@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { optionalQueryBoolean } from '@breeze/shared';
+import { currencyCodeSchema, optionalQueryBoolean } from '@breeze/shared';
 import { requireMfa, requirePermission, requireScope, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { checkSsrfSafe } from '../../services/ssrfGuard';
@@ -123,7 +123,7 @@ const productSchema = z.object({
   description: z.string().max(10_000).nullable(),
   // Normalized money string (matches normalizeTdSynnexProducts' toFixed(2) output).
   cost: z.string().regex(/^-?\d+\.\d{2}$/).max(30).nullable(),
-  currency: z.string().max(10).nullable(),
+  currency: currencyCodeSchema.nullable(),
   availability: z.number().nullable(),
   warehouses: z.array(z.record(z.string(), z.unknown())).max(200),
   // Provider passthrough — not persisted, but bound the inbound size so a partner
@@ -143,6 +143,7 @@ const importSchema = z.object({
     sku: z.string().max(100).nullable().optional(),
     description: z.string().max(10_000).nullable().optional(),
     unitPrice: money,
+    sellCurrency: currencyCodeSchema.optional(),
     costBasis: money.nullable().optional(),
     markupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
     taxable: z.boolean().default(true),
@@ -269,7 +270,7 @@ const ecProductSchema = z.object({
   status: z.string().max(64).nullable(),
   name: z.string().min(1).max(500),
   description: z.string().max(10_000).nullable(),
-  currency: z.string().max(10).nullable(),
+  currency: currencyCodeSchema.nullable(),
   cost: z.number().nullable(),
   msrp: z.number().nullable(),
   discount: z.number().nullable(),
@@ -298,6 +299,7 @@ const ecImportSchema = z.object({
     sku: z.string().max(100).nullable().optional(),
     description: z.string().max(10_000).nullable().optional(),
     unitPrice: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01),
+    sellCurrency: currencyCodeSchema.optional(),
     costBasis: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01).nullable().optional(),
     markupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
     taxable: z.boolean().optional(),
@@ -413,7 +415,7 @@ const pax8ProductSchema = z.object({
   commitmentTerm: z.string().max(120).nullable(),
   billingTerm: z.string().max(120).nullable(),
   partnerBuyRate: z.string().regex(/^-?\d+\.\d{2}$/).max(30).nullable(),
-  currency: z.string().max(10).nullable(),
+  currency: currencyCodeSchema.nullable(),
   raw: z.record(z.string(), z.unknown()).refine(
     (v) => JSON.stringify(v).length <= 200_000,
     { message: 'raw product payload is too large' },
@@ -427,6 +429,7 @@ const pax8ImportSchema = z.object({
     sku: z.string().max(100).nullable().optional(),
     description: z.string().max(10_000).nullable().optional(),
     unitPrice: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01),
+    sellCurrency: currencyCodeSchema.optional(),
     costBasis: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01).nullable().optional(),
     taxable: z.boolean().optional(),
   }),

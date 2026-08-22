@@ -13,7 +13,7 @@ interface SignaturePanelProps {
   /** Called with the typed signer name once name + agreement are provided. */
   onAccept: (signerName: string) => void | Promise<void>;
   /** Called ONLY after the customer confirms the inline decline block. */
-  onDecline: (reason?: string) => void;
+  onDecline: (reason?: string) => void | Promise<void>;
   busy: boolean;
   /** Prefixes the data-testids so existing public/authed selectors keep working. */
   testIdPrefix: string;
@@ -154,6 +154,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
               onChange={(e) => setDeclineReason(e.target.value)}
               disabled={busy}
               rows={3}
+              maxLength={2000}
               className={cn(INPUT, "mt-0")}
             />
           </div>

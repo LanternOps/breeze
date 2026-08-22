@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { SignaturePanel } from './SignaturePanel';
@@ -24,7 +23,6 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
   const [status, setStatus] = useState(initial?.quote.status ?? '');
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
-  const [payUrl, setPayUrl] = useState<string | null>(null);
 
   if (error || !initial) {
     return (
@@ -54,20 +52,6 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
 
   const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
 
-  // Label the post-accept CTA with what Stripe will actually charge. The link is
-  // minted against the invoice this acceptance just created, so amountPaid is 0
-  // and the deposit-first rule reduces to "deposit if one is set, else the
-  // due-on-acceptance total" — computed through the shared helper so the label
-  // can't drift from the server's charge.
-  const payCharge = computeChargeNow({
-    depositDue: depositDue != null ? String(depositDue) : null,
-    amountPaid: '0.00',
-    balance: String(dueOnAcceptance),
-  });
-  const payLabel = payCharge.isDeposit
-    ? `Pay deposit ${money(payCharge.amount, currency)}`
-    : `Pay ${money(payCharge.amount, currency)}`;
-
   const statusBadge =
     status === 'accepted' || status === 'converted'
       ? { label: 'Accepted', cls: 'bg-success/10 text-success-on-tint' }
@@ -95,14 +79,21 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       return;
     }
     setStatus('converted');
-    // Phase 3: the accept response carries a one-shot Stripe checkout URL (the accept
-    // token is now spent, so it can't be re-minted). payDeferred means a link was
-    // expected but couldn't be minted right now (e.g. a transient Stripe error) — tell
-    // the customer a link is coming rather than silently dropping the payment CTA.
-    setPayUrl(res.data?.data?.payUrl ?? null);
+    // The accept response carries the invoice's DURABLE public url (the quote
+    // accept token is now spent). Land the customer straight on it — it shows
+    // the invoice with its Pay button and keeps working after the tab closes
+    // (replace, not assign: back must not return to the dead accept form).
+    // The invoice is also auto-emailed server-side, so losing this navigation
+    // is harmless. payDeferred = the link couldn't be minted right now.
+    const invoiceUrl = res.data?.data?.invoiceUrl ?? null;
+    if (invoiceUrl) {
+      setMsg('Signed and accepted. Taking you to your invoice.');
+      window.location.replace(invoiceUrl);
+      return;
+    }
     setMsg(
       res.data?.data?.payDeferred
-        ? "Signed and accepted. We'll email you a payment link shortly."
+        ? "Signed and accepted. We'll email you your invoice shortly."
         : 'Signed and accepted. Thank you.'
     );
   };
@@ -124,7 +115,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       return;
     }
     setStatus('declined');
-    setMsg('You have declined this proposal.');
+    setMsg(`Thanks — ${branding.partnerName} has been notified.`);
   };
 
   return (
@@ -255,15 +246,6 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       {status === 'converted' && (
         <div data-testid="public-quote-accepted" role="status" className="space-y-3 rounded-md bg-success/10 p-4 text-sm text-success-on-tint">
           <p>{msg ?? 'This proposal has already been accepted.'}</p>
-          {payUrl && (
-            <a
-              href={payUrl}
-              data-testid="public-quote-pay"
-              className="inline-flex rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              {payLabel}
-            </a>
-          )}
         </div>
       )}
       {status === 'declined' && msg && (

@@ -1,3 +1,5 @@
+import { formatMoney } from '@breeze/shared';
+import { portalLocale } from '@/lib/money';
 /**
  * Shared customer-facing formatters. These were duplicated verbatim in four
  * list/detail components; one definition keeps the register's figures in one
@@ -5,6 +7,9 @@
  * per-line rendering — it re-exports this one.)
  */
 
+// Formatting itself is the multi-currency formatter in lib/money.ts (shared
+// formatMoney in the browser's locale); this adds the guard above it so a
+// broken figure reads as a dash, never as a settled-looking zero.
 export function money(value: string | number, currencyCode: string): string {
   // Number(null) and Number('') are 0, which would dress a missing amount as a
   // settled one; only an actual numeric value may format.
@@ -15,11 +20,7 @@ export function money(value: string | number, currencyCode: string): string {
     console.error('[portal] non-numeric money value', { value, currencyCode });
     return '—';
   }
-  try {
-    return n.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${n.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
+  return formatMoney(n, currencyCode, portalLocale());
 }
 
 /** Date-only strings render calendar-true (no timezone shift); anything else

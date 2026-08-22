@@ -11,7 +11,7 @@ interface CatalogEventEnvelope {
 }
 
 export type CatalogEvent = CatalogEventEnvelope & {
-  type: 'catalog.item.created' | 'catalog.item.updated' | 'catalog.item.archived';
+  type: 'catalog.item.created' | 'catalog.item.updated' | 'catalog.item.archived' | 'catalog.item.price_changed';
 };
 
 let queue: Queue | null = null;

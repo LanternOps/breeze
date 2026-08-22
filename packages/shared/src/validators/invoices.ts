@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 import { BULK_ID_LIMIT } from '../constants';
 import { nullableHttpUrlField } from './httpUrl';
+import { currencyCodeSchema } from './currency';
 
 const money = z.number().nonnegative().multipleOf(0.01);
 const positiveQty = z.number().positive().multipleOf(0.01);
@@ -85,7 +86,7 @@ export const listInvoicesQuerySchema = z.object({
 });
 
 export const partnerBillingSettingsSchema = z.object({
-  currencyCode: z.string().length(3),
+  currencyCode: currencyCodeSchema,
   defaultTaxRate: taxRate.nullable().optional(),
   invoiceNumberPrefix: z.string().min(1).max(12),
   invoiceTermsDays: z.number().int().min(0).max(365),
@@ -96,6 +97,9 @@ export const partnerBillingSettingsSchema = z.object({
   defaultMarkupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
   // When true, hardware catalog items default to taxable when added/imported.
   autoTaxHardware: z.boolean().optional(),
+  // Auto-email the issued invoice (with its public pay link) when a quote is
+  // accepted. Default ON — see partners.auto_email_invoice_on_quote_accept.
+  autoEmailInvoiceOnQuoteAccept: z.boolean().optional(),
   // AI copy style for enrich/polish output; null reverts to the built-in house format.
   catalogAiStyle: z.string().max(2000).nullable().optional(),
   invoiceFooter: z.string().max(5000).nullable().optional(),

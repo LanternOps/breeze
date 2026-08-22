@@ -61,12 +61,14 @@ beforeEach(() => { results.length = 0; recompute.mockReset(); emit.mockReset(); 
 
 describe('recordStripePayment', () => {
   it('inserts a card payment, links the mapping, recomputes, emits payment.recorded', async () => {
-    // db call order: select mapping → select invoice → insert payment returning →
-    // update mapping → (recompute, mocked) → select updated invoice
-    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping (pending)
-    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice
+    // db call order (B10 lock order): select mapping (discovery) → select invoice
+    // FOR UPDATE → re-read mapping FOR UPDATE → insert payment returning →
+    // guarded mapping update RETURNING → (recompute, mocked) → select updated invoice
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping discovery (pending)
+    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping re-read under lock (still unlinked)
     queueResult([{ id: 'pay1' }]); // insert payment returning
-    queueResult([]); // update mapping
+    queueResult([{ id: 'm1' }]); // guarded mapping update RETURNING (1 row = linked)
     queueResult([{ id: 'inv1', status: 'partially_paid' }]); // updated invoice re-read
 
     const res = await recordStripePayment({
@@ -80,10 +82,11 @@ describe('recordStripePayment', () => {
   });
 
   it('emits invoice.paid when the recompute fully pays the invoice', async () => {
-    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping
-    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping discovery
+    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping re-read under lock
     queueResult([{ id: 'pay1' }]); // insert payment returning
-    queueResult([]); // update mapping
+    queueResult([{ id: 'm1' }]); // guarded mapping update RETURNING
     queueResult([{ id: 'inv1', status: 'paid' }]); // updated invoice re-read => paid
 
     await recordStripePayment({
@@ -101,11 +104,13 @@ describe('recordStripePayment', () => {
     // invoicePaymentId it persists. Call 2's mapping read is fed THAT same linked
     // value — proving the second redelivery short-circuits with no recompute/emit/insert.
 
-    // CALL 1: full record path. mapping(pending) → invoice → insert payment → update mapping → updated invoice
+    // CALL 1: full record path. mapping discovery → invoice lock → mapping re-read
+    // → insert payment → guarded mapping update RETURNING → updated invoice
     queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]);
     queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]);
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // re-read under lock
     queueResult([{ id: 'pay1' }]);
-    queueResult([]); // update mapping (links invoicePaymentId='pay1')
+    queueResult([{ id: 'm1' }]); // guarded mapping update RETURNING (links invoicePaymentId='pay1')
     queueResult([{ id: 'inv1', status: 'partially_paid' }]);
 
     await recordStripePayment({ stripeObjectId: 'cs_1', stripePaymentIntentId: 'pi_1', stripeAccountId: 'acct_1', amount: '100.00', currency: 'USD' });
@@ -133,11 +138,47 @@ describe('recordStripePayment', () => {
     expect(insertValues.calls.length).toBe(call1Inserts);
   });
 
+  it('concurrent-delivery no-op: the mapping re-read under the invoice lock sees the link and short-circuits', async () => {
+    // Two deliveries can BOTH pass the unlocked discovery read with
+    // invoicePaymentId=null; the loser must observe the winner's link on the
+    // FOR UPDATE re-read after waiting on the invoice lock — no insert, no
+    // recompute, no emit.
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // discovery: still unlinked (stale)
+    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '0.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked, winner already recomputed)
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // re-read under lock: LINKED
+
+    const res = await recordStripePayment({
+      stripeObjectId: 'cs_1', stripePaymentIntentId: 'pi_1', stripeAccountId: 'acct_1',
+      amount: '100.00', currency: 'USD'
+    });
+
+    expect(res.invoiceId).toBe('inv1');
+    expect(insertValues.calls.length).toBe(0);
+    expect(recompute).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('guarded mapping link matching 0 rows THROWS (locking contract broke → 500 → retry, insert rolls back)', async () => {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // discovery
+    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // re-read under lock
+    queueResult([{ id: 'pay1' }]); // insert payment returning
+    queueResult([]); // guarded mapping update RETURNING → 0 rows (impossible under the lock)
+
+    await expect(recordStripePayment({
+      stripeObjectId: 'cs_1', stripePaymentIntentId: 'pi_1', stripeAccountId: 'acct_1',
+      amount: '100.00', currency: 'USD'
+    })).rejects.toThrow(/changed under the payment lock/);
+    expect(recompute).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('overpayment (amount > balance) is TERMINAL: marks failed + emits payment.failed, no throw', async () => {
     // Terminal conditions must NOT throw (a thrown error → 500 → Stripe retries
     // forever). Instead: markMapping('failed') + emit payment.failed + return.
-    queueResult([{ id: 'm2', invoiceId: 'inv2', invoicePaymentId: null }]); // mapping
-    queueResult([{ id: 'inv2', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice
+    queueResult([{ id: 'm2', invoiceId: 'inv2', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping discovery
+    queueResult([{ id: 'inv2', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)
+    queueResult([{ id: 'm2', invoiceId: 'inv2', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping re-read under lock
     queueResult([]); // markMapping('failed') update
 
     const res = await recordStripePayment({
@@ -153,8 +194,9 @@ describe('recordStripePayment', () => {
   });
 
   it('void invoice is TERMINAL: marks failed + emits payment.failed, no throw', async () => {
-    queueResult([{ id: 'm3', invoiceId: 'inv3', invoicePaymentId: null }]); // mapping
-    queueResult([{ id: 'inv3', orgId: 'org1', partnerId: 'p1', status: 'void', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice
+    queueResult([{ id: 'm3', invoiceId: 'inv3', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping discovery
+    queueResult([{ id: 'inv3', orgId: 'org1', partnerId: 'p1', status: 'void', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)
+    queueResult([{ id: 'm3', invoiceId: 'inv3', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping re-read under lock
     queueResult([]); // markMapping('failed') update
 
     const res = await recordStripePayment({
@@ -168,8 +210,9 @@ describe('recordStripePayment', () => {
   });
 
   it('currency mismatch is TERMINAL: marks failed + emits payment.failed, no throw', async () => {
-    queueResult([{ id: 'm4', invoiceId: 'inv4', invoicePaymentId: null }]); // mapping
-    queueResult([{ id: 'inv4', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'EUR', stripeAccountId: 'acct_1' }]); // invoice (EUR)
+    queueResult([{ id: 'm4', invoiceId: 'inv4', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping discovery
+    queueResult([{ id: 'inv4', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'EUR', stripeAccountId: 'acct_1' }]); // invoice (EUR, locked)
+    queueResult([{ id: 'm4', invoiceId: 'inv4', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping re-read under lock
     queueResult([]); // markMapping('failed') update
 
     const res = await recordStripePayment({
@@ -183,8 +226,9 @@ describe('recordStripePayment', () => {
   });
 
   it('account mismatch is TERMINAL: marks failed + emits payment.failed, no throw', async () => {
-    queueResult([{ id: 'm5', invoiceId: 'inv5', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping
-    queueResult([{ id: 'inv5', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice
+    queueResult([{ id: 'm5', invoiceId: 'inv5', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping discovery
+    queueResult([{ id: 'inv5', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)
+    queueResult([{ id: 'm5', invoiceId: 'inv5', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping re-read under lock — account guard reads THIS row
     queueResult([]); // markMapping('failed') update
 
     const res = await recordStripePayment({

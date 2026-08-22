@@ -44,8 +44,8 @@ beforeAll(async () => {
   const sfx = randomUUID();
 
   await admin`INSERT INTO partners (id, name, slug) VALUES (${partner}, 'wsp-3472', ${`wsp-3472-${sfx}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${org}, ${partner}, 'wsp-3472-org', ${`wsp-3472-org-${sfx}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${org}, ${partner}, 'wsp-3472-org', ${`wsp-3472-org-${sfx}`}, 'USD')`;
   await admin`INSERT INTO sites (id, org_id, name) VALUES (${site}, ${org}, 'wsp-3472-site')`;
   await admin`INSERT INTO devices
                 (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)

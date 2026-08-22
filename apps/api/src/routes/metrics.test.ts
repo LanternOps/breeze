@@ -43,10 +43,25 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   };
 });
 
+// Records the ORDER in which db-context wrappers are entered, so a test can prove
+// the fleet query actually ran inside them. `toHaveBeenCalled()` alone is not
+// enough — see the nesting test below for why.
+const dbContextEvents = vi.hoisted(() => [] as string[]);
+
 vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
+  runOutsideDbContext: vi.fn((fn: any) => {
+    dbContextEvents.push('outside:enter');
+    return fn();
+  }),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    dbContextEvents.push('system:enter');
+    try {
+      return await fn();
+    } finally {
+      dbContextEvents.push('system:exit');
+    }
+  }),
   db: {
     select: selectMock,
     insert: vi.fn(),
@@ -74,6 +89,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { authMiddleware } from '../middleware/auth';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import {
   metricsMiddleware,
@@ -222,6 +238,27 @@ function connectTimeoutStats(timeouts: number, windowMs = 300_000): DbConnectTim
   };
 }
 
+/**
+ * Stubs the single fleet-gauge pass (device counts + backup readiness) by TABLE
+ * rather than by call order, so reordering the two queries inside the shared
+ * transaction cannot break unrelated suites.
+ */
+function stubFleetGaugeQueries(
+  selectMock: ReturnType<typeof vi.fn>,
+  opts: { fleet?: Record<string, unknown>; readiness?: Record<string, unknown> } = {}
+): void {
+  selectMock.mockImplementation(() => ({
+    from: (table: unknown) => ({
+      where: () =>
+        Promise.resolve([
+          table === devices
+            ? (opts.fleet ?? { devicesActive: 0, organizationsActive: 0 })
+            : (opts.readiness ?? { count: 0 }),
+        ]),
+    }),
+  }));
+}
+
 function getMetricLine(metrics: string, name: string, labels?: Record<string, string>): string | undefined {
   const labelText = labels ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}` : '';
   return metrics
@@ -270,6 +307,7 @@ describe('metrics routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    dbContextEvents.length = 0;
     selectMock.mockReset();
     selectMock.mockReturnValue({
       from: () => ({
@@ -602,19 +640,19 @@ describe('metrics routes', () => {
   });
 
   it('records and aggregates HTTP request metrics', async () => {
-    recordHttpRequest('GET', '/api/devices/123', 200, 0.2, 'org-1');
-    recordHttpRequest('GET', '/api/devices/456', 200, 0.4, 'org-1');
+    recordHttpRequest('GET', '/api/devices/:id', 200, 0.2);
+    recordHttpRequest('GET', '/api/devices/:id', 204, 0.4);
 
     const res = await app.request('/metrics', {
       headers: { Authorization: 'Bearer token' }
     });
     const body = await res.text();
 
+    // Both requests collapse onto one series: same route template, same class.
     const counterLine = getMetricLine(body, 'http_requests_total', {
       method: 'GET',
       route: '/api/devices/:id',
-      status: '200',
-      org_id: 'org-1'
+      status_class: '2xx'
     });
     expect(counterLine).toBeDefined();
     expect(counterLine?.endsWith(' 2')).toBe(true);
@@ -627,37 +665,493 @@ describe('metrics routes', () => {
     expect(countLine?.endsWith(' 2')).toBe(true);
   });
 
-  it('captures request metrics via middleware with org context', async () => {
-    const appWithMiddleware = new Hono();
-    appWithMiddleware.use('*', authMiddleware);
-    appWithMiddleware.use('*', metricsMiddleware);
-    appWithMiddleware.get('/widgets/:id', (c) => c.json({ ok: true }));
-    appWithMiddleware.route('/', metricsRoutes);
+  it('buckets responses by class rather than exact status code', async () => {
+    recordHttpRequest('POST', '/api/things', 500, 0.1);
+    recordHttpRequest('POST', '/api/things', 503, 0.1);
+    recordHttpRequest('POST', '/api/things', 404, 0.1);
 
-    const res = await appWithMiddleware.request('/widgets/42', {
-      headers: { Authorization: 'Bearer token' }
-    });
-    expect(res.status).toBe(200);
+    const body = await (
+      await app.request('/metrics', { headers: { Authorization: 'Bearer token' } })
+    ).text();
 
-    const metricsRes = await appWithMiddleware.request('/metrics', {
-      headers: { Authorization: 'Bearer token' }
-    });
-    const body = await metricsRes.text();
+    expect(
+      getMetricLine(body, 'http_requests_total', {
+        method: 'POST',
+        route: '/api/things',
+        status_class: '5xx'
+      })?.endsWith(' 2')
+    ).toBe(true);
+    expect(
+      getMetricLine(body, 'http_requests_total', {
+        method: 'POST',
+        route: '/api/things',
+        status_class: '4xx'
+      })?.endsWith(' 1')
+    ).toBe(true);
+    // The exact code must not survive as its own label.
+    expect(body).not.toContain('status="503"');
+  });
 
-    const counterLine = getMetricLine(body, 'http_requests_total', {
-      method: 'GET',
-      route: '/widgets/:id',
-      status: '200',
-      org_id: 'org-123'
+  it('normalizes unknown verbs so a probe cannot open a new series', async () => {
+    recordHttpRequest('PROPFIND', '/api/things', 405, 0.01);
+
+    const body = await (
+      await app.request('/metrics', { headers: { Authorization: 'Bearer token' } })
+    ).text();
+
+    expect(
+      getMetricLine(body, 'http_requests_total', {
+        method: 'other',
+        route: '/api/things',
+        status_class: '4xx'
+      })
+    ).toBeDefined();
+    expect(body).not.toContain('PROPFIND');
+  });
+
+  // The bug this file exists to prevent a repeat of: the middleware was written
+  // and unit-tested, but nothing mounted it, so a production scrape carried no
+  // per-request series at all. These assertions only hold when it is wired up.
+  describe('metricsMiddleware route labelling', () => {
+    function buildApp(): Hono {
+      const appWithMiddleware = new Hono();
+      appWithMiddleware.use('*', metricsMiddleware);
+      appWithMiddleware.use('*', authMiddleware);
+      appWithMiddleware.get('/widgets/:id', (c) => c.json({ ok: true }));
+      // A non-numeric, non-UUID path parameter: the label the OLD raw-path
+      // scrubber would have emitted verbatim.
+      appWithMiddleware.get('/orgs/:slug/detail', (c) => c.json({ ok: true }));
+      appWithMiddleware.get('/boom', () => {
+        throw new Error('handler exploded');
+      });
+      appWithMiddleware.route('/', metricsRoutes);
+      return appWithMiddleware;
+    }
+
+    async function scrape(target: Hono): Promise<string> {
+      const res = await target.request('/metrics', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      return res.text();
+    }
+
+    it('labels a matched request with the Hono route template', async () => {
+      const appWithMiddleware = buildApp();
+      const res = await appWithMiddleware.request('/widgets/42', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+
+      const body = await scrape(appWithMiddleware);
+      expect(
+        getMetricLine(body, 'http_requests_total', {
+          method: 'GET',
+          route: '/widgets/:id',
+          status_class: '2xx'
+        })?.endsWith(' 1')
+      ).toBe(true);
+      expect(
+        getMetricLine(body, 'http_request_duration_seconds_count', {
+          method: 'GET',
+          route: '/widgets/:id'
+        })?.endsWith(' 1')
+      ).toBe(true);
     });
-    expect(counterLine).toBeDefined();
-    expect(counterLine?.endsWith(' 1')).toBe(true);
+
+    it('uses the template for a non-numeric path parameter instead of the raw value', async () => {
+      const appWithMiddleware = buildApp();
+      await appWithMiddleware.request('/orgs/acme-corp/detail', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      await appWithMiddleware.request('/orgs/globex-industries/detail', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const body = await scrape(appWithMiddleware);
+      expect(
+        getMetricLine(body, 'http_requests_total', {
+          method: 'GET',
+          route: '/orgs/:slug/detail',
+          status_class: '2xx'
+        })?.endsWith(' 2')
+      ).toBe(true);
+      expect(body).not.toContain('acme-corp');
+      expect(body).not.toContain('globex-industries');
+    });
+
+    it('collapses unrouted paths onto a single `unmatched` series', async () => {
+      const appWithMiddleware = buildApp();
+      await appWithMiddleware.request('/wp-admin/setup-config.php', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      await appWithMiddleware.request('/.env', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const body = await scrape(appWithMiddleware);
+      expect(
+        getMetricLine(body, 'http_requests_total', {
+          method: 'GET',
+          route: 'unmatched',
+          status_class: '4xx'
+        })?.endsWith(' 2')
+      ).toBe(true);
+      expect(body).not.toContain('wp-admin');
+    });
+
+    it('counts a throwing handler as 5xx and releases the in-flight gauge', async () => {
+      const appWithMiddleware = buildApp();
+      await appWithMiddleware.request('/boom', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const body = await scrape(appWithMiddleware);
+      expect(
+        getMetricLine(body, 'http_requests_total', {
+          method: 'GET',
+          route: '/boom',
+          status_class: '5xx'
+        })?.endsWith(' 1')
+      ).toBe(true);
+      // The scrape itself is in flight while it renders, so 1 — never 2, which
+      // is what a `finally`-less decrement would leave behind.
+      expect(body).toContain('http_requests_in_flight 1');
+    });
+
+    it('does not carry an org_id label', async () => {
+      const appWithMiddleware = buildApp();
+      await appWithMiddleware.request('/widgets/42', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const body = await scrape(appWithMiddleware);
+      const line = body
+        .split('\n')
+        .find((l) => l.startsWith('http_requests_total{') && l.includes('/widgets/:id'));
+      expect(line).toBeDefined();
+      expect(line).not.toContain('org_id');
+    });
+  });
+
+  // `breeze_active_devices` / `breeze_active_organizations` reported 0 in both
+  // production regions against a live fleet: they were seeded to 0 and the only
+  // setter had no production caller. These tests pin the refresh path AND the db
+  // context it runs in — a contextless read on RLS-forced `devices` returns zero
+  // rows silently, which would reproduce the original symptom exactly.
+  describe('fleet gauges (SOC 2 A1.1)', () => {
+    /**
+     * Discriminates on the TABLE rather than call order. An order-coupled mock
+     * (chained `mockReturnValueOnce`) breaks whenever the two queries are
+     * reordered inside one transaction, which is a refactor with no behavioural
+     * meaning.
+     */
+    function mockFleetQueries(opts: {
+      fleet?: Record<string, unknown>;
+      readiness?: Record<string, unknown>;
+      fleetError?: Error;
+    } = {}): any[] {
+      const captured: any[] = [];
+      selectMock.mockImplementation(() => ({
+        from: (table: unknown) => ({
+          where: (condition: any) => {
+            if (table === devices) {
+              captured.push(condition);
+              dbContextEvents.push('fleet-query');
+              if (opts.fleetError) return Promise.reject(opts.fleetError);
+              return Promise.resolve([
+                opts.fleet ?? { devicesActive: 0, organizationsActive: 0 },
+              ]);
+            }
+            return Promise.resolve([opts.readiness ?? { count: 0 }]);
+          },
+        }),
+      }));
+      return captured;
+    }
+
+    async function scrape(): Promise<string> {
+      const res = await app.request('/metrics', { headers: { Authorization: 'Bearer token' } });
+      return res.text();
+    }
+
+    it('publishes live device and organization counts on scrape', async () => {
+      mockFleetQueries({ fleet: { devicesActive: 4213, organizationsActive: 87 } });
+
+      const body = await scrape();
+
+      expect(getMetricLine(body, 'breeze_active_devices')).toBe('breeze_active_devices 4213');
+      expect(getMetricLine(body, 'breeze_active_organizations')).toBe(
+        'breeze_active_organizations 87'
+      );
+    });
+
+    it('refreshes the backup readiness gauge in the same pass', async () => {
+      mockFleetQueries({ readiness: { count: 3 } });
+
+      const body = await scrape();
+
+      expect(getMetricLine(body, 'breeze_backup_low_readiness_devices')).toBe(
+        'breeze_backup_low_readiness_devices 3'
+      );
+    });
+
+    it('coerces string counts from the driver', async () => {
+      mockFleetQueries({ fleet: { devicesActive: '12', organizationsActive: '3' } });
+
+      const body = await scrape();
+
+      expect(getMetricLine(body, 'breeze_active_devices')).toBe('breeze_active_devices 12');
+    });
+
+    // The predecessor of this test asserted only `toHaveBeenCalled()` on both
+    // wrappers — which passed even with the wrapper stripped off the fleet query,
+    // because the readiness query called them first. It also could not tell the
+    // correct nesting from the inverted one, and inverting it drops the system
+    // GUCs and returns zero rows under RLS: the exact original symptom.
+    it('runs the fleet query inside runOutsideDbContext → withSystemDbAccessContext', async () => {
+      mockFleetQueries();
+
+      await scrape();
+
+      const outside = dbContextEvents.lastIndexOf('outside:enter');
+      const system = dbContextEvents.lastIndexOf('system:enter');
+      const query = dbContextEvents.lastIndexOf('fleet-query');
+      const exit = dbContextEvents.indexOf('system:exit', system);
+
+      expect(outside).toBeGreaterThan(-1);
+      expect(query).toBeGreaterThan(-1);
+      // Order matters: exit the request context FIRST, then open a system one.
+      expect(outside).toBeLessThan(system);
+      expect(system).toBeLessThan(query);
+      // ...and the query must still be inside that context when it runs.
+      expect(query).toBeLessThan(exit);
+    });
+
+    it('opens exactly one db context per scrape for both gauges', async () => {
+      mockFleetQueries();
+
+      await scrape();
+
+      expect(dbContextEvents.filter((e) => e === 'system:enter')).toHaveLength(1);
+    });
+
+    it('excludes ephemeral and decommissioned devices and bounds by last heartbeat', async () => {
+      const captured = mockFleetQueries();
+
+      await scrape();
+
+      const condition = captured[0];
+      expect(findCondition(condition, 'eq', devices.isEphemeral)?.value).toBe(false);
+      const recency = findCondition(condition, 'gte', devices.lastSeenAt);
+      expect(recency?.value).toBeInstanceOf(Date);
+      // Default window is 300s; allow slack for test execution time.
+      const windowMs = Date.now() - (recency.value as Date).getTime();
+      expect(windowMs).toBeGreaterThan(290_000);
+      expect(windowMs).toBeLessThan(310_000);
+    });
+
+    it('honours METRICS_ACTIVE_DEVICE_WINDOW_SECONDS', async () => {
+      process.env.METRICS_ACTIVE_DEVICE_WINDOW_SECONDS = '60';
+      try {
+        const captured = mockFleetQueries();
+        await scrape();
+
+        const recency = findCondition(captured[0], 'gte', devices.lastSeenAt);
+        const windowMs = Date.now() - (recency.value as Date).getTime();
+        expect(windowMs).toBeGreaterThan(50_000);
+        expect(windowMs).toBeLessThan(70_000);
+      } finally {
+        delete process.env.METRICS_ACTIVE_DEVICE_WINDOW_SECONDS;
+      }
+    });
+
+    // The `> 0` clamp is what stops a misconfigured deploy from turning the TTL
+    // into "aggregate on every scrape" or the window into "the fleet is inactive".
+    it.each(['0', '-30', 'not-a-number'])(
+      'falls back to the default window when the env var is %s',
+      async (raw) => {
+        process.env.METRICS_ACTIVE_DEVICE_WINDOW_SECONDS = raw;
+        try {
+          const captured = mockFleetQueries();
+          await scrape();
+
+          const recency = findCondition(captured[0], 'gte', devices.lastSeenAt);
+          const windowMs = Date.now() - (recency.value as Date).getTime();
+          expect(windowMs).toBeGreaterThan(290_000);
+          expect(windowMs).toBeLessThan(310_000);
+        } finally {
+          delete process.env.METRICS_ACTIVE_DEVICE_WINDOW_SECONDS;
+        }
+      }
+    );
+
+    it('caches across back-to-back scrapes so a scrape loop cannot hammer the fleet query', async () => {
+      mockFleetQueries({ fleet: { devicesActive: 500, organizationsActive: 9 } });
+      await scrape();
+      mockFleetQueries({ fleet: { devicesActive: 999, organizationsActive: 99 } });
+      const body = await scrape();
+
+      expect(getMetricLine(body, 'breeze_active_devices')).toBe('breeze_active_devices 500');
+      expect(dbContextEvents.filter((e) => e === 'fleet-query')).toHaveLength(1);
+    });
+
+    // A timestamp alone throttles only scrapes arriving inside the TTL. The
+    // aggregate gets slow exactly when the database is unwell, which is when a
+    // second scrape would otherwise launch a concurrent full scan.
+    it('single-flights concurrent scrapes into one query', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      selectMock.mockImplementation(() => ({
+        from: (table: unknown) => ({
+          where: () => {
+            if (table === devices) {
+              dbContextEvents.push('fleet-query');
+              return gate.then(() => [{ devicesActive: 7, organizationsActive: 2 }]);
+            }
+            return Promise.resolve([{ count: 0 }]);
+          },
+        }),
+      }));
+
+      const both = Promise.all([scrape(), scrape()]);
+      release();
+      await both;
+
+      expect(dbContextEvents.filter((e) => e === 'fleet-query')).toHaveLength(1);
+    });
+
+    it('leaves the last known values in place when the query fails', async () => {
+      mockFleetQueries({ fleet: { devicesActive: 77, organizationsActive: 2 } });
+      await scrape();
+
+      process.env.METRICS_FLEET_GAUGE_TTL_SECONDS = '0.001';
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        mockFleetQueries({ fleetError: new Error('pool exhausted') });
+
+        const body = await scrape();
+
+        // A failed refresh must not silently republish 0 — that is the exact
+        // reading that hid this bug for months.
+        expect(getMetricLine(body, 'breeze_active_devices')).toBe('breeze_active_devices 77');
+        expect(warn).toHaveBeenCalled();
+        // ...but the staleness must be VISIBLE rather than merely survivable.
+        expect(getMetricLine(body, 'breeze_fleet_gauge_refresh_failures_total')).toBe(
+          'breeze_fleet_gauge_refresh_failures_total 1'
+        );
+      } finally {
+        warn.mockRestore();
+        delete process.env.METRICS_FLEET_GAUGE_TTL_SECONDS;
+      }
+    });
+
+    // Without this, a refresh that fails from boot onward publishes a flat 0 with
+    // nothing to distinguish it from an empty fleet — the original bug, with a
+    // console.warn nobody alerts on.
+    it('keeps the freshness timestamp at 0 until a refresh actually succeeds', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        mockFleetQueries({ fleetError: new Error('permission denied for table devices') });
+
+        const body = await scrape();
+
+        expect(getMetricLine(body, 'breeze_fleet_gauges_last_refresh_timestamp_seconds')).toBe(
+          'breeze_fleet_gauges_last_refresh_timestamp_seconds 0'
+        );
+        expect(getMetricLine(body, 'breeze_active_devices')).toBe('breeze_active_devices 0');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('publishes a freshness timestamp once a refresh succeeds', async () => {
+      mockFleetQueries({ fleet: { devicesActive: 5, organizationsActive: 1 } });
+
+      const body = await scrape();
+
+      const line = getMetricLine(body, 'breeze_fleet_gauges_last_refresh_timestamp_seconds');
+      const seconds = Number(line?.split(' ').pop());
+      expect(seconds).toBeGreaterThan(Date.now() / 1000 - 60);
+    });
+
+    // A failed refresh must not burn the whole TTL: the next scrape retries.
+    it('retries on the next scrape after a failure', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        mockFleetQueries({ fleetError: new Error('transient') });
+        await scrape();
+
+        mockFleetQueries({ fleet: { devicesActive: 31, organizationsActive: 4 } });
+        const body = await scrape();
+
+        expect(getMetricLine(body, 'breeze_active_devices')).toBe('breeze_active_devices 31');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    // The scrape is the only way to see inside a sick instance. Gating it on a
+    // database read means a pool stall takes every unrelated series with it and
+    // flips `up` to 0, which reads as a dead API rather than a sick database.
+    it('still renders the registry when the fleet query never settles', async () => {
+      process.env.METRICS_FLEET_GAUGE_TIMEOUT_SECONDS = '0.05';
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        selectMock.mockImplementation(() => ({
+          from: (table: unknown) => ({
+            where: () =>
+              table === devices ? new Promise(() => {}) : Promise.resolve([{ count: 0 }]),
+          }),
+        }));
+
+        const body = await scrape();
+
+        expect(body).toContain('http_requests_in_flight');
+        expect(getMetricLine(body, 'breeze_fleet_gauge_refresh_failures_total')).toBe(
+          'breeze_fleet_gauge_refresh_failures_total 1'
+        );
+      } finally {
+        warn.mockRestore();
+        delete process.env.METRICS_FLEET_GAUGE_TIMEOUT_SECONDS;
+      }
+    });
+
+    // A `count(*)` always returns one row, so no row is a driver anomaly — not an
+    // empty fleet. Publishing 0 for it is the misleading reading, not the safe one.
+    it('treats a missing result row as a failure rather than an empty fleet', async () => {
+      mockFleetQueries({ fleet: { devicesActive: 42, organizationsActive: 8 } });
+      await scrape();
+
+      process.env.METRICS_FLEET_GAUGE_TTL_SECONDS = '0.001';
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        selectMock.mockImplementation(() => ({
+          from: () => ({ where: () => Promise.resolve([]) }),
+        }));
+
+        const body = await scrape();
+
+        expect(getMetricLine(body, 'breeze_active_devices')).toBe('breeze_active_devices 42');
+        expect(getMetricLine(body, 'breeze_fleet_gauge_refresh_failures_total')).toBe(
+          'breeze_fleet_gauge_refresh_failures_total 1'
+        );
+      } finally {
+        warn.mockRestore();
+        delete process.env.METRICS_FLEET_GAUGE_TTL_SECONDS;
+      }
+    });
   });
 
   it('aggregates business metrics and counters', async () => {
+    // Device/org counts come from the scrape-time refresh, so they are seeded
+    // through the mocked query rather than the setter — the setter's values
+    // would be overwritten by the refresh that `/json` performs.
+    stubFleetGaugeQueries(selectMock, { fleet: { devicesActive: 12, organizationsActive: 3 } });
     updateBusinessMetrics({
-      devicesActive: 12,
-      organizationsTotal: 3,
       alertsActive: 5,
       alertQueueLength: 2
     });
@@ -682,6 +1176,39 @@ describe('metrics routes', () => {
         { labels: { status: 'success' }, value: 2 },
         { labels: { status: 'failed' }, value: 1 }
       ])
+    );
+  });
+
+  // The other half of the `agent_heartbeat_total` fix: the heartbeat route imports
+  // `recordAgentHeartbeat` from this module directly, so what this pins is that the
+  // counter it increments is the one actually rendered into the scrape.
+  it('renders agent heartbeats recorded through the exported counter', async () => {
+    recordAgentHeartbeat('success');
+    recordAgentHeartbeat('success');
+    recordAgentHeartbeat('failed');
+
+    const body = await (
+      await app.request('/metrics', { headers: { Authorization: 'Bearer token' } })
+    ).text();
+
+    expect(getMetricLine(body, 'agent_heartbeat_total', { status: 'success' })).toBe(
+      'agent_heartbeat_total{status="success"} 2'
+    );
+    expect(getMetricLine(body, 'agent_heartbeat_total', { status: 'failed' })).toBe(
+      'agent_heartbeat_total{status="failed"} 1'
+    );
+  });
+
+  it('keeps the agent-heartbeat counter usable after a metrics reset', async () => {
+    resetMetricsForTesting();
+    recordAgentHeartbeat('failed');
+
+    const body = await (
+      await app.request('/metrics', { headers: { Authorization: 'Bearer token' } })
+    ).text();
+
+    expect(getMetricLine(body, 'agent_heartbeat_total', { status: 'failed' })).toBe(
+      'agent_heartbeat_total{status="failed"} 1'
     );
   });
 
@@ -726,11 +1253,7 @@ describe('metrics routes', () => {
   });
 
   it('records backup operational metrics', async () => {
-    selectMock.mockReturnValueOnce({
-      from: () => ({
-        where: () => Promise.resolve([{ count: 3 }]),
-      }),
-    });
+    stubFleetGaugeQueries(selectMock, { readiness: { count: 3 } });
     recordBackupDispatchFailure('manual_restore', 'device_offline');
     recordBackupCommandTimeout('mssql_backup', 'sync_wait');
     recordBackupVerificationResult('test_restore', 'failed');

@@ -5,7 +5,12 @@ import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
 import { deviceSessions } from '../../db/schema';
-import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import {
+  authMiddleware,
+  requirePermission,
+  requireScope,
+  withAuthDbAccessContext,
+} from '../../middleware/auth';
 import { sendCommandToAgentAwaitResult } from '../../services/agentCommandAwait';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
@@ -129,7 +134,14 @@ sessionsRoutes.get(
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
 
-    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    // This route is registered in SELF_MANAGED_DB_CONTEXT_ROUTES, so the auth
+    // middleware does NOT open an ambient request transaction for it. Read the
+    // device row inside a short context of our own and let it close before the
+    // agent round-trip below, which can block for LIST_SESSIONS_TIMEOUT_MS (10s)
+    // waiting on a customer device (#1105).
+    const device = await withAuthDbAccessContext(auth, () =>
+      getDeviceWithOrgAndSiteCheck(c, deviceId, auth),
+    );
     if (device === SITE_ACCESS_DENIED) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }

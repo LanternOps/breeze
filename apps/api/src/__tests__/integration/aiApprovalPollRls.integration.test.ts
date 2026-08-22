@@ -45,7 +45,7 @@ beforeEach(async () => {
     .returning({ id: partners.id });
   const [o] = await tdb
     .insert(organizations)
-    .values({ partnerId: p!.id, name: 'AI Approval Org', slug: `ai-appr-org-${sfx}` })
+    .values({ currencyCode: 'USD', partnerId: p!.id, name: 'AI Approval Org', slug: `ai-appr-org-${sfx}` })
     .returning({ id: organizations.id });
   orgId = o!.id;
   const [u] = await tdb

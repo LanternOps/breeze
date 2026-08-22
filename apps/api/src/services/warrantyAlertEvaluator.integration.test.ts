@@ -40,7 +40,7 @@ type Fixture = { orgId: string; deviceId: string };
 async function seed(unique: string, opts: { enableAlerting: boolean; endDate: string; isSubscription?: boolean }): Promise<Fixture> {
   return withSystemDbAccessContext(async () => {
     const [partner] = await db.insert(partners).values({ name: `WA Partner ${unique}`, slug: `wa-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
-    const [org] = await db.insert(organizations).values({ partnerId: partner!.id, name: `WA Org ${unique}`, slug: `wa-org-${unique}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
+    const [org] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: partner!.id, name: `WA Org ${unique}`, slug: `wa-org-${unique}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
     const [site] = await db.insert(sites).values({ orgId: org!.id, name: `WA Site ${unique}` }).returning({ id: sites.id });
     const [device] = await db.insert(devices).values({ orgId: org!.id, siteId: site!.id, agentId: `wa-agent-${unique}`, hostname: `wa-host-${unique}`, osType: 'macos', osVersion: '14', architecture: 'arm64', agentVersion: '0.0.0-test', status: 'offline' }).returning({ id: devices.id });
 

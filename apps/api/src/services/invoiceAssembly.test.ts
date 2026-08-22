@@ -22,7 +22,27 @@ describe('timeEntryToLineSpec', () => {
   });
 });
 
+describe('timeEntryToLineSpec currency threading', () => {
+  it('rounds the line total at the invoice currency minor unit (JPY → whole units)', () => {
+    const spec = timeEntryToLineSpec({
+      id: 'te3', ticketId: 'tk1', description: 'Onsite repair',
+      durationMinutes: 90, hourlyRate: '333.00', isApproved: true
+    }, 'JPY');
+    // 1.50h * 333.00 = 499.50 → whole-yen half-up round, not cent rounding
+    expect(spec.lineTotal).toBe('500.00');
+  });
+});
+
 describe('ticketPartToLineSpec', () => {
+  it('rounds the line total at the invoice currency minor unit (JPY → whole units)', () => {
+    const spec = ticketPartToLineSpec({
+      id: 'p2', ticketId: 'tk1', catalogItemId: 'c1', description: 'Cable',
+      quantity: '3', unitPrice: '333.50', costBasis: null
+    }, 'JPY');
+    // 3 * 333.50 = 1000.50 → '1001.00' (whole yen), never '1000.50'
+    expect(spec.lineTotal).toBe('1001.00');
+  });
+
   it('maps qty/price/cost; parts are taxable by default', () => {
     const spec = ticketPartToLineSpec({
       id: 'p1', ticketId: 'tk1', catalogItemId: 'c1', description: 'SSD 1TB',

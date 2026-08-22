@@ -1,3 +1,4 @@
+import { formatMoney } from '@breeze/shared';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from '../db/schema/quotes';
@@ -14,9 +15,11 @@ import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from './documentThemes';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
+import { notifyQuoteOutcome } from './quoteOutcomeNotify';
 import { captureException } from './sentry';
 
 export { portalBase };
@@ -26,12 +29,6 @@ type QuoteRow = typeof quotes.$inferSelect;
 /** Build the public accept link emailed to the prospect: `<portalBase>/quote/<token>`. */
 export function buildPublicQuoteAcceptUrl(token: string): string {
   return `${portalBase()}/quote/${encodeURIComponent(token)}`;
-}
-
-/** Light money formatter for the email body (invoicePdf's formatMoney is module-private). */
-function formatMoneyish(n: string | null | undefined, currency: string): string {
-  const v = Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return currency === 'USD' ? `$${v}` : `${v} ${currency}`;
 }
 
 /** Why the best-effort email did not go out (mirrors invoicePdf's SendInvoiceResult
@@ -105,6 +102,7 @@ export async function sendQuote(
       lines as QuoteLineForMath[],
       quote.taxRate ? parseFloat(quote.taxRate) : null,
       toQuoteDepositConfig(quote.depositType, quote.depositPercent),
+      quote.currencyCode,
     );
     if (!check.ok) {
       throw new QuoteServiceError(`Cannot send: ${check.message}`, 409, 'DEPOSIT_INVALID');
@@ -190,6 +188,7 @@ export async function sendQuote(
     pageSize: resolvePageSize(partnerRow?.documentPageSize),
   };
 
+  const documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow);
   const claimed = await db
     .update(quotes)
     .set({
@@ -207,6 +206,10 @@ export async function sendQuote(
       termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
       terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
       presentationSnapshot,
+      // Render-locale snapshot (#3777): stamped ONCE at first send from the
+      // partner's language, never restamped (resendQuote does not write it);
+      // `??` keeps a locale the draft already carries.
+      documentLocale,
     })
     .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
     .returning({ id: quotes.id });
@@ -238,6 +241,8 @@ export async function sendQuote(
     billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
     sellerSnapshot,
     presentationSnapshot,
+    // The just-stamped locale, so the same-request PDF + email render with it.
+    documentLocale,
   };
 
   const { emailed, emailReason } = await deliverQuoteEmail({
@@ -394,7 +399,6 @@ async function deliverQuoteEmail(
           // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
           // per authored contract block + any uploaded contract PDFs to append after
           // rendering, so the emailed attachment matches the on-demand download.
-          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
           const { renderQuotePdf } = await import('./quotePdf');
           // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding):
           // frozenQuote.presentationSnapshot is the send-stamped value on a first
@@ -406,7 +410,12 @@ async function deliverQuoteEmail(
             footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
             theme: resolveThemeId(presentationSnap?.theme ?? partnerRow?.documentTheme),
             pageSize: resolvePageSize(presentationSnap?.pageSize ?? partnerRow?.documentPageSize),
+            // Send-time locale snapshot → partner language → 'en' (#3777).
+            locale: frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow),
           };
+          // Same `emailBranding.locale` the page renderer uses, so contract totals
+          // and the quote summary on the same PDF never disagree (#3777).
+          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote, emailBranding.locale);
           const rawPdf = await renderQuotePdf(
             frozenQuote,
             blocks, customerLines, loadImage, emailBranding, undefined, contractRenderData);
@@ -422,7 +431,7 @@ async function deliverQuoteEmail(
       if (!pdfBuildFailed) {
         const template = buildQuoteTemplate({
           quoteNumber, partnerName: partnerName ?? 'your provider',
-          total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
+          total: formatMoney(quote.total, quote.currencyCode, frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow)), acceptUrl,
           expiryDate: quote.expiryDate ?? undefined,
           message: opts.message,
           subject: opts.subject,
@@ -741,7 +750,14 @@ export async function markQuoteViewed(quoteId: string, orgId: string): Promise<v
 }
 
 /** Internal/portal decline. */
-export async function declineQuoteByActor(id: string, reason: string | undefined, actor: QuoteActor): Promise<QuoteRow> {
+export async function declineQuoteByActor(
+  id: string, reason: string | undefined, actor: QuoteActor,
+  // Attribution for the outcome notification: 'customer' (portal decline on the
+  // customer's behalf) emails the quote creator; 'msp' (a tech marking their own
+  // quote declined — AI tool / internal route) only emits the bus event, so an
+  // internal action is never misattributed to the customer.
+  source: 'customer' | 'msp' = 'msp',
+): Promise<QuoteRow> {
   const { quote } = await getQuote(id, actor);
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot decline a quote in status ${quote.status}`, 409, 'INVALID_STATE');
@@ -754,5 +770,9 @@ export async function declineQuoteByActor(id: string, reason: string | undefined
   const now = new Date();
   await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, id));
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
+  // Tell the tech who sent it (decline-completion spec §A). Deliberately
+  // UNAWAITED: it emails over SMTP and must never add latency to (or fail)
+  // the decline the caller already committed; it swallows its own errors.
+  void notifyQuoteOutcome({ quoteId: id, outcome: 'declined', source });
   return updated!;
 }

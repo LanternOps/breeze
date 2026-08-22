@@ -28,7 +28,7 @@ const basePartner = {
 const baseBrand = { logoUrl: 'logo.png', primaryColor: '#1c8a9e', footerText: 'portal footer' };
 
 function source(overrides: Partial<QuoteBrandingSource> = {}): QuoteBrandingSource {
-  return { partnerId: 'p1', orgId: 'o1', currencyCode: 'USD', terms: null, sellerSnapshot: null, presentationSnapshot: null, ...overrides };
+  return { partnerId: 'p1', orgId: 'o1', currencyCode: 'USD', terms: null, sellerSnapshot: null, presentationSnapshot: null, documentLocale: null, ...overrides };
 }
 
 beforeEach(() => { dbRows.next = []; dbRows.i = 0; });
@@ -127,6 +127,27 @@ describe('resolveQuoteBranding', () => {
     const b = await resolveQuoteBranding(source());
     expect(b.logoUrl).toBeNull();
     expect(b.primaryColor).toBeNull();
+  });
+
+  // #3777: render locale. Precedence: quote.documentLocale (send-time snapshot)
+  // → partner.settings.language → 'en'.
+  describe('locale resolution', () => {
+    it('prefers the stamped document locale over the partner language', async () => {
+      queue({ ...basePartner, settings: { language: 'fr-FR' } }, baseBrand);
+      expect((await resolveQuoteBranding(source({ documentLocale: 'de-DE' }))).locale).toBe('de-DE');
+    });
+
+    it('falls back to the partner language for unstamped (draft/legacy) quotes', async () => {
+      queue({ ...basePartner, settings: { language: 'fr-FR' } }, baseBrand);
+      expect((await resolveQuoteBranding(source({ documentLocale: null }))).locale).toBe('fr-FR');
+    });
+
+    it("defaults to 'en' when neither the quote nor the partner carries a locale", async () => {
+      queue({ ...basePartner, settings: { language: 'xx' } }, baseBrand);
+      expect((await resolveQuoteBranding(source({ documentLocale: null }))).locale).toBe('en');
+      queue(null, baseBrand);
+      expect((await resolveQuoteBranding(source({ documentLocale: null }))).locale).toBe('en');
+    });
   });
 
   // Task 5: theme/pageSize resolution. Precedence: quote.presentationSnapshot

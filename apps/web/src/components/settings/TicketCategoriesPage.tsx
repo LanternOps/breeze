@@ -7,7 +7,8 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
-import { formatCurrency } from '@/lib/i18n/format';
+import { formatMoney } from '@/components/billing/shared/format';
+import { usePartnerCurrencyOrDefault } from '../../lib/usePartnerCurrency';
 
 interface Category {
   id: string;
@@ -81,12 +82,12 @@ export function moveWithinSiblings(cats: Category[], id: string, dir: -1 | 1): s
   return order;
 }
 
-function defaultsSummary(c: Category): string {
+function defaultsSummary(c: Category, currencyCode: string): string {
   const parts: string[] = [];
   if (c.defaultPriority) parts.push(priorityConfig[c.defaultPriority as TicketPriority]?.label ?? c.defaultPriority);
   if (c.responseSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.responseMinutes', { count: c.responseSlaMinutes }));
   if (c.resolutionSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.resolveMinutes', { count: c.resolutionSlaMinutes }));
-  if (c.defaultHourlyRate) parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', { rate: formatCurrency(parseFloat(c.defaultHourlyRate)) }));
+  if (c.defaultHourlyRate) parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', { rate: formatMoney(c.defaultHourlyRate, currencyCode) }));
   if (c.defaultBillable) parts.push('billable');
   else if (parts.length > 0) parts.push('non-billable');
   return parts.length > 0 ? parts.join(' · ') : '—';
@@ -96,6 +97,8 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 
 export default function TicketCategoriesPage() {
   const { t } = useTranslation('settings');
+  // INTERIM (#3777): replaced by wave-4 rate currencies on ticket categories.
+  const currencyCode = usePartnerCurrencyOrDefault();
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -315,7 +318,7 @@ export default function TicketCategoriesPage() {
                   <span className="mr-1.5 inline-block h-3 w-3 rounded-sm align-middle" style={{ backgroundColor: c.color }} />
                   {c.name}
                 </td>
-                <td className="px-4 py-2 text-sm text-muted-foreground">{defaultsSummary(c)}</td>
+                <td className="px-4 py-2 text-sm text-muted-foreground">{defaultsSummary(c, currencyCode)}</td>
                 <td className="px-4 py-2 text-sm">{c.isActive ? t('ticketCategoriesPage.active') : t('ticketCategoriesPage.inactive')}</td>
                 <td className="px-4 py-2 text-right space-x-2">
                   <button

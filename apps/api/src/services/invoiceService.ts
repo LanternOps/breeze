@@ -2,11 +2,11 @@ import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   invoices, invoiceLines, invoicePayments, invoiceStripePayments, organizations, partners,
-  catalogBundleComponents, catalogItems, timeEntries, ticketParts, tickets
+  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
-import { resolvePrice, computeBundleEconomics } from './catalogService';
+import { resolvePrice, computeBundleEconomics, CatalogServiceError, type CatalogActor } from './catalogService';
 // formatInvoiceNumber is shared with the standalone allocator; issueInvoice
 // inlines the counter upsert itself (rather than calling allocateInvoiceCounter)
 // to keep allocation atomic with the number write inside its single transaction.
@@ -16,9 +16,11 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
+import { resolvePartnerDocumentLocale } from './documentLocale';
+import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import type { ManualLineInput, RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, buildStripeCurrencyWarning, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -52,8 +54,11 @@ export function requireInvoiceAccess(actor: InvoiceActor, inv: { orgId: string; 
   requireSiteAccess(actor, inv.siteId);
 }
 
-async function getOwnedInvoiceOr404(id: string) {
-  const rows = await db.select().from(invoices).where(eq(invoices.id, id)).limit(1);
+/** Either the ambient `db` handle or a `db.transaction` callback handle. */
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function getOwnedInvoiceOr404(id: string, dbc: DbExecutor = db) {
+  const rows = await dbc.select().from(invoices).where(eq(invoices.id, id)).limit(1);
   if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   return rows[0];
 }
@@ -62,113 +67,192 @@ function assertDraft(inv: { status: string }): void {
   if (inv.status !== 'draft') throw new InvoiceServiceError('Invoice is not a draft', 409, 'NOT_A_DRAFT');
 }
 
-export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string }, actor: InvoiceActor) {
+/**
+ * B10 lock-order anchor (#3774): every draft line/header writer takes the
+ * INVOICE row lock first, then mutates lines, then recomputes totals — all in
+ * one transaction. issueInvoice locks in the same order (invoice → lines →
+ * source rows), so writer-vs-issue interleavings serialize on the invoice row
+ * instead of deadlocking (the old line→invoice recompute order was AB/BA
+ * against issuance) or leaving a line invisible to the frozen totals. The
+ * invoice lock is also what serializes line-insert phantoms — line-level
+ * FOR UPDATE alone cannot.
+ */
+async function lockDraftInvoice(tx: DbExecutor, invoiceId: string) {
+  const rows = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
+  if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  assertDraft(rows[0]);
+  return rows[0];
+}
+
+export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string; currencyCode?: string }, actor: InvoiceActor) {
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
   requireSiteAccess(actor, input.siteId ?? null);
+  // Stamp the document currency at creation (spec §5): the explicit override
+  // (used internally by contract generation, which copies the CONTRACT's stamp)
+  // or the org's currency — never the partner's, and never a DB default.
+  let currencyCode = input.currencyCode;
+  if (!currencyCode) {
+    const [org] = await db.select({ currencyCode: organizations.currencyCode })
+      .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
+    if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    currencyCode = org.currencyCode;
+  }
   const rows = await db.insert(invoices).values({
     partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
-    notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null, createdBy: actor.userId
+    notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null,
+    currencyCode, createdBy: actor.userId
   }).returning();
   return rows[0]!;
 }
 
 /** Draft-time effective tax rate: org rate or 0. The partner default is applied
  *  authoritatively at issue (system context, where the partner row is readable). */
-async function effectiveRateForOrg(orgId: string, _partnerId: string): Promise<string> {
-  const [org] = await db.select({ taxExempt: organizations.taxExempt, taxRate: organizations.taxRate })
+async function effectiveRateForOrg(orgId: string, dbc: DbExecutor = db): Promise<string> {
+  const [org] = await dbc.select({ taxExempt: organizations.taxExempt, taxRate: organizations.taxRate })
     .from(organizations).where(eq(organizations.id, orgId)).limit(1);
   return resolveEffectiveTaxRate({ taxExempt: org?.taxExempt ?? false, orgRate: org?.taxRate ?? null, partnerRate: null });
 }
 
 /** Recompute subtotal/tax/total/balance from the invoice's current lines. Draft-time
- *  uses the org's effective rate; on issue the snapshotted tax_rate is passed instead. */
-export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?: string | null) {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
+ *  uses the org's effective rate; on issue the snapshotted tax_rate is passed instead.
+ *  Writers holding the invoice row lock pass their `tx` so the recompute stays inside
+ *  the same transaction (a global-db call here would escape the lock scope). */
+export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?: string | null, dbc: DbExecutor = db) {
+  const inv = await getOwnedInvoiceOr404(invoiceId, dbc);
   // Frozen invoices can never be re-totaled by a direct call. issueInvoice computes
   // totals inline with the snapshot rate and does NOT call this; assembly recomputes
   // a fresh draft (still draft here), so this guard is safe on both paths.
   assertDraft(inv);
-  const lines = await db.select({
+  const lines = await dbc.select({
     lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible
   }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
-  const taxRate = taxRateOverride !== undefined ? taxRateOverride : await effectiveRateForOrg(inv.orgId, inv.partnerId);
-  const totals = computeInvoiceTotals(lines, taxRate);
+  const taxRate = taxRateOverride !== undefined ? taxRateOverride : await effectiveRateForOrg(inv.orgId, dbc);
+  const totals = computeInvoiceTotals(lines, taxRate, inv.currencyCode);
   const balance = fromCents(toCents(totals.total) - toCents(inv.amountPaid));
-  await db.update(invoices).set({
+  await dbc.update(invoices).set({
     subtotal: totals.subtotal, taxRate, taxTotal: totals.taxTotal, total: totals.total, balance, updatedAt: new Date()
   }).where(eq(invoices.id, invoiceId));
 }
 
+/** The catalog-side actor for a price resolution on behalf of an invoice actor. */
+function catalogActorFrom(actor: InvoiceActor): CatalogActor {
+  return { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
+}
+
+/**
+ * Multi-currency wave 3 (#3775): resolve a catalog item's sell price in the
+ * INVOICE's currency on the already-locked tx (invoice → lines → catalog plain
+ * SELECTs — no new lock edge). A price-book gap is mapped to the invoice's own
+ * typed 409; every other catalog error propagates unchanged.
+ */
+async function resolveInvoicePrice(tx: DbExecutor, catalogItemId: string, inv: { currencyCode: string; orgId: string }, actor: InvoiceActor) {
+  try {
+    return await resolvePrice(catalogItemId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
+  } catch (err) {
+    if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
+      throw new InvoiceServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+    }
+    throw err;
+  }
+}
+
 async function insertLineAndRecompute(
+  tx: DbExecutor,
   invoiceId: string,
   orgId: string,
   spec: Omit<typeof invoiceLines.$inferInsert, 'invoiceId' | 'orgId' | 'sortOrder'>
 ) {
-  const sortRows = await db.select({ max: invoiceLines.sortOrder }).from(invoiceLines)
+  const sortRows = await tx.select({ max: invoiceLines.sortOrder }).from(invoiceLines)
     .where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(desc(invoiceLines.sortOrder)).limit(1);
   const nextSort = (sortRows[0]?.max ?? 0) + 1;
-  const [line] = await db.insert(invoiceLines).values({ ...spec, invoiceId, orgId, sortOrder: nextSort }).returning();
-  await recomputeInvoiceTotals(invoiceId);
+  const [line] = await tx.insert(invoiceLines).values({ ...spec, invoiceId, orgId, sortOrder: nextSort }).returning();
+  await recomputeInvoiceTotals(invoiceId, undefined, tx);
   return line!;
 }
 
 export async function addManualLine(invoiceId: string, input: ManualLineInput, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
-  const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice));
-  return insertLineAndRecompute(invoiceId, inv.orgId, {
-    sourceType: 'manual', sourceId: null, catalogItemId: null, parentLineId: null, ticketId: null,
-    name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice: Number(input.unitPrice).toFixed(2),
-    costBasis: input.costBasis != null ? Number(input.costBasis).toFixed(2) : null,
-    taxable: input.taxable, customerVisible: true, lineTotal, isUnapprovedTime: false
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice), inv.currencyCode);
+    return insertLineAndRecompute(tx, invoiceId, inv.orgId, {
+      sourceType: 'manual', sourceId: null, catalogItemId: null, parentLineId: null, ticketId: null,
+      name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice: Number(input.unitPrice).toFixed(2),
+      costBasis: input.costBasis != null ? Number(input.costBasis).toFixed(2) : null,
+      taxable: input.taxable, customerVisible: true, lineTotal, isUnapprovedTime: false
+    });
   });
 }
 
 export async function addCatalogLine(invoiceId: string, catalogItemId: string, quantity: number, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
-  const resolved = await resolvePrice(catalogItemId, inv.orgId, { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds });
-  const [item] = await db.select({ name: catalogItems.name, description: catalogItems.description, isBundle: catalogItems.isBundle }).from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
-  if (item?.isBundle) throw new InvoiceServiceError('Use addBundleLine for bundles', 400, 'INVALID_STATE');
-  const qty = String(quantity);
-  return insertLineAndRecompute(invoiceId, inv.orgId, {
-    sourceType: 'catalog', sourceId: null, catalogItemId, parentLineId: null, ticketId: null,
-    name: item?.name ?? 'Catalog item', description: item?.description ?? null, quantity: qty, unitPrice: resolved.unitPrice,
-    costBasis: resolved.costBasis, taxable: resolved.taxable, customerVisible: true,
-    lineTotal: computeLineTotal(qty, resolved.unitPrice), isUnapprovedTime: false
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    // Price book in the invoice's currency (org override → catalog_item_prices),
+    // never the deprecated catalog_items.unit_price mirror, never converted.
+    const resolved = await resolveInvoicePrice(tx, catalogItemId, inv, actor);
+    const [item] = await tx.select({ name: catalogItems.name, description: catalogItems.description, isBundle: catalogItems.isBundle }).from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
+    if (item?.isBundle) throw new InvoiceServiceError('Use addBundleLine for bundles', 400, 'INVALID_STATE');
+    const qty = String(quantity);
+    return insertLineAndRecompute(tx, invoiceId, inv.orgId, {
+      sourceType: 'catalog', sourceId: null, catalogItemId, parentLineId: null, ticketId: null,
+      name: item?.name ?? 'Catalog item', description: item?.description ?? null, quantity: qty, unitPrice: resolved.unitPrice,
+      // Cost is only meaningful in the line's currency: a cost stamped in another
+      // currency makes the margin unavailable (no conversion), so snapshot null.
+      costBasis: resolved.marginAvailable ? resolved.costBasis : null,
+      taxable: resolved.taxable, customerVisible: true,
+      lineTotal: computeLineTotal(qty, resolved.unitPrice, inv.currencyCode), isUnapprovedTime: false
+    });
   });
 }
 
 export async function addBundleLine(invoiceId: string, bundleId: string, quantity: number, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
-  const catalogActor = { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
-  const econ = await computeBundleEconomics(bundleId, inv.orgId, catalogActor); // throws NOT_A_BUNDLE etc.
-  const [bundle] = await db.select({ name: catalogItems.name, description: catalogItems.description }).from(catalogItems).where(eq(catalogItems.id, bundleId)).limit(1);
-  const qty = String(quantity);
-  const parent = await insertLineAndRecompute(invoiceId, inv.orgId, {
-    sourceType: 'bundle', sourceId: null, catalogItemId: bundleId, parentLineId: null, ticketId: null,
-    name: bundle?.name ?? 'Bundle', description: bundle?.description ?? null, quantity: qty, unitPrice: econ.headlinePrice,
-    costBasis: econ.totalCost, taxable: true, customerVisible: true,
-    lineTotal: computeLineTotal(qty, econ.headlinePrice), isUnapprovedTime: false
-  });
-  // child component lines (unit_price 0, visibility per show_on_invoice)
-  const comps = await db.select({
-    componentItemId: catalogBundleComponents.componentItemId, quantity: catalogBundleComponents.quantity,
-    showOnInvoice: catalogBundleComponents.showOnInvoice, revenueAllocation: catalogBundleComponents.revenueAllocation,
-    name: catalogItems.name, description: catalogItems.description, costBasis: catalogItems.costBasis
-  }).from(catalogBundleComponents)
-    .innerJoin(catalogItems, eq(catalogItems.id, catalogBundleComponents.componentItemId))
-    .where(eq(catalogBundleComponents.bundleItemId, bundleId));
-  for (const comp of comps) {
-    await db.insert(invoiceLines).values({
-      invoiceId, orgId: inv.orgId, sourceType: 'bundle', sourceId: null, catalogItemId: comp.componentItemId,
-      parentLineId: parent.id, ticketId: null, name: comp.name, description: comp.description ?? null, quantity: comp.quantity, unitPrice: '0.00',
-      costBasis: comp.costBasis, revenueAllocation: comp.revenueAllocation, taxable: false,
-      customerVisible: comp.showOnInvoice, lineTotal: '0.00', isUnapprovedTime: false,
-      sortOrder: parent.sortOrder // children sort directly under the parent
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    // Economics in the INVOICE's currency on the locked tx (throws NOT_A_BUNDLE etc.).
+    // The bundle's own gap and any component gap are typed 409s — a bundle is
+    // never billed from a partial price book (wave 3, #3775).
+    const econ = await computeBundleEconomics(bundleId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
+    if (econ.headlinePrice === null) {
+      throw new InvoiceServiceError(`Bundle has no ${inv.currencyCode} price`, 409, 'NO_PRICE_FOR_CURRENCY');
+    }
+    if (!econ.priceBookComplete) {
+      throw new InvoiceServiceError(
+        `Bundle has no ${inv.currencyCode} price for ${econ.missingPriceComponentIds.length} component(s)`,
+        409, 'PRICE_BOOK_INCOMPLETE'
+      );
+    }
+    const [bundle] = await tx.select({ name: catalogItems.name, description: catalogItems.description }).from(catalogItems).where(eq(catalogItems.id, bundleId)).limit(1);
+    const qty = String(quantity);
+    const parent = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
+      sourceType: 'bundle', sourceId: null, catalogItemId: bundleId, parentLineId: null, ticketId: null,
+      name: bundle?.name ?? 'Bundle', description: bundle?.description ?? null, quantity: qty, unitPrice: econ.headlinePrice,
+      costBasis: econ.totalCost, // null when any component's cost is in another currency (margin unavailable)
+      taxable: true, customerVisible: true,
+      lineTotal: computeLineTotal(qty, econ.headlinePrice, inv.currencyCode), isUnapprovedTime: false
     });
-  }
-  await recomputeInvoiceTotals(invoiceId);
-  return parent;
+    // child component lines (unit_price 0, visibility per show_on_invoice)
+    const comps = await tx.select({
+      componentItemId: catalogBundleComponents.componentItemId, quantity: catalogBundleComponents.quantity,
+      showOnInvoice: catalogBundleComponents.showOnInvoice, revenueAllocation: catalogBundleComponents.revenueAllocation,
+      name: catalogItems.name, description: catalogItems.description,
+      costBasis: catalogItems.costBasis, costCurrency: catalogItems.costCurrency
+    }).from(catalogBundleComponents)
+      .innerJoin(catalogItems, eq(catalogItems.id, catalogBundleComponents.componentItemId))
+      .where(eq(catalogBundleComponents.bundleItemId, bundleId));
+    for (const comp of comps) {
+      await tx.insert(invoiceLines).values({
+        invoiceId, orgId: inv.orgId, sourceType: 'bundle', sourceId: null, catalogItemId: comp.componentItemId,
+        parentLineId: parent.id, ticketId: null, name: comp.name, description: comp.description ?? null, quantity: comp.quantity, unitPrice: '0.00',
+        // Child cost snapshots only when stamped in the invoice's currency.
+        costBasis: comp.costCurrency === inv.currencyCode ? comp.costBasis : null,
+        revenueAllocation: comp.revenueAllocation, taxable: false,
+        customerVisible: comp.showOnInvoice, lineTotal: '0.00', isUnapprovedTime: false,
+        sortOrder: parent.sortOrder // children sort directly under the parent
+      });
+    }
+    await recomputeInvoiceTotals(invoiceId, undefined, tx);
+    return parent;
+  });
 }
 
 /**
@@ -178,12 +262,23 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
  * originating contract_line). Do NOT wire this directly to an HTTP endpoint.
  *
  * When catalogItemId is supplied the price, taxable flag, and costBasis are
- * authoritative from resolvePrice (tenant-scoped; throws if inaccessible).
+ * authoritative from resolvePrice in the INVOICE's currency (tenant-scoped;
+ * throws if inaccessible). **Price-book gap fallback (wave 3, #3775):** when the
+ * catalog has no price in that currency (NO_PRICE_FOR_CURRENCY) the line is
+ * billed at the CONTRACT LINE's stamped snapshot (`input.unitPrice` /
+ * `input.taxable`, costBasis null) instead of failing the billing run or
+ * converting. The B2 guard below has already proven that snapshot is in the
+ * invoice's currency, so the fallback never crosses currencies. The gap is
+ * never silent: the result carries `pricedFrom: 'contract_snapshot'` so
+ * generateDueInvoice can report it (GenerateResult.priceBookGaps) and the
+ * contract worker can log it. Any other CatalogServiceError still propagates.
  * On the non-catalog path the caller-supplied unitPrice and taxable are used,
- * with numeric normalization and a non-negative guard applied.
+ * with numeric normalization and a non-negative guard applied (reported as
+ * `pricedFrom: 'contract_snapshot'` too — a non-catalog line IS its snapshot).
  * sourceId carries the originating contract_line id (already org-scoped by
  * the contract engine — no additional scoping is applied here).
  */
+export type ContractLinePricedFrom = 'org_override' | 'price_book' | 'contract_snapshot';
 export async function addContractLine(
   invoiceId: string,
   input: {
@@ -195,71 +290,112 @@ export async function addContractLine(
     sourceId?: string | null; // contract_line id
   },
   actor: InvoiceActor
-) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
+): Promise<{ line: typeof invoiceLines.$inferSelect; pricedFrom: ContractLinePricedFrom }> {
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
 
-  // Quantity is always engine-supplied (e.g. device count) — normalize but do not override.
-  const quantity = String(input.quantity);
-
-  let unitPrice: string;
-  let taxable: boolean;
-  let costBasis: string | null = null;
-
-  if (input.catalogItemId) {
-    // Catalog path: resolve price through the tenant-scoped catalog service.
-    // resolvePrice throws if the item is not accessible to the actor's org/partner,
-    // closing the cross-tenant catalog reference hole (Finding 1).
-    const resolved = await resolvePrice(
-      input.catalogItemId, inv.orgId,
-      { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds }
-    );
-    unitPrice = resolved.unitPrice;
-    taxable = resolved.taxable;
-    costBasis = resolved.costBasis;
-  } else {
-    // Non-catalog path: normalize like addManualLine/updateLine (Finding 2).
-    unitPrice = Number(input.unitPrice).toFixed(2);
-    taxable = input.taxable;
-    if (Number(quantity) < 0 || Number(unitPrice) < 0) {
-      throw new InvoiceServiceError('Negative amounts not allowed', 400, 'INVALID_AMOUNT');
+    // B2 guard (spec §5): a contract-sourced line may only land on an invoice in
+    // the SAME currency as its contract — no conversion, no silent restamp. This
+    // is the first source-vs-header validation; time entries/parts gain currency
+    // in wave 4 and plug into the same check.
+    if (input.sourceId) {
+      const [src] = await tx.select({ currencyCode: contracts.currencyCode })
+        .from(contractLines)
+        .innerJoin(contracts, eq(contracts.id, contractLines.contractId))
+        .where(eq(contractLines.id, input.sourceId)).limit(1);
+      if (src && src.currencyCode !== inv.currencyCode) {
+        throw new InvoiceServiceError(
+          `Contract is in ${src.currencyCode}; this invoice is in ${inv.currencyCode} — contract lines cannot cross currencies`,
+          400, 'CURRENCY_MISMATCH'
+        );
+      }
     }
-  }
 
-  return insertLineAndRecompute(invoiceId, inv.orgId, {
-    sourceType: 'contract', sourceId: input.sourceId ?? null, catalogItemId: input.catalogItemId ?? null,
-    parentLineId: null, ticketId: null, description: input.description, quantity,
-    unitPrice, costBasis, taxable, customerVisible: true,
-    lineTotal: computeLineTotal(quantity, unitPrice), isUnapprovedTime: false
+    // Quantity is always engine-supplied (e.g. device count) — normalize but do not override.
+    const quantity = String(input.quantity);
+
+    let unitPrice: string;
+    let taxable: boolean;
+    let costBasis: string | null = null;
+    let pricedFrom: ContractLinePricedFrom;
+
+    if (input.catalogItemId) {
+      // Catalog path: resolve price through the tenant-scoped catalog service in
+      // the invoice's currency, on the locked tx. resolvePrice throws if the item
+      // is not accessible to the actor's org/partner, closing the cross-tenant
+      // catalog reference hole (Finding 1). A price-book GAP is not an error
+      // here — see the doc-comment: bill the contract line's stamped snapshot.
+      let resolved: Awaited<ReturnType<typeof resolvePrice>> | null;
+      try {
+        resolved = await resolvePrice(input.catalogItemId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
+      } catch (err) {
+        if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') resolved = null;
+        else throw err;
+      }
+      if (resolved) {
+        unitPrice = resolved.unitPrice;
+        taxable = resolved.taxable;
+        costBasis = resolved.marginAvailable ? resolved.costBasis : null;
+        pricedFrom = resolved.source;
+      } else {
+        unitPrice = Number(input.unitPrice).toFixed(2);
+        taxable = input.taxable;
+        costBasis = null;
+        pricedFrom = 'contract_snapshot';
+      }
+    } else {
+      // Non-catalog path: normalize like addManualLine/updateLine (Finding 2).
+      unitPrice = Number(input.unitPrice).toFixed(2);
+      taxable = input.taxable;
+      pricedFrom = 'contract_snapshot';
+      if (Number(quantity) < 0 || Number(unitPrice) < 0) {
+        throw new InvoiceServiceError('Negative amounts not allowed', 400, 'INVALID_AMOUNT');
+      }
+    }
+
+    const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
+      sourceType: 'contract', sourceId: input.sourceId ?? null, catalogItemId: input.catalogItemId ?? null,
+      parentLineId: null, ticketId: null, description: input.description, quantity,
+      unitPrice, costBasis, taxable, customerVisible: true,
+      lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode), isUnapprovedTime: false
+    });
+    return { line, pricedFrom };
   });
 }
 
 export async function updateLine(invoiceId: string, lineId: string, patch: { name?: string | null; description?: string | null; quantity?: number; unitPrice?: number; taxable?: boolean; customerVisible?: boolean }, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
-  const [existing] = await db.select().from(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId))).limit(1);
-  if (!existing) throw new InvoiceServiceError('Line not found', 404, 'LINE_NOT_FOUND');
-  const quantity = patch.quantity != null ? String(patch.quantity) : existing.quantity;
-  const unitPrice = patch.unitPrice != null ? Number(patch.unitPrice).toFixed(2) : existing.unitPrice;
-  await db.update(invoiceLines).set({
-    name: patch.name !== undefined ? patch.name : existing.name,
-    description: patch.description !== undefined ? patch.description : existing.description, quantity, unitPrice,
-    taxable: patch.taxable ?? existing.taxable, customerVisible: patch.customerVisible ?? existing.customerVisible,
-    lineTotal: computeLineTotal(quantity, unitPrice)
-  }).where(eq(invoiceLines.id, lineId));
-  await recomputeInvoiceTotals(invoiceId);
-  return getOwnedInvoiceOr404(invoiceId);
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const [existing] = await tx.select().from(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId))).limit(1);
+    if (!existing) throw new InvoiceServiceError('Line not found', 404, 'LINE_NOT_FOUND');
+    const quantity = patch.quantity != null ? String(patch.quantity) : existing.quantity;
+    const unitPrice = patch.unitPrice != null ? Number(patch.unitPrice).toFixed(2) : existing.unitPrice;
+    await tx.update(invoiceLines).set({
+      name: patch.name !== undefined ? patch.name : existing.name,
+      description: patch.description !== undefined ? patch.description : existing.description, quantity, unitPrice,
+      taxable: patch.taxable ?? existing.taxable, customerVisible: patch.customerVisible ?? existing.customerVisible,
+      lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode)
+    }).where(eq(invoiceLines.id, lineId));
+    await recomputeInvoiceTotals(invoiceId, undefined, tx);
+    return getOwnedInvoiceOr404(invoiceId, tx);
+  });
 }
 
 export async function removeLine(invoiceId: string, lineId: string, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
-  // cascade FK removes bundle children when a parent is deleted
-  await db.delete(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId)));
-  await recomputeInvoiceTotals(invoiceId);
-  return getOwnedInvoiceOr404(invoiceId);
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    // cascade FK removes bundle children when a parent is deleted
+    await tx.delete(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId)));
+    await recomputeInvoiceTotals(invoiceId, undefined, tx);
+    return getOwnedInvoiceOr404(invoiceId, tx);
+  });
 }
 
 export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
-  await db.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    await tx.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
+  });
 }
 
 /** Draft-only header edit (notes/site/dueDate/termsAndConditions). Only provided fields are written;
@@ -270,19 +406,105 @@ export async function updateInvoice(
   patch: { notes?: string; siteId?: string | null; dueDate?: string; termsAndConditions?: string | null },
   actor: InvoiceActor
 ) {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  assertDraft(inv);
-  requireInvoiceAccess(actor, inv);
-  // A site-restricted caller may not move the invoice to a site it can't access
-  // (nor clear it to null, which a restricted caller can never see).
-  if (patch.siteId !== undefined) requireSiteAccess(actor, patch.siteId);
-  const set: Record<string, unknown> = { updatedAt: new Date() };
-  if (patch.notes !== undefined) set.notes = patch.notes;
-  if (patch.siteId !== undefined) set.siteId = patch.siteId;     // null clears it
-  if (patch.dueDate !== undefined) set.dueDate = patch.dueDate;  // date string
-  if (patch.termsAndConditions !== undefined) set.termsAndConditions = patch.termsAndConditions;
-  await db.update(invoices).set(set).where(eq(invoices.id, invoiceId));
-  return getOwnedInvoiceOr404(invoiceId);
+  return db.transaction(async (tx) => {
+    const inv = await lockDraftInvoice(tx, invoiceId);
+    requireInvoiceAccess(actor, inv);
+    // A site-restricted caller may not move the invoice to a site it can't access
+    // (nor clear it to null, which a restricted caller can never see).
+    if (patch.siteId !== undefined) requireSiteAccess(actor, patch.siteId);
+    const set: Record<string, unknown> = { updatedAt: new Date() };
+    if (patch.notes !== undefined) set.notes = patch.notes;
+    if (patch.siteId !== undefined) set.siteId = patch.siteId;     // null clears it
+    if (patch.dueDate !== undefined) set.dueDate = patch.dueDate;  // date string
+    if (patch.termsAndConditions !== undefined) set.termsAndConditions = patch.termsAndConditions;
+    await tx.update(invoices).set(set).where(eq(invoices.id, invoiceId));
+    return getOwnedInvoiceOr404(invoiceId, tx);
+  });
+}
+
+/**
+ * Draft-only atomic change-currency operation (multi-currency wave 2, #3774).
+ * A draft's stamped currency is immutable through every other mutation path —
+ * no PATCH schema admits currencyCode — so this is the ONLY way the stamp
+ * moves, and only while the document is a draft. With monetary lines present
+ * the change is refused (CURRENCY_LOCKED 409) unless the caller opts into
+ * `clearLines`, which deletes the lines and restamps in ONE transaction, or
+ * into `reprice` (wave 3, #3775), which re-resolves catalog-sourced lines from
+ * the price book in the new currency. Amounts are never converted or
+ * reinterpreted.
+ */
+export async function changeInvoiceCurrency(
+  invoiceId: string,
+  input: { currencyCode: string; clearLines?: boolean; reprice?: boolean },
+  actor: InvoiceActor
+) {
+  return db.transaction(async (tx) => {
+    // Invoice row lock FIRST (Task 8 lock order: invoices → invoice_lines) so a
+    // concurrent issue or line write serializes against the restamp instead of
+    // deadlocking or observing a half-changed draft.
+    const inv = await lockDraftInvoice(tx, invoiceId);
+    requireInvoiceAccess(actor, inv);
+    if (inv.currencyCode === input.currencyCode) return inv; // no-op restamp
+
+    const lineRows = await tx.select({
+      id: invoiceLines.id, sourceType: invoiceLines.sourceType, catalogItemId: invoiceLines.catalogItemId,
+      parentLineId: invoiceLines.parentLineId, quantity: invoiceLines.quantity,
+    }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id);
+    if (lineRows.length > 0 && input.reprice) {
+      // Multi-currency wave 3 (#3775): re-resolve every catalog-sourced line
+      // from the price book in the NEW currency on the locked tx (invoice →
+      // lines → catalog plain SELECTs). Bundle parents/children, contract,
+      // time-entry, part and manual lines are NOT repriceable — their presence
+      // refuses the whole operation. One gap aborts the transaction: never a
+      // partial reprice, never a converted number.
+      const repriceable = lineRows.filter((l) => l.sourceType === 'catalog' && l.catalogItemId !== null && l.parentLineId === null);
+      const rest = lineRows.length - repriceable.length;
+      if (rest > 0) {
+        throw new InvoiceServiceError(`${rest} non-catalog line(s) cannot be repriced — pass clearLines instead`, 409, 'CURRENCY_LOCKED');
+      }
+      const target = { currencyCode: input.currencyCode, orgId: inv.orgId };
+      for (const line of repriceable) {
+        const resolved = await resolveInvoicePrice(tx, line.catalogItemId!, target, actor);
+        await tx.update(invoiceLines).set({
+          unitPrice: resolved.unitPrice,
+          lineTotal: computeLineTotal(line.quantity, resolved.unitPrice, input.currencyCode),
+          // Cost is only meaningful in the line's currency (no conversion).
+          costBasis: resolved.marginAvailable ? resolved.costBasis : null,
+        }).where(eq(invoiceLines.id, line.id));
+      }
+      // Header restamp first so the recompute rounds in the NEW currency, then
+      // sum the repriced lines (the [] shortcut below is only valid line-less).
+      await tx.update(invoices).set({ currencyCode: input.currencyCode, updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
+      await recomputeInvoiceTotals(invoiceId, undefined, tx);
+      return getOwnedInvoiceOr404(invoiceId, tx);
+    }
+    if (lineRows.length > 0) {
+      if (!input.clearLines) {
+        throw new InvoiceServiceError(
+          `Invoice has ${lineRows.length} line(s) priced in ${inv.currencyCode} — pass clearLines to remove them, or delete the draft`,
+          409, 'CURRENCY_LOCKED'
+        );
+      }
+      // Clear-and-restamp. Draft gathering never flips source billing_status
+      // (time entries/parts stay 'not_billed' until issueInvoice flips them),
+      // so a draft holds no billed claim and there is nothing to release here.
+      // Deliberately NOT mirroring voidInvoice's unconditional reset: another
+      // invoice may have legitimately billed these sources since this draft
+      // gathered them, and resetting would corrupt that claim (#3774 addendum).
+      await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
+    }
+
+    // Lines are guaranteed gone (or never existed): totals recompute to zero,
+    // rounded in the NEW currency. The draft-time taxRate snapshot is kept.
+    const totals = computeInvoiceTotals([], inv.taxRate, input.currencyCode);
+    const balance = fromCents(toCents(totals.total) - toCents(inv.amountPaid));
+    const [updated] = await tx.update(invoices).set({
+      currencyCode: input.currencyCode,
+      subtotal: totals.subtotal, taxTotal: totals.taxTotal, total: totals.total, balance,
+      updatedAt: new Date(),
+    }).where(eq(invoices.id, invoiceId)).returning();
+    return updated!;
+  });
 }
 
 /**
@@ -312,7 +534,15 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // actor's own connection row is RLS-visible. Best-effort: a lookup failure
   // (e.g. Stripe unconfigured) just means "not connected".
   const conn = await getConnection(inv.partnerId).catch(() => null);
-  return { invoice: inv, lines, stripeConnected: conn?.status === 'connected' }; // accounting view (all lines)
+  const connected = conn?.status === 'connected';
+  // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
+  // warn-don't-block mismatch so the detail page can flag the FX spread before
+  // the partner sends a pay link. Cached columns only — no Stripe call here.
+  return {
+    invoice: inv, lines, stripeConnected: connected, // accounting view (all lines)
+    stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
+    currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
+  };
 }
 
 export type CustomerInvoiceLine = {
@@ -455,6 +685,7 @@ export async function updatePartnerBillingSettings(
   patch: {
     currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
     invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
+    autoEmailInvoiceOnQuoteAccept?: boolean;
     catalogAiStyle?: string | null;
     invoiceFooter?: string | null;
     documentTheme?: 'classic' | 'condensed'; documentPageSize?: 'letter' | 'a4';
@@ -479,6 +710,7 @@ export async function updatePartnerBillingSettings(
     set.defaultMarkupPercent = patch.defaultMarkupPercent === null ? null : Number(patch.defaultMarkupPercent).toFixed(2);
   }
   if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
+  if (patch.autoEmailInvoiceOnQuoteAccept !== undefined) set.autoEmailInvoiceOnQuoteAccept = patch.autoEmailInvoiceOnQuoteAccept;
   if (patch.catalogAiStyle !== undefined) set.catalogAiStyle = patch.catalogAiStyle?.trim() || null;
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
   if (patch.documentTheme !== undefined) set.documentTheme = patch.documentTheme;
@@ -494,6 +726,7 @@ export async function updatePartnerBillingSettings(
     currencyCode: partners.currencyCode, defaultTaxRate: partners.defaultTaxRate,
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
     defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
+    autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
     documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
   });
@@ -598,9 +831,22 @@ export async function assembleDraftFromOrg(input: { orgId: string; siteId?: stri
   requireSiteAccess(actor, input.siteId ?? null);
   const from = new Date(input.from + 'T00:00:00Z');
   const to = new Date(input.to + 'T23:59:59Z');
-  const specs = [...(await gatherOrgTimeEntries(input.orgId, from, to)), ...(await gatherOrgParts(input.orgId, from, to))];
-  if (specs.length === 0) throw new InvoiceServiceError('No unbilled billable work in range', 409, 'NOTHING_TO_INVOICE');
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', createdBy: actor.userId }).returning();
+  // Create the draft FIRST so the gathered line totals are rounded in the
+  // invoice row's actual currency (JPY drafts must not persist cent-fraction
+  // line totals). On an empty range the transient draft is deleted again.
+  // The draft is stamped with the ORG's currency at creation (spec §5).
+  const [org] = await db.select({ currencyCode: organizations.currencyCode })
+    .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
+  if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode: org.currencyCode, createdBy: actor.userId }).returning();
+  const specs = [
+    ...(await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode)),
+    ...(await gatherOrgParts(input.orgId, from, to, inv!.currencyCode))
+  ];
+  if (specs.length === 0) {
+    await db.delete(invoices).where(eq(invoices.id, inv!.id));
+    throw new InvoiceServiceError('No unbilled billable work in range', 409, 'NOTHING_TO_INVOICE');
+  }
   await materializeLines(inv!.id, input.orgId, specs);
   await recomputeInvoiceTotals(inv!.id);
   return getInvoice(inv!.id, actor);
@@ -614,9 +860,18 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   // This path produces an org-level (null-site) invoice; a site-restricted caller
   // can never see such a row, so deny it up front rather than orphan an invoice.
   requireSiteAccess(actor, null);
-  const specs = await gatherTicketBillables(ticketId);
-  if (specs.length === 0) throw new InvoiceServiceError('Nothing billable on this ticket', 409, 'NOTHING_TO_INVOICE');
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', createdBy: actor.userId }).returning();
+  // Draft first: gathered line totals must round in the invoice row's actual
+  // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
+  // Stamped with the ticket org's currency at creation (spec §5).
+  const [org] = await db.select({ currencyCode: organizations.currencyCode })
+    .from(organizations).where(eq(organizations.id, tk.orgId)).limit(1);
+  if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode: org.currencyCode, createdBy: actor.userId }).returning();
+  const specs = await gatherTicketBillables(ticketId, inv!.currencyCode);
+  if (specs.length === 0) {
+    await db.delete(invoices).where(eq(invoices.id, inv!.id));
+    throw new InvoiceServiceError('Nothing billable on this ticket', 409, 'NOTHING_TO_INVOICE');
+  }
   await materializeLines(inv!.id, tk.orgId, specs);
   await recomputeInvoiceTotals(inv!.id);
   return getInvoice(inv!.id, actor);
@@ -627,42 +882,118 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
 // ---------------------------------------------------------------------------
 
 export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  assertDraft(inv);
-  requireInvoiceAccess(actor, inv);
-
-  // Gather source rows referenced by lines, for the double-bill guard + flip.
-  const lines = await db.select({ id: invoiceLines.id, sourceType: invoiceLines.sourceType, sourceId: invoiceLines.sourceId, customerVisible: invoiceLines.customerVisible }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
-  if (!lines.some((l) => l.customerVisible)) throw new InvoiceServiceError('Invoice has no customer-visible lines', 409, 'NO_VISIBLE_LINES');
-  const timeIds = lines.filter((l) => l.sourceType === 'time_entry' && l.sourceId).map((l) => l.sourceId!) as string[];
-  const partIds = lines.filter((l) => l.sourceType === 'part' && l.sourceId).map((l) => l.sourceId!) as string[];
+  // Fast-fail pre-checks only. NOT authoritative: everything is re-checked on
+  // the LOCKED row inside the system transaction below (B10) — this read runs
+  // under the caller's RLS scope purely to 404/409 cheaply before opening a
+  // system tx.
+  const pre = await getOwnedInvoiceOr404(invoiceId);
+  assertDraft(pre);
+  requireInvoiceAccess(actor, pre);
 
   // Everything below runs in ONE system transaction (withSystemDbAccessContext
-  // wraps its callback in baseDb.transaction — db/index.ts:107). The double-bill
-  // guard's FOR UPDATE locks, the gapless counter upsert, the number/snapshot
-  // write, and the source-row flip are therefore atomic: a failed issue rolls
-  // the counter back too (no committed gap), and the source locks are held only
-  // for this short system tx. We inline the counter upsert rather than calling
-  // allocateInvoiceCounter() — that helper does its own runOutsideDbContext,
-  // which would exit THIS transaction and break atomicity (checkpoint 3).
-  await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [org] = await db.select().from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
-    const [partner] = await db.select().from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
+  // wraps its callback in baseDb.transaction — db/index.ts). Lock order is the
+  // repo-wide invoice contract (see lockDraftInvoice): invoices row → invoice
+  // lines → source rows (contracts before contract_lines, then time_entries,
+  // then ticket_parts, each deduplicated + ORDER BY id). ALL validation happens
+  // on the locked rows; the gapless counter upsert, the number/snapshot write,
+  // and the source-row flips are atomic with it — a failed issue rolls the
+  // counter back too (no committed gap). We inline the counter upsert rather
+  // than calling allocateInvoiceCounter() — that helper does its own
+  // runOutsideDbContext, which would exit THIS transaction and break atomicity.
+  const issueTx = () => runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    // 1. Invoice row lock. Recheck draft state and re-run actor authorization
+    //    against the LOCKED row — the system tx bypasses RLS, so the pre-tx
+    //    check above is a fast-fail only, not authoritative.
+    const [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
+    if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    assertDraft(inv); // a concurrent issue that won the lock leaves 'sent' → NOT_A_DRAFT
+    requireInvoiceAccess(actor, inv);
 
-    // Double-bill guard: re-lock referenced source rows; any already billed → abort.
+    // 2. Lock the lines. ONLY these locked rows feed source-id collection AND
+    //    totals — a pre-tx snapshot would let a line added/removed mid-flight
+    //    desync the frozen totals from the flipped sources.
+    const lines = await db.select().from(invoiceLines)
+      .where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id).for('update');
+    if (!lines.some((l) => l.customerVisible)) throw new InvoiceServiceError('Invoice has no customer-visible lines', 409, 'NO_VISIBLE_LINES');
+    const sourceIds = (type: string) => [...new Set(
+      lines.filter((l) => l.sourceType === type && l.sourceId).map((l) => l.sourceId!)
+    )].sort();
+    const timeIds = sourceIds('time_entry');
+    const partIds = sourceIds('part');
+    const contractLineIds = sourceIds('contract');
+
+    // 3. Lock ALL referenced source rows with NO billing-status filter (the old
+    //    guard's inverted predicate locked nothing when rows were not_billed),
+    //    then validate on the locked rows.
+    if (contractLineIds.length) {
+      // Parent contracts lock BEFORE contract_lines (repo lock order). The
+      //  unlocked discovery read only maps line → contract; membership is
+      //  re-verified on the locked rows below.
+      const discovered = await db.select({ contractId: contractLines.contractId })
+        .from(contractLines).where(inArray(contractLines.id, contractLineIds));
+      const contractIds = [...new Set(discovered.map((r) => r.contractId))].sort();
+      const lockedContracts = contractIds.length
+        ? await db.select({ id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode })
+            .from(contracts).where(inArray(contracts.id, contractIds)).orderBy(contracts.id).for('update')
+        : [];
+      const contractById = new Map(lockedContracts.map((c) => [c.id, c]));
+      const lockedContractLines = await db.select({ id: contractLines.id, contractId: contractLines.contractId })
+        .from(contractLines).where(inArray(contractLines.id, contractLineIds)).orderBy(contractLines.id).for('update');
+      const contractLineById = new Map(lockedContractLines.map((l) => [l.id, l]));
+      for (const id of contractLineIds) {
+        const cl = contractLineById.get(id);
+        const parent = cl ? contractById.get(cl.contractId) : undefined;
+        if (!cl || !parent || parent.orgId !== inv.orgId) {
+          throw new InvoiceServiceError(`Contract line ${id} no longer exists for this organization`, 409, 'SOURCE_NOT_FOUND');
+        }
+        // B2 under lock: the contract's currency must match the header.
+        if (parent.currencyCode !== inv.currencyCode) {
+          throw new InvoiceServiceError(
+            `Contract is in ${parent.currencyCode}; this invoice is in ${inv.currencyCode} — contract lines cannot cross currencies`,
+            400, 'CURRENCY_MISMATCH'
+          );
+        }
+      }
+    }
+    const validateBillable = (
+      label: string, ids: string[],
+      locked: Array<{ id: string; orgId: string | null; billingStatus: string }>
+    ) => {
+      const byId = new Map(locked.map((r) => [r.id, r]));
+      const missing = ids.filter((id) => byId.get(id)?.orgId !== inv.orgId);
+      if (missing.length) {
+        throw new InvoiceServiceError(`${label} no longer exist for this organization: ${missing.join(', ')}`, 409, 'SOURCE_NOT_FOUND');
+      }
+      const billed = ids.filter((id) => byId.get(id)!.billingStatus !== 'not_billed');
+      if (billed.length) {
+        throw new InvoiceServiceError(`${label} already billed: ${billed.join(', ')}`, 409, 'SOURCE_ALREADY_BILLED');
+      }
+    };
     if (timeIds.length) {
-      const billed = await db.select({ id: timeEntries.id }).from(timeEntries).where(and(inArray(timeEntries.id, timeIds), sql`${timeEntries.billingStatus} <> 'not_billed'`)).for('update');
-      if (billed.length) throw new InvoiceServiceError(`Time entries already billed: ${billed.map((b) => b.id).join(', ')}`, 409, 'SOURCE_ALREADY_BILLED');
+      validateBillable('Time entries', timeIds, await db
+        .select({ id: timeEntries.id, orgId: timeEntries.orgId, billingStatus: timeEntries.billingStatus })
+        .from(timeEntries).where(inArray(timeEntries.id, timeIds)).orderBy(timeEntries.id).for('update'));
     }
     if (partIds.length) {
-      const billed = await db.select({ id: ticketParts.id }).from(ticketParts).where(and(inArray(ticketParts.id, partIds), sql`${ticketParts.billingStatus} <> 'not_billed'`)).for('update');
-      if (billed.length) throw new InvoiceServiceError(`Parts already billed: ${billed.map((b) => b.id).join(', ')}`, 409, 'SOURCE_ALREADY_BILLED');
+      validateBillable('Parts', partIds, await db
+        .select({ id: ticketParts.id, orgId: ticketParts.orgId, billingStatus: ticketParts.billingStatus })
+        .from(ticketParts).where(inArray(ticketParts.id, partIds)).orderBy(ticketParts.id).for('update'));
     }
+    // Wave-4 hook: time_entries/ticket_parts have no currency column yet, so
+    // source-vs-header currency validation for them is structurally impossible
+    // here. When wave 4 adds the columns, assert them in validateBillable.
 
+    // 4. Snapshot inputs, totals from the LOCKED lines, number allocation LAST
+    //    before the guarded write.
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
+    const [partner] = await db.select().from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
     const taxRate = resolveEffectiveTaxRate({ taxExempt: org?.taxExempt ?? false, orgRate: org?.taxRate ?? null, partnerRate: partner?.defaultTaxRate ?? null });
     const issueDate = new Date();
     const dueDate = new Date(issueDate.getTime() + (partner?.invoiceTermsDays ?? 30) * 86400000);
     const year = issueDate.getUTCFullYear();
+
+    const { subtotal, taxTotal, total } = computeInvoiceTotals(lines, taxRate, inv.currencyCode);
+    const billToAddress = buildBillToAddress(org);
 
     // Gapless-safe counter allocation, atomic with the rest of this transaction.
     const counterRows = await db.execute(sql`
@@ -676,17 +1007,15 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     if (!Number.isFinite(counter) || counter < 1) throw new InvoiceServiceError('Failed to allocate invoice number', 500, 'NUMBER_ALLOCATION_FAILED');
     const number = formatInvoiceNumber(partner?.invoiceNumberPrefix ?? 'INV', year, counter);
 
-    // Recompute totals with the snapshotted rate, then write everything atomically.
-    const lineRows = await db.select({ lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
-    const { subtotal, taxTotal, total } = computeInvoiceTotals(lineRows, taxRate);
-    const billToAddress = buildBillToAddress(org);
-
-    await db.update(invoices).set({
+    const updated = await db.update(invoices).set({
       // status 'sent' is the lifecycle "issued/finalized" state. sentAt is left
       // NULL here on purpose — it means "emailed to the customer" and is stamped
       // only by sendInvoiceEmail. That lets the UI distinguish "Issued" (no email
       // yet) from "Sent" (emailed) instead of mislabeling a plain Issue as Sent.
-      status: 'sent', invoiceNumber: number, currencyCode: partner?.currencyCode ?? 'USD',
+      // currencyCode is deliberately NOT written here (B1): the draft's stamped
+      // header currency is a snapshot and must survive issue verbatim — totals
+      // above are already rounded with inv.currencyCode, so header and totals agree.
+      status: 'sent', invoiceNumber: number,
       issueDate: issueDate.toISOString().slice(0, 10), dueDate: dueDate.toISOString().slice(0, 10),
       taxRate, subtotal, taxTotal, total, balance: total,
       billToName: org?.name ?? null, billToAddress, billToTaxId: org?.taxId ?? null,
@@ -696,15 +1025,48 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       terms: partner?.invoiceFooter ?? null,
       sellerSnapshot: buildSellerSnapshot(partner),
       termsAndConditions: inv.termsAndConditions ?? partner?.billingTermsAndConditions ?? null,
+      // Render-locale snapshot (#3777): stamped ONCE at issue from the partner's
+      // language and never restamped — `??` keeps a locale the draft already
+      // carries. Pure key addition using the `partner` row read above (after
+      // all locks): no new read, no new lock class.
+      documentLocale: inv.documentLocale ?? resolvePartnerDocumentLocale(partner),
       updatedAt: issueDate
-    }).where(eq(invoices.id, invoiceId));
+    }).where(and(eq(invoices.id, invoiceId), eq(invoices.status, 'draft'))).returning({ id: invoices.id });
+    // Guarded write: impossible to miss while we hold the row lock and asserted
+    // draft above — a mismatch means the locking contract broke, so fail loudly.
+    if (updated.length !== 1) {
+      throw new InvoiceServiceError('Invoice changed under the issuance lock', 500, 'CONCURRENT_MODIFICATION');
+    }
 
-    // A since-deleted source row makes its `billed` flip a harmless no-op; the
-    // invoice stays self-contained via its immutable snapshot lines, so we don't
-    // re-verify the source rows still exist before flipping.
-    if (timeIds.length) await db.update(timeEntries).set({ billingStatus: 'billed', updatedAt: issueDate }).where(inArray(timeEntries.id, timeIds));
-    if (partIds.length) await db.update(ticketParts).set({ billingStatus: 'billed', updatedAt: issueDate }).where(inArray(ticketParts.id, partIds));
+    // Guarded source flips (belt-and-braces under the held locks — also stops
+    // an unconditional flip of a deleted/foreign/already-billed row).
+    if (timeIds.length) {
+      const flipped = await db.update(timeEntries).set({ billingStatus: 'billed', updatedAt: issueDate })
+        .where(and(inArray(timeEntries.id, timeIds), eq(timeEntries.orgId, inv.orgId), eq(timeEntries.billingStatus, 'not_billed')))
+        .returning({ id: timeEntries.id });
+      if (flipped.length !== timeIds.length) {
+        throw new InvoiceServiceError('Time entries changed under the issuance lock', 500, 'CONCURRENT_MODIFICATION');
+      }
+    }
+    if (partIds.length) {
+      const flipped = await db.update(ticketParts).set({ billingStatus: 'billed', updatedAt: issueDate })
+        .where(and(inArray(ticketParts.id, partIds), eq(ticketParts.orgId, inv.orgId), eq(ticketParts.billingStatus, 'not_billed')))
+        .returning({ id: ticketParts.id });
+      if (flipped.length !== partIds.length) {
+        throw new InvoiceServiceError('Parts changed under the issuance lock', 500, 'CONCURRENT_MODIFICATION');
+      }
+    }
+    return inv;
   }));
+
+  // Single retry on a transient lock error (40P01 deadlock / 40001
+  // serialization): the new invoice-first lock order cannot deadlock against
+  // itself, but during a rolling deploy old-code orderings (line → invoice)
+  // may still run; one fresh transaction absorbs that window. issueTx is a
+  // fresh TOP-LEVEL system transaction (runOutsideDbContext), so the helper's
+  // nested-savepoint caveat does not apply — a failed attempt rolls back
+  // cleanly and the retry starts a brand-new transaction.
+  const inv = await retryOnTransientLockError('issueInvoice', issueTx, { attempts: 2 });
 
   await emitInvoiceEvent({ type: 'invoice.issued', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
   // Async PDF render (worker stores invoice_documents). enqueueInvoicePdfRender is
@@ -724,9 +1086,16 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
 // Payments + status recompute (Task 3.7)
 // ---------------------------------------------------------------------------
 
-export async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  const paidRows = await db.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
+/** Derive amount_paid/balance/status from the payment rows and persist them.
+ *  The locking payment writers (recordPayment, voidPayment, recordStripePayment)
+ *  hold the invoice row lock and pass their `tx`, so the sum read here is
+ *  consistent with the write (B10) — a global-db call from a locked writer
+ *  would escape the transaction and race the lock it holds. Exception:
+ *  reflectStripeRefund (stripeReconcile.ts) does NOT lock the invoice row
+ *  before calling this — deliberately deferred, tracked as #3803 item 1. */
+export async function recomputeInvoiceStatus(invoiceId: string, dbc: DbExecutor = db): Promise<void> {
+  const inv = await getOwnedInvoiceOr404(invoiceId, dbc);
+  const paidRows = await dbc.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
   const amountPaid = fromCents(paidRows.reduce((s, r) => s + toCents(r.amount), 0));
   const balance = fromCents(toCents(inv.total) - toCents(amountPaid));
   const issued = inv.invoiceNumber !== null;
@@ -734,25 +1103,75 @@ export async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
   const patch: Record<string, unknown> = { amountPaid, balance, status, updatedAt: new Date() };
   if (status === 'paid' && inv.paidAt === null) patch.paidAt = new Date();
   if (status === 'overdue' && inv.markedOverdueAt === null) patch.markedOverdueAt = new Date();
-  await db.update(invoices).set(patch).where(eq(invoices.id, invoiceId));
+  await dbc.update(invoices).set(patch).where(eq(invoices.id, invoiceId));
 }
 
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireInvoiceAccess(actor, inv);
-  if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
-  if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
-  // Exact integer-cents comparison — robust against float representation error.
-  if (Math.round(Number(input.amount) * 100) > Math.round(Number(inv.balance) * 100)) {
-    throw new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT');
-  }
-  const [payment] = await db.insert(invoicePayments).values({
-    invoiceId, orgId: inv.orgId, amount: Number(input.amount).toFixed(2), method: input.method,
-    reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null
-  }).returning();
-  await recomputeInvoiceStatus(invoiceId);
-  await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment!.id, actorUserId: actor.userId });
-  const updated = await getOwnedInvoiceOr404(invoiceId);
+  // ONE transaction, invoice row lock FIRST (B10 lock order — every payment
+  // writer: manual record, manual void, Stripe reconcile). All validation runs
+  // against the LOCKED row and the in-tx payment sum; a check-then-insert
+  // against a pre-lock snapshot let two concurrent full-balance payments both
+  // land. Every helper gets the `tx` handle — inside a request context this
+  // transaction is a savepoint on the request tx, and a stray global-`db` call
+  // would escape it.
+  const { inv, payment, updated } = await db.transaction(async (tx) => {
+    const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
+    if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    // Re-authorize against the locked row (it may have moved site/org since any
+    // earlier unlocked read the caller made).
+    requireInvoiceAccess(actor, inv);
+    if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
+    if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
+
+    // Authoritative balance: recompute from invoice_payments UNDER the lock.
+    // Consistent because every payment writer locks the invoice row first —
+    // the header's balance column is only a cache of this sum.
+    const paidRows = await tx.select({ amount: invoicePayments.amount })
+      .from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
+    const balanceCents = toCents(inv.total) - paidRows.reduce((s, r) => s + toCents(r.amount), 0);
+    // Exact integer-cents comparison — robust against float representation error.
+    const amountCents = toCents(input.amount);
+
+    if (!isRepresentableInCurrency(fromCents(balanceCents), inv.currencyCode)) {
+      // Legacy escape hatch: invoices created before currency-aware rounding
+      // can carry a zero-decimal-currency balance with cent fractions (e.g.
+      // JPY '1000.50'). ONLY the exact payoff may land on such a balance —
+      // requiring representability would strand the invoice forever, and a
+      // smaller representable payment would strand a non-representable residue
+      // (e.g. '0.50') that no later payment could clear. Evaluated against the
+      // LOCKED balance: a stale pre-lock balance could let both an exact payoff
+      // and an underpayment through.
+      if (amountCents !== balanceCents) {
+        throw new InvoiceServiceError(
+          'Invoice balance is not representable in its currency; only the exact payoff amount can be recorded',
+          400, 'INVALID_AMOUNT'
+        );
+      }
+    } else {
+      if (!isRepresentableInCurrency(input.amount, inv.currencyCode)) {
+        throw new InvoiceServiceError('Payment amount has more precision than the invoice currency allows', 400, 'INVALID_AMOUNT');
+      }
+      if (amountCents > balanceCents) {
+        throw new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT');
+      }
+    }
+
+    const [payment] = await tx.insert(invoicePayments).values({
+      invoiceId, orgId: inv.orgId, amount: Number(input.amount).toFixed(2), method: input.method,
+      reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null
+    }).returning();
+    await recomputeInvoiceStatus(invoiceId, tx);
+    const updated = await getOwnedInvoiceOr404(invoiceId, tx);
+    return { inv, payment: payment!, updated };
+  });
+
+  // Event emission runs after db.transaction returns, but that does NOT mean
+  // the invoice row lock is released: on the request path db.transaction is a
+  // SAVEPOINT inside the request-wide withDbAccessContext transaction, so the
+  // FOR UPDATE lock persists until the request tx commits. (recordStripePayment
+  // avoids this by emitting after its top-level system tx has returned.)
+  // Moving emission to post-commit is the follow-up tracked in #3803.
+  await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment.id, actorUserId: actor.userId });
   if (updated.status === 'paid') await emitInvoiceEvent({ type: 'invoice.paid', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
   // Surface the persisted payment alongside the refreshed invoice so the route
   // can write a durable audit_logs entry for this money-path mutation. The
@@ -762,39 +1181,53 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     invoice: updated,
     audit: {
       orgId: inv.orgId,
-      paymentId: payment!.id,
+      paymentId: payment.id,
       invoiceId,
-      amount: payment!.amount,
-      method: payment!.method,
-      reference: payment!.reference,
-      recordedBy: payment!.recordedBy,
+      amount: payment.amount,
+      method: payment.method,
+      reference: payment.reference,
+      recordedBy: payment.recordedBy,
     },
   };
 }
 
 export async function voidPayment(paymentId: string, actor: InvoiceActor) {
-  const [pay] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
-  if (!pay) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
-  // The payment row carries orgId but not siteId; load the parent invoice so the
-  // site-axis guard runs against the invoice's site (a site-restricted caller must
-  // not void a payment on an out-of-site invoice).
-  const parentInv = await getOwnedInvoiceOr404(pay.invoiceId);
-  requireInvoiceAccess(actor, parentInv);
-  // Capture the destroyed row's financial details BEFORE the delete so the voided
-  // payment survives in the durable audit chain even after the row is gone.
-  const audit = {
-    orgId: pay.orgId,
-    paymentId,
-    invoiceId: pay.invoiceId,
-    amount: pay.amount,
-    method: pay.method,
-    reference: pay.reference,
-    recordedBy: pay.recordedBy,
-  };
-  await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
-  await recomputeInvoiceStatus(pay.invoiceId);
-  const inv = await getOwnedInvoiceOr404(pay.invoiceId);
-  await emitInvoiceEvent({ type: 'payment.voided', invoiceId: pay.invoiceId, orgId: pay.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
+  // Unlocked discovery read: the caller supplies a payment id, but the lock
+  // order is invoice row FIRST (B10) — so resolve the parent invoice id, then
+  // lock invoice → payment inside one transaction and re-validate both.
+  const [pre] = await db.select({ invoiceId: invoicePayments.invoiceId }).from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
+  if (!pre) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
+  const { inv, audit } = await db.transaction(async (tx) => {
+    // The payment row carries orgId but not siteId; the parent invoice drives the
+    // site-axis guard (a site-restricted caller must not void a payment on an
+    // out-of-site invoice) — run it against the LOCKED row.
+    const [parentInv] = await tx.select().from(invoices).where(eq(invoices.id, pre.invoiceId)).limit(1).for('update');
+    if (!parentInv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    requireInvoiceAccess(actor, parentInv);
+    // Re-read the payment under the invoice lock: a concurrent void or Stripe
+    // full-refund may have deleted it while we waited.
+    const [pay] = await tx.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1).for('update');
+    if (!pay || pay.invoiceId !== pre.invoiceId) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
+    // Capture the destroyed row's financial details BEFORE the delete so the voided
+    // payment survives in the durable audit chain even after the row is gone.
+    const audit = {
+      orgId: pay.orgId,
+      paymentId,
+      invoiceId: pay.invoiceId,
+      amount: pay.amount,
+      method: pay.method,
+      reference: pay.reference,
+      recordedBy: pay.recordedBy,
+    };
+    await tx.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
+    await recomputeInvoiceStatus(pay.invoiceId, tx);
+    const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
+    return { inv, audit };
+  });
+  // Emitted after db.transaction returns — NOT after the lock is released: on
+  // the request path this is a savepoint of the request-wide tx, so the invoice
+  // row lock is held until the request commits. Post-commit emission: #3803.
+  await emitInvoiceEvent({ type: 'payment.voided', invoiceId: audit.invoiceId, orgId: audit.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
   return { invoice: inv, audit };
 }
 
@@ -838,8 +1271,13 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     if (partIds.length) await db.update(ticketParts).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(ticketParts.id, partIds));
 
     if (!opts.reissue) return;
-    // Clone source-backed lines into a fresh draft (released rows are not_billed again).
-    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
+    // Clone source-backed lines into a fresh draft (released rows are not_billed
+    // again). The clone copies the ORIGINAL document's currency, not the org's
+    // current setting (spec §5) — line totals are copied verbatim, so they only
+    // make sense in the currency they were rounded in. document_locale is
+    // likewise NOT copied: it is an issue-time snapshot, restamped when this
+    // draft issues (#3777).
+    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
     const srcLines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);

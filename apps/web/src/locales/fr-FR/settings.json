@@ -1542,7 +1542,20 @@
     "saving": "Enregistrement...",
     "saveChanges": "Enregistrer les modifications",
     "createItem": "Créer un élément",
-    "unknownItem": "élément inconnu"
+    "unknownItem": "élément inconnu",
+    "priceBook": "Grille tarifaire",
+    "addCurrencyPrice": "Ajouter un prix dans une autre devise…",
+    "removePrice": "Supprimer le prix en {{currency}}",
+    "priceCurrency": "Devise du prix",
+    "costCurrency": "Devise du coût",
+    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
+    "overrideCurrency": "Devise du prix spécifique",
+    "noPricesYet": "Aucun prix pour l’instant. Ajoutez au moins une devise.",
+    "loadingPartnerCurrency": "Chargement de la devise du partenaire…",
+    "partnerCurrencyUnavailable": "Impossible de charger la devise de votre partenaire.",
+    "retry": "Réessayer",
+    "priceCouldNotBeSavedRetry": "Le prix en {{currency}} n’a pas pu être enregistré. Réessayez.",
+    "priceCouldNotBeRemovedRetry": "Le prix en {{currency}} n’a pas pu être supprimé. Réessayez."
   },
   "catalogItemsTab": {
     "itemArchived": "Article archivé",
@@ -1589,7 +1602,12 @@
     "margin": "Marge",
     "unknownItem": "élément inconnu",
     "collapseBundle": "Réduire le lot",
-    "expandBundle": "Fibré expanseur"
+    "expandBundle": "Fibré expanseur",
+    "nMoreCurrencies_one": "+{{count}} devise",
+    "nMoreCurrencies_other": "+{{count}} devises",
+    "incompletePriceBook": "Grille tarifaire incomplète",
+    "marginUnavailable": "Marge indisponible",
+    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",
@@ -2042,6 +2060,7 @@
     "saveChanges": "Enregistrer les modifications"
   },
   "tdSynnexCatalogPanel": {
+    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
     "tDSYNNEXSettingsFailedToLoad": "Les paramètres TD SYNNEX ne se sont pas chargés.",
     "tDSYNNEXSettingsSaved": "Paramètres TD SYNNEX enregistrés",
     "tDSYNNEXConnectionTestSucceeded": "Test de connexion TD SYNNEX réussi",
@@ -2107,6 +2126,7 @@
     "notConfigured": "Non configuré"
   },
   "tdSynnexEcExpressPanel": {
+    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
     "tDSYNNEXPricingSettingsSaved": "TD SYNNEX Paramètres tarifaires enregistrés",
     "tDSYNNEXPricingConnectionTestSucceeded": "Test de connexion de tarification TD SYNNEX réussi",
     "enterAValidSellPrice": "Entrez un prix de vente valide.",
@@ -2198,7 +2218,7 @@
     "responseSLAMinutes": "Réponse SLA (minutes)",
     "resolutionSLAMinutes": "Résolution SLA (minutes)",
     "billableByDefault": "Facturable par défaut",
-    "defaultHourlyRate": "Taux horaire par défaut ($)",
+    "defaultHourlyRate": "Taux horaire par défaut",
     "save": "Enregistrer",
     "cancel": "Annuler",
     "responseMinutes": "{{count}}m réponse",
@@ -2699,7 +2719,7 @@
     "billing": {
       "title": "Paramètres de facturation par défaut",
       "description": "Paramètres de facturation par défaut pour les saisies de temps sur les tickets pour cette organisation.",
-      "hourlyRate": "Taux horaire par défaut ($)",
+      "hourlyRate": "Taux horaire par défaut",
       "billable": "Facturable par défaut",
       "inherit": "Héritage",
       "billableOption": "Facturable",

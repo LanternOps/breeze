@@ -3,6 +3,7 @@ import * as Sentry from '@sentry/react-native';
 import type { User } from './api';
 import { APPROVAL_CACHE_KEY, clearApprovalCacheOrThrow } from './approvalCache';
 import { APP_LOCK_STATE_KEY } from './appLockState';
+import { CSRF_TOKEN_KEY, clearCsrfToken } from './csrfToken';
 
 const TOKEN_KEY = 'breeze_auth_token';
 const USER_KEY = 'breeze_user';
@@ -120,6 +121,9 @@ export async function clearAuthData(): Promise<void> {
     // on the next launch and the leftover record waves it straight past the
     // lock. Deleting is the fail-secure direction — an absent record locks.
     { key: APP_LOCK_STATE_KEY, run: () => SecureStore.deleteItemAsync(APP_LOCK_STATE_KEY) },
+    // The CSRF token is account-scoped: leaving it behind would hand the next
+    // account a stale double-submit value that fails every write.
+    { key: CSRF_TOKEN_KEY, run: () => clearCsrfToken() },
   ];
 
   const results = await Promise.allSettled(deletions.map((d) => d.run()));

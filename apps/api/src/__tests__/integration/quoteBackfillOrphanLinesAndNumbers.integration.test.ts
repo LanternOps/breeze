@@ -63,8 +63,8 @@ async function seedTenant(): Promise<{ partnerId: string; orgId: string }> {
     RETURNING id
   `;
   const [o] = await sql<{ id: string }[]>`
-    INSERT INTO organizations (partner_id, name, slug)
-    VALUES (${p!.id}, 'QB Org', ${`qb-org-${sfx}`})
+    INSERT INTO organizations (partner_id, name, slug, currency_code)
+    VALUES (${p!.id}, 'QB Org', ${`qb-org-${sfx}`}, 'USD')
     RETURNING id
   `;
   return { partnerId: p!.id, orgId: o!.id };
@@ -75,14 +75,15 @@ async function seedQuote(
   opts: { quoteNumber?: string | null; sentAt?: string | null; createdAt?: string; status?: string } = {}
 ): Promise<string> {
   const [q] = await sql<{ id: string }[]>`
-    INSERT INTO quotes (partner_id, org_id, quote_number, status, sent_at, created_at)
+    INSERT INTO quotes (partner_id, org_id, quote_number, status, sent_at, created_at, currency_code)
     VALUES (
       ${t.partnerId},
       ${t.orgId},
       ${opts.quoteNumber ?? null},
       ${(opts.status ?? 'draft') as string}::quote_status,
       ${opts.sentAt ?? null},
-      ${opts.createdAt ?? '2026-01-15 10:00:00'}
+      ${opts.createdAt ?? '2026-01-15 10:00:00'},
+      'USD'
     )
     RETURNING id
   `;

@@ -52,6 +52,7 @@ async function seedTenant(label: string) {
   const [org] = await db
     .insert(organizations)
     .values({
+      currencyCode: 'USD',
       partnerId: partner!.id,
       name: `${label} Org ${unique}`,
       slug: `${label}-org-${unique}`.toLowerCase(),

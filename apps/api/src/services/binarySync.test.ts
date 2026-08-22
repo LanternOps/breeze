@@ -2246,3 +2246,187 @@ describe("binarySync", () => {
     });
   });
 });
+
+describe("boot sync is pinned to the server's own release (#3742)", () => {
+  const originalEnv = process.env;
+  const apiBase = "https://api.github.com/repos/lanternops/breeze";
+
+  function stubNotFoundFetch() {
+    const fetchSpy = vi.fn(async () => new Response("not found", { status: 404 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    return fetchSpy;
+  }
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.BINARY_GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPO;
+    delete process.env.BINARY_VERSION;
+    delete process.env.BREEZE_VERSION;
+    delete process.env.APP_VERSION;
+    delete process.env.BINARY_EDITION;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  it("github mode fetches releases/tags/v<BREEZE_VERSION>, never /releases/latest", async () => {
+    process.env.BINARY_SOURCE = "github";
+    process.env.BREEZE_VERSION = "0.105.1";
+    const fetchSpy = stubNotFoundFetch();
+
+    await expect(syncBinaries()).rejects.toThrow(/GitHub API error/);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${apiBase}/releases/tags/v0.105.1`,
+      expect.anything(),
+    );
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      `${apiBase}/releases/latest`,
+      expect.anything(),
+    );
+  });
+
+  it("BINARY_VERSION wins over BREEZE_VERSION — the same precedence as the download redirect", async () => {
+    // A droplet whose server images are ahead of the last PUBLISHED release
+    // pins BINARY_VERSION to that release; boot sync must follow the pin or
+    // isLatest runs ahead of the bytes the redirect can serve.
+    process.env.BINARY_SOURCE = "github";
+    process.env.BREEZE_VERSION = "0.106.0";
+    process.env.BINARY_VERSION = "0.105.1";
+    const fetchSpy = stubNotFoundFetch();
+
+    await expect(syncBinaries()).rejects.toThrow(/GitHub API error/);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${apiBase}/releases/tags/v0.105.1`,
+      expect.anything(),
+    );
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      `${apiBase}/releases/tags/v0.106.0`,
+      expect.anything(),
+    );
+  });
+
+  it("tolerates an explicit v prefix on the pinned version", async () => {
+    process.env.BINARY_SOURCE = "github";
+    process.env.BREEZE_VERSION = "v0.105.1";
+    const fetchSpy = stubNotFoundFetch();
+
+    await expect(syncBinaries()).rejects.toThrow(/GitHub API error/);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${apiBase}/releases/tags/v0.105.1`,
+      expect.anything(),
+    );
+  });
+
+  it.each([undefined, "latest"])(
+    "falls back to /releases/latest when BREEZE_VERSION is %s (floating deployment)",
+    async (value) => {
+      process.env.BINARY_SOURCE = "github";
+      if (value !== undefined) process.env.BREEZE_VERSION = value;
+      const fetchSpy = stubNotFoundFetch();
+
+      await expect(syncBinaries()).rejects.toThrow(/GitHub API error/);
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${apiBase}/releases/latest`,
+        expect.anything(),
+      );
+    },
+  );
+
+  it("local-mode stale-volume fallback fetches the pinned tag, not /releases/latest", async () => {
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    process.env.BREEZE_VERSION = "0.65.9";
+    fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+    fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+    mockReadFileVersionOnly("0.65.8"); // stale: != BREEZE_VERSION
+    const fetchSpy = stubNotFoundFetch();
+
+    // The fallback failing is logged, not thrown (compound-failure path);
+    // sync then proceeds with the stale local binaries.
+    await syncBinaries();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${apiBase}/releases/tags/v0.65.9`,
+      expect.anything(),
+    );
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      `${apiBase}/releases/latest`,
+      expect.anything(),
+    );
+  });
+});
+
+describe("unpublished pinned release is loud, not a /releases/latest fallback (#3742)", () => {
+  const originalEnv = process.env;
+  const apiBase = "https://api.github.com/repos/lanternops/breeze";
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.BINARY_GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPO;
+    delete process.env.BINARY_VERSION;
+    delete process.env.APP_VERSION;
+    delete process.env.BINARY_EDITION;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  it("github mode: logs the BINARY_VERSION remedy and rethrows (non-fatal in index.ts), never fetching /releases/latest", async () => {
+    process.env.BINARY_SOURCE = "github";
+    process.env.BREEZE_VERSION = "0.106.0"; // images ahead of the last published release
+    const fetchSpy = vi.fn(async () => new Response("not found", { status: 404 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(syncBinaries()).rejects.toThrow(/GitHub API error: 404/);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to the last PUBLISHED release/s),
+    );
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      `${apiBase}/releases/latest`,
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("local mode with an empty volume: fetches the pinned tag, logs, and does NOT crash boot", async () => {
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    process.env.BREEZE_VERSION = "0.106.0";
+    fsMocks.readdir.mockResolvedValue([] as any);
+    mockReadFileVersionOnly("0.106.0"); // volume version matches — not the stale path
+    const fetchSpy = vi.fn(async () => new Response("not found", { status: 404 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(syncBinaries()).resolves.toBeUndefined();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${apiBase}/releases/tags/v0.106.0`,
+      expect.anything(),
+    );
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      `${apiBase}/releases/latest`,
+      expect.anything(),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/pinned release v0\.106\.0 FAILED/),
+    );
+    errorSpy.mockRestore();
+  });
+});

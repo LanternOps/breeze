@@ -745,7 +745,8 @@
           "service": "Servis"
         },
         "noResults": "Eşleşen katalog öğesi yok.",
-        "placeholder": "Kataloğu ada veya SKU'ya göre arayın"
+        "placeholder": "Kataloğu ada veya SKU'ya göre arayın",
+        "noPriceInCurrency": "{{currency}} fiyatı yok"
       },
       "PolishButton": {
         "actions": {

@@ -286,10 +286,10 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `list_invoices` | 2 | List invoices across the organizations you can access, newest first, with optional organization and status filters. |
 | `get_invoice` | 2 | Full accounting view of one invoice — header plus all line items. |
 | `manage_invoices` | 2/3 | Invoice lifecycle. Draft create/update/delete, line management (manual, catalog, bundle, and contract lines), assembling a draft from an organization's billable period or from a ticket's billable time and parts, and creating a Stripe payment link are Tier 2. Financial finalization — issue, void, record payment, void payment — is Tier 3. |
-| `search_catalog` | 2 | Search the partner product catalog (hardware, software, services, bundles) by name or type. |
-| `get_catalog_item` | 2 | Full detail for one catalog item, including bundle components. |
+| `search_catalog` | 2 | Search the partner product catalog (hardware, software, services, bundles) by name or type. Returns `prices` as `{currencyCode, unitPrice}` entries; optional `currencyCode` filters to items with a price in that currency. |
+| `get_catalog_item` | 2 | Full detail for one catalog item, including bundle components and `prices` per currency. |
 | `lookup_distributor_product` | 2 | Live TD SYNNEX (EC Express) price &amp; availability lookup for a single distributor SKU or manufacturer part number that isn't in your catalog yet — returns reseller cost, MSRP, currency, total stock, and per-warehouse availability. Partner-scoped: organization-scoped callers get availability but reseller cost is redacted, and a caller with no partner in context receives an error with no outbound call made. |
-| `manage_catalog` | 2 | Catalog maintenance: create, update, and archive items; set or remove per-organization price overrides; manage bundle components. All actions are Tier 2. |
+| `manage_catalog` | 2 | Catalog maintenance: create, update, and archive items; manage bundle components; and set or remove currency-specific organization overrides. `set_price` and `remove_price` manage price-book rows with `catalogId` and `currencyCode`; `set_price` also takes `price: { unitPrice }`. All actions are Tier 2. |
 | `list_contracts` | 2 | List recurring contracts across accessible organizations, newest first, with optional filters. |
 | `get_contract` | 2 | Full contract view — header, lines, and billing-period history. |
 | `manage_contracts` | 2/3 | Contract lifecycle. Draft create/update/delete and line management are Tier 2. Lifecycle state changes — activate, pause, resume, cancel — are Tier 3. |

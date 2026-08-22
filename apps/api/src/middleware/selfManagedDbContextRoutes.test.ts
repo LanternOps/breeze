@@ -13,6 +13,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['post', '/api/v1/invoices/abc-123/pay-link'], // method is case-insensitive
     ['POST', '/api/v1/portal/invoices/def-456/pay'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/'],
+    ['POST', '/api/v1/partner/stripe-connect/key'],
+    ['POST', '/api/v1/partner/stripe-connect/key/'],
+    ['GET', '/api/v1/partner/stripe-connect'],
+    ['GET', '/api/v1/partner/stripe-connect/'],
+    ['POST', '/api/v1/partner/stripe-connect/refresh'],
+    ['POST', '/api/v1/partner/stripe-connect/refresh/'],
     // QuickBooks customer import — both page the QBO API inside the handler.
     ['GET', '/api/v1/accounting/quickbooks/customers'],
     ['GET', '/api/v1/accounting/quickbooks/customers/'],
@@ -69,6 +75,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections/conn-1/import'],
     ['POST', '/api/v1/psa/connections/conn-1/import/'],
     ['post', '/api/v1/psa/connections/conn-1/import'],
+
+    // Live agent session listing — awaits a 10s agent round-trip (#1105), so it
+    // must not hold a pooled connection idle-in-transaction.
+    ['GET', '/api/v1/devices/dev-1/sessions/live'],
+    ['GET', '/api/v1/devices/dev-1/sessions/live/'],
+    ['get', '/api/v1/devices/dev-1/sessions/live'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -81,6 +93,7 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
+    ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
     ['GET', '/api/v1/accounting/quickbooks', 'accounting status route does only DB work — keep ambient tx'],
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],
@@ -144,6 +157,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections//import/preview', 'empty connection id must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/import/extra', 'extra segment must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/import/preview/extra', 'extra segment must not match'],
+
+    // The sibling session routes do only DB work and MUST keep the ambient tx.
+    ['GET', '/api/v1/devices/dev-1/sessions/active', 'active listing is DB-only'],
+    ['GET', '/api/v1/devices/dev-1/sessions/history', 'history is DB-only'],
+    ['POST', '/api/v1/devices/dev-1/sessions/live', 'live is GET-only'],
+    ['GET', '/api/v1/devices//sessions/live', 'empty device id must not match'],
+    ['GET', '/api/v1/devices/dev-1/sessions/live/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

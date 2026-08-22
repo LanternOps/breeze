@@ -9,6 +9,7 @@ import { loginPathWithNext } from '../../lib/authScope';
 import { ecExpressImport, type EcProduct } from '../../lib/api/distributors';
 import type { CatalogItem } from '../../lib/api/catalog';
 import DistributorLookup from '../billing/quotes/DistributorLookup';
+import { feedCurrencyCode } from './marginMath';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -47,7 +48,8 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
       try {
         const saved = await runAction<CatalogItem>({
           request: () => ecExpressImport({
-            product,
+            // Trimmed uppercase ISO or explicit null — never coerced to USD.
+            product: { ...product, currency: feedCurrencyCode(product.currency) },
             item: {
               name: product.name,
               sku: product.synnexSku || product.mfgPartNo || null,

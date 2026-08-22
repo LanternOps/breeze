@@ -124,7 +124,7 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
       return;
     }
     setStatus('declined');
-    setMsg('Proposal declined.');
+    setMsg('Proposal declined — your provider has been notified.');
   };
 
   const pay = async () => {

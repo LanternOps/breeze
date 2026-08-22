@@ -27,12 +27,30 @@ export interface InvoiceActor {
 export type InvoiceServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'ORG_DENIED'
+  | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
   | 'INVOICE_NOT_FOUND'
+  | 'CURRENCY_MISMATCH'
+  // Draft currency immutability (#3774): the change-currency op refused because
+  // monetary lines exist and the caller didn't opt into clearLines.
+  | 'CURRENCY_LOCKED'
+  // Multi-currency wave 3 (#3775): addCatalogLine / addBundleLine found no
+  // price-book row (and no org override) in the invoice's currency. Mapped 409
+  // from CatalogServiceError — never another currency's number, never converted.
+  | 'NO_PRICE_FOR_CURRENCY'
+  // Multi-currency wave 3 (#3775): addBundleLine — the bundle has a headline
+  // price but one or more components lack a price in the invoice's currency.
+  | 'PRICE_BOOK_INCOMPLETE'
   | 'NOT_A_DRAFT'
   | 'NOTHING_TO_INVOICE'
   | 'NO_VISIBLE_LINES'
   | 'SOURCE_ALREADY_BILLED'
+  // B10 (#3774): a line's source row no longer exists (or belongs to another
+  // org) when re-validated under lock at issue time.
+  | 'SOURCE_NOT_FOUND'
+  // B10 (#3774): a guarded write inside the issuance transaction affected an
+  // unexpected row count — impossible while the locks are held, so a 500.
+  | 'CONCURRENT_MODIFICATION'
   | 'OVERPAYMENT'
   | 'INVALID_STATE'
   | 'INVALID_AMOUNT'
@@ -43,7 +61,8 @@ export type InvoiceServiceErrorCode =
   | 'NOTHING_TO_PAY'
   | 'STRIPE_NOT_CONNECTED'
   | 'STRIPE_NO_URL'
-  | 'STRIPE_INIT_FAILED';
+  | 'STRIPE_INIT_FAILED'
+  | 'STRIPE_CURRENCY_UNSUPPORTED';
 
 export class InvoiceServiceError extends Error {
   constructor(

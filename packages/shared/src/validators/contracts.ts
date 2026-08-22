@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { BULK_ID_LIMIT } from '../constants';
+import { currencyCodeSchema } from './currency';
 
 const money = z.string().regex(/^\d+(\.\d{1,2})?$/, 'must be a 2-decimal money string');
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
@@ -7,13 +8,20 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
 export const contractLineInputSchema = z.object({
   lineType: z.enum(['flat', 'per_device', 'per_seat', 'manual']),
   description: z.string().min(1).max(2000),
-  unitPrice: money,
+  // Multi-currency wave 3 (#3775): a catalog-sourced line is priced by the
+  // server-side resolver in the CONTRACT's currency, so unitPrice is optional
+  // when catalogItemId is set (and any client value is ignored there — the
+  // resolver is authoritative, as is taxable). Non-catalog lines require it.
+  unitPrice: money.optional(),
   taxable: z.boolean(),
   catalogItemId: z.string().guid().optional(),
   manualQuantity: money.optional(),
   siteId: z.string().guid().optional(),
   sortOrder: z.number().int().min(0).optional()
 }).refine(
+  (l) => l.unitPrice !== undefined || l.catalogItemId !== undefined,
+  { message: 'unitPrice is required unless catalogItemId is set', path: ['unitPrice'] }
+).refine(
   (l) => l.lineType !== 'manual' || l.manualQuantity !== undefined,
   { message: 'manualQuantity is required for manual lines', path: ['manualQuantity'] }
 ).refine(
@@ -31,7 +39,7 @@ export const createContractSchema = z.object({
   // `endDate || null` and `notes.trim() || null`, matching updateContractSchema.
   endDate: isoDate.nullable().optional(),
   autoIssue: z.boolean().optional(),
-  currencyCode: z.string().length(3).optional(),
+  currencyCode: currencyCodeSchema.optional(),
   notes: z.string().max(5000).nullable().optional(),
   terms: z.string().max(5000).nullable().optional(),
   autoRenew: z.boolean().optional(),

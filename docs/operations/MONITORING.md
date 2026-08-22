@@ -145,29 +145,66 @@ The main dashboard provides:
 
 Example query for request rate:
 ```promql
-sum(rate(http_requests_total{job="breeze-api"}[5m])) by (method)
+sum(rate(http_requests_total{job=~"breeze-api.*"}[5m])) by (method)
 ```
+
+The `job` selector is a regex because production runs one scrape job per region
+(`breeze-api-us`, `breeze-api-eu`) while the bundled compose stack uses the bare
+`breeze-api`. A literal `job="breeze-api"` matches nothing in production.
 
 ## Key Metrics
 
 ### HTTP Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `http_requests_total` | Counter | Total HTTP requests |
-| `http_request_duration_seconds` | Histogram | Request duration |
-| `breeze_active_connections` | Gauge | Current active connections |
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `http_requests_total` | Counter | `method`, `route`, `status_class` | Total HTTP requests |
+| `http_request_duration_seconds` | Histogram | `method`, `route` | Request duration |
+| `http_requests_in_flight` | Gauge | — | Requests currently being processed (excludes SSE/WebSocket, see below) |
+
+`route` is the Hono route TEMPLATE (`/api/v1/devices/:id`), never the request
+path, which is what keeps these series bounded by the registered route table.
+Requests rejected before reaching a handler (404s, rate limiting) share the single
+label `route="unmatched"`; requests rejected by a path-scoped guard carry that
+guard's pattern (`/api/v1/agents/:id/*`). `status_class` is the response class —
+six values, `1xx`–`5xx` plus `other` — not the exact status code, so 429s cannot
+be told apart from 404s here.
+
+`http_requests_in_flight` counts requests whose handler has not yet returned.
+`streamSSE` and `upgradeWebSocket` return their Response at handshake, so
+long-lived agent connections — the dominant source of sustained concurrency — are
+not represented in it.
 
 ### Business Metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `breeze_devices_active` | Gauge | Number of active devices |
-| `breeze_organizations_total` | Gauge | Total organizations |
-| `breeze_alerts_active` | Gauge | Active alerts count |
+| `breeze_active_devices` | Gauge | Devices with a heartbeat inside `METRICS_ACTIVE_DEVICE_WINDOW_SECONDS` (default 300) |
+| `breeze_active_organizations` | Gauge | Distinct organizations owning those devices |
+| `breeze_alerts_total` | Counter | Alerts fired, by severity |
 | `breeze_alert_queue_length` | Gauge | Alerts pending processing |
-| `agent_heartbeat_total` | Counter | Agent heartbeats received |
+| `agent_heartbeat_total` | Counter | Authenticated agent heartbeats, by `status` |
 | `breeze_scripts_executed_total` | Counter | Scripts executed |
+
+The two fleet gauges are refreshed from the database on scrape and cached for
+`METRICS_FLEET_GAUGE_TTL_SECONDS` (default 30), so a tight scrape loop cannot
+turn them into per-request load. The refresh is single-flighted and bounded by
+`METRICS_FLEET_GAUGE_TIMEOUT_SECONDS` (default 5) — the scrape renders regardless,
+so a stalled database can never take the rest of the metrics down with it.
+
+When a refresh fails the gauges keep their last good values, which on a chart is
+indistinguishable from a stable fleet. Two companion series make that visible and
+should be alerted on rather than trusted implicitly:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `breeze_fleet_gauges_last_refresh_timestamp_seconds` | Gauge | Unix time of the last SUCCESSFUL refresh; `0` = never succeeded since boot |
+| `breeze_fleet_gauge_refresh_failures_total` | Counter | Refresh attempts that failed or timed out |
+
+These three env vars are code-level defaults: they are read from `process.env` but
+are not currently threaded through `.env.example` or the compose `environment:`
+blocks, so overriding them on a deployed droplet requires adding them there first
+(see the Compose interpolation note in CLAUDE.md).
 
 ### Backup Operational Checks
 

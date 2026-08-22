@@ -17,10 +17,10 @@ async function seedAutoRenew(opts: { nextBillingAt: string; endDate: string; not
   const sfx = Math.random().toString(36).slice(2, 8);
   return withSystemDbAccessContext(async () => {
     const [p] = await db.insert(partners).values({ name: `R ${sfx}`, slug: `r-${sfx}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
-    const [o] = await db.insert(organizations).values({ partnerId: p!.id, name: 'ROrg', slug: `ro-${sfx}` }).returning({ id: organizations.id });
+    const [o] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: p!.id, name: 'ROrg', slug: `ro-${sfx}` }).returning({ id: organizations.id });
     const [c] = await db.insert(contracts).values({
       partnerId: p!.id, orgId: o!.id, name: 'Renew Me', status: 'active', billingTiming: 'advance',
-      intervalMonths: 1, startDate: '2026-07-01', endDate: opts.endDate, nextBillingAt: opts.nextBillingAt,
+      intervalMonths: 1, startDate: '2026-07-01', endDate: opts.endDate, nextBillingAt: opts.nextBillingAt, currencyCode: 'USD',
       autoRenew: true, renewalTermMonths: 12, renewalNoticeDays: opts.noticeDays ?? 30
     }).returning({ id: contracts.id });
     await db.insert(contractLines).values({ contractId: c!.id, orgId: o!.id, lineType: 'flat', description: 'svc', unitPrice: '500.00' });

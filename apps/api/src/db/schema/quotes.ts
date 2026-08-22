@@ -38,7 +38,11 @@ export const quotes = pgTable('quotes', {
   quoteNumber: varchar('quote_number', { length: 40 }),
   title: varchar('title', { length: 200 }),
   status: quoteStatusEnum('status').notNull().default('draft'),
-  currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
+  // Multi-currency (spec §5): stamped from the org (or copied from the source
+  // document) at creation and immutable once monetary lines exist. Deliberately
+  // NO .default() — every creation path must stamp it explicitly, so a missed
+  // path is a loud insert failure, never a silent USD document.
+  currencyCode: char('currency_code', { length: 3 }).notNull(),
   issueDate: date('issue_date'),
   expiryDate: date('expiry_date'),
   acceptedAt: timestamp('accepted_at'),
@@ -71,6 +75,8 @@ export const quotes = pgTable('quotes', {
   // Frozen { theme, pageSize } captured at send so sent quotes never restyle
   // when the partner later changes theme (sellerSnapshot pattern).
   presentationSnapshot: jsonb('presentation_snapshot'),
+  // Render-locale snapshot, stamped once at issue/send (#3777). NULL = resolve from partner at render.
+  documentLocale: varchar('document_locale', { length: 16 }),
   termsAndConditions: text('terms_and_conditions'),
   declineReason: text('decline_reason'),
   convertedInvoiceId: uuid('converted_invoice_id'),

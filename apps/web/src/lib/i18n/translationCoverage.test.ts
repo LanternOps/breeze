@@ -30,7 +30,9 @@ const namespaceDuplicateBaselines = {
     // "{{count}} item" spell identically to English in pt-BR.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 51,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    'billing.json': 53,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -82,7 +84,9 @@ const namespaceDuplicateBaselines = {
     // ISO 216 paper size code, identical in every catalog.
     // 41 -> 40: `contracts.contractPax8Drawer.priceEach` is no longer a
     // duplicate; its "/ea" was genuinely untranslated, not a literal.
-    'billing.json': 40,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    'billing.json': 42,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -138,7 +142,9 @@ const namespaceDuplicateBaselines = {
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 52,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    'billing.json': 54,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -194,7 +200,9 @@ const namespaceDuplicateBaselines = {
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 52,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    'billing.json': 54,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -251,7 +259,9 @@ const namespaceDuplicateBaselines = {
     // the loanword the quote editor already uses in de-DE.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 38,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    'billing.json': 40,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -294,7 +304,9 @@ const namespaceDuplicateBaselines = {
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 32,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    'billing.json': 34,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -334,7 +346,9 @@ const namespaceDuplicateBaselines = {
     // which is why the PR was green on its base and this baseline was short on
     // main. 18 -> 17 because `contracts.contractPax8Drawer.priceEach` is no
     // longer a duplicate: it was genuinely untranslated, not a literal.
-    'billing.json': 17,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    'billing.json': 19,
     'common.json': 48,
     'devices.json': 77,
     'discovery.json': 9,

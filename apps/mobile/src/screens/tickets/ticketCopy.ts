@@ -76,3 +76,20 @@ export function emptyStateCopy(
     ? { title: 'No open tickets', body: 'The open queue is clear.' }
     : { title: 'No closed tickets', body: 'Closed tickets will appear here.' };
 }
+
+/**
+ * Which empty state the list should show, if any.
+ *
+ * `error` is part of the decision, not just decoration. A rejected fetch leaves
+ * `tickets` empty, so a list gated on `loading` alone rendered the error line
+ * and the reassuring "The open queue is clear." copy together, in one viewport.
+ * The empty-state copy above describes a queue we successfully read; it must
+ * never narrate a queue we failed to reach.
+ */
+export function emptyStateKind(
+  loading: boolean,
+  error: string | null
+): 'none' | 'error' | 'empty' {
+  if (loading) return 'none';
+  return error ? 'error' : 'empty';
+}

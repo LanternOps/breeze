@@ -683,12 +683,14 @@ describe('partner desired-configuration material watermarks', () => {
     const partner = await createPartner();
     await db.insert(organizations).values([
       {
+        currencyCode: 'USD',
         id: '10000000-0000-4000-8000-000000000001',
         partnerId: partner.id,
         name: 'Deterministic low organization',
         slug: `custom-move-low-${crypto.randomUUID()}`,
       },
       {
+        currencyCode: 'USD',
         id: 'f0000000-0000-4000-8000-000000000002',
         partnerId: partner.id,
         name: 'Deterministic high organization',

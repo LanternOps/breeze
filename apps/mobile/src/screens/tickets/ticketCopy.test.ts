@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 
-import { emptyStateCopy, isBreached, priorityLabel, statusLabel, ticketRef } from './ticketCopy';
+import {
+  emptyStateCopy,
+  emptyStateKind,
+  isBreached,
+  priorityLabel,
+  statusLabel,
+  ticketRef,
+} from './ticketCopy';
 
 describe('statusLabel', () => {
   it('prefers the tenant custom status name', () => {
@@ -55,5 +62,24 @@ describe('emptyStateCopy', () => {
   it('varies by queue as well as assignee', () => {
     expect(emptyStateCopy('closed', 'me').title).toBe('Nothing closed by you');
     expect(emptyStateCopy('closed', 'all').title).toBe('No closed tickets');
+  });
+});
+
+describe('emptyStateKind', () => {
+  it('shows nothing while the first load is still running', () => {
+    expect(emptyStateKind(true, null)).toBe('none');
+    // Even with a stale error on screen, a load in progress owns the viewport.
+    expect(emptyStateKind(true, 'Network request failed')).toBe('none');
+  });
+
+  it('shows the empty state only when the queue was actually read', () => {
+    expect(emptyStateKind(false, null)).toBe('empty');
+  });
+
+  it('never narrates an empty queue after a failed fetch', () => {
+    // The #3753 regression: `tickets` is empty because the request REJECTED,
+    // and the old gate rendered "The open queue is clear." right under the
+    // error line.
+    expect(emptyStateKind(false, 'Network request failed')).toBe('error');
   });
 });
