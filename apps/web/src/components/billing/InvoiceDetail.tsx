@@ -49,6 +49,9 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     ? t('invoice.status.issued')
     : t(/* i18n-dynamic */ `invoice.status.${invoice.status}`);
   const stripeConnected = detail.stripeConnected === true;
+  // Warn-don't-block (#3777): only the API's cached account currency decides
+  // this — never recomputed client-side, never gates the pay-link action.
+  const currencyWarning = stripeConnected ? detail.currencyWarning ?? null : null;
 
   // The billing-wide persisted "internal costs on screen?" preference — the SAME
   // key the quote editor/detail toggles write, so "hide cost & margin" holds
@@ -557,6 +560,19 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             {invoice.status === 'draft' && (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-payments-draft-hint">
                 {t('invoiceDetail.payments.draftHint')}
+              </p>
+            )}
+
+            {currencyWarning && (
+              <p
+                className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+                role="status"
+                data-testid="invoice-stripe-currency-warning"
+              >
+                {t('invoiceDetail.payments.currencyMismatch', {
+                  documentCurrency: currencyWarning.documentCurrency,
+                  accountCurrency: currencyWarning.accountCurrency,
+                })}
               </p>
             )}
 

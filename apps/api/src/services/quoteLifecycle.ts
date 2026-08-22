@@ -1,3 +1,4 @@
+import { formatMoney } from '@breeze/shared';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from '../db/schema/quotes';
@@ -14,6 +15,7 @@ import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from './documentThemes';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
@@ -27,12 +29,6 @@ type QuoteRow = typeof quotes.$inferSelect;
 /** Build the public accept link emailed to the prospect: `<portalBase>/quote/<token>`. */
 export function buildPublicQuoteAcceptUrl(token: string): string {
   return `${portalBase()}/quote/${encodeURIComponent(token)}`;
-}
-
-/** Light money formatter for the email body (invoicePdf's formatMoney is module-private). */
-function formatMoneyish(n: string | null | undefined, currency: string): string {
-  const v = Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return currency === 'USD' ? `$${v}` : `${v} ${currency}`;
 }
 
 /** Why the best-effort email did not go out (mirrors invoicePdf's SendInvoiceResult
@@ -192,6 +188,7 @@ export async function sendQuote(
     pageSize: resolvePageSize(partnerRow?.documentPageSize),
   };
 
+  const documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow);
   const claimed = await db
     .update(quotes)
     .set({
@@ -209,6 +206,10 @@ export async function sendQuote(
       termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
       terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
       presentationSnapshot,
+      // Render-locale snapshot (#3777): stamped ONCE at first send from the
+      // partner's language, never restamped (resendQuote does not write it);
+      // `??` keeps a locale the draft already carries.
+      documentLocale,
     })
     .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
     .returning({ id: quotes.id });
@@ -240,6 +241,8 @@ export async function sendQuote(
     billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
     sellerSnapshot,
     presentationSnapshot,
+    // The just-stamped locale, so the same-request PDF + email render with it.
+    documentLocale,
   };
 
   const { emailed, emailReason } = await deliverQuoteEmail({
@@ -396,7 +399,6 @@ async function deliverQuoteEmail(
           // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
           // per authored contract block + any uploaded contract PDFs to append after
           // rendering, so the emailed attachment matches the on-demand download.
-          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
           const { renderQuotePdf } = await import('./quotePdf');
           // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding):
           // frozenQuote.presentationSnapshot is the send-stamped value on a first
@@ -408,7 +410,12 @@ async function deliverQuoteEmail(
             footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
             theme: resolveThemeId(presentationSnap?.theme ?? partnerRow?.documentTheme),
             pageSize: resolvePageSize(presentationSnap?.pageSize ?? partnerRow?.documentPageSize),
+            // Send-time locale snapshot → partner language → 'en' (#3777).
+            locale: frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow),
           };
+          // Same `emailBranding.locale` the page renderer uses, so contract totals
+          // and the quote summary on the same PDF never disagree (#3777).
+          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote, emailBranding.locale);
           const rawPdf = await renderQuotePdf(
             frozenQuote,
             blocks, customerLines, loadImage, emailBranding, undefined, contractRenderData);
@@ -424,7 +431,7 @@ async function deliverQuoteEmail(
       if (!pdfBuildFailed) {
         const template = buildQuoteTemplate({
           quoteNumber, partnerName: partnerName ?? 'your provider',
-          total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
+          total: formatMoney(quote.total, quote.currencyCode, frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow)), acceptUrl,
           expiryDate: quote.expiryDate ?? undefined,
           message: opts.message,
           subject: opts.subject,

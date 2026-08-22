@@ -887,7 +887,7 @@
         "toLabel": "Kime",
         "toPlaceholder": "Alıcı ekle…",
         "tooManyRecipients": "En fazla {{max}} adresi kullanın.",
-        "zeroTotalWarning": "Bu fiyat teklifinin toplamı 0,00 ABD dolarıdır — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
+        "zeroTotalWarning": "Bu fiyat teklifinin toplamı {{zero}} — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
         "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin."
       },
       "sendEmailWarning": {
@@ -931,7 +931,8 @@
       "resendNewLinkOriginalLive": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı yenisiyle birlikte çalışmaya devam eder.",
       "resendNewLinkOriginalDead": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes yeni bağlantıyı kullanmalıdır.",
       "shareLinkNewLinkOriginalLive": "YENİ bir bağlantı kopyalandı. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı bununla birlikte çalışmaya devam eder.",
-      "shareLinkNewLinkOriginalDead": "YENİ bir bağlantı kopyalandı. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes bu bağlantıyı kullanmalıdır."
+      "shareLinkNewLinkOriginalDead": "YENİ bir bağlantı kopyalandı. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes bu bağlantıyı kullanmalıdır.",
+      "currencyMismatch": "Bu teklif {{documentCurrency}} cinsinden, ancak Stripe hesabınız {{accountCurrency}} olarak ödeme yapıyor. Stripe müşteriye {{documentCurrency}} gösterecek ve ödeme sırasında dönüştürecek — kur farkı ve varsa dönüştürme ücreti size aittir."
     },
     "detail": {
       "addContentInEditor": "Editör'e içerik ekleyin",
@@ -1499,6 +1500,7 @@
       "amount": "Tutar",
       "amountRequired": "Kaydetmek için bir ödeme tutarı girin",
       "connectStripe": "Çevrimiçi ödemeleri kabul etmek için Stripe bağlanın.",
+      "currencyMismatch": "Bu fatura {{documentCurrency}} cinsinden, ancak Stripe hesabınız {{accountCurrency}} olarak ödeme yapıyor. Stripe müşteriye {{documentCurrency}} gösterecek ve ödeme sırasında dönüştürecek — kur farkı ve varsa dönüştürme ücreti size aittir.",
       "date": "Ödeme tarihi",
       "draftHint": "Ödemeleri kaydetmek için bu faturayı düzenleyin.",
       "empty": "Hiçbir ödeme kaydedilmedi.",

@@ -108,6 +108,15 @@ function getReadTool(name: 'get_invoice' | 'list_invoices'): AiTool {
 describe('manage_invoices', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('documents invoice-currency money inputs and non-blocking pay-link currency warnings', () => {
+    const tool = getTool();
+    const properties = tool.definition.input_schema.properties as Record<string, { description?: string }>;
+
+    expect(tool.definition.description).toContain('currencyCode');
+    expect(tool.definition.description).toContain('CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT');
+    expect(properties.payment?.description).toContain("invoice's currencyCode");
+  });
+
   it('create_draft calls createManualInvoice with an actor built from auth', async () => {
     const out = await getTool().handler({ action: 'create_draft', orgId: 'org-1' }, auth);
 
@@ -375,6 +384,13 @@ describe('manage_invoices', () => {
 
 describe('get_invoice / list_invoices deposit fields', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it.each(['list_invoices', 'get_invoice'] as const)('%s documents per-currency grouping', (name) => {
+    const description = getReadTool(name).definition.description;
+
+    expect(description).toContain('currencyCode');
+    expect(description).toContain('group by currencyCode');
+  });
 
   it('get_invoice adds depositPaid=true when amountPaid covers depositDue', async () => {
     vi.mocked(invoiceService.getInvoice).mockResolvedValueOnce({

@@ -11,6 +11,7 @@ import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl 
 import { toCustomerInvoiceHeader, toCustomerInvoiceLine, markViewed } from '../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
+import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
 import { settleCheckoutSession } from '../services/stripeSettle';
 import { InvoiceServiceError } from '../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../utils/httpHeaders';
@@ -216,6 +217,11 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
       // Customer-facing wording for the benign 409s.
       if (err.code === 'STRIPE_NOT_CONNECTED') {
         return c.json({ error: 'Online payment is not available for this invoice — please contact the sender', code: err.code }, 409);
+      }
+      // The partner-facing message names their Stripe account setup — never
+      // leak it to the customer (spec §10).
+      if (err.code === 'STRIPE_CURRENCY_UNSUPPORTED') {
+        return c.json({ error: CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE, code: err.code }, 409);
       }
       return c.json({ error: err.message, code: err.code }, err.status);
     }

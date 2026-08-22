@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { formatMoney } from '../../lib/timeFormat';
+import { formatMoney } from '@/components/billing/shared/format';
+import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
 import {
   CATALOG_TYPE_CHIP,
   type CatalogItem,
@@ -16,6 +17,11 @@ interface Props {
   placeholder?: string;
   disabled?: boolean;
   testId?: string;
+  /** Currency the listed unit prices are labelled with. Defaults to the
+   *  partner currency (INTERIM #3777: wave 3 price books give each item a
+   *  per-currency price, at which point quote/ticket pickers pass the document
+   *  currency). */
+  currencyCode?: string;
 }
 
 const MAX_RESULTS = 8;
@@ -27,9 +33,11 @@ const MAX_RESULTS = 8;
  * wrapper (callers place it in non-overflow-clipped form areas).
  */
 export default function CatalogItemPicker({
-  items, onSelect, includeBundles = true, placeholder, disabled, testId = 'catalog-picker',
+  items, onSelect, includeBundles = true, placeholder, disabled, testId = 'catalog-picker', currencyCode,
 }: Props) {
   const { t } = useTranslation('common');
+  const partnerCurrency = usePartnerCurrency();
+  const priceCurrency = currencyCode ?? partnerCurrency;
   const resolvedPlaceholder = placeholder ?? t('longTail.catalog.CatalogItemPicker.placeholder');
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -112,7 +120,7 @@ export default function CatalogItemPicker({
                   {t(/* i18n-dynamic */ `longTail.catalog.CatalogItemPicker.itemTypes.${item.itemType}`)}
                 </span>
                 {item.sku && <span className="font-mono chart-legend-xs text-muted-foreground">{item.sku}</span>}
-                <span className="tabular-nums text-muted-foreground">{formatMoney(item.unitPrice)}</span>
+                <span className="tabular-nums text-muted-foreground">{formatMoney(item.unitPrice, priceCurrency)}</span>
               </button>
             </li>
           ))}

@@ -16,10 +16,11 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type DraftLineSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import { isRepresentableInCurrency, roundToCurrency, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, roundToCurrency, buildStripeCurrencyWarning, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -432,7 +433,15 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // actor's own connection row is RLS-visible. Best-effort: a lookup failure
   // (e.g. Stripe unconfigured) just means "not connected".
   const conn = await getConnection(inv.partnerId).catch(() => null);
-  return { invoice: inv, lines, stripeConnected: conn?.status === 'connected' }; // accounting view (all lines)
+  const connected = conn?.status === 'connected';
+  // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
+  // warn-don't-block mismatch so the detail page can flag the FX spread before
+  // the partner sends a pay link. Cached columns only — no Stripe call here.
+  return {
+    invoice: inv, lines, stripeConnected: connected, // accounting view (all lines)
+    stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
+    currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
+  };
 }
 
 export type CustomerInvoiceLine = {
@@ -956,6 +965,11 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       terms: partner?.invoiceFooter ?? null,
       sellerSnapshot: buildSellerSnapshot(partner),
       termsAndConditions: inv.termsAndConditions ?? partner?.billingTermsAndConditions ?? null,
+      // Render-locale snapshot (#3777): stamped ONCE at issue from the partner's
+      // language and never restamped — `??` keeps a locale the draft already
+      // carries. Pure key addition using the `partner` row read above (after
+      // all locks): no new read, no new lock class.
+      documentLocale: inv.documentLocale ?? resolvePartnerDocumentLocale(partner),
       updatedAt: issueDate
     }).where(and(eq(invoices.id, invoiceId), eq(invoices.status, 'draft'))).returning({ id: invoices.id });
     // Guarded write: impossible to miss while we hold the row lock and asserted
@@ -1200,7 +1214,9 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     // Clone source-backed lines into a fresh draft (released rows are not_billed
     // again). The clone copies the ORIGINAL document's currency, not the org's
     // current setting (spec §5) — line totals are copied verbatim, so they only
-    // make sense in the currency they were rounded in.
+    // make sense in the currency they were rounded in. document_locale is
+    // likewise NOT copied: it is an issue-time snapshot, restamped when this
+    // draft issues (#3777).
     const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));

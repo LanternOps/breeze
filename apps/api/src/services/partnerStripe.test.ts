@@ -21,9 +21,12 @@ const { dbMocks, accountsRetrieveMock, systemContextCalls } = vi.hoisted(() => (
     insertedValues: [] as Record<string, unknown>[],
     upsertConfigs: [] as Record<string, unknown>[],
     upsertErrors: [] as unknown[],
+    updatedValues: [] as Record<string, unknown>[],
+    callOrder: [] as string[],
+    insertSystemContextDepths: [] as number[],
   },
   accountsRetrieveMock: vi.fn(),
-  systemContextCalls: { count: 0 },
+  systemContextCalls: { count: 0, depth: 0 },
 }));
 
 vi.mock('stripe', () => ({
@@ -40,20 +43,30 @@ vi.mock('./secretCrypto', () => ({
 
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => {
+  withSystemDbAccessContext: async (fn: () => unknown) => {
     systemContextCalls.count += 1;
-    return fn();
+    systemContextCalls.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      systemContextCalls.depth -= 1;
+    }
   },
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve(dbMocks.selectResults.shift() ?? [])),
+          limit: vi.fn(() => {
+            dbMocks.callOrder.push('select');
+            return Promise.resolve(dbMocks.selectResults.shift() ?? []);
+          }),
         })),
       })),
     })),
     insert: vi.fn(() => ({
       values: vi.fn((vals: Record<string, unknown>) => {
+        dbMocks.callOrder.push('insert');
+        dbMocks.insertSystemContextDepths.push(systemContextCalls.depth);
         dbMocks.insertedValues.push(vals);
         return {
           onConflictDoUpdate: vi.fn((cfg: Record<string, unknown>) => {
@@ -64,10 +77,23 @@ vi.mock('../db', () => ({
         };
       }),
     })),
+    update: vi.fn(() => ({
+      set: vi.fn((vals: Record<string, unknown>) => {
+        dbMocks.callOrder.push('update');
+        dbMocks.updatedValues.push(vals);
+        return { where: vi.fn(() => Promise.resolve()) };
+      }),
+    })),
   },
 }));
 
-import { savePartnerStripeKey, PartnerStripeError } from './partnerStripe';
+import {
+  getPartnerStripeStatus,
+  getStripeAccountCurrency,
+  PartnerStripeError,
+  refreshPartnerStripeAccount,
+  savePartnerStripeKey,
+} from './partnerStripe';
 
 const TEST_KEY = ['sk', 'test', '51UNITtestKEY9999'].join('_');
 const CLAIM_MESSAGE =
@@ -78,7 +104,11 @@ beforeEach(() => {
   dbMocks.insertedValues.length = 0;
   dbMocks.upsertConfigs.length = 0;
   dbMocks.upsertErrors.length = 0;
+  dbMocks.updatedValues.length = 0;
+  dbMocks.callOrder.length = 0;
+  dbMocks.insertSystemContextDepths.length = 0;
   systemContextCalls.count = 0;
+  systemContextCalls.depth = 0;
   accountsRetrieveMock.mockReset();
   accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit' });
 });
@@ -89,15 +119,42 @@ describe('savePartnerStripeKey', () => {
 
     const res = await savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID });
 
-    expect(res).toEqual({ stripeAccountId: 'acct_unit', last4: '9999', livemode: false });
+    expect(res).toEqual({
+      stripeAccountId: 'acct_unit',
+      last4: '9999',
+      livemode: false,
+      defaultCurrency: null,
+      accountCountry: null,
+      accountRefreshedAt: expect.any(Date),
+    });
     // Pre-check ran inside the system context (partner-axis RLS would hide a
     // cross-partner claim from the request context).
-    expect(systemContextCalls.count).toBe(1);
+    expect(systemContextCalls.count).toBe(2);
+    expect(dbMocks.callOrder).toEqual(['select', 'insert']);
+    expect(dbMocks.insertSystemContextDepths).toEqual([1]);
     const vals = dbMocks.insertedValues[0]!;
     expect(vals.partnerId).toBe(PARTNER_A);
     expect(vals.apiKey).toBe(`enc(${TEST_KEY})`); // never plaintext
     expect(vals.stripeAccountId).toBe('acct_unit');
     expect(dbMocks.upsertConfigs).toHaveLength(1); // partner_id upsert reached
+  });
+
+  it('captures and normalizes Stripe account currency and country in both upsert arms', async () => {
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'eur', country: 'DE' });
+    dbMocks.selectResults.push([]);
+
+    const res = await savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID });
+
+    expect(res).toEqual({
+      stripeAccountId: 'acct_unit',
+      last4: '9999',
+      livemode: false,
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt: expect.any(Date),
+    });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ defaultCurrency: 'EUR', accountCountry: 'DE' });
+    expect(dbMocks.upsertConfigs[0]!.set).toMatchObject({ defaultCurrency: 'EUR', accountCountry: 'DE' });
   });
 
   it('account claimed by ANOTHER partner: throws the typed error BEFORE any write', async () => {
@@ -167,5 +224,154 @@ describe('savePartnerStripeKey', () => {
     const res = await savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: liveKey, userId: USER_ID });
     expect(res.livemode).toBe(true);
     expect(dbMocks.insertedValues[0]!.livemode).toBe(true);
+  });
+});
+
+describe('getPartnerStripeStatus', () => {
+  it('returns cached account fields for a connected account', async () => {
+    const accountRefreshedAt = new Date('2026-08-21T12:00:00.000Z');
+    dbMocks.selectResults.push([{
+      status: 'connected',
+      apiKey: 'enc(sk_test_x)',
+      stripeAccountId: 'acct_unit',
+      keyLast4: '9999',
+      livemode: false,
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt,
+    }]);
+
+    await expect(getPartnerStripeStatus(PARTNER_A)).resolves.toEqual({
+      connected: true,
+      stripeAccountId: 'acct_unit',
+      last4: '9999',
+      livemode: false,
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt,
+    });
+  });
+});
+
+describe('refreshPartnerStripeAccount', () => {
+  it('retrieves fresh account fields and updates the cache', async () => {
+    dbMocks.selectResults.push([{
+      apiKey: 'enc(sk_test_x)',
+      status: 'connected',
+      stripeAccountId: 'acct_unit',
+      defaultCurrency: 'USD',
+    }]);
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'gbp', country: 'GB' });
+
+    const res = await refreshPartnerStripeAccount(PARTNER_A);
+
+    expect(res).toEqual({
+      defaultCurrency: 'GBP',
+      accountCountry: 'GB',
+      accountRefreshedAt: expect.any(Date),
+    });
+    expect(dbMocks.updatedValues).toHaveLength(1);
+    expect(dbMocks.updatedValues[0]).toEqual({
+      defaultCurrency: 'GBP',
+      accountCountry: 'GB',
+      accountRefreshedAt: res.accountRefreshedAt,
+      updatedAt: res.accountRefreshedAt,
+    });
+  });
+
+  it('maps transient Stripe failures and does not update the cache', async () => {
+    dbMocks.selectResults.push([{
+      apiKey: 'enc(sk_test_x)',
+      status: 'connected',
+      stripeAccountId: 'acct_unit',
+      defaultCurrency: 'USD',
+    }]);
+    accountsRetrieveMock.mockRejectedValue({ type: 'StripeConnectionError' });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({
+        name: 'PartnerStripeError',
+        code: 'INVALID_STRIPE_KEY',
+        message: 'Could not reach Stripe right now — try again in a moment.',
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    expect(dbMocks.updatedValues).toHaveLength(0);
+  });
+});
+
+describe('getStripeAccountCurrency', () => {
+  it('returns a fresh connected cache entry without calling Stripe', async () => {
+    const accountRefreshedAt = new Date();
+    dbMocks.selectResults.push([{
+      defaultCurrency: 'USD',
+      accountCountry: 'US',
+      accountRefreshedAt,
+      status: 'connected',
+    }]);
+
+    await expect(getStripeAccountCurrency(PARTNER_A)).resolves.toEqual({
+      defaultCurrency: 'USD',
+      accountCountry: 'US',
+      accountRefreshedAt,
+      stale: false,
+    });
+    expect(accountsRetrieveMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a connected cache entry older than the TTL', async () => {
+    dbMocks.selectResults.push(
+      [{
+        defaultCurrency: 'USD',
+        accountCountry: 'US',
+        accountRefreshedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+        status: 'connected',
+      }],
+      [{
+        apiKey: 'enc(sk_test_x)',
+        status: 'connected',
+        stripeAccountId: 'acct_unit',
+        defaultCurrency: 'USD',
+      }],
+    );
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'cad', country: 'CA' });
+
+    const res = await getStripeAccountCurrency(PARTNER_A);
+
+    expect(res).toEqual({
+      defaultCurrency: 'CAD',
+      accountCountry: 'CA',
+      accountRefreshedAt: expect.any(Date),
+      stale: false,
+    });
+    expect(accountsRetrieveMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves stale cached values when refresh fails', async () => {
+    const accountRefreshedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    dbMocks.selectResults.push(
+      [{ defaultCurrency: 'USD', accountCountry: 'US', accountRefreshedAt, status: 'connected' }],
+      [{
+        apiKey: 'enc(sk_test_x)',
+        status: 'connected',
+        stripeAccountId: 'acct_unit',
+        defaultCurrency: 'USD',
+      }],
+    );
+    accountsRetrieveMock.mockRejectedValue({ type: 'StripeConnectionError' });
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(getStripeAccountCurrency(PARTNER_A)).resolves.toEqual({
+        defaultCurrency: 'USD',
+        accountCountry: 'US',
+        accountRefreshedAt,
+        stale: true,
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 });

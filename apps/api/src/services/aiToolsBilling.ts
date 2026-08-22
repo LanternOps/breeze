@@ -130,7 +130,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       name: 'list_invoices',
       description:
         'List invoices for the orgs the caller can access, newest first. Optionally filter by org or status. ' +
-        'Each invoice includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Read-only.',
+        'Each invoice includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Read-only.' +
+        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -172,7 +173,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       name: 'get_invoice',
       description:
         'Get the full accounting view of one invoice (header plus all lines) by id. Includes depositDue and, ' +
-        'when a deposit is configured, a derived depositPaid boolean. Read-only.',
+        'when a deposit is configured, a derived depositPaid boolean. Read-only.' +
+        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -203,7 +205,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
         'issue (finalize), void, record or void payments, and create a Stripe pay link. Issue/void/payment ' +
         'actions finalize financial state and require approval. Assembly responses carry `blockedByCurrency` ' +
         'listing unbilled work in other currencies — assemble a separate draft with `currencyCode` set; never ' +
-        'sum across currencies.',
+        'sum across currencies.' +
+        ' Money inputs (line unitPrice, payment amount) are in the invoice\'s currencyCode. create_pay_link may return a `warning` (code CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT) when the invoice currency differs from the partner\'s Stripe account currency — relay it to the user; it does not block the link.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -236,7 +239,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           currencyCode: { type: 'string', description: 'Header currency override for assemble_from_org / assemble_from_ticket (ISO 4217). Defaults to the org currency; set it to assemble a separate draft for work snapshotted in another currency' },
           line: { type: 'object', description: 'Manual line fields for add_manual_line' },
           patch: { type: 'object', description: 'Line or header patch fields' },
-          payment: { type: 'object', description: 'Payment fields (amount, method, ...)' },
+          payment: { type: 'object', description: 'Payment fields (amount in the invoice\'s currencyCode, method, ...)' },
         },
         required: ['action'],
       },

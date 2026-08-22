@@ -43,6 +43,16 @@ describe('TicketPartsCard', () => {
     expect(screen.getByTestId('ticket-part-p-1').textContent).toContain('€198.00');
   });
 
+  it('formats line total, unit price and margin in the currency each row carries', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === '/tickets/tk-1/parts' ? jsonRes(parts.map((p) => ({ ...p, currencyCode: 'GBP' }))) : jsonRes({}));
+    render(<TicketPartsCard ticketId="tk-1" />);
+    const row = await screen.findByTestId('ticket-part-p-1');
+    expect(row.textContent).toContain('2 × £99.00');
+    expect(row.textContent).toContain('£198.00');
+    expect(row.textContent).toContain('£78.00');
+  });
+
   it('adds a part', async () => {
     render(<TicketPartsCard ticketId="tk-1" />);
     fireEvent.click(await screen.findByTestId('ticket-parts-add-toggle'));

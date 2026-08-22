@@ -32,6 +32,10 @@ export const stripeConnectAccounts = pgTable('stripe_connect_accounts', {
   // Legacy Connect-OAuth token (unused by the API-key path; retained until a later drop migration).
   credentials: jsonb('credentials').$type<{ accessToken: string | null }>(),
   livemode: boolean('livemode').notNull().default(false),
+  // Cached connected-account facts (#3777 §10); null until the key is saved under wave 5.
+  defaultCurrency: char('default_currency', { length: 3 }),
+  accountCountry: char('account_country', { length: 2 }),
+  accountRefreshedAt: timestamp('account_refreshed_at'),
   status: stripeConnectStatusEnum('status').notNull().default('connected'),
   // Legacy Connect-OAuth scope (unused by the API-key path; retained until a later drop migration).
   scope: varchar('scope', { length: 50 }),

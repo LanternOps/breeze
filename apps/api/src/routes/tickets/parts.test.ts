@@ -79,7 +79,7 @@ vi.mock('../../db/schema', () => ({
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId', id: 'id', linkType: 'linkType' },
   alerts: { id: 'id', title: 'title', severity: 'severity', status: 'status', deviceId: 'deviceId' },
   devices: { id: 'id', hostname: 'hostname', orgId: 'orgId', siteId: 'siteId' },
-  organizations: { id: 'id', name: 'name' },
+  organizations: { id: 'id', name: 'name', currencyCode: 'currencyCode' },
   users: { id: 'id', name: 'name' },
   timeEntries: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', userId: 'userId',

@@ -22,6 +22,7 @@ import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { toPublicQuoteHeader, toPublicQuotePresentation } from '../services/publicQuoteDto';
 import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
+import { resolvePartnerDocumentLocale } from '../services/documentLocale';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -59,7 +60,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       if (!quote || quote.status === 'draft') return null;
       const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder));
       const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
-      const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+      const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
       const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
       // Cosmetic view-stamping only — must never fail the render. Mirrors the
       // authenticated counterpart at portal/quotes.ts:48.
@@ -70,7 +71,10 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
       // Resolves every `contract` block's pinned template version (system context)
       // and replaces its raw authoring content with the token-gated render contract.
-      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);
+      // Public link serves sent (stamped) quotes: quote.documentLocale is the
+      // render locale; null only for pre-wave-5 sends, which resolve to the
+      // partner's language — the same fallback the quote PDF uses.
+      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`, quote.documentLocale ?? resolvePartnerDocumentLocale(partner));
       const serializedLines = attachCustomerLineImages(lines, (lineId) => `/quotes/public/${encodeURIComponent(token)}/line-image/${lineId}`);
       // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
       // sent quote's frozen presentation always wins over the partner's live

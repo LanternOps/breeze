@@ -6,6 +6,7 @@ import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { cn } from '@/lib/utils';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { money } from '@/lib/money';
 
 // Invoice statuses that can be paid online (mirrors the API's PAYABLE set).
 const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially_paid', 'overdue']);
@@ -15,15 +16,6 @@ interface InvoiceDetailViewProps {
   error?: string | null;
 }
 
-function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
 
 /** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
  *  rounded to cents; non-taxable lines / a non-positive rate return null (shown

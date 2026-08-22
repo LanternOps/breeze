@@ -269,3 +269,72 @@ describe('InvoiceDetail', () => {
     expect(screen.queryByTestId('invoice-payment-void-p1')).not.toBeInTheDocument();
   });
 });
+
+describe('InvoiceDetail — Stripe currency-mismatch warning (#3777)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    _resetShowMarginMemoryForTests();
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [] });
+      return json({ data: {} });
+    });
+  });
+
+  it('renders the warn-don\'t-block copy when the API reports a currency mismatch', async () => {
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          invoice: { ...issued.invoice, currencyCode: 'EUR' },
+          stripeConnected: true,
+          stripeAccountCurrency: 'USD',
+          currencyWarning: {
+            code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
+            documentCurrency: 'EUR',
+            accountCurrency: 'USD',
+            message: 'server copy',
+          },
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    const warning = screen.getByTestId('invoice-stripe-currency-warning');
+    expect(warning.textContent).toContain('EUR');
+    expect(warning.textContent).toContain('USD');
+    // Never blocks the pay-link action.
+    expect(screen.getByTestId('invoice-pay-link')).not.toBeDisabled();
+  });
+
+  it('renders nothing when the currencies match (warning null)', async () => {
+    render(
+      <InvoiceDetail
+        detail={{ ...issued, stripeConnected: true, stripeAccountCurrency: 'USD', currencyWarning: null }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-stripe-currency-warning')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when Stripe is not connected, even if a stale warning is present', async () => {
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          stripeConnected: false,
+          currencyWarning: {
+            code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
+            documentCurrency: 'EUR',
+            accountCurrency: 'USD',
+            message: 'server copy',
+          },
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-stripe-currency-warning')).not.toBeInTheDocument();
+  });
+});

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { SUPPORTED_LOCALES } from '@breeze/shared';
 import type { SupportedLocale } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { bodyLimit } from 'hono/body-limit';
@@ -45,7 +46,7 @@ import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
 
 export const userRoutes = new Hono();
-const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const satisfies readonly SupportedLocale[];
+const supportedLocales = SUPPORTED_LOCALES;
 
 userRoutes.use('*', authMiddleware);
 userRoutes.use('*', async (c, next) => {
