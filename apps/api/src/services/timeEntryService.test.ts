@@ -1023,6 +1023,21 @@ describe('query helpers', () => {
     ]);
   });
 
+  it('getTimesheet rounds quantity x rate ties half-up in exact decimal (review #2)', async () => {
+    // 1 min at 7.25/h → 0.02 h × 7.25 = 0.145 → 0.15 per row. The double product is
+    // 0.14499999999999999, which Math.floor(n*100+0.5) turned into 0.14 while the
+    // SQL ticket summary said 0.15. Three rows = 0.45.
+    const row = (id: string) => ({
+      id, startedAt: new Date('2026-06-08T09:00:00Z'), durationMinutes: 1,
+      isBillable: true, hourlyRate: '7.25', currencyCode: 'USD'
+    });
+    dbMocks.selectResults.push([row('a'), row('b'), row('c')]);
+
+    const result = await getTimesheet('u-1', new Date('2026-06-08T00:00:00Z'));
+
+    expect(result.totals.billableAmounts).toEqual([{ currencyCode: 'USD', amount: '0.45' }]);
+  });
+
   it('getTimesheet rounds labor hours to two decimals before currency rounding', async () => {
     dbMocks.selectResults.push([{
       id: 'te-jpy',

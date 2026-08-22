@@ -23,6 +23,13 @@ describe('timeEntryToLineSpec', () => {
     expect(spec.lineTotal).toBe('0.00');
     expect(spec.isUnapprovedTime).toBe(false);
   });
+  it('one minute at 7.25/h is 0.15, not 0.14 (review #2: exact half-up, same as the SQL summary)', () => {
+    const spec = timeEntryToLineSpec(
+      { id: 'te3', ticketId: null, description: null, durationMinutes: 1, hourlyRate: '7.25', isApproved: true }, 'USD'
+    );
+    expect(spec.quantity).toBe('0.02');
+    expect(spec.lineTotal).toBe('0.15');
+  });
   it('never substitutes zero for a NULL rate — that is an assembly gap, not a free line (review #1)', () => {
     expect(() => timeEntryToLineSpec(
       { id: 'te2', ticketId: null, description: null, durationMinutes: 60, hourlyRate: null, isApproved: true }, 'USD'

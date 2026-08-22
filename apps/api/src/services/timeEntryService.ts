@@ -3,7 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
-import { CURRENCY_CODES, isZeroDecimal, roundToCurrency } from '@breeze/shared';
+import { CURRENCY_CODES, isZeroDecimal, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -979,14 +979,16 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
     if (!entry.isBillable || entry.hourlyRate == null || entry.currencyCode == null) continue;
     // Labor rule: hours to 2 dp, then ONE round per row at the currency's minor
     // unit — the same per-line figure invoice assembly produces, so the sum of
-    // rounded rows equals the invoice total (never "round the sum").
-    const hours = Number(((entry.durationMinutes ?? 0) / 60).toFixed(2));
-    const amount = Number(roundToCurrency(hours * Number(entry.hourlyRate), entry.currencyCode));
-    money.set(entry.currencyCode, (money.get(entry.currencyCode) ?? 0) + amount);
+    // rounded rows equals the invoice total (never "round the sum"). The product
+    // is exact decimal (review #2: 0.02 × 7.25 = 0.145 → 0.15, same as the SQL
+    // summary) and rows are summed as integer minor units, never as floats.
+    const hours = ((entry.durationMinutes ?? 0) / 60).toFixed(2);
+    const amount = multiplyToCurrency(hours, entry.hourlyRate, entry.currencyCode);
+    money.set(entry.currencyCode, (money.get(entry.currencyCode) ?? 0) + toMinorUnits(amount, entry.currencyCode));
   }
-  const billableAmounts: CurrencyAmount[] = [...money].map(([currencyCode, amount]) => ({
+  const billableAmounts: CurrencyAmount[] = [...money].map(([currencyCode, minor]) => ({
     currencyCode,
-    amount: roundToCurrency(amount, currencyCode)
+    amount: fromMinorUnits(minor, currencyCode)
   }));
   return {
     weekStart: weekStart.toISOString().slice(0, 10),
@@ -1166,7 +1168,7 @@ export async function listBillables(
 
   const rows: BillableRow[] = [];
   for (const r of timeRows) {
-    const hours = Number(((r.minutes ?? 0) / 60).toFixed(2));
+    const hours = ((r.minutes ?? 0) / 60).toFixed(2);
     const rate = toFinite(r.rate);
     rows.push({
       kind: 'time',
@@ -1175,15 +1177,14 @@ export async function listBillables(
       ticketNumber: r.ticketNumber,
       description: r.description,
       technician: r.technician,
-      quantity: hours.toFixed(2),
+      quantity: hours,
       rate: r.rate,
-      // Labor rule (one rule everywhere): hours to 2 dp first, then round the
-      // product at the snapshot currency's minor unit. Standalone entries with
-      // no currency fall back to a plain 2-dp string.
+      // Labor rule (one rule everywhere): hours to 2 dp first, then ONE exact
+      // half-up round of the product at the snapshot currency's minor unit
+      // (review #2 — never through a double). Standalone entries with no
+      // currency fall back to the 2-decimal exponent.
       amount: rate != null
-        ? r.currencyCode
-          ? roundToCurrency(hours * rate, r.currencyCode)
-          : (hours * rate).toFixed(2)
+        ? multiplyToCurrency(hours, rate, r.currencyCode ?? 'USD')
         : '0.00',
       currencyCode: r.currencyCode,
       billingStatus: r.billingStatus,
@@ -1203,9 +1204,7 @@ export async function listBillables(
       quantity: r.quantity,
       rate: r.unitPrice,
       amount: quantity != null && unitPrice != null
-        ? r.currencyCode
-          ? roundToCurrency(quantity * unitPrice, r.currencyCode)
-          : (quantity * unitPrice).toFixed(2)
+        ? multiplyToCurrency(quantity, unitPrice, r.currencyCode ?? 'USD')
         : '0.00',
       currencyCode: r.currencyCode,
       billingStatus: r.billingStatus,
@@ -1213,14 +1212,15 @@ export async function listBillables(
     });
   }
   rows.sort((a, b) => a.date.getTime() - b.date.getTime());
+  // Sum as integer minor units — never float-add 2-dp strings and re-round.
   const totals = new Map<string, number>();
   for (const r of rows) {
     if (r.currencyCode == null) continue;
-    totals.set(r.currencyCode, (totals.get(r.currencyCode) ?? 0) + Number(r.amount));
+    totals.set(r.currencyCode, (totals.get(r.currencyCode) ?? 0) + toMinorUnits(r.amount, r.currencyCode));
   }
-  const totalsByCurrency: CurrencyAmount[] = [...totals].map(([currencyCode, amount]) => ({
+  const totalsByCurrency: CurrencyAmount[] = [...totals].map(([currencyCode, minor]) => ({
     currencyCode,
-    amount: roundToCurrency(amount, currencyCode)
+    amount: fromMinorUnits(minor, currencyCode)
   }));
   return { rows, totalsByCurrency };
 }
