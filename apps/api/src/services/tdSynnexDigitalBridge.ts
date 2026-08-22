@@ -441,7 +441,7 @@ export function normalizeTdSynnexProducts(payload: unknown): TdSynnexProduct[] {
       name,
       description: pickString(product, ['description', 'longDescription', 'shortDescription']),
       cost: cost === null ? null : cost.toFixed(2),
-      currency: pickString(product, ['currency', 'currencyCode']) ?? 'USD',
+      currency: pickString(product, ['currency', 'currencyCode']),
       availability: pickNumber(product, ['availability', 'availableQuantity', 'quantityAvailable', 'stock']),
       warehouses: pickArray(product, ['warehouses', 'warehouseAvailability', 'inventory']),
       raw: product,
@@ -573,6 +573,8 @@ export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItem
     unitPrice: input.item.unitPrice,
     costBasis: input.item.costBasis ?? null,
     markupPercent: input.item.markupPercent ?? null,
+    // B4 (#3775): feed currency is the cost currency (real column, not jsonb-only).
+    costCurrency: input.product.currency ? input.product.currency.trim().toUpperCase() : undefined,
     unitOfMeasure: 'each',
     taxable: input.item.taxable,
     taxCategory: null,
