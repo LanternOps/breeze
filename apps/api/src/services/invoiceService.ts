@@ -16,6 +16,7 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
+import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
 import { isRepresentableInCurrency, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
@@ -762,12 +763,6 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
 // Issue: numbering, double-bill guard, freeze, snapshot, source flip (Task 3.6)
 // ---------------------------------------------------------------------------
 
-/** Postgres deadlock (SQLSTATE 40P01) — the one transient we retry once. */
-function isDeadlockError(err: unknown): boolean {
-  const e = err as { code?: unknown; cause?: { code?: unknown } };
-  return e?.code === '40P01' || e?.cause?.code === '40P01';
-}
-
 export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
   // Fast-fail pre-checks only. NOT authoritative: everything is re-checked on
   // the LOCKED row inside the system transaction below (B10) — this read runs
@@ -941,17 +936,14 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     return inv;
   }));
 
-  // Single retry on PostgreSQL deadlock (40P01): the new invoice-first lock
-  // order cannot deadlock against itself, but during a rolling deploy old-code
-  // orderings (line → invoice) may still run; one fresh transaction absorbs
-  // that window.
-  let inv: Awaited<ReturnType<typeof issueTx>>;
-  try {
-    inv = await issueTx();
-  } catch (err) {
-    if (!isDeadlockError(err)) throw err;
-    inv = await issueTx();
-  }
+  // Single retry on a transient lock error (40P01 deadlock / 40001
+  // serialization): the new invoice-first lock order cannot deadlock against
+  // itself, but during a rolling deploy old-code orderings (line → invoice)
+  // may still run; one fresh transaction absorbs that window. issueTx is a
+  // fresh TOP-LEVEL system transaction (runOutsideDbContext), so the helper's
+  // nested-savepoint caveat does not apply — a failed attempt rolls back
+  // cleanly and the retry starts a brand-new transaction.
+  const inv = await retryOnTransientLockError('issueInvoice', issueTx, { attempts: 2 });
 
   await emitInvoiceEvent({ type: 'invoice.issued', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
   // Async PDF render (worker stores invoice_documents). enqueueInvoicePdfRender is
@@ -972,9 +964,12 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
 // ---------------------------------------------------------------------------
 
 /** Derive amount_paid/balance/status from the payment rows and persist them.
- *  Every payment writer holds the invoice row lock and passes its `tx`, so the
- *  sum read here is consistent with the write (B10) — a global-db call from a
- *  locked writer would escape the transaction and race the lock it holds. */
+ *  The locking payment writers (recordPayment, voidPayment, recordStripePayment)
+ *  hold the invoice row lock and pass their `tx`, so the sum read here is
+ *  consistent with the write (B10) — a global-db call from a locked writer
+ *  would escape the transaction and race the lock it holds. Exception:
+ *  reflectStripeRefund (stripeReconcile.ts) does NOT lock the invoice row
+ *  before calling this — deliberately deferred, tracked as #3803 item 1. */
 export async function recomputeInvoiceStatus(invoiceId: string, dbc: DbExecutor = db): Promise<void> {
   const inv = await getOwnedInvoiceOr404(invoiceId, dbc);
   const paidRows = await dbc.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
@@ -1047,8 +1042,12 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     return { inv, payment: payment!, updated };
   });
 
-  // Event emission stays OUTSIDE the transaction — no Redis work while the
-  // invoice row lock is held.
+  // Event emission runs after db.transaction returns, but that does NOT mean
+  // the invoice row lock is released: on the request path db.transaction is a
+  // SAVEPOINT inside the request-wide withDbAccessContext transaction, so the
+  // FOR UPDATE lock persists until the request tx commits. (recordStripePayment
+  // avoids this by emitting after its top-level system tx has returned.)
+  // Moving emission to post-commit is the follow-up tracked in #3803.
   await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment.id, actorUserId: actor.userId });
   if (updated.status === 'paid') await emitInvoiceEvent({ type: 'invoice.paid', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
   // Surface the persisted payment alongside the refreshed invoice so the route
@@ -1102,7 +1101,9 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
     return { inv, audit };
   });
-  // Event emission outside the transaction — no Redis work under the held lock.
+  // Emitted after db.transaction returns — NOT after the lock is released: on
+  // the request path this is a savepoint of the request-wide tx, so the invoice
+  // row lock is held until the request commits. Post-commit emission: #3803.
   await emitInvoiceEvent({ type: 'payment.voided', invoiceId: audit.invoiceId, orgId: audit.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
   return { invoice: inv, audit };
 }

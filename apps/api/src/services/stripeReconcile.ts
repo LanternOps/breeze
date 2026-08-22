@@ -80,9 +80,11 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
     if (!input.stripeAccountId || input.stripeAccountId !== mapping.stripeAccountId) {
       return terminalFail(`account mismatch (event=${input.stripeAccountId} mapping=${mapping.stripeAccountId})`);
     }
-    // The locked row's balance is authoritative: every writer that changes it
-    // (recordPayment, voidPayment, this path, reflectStripeRefund's recompute)
-    // holds the invoice row lock while recomputeInvoiceStatus persists it.
+    // The locked row's balance is authoritative against the locking writers
+    // (recordPayment, voidPayment, this path): each holds the invoice row lock
+    // while recomputeInvoiceStatus persists it. reflectStripeRefund below does
+    // NOT take the lock before its recompute — deliberately deferred (#3803
+    // item 1), so a refund racing this path can still interleave.
     if (toCents(input.amount) > toCents(inv.balance)) {
       return terminalFail('overpayment: payment exceeds balance');
     }
