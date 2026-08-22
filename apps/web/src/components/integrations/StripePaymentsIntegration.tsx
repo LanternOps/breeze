@@ -140,6 +140,37 @@ export default function StripePaymentsIntegration() {
     }
   }, [busy, load]);
 
+  // Refresh + Disconnect. Rendered for `connected` AND for `reconnect_required`:
+  // that state can be a false positive (a restricted key, a blip Stripe reported
+  // as an auth failure), and hiding both actions leaves the partner with no
+  // in-page way to re-check or to clear the connection (#3777 review F3).
+  const connectionActions = (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => void refreshAccount()}
+        disabled={busy}
+        data-testid="stripe-connect-refresh-button"
+        className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+      >
+        {busy
+          ? t("stripePaymentsIntegration.refreshing")
+          : t("stripePaymentsIntegration.refresh")}
+      </button>
+      <button
+        type="button"
+        onClick={() => void disconnect()}
+        disabled={busy}
+        data-testid="stripe-disconnect-button"
+        className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+      >
+        {busy
+          ? t("stripePaymentsIntegration.working")
+          : t("stripePaymentsIntegration.disconnect")}
+      </button>
+    </div>
+  );
+
   return (
     <section
       className="rounded-lg border bg-card p-6 shadow-xs"
@@ -265,61 +296,42 @@ export default function StripePaymentsIntegration() {
                 </span>
               ) : null}
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void refreshAccount()}
-                disabled={busy}
-                data-testid="stripe-connect-refresh-button"
-                className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                {busy
-                  ? t("stripePaymentsIntegration.refreshing")
-                  : t("stripePaymentsIntegration.refresh")}
-              </button>
-              <button
-                type="button"
-                onClick={() => void disconnect()}
-                disabled={busy}
-                data-testid="stripe-disconnect-button"
-                className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-              >
-                {busy
-                  ? t("stripePaymentsIntegration.working")
-                  : t("stripePaymentsIntegration.disconnect")}
-              </button>
-            </div>
+            {connectionActions}
           </div>
         ) : (
-          <form
-            className="flex flex-wrap items-center gap-3"
-            aria-describedby={state.status === "reconnect_required" ? "stripe-connect-reconnect-required" : undefined}
-            onSubmit={(e) => {
-              e.preventDefault();
-              void saveKey();
-            }}
-          >
-            <input
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={t("stripePaymentsIntegration.skLiveOrRkLive")}
-              data-testid="stripe-key-input"
-              className="min-w-[16rem] flex-1 rounded-md border bg-background px-3 py-2 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            />
-            <button
-              type="submit"
-              disabled={busy || !apiKey.trim()}
-              data-testid="stripe-key-save-button"
-              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <form
+              className="flex flex-wrap items-center gap-3"
+              aria-describedby={state.status === "reconnect_required" ? "stripe-connect-reconnect-required" : undefined}
+              onSubmit={(e) => {
+                e.preventDefault();
+                void saveKey();
+              }}
             >
-              {busy
-                ? t("stripePaymentsIntegration.saving")
-                : t("stripePaymentsIntegration.saveKey")}
-            </button>
-          </form>
+              <input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={t("stripePaymentsIntegration.skLiveOrRkLive")}
+                data-testid="stripe-key-input"
+                className="min-w-[16rem] flex-1 rounded-md border bg-background px-3 py-2 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+              />
+              <button
+                type="submit"
+                disabled={busy || !apiKey.trim()}
+                data-testid="stripe-key-save-button"
+                className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {busy
+                  ? t("stripePaymentsIntegration.saving")
+                  : t("stripePaymentsIntegration.saveKey")}
+              </button>
+            </form>
+            {/* A stored-but-rejected key still has something to re-check or clear. */}
+            {state.status === "reconnect_required" ? connectionActions : null}
+          </div>
         )}
       </div>
     </section>

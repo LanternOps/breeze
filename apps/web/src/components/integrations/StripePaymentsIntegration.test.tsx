@@ -115,9 +115,45 @@ describe('StripePaymentsIntegration — account currency cache (#3777)', () => {
     const banner = await screen.findByTestId('stripe-connect-reconnect-required');
     expect(banner.textContent).toContain('Zz9q');
     expect(banner.textContent).toContain('Stripe rejected the stored key');
-    // The key form is offered; the "connected" row (refresh/disconnect buttons) is not.
+    // The key form is offered and the "connected" account row is not...
     expect(screen.getByTestId('stripe-key-input')).toBeInTheDocument();
-    expect(screen.queryByTestId('stripe-connect-refresh-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('stripe-connect-currency')).not.toBeInTheDocument();
+    // ...but Refresh and Disconnect stay reachable: reconnect_required can be a
+    // false positive, and hiding them leaves no in-page recovery (review F3).
+    expect(screen.getByTestId('stripe-connect-refresh-button')).toBeInTheDocument();
+    expect(screen.getByTestId('stripe-disconnect-button')).toBeInTheDocument();
+  });
+
+  it('Refresh from a reconnect_required panel re-checks and recovers to connected (review F3)', async () => {
+    let rechecked = false;
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/partner/stripe-connect/refresh' && init?.method === 'POST') {
+        rechecked = true;
+        return json({ ...connected, cacheState: 'fresh' });
+      }
+      if (url === '/partner/stripe-connect') {
+        return json(
+          rechecked
+            ? connected
+            : {
+                ...connected,
+                status: 'reconnect_required',
+                cacheState: 'reconnect_required',
+                error: { code: 'INVALID_STRIPE_KEY', message: 'Stripe rejected the stored key — reconnect Stripe.' },
+              },
+        );
+      }
+      return json({});
+    });
+    render(<StripePaymentsIntegration />);
+    await screen.findByTestId('stripe-connect-reconnect-required');
+
+    fireEvent.click(screen.getByTestId('stripe-connect-refresh-button'));
+
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/partner/stripe-connect/refresh', expect.objectContaining({ method: 'POST' })),
+    );
+    await waitFor(() => expect(screen.queryByTestId('stripe-connect-reconnect-required')).not.toBeInTheDocument());
+    expect(screen.getByTestId('stripe-connect-currency').textContent).toContain('EUR');
   });
 });
