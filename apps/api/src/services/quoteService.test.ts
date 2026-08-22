@@ -1018,6 +1018,80 @@ describe('changeQuoteCurrency (draft currency immutability, #3774)', () => {
   });
 });
 
+describe('changeQuoteCurrency reprice (price-book reprice of catalog lines, #3775)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const draft = { id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' };
+
+  it('reprices a catalog line from the price book, restamps, and re-totals — no delete, no CURRENCY_LOCKED', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '2.00' }]);
+    resolvePriceMock.mockResolvedValueOnce(resolvedUsd({ unitPrice: '20.00', currencyCode: 'EUR', costBasis: '15.00', costCurrency: 'EUR', marginAvailable: true }));
+    queueResult([]); // line update
+    queueResult([]); // header currency update
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'EUR' }]); // recompute header select
+    queueResult([{ quantity: '2.00', unitPrice: '20.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: null }]);
+    queueResult([]); // recompute totals update
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', currencyCode: 'EUR', total: '40.00' }]);
+
+    const updated = await svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    expect(resolvePriceMock).toHaveBeenCalledTimes(1);
+    expect(resolvePriceMock).toHaveBeenCalledWith(
+      'cat1', 'EUR', 'org1', { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] }, db
+    );
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toEqual({ unitPrice: '20.00', lineTotal: '40.00', unitCost: '15.00' });
+    expect(setMock.mock.calls[1]![0]).toMatchObject({ currencyCode: 'EUR' });
+    expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(0);
+  });
+
+  it('nulls unitCost when the resolved cost is in another currency (margin unavailable)', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '1.00' }]);
+    resolvePriceMock.mockResolvedValueOnce(resolvedUsd({ unitPrice: '20.00', currencyCode: 'EUR', costBasis: '15.00', costCurrency: 'USD', marginAvailable: false }));
+    queueResult([]); queueResult([]);
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'EUR' }]);
+    queueResult([]); queueResult([]);
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', currencyCode: 'EUR' }]);
+    await svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor);
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toEqual({ unitPrice: '20.00', lineTotal: '20.00', unitCost: null });
+  });
+
+  it('refuses reprice when a non-catalog line exists (CURRENCY_LOCKED 409) without touching anything', async () => {
+    queueResult([draft]);
+    queueResult([
+      { id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '1.00' },
+      { id: 'l2', sourceType: 'manual', catalogItemId: null, parentLineId: null, quantity: '1.00' },
+    ]);
+    await expect(
+      svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) cannot be repriced — pass clearLines instead') });
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+    expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(0);
+  });
+
+  it('a price-book gap aborts the reprice as NO_PRICE_FOR_CURRENCY (409) — header never restamped', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '1.00' }]);
+    resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('No price for "Onboarding" in EUR', 409, 'NO_PRICE_FOR_CURRENCY'));
+    await expect(
+      svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor)
+    ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409, message: expect.stringContaining('Onboarding') });
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
+
+  it('bundle lines are not repriceable (CURRENCY_LOCKED 409)', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', sourceType: 'bundle', catalogItemId: 'bundle1', parentLineId: null, quantity: '1.00' }]);
+    await expect(
+      svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409 });
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+  });
+});
+
 // #3774 phantom-line race: every quote LINE writer must take the quote row
 // lock (SELECT ... FOR UPDATE) as the FIRST statement of a transaction, then
 // mutate lines + recompute inside that same transaction — the same discipline

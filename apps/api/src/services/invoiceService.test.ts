@@ -1039,3 +1039,63 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
     expect(out.currencyWarning).toBeNull();
   });
 });
+
+describe('changeInvoiceCurrency reprice (price-book reprice of catalog lines, #3775)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draft = { id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' };
+
+  it('reprices a catalog line, restamps, and recomputes totals from the repriced lines', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '2.00' }]);
+    resolvePriceMock.mockResolvedValueOnce({
+      unitPrice: '20.00', currencyCode: 'EUR', costBasis: '15.00', costCurrency: 'EUR',
+      marginAvailable: true, taxable: true, taxCategory: null, source: 'price_book',
+    });
+    queueResult([]); // line update
+    queueResult([]); // header currency update
+    // recomputeInvoiceTotals: invoice select, lines select, org tax select, totals update
+    queueResult([{ ...draft, currencyCode: 'EUR' }]);
+    queueResult([{ lineTotal: '40.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]);
+    queueResult([{ ...draft, currencyCode: 'EUR', subtotal: '40.00', total: '40.00', balance: '40.00' }]); // final select
+
+    const updated = await svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', reprice: true }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    expect(updated.total).toBe('40.00');
+    expect(resolvePriceMock).toHaveBeenCalledTimes(1);
+    expect(resolvePriceMock).toHaveBeenCalledWith('cat1', 'EUR', 'org1', { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] }, db);
+    const setMock = (db as unknown as { set: Mock }).set;
+    expect(setMock.mock.calls[0]![0]).toEqual({ unitPrice: '20.00', lineTotal: '40.00', costBasis: '15.00' });
+    expect(setMock.mock.calls[1]![0]).toMatchObject({ currencyCode: 'EUR' });
+    // totals recompute summed the repriced line (not the [] shortcut)
+    expect(setMock.mock.calls[2]![0]).toMatchObject({ subtotal: '40.00', total: '40.00' });
+    expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses reprice when a non-catalog line exists (CURRENCY_LOCKED 409)', async () => {
+    queueResult([draft]);
+    queueResult([
+      { id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '1.00' },
+      { id: 'l2', sourceType: 'time_entry', catalogItemId: null, parentLineId: null, quantity: '1.00' },
+      { id: 'l3', sourceType: 'bundle', catalogItemId: 'b1', parentLineId: null, quantity: '1.00' },
+    ]);
+    await expect(
+      svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', reprice: true }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('2 non-catalog line(s) cannot be repriced — pass clearLines instead') });
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+    expect((db as unknown as { set: Mock }).set).not.toHaveBeenCalled();
+    expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
+  });
+
+  it('a price-book gap aborts the reprice as NO_PRICE_FOR_CURRENCY (409) — header never restamped', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', sourceType: 'catalog', catalogItemId: 'cat1', parentLineId: null, quantity: '1.00' }]);
+    resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('No price for "Onboarding" in EUR', 409, 'NO_PRICE_FOR_CURRENCY'));
+    await expect(
+      svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', reprice: true }, actor)
+    ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409, message: expect.stringContaining('Onboarding') });
+    expect((db as unknown as { set: Mock }).set).not.toHaveBeenCalled();
+  });
+});

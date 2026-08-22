@@ -428,13 +428,14 @@ export async function updateInvoice(
  * no PATCH schema admits currencyCode — so this is the ONLY way the stamp
  * moves, and only while the document is a draft. With monetary lines present
  * the change is refused (CURRENCY_LOCKED 409) unless the caller opts into
- * `clearLines`, which deletes the lines and restamps in ONE transaction.
- * Amounts are never converted or reinterpreted; repricing arrives with the
- * wave-3 price books — wave 2 ships clear-and-restamp only.
+ * `clearLines`, which deletes the lines and restamps in ONE transaction, or
+ * into `reprice` (wave 3, #3775), which re-resolves catalog-sourced lines from
+ * the price book in the new currency. Amounts are never converted or
+ * reinterpreted.
  */
 export async function changeInvoiceCurrency(
   invoiceId: string,
-  input: { currencyCode: string; clearLines?: boolean },
+  input: { currencyCode: string; clearLines?: boolean; reprice?: boolean },
   actor: InvoiceActor
 ) {
   return db.transaction(async (tx) => {
@@ -445,7 +446,38 @@ export async function changeInvoiceCurrency(
     requireInvoiceAccess(actor, inv);
     if (inv.currencyCode === input.currencyCode) return inv; // no-op restamp
 
-    const lineRows = await tx.select({ id: invoiceLines.id }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
+    const lineRows = await tx.select({
+      id: invoiceLines.id, sourceType: invoiceLines.sourceType, catalogItemId: invoiceLines.catalogItemId,
+      parentLineId: invoiceLines.parentLineId, quantity: invoiceLines.quantity,
+    }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id);
+    if (lineRows.length > 0 && input.reprice) {
+      // Multi-currency wave 3 (#3775): re-resolve every catalog-sourced line
+      // from the price book in the NEW currency on the locked tx (invoice →
+      // lines → catalog plain SELECTs). Bundle parents/children, contract,
+      // time-entry, part and manual lines are NOT repriceable — their presence
+      // refuses the whole operation. One gap aborts the transaction: never a
+      // partial reprice, never a converted number.
+      const repriceable = lineRows.filter((l) => l.sourceType === 'catalog' && l.catalogItemId !== null && l.parentLineId === null);
+      const rest = lineRows.length - repriceable.length;
+      if (rest > 0) {
+        throw new InvoiceServiceError(`${rest} non-catalog line(s) cannot be repriced — pass clearLines instead`, 409, 'CURRENCY_LOCKED');
+      }
+      const target = { currencyCode: input.currencyCode, orgId: inv.orgId };
+      for (const line of repriceable) {
+        const resolved = await resolveInvoicePrice(tx, line.catalogItemId!, target, actor);
+        await tx.update(invoiceLines).set({
+          unitPrice: resolved.unitPrice,
+          lineTotal: computeLineTotal(line.quantity, resolved.unitPrice, input.currencyCode),
+          // Cost is only meaningful in the line's currency (no conversion).
+          costBasis: resolved.marginAvailable ? resolved.costBasis : null,
+        }).where(eq(invoiceLines.id, line.id));
+      }
+      // Header restamp first so the recompute rounds in the NEW currency, then
+      // sum the repriced lines (the [] shortcut below is only valid line-less).
+      await tx.update(invoices).set({ currencyCode: input.currencyCode, updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
+      await recomputeInvoiceTotals(invoiceId, undefined, tx);
+      return getOwnedInvoiceOr404(invoiceId, tx);
+    }
     if (lineRows.length > 0) {
       if (!input.clearLines) {
         throw new InvoiceServiceError(

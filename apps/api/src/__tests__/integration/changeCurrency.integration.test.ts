@@ -12,6 +12,7 @@ import * as invoiceSvc from '../../services/invoiceService';
 import * as quoteSvc from '../../services/quoteService';
 import * as contractSvc from '../../services/contractService';
 import { computeLineTotal } from '../../services/invoiceMath';
+import { createCatalogItem, removeItemPrice, type CatalogActor } from '../../services/catalogService';
 import type { InvoiceActor } from '../../services/invoiceTypes';
 import { getTestDb } from './setup';
 
@@ -226,6 +227,181 @@ describe.runIf(RUN)('changeContractCurrency (atomic clear-and-restamp, #3774)', 
       ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409 });
       const lines = await db.select({ id: contractLines.id }).from(contractLines).where(eq(contractLines.contractId, c.id));
       expect(lines.length).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-currency wave 3 (#3775): `reprice` re-resolves catalog-sourced lines
+// from the price book in the new currency inside the restamp transaction.
+// Atomic: one price-book gap leaves the document byte-identical.
+// ---------------------------------------------------------------------------
+
+/** Two catalog items under the fixture's USD partner, each with a USD and an
+ *  EUR price-book row (A: 100/90, B: 50/45). */
+async function seedPricedItems(f: Fixture) {
+  const catalogActor: CatalogActor = { userId: null, partnerId: f.partnerId, accessibleOrgIds: null };
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return withSystemDbAccessContext(async () => {
+    const a = await createCatalogItem({
+      itemType: 'service', name: `Managed endpoint ${suffix}`, billingType: 'one_time', unitOfMeasure: 'each',
+      taxable: false, isBundle: false, attributes: {},
+      prices: [{ currencyCode: 'USD', unitPrice: 100 }, { currencyCode: 'EUR', unitPrice: 90 }],
+    }, catalogActor);
+    const b = await createCatalogItem({
+      itemType: 'service', name: `Onboarding ${suffix}`, billingType: 'one_time', unitOfMeasure: 'each',
+      taxable: false, isBundle: false, attributes: {},
+      prices: [{ currencyCode: 'USD', unitPrice: 50 }, { currencyCode: 'EUR', unitPrice: 45 }],
+    }, catalogActor);
+    return { a, b, catalogActor };
+  });
+}
+
+describe.runIf(RUN)('change-currency reprice via the price book (#3775)', () => {
+  it('quote: reprice to EUR stamps both lines from the EUR book and re-totals in EUR', async () => {
+    const f = await seedFixture('USD');
+    const { a, b } = await seedPricedItems(f);
+    const result = await withDbAccessContext(ctx(f), async () => {
+      const q = await quoteSvc.createQuote({ orgId: f.orgId }, actor(f));
+      expect(q.currencyCode).toBe('USD');
+      await quoteSvc.addCatalogLine(q.id, a.id, 2, undefined, actor(f));
+      await quoteSvc.addCatalogLine(q.id, b.id, 1, undefined, actor(f));
+      const [before] = await db.select().from(quotes).where(eq(quotes.id, q.id)).limit(1);
+      expect(before!.subtotal).toBe('250.00'); // 2×100 + 1×50 USD
+      return quoteSvc.changeQuoteCurrency(q.id, { currencyCode: 'EUR', reprice: true }, actor(f));
+    });
+    expect(result.currencyCode).toBe('EUR');
+    expect(result.subtotal).toBe('225.00'); // 2×90 + 1×45 EUR
+    expect(result.total).toBe('225.00');
+    const lines = await withSystemDbAccessContext(() =>
+      db.select().from(quoteLines).where(eq(quoteLines.quoteId, result.id)).orderBy(quoteLines.sortOrder));
+    expect(lines.map((l) => [l.catalogItemId, l.unitPrice, l.lineTotal])).toEqual([
+      [a.id, '90.00', '180.00'],
+      [b.id, '45.00', '45.00'],
+    ]);
+  });
+
+  it('quote: a price-book gap fails 409 and leaves the quote byte-identical', async () => {
+    const f = await seedFixture('USD');
+    const { a, b, catalogActor } = await seedPricedItems(f);
+    await withDbAccessContext(ctx(f), async () => {
+      const q = await quoteSvc.createQuote({ orgId: f.orgId }, actor(f));
+      await quoteSvc.addCatalogLine(q.id, a.id, 2, undefined, actor(f));
+      await quoteSvc.addCatalogLine(q.id, b.id, 1, undefined, actor(f));
+      await withSystemDbAccessContext(() => removeItemPrice(b.id, 'EUR', catalogActor));
+      const [before] = await db.select().from(quotes).where(eq(quotes.id, q.id)).limit(1);
+      const linesBefore = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, q.id)).orderBy(quoteLines.sortOrder);
+      await expect(
+        quoteSvc.changeQuoteCurrency(q.id, { currencyCode: 'EUR', reprice: true }, actor(f))
+      ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409, message: expect.stringContaining(b.name) });
+      const [after] = await db.select().from(quotes).where(eq(quotes.id, q.id)).limit(1);
+      const linesAfter = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, q.id)).orderBy(quoteLines.sortOrder);
+      expect(after).toEqual(before);
+      expect(linesAfter).toEqual(linesBefore); // item A's line was NOT repriced (rolled back)
+      expect(after!.currencyCode).toBe('USD');
+    });
+  });
+
+  it('quote: reprice refuses a manual line (CURRENCY_LOCKED 409) — clearLines is the only path', async () => {
+    const f = await seedFixture('USD');
+    const { a } = await seedPricedItems(f);
+    await withDbAccessContext(ctx(f), async () => {
+      const q = await quoteSvc.createQuote({ orgId: f.orgId }, actor(f));
+      await quoteSvc.addCatalogLine(q.id, a.id, 1, undefined, actor(f));
+      await quoteSvc.addManualLine(q.id, manualQuoteLine('Travel', 75), actor(f));
+      await expect(
+        quoteSvc.changeQuoteCurrency(q.id, { currencyCode: 'EUR', reprice: true }, actor(f))
+      ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s)') });
+      const [after] = await db.select().from(quotes).where(eq(quotes.id, q.id)).limit(1);
+      expect(after!.currencyCode).toBe('USD');
+    });
+  });
+
+  it('invoice: reprice to EUR stamps both lines from the EUR book and re-totals in EUR', async () => {
+    const f = await seedFixture('USD');
+    const { a, b } = await seedPricedItems(f);
+    const result = await withDbAccessContext(ctx(f), async () => {
+      const inv = await invoiceSvc.createManualInvoice({ orgId: f.orgId }, actor(f));
+      expect(inv.currencyCode).toBe('USD');
+      await invoiceSvc.addCatalogLine(inv.id, a.id, 2, actor(f));
+      await invoiceSvc.addCatalogLine(inv.id, b.id, 1, actor(f));
+      const [before] = await db.select().from(invoices).where(eq(invoices.id, inv.id)).limit(1);
+      expect(before!.subtotal).toBe('250.00');
+      return invoiceSvc.changeInvoiceCurrency(inv.id, { currencyCode: 'EUR', reprice: true }, actor(f));
+    });
+    expect(result.currencyCode).toBe('EUR');
+    expect(result.subtotal).toBe('225.00');
+    expect(result.total).toBe('225.00');
+    expect(result.balance).toBe('225.00');
+    const lines = await withSystemDbAccessContext(() =>
+      db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, result.id)).orderBy(invoiceLines.sortOrder));
+    expect(lines.map((l) => [l.catalogItemId, l.unitPrice, l.lineTotal])).toEqual([
+      [a.id, '90.00', '180.00'],
+      [b.id, '45.00', '45.00'],
+    ]);
+  });
+
+  it('invoice: a price-book gap fails 409 and leaves the invoice byte-identical', async () => {
+    const f = await seedFixture('USD');
+    const { a, b, catalogActor } = await seedPricedItems(f);
+    await withDbAccessContext(ctx(f), async () => {
+      const inv = await invoiceSvc.createManualInvoice({ orgId: f.orgId }, actor(f));
+      await invoiceSvc.addCatalogLine(inv.id, a.id, 2, actor(f));
+      await invoiceSvc.addCatalogLine(inv.id, b.id, 1, actor(f));
+      await withSystemDbAccessContext(() => removeItemPrice(b.id, 'EUR', catalogActor));
+      const [before] = await db.select().from(invoices).where(eq(invoices.id, inv.id)).limit(1);
+      const linesBefore = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, inv.id)).orderBy(invoiceLines.sortOrder);
+      await expect(
+        invoiceSvc.changeInvoiceCurrency(inv.id, { currencyCode: 'EUR', reprice: true }, actor(f))
+      ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409, message: expect.stringContaining(b.name) });
+      const [after] = await db.select().from(invoices).where(eq(invoices.id, inv.id)).limit(1);
+      const linesAfter = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, inv.id)).orderBy(invoiceLines.sortOrder);
+      expect(after).toEqual(before);
+      expect(linesAfter).toEqual(linesBefore);
+      expect(after!.currencyCode).toBe('USD');
+    });
+  });
+
+  it('contract: reprice to EUR stamps both catalog lines from the EUR book', async () => {
+    const f = await seedFixture('USD');
+    const { a, b } = await seedPricedItems(f);
+    const updated = await withDbAccessContext(ctx(f), async () => {
+      const c = await contractSvc.createContract({
+        orgId: f.orgId, name: 'MSA', billingTiming: 'advance', intervalMonths: 1,
+        startDate: new Date().toISOString().slice(0, 10),
+      }, actor(f));
+      expect(c.currencyCode).toBe('USD');
+      await contractSvc.addContractLineToContract(c.id, { lineType: 'flat', description: 'A', taxable: false, catalogItemId: a.id }, actor(f));
+      await contractSvc.addContractLineToContract(c.id, { lineType: 'flat', description: 'B', taxable: false, catalogItemId: b.id }, actor(f));
+      return contractSvc.changeContractCurrency(c.id, { currencyCode: 'EUR', reprice: true }, actor(f));
+    });
+    expect(updated.currencyCode).toBe('EUR');
+    const lines = await withSystemDbAccessContext(() =>
+      db.select().from(contractLines).where(eq(contractLines.contractId, updated.id)).orderBy(contractLines.sortOrder));
+    expect(lines.map((l) => [l.catalogItemId, l.unitPrice])).toEqual([[a.id, '90.00'], [b.id, '45.00']]);
+  });
+
+  it('contract: a price-book gap fails 409 and leaves the contract byte-identical', async () => {
+    const f = await seedFixture('USD');
+    const { a, b, catalogActor } = await seedPricedItems(f);
+    await withDbAccessContext(ctx(f), async () => {
+      const c = await contractSvc.createContract({
+        orgId: f.orgId, name: 'MSA', billingTiming: 'advance', intervalMonths: 1,
+        startDate: new Date().toISOString().slice(0, 10),
+      }, actor(f));
+      await contractSvc.addContractLineToContract(c.id, { lineType: 'flat', description: 'A', taxable: false, catalogItemId: a.id }, actor(f));
+      await contractSvc.addContractLineToContract(c.id, { lineType: 'flat', description: 'B', taxable: false, catalogItemId: b.id }, actor(f));
+      await withSystemDbAccessContext(() => removeItemPrice(b.id, 'EUR', catalogActor));
+      const [before] = await db.select().from(contracts).where(eq(contracts.id, c.id)).limit(1);
+      const linesBefore = await db.select().from(contractLines).where(eq(contractLines.contractId, c.id)).orderBy(contractLines.sortOrder);
+      await expect(
+        contractSvc.changeContractCurrency(c.id, { currencyCode: 'EUR', reprice: true }, actor(f))
+      ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409, message: expect.stringContaining(b.name) });
+      const [after] = await db.select().from(contracts).where(eq(contracts.id, c.id)).limit(1);
+      const linesAfter = await db.select().from(contractLines).where(eq(contractLines.contractId, c.id)).orderBy(contractLines.sortOrder);
+      expect(after).toEqual(before);
+      expect(linesAfter).toEqual(linesBefore);
+      expect(after!.currencyCode).toBe('USD');
     });
   });
 });

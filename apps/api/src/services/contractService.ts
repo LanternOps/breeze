@@ -227,14 +227,14 @@ export async function deleteDraftContract(contractId: string, actor: ContractAct
  * ONLY way the stamp moves, and only while the contract is a draft. With
  * lines present the change is refused (CURRENCY_LOCKED 409) unless the caller
  * opts into `clearLines`, which deletes the contract's lines and restamps in
- * ONE transaction. Unit prices are never converted or reinterpreted;
- * repricing arrives with the wave-3 price books — wave 2 ships
- * clear-and-restamp only. Contracts store no header totals, so there is
- * nothing further to recompute.
+ * ONE transaction, or into `reprice` (wave 3, #3775), which re-resolves
+ * catalog-linked lines from the price book in the new currency. Unit prices
+ * are never converted or reinterpreted. Contracts store no header totals, so
+ * there is nothing further to recompute.
  */
 export async function changeContractCurrency(
   contractId: string,
-  input: { currencyCode: string; clearLines?: boolean },
+  input: { currencyCode: string; clearLines?: boolean; reprice?: boolean },
   actor: ContractActor
 ) {
   return db.transaction(async (tx) => {
@@ -245,15 +245,41 @@ export async function changeContractCurrency(
     assertDraft(c);
     if (c.currencyCode === input.currencyCode) return c; // no-op restamp
 
-    const lineRows = await tx.select({ id: contractLines.id }).from(contractLines).where(eq(contractLines.contractId, contractId));
+    const lineRows = await tx.select({ id: contractLines.id, catalogItemId: contractLines.catalogItemId })
+      .from(contractLines).where(eq(contractLines.contractId, contractId)).orderBy(contractLines.id);
     if (lineRows.length > 0) {
-      if (!input.clearLines) {
+      if (input.reprice) {
+        // Multi-currency wave 3 (#3775): re-resolve every catalog-linked line's
+        // unit_price from the price book in the NEW currency on the locked tx
+        // (contract → lines → catalog plain SELECTs). Lines without a catalog
+        // item carry a hand-entered price the book cannot re-derive, so their
+        // presence refuses the whole operation. One gap aborts the transaction.
+        const repriceable = lineRows.filter((l) => l.catalogItemId !== null);
+        const rest = lineRows.length - repriceable.length;
+        if (rest > 0) {
+          throw new ContractServiceError(`${rest} non-catalog line(s) cannot be repriced — pass clearLines instead`, 409, 'CURRENCY_LOCKED');
+        }
+        const catalogActor = { userId: actor.userId, partnerId: c.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
+        for (const line of repriceable) {
+          let resolved: Awaited<ReturnType<typeof resolvePrice>>;
+          try {
+            resolved = await resolvePrice(line.catalogItemId!, input.currencyCode, c.orgId, catalogActor, tx);
+          } catch (err) {
+            if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
+              throw new ContractServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+            }
+            throw err;
+          }
+          await tx.update(contractLines).set({ unitPrice: resolved.unitPrice }).where(eq(contractLines.id, line.id));
+        }
+      } else if (!input.clearLines) {
         throw new ContractServiceError(
           `Contract has ${lineRows.length} line(s) priced in ${c.currencyCode} — pass clearLines to remove them, or delete the draft`,
           409, 'CURRENCY_LOCKED'
         );
+      } else {
+        await tx.delete(contractLines).where(eq(contractLines.contractId, contractId));
       }
-      await tx.delete(contractLines).where(eq(contractLines.contractId, contractId));
     }
 
     const [updated] = await tx.update(contracts)

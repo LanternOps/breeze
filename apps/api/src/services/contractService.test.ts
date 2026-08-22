@@ -120,6 +120,55 @@ describe('changeContractCurrency (draft currency immutability, #3774)', () => {
   });
 });
 
+describe('changeContractCurrency reprice (price-book reprice of catalog lines, #3775)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const draft = { id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' };
+  const resolved = {
+    unitPrice: '20.00', currencyCode: 'EUR', costBasis: null, costCurrency: 'USD',
+    marginAvailable: false, taxable: true, taxCategory: null, source: 'price_book' as const,
+  };
+
+  it('reprices catalog lines from the price book and restamps — no delete', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', catalogItemId: 'cat1' }, { id: 'l2', catalogItemId: 'cat2' }]);
+    resolvePriceMock.mockResolvedValueOnce(resolved).mockResolvedValueOnce({ ...resolved, unitPrice: '5.00' });
+    queueResult([]); // l1 update
+    queueResult([]); // l2 update
+    queueResult([{ ...draft, currencyCode: 'EUR' }]); // header update returning
+    const updated = await svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    expect(resolvePriceMock).toHaveBeenCalledTimes(2);
+    expect(resolvePriceMock).toHaveBeenNthCalledWith(1, 'cat1', 'EUR', 'org1', { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] }, db);
+    expect(resolvePriceMock).toHaveBeenNthCalledWith(2, 'cat2', 'EUR', 'org1', { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] }, db);
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toEqual({ unitPrice: '20.00' });
+    expect(setMock.mock.calls[1]![0]).toEqual({ unitPrice: '5.00' });
+    expect(setMock.mock.calls[2]![0]).toMatchObject({ currencyCode: 'EUR' });
+    expect((db as unknown as Chain).delete.mock.calls.length).toBe(0);
+  });
+
+  it('refuses reprice when a non-catalog line exists (CURRENCY_LOCKED 409)', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', catalogItemId: 'cat1' }, { id: 'l2', catalogItemId: null }]);
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) cannot be repriced — pass clearLines instead') });
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+    expect((db as unknown as Chain).delete.mock.calls.length).toBe(0);
+  });
+
+  it('a price-book gap aborts the reprice as NO_PRICE_FOR_CURRENCY (409) — header never restamped', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', catalogItemId: 'cat1' }]);
+    resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('No price for "Managed endpoint" in EUR', 409, 'NO_PRICE_FOR_CURRENCY'));
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor)
+    ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409, message: expect.stringContaining('Managed endpoint') });
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
+});
+
 // #3774 phantom-line race: contract line writers must take the contract row
 // lock (SELECT ... FOR UPDATE) as the FIRST statement of a transaction — the
 // same lock changeContractCurrency takes — so a restamp can never interleave
