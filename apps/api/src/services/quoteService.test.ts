@@ -29,8 +29,24 @@ vi.mock('../db', () => {
   };
 });
 
+// Multi-currency wave 3 (#3775): addCatalogLine prices the line through the
+// catalog price-book resolver, never from catalog_items.unit_price. Mock the
+// resolver only; CatalogServiceError stays real so the code-mapping path is
+// exercised.
+vi.mock('./catalogService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./catalogService')>();
+  return { ...actual, resolvePrice: vi.fn() };
+});
+
 import * as svc from './quoteService';
 import { db } from '../db';
+import { resolvePrice, CatalogServiceError } from './catalogService';
+
+const resolvePriceMock = vi.mocked(resolvePrice);
+const resolvedUsd = (over: Partial<Awaited<ReturnType<typeof resolvePrice>>> = {}) => ({
+  unitPrice: '42.00', currencyCode: 'USD', costBasis: '30.00', costCurrency: 'USD',
+  marginAvailable: true, taxable: true, taxCategory: null, source: 'price_book' as const, ...over,
+});
 
 type Chain = { set: { mock: { calls: unknown[][] } }; values: { mock: { calls: unknown[][] } } };
 
@@ -252,7 +268,8 @@ describe('quoteService deposits', () => {
   });
 
   it('addCatalogLine on a hardware catalog item sets depositEligible true and itemType hardware', async () => {
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    resolvePriceMock.mockResolvedValueOnce(resolvedUsd());
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' }]); // loadDraft
     queueResult([{ // catalog item lookup
       name: 'Server', description: null, unitPrice: '500.00', taxable: true,
       billingType: 'one_time', billingFrequency: null, commitmentTermMonths: null,
@@ -268,11 +285,22 @@ describe('quoteService deposits', () => {
     await svc.addCatalogLine('q1', 'cat1', 1, undefined, actor);
 
     const valuesMock = (db as unknown as Chain).values;
-    expect(valuesMock.mock.calls.at(-1)![0]).toMatchObject({ depositEligible: true, itemType: 'hardware' });
+    // Price/cost come from the resolver ('42.00'/'30.00'), NOT the item row's
+    // unit_price ('500.00') / cost_basis ('300.00').
+    expect(valuesMock.mock.calls.at(-1)![0]).toMatchObject({
+      depositEligible: true, itemType: 'hardware', unitPrice: '42.00', lineTotal: '42.00', unitCost: '30.00', taxable: true,
+    });
+    expect(resolvePriceMock).toHaveBeenCalledWith(
+      'cat1', 'USD', 'org1', expect.objectContaining({ partnerId: 'p1', userId: 'u1', accessibleOrgIds: ['org1'] }), expect.anything()
+    );
   });
 
   it('addCatalogLine on a service catalog item sets depositEligible false and itemType service', async () => {
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    // Cost in another currency than the quote: margin unavailable → unitCost null.
+    resolvePriceMock.mockResolvedValueOnce(resolvedUsd({
+      unitPrice: '42.00', currencyCode: 'EUR', costBasis: '30.00', costCurrency: 'USD', marginAvailable: false, taxable: false,
+    }));
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'EUR' }]); // loadDraft
     queueResult([{ // catalog item lookup
       name: 'Onboarding', description: null, unitPrice: '250.00', taxable: false,
       billingType: 'one_time', billingFrequency: null, commitmentTermMonths: null,
@@ -285,10 +313,38 @@ describe('quoteService deposits', () => {
     queueResult([]); // recompute lines
     queueResult([]); // recompute's own update (unused result)
 
-    await svc.addCatalogLine('q1', 'cat2', 1, undefined, actor);
+    await svc.addCatalogLine('q1', 'cat2', 2, undefined, actor);
 
     const valuesMock = (db as unknown as Chain).values;
-    expect(valuesMock.mock.calls.at(-1)![0]).toMatchObject({ depositEligible: false, itemType: 'service' });
+    expect(valuesMock.mock.calls.at(-1)![0]).toMatchObject({
+      depositEligible: false, itemType: 'service', unitPrice: '42.00', lineTotal: '84.00', unitCost: null, taxable: false,
+    });
+    expect(resolvePriceMock).toHaveBeenCalledWith(
+      'cat2', 'EUR', 'org1', expect.objectContaining({ partnerId: 'p1' }), expect.anything()
+    );
+  });
+
+  it('addCatalogLine maps a price-book gap to QuoteServiceError NO_PRICE_FOR_CURRENCY (409) and inserts nothing', async () => {
+    resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('No price for "Onboarding" in EUR', 409, 'NO_PRICE_FOR_CURRENCY'));
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'EUR' }]); // loadDraft
+    queueResult([{ // catalog item lookup
+      name: 'Onboarding', description: null, unitPrice: '250.00', taxable: false,
+      billingType: 'one_time', billingFrequency: null, commitmentTermMonths: null,
+      costBasis: null, sku: null, itemType: 'service',
+    }]);
+
+    await expect(svc.addCatalogLine('q1', 'cat2', 1, undefined, actor))
+      .rejects.toMatchObject({ name: 'QuoteServiceError', code: 'NO_PRICE_FOR_CURRENCY', status: 409 });
+    expect((db as unknown as Chain).values).not.toHaveBeenCalled();
+  });
+
+  it('addCatalogLine rethrows non-gap CatalogServiceErrors unchanged', async () => {
+    resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('denied', 403, 'ORG_DENIED'));
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' }]); // loadDraft
+    queueResult([{ name: 'X', unitPrice: '1.00', taxable: true, billingType: 'one_time', itemType: 'service' }]);
+
+    await expect(svc.addCatalogLine('q1', 'cat2', 1, undefined, actor))
+      .rejects.toMatchObject({ name: 'CatalogServiceError', code: 'ORG_DENIED', status: 403 });
   });
 
   it('addManualLine without a blockId attaches to the existing pricing section (no orphan)', async () => {

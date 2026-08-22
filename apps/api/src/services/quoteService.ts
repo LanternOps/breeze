@@ -10,6 +10,7 @@ import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { listQuoteOrders } from './quoteOrderService';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
 import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
+import { resolvePrice, CatalogServiceError } from './catalogService';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
@@ -1184,6 +1185,27 @@ export async function addCatalogLine(
       .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, q.partnerId)))
       .limit(1);
     if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+    // Multi-currency wave 3 (#3775, B3): the sell price comes from the price book
+    // (org override in the quote's currency → catalog_item_prices row for that
+    // currency), never from the deprecated catalog_items.unit_price mirror and
+    // never converted. Resolved on the already-locked tx (quote → lines → catalog
+    // plain SELECTs — no new lock edge). A gap is a typed 409 so the caller can
+    // fall back to a manual line.
+    let resolved;
+    try {
+      resolved = await resolvePrice(
+        catalogItemId,
+        q.currencyCode,
+        q.orgId,
+        { userId: actor.userId, partnerId: q.partnerId, accessibleOrgIds: actor.accessibleOrgIds },
+        tx
+      );
+    } catch (err) {
+      if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
+        throw new QuoteServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+      }
+      throw err;
+    }
     const vendor = vendorIdentityFromAttributes(item.attributes);
     // Phase 1 recurrence is monthly|annual only; quarterly is not offered (dropped
     // from the catalog Zod enum). The DB enum retains 'quarterly' for a future phase.
@@ -1203,16 +1225,18 @@ export async function addCatalogLine(
       name: item.name,
       description: item.description ?? null,
       quantity: qty,
-      unitPrice: item.unitPrice,
-      taxable: item.taxable,
+      unitPrice: resolved.unitPrice,
+      taxable: resolved.taxable,
       customerVisible: true,
-      lineTotal: computeLineTotal(qty, item.unitPrice, q.currencyCode),
+      lineTotal: computeLineTotal(qty, resolved.unitPrice, q.currencyCode),
       recurrence,
       termMonths: item.commitmentTermMonths ?? null,
       billingFrequency: item.billingFrequency ?? null,
       // Snapshot internal economics from the catalog item at add-time so a later
-      // catalog edit never mutates existing quote line cost/sku data.
-      unitCost: item.costBasis ?? null,
+      // catalog edit never mutates existing quote line cost/sku data. Cost is
+      // only meaningful in the line's currency: when the item's cost_currency
+      // differs from the quote currency the margin is unavailable (no conversion).
+      unitCost: resolved.marginAvailable ? resolved.costBasis : null,
       sku: item.sku ?? null,
       partNumber: options?.partNumber ?? vendor.mfgPartNo,
       procurementSource: vendor.procurementSource,
