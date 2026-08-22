@@ -1,22 +1,25 @@
 package snmppoll
 
 import (
+	"encoding/json"
 	"math"
 	"math/big"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosnmp/gosnmp"
 )
 
 // ---------------------------------------------------------------------------
-// ParseValue
+// parseValue
 // ---------------------------------------------------------------------------
 
 func TestParseValue_NilValue(t *testing.T) {
 	pdu := gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.1.0", Value: nil}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	if got != nil {
-		t.Errorf("ParseValue(nil value) = %v, want nil", got)
+		t.Errorf("parseValue(nil value) = %v, want nil", got)
 	}
 }
 
@@ -26,10 +29,10 @@ func TestParseValue_String(t *testing.T) {
 		Type:  gosnmp.OctetString,
 		Value: "router-1.example.com",
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	s, ok := got.(string)
 	if !ok || s != "router-1.example.com" {
-		t.Errorf("ParseValue(string) = %v (%T), want \"router-1.example.com\"", got, got)
+		t.Errorf("parseValue(string) = %v (%T), want \"router-1.example.com\"", got, got)
 	}
 }
 
@@ -39,10 +42,10 @@ func TestParseValue_EmptyString(t *testing.T) {
 		Type:  gosnmp.OctetString,
 		Value: "",
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	s, ok := got.(string)
 	if !ok || s != "" {
-		t.Errorf("ParseValue(empty string) = %v (%T), want \"\"", got, got)
+		t.Errorf("parseValue(empty string) = %v (%T), want \"\"", got, got)
 	}
 }
 
@@ -52,10 +55,10 @@ func TestParseValue_ByteSlice(t *testing.T) {
 		Type:  gosnmp.OctetString,
 		Value: []byte("switch-2"),
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	s, ok := got.(string)
 	if !ok || s != "switch-2" {
-		t.Errorf("ParseValue([]byte) = %v (%T), want \"switch-2\"", got, got)
+		t.Errorf("parseValue([]byte) = %v (%T), want \"switch-2\"", got, got)
 	}
 }
 
@@ -65,10 +68,10 @@ func TestParseValue_EmptyByteSlice(t *testing.T) {
 		Type:  gosnmp.OctetString,
 		Value: []byte{},
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	s, ok := got.(string)
 	if !ok || s != "" {
-		t.Errorf("ParseValue(empty []byte) = %v (%T), want \"\"", got, got)
+		t.Errorf("parseValue(empty []byte) = %v (%T), want \"\"", got, got)
 	}
 }
 
@@ -78,10 +81,10 @@ func TestParseValue_BigIntSmall(t *testing.T) {
 		Type:  gosnmp.Counter64,
 		Value: big.NewInt(42),
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	v, ok := got.(int64)
 	if !ok || v != 42 {
-		t.Errorf("ParseValue(big.Int 42) = %v (%T), want int64(42)", got, got)
+		t.Errorf("parseValue(big.Int 42) = %v (%T), want int64(42)", got, got)
 	}
 }
 
@@ -91,10 +94,10 @@ func TestParseValue_BigIntNegative(t *testing.T) {
 		Type:  gosnmp.Counter64,
 		Value: big.NewInt(-100),
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	v, ok := got.(int64)
 	if !ok || v != -100 {
-		t.Errorf("ParseValue(big.Int -100) = %v (%T), want int64(-100)", got, got)
+		t.Errorf("parseValue(big.Int -100) = %v (%T), want int64(-100)", got, got)
 	}
 }
 
@@ -104,10 +107,10 @@ func TestParseValue_BigIntMaxInt64(t *testing.T) {
 		Type:  gosnmp.Counter64,
 		Value: big.NewInt(math.MaxInt64),
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	v, ok := got.(int64)
 	if !ok || v != math.MaxInt64 {
-		t.Errorf("ParseValue(big.Int MaxInt64) = %v (%T), want int64(MaxInt64)", got, got)
+		t.Errorf("parseValue(big.Int MaxInt64) = %v (%T), want int64(MaxInt64)", got, got)
 	}
 }
 
@@ -119,10 +122,10 @@ func TestParseValue_BigIntUint64Range(t *testing.T) {
 		Type:  gosnmp.Counter64,
 		Value: val,
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	v, ok := got.(uint64)
 	if !ok || v != math.MaxUint64 {
-		t.Errorf("ParseValue(big.Int MaxUint64) = %v (%T), want uint64(MaxUint64)", got, got)
+		t.Errorf("parseValue(big.Int MaxUint64) = %v (%T), want uint64(MaxUint64)", got, got)
 	}
 }
 
@@ -137,13 +140,13 @@ func TestParseValue_BigIntOverflow(t *testing.T) {
 		Type:  gosnmp.Counter64,
 		Value: val,
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	s, ok := got.(string)
 	if !ok {
-		t.Errorf("ParseValue(huge big.Int) = %v (%T), want string", got, got)
+		t.Errorf("parseValue(huge big.Int) = %v (%T), want string", got, got)
 	}
 	if s != val.String() {
-		t.Errorf("ParseValue(huge big.Int) = %q, want %q", s, val.String())
+		t.Errorf("parseValue(huge big.Int) = %q, want %q", s, val.String())
 	}
 }
 
@@ -153,10 +156,10 @@ func TestParseValue_BigIntZero(t *testing.T) {
 		Type:  gosnmp.Counter64,
 		Value: big.NewInt(0),
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	v, ok := got.(int64)
 	if !ok || v != 0 {
-		t.Errorf("ParseValue(big.Int 0) = %v (%T), want int64(0)", got, got)
+		t.Errorf("parseValue(big.Int 0) = %v (%T), want int64(0)", got, got)
 	}
 }
 
@@ -167,11 +170,11 @@ func TestParseValue_IntegerType(t *testing.T) {
 		Type:  gosnmp.Integer,
 		Value: 1,
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	// gosnmp.ToBigInt converts int to *big.Int, which IsInt64, so we get int64.
 	v, ok := got.(int64)
 	if !ok || v != 1 {
-		t.Errorf("ParseValue(int 1) = %v (%T), want int64(1)", got, got)
+		t.Errorf("parseValue(int 1) = %v (%T), want int64(1)", got, got)
 	}
 }
 
@@ -181,10 +184,10 @@ func TestParseValue_Counter32(t *testing.T) {
 		Type:  gosnmp.Counter32,
 		Value: uint(123456),
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	v, ok := got.(int64)
 	if !ok || v != 123456 {
-		t.Errorf("ParseValue(Counter32 123456) = %v (%T), want int64(123456)", got, got)
+		t.Errorf("parseValue(Counter32 123456) = %v (%T), want int64(123456)", got, got)
 	}
 }
 
@@ -194,10 +197,10 @@ func TestParseValue_Gauge32(t *testing.T) {
 		Type:  gosnmp.Gauge32,
 		Value: uint(0),
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	v, ok := got.(int64)
 	if !ok || v != 0 {
-		t.Errorf("ParseValue(Gauge32 0) = %v (%T), want int64(0)", got, got)
+		t.Errorf("parseValue(Gauge32 0) = %v (%T), want int64(0)", got, got)
 	}
 }
 
@@ -208,10 +211,10 @@ func TestParseValue_TimeTicks(t *testing.T) {
 		Type:  gosnmp.TimeTicks,
 		Value: uint32(87654321),
 	}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	v, ok := got.(int64)
 	if !ok || v != 87654321 {
-		t.Errorf("ParseValue(TimeTicks) = %v (%T), want int64(87654321)", got, got)
+		t.Errorf("parseValue(TimeTicks) = %v (%T), want int64(87654321)", got, got)
 	}
 }
 
@@ -340,7 +343,7 @@ func TestSNMPMetric_FieldAssignment(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ParseValue — table-driven comprehensive coverage
+// parseValue — table-driven comprehensive coverage
 // ---------------------------------------------------------------------------
 
 func TestParseValue_TableDriven(t *testing.T) {
@@ -393,7 +396,7 @@ func TestParseValue_TableDriven(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ParseValue(tt.pdu)
+			got, _ := parseValue(tt.pdu)
 			switch tt.wantType {
 			case "nil":
 				if got != nil {
@@ -417,7 +420,332 @@ func TestParseValue_TableDriven(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ParseValue — big.Int negative overflow
+// parseValue — octet-string sanitisation (binary payloads become hex)
+// ---------------------------------------------------------------------------
+
+func TestParseValue_OctetStringSanitization(t *testing.T) {
+	tests := []struct {
+		name string
+		pdu  gosnmp.SnmpPDU
+		want string
+	}{
+		{
+			// dot1dBaseBridgeAddress on a UniFi USW-24-PoE: a raw 6-octet MAC
+			// with an embedded NUL that Postgres `text` rejects.
+			name: "binary MAC with NUL byte",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x78, 0x8a, 0x20, 0x00, 0xd4, 0xe1}},
+			want: "788a2000d4e1",
+		},
+		{
+			name: "binary MAC without NUL byte",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x78, 0x8a, 0x20, 0xc3, 0xd4, 0xe1}},
+			want: "788a20c3d4e1",
+		},
+		{
+			name: "printable ASCII text unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("USW-24-PoE")},
+			want: "USW-24-PoE",
+		},
+		{
+			name: "printable sysDescr unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Linux UBNT 3.18.24 #1 SMP Thu Jan 1 00:00:00 UTC 2026")},
+			want: "Linux UBNT 3.18.24 #1 SMP Thu Jan 1 00:00:00 UTC 2026",
+		},
+		{
+			name: "multi-line sysDescr keeps newlines and tabs",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Cisco IOS Software\r\nTechnical Support:\thttp://example.test")},
+			want: "Cisco IOS Software\r\nTechnical Support:\thttp://example.test",
+		},
+		{
+			name: "non-ASCII valid UTF-8 unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Café-Switch-Ω")},
+			want: "Café-Switch-Ω",
+		},
+		{
+			name: "invalid UTF-8 becomes hex",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0xff, 0xfe, 0x41}},
+			want: "fffe41",
+		},
+		{
+			// C-based agents NUL-pad fixed-width fields; the name is clean text,
+			// not binary, and must not be hexed.
+			name: "NUL-padded fixed-width sysName recovers to text",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("switch-01\x00")},
+			want: "switch-01",
+		},
+		{
+			name: "multiple trailing NULs are trimmed",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("sw1\x00\x00\x00\x00")},
+			want: "sw1",
+		},
+		{
+			// Postgres stores NBSP fine, and sysLocation routinely carries one
+			// from pasted config or a non-English locale.
+			name: "NBSP in sysLocation passes through unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Building A\u00a0Floor 3")},
+			want: "Building A\u00a0Floor 3",
+		},
+		{
+			name: "BOM and thin space pass through unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("\ufeffcore\u2009sw")},
+			want: "\ufeffcore\u2009sw",
+		},
+		{
+			name: "soft hyphen and ideographic space pass through unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("cata\u00adlyst\u30003850")},
+			want: "cata\u00adlyst\u30003850",
+		},
+		{
+			// Not text-unsafe for Postgres, so they survive: only NUL and
+			// invalid UTF-8 force hex.
+			name: "ordinary control characters pass through unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x01, 0x02, 0x1f}},
+			want: "\x01\x02\x1f",
+		},
+		{
+			// A zeroed bridge MAC (00:00:00:00:00:00) is routine on freshly
+			// racked hardware, unresolved FDB entries and unconfigured chassis
+			// ids. Trimming before the safety test collapses it to "" —
+			// indistinguishable from "the OID returned nothing" — and the
+			// promise that the original bytes stay recoverable is broken.
+			name: "all-NUL payload hexes instead of collapsing to empty",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+			want: "000000000000",
+		},
+		{
+			// 0x54 0x65 0x73 is a plausible OUI, so this is a real 6-octet MAC
+			// whose last two octets are NUL. Trimming first yields "Test": two
+			// octets destroyed, a wrong value stored, and no hex marker to
+			// signal it.
+			name: "MAC with a printable prefix and trailing NULs stays hex",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x54, 0x65, 0x73, 0x74, 0x00, 0x00}},
+			want: "546573740000",
+		},
+		{
+			// Same as above at a width the binary-identifier rule does not
+			// cover, so the "nothing survives the padding" guard is the only
+			// thing keeping this out of the empty string.
+			name: "all-NUL payload of a non-identifier width still hexes",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x00, 0x00, 0x00}},
+			want: "000000",
+		},
+		{
+			name: "MAC with an interior NUL and a trailing NUL hexes the original bytes",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x00}},
+			want: "001a2b3c4d00",
+		},
+		{
+			// Guards hexOctets(value) against hexOctets(trimmed): the trailing
+			// 00 must still appear in the dump, or any MAC ending in 0x00 is
+			// silently truncated.
+			name: "invalid UTF-8 with a trailing NUL hexes the ORIGINAL bytes",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0xff, 0xfe, 0x41, 0x00}},
+			want: "fffe4100",
+		},
+		{
+			// Control bytes are storable, so they pass through when the payload
+			// carries no NUL (case above). Once NULs force a decision, the
+			// non-NUL remainder has to look like text to earn the trim — these
+			// bytes do not.
+			name: "control bytes before trailing NULs stay hex",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x01, 0x02, 0x1f, 0x00, 0x00}},
+			want: "01021f0000",
+		},
+		{
+			name: "interior NUL between text runs stays hex",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("ab\x00cd")},
+			want: "6162006364",
+		},
+		{
+			name: "NUL-padded text wider than a binary identifier recovers to text",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("switch-01\x00\x00")},
+			want: "switch-01",
+		},
+		{
+			// The documented limit of the width rule: text NUL-padded to
+			// exactly a MAC (6) or IPv4 (4) width is hexed rather than trimmed,
+			// because "Gi0/5\x00" and a MAC ending in 0x00 are indistinguishable
+			// from the bytes alone. Hex is lossless and flagged, so this value
+			// is recoverable; silently truncating a real MAC would not be.
+			name: "text padded to exactly a MAC width is conservatively hexed",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Gi0/5\x00")},
+			want: "4769302f3500",
+		},
+		{
+			name: "text padded past a MAC width recovers to text",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Gi0/5\x00\x00")},
+			want: "Gi0/5",
+		},
+		{
+			// Preserved current behaviour: an empty octet string stays "".
+			name: "empty byte slice stays empty string",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{}},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := parseValue(tt.pdu)
+			s, ok := got.(string)
+			if !ok {
+				t.Fatalf("parseValue() = %v (%T), want string", got, got)
+			}
+			if s != tt.want {
+				t.Errorf("parseValue() = %q, want %q", s, tt.want)
+			}
+			if strings.ContainsRune(s, 0) {
+				t.Errorf("parseValue() = %q contains a NUL byte", s)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildMetrics — ValueEncoding declaration
+// ---------------------------------------------------------------------------
+
+func TestBuildMetrics_ValueEncoding(t *testing.T) {
+	tests := []struct {
+		name         string
+		pdu          gosnmp.SnmpPDU
+		wantValue    any
+		wantEncoding string
+	}{
+		{
+			name:         "binary MAC is declared hex",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.17.1.1.0", Value: []byte{0x78, 0x8a, 0x20, 0x00, 0xd4, 0xe1}},
+			wantValue:    "788a2000d4e1",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			// The case that motivates the field: hexed MAC is all digits and
+			// would otherwise be indistinguishable from a real numeric string.
+			name:         "all-digit hex MAC is declared hex",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.17.1.1.0", Value: []byte{0x00, 0x11, 0x22, 0x30, 0x40, 0x50}},
+			wantValue:    "001122304050",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			name:         "invalid UTF-8 is declared hex",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.1.0", Value: []byte{0xff, 0xfe, 0x41}},
+			wantValue:    "fffe41",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			// A zeroed MAC must arrive as a flagged hex string, not as an
+			// unflagged empty string that reads as "no value".
+			name:         "all-NUL MAC is declared hex",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.17.1.1.0", Value: []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+			wantValue:    "000000000000",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			name:         "MAC with a printable prefix and trailing NULs is declared hex",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.17.1.1.0", Value: []byte{0x54, 0x65, 0x73, 0x74, 0x00, 0x00}},
+			wantValue:    "546573740000",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			name:         "invalid UTF-8 with a trailing NUL hexes the original bytes",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.1.0", Value: []byte{0xff, 0xfe, 0x41, 0x00}},
+			wantValue:    "fffe4100",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			name:         "plain text carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.5.0", Value: []byte("switch-01")},
+			wantValue:    "switch-01",
+			wantEncoding: "",
+		},
+		{
+			name:         "NUL-padded text carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.5.0", Value: []byte("switch-01\x00")},
+			wantValue:    "switch-01",
+			wantEncoding: "",
+		},
+		{
+			name:         "NBSP text carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.6.0", Value: []byte("Building A\u00a0Floor 3")},
+			wantValue:    "Building A\u00a0Floor 3",
+			wantEncoding: "",
+		},
+		{
+			name:         "a device reporting the literal string 788a2000d4e1 carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.5.0", Value: []byte("788a2000d4e1")},
+			wantValue:    "788a2000d4e1",
+			wantEncoding: "",
+		},
+		{
+			name:         "numeric value carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.3.0", Type: gosnmp.TimeTicks, Value: uint32(4242)},
+			wantValue:    int64(4242),
+			wantEncoding: "",
+		},
+		{
+			name:         "empty byte slice carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.5.0", Value: []byte{}},
+			wantValue:    "",
+			wantEncoding: "",
+		},
+	}
+
+	stamp := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildMetrics([]gosnmp.SnmpPDU{tt.pdu}, stamp)
+			if len(got) != 1 {
+				t.Fatalf("buildMetrics() returned %d metrics, want 1", len(got))
+			}
+			m := got[0]
+			if m.Value != tt.wantValue {
+				t.Errorf("Value = %v (%T), want %v (%T)", m.Value, m.Value, tt.wantValue, tt.wantValue)
+			}
+			if m.ValueEncoding != tt.wantEncoding {
+				t.Errorf("ValueEncoding = %q, want %q", m.ValueEncoding, tt.wantEncoding)
+			}
+			if m.OID != tt.pdu.Name || m.Name != tt.pdu.Name {
+				t.Errorf("OID/Name = %q/%q, want %q", m.OID, m.Name, tt.pdu.Name)
+			}
+			if !m.Timestamp.Equal(stamp) {
+				t.Errorf("Timestamp = %v, want %v", m.Timestamp, stamp)
+			}
+
+			// The wire contract: `valueEncoding` must be absent — not empty —
+			// when the agent did not hex-encode, so older APIs and older agents
+			// stay interoperable.
+			raw, err := json.Marshal(m)
+			if err != nil {
+				t.Fatalf("json.Marshal(metric) = %v", err)
+			}
+			hasField := strings.Contains(string(raw), `"valueEncoding"`)
+			if tt.wantEncoding == "" && hasField {
+				t.Errorf("json = %s, want no valueEncoding field", raw)
+			}
+			if tt.wantEncoding != "" {
+				if !hasField {
+					t.Errorf("json = %s, want a valueEncoding field", raw)
+				}
+				if !strings.Contains(string(raw), `"valueEncoding":"`+tt.wantEncoding+`"`) {
+					t.Errorf("json = %s, want valueEncoding %q", raw, tt.wantEncoding)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildMetrics_EmptyPDUsYieldsEmptySlice(t *testing.T) {
+	got := buildMetrics(nil, time.Now().UTC())
+	if got == nil {
+		t.Fatal("buildMetrics(nil) = nil, want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("buildMetrics(nil) returned %d metrics, want 0", len(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseValue — big.Int negative overflow
 // ---------------------------------------------------------------------------
 
 func TestParseValue_BigIntNegativeOverflow(t *testing.T) {
@@ -427,10 +755,10 @@ func TestParseValue_BigIntNegativeOverflow(t *testing.T) {
 		big.NewInt(2),
 	))
 	pdu := gosnmp.SnmpPDU{Value: val}
-	got := ParseValue(pdu)
+	got, _ := parseValue(pdu)
 	s, ok := got.(string)
 	if !ok {
-		t.Errorf("ParseValue(large negative big.Int) = %v (%T), want string", got, got)
+		t.Errorf("parseValue(large negative big.Int) = %v (%T), want string", got, got)
 	}
 	if s != val.String() {
 		t.Errorf("ParseValue = %q, want %q", s, val.String())

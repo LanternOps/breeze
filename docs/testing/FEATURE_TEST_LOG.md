@@ -4532,3 +4532,221 @@ Flag enabled on the dev stack (web env + restart). Verified: Devices page grows 
 
 ### Environment addendum
 Docker engine restarted mid-session (~21:07) and the wt-main postgres data dir is tmpfs → DB wiped, API re-bootstrapped a fresh tenant. QA seed re-applied against the new tenant (anchor UUIDs substituted; BEGIN/COMMIT stripped because the new Default Org UUID sorts below the QA orgs and the partner-export lock-order trigger rejects cross-org statements in one transaction). Current stack: http://localhost:32773 (network-list flag ON on web).
+
+## UI QA Sweep — 2026-08-17 (post-merge pass on main, stacks :32833 → :32845)
+
+Scope: latest `main` pulled and booted via `pnpm wt-stack up`; regression sweep of the nav
+surface plus everyday/setup workflows, then a backward pass over the ~120 PRs merged since
+the 2026-08-11 sweep. Second half re-verified against `8c64a060d` after three more merges.
+
+### Environment — PARTIAL (4 setup blockers, all local config)
+- ❌ Worktree had **no `.env`**; copied from the main clone (known trap).
+- ❌ That `.env` (Jul 20) predates four now-**required** compose vars — stack refused to
+  start: `EVENT_PERMISSION_EPOCH_MODE`, `REMOTE_ACCESS_ADMISSION_MODE`,
+  `REMOTE_WS_AUTH_MODE`, `REMOTE_WS_REDIS_TOPOLOGY`. Added from `.env.example`.
+- ❌ `POSTGRES_IMAGE_REF=postgres:16-alpine` in the stale `.env` → API **crash-loops at
+  boot**: `BREEZE_WORKSPACE_ENABLED=true` but the workspace ee migrations need pgvector.
+  Fixed to `pgvector/pgvector:pg16` (what `.env.example` already ships).
+  ⚠️ The API's error message here is genuinely good — names the flag, the image, and both
+  remedies. Worth copying elsewhere.
+- ❌ Default `BREEZE_DOCKER_SUBNET` (172.31.0.0/24) collided with another worktree stack;
+  set 172.31.200.0/24 + matching `BREEZE_CADDY_IP`.
+- ⚠️ `docker restart web` leaves a stale `astro dev` lock ("Another astro dev server is
+  already running", PID 61) → permanent 502. Must `up -d --force-recreate web`, which then
+  **reassigns ephemeral ports** (32833 → 32845) while `.breeze-stack.json` still advertises
+  the old one. Read the live `docker ps` port, not the descriptor, after any recreate.
+
+### Nav crawl (52 sidebar routes) — PASS
+- ✅ All 52 routes serve HTTP 200 and render their real page (h1 + content), including the
+  empty states: `/fleet` "Fleet is clean", `/workspace` "New Conversation" CTA.
+- ✅ Dashboard renders full data (2 devices, 1 critical / 1 warning, patch compliance 33%,
+  1 open vulnerability finding, recent-activity table).
+- ✅ Zero console errors on a clean sequential pass.
+- False positives worth recording: "Failed" on the dashboard is a patch-status tile label
+  (`Failed 0`) and "Error" on `/fleet` is a severity filter option. Neither is a defect.
+
+### ❌ BUG: navigating ~10 pages in a minute force-logs-out the user — issue #3696
+- Symptom: 11 sidebar navigations in ~43 s → redirect to `/login`, no warning or toast.
+- API actual: `POST /api/v1/auth/refresh` → 9× `200` then `429`; client surfaces
+  `AuthSessionExpiredError: Session expired` and hard-logs-out.
+- Mechanism: the access token is **in-memory only**, so every full page load must refresh
+  (proved: refresh counter 73→76 across exactly 3 navigations). `/auth/refresh` is capped at
+  **10/60 s per user** (`apps/api/src/routes/auth/login.ts:751-766`). Astro MPA ⇒ every nav
+  is a document load ⇒ ~10 page views/minute is a hard ceiling.
+- Aggravator: the client *retries* a 429 (`MAX_TRANSIENT_REFRESH_RETRIES = 2`), burning more
+  of the same budget; a transient throttle is reported as an expired session.
+- Not a client dedup bug — refresh IS single-flighted per realm (`auth.ts:445-457`) plus a
+  cross-tab Web Lock. It is one refresh *per realm*, and each navigation is a new realm.
+- Not an E2E artifact: the limiter is skipped only under `E2E_MODE`; real 429s observed.
+- ⚠️ This also makes fast automated UI crawling unreliable — pace tooling under ~10 page
+  loads/minute or the sweep logs itself out mid-run.
+
+### Devices — PARTIAL
+- ✅ List renders; search filters (`windows` → "1 of 2 devices"); quick filters, sort
+  headers, per-page selector, grid/list toggle, Columns picker all present.
+- ✅ Offline actions degrade gracefully with good copy: "Device is offline — Remote Terminal
+  needs a connected agent. Queued commands still run on reconnect."
+- ✅ Reboot **does** toast: "Reboot queued — will run when e2e-macos.local reconnects".
+  (An earlier probe read the DOM at 1.2 s and missed it — recorded so it isn't refiled.)
+- ❌ BUG (**#3698**): list kebab Reboot fired on ONE click with **no confirmation**, while
+  the detail page gates the identical action behind `ConfirmDialog`
+  (`DeviceList.tsx:2449-2452` vs `DeviceActions.tsx:227-240`). Two stray clicks queued two
+  real `reboot` rows (`device_commands`, `pending`). **Fixed by #3703 — verified below.**
+- ⚠️ UI/UX: the first-run OnboardingTour popover lands on the first table row and intercepts
+  clicks until skipped. Legitimate overlap, but it sits right on the data grid.
+
+### Alerts — PASS
+- ✅ Severity counts, search, saved filters, advanced filter all render.
+- ✅ Every row action carries a descriptive aria-label ("Acknowledge: E2E fixture: disk full").
+- ✅ **Acknowledge** works; the row visibly moves Active → Acknowledged (state change is the
+  feedback — no silent 2xx).
+
+### Notification channels — PARTIAL
+- ✅ Create flow works end to end: modal → create → modal closes → "1 of 1 channels" with
+  type, status and recipient shown.
+- ✅ Create modal exposes the partner-wide ownerScope selector ("All organizations
+  (partner-wide channel — receives alerts from every org)" vs "This organization only").
+- ❌ BUG (**#3697**): **Test** reports a failed test as success. API returns HTTP 200 with
+  `testResult.success:false` + "Resend error: Invalid `to` field…"; UI shows only
+  "Last test: Just Now". Exactly the case `runAction` exists to catch; this path bypasses it.
+- ⚠️ UI/UX: the true-empty state (0 channels, no search, no filter) reads "No notification
+  channels found. Try adjusting your search or filters." — blames a filter never set.
+
+### Backward-through-PRs pass (merged since 2026-08-11)
+
+**Device Groups (#3564, #3626) — PASS**
+- ✅ Edit opens with per-device membership checkboxes (the #3626 regression is fixed).
+- ✅ Checking `e2e-macos.local` + **Save changes** persists: 0 → **1 device**, host listed.
+
+**Analytics rebuild (#3513) — PASS**
+- ✅ Tabs, range picker, refresh; real data (OS distribution 50/50) and **honest
+  "No data available"** for Performance Trend / Weekly enrollments — no fabricated zeros.
+
+**Tenant variables (#3494 / #3409 PR4b) — PASS**
+- ✅ Partner/org scope radios, key-format hint, Secret checkbox stating the contract.
+- ✅ Created a **secret** variable: key renders as `{{var.qa_sweep_token}}`, value masked.
+- ✅ No leak: `GET /api/v1/tenant-variables` returns `"value": null, "isSecret": true`.
+- ✅ Best-in-app empty state ("Create one to stop pasting the same token into every
+  customer's scripts").
+
+**Package-manager Software Library (#3587, #3611) — PASS**
+- ✅ Partner/org SCOPE, SOURCE = Download URL / Upload file / **Package manager**,
+  installer-type auto-detect, `{{org.name}}` variable insertion.
+- ✅ Created `QA Sweep Chrome` via winget id `Google.Chrome` → appears in the catalog.
+- ✅ Honest degradation twice: "File uploads require S3 object storage…" and "Package search
+  is unavailable right now — enter a package ID manually below."
+
+### Organizations & Sites (setup) — PARTIAL
+- ✅ Create org works; URL adopts the `#<orgId>` hash (repo convention); list updates.
+- ✅ **Guided onboarding fires**: "Add the first site for QA Sweep Customer" with honest
+  framing, a **Skip for now**, and "Only the site name is required."
+- ✅ Created site `QA Sweep HQ` → "1 of 1 sites".
+- ❌ BUG (**#3699**): org list cards render a blank device count —
+  `<span class="text-xs text-muted-foreground"> devices</span>`. `GET /orgs/organizations`
+  returns no count field. The org *detail* panel beside it renders "0 devices" correctly.
+
+### Partner settings — PASS
+- ✅ **#3518 verified**: Website = `javascript:alert(1)` rejected with a readable message —
+  "Website must be a full http:// or https:// URL". No `[object Object]`, no silent accept.
+
+### Global search (Cmd+K) — PASS
+- ✅ Palette focuses; `e2e-windows` groups under DEVICES with status; **Enter navigates**.
+
+### Device detail — PASS
+- ✅ Tabs Overview/Details/Performance/Alerts/Anomalies/Tickets/Event Log/More; hash state.
+- ✅ Unknown hardware fields render "—" rather than fabricated zeros.
+- ⚠️ `GET /api/v1/reliability/{deviceId}` 404s when a device has no snapshot, so every such
+  view logs a console error. UI copes correctly ("No reliability snapshot available").
+
+### Scripts — PASS
+- ✅ "Catalog — same for every organization" banner marks partner scope.
+- ✅ **Import from Library** opens the System Script Library (12+ seeded scripts).
+- ✅ Importing "Clear Package Cache" persists (`GET /scripts` → 1) and the row disappears.
+- ⚠️ No toast on import — feedback is only the row vanishing.
+- ⚠️ **Testing note:** that modal has **`role=dialog` count 0** (plain `fixed inset-0` div).
+  An early probe looked like a silent failure purely from selector choice. Assert on modal
+  *title text*, never role/class. (The skill warns about this; it bit this sweep once.)
+
+### Second pass — the three PRs merged during the sweep (main `8c64a060d`)
+
+**#3686 workspace local_profile crawl-device rejection — not UI-reachable.** API/workspace
+guard; covered by its own integration tests, no browser surface exercised here.
+
+**#3596 Outlook tech persona (tickets from the add-in) — PARTIAL / BLOCKED**
+- ✅ **Tenancy done correctly** (the step CLAUDE.md says gets missed): `ticket_email_links`
+  has `org_id` and IS registered in both `CORE_ORG_CASCADE_DELETE_ORDER` and
+  `CORE_TENANT_EXPORT_POLICY`. `office_addin_user_bindings` is **shape 3 partner-axis**
+  (no `org_id`, documented in the schema comment) with its RLS policy created in the same
+  migration — correctly needs no cascade/export entry.
+- ✅ All 3 migrations (`2026-08-22-office-addin-user-bindings`, `2026-08-22-ticket-email-links`,
+  `2026-08-23-ticket-comments-email-authored-insert`) applied cleanly on restart.
+- ✅ Add-in routes mounted and gated: `/office-addin/tickets` and `/office-addin/email-context`
+  → **401** unauthenticated; `/office-addin/auth/exchange` → 400 on an empty body.
+- ✅ Core ticket path still healthy: created **T-2026-0001** via `/tickets/new`; queue counts
+  updated (Unassigned 1, All open 1), detail pane opened, `#T-2026-0001` hash state.
+  Submit is correctly disabled until required fields are set, and Requester/Device stay
+  disabled until an Organization is chosen.
+- 🚫 **BLOCKED**: the add-in itself (email context, link/create from an email, time entry,
+  AI draft) needs Entra sign-in + the Outlook host. Not fakeable from the browser — re-test
+  from Outlook with a real Entra tenant.
+
+**#3702 SSO `#ssoCode` consumption — PARTIAL (success path unverifiable locally)**
+- ✅ The fragment IS consumed and **stripped synchronously** — `/#ssoCode=…` leaves no
+  fragment in the URL, so the single-use grant can't be replayed or copied out.
+- ✅ Invalid code is rejected server-side: `POST /api/v1/sso/exchange` → **400**.
+- 🚫 Success path (valid grant → `/users/me` → logged in) needs a real IdP — not verified.
+- ❌ BUG (**#3704**): on a *failed* exchange the SSO-specific notice never reaches the user.
+  Trace: `POST /sso/exchange` 400 → `GET /login?error=sso_exchange_failed` **ERR_ABORTED** →
+  racing `POST /auth/refresh` 401 wins → user lands on `/login?reason=session-expired` and
+  reads "Your session expired. Please sign in again to continue."
+  Deterministic across two attempts. The copy exists and is fully localized
+  (`LoginPage.tsx:84`, `login.ssoErrors.ssoExchangeFailed` in all 8 locales) but is
+  unreachable on this path. Misleading for an admin debugging a broken SSO config — it
+  points away from SSO and invites a retry loop through the same broken round trip.
+
+**#3703 confirm-gate single-device reboot (fixes #3698) — VERIFIED, see below.**
+
+## Summary table (2026-08-17)
+
+| Area | Result |
+|---|---|
+| Environment / stack bring-up | PARTIAL — 4 stale-`.env` blockers + astro-lock/port trap |
+| Nav crawl (52 routes) | PASS |
+| Session / auth under navigation | **FAIL — #3696** |
+| Dashboard | PASS |
+| Devices list + actions | PARTIAL — **#3698**, fixed by #3703 |
+| Alerts | PASS |
+| Notification channels | PARTIAL — **#3697** |
+| Device Groups (#3564/#3626) | PASS |
+| Analytics (#3513) | PASS |
+| Tenant variables (#3494/PR4b) | PASS |
+| Software Library (#3587/#3611) | PASS |
+| Organizations & Sites | PARTIAL — **#3699** |
+| Partner settings (#3518) | PASS |
+| Global search (Cmd+K) | PASS |
+| Device detail | PASS |
+| Scripts | PASS |
+| Tickets core + add-in routes (#3596) | PARTIAL / add-in BLOCKED |
+| SSO fragment (#3702) | PARTIAL — **#3704**, success path BLOCKED |
+
+## Top findings
+
+1. **#3696 — session dies under ordinary navigation.** The severe one. Access token is
+   in-memory, so *every* page load spends one of 10 allowed `/auth/refresh` calls per minute;
+   an MPA where every click is a document load turns that into a hard ceiling of ~10 page
+   views/minute, after which the user is thrown to `/login`. Reproduced with plain sidebar
+   clicks (11 loads / 43 s). The client also *retries* the 429, spending budget faster, and
+   reports a transient throttle as "Session expired".
+2. **#3698 — destructive action gated on one screen but not the other** (now fixed by #3703).
+3. **#3697 — a Test button that can't report failure.** HTTP 200 + `testResult.success:false`
+   renders as "Last test: Just Now". The API's failure text is already good; it never reaches
+   the user. `runAction` exists for exactly this and isn't used here.
+4. **#3704 — the SSO failure notice loses a race** to the generic session-expired eviction,
+   so a broken SSO config reports itself as an expired session.
+5. **Empty-state quality is inconsistent** — Variables and Software are excellent and
+   specific; Notification channels blames a filter the user never set.
+6. **Verified and dismissed, so they aren't refiled:** dashboard "100% online" was accurate
+   for that moment; `/fleet` "Error" and dashboard "Failed" are filter/tile labels; the
+   reboot toast does fire; "API 0.82.0" in the footer came from the stale local `.env`.
+
+**Backward-PR pass reached #3494** (2026-08-13). Older PRs were not re-verified — resume there.

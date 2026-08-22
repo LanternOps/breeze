@@ -18,7 +18,7 @@ import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import type { ManualLineInput, RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -93,7 +93,7 @@ export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?
     lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible
   }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
   const taxRate = taxRateOverride !== undefined ? taxRateOverride : await effectiveRateForOrg(inv.orgId, inv.partnerId);
-  const totals = computeInvoiceTotals(lines, taxRate);
+  const totals = computeInvoiceTotals(lines, taxRate, inv.currencyCode);
   const balance = fromCents(toCents(totals.total) - toCents(inv.amountPaid));
   await db.update(invoices).set({
     subtotal: totals.subtotal, taxRate, taxTotal: totals.taxTotal, total: totals.total, balance, updatedAt: new Date()
@@ -115,7 +115,7 @@ async function insertLineAndRecompute(
 
 export async function addManualLine(invoiceId: string, input: ManualLineInput, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
-  const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice));
+  const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice), inv.currencyCode);
   return insertLineAndRecompute(invoiceId, inv.orgId, {
     sourceType: 'manual', sourceId: null, catalogItemId: null, parentLineId: null, ticketId: null,
     name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice: Number(input.unitPrice).toFixed(2),
@@ -134,7 +134,7 @@ export async function addCatalogLine(invoiceId: string, catalogItemId: string, q
     sourceType: 'catalog', sourceId: null, catalogItemId, parentLineId: null, ticketId: null,
     name: item?.name ?? 'Catalog item', description: item?.description ?? null, quantity: qty, unitPrice: resolved.unitPrice,
     costBasis: resolved.costBasis, taxable: resolved.taxable, customerVisible: true,
-    lineTotal: computeLineTotal(qty, resolved.unitPrice), isUnapprovedTime: false
+    lineTotal: computeLineTotal(qty, resolved.unitPrice, inv.currencyCode), isUnapprovedTime: false
   });
 }
 
@@ -148,7 +148,7 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
     sourceType: 'bundle', sourceId: null, catalogItemId: bundleId, parentLineId: null, ticketId: null,
     name: bundle?.name ?? 'Bundle', description: bundle?.description ?? null, quantity: qty, unitPrice: econ.headlinePrice,
     costBasis: econ.totalCost, taxable: true, customerVisible: true,
-    lineTotal: computeLineTotal(qty, econ.headlinePrice), isUnapprovedTime: false
+    lineTotal: computeLineTotal(qty, econ.headlinePrice, inv.currencyCode), isUnapprovedTime: false
   });
   // child component lines (unit_price 0, visibility per show_on_invoice)
   const comps = await db.select({
@@ -229,7 +229,7 @@ export async function addContractLine(
     sourceType: 'contract', sourceId: input.sourceId ?? null, catalogItemId: input.catalogItemId ?? null,
     parentLineId: null, ticketId: null, description: input.description, quantity,
     unitPrice, costBasis, taxable, customerVisible: true,
-    lineTotal: computeLineTotal(quantity, unitPrice), isUnapprovedTime: false
+    lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode), isUnapprovedTime: false
   });
 }
 
@@ -243,7 +243,7 @@ export async function updateLine(invoiceId: string, lineId: string, patch: { nam
     name: patch.name !== undefined ? patch.name : existing.name,
     description: patch.description !== undefined ? patch.description : existing.description, quantity, unitPrice,
     taxable: patch.taxable ?? existing.taxable, customerVisible: patch.customerVisible ?? existing.customerVisible,
-    lineTotal: computeLineTotal(quantity, unitPrice)
+    lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode)
   }).where(eq(invoiceLines.id, lineId));
   await recomputeInvoiceTotals(invoiceId);
   return getOwnedInvoiceOr404(invoiceId);
@@ -593,9 +593,18 @@ export async function assembleDraftFromOrg(input: { orgId: string; siteId?: stri
   requireSiteAccess(actor, input.siteId ?? null);
   const from = new Date(input.from + 'T00:00:00Z');
   const to = new Date(input.to + 'T23:59:59Z');
-  const specs = [...(await gatherOrgTimeEntries(input.orgId, from, to)), ...(await gatherOrgParts(input.orgId, from, to))];
-  if (specs.length === 0) throw new InvoiceServiceError('No unbilled billable work in range', 409, 'NOTHING_TO_INVOICE');
+  // Create the draft FIRST so the gathered line totals are rounded in the
+  // invoice row's actual currency (JPY drafts must not persist cent-fraction
+  // line totals). On an empty range the transient draft is deleted again.
   const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', createdBy: actor.userId }).returning();
+  const specs = [
+    ...(await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode)),
+    ...(await gatherOrgParts(input.orgId, from, to, inv!.currencyCode))
+  ];
+  if (specs.length === 0) {
+    await db.delete(invoices).where(eq(invoices.id, inv!.id));
+    throw new InvoiceServiceError('No unbilled billable work in range', 409, 'NOTHING_TO_INVOICE');
+  }
   await materializeLines(inv!.id, input.orgId, specs);
   await recomputeInvoiceTotals(inv!.id);
   return getInvoice(inv!.id, actor);
@@ -609,9 +618,14 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   // This path produces an org-level (null-site) invoice; a site-restricted caller
   // can never see such a row, so deny it up front rather than orphan an invoice.
   requireSiteAccess(actor, null);
-  const specs = await gatherTicketBillables(ticketId);
-  if (specs.length === 0) throw new InvoiceServiceError('Nothing billable on this ticket', 409, 'NOTHING_TO_INVOICE');
+  // Draft first: gathered line totals must round in the invoice row's actual
+  // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
   const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', createdBy: actor.userId }).returning();
+  const specs = await gatherTicketBillables(ticketId, inv!.currencyCode);
+  if (specs.length === 0) {
+    await db.delete(invoices).where(eq(invoices.id, inv!.id));
+    throw new InvoiceServiceError('Nothing billable on this ticket', 409, 'NOTHING_TO_INVOICE');
+  }
   await materializeLines(inv!.id, tk.orgId, specs);
   await recomputeInvoiceTotals(inv!.id);
   return getInvoice(inv!.id, actor);
@@ -673,7 +687,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
 
     // Recompute totals with the snapshotted rate, then write everything atomically.
     const lineRows = await db.select({ lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
-    const { subtotal, taxTotal, total } = computeInvoiceTotals(lineRows, taxRate);
+    const { subtotal, taxTotal, total } = computeInvoiceTotals(lineRows, taxRate, inv.currencyCode);
     const billToAddress = buildBillToAddress(org);
 
     await db.update(invoices).set({
@@ -738,7 +752,19 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
   if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
   // Exact integer-cents comparison — robust against float representation error.
-  if (Math.round(Number(input.amount) * 100) > Math.round(Number(inv.balance) * 100)) {
+  const amountCents = toCents(input.amount);
+  const balanceCents = toCents(inv.balance);
+  // Legacy escape hatch: invoices created before currency-aware rounding can
+  // carry a zero-decimal-currency balance with cent fractions (e.g. JPY
+  // '1000.50'). Such a balance is non-representable, so requiring
+  // representability on every payment would strand the invoice forever
+  // (exact payoff → INVALID_AMOUNT; whole-unit underpayment leaves '0.50'
+  // that no representable amount can clear without OVERPAYMENT). Paying the
+  // EXACT outstanding balance is therefore always allowed.
+  if (amountCents !== balanceCents && !isRepresentableInCurrency(input.amount, inv.currencyCode)) {
+    throw new InvoiceServiceError('Payment amount has more precision than the invoice currency allows', 400, 'INVALID_AMOUNT');
+  }
+  if (amountCents > balanceCents) {
     throw new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT');
   }
   const [payment] = await db.insert(invoicePayments).values({

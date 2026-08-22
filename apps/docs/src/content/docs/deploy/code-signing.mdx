@@ -1,6 +1,6 @@
 ---
 title: Code Signing
-description: Code signing for Breeze agent, viewer, and helper binaries on Windows and macOS.
+description: "Code signing for Breeze agent, viewer, and helper binaries: Windows Authenticode, macOS notarization, self-hosted signing, and signature verification."
 sidebar:
   order: 7
   label: Code Signing
@@ -31,16 +31,16 @@ The CI/CD release pipeline produces the following artifacts:
 |----------|----------|--------|----------------|
 | Breeze Agent | Windows | `.exe`, `.msi` | **Unsigned in the public release** (self-host edition signing inputs — sign them yourself, see below) |
 | Breeze Agent | macOS | `.pkg`, binary | Apple Developer ID + notarization |
-| Breeze Viewer | Windows | `.exe`, `.msi` | Azure Artifact Signing (formerly Trusted Signing) |
+| Breeze Viewer | Windows | `.exe`, `.msi` | LanternOps Authenticode (Azure Artifact Signing or SSL.com eSigner) |
 | Breeze Viewer | macOS | `.app`, `.dmg` | Apple Developer ID + notarization |
-| Breeze Helper | Windows | `.exe` | Azure Artifact Signing (formerly Trusted Signing) |
+| Breeze Helper | Windows | `.exe` | LanternOps Authenticode (Azure Artifact Signing or SSL.com eSigner) |
 | Breeze Helper | macOS | `.app` | Apple Developer ID + notarization |
 
 ---
 
 ## Windows Code Signing
 
-The Windows **Viewer and Helper** installers are signed using **Azure Artifact Signing** (formerly Azure Trusted Signing). The signing happens in the GitHub Actions release workflow.
+The Windows **Viewer and Helper** installers are Authenticode-signed by LanternOps in the GitHub Actions release workflow. The release operator can use Azure Artifact Signing or SSL.com eSigner; both paths are timestamped and must pass the same publisher verification before an artifact is uploaded.
 
 The Windows **agent** artifacts (`.exe` binaries and `breeze-agent.msi`) are no longer Authenticode-signed by the public pipeline — they are published unsigned as the exact pre-signing build outputs, so a deployment can sign them under its own certificate. An unsigned agent MSI will trip SmartScreen unless you sign it; see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for the supported signing path.
 
@@ -48,13 +48,17 @@ The Windows **agent** artifacts (`.exe` binaries and `breeze-agent.msi`) are no 
 
 <Steps>
 
-1. The release workflow signs each binary with the `azure/artifact-signing-action`, authenticating via an OIDC federated credential (no stored client secret).
+1. The release workflow selects exactly one configured Windows signing provider and fails if the provider value is invalid.
 
-2. Each binary is signed and RFC 3161-timestamped against the Azure Artifact Signing endpoint; the certificates are short-lived and HSM-backed — the private key never exists outside Azure.
+2. Azure authenticates with a short-lived OIDC token. SSL.com eSigner authenticates with credentials scoped to the tag's signing environment. The two providers run in separate jobs, so the SSL.com job never receives Azure's OIDC permission.
 
-3. The workflow verifies every signature with `Get-AuthenticodeSignature` before upload (tolerating `UnknownError`, which means "signed, root not yet cached locally").
+3. The SSL.com path stages its signing toolchain from a checksum-verified archive before any credential is used, rather than letting the signing action fetch it unverified at run time.
 
-4. Signed artifacts are uploaded to the GitHub release together with a signed release manifest.
+4. The selected provider Authenticode-signs and RFC 3161-timestamps the Viewer and Helper installers.
+
+5. Both providers verify through the same script before upload: signature status, signer certificate, RFC 3161 timestamp, certificate validity window, and that the publisher is LanternOps. The SSL.com path additionally requires the exact configured SHA-256 certificate thumbprint; Azure does not pin one, because its certificates are short-lived and rotate automatically.
+
+6. Signed artifacts are uploaded to the GitHub release together with a signed release manifest.
 
 </Steps>
 
@@ -66,8 +70,20 @@ unrelated). The MSI bundles the agent binary, configures the Windows service, an
 
 The MSI carries a **per-edition product identity**: the public release builds the self-host edition ("Breeze Agent (Self-Hosted)", with its own UpgradeCode), distinct from the hosted edition used by Breeze's SaaS. The two editions refuse to install over each other on the same machine — the installer blocks with *"A different edition of the Breeze Agent is already installed."* See the [MSI product identity appendix](/deploy/sign-your-own-packages/#msi-product-identity) for details, and [Self-Host Migration](/agents/self-host-migration/) for moving a fleet between editions.
 
-<Aside>
-  Azure Artifact Signing keys are HSM-backed and never exportable, meeting the CA/Browser Forum hardware requirements for publicly trusted code signing. Certificates are short-lived and rotated automatically — there is nothing to renew.
+<Aside type="caution">
+  Verify the publisher as LanternOps when installing Viewer or Helper packages. Public Agent packages remain unsigned by design so self-hosters can sign them with their own certificate; see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/).
+</Aside>
+
+<Aside type="note" title="Operators: SSL.com secrets are per-environment">
+  The SSL.com path reads `SSLCOM_USERNAME`, `SSLCOM_PASSWORD`, `SSLCOM_CREDENTIAL_ID`, `SSLCOM_TOTP_SECRET`, `SSLCOM_CERT_SHA256` and `SSLCOM_ENVIRONMENT_LABEL`. These **must** be added to the `signing-production` and `signing-prerelease` GitHub Environments individually, not to the repository.
+
+  `SSLCOM_CERT_SHA256` also accepts a comma-separated allowlist. Put the incoming thumbprint alongside the outgoing one ahead of a certificate renewal, then drop the old entry once the changeover is done — otherwise renewal becomes a release-day edit made *after* the signing steps have already run and consumed eSigner quota.
+
+  Only the first four are credentials. `SSLCOM_CERT_SHA256` is a public certificate hash and `SSLCOM_ENVIRONMENT_LABEL` is just the environment's own name; they are kept as secrets so they sit alongside the credentials they describe.
+
+  Nothing in the workflow differs between a stable and a prerelease tag except which environment supplies the credentials, so repository-level secrets would sign prereleases with the production certificate. `SSLCOM_ENVIRONMENT_LABEL` guards against that: set it to the environment's own name (`signing-production` or `signing-prerelease`) and putting all six at the repository level will fail one of the two environments loudly instead of signing silently.
+
+  It is a safety net for the common mistake, not a proof. Scoping only the label per environment while leaving the credentials at repository level would still pass, so place all six deliberately.
 </Aside>
 
 ---
@@ -146,7 +162,7 @@ spctl --assess --verbose /usr/local/bin/breeze-agent
 ## Troubleshooting
 
 **Windows SmartScreen still warns after signing.**
-SmartScreen reputation is built over time. Newly signed binaries from a new publisher may still show a warning until enough users have downloaded and run the binary. Azure Artifact Signing certificates build reputation faster than traditional OV certificates because Microsoft attests the identity validation. If the warning persists, verify the signature with `Get-AuthenticodeSignature` to confirm the binary is properly signed. Self-hosters should see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for guidance on establishing their own signing identity.
+SmartScreen reputation is built over time. Newly signed binaries using any newly introduced certificate may still show a warning until enough users have downloaded and run the binary. If the warning persists, verify the signature with `Get-AuthenticodeSignature` to confirm the binary is properly signed. Self-hosters should see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for guidance on establishing their own signing identity.
 
 **macOS notarization timeout.**
 Apple's notarization service can be slow during peak times. The workflow allows up to 30 minutes. If it times out, re-run the release workflow — the binary does not need to be rebuilt, only re-submitted.

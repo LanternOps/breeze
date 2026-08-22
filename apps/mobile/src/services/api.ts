@@ -4,6 +4,12 @@ import * as Sentry from '@sentry/react-native';
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
 import { fetchWithTimeout } from './fetchWithTimeout';
+import {
+  applyCsrfSignal,
+  forgetCsrfToken,
+  getCsrfHeaderValue,
+  readCsrfCookie,
+} from './csrfToken';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -215,7 +221,10 @@ async function requestWithPrefix<T>(
   }
 
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-    (headers as Record<string, string>)[CSRF_HEADER_NAME] = CSRF_HEADER_VALUE;
+    // Echo the server's double-submit token. Sending the fixed bootstrap value
+    // once the CSRF cookie exists fails `safeCompareTokens` server-side and
+    // rejects every refresh, which ends the session at the access-token TTL.
+    (headers as Record<string, string>)[CSRF_HEADER_NAME] = await getCsrfHeaderValue();
   }
 
   // Always send the per-install id so the API can recognise this phone. This
@@ -247,6 +256,13 @@ async function requestWithPrefix<T>(
     timeoutMs
   );
 
+  // The server sets a fresh CSRF cookie on login and refresh, and clears it on
+  // sign-out or a rejected refresh. It is deliberately not HttpOnly so a native
+  // client can read and echo it. A `cleared` signal must drop our copy too —
+  // holding a token whose cookie is gone fails the server's no-cookie path,
+  // which accepts only the bootstrap literal.
+  await applyCsrfSignal(readCsrfCookie(response.headers.get('set-cookie')));
+
   if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
     const code = typeof body.code === 'string' ? body.code : undefined;
@@ -254,11 +270,22 @@ async function requestWithPrefix<T>(
       const reason = typeof body.reason === 'string' ? body.reason : null;
       notifyDeviceBlocked(reason);
     }
+    // Self-heal a token the server will not accept. The stored value can
+    // outlive its cookie — SecureStore survives an iOS reinstall while the
+    // cookie jar does not — and if `set-cookie` is not readable on this runtime
+    // we would never have learned a good one. Forgetting it makes the next
+    // request bootstrap with the literal the no-cookie path accepts, so the
+    // client recovers instead of looping.
+    const message =
+      (typeof body.error === 'string' && body.error)
+      || (typeof body.message === 'string' && body.message)
+      || 'An error occurred';
+    if (/csrf/i.test(message)) {
+      await forgetCsrfToken();
+    }
+
     const error: ApiError = {
-      message:
-        (typeof body.error === 'string' && body.error)
-        || (typeof body.message === 'string' && body.message)
-        || 'An error occurred',
+      message,
       code,
       statusCode: response.status
     };
@@ -432,21 +459,50 @@ export async function changePassword(currentPassword: string, newPassword: strin
 
 // Alerts API
 /**
- * Fetch the alert inbox.
+ * Server caps `limit` at 100 for this route — `/alerts/inbox` runs its query
+ * through `getPagination`, which does `Math.min(100, ...)` and CLAMPS rather
+ * than rejecting, so asking for more just returns 100 with a 200.
+ */
+const ALERT_PAGE_LIMIT = 100;
+
+/**
+ * Fetch the alert inbox, paging to the end.
  *
  * Defaults to `status=active` because the inbox is a RECENCY window, not a
- * priority one: it returns the newest non-dismissed alerts and the client asks
- * for one page. On a real fleet the page fills with resolved low-severity
- * noise and never reaches anything actionable — measured on a 7,023-alert
- * tenant, all 50 rows came back `low` and 48 of them resolved, so the Systems
- * screen rendered zero issues while 18 unacknowledged high/medium alerts sat
- * just outside the window. Asking for active-only makes the same page carry
- * what the screen actually renders.
+ * priority one: it returns the newest non-dismissed alerts. On a real fleet a
+ * single page fills with resolved low-severity noise and never reaches anything
+ * actionable — measured on a 7,023-alert tenant, all 50 rows came back `low`
+ * and 48 of them resolved, so the Systems screen rendered zero issues while 18
+ * unacknowledged high/medium alerts sat just outside the window.
+ *
+ * Asking for active-only narrows what the page carries, but it does not make
+ * one page enough: this used to send no `limit` at all and discard `pagination`
+ * entirely, so it saw the first 50 by recency and the Active Issues section
+ * plus every org rollup count silently described a 50-alert sample as the whole
+ * fleet (issue #3753). It now asks for the server's maximum and, crucially,
+ * reports whether that was everything.
  */
+export async function getAlertsPaged(
+  status: 'active' | 'all' = 'active'
+): Promise<PagedResult<Alert>> {
+  const { rows, total, truncated } = await fetchPage<MobileAlertRecord>((params) => {
+    if (status === 'active') params.set('status', 'active');
+    return `/alerts/inbox?${params.toString()}`;
+  }, ALERT_PAGE_LIMIT);
+
+  if (truncated) {
+    Sentry.captureMessage('alert inbox is showing a partial set', {
+      level: 'warning',
+      tags: { area: 'alert-inbox' },
+      extra: { returned: rows.length, total, status, pageLimit: ALERT_PAGE_LIMIT },
+    });
+  }
+
+  return { items: rows.map(mapAlert), total, truncated };
+}
+
 export async function getAlerts(status: 'active' | 'all' = 'active'): Promise<Alert[]> {
-  const path = status === 'active' ? '/alerts/inbox?status=active' : '/alerts/inbox';
-  const response = await request<ListResponse<MobileAlertRecord>>(path);
-  return response.data.map(mapAlert);
+  return (await getAlertsPaged(status)).items;
 }
 
 export async function getAlert(id: string): Promise<Alert> {
@@ -564,47 +620,110 @@ export async function getAlertStats(): Promise<{
 }
 
 // Devices API
-/** Server cap on `limit` (patches/helpers.ts MAX_PAGE_LIMIT). */
-const DEVICE_PAGE_LIMIT = 200;
 /**
- * Safety stop for the cursor walk. 20 pages x 200 = 4,000 devices, well beyond
- * any fleet that belongs on a phone screen, and it bounds the loop if the
- * server ever returns a non-advancing cursor.
- */
-const MAX_DEVICE_PAGES = 20;
-
-/**
- * Fetch devices, following the cursor to the end of the fleet.
+ * Server cap on `limit` for THIS route. `/mobile/devices` runs its query
+ * through `getPagination`, which does `Math.min(100, ...)` — it CLAMPS rather
+ * than rejecting, so asking for more is silently downgraded with nothing in the
+ * response to say so.
  *
- * A single request returns `limit` rows (default 50, capped at 200), so asking
- * once silently truncates: a 210-device tenant showed 50 and any client-side
- * org filter then searched only that first page — an org whose machines sat
- * further down rendered as empty. `orgId` is pushed to the server so a scoped
- * view pages through that org rather than through the whole fleet.
+ * This previously read 200, citing `patches/helpers.ts MAX_PAGE_LIMIT`. That is
+ * a different route's constant (the patches endpoints do cap at 200); the
+ * mobile route never has. The effect was a walk that read as 4,000 devices and
+ * delivered 2,000.
  */
-export async function getDevices(orgId?: string | null): Promise<Device[]> {
-  const out: MobileDeviceRecord[] = [];
-  let cursor: string | null = null;
+const DEVICE_PAGE_LIMIT = 100;
 
-  for (let page = 0; page < MAX_DEVICE_PAGES; page += 1) {
-    const params = new URLSearchParams({ limit: String(DEVICE_PAGE_LIMIT) });
+/**
+ * A walk's result together with whether it actually got everything.
+ *
+ * `total` is the server's exact count for the same filter. `truncated` is the
+ * only honest answer to "is this the whole set?" — a caller that receives a
+ * bare array cannot distinguish N items from the first N of more, and every
+ * count, filter and empty-state rendered over it then looks authoritative
+ * while being wrong (issue #3753).
+ */
+export interface PagedResult<T> {
+  items: T[];
+  /** Server's exact count for this filter, or null if it reported none. */
+  total: number | null;
+  /**
+   * True when this is NOT the whole set — either the server counted more than
+   * came back, or it reported no count and the page came back full.
+   */
+  truncated: boolean;
+}
+
+/**
+ * Fetch ONE page of a mobile list endpoint and report how much of the set it
+ * represents.
+ *
+ * Deliberately one request, not a walk. Neither pagination mode on
+ * `/mobile/devices` or `/mobile/alerts/inbox` can produce a trustworthy
+ * full-set walk today:
+ *
+ *  - CURSOR mode is unreachable. The routes compute `nextCursor` only inside
+ *    `if (cursor)`, so a cold-start caller — which has no cursor to send — gets
+ *    `nextCursor: null` on its first response and can never obtain the token
+ *    for page two. The previous walk here treated that null as clean
+ *    exhaustion, so it stopped after one page AND suppressed its own truncation
+ *    warning.
+ *  - OFFSET mode is reachable but skews. Both routes order by a MUTABLE key
+ *    (`last_seen_at`, rewritten by every heartbeat), so rows reorder between
+ *    page requests: page two can repeat rows page one already returned and
+ *    never return the ones that moved ahead of the offset. A row-count check
+ *    cannot detect that, because the duplicates make the count come out right.
+ *
+ * So the walk is not the fix — the honest claim is. One page, plus the server's
+ * exact `total`, lets the caller say "showing N of M" instead of presenting a
+ * sample as the whole set. Fixing the underlying keyset (the way
+ * `routes/devices/core.ts` did, by keying cursor mode on the NOT NULL,
+ * immutable `hostname`) is filed separately.
+ */
+async function fetchPage<TRow>(
+  buildPath: (params: URLSearchParams) => string,
+  pageLimit: number
+): Promise<{ rows: TRow[]; total: number | null; truncated: boolean }> {
+  const params = new URLSearchParams({ limit: String(pageLimit) });
+  const response = await request<ListResponse<TRow>>(buildPath(params));
+  const rows = Array.isArray(response.data) ? response.data : [];
+  const total = typeof response.pagination?.total === 'number' ? response.pagination.total : null;
+
+  // Unknown total => we CANNOT claim this is the whole set, so we don't. Only
+  // one direction of this flag is dangerous — reporting complete when it isn't
+  // — and a short page is not proof of completeness either (an older server or
+  // an intermediary could cap below the limit we asked for). Both mobile routes
+  // send `pagination` on every response path today, so this branch should not
+  // fire in practice; when it does, warning is the safe answer.
+  const truncated = total === null || rows.length < total;
+  return { rows, total, truncated };
+}
+
+/**
+ * Fetch a page of devices.
+ *
+ * `orgId` is pushed to the server so a scoped view selects that org's machines
+ * rather than filtering a page drawn from the whole fleet — an org whose
+ * machines sat below the cut rendered as empty.
+ */
+export async function getDevicesPaged(orgId?: string | null): Promise<PagedResult<Device>> {
+  const { rows, total, truncated } = await fetchPage<MobileDeviceRecord>((params) => {
     if (orgId) params.set('orgId', orgId);
-    if (cursor) params.set('cursor', cursor);
+    return `/devices?${params.toString()}`;
+  }, DEVICE_PAGE_LIMIT);
 
-    const response = await request<ListResponse<MobileDeviceRecord>>(
-      `/devices?${params.toString()}`
-    );
-    const rows = Array.isArray(response.data) ? response.data : [];
-    out.push(...rows);
-
-    const next = response.pagination?.nextCursor ?? null;
-    // Stop on a null cursor, a short page, or a cursor that did not advance —
-    // the last of these would otherwise spin until the page cap.
-    if (!next || next === cursor || rows.length === 0) break;
-    cursor = next;
+  if (truncated) {
+    Sentry.captureMessage('device list is showing a partial fleet', {
+      level: 'warning',
+      tags: { area: 'device-list' },
+      extra: { returned: rows.length, total, pageLimit: DEVICE_PAGE_LIMIT },
+    });
   }
 
-  return out.map(mapDevice);
+  return { items: rows.map(mapDevice), total, truncated };
+}
+
+export async function getDevices(orgId?: string | null): Promise<Device[]> {
+  return (await getDevicesPaged(orgId)).items;
 }
 
 export async function getDevice(id: string): Promise<Device> {

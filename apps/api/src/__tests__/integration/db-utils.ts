@@ -145,6 +145,7 @@ export async function createOrganization(options: CreateOrganizationOptions) {
     .insert(organizations)
     .values({
       partnerId: options.partnerId,
+      currencyCode: 'USD',
       name: options.name || `Test Organization ${timestamp}-${rand}`,
       slug: options.slug || `test-org-${timestamp}-${rand}`,
       type: options.type || 'customer',

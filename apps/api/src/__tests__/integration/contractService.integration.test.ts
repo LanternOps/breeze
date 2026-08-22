@@ -34,6 +34,7 @@ async function seedOrg(): Promise<{ actor: ContractActorT; orgId: string }> {
     }).returning({ id: partners.id });
     partnerId = p!.id;
     const [o] = await db.insert(organizations).values({
+      currencyCode: 'USD',
       partnerId, name: 'COrg', slug: `co-${sfx}`
     }).returning({ id: organizations.id });
     orgId = o!.id;
@@ -320,6 +321,7 @@ describe('contractService generation', () => {
       }).returning({ id: partners.id });
       partnerId = p!.id;
       const [o] = await db.insert(organizations).values({
+        currencyCode: 'USD',
         partnerId, name: `SysOrg-${sfx}`, slug: `so-${sfx}`
       }).returning({ id: organizations.id });
       orgId = o!.id;

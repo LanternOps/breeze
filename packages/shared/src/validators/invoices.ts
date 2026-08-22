@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 import { BULK_ID_LIMIT } from '../constants';
 import { nullableHttpUrlField } from './httpUrl';
+import { currencyCodeSchema } from './currency';
 
 const money = z.number().nonnegative().multipleOf(0.01);
 const positiveQty = z.number().positive().multipleOf(0.01);
@@ -85,7 +86,7 @@ export const listInvoicesQuerySchema = z.object({
 });
 
 export const partnerBillingSettingsSchema = z.object({
-  currencyCode: z.string().length(3),
+  currencyCode: currencyCodeSchema,
   defaultTaxRate: taxRate.nullable().optional(),
   invoiceNumberPrefix: z.string().min(1).max(12),
   invoiceTermsDays: z.number().int().min(0).max(365),

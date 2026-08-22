@@ -123,8 +123,8 @@ beforeAll(async () => {
   openSource = randomUUID(); groupedSource = randomUUID();
   const sfx = randomUUID();
   await admin`INSERT INTO partners (id, name, slug) VALUES (${partner}, 'wsp-vis', ${`wsp-vis-${sfx}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${org}, ${partner}, 'wsp-vis-org', ${`wsp-vis-org-${sfx}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${org}, ${partner}, 'wsp-vis-org', ${`wsp-vis-org-${sfx}`}, 'USD')`;
   // A real device row: workspace_file_activity.device_id carries an FK.
   await admin`INSERT INTO sites (id, org_id, name) VALUES (${site}, ${org}, 'wsp-vis-site')`;
   await admin`INSERT INTO devices

@@ -51,7 +51,7 @@ jobs:
         run: |
           bash scripts/check-guided-setup-compose-rewrites.sh
           bash scripts/check-guided-setup-default-project.sh
-          bash scripts/check-guided-setup-db-urls.sh
+          bash scripts/check-selfhost-db-urls.sh
           bash scripts/check-guided-setup-env-roundtrip.sh
           bash scripts/check-guided-setup-placeholders.sh
 
@@ -718,6 +718,20 @@ jobs:
 
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
+
+      # release.yml and releaseAssetTrust.ts independently encode "which agent-family
+      # Windows assets ship unsigned". When they drifted in v0.105.0, the API rejected
+      # the four unsigned exes and aborted the ENTIRE binary sync — freezing
+      # agent_versions at 0.104.0 in both prod regions for nine days, and surfacing as a
+      # 404 on Linux and macOS too, which were signed correctly (#3504).
+      # The guard's own parser is tested first, deliberately. This check reads two
+      # hand-written declarations, so a parser regression would make it silently
+      # find nothing to compare — indistinguishable from passing.
+      - name: Test release trust allowlist guard
+        run: node --test scripts/security/check-release-trust-allowlist.test.mjs
+
+      - name: Run release trust allowlist drift guard
+        run: node scripts/security/check-release-trust-allowlist.mjs
 
       - name: Run M365 signing secret runtime smoke
         run: bash scripts/security/check-m365-graph-read-runtime.sh
@@ -1540,6 +1554,20 @@ jobs:
           persist-credentials: false
 
       - name: Install Tauri system dependencies
+        # Bound the STEP, not just the commands inside it. The per-command
+        # deadlines below sum to ~27.75m worst case (3 attempts x 8m, plus two
+        # 90s dpkg recoveries, plus 45s of backoff), and the job budget is 35m
+        # JOB-wide — so a worst-case apt would leave ~7m for Rust toolchain
+        # setup, a cold `cargo check` on two webkit2gtk-linked crates, and the
+        # viewer tests. On a cache miss that is not enough, and the job would
+        # die on GitHub's generic "job timed out" with no diagnostic: the exact
+        # failure #3730 reported and this step exists to prevent, merely
+        # relocated from apt to whatever ran last.
+        #
+        # 12m caps apt at roughly a third of the budget and fires as a labelled
+        # step timeout, leaving 23m for the Rust work regardless of how badly
+        # the mirror behaves.
+        timeout-minutes: 12
         run: |
           # The Azure apt mirror (azure.archive.ubuntu.com) is intermittently
           # degraded and can crawl at 1-4 min/package, blowing this job's
@@ -1559,12 +1587,13 @@ jobs:
           # signals apt-get itself as root; wrapping sudo would kill the wrapper
           # and leave a root apt-get orphaned holding the dpkg lock.
           #
-          # Deadlines are sized so the WORST case still fails cleanly inside the
-          # job's 35-minute budget. Counting the --kill-after grace on every
-          # bound (each deadline can run to deadline + 30s), three attempts plus
-          # two recovery runs plus the sleeps come to under 27m, so the step
-          # reports its own error rather than being killed mid-attempt with no
-          # diagnostic. Normal runs finish in well under a minute, so these are
+          # Deadlines bound each apt phase so a stall fails fast with a real
+          # message instead of consuming the job. Counting the --kill-after
+          # grace on every bound (each deadline can run to deadline + 30s),
+          # three attempts plus two recovery runs plus the sleeps come to
+          # ~27.75m — which is why the step-level timeout above exists: sized
+          # against the job budget alone, that worst case starves everything
+          # after it. Normal runs finish in well under a minute, so these are
           # roughly 10x headroom rather than tight.
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/sources.list \

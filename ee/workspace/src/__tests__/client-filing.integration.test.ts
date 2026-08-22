@@ -210,8 +210,8 @@ beforeAll(async () => {
   const sfx = randomUUID();
   await admin`INSERT INTO partners (id, name, slug) VALUES (${partner}, 'wsp-client', ${`wsp-client-${sfx}`})`;
   for (const [id, label] of [[orgA, 'a'], [orgB, 'b'], [orgOff, 'off']] as const) {
-    await admin`INSERT INTO organizations (id, partner_id, name, slug)
-                VALUES (${id}, ${partner}, ${`wsp-client-${label}`}, ${`wsp-client-${label}-${sfx}`})`;
+    await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+                VALUES (${id}, ${partner}, ${`wsp-client-${label}`}, ${`wsp-client-${label}-${sfx}`}, 'USD')`;
   }
   // Content ON for the two tenants that serve the client surface; orgOff gets
   // NO settings row at all — default-deny is the behavior under test.

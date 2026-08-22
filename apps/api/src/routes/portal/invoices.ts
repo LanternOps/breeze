@@ -169,7 +169,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // deposit, deposit partially/fully paid) — never reimplement that logic here.
   const chargeNow = computeChargeNow({
     depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
-  });
+  }, inv.currencyCode);
   // Currency-aware minor units: zero-decimal currencies (JPY, KRW, …) must NOT be
   // multiplied by 100, or the customer is over-charged 100x (see stripeMoney.ts).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);

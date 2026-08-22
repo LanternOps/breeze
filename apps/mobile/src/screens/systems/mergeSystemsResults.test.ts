@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 
 import {
   ALL_FAILED_MESSAGE,
+  ORG_NAME_UNAVAILABLE,
+  ORG_NAME_UNKNOWN,
   PARTIAL_FAILED_MESSAGE,
   mergeSystemsResults,
   rejectionReasons,
+  resolveOrgName,
   type SystemsSlices,
 } from './mergeSystemsResults';
 import type { Alert, Device } from '../../services/api';
@@ -125,5 +128,34 @@ describe('the two alert pages stay independent', () => {
     });
     expect(recentDown.slices.activeAlerts[0].id).toBe('act-new');
     expect(recentDown.slices.alerts).toEqual(previous.alerts);
+  });
+});
+
+describe('resolveOrgName', () => {
+  const orgs = [{ id: 'o1', name: 'Acme' }];
+
+  it('returns the real name when the list has it', () => {
+    expect(resolveOrgName(orgs, 'o1', false)).toEqual({ name: 'Acme', unavailable: false });
+  });
+
+  it('says "unknown" when the list loaded and simply does not contain the org', () => {
+    const out = resolveOrgName(orgs, 'missing', false);
+    expect(out.name).toBe(ORG_NAME_UNKNOWN);
+    // Not a failure: the list is trustworthy, this org is genuinely not in it.
+    expect(out.unavailable).toBe(false);
+  });
+
+  it('distinguishes "we never loaded the list" from "not in the list"', () => {
+    // The #3753 regression: both used to render 'Unknown organization', so a
+    // failed orgs slice produced rows indistinguishable from real data.
+    const out = resolveOrgName([], 'o1', true);
+    expect(out.name).toBe(ORG_NAME_UNAVAILABLE);
+    expect(out.unavailable).toBe(true);
+    expect(out.name).not.toBe(ORG_NAME_UNKNOWN);
+  });
+
+  it('prefers a resolved name even when another slice failed', () => {
+    // orgs itself succeeded; a sibling failure must not degrade good labels.
+    expect(resolveOrgName(orgs, 'o1', true)).toEqual({ name: 'Acme', unavailable: false });
   });
 });

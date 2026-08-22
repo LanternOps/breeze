@@ -30,6 +30,7 @@ it.runIf(!!process.env.DATABASE_URL)(
       }).returning({ id: partners.id });
 
       const [o] = await db.insert(organizations).values({
+        currencyCode: 'USD',
         partnerId: p!.id, name: 'WOrg', slug: `wo-${sfx}`
       }).returning({ id: organizations.id });
 

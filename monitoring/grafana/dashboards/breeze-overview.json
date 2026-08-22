@@ -116,7 +116,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"breeze-api\"}",
+          "expr": "up{job=~\"breeze-api.*\"}",
           "refId": "A"
         }
       ],
@@ -202,7 +202,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_requests_total{job=\"breeze-api\"}[5m])) by (method)",
+          "expr": "sum(rate(http_requests_total{job=~\"breeze-api.*\"}[5m])) by (method)",
           "legendFormat": "{{method}}",
           "refId": "A"
         }
@@ -297,7 +297,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"breeze-api\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=~\"breeze-api.*\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -306,7 +306,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"breeze-api\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~\"breeze-api.*\"}[5m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
@@ -315,7 +315,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"breeze-api\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=~\"breeze-api.*\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -381,7 +381,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_requests_total{job=\"breeze-api\", status=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"breeze-api\"}[5m]))",
+          "expr": "sum(rate(http_requests_total{job=~\"breeze-api.*\", status_class=\"5xx\"}[5m])) / sum(rate(http_requests_total{job=~\"breeze-api.*\"}[5m]))",
           "refId": "A"
         }
       ],
@@ -398,7 +398,7 @@
       },
       "id": 101,
       "panels": [],
-      "title": "HTTP Status Codes",
+      "title": "HTTP Response Classes",
       "type": "row"
     },
     {
@@ -541,12 +541,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_requests_total{job=\"breeze-api\"}[5m])) by (status)",
-          "legendFormat": "{{status}}",
+          "expr": "sum(rate(http_requests_total{job=~\"breeze-api.*\"}[5m])) by (status_class)",
+          "legendFormat": "{{status_class}}",
           "refId": "A"
         }
       ],
-      "title": "Requests by Status Code",
+      "title": "Requests by Response Class",
       "type": "timeseries"
     },
     {
@@ -649,12 +649,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(http_requests_total{job=\"breeze-api\"}[$__range])) by (status)",
-          "legendFormat": "{{status}}",
+          "expr": "sum(increase(http_requests_total{job=~\"breeze-api.*\"}[$__range])) by (status_class)",
+          "legendFormat": "{{status_class}}",
           "refId": "A"
         }
       ],
-      "title": "Status Code Distribution",
+      "title": "Response Class Distribution",
       "type": "piechart"
     },
     {
@@ -776,7 +776,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_requests_total{job=\"breeze-api\"}[5m])) by (route)",
+          "expr": "sum(rate(http_requests_total{job=~\"breeze-api.*\"}[5m])) by (route)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -787,7 +787,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_request_duration_seconds_sum{job=\"breeze-api\"}[5m])) by (route) / sum(rate(http_request_duration_seconds_count{job=\"breeze-api\"}[5m])) by (route)",
+          "expr": "sum(rate(http_request_duration_seconds_sum{job=~\"breeze-api.*\"}[5m])) by (route) / sum(rate(http_request_duration_seconds_count{job=~\"breeze-api.*\"}[5m])) by (route)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -1380,7 +1380,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_heartbeat_total{job=\"breeze-api\"}[5m])) by (status)",
+          "expr": "sum(rate(agent_heartbeat_total{job=~\"breeze-api.*\"}[5m])) by (status)",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -1541,7 +1541,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(breeze_backup_dispatch_failures_total{job=\"breeze-api\"}[24h]))",
+          "expr": "sum(increase(breeze_backup_dispatch_failures_total{job=~\"breeze-api.*\"}[24h]))",
           "refId": "A"
         }
       ],
@@ -1601,7 +1601,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(breeze_restore_timeouts_total{job=\"breeze-api\"}[24h]))",
+          "expr": "sum(increase(breeze_restore_timeouts_total{job=~\"breeze-api.*\"}[24h]))",
           "refId": "A"
         }
       ],
@@ -1661,7 +1661,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(breeze_backup_verification_skips_total{job=\"breeze-api\"}[24h]))",
+          "expr": "sum(increase(breeze_backup_verification_skips_total{job=~\"breeze-api.*\"}[24h]))",
           "refId": "A"
         }
       ],

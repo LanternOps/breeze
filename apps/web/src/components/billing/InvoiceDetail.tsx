@@ -144,7 +144,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     depositDue: invoice.depositDue ?? null,
     amountPaid: invoice.amountPaid,
     balance: invoice.balance,
-  });
+  }, invoice.currencyCode);
 
   // The due date is editable once the invoice is live (issued/partially paid/overdue);
   // the /due-date route is gated on invoices:write.

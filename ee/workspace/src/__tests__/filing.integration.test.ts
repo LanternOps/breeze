@@ -103,8 +103,8 @@ beforeAll(async () => {
   partner = randomUUID(); org = randomUUID(); source = randomUUID(); hiddenSource = randomUUID();
   const sfx = randomUUID();
   await admin`INSERT INTO partners (id, name, slug) VALUES (${partner}, 'wsp-filing', ${`wsp-filing-${sfx}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${org}, ${partner}, 'wsp-filing-org', ${`wsp-filing-org-${sfx}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${org}, ${partner}, 'wsp-filing-org', ${`wsp-filing-org-${sfx}`}, 'USD')`;
   await admin`INSERT INTO workspace_sources (id, org_id, kind, display_name, root_path, visibility_group_ids)
               VALUES (${source}, ${org}, 'smb_share', 'estate', '\\\\srv\\estate', '[]'::jsonb),
                      (${hiddenSource}, ${org}, 'smb_share', 'hidden', '\\\\srv\\hidden', '["g1"]'::jsonb)`;

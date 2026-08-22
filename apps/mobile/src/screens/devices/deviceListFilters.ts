@@ -5,9 +5,15 @@ export type DeviceStatusFilter = 'all' | 'online' | 'offline';
 /**
  * Client-side list shaping for the devices browser.
  *
- * The fleet arrives as one page from `/mobile/devices` (50 by default), so
- * filtering and sorting happen here rather than round-tripping. Kept pure so
- * the ordering contract is testable without a renderer.
+ * Filtering and sorting happen here over the in-memory list rather than
+ * round-tripping per keystroke. Kept pure so the ordering contract is testable
+ * without a renderer.
+ *
+ * IMPORTANT: that list is ONE PAGE, not the fleet. This comment used to claim
+ * `getDevices` "walks the cursor to the end of the fleet" — it never did; the
+ * cursor walk could not obtain a first-page cursor from the server and stopped
+ * after one page (#3753). So a filter here searches a subset, and a "no match"
+ * result means "not on this page". The caller owns saying so.
  */
 
 /** Offline-first: the machines that need attention sort to the top. */

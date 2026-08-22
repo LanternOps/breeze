@@ -53,7 +53,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   // Derive the amount accept actually invoices (one-time only) so the customer
   // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
   // plus the deposit due + per-category subtotals for the summary panel.
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
   // Branding parity with the public token view (quotesPublic.ts): partners is a
   // partner-axis RLS table invisible to this org scope (#1375 class — 0 rows, no
   // error), so the name reads under SYSTEM scope like the /pdf route below;
@@ -96,7 +96,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   // "Remaining balance" line matches the portal detail view instead of falling
   // back to renderQuotePdf's oneTimeTotal default (tax-exclusive on taxed
   // deposit quotes).
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
   // partners is a partner-axis RLS table — the portal request runs in ORG scope,
   // where breeze_has_partner_access is false. A bare read returns 0 rows with NO
   // error (the #1375 class), causing buildSellerSnapshot(undefined) to produce an

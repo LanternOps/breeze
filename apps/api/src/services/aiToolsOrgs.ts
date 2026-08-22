@@ -34,7 +34,7 @@
 
 import { and, eq, ilike, inArray, isNull, ne, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { organizations, sites } from '../db/schema';
+import { organizations, partners, sites } from '../db/schema';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
@@ -243,6 +243,13 @@ async function handleCreateOrg(
   // one system-context transaction.
   const created = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
+      const [partnerRow] = await db
+        .select({ currencyCode: partners.currencyCode })
+        .from(partners)
+        .where(eq(partners.id, partnerId))
+        .limit(1);
+      if (!partnerRow) throw new Error('Partner not found');
+
       const existing = await db
         .select({ slug: organizations.slug })
         .from(organizations)
@@ -254,6 +261,7 @@ async function handleCreateOrg(
         .insert(organizations)
         .values({
           partnerId,
+          currencyCode: partnerRow.currencyCode,
           name: name.slice(0, 255),
           slug,
           type: 'customer' as const,

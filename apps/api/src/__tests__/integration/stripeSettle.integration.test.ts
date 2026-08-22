@@ -32,7 +32,7 @@ async function seedPendingPayment() {
   const f = await withSystemDbAccessContext(async () => {
     const sfx = Math.random().toString(36).slice(2, 8);
     const [p] = await db.insert(partners).values({ name: `P ${sfx}`, slug: `p-${sfx}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
-    const [o] = await db.insert(organizations).values({ partnerId: p!.id, name: 'O', slug: `o-${sfx}` }).returning({ id: organizations.id });
+    const [o] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: p!.id, name: 'O', slug: `o-${sfx}` }).returning({ id: organizations.id });
     const [u] = await db.insert(users).values({ partnerId: p!.id, orgId: o!.id, email: `u-${sfx}@x.io`, name: 'U', status: 'active' }).returning({ id: users.id });
     return { partnerId: p!.id, orgId: o!.id, userId: u!.id };
   });

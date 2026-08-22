@@ -72,8 +72,8 @@ async function seedPartner(label: string): Promise<PartnerSeed> {
   `);
 
   const [org] = (await testDb.execute(sql`
-    INSERT INTO organizations (partner_id, name, slug, status, created_at, updated_at)
-    VALUES (${partnerId}, ${`Org ${label}`}, ${`org-${label}-${suffix}`}, 'active', now(), now())
+    INSERT INTO organizations (partner_id, name, slug, status, currency_code, created_at, updated_at)
+    VALUES (${partnerId}, ${`Org ${label}`}, ${`org-${label}-${suffix}`}, 'active', 'USD', now(), now())
     RETURNING id
   `)) as unknown as Array<{ id: string }>;
   const orgId = org!.id;

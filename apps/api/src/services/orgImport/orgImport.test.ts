@@ -50,9 +50,11 @@ function stubState(orgs: OrgRow[], links: LinkRow[], extraSelects: unknown[][] =
     ...o,
   }));
   const queue: unknown[][] = [orgRows, links, ...extraSelects];
-  selectMock.mockImplementation(() => ({
+  selectMock.mockImplementation((selection?: Record<string, unknown>) => ({
     from: () => {
-      const rows = queue.shift() ?? [];
+      const rows = selection && 'currencyCode' in selection
+        ? [{ currencyCode: 'CAD' }]
+        : queue.shift() ?? [];
       return {
         where: () => {
           const p = Promise.resolve(rows) as Promise<unknown[]> & { limit: () => Promise<unknown[]> };
@@ -369,7 +371,7 @@ describe('commitOrgImport — create', () => {
     expect(summary.imported[1]).toMatchObject({ createdOrganization: false });
 
     // Insert order: org, link, site, site.
-    expect(insertedValues[0]!.values).toMatchObject({ partnerId: 'p1', name: 'Acme', slug: 'acme', type: 'customer' });
+    expect(insertedValues[0]!.values).toMatchObject({ partnerId: 'p1', currencyCode: 'CAD', name: 'Acme', slug: 'acme', type: 'customer' });
     expect(insertedValues[1]!.values).toMatchObject({
       orgId: 'row-1', partnerId: 'p1', system: 'datto_rmm', externalId: '1', createdBy: 'u1',
     });

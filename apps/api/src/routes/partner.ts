@@ -7,6 +7,24 @@ import { authMiddleware, requirePermission, requireScope } from '../middleware/a
 import { PERMISSIONS } from '../services/permissions';
 
 export const partnerRoutes = new Hono();
+
+/**
+ * Operator-configured scheduling link shown to inactive (pending) partners next
+ * to the billing CTA so the payment wall is never a dead end. Env-driven so the
+ * link can change without a deploy (same rationale as
+ * SIGNUP_BUSINESS_EMAIL_CONTACT_URL). Non-http(s) values are dropped here so no
+ * client has to trust the value.
+ */
+export function pendingAccountMeetingUrl(): string | null {
+  const raw = process.env.PENDING_ACCOUNT_MEETING_URL?.trim();
+  if (!raw) return null;
+  try {
+    const { protocol } = new URL(raw);
+    return protocol === 'http:' || protocol === 'https:' ? raw : null;
+  } catch {
+    return null;
+  }
+}
 const requirePartnerDashboardRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 const requirePartnerDeviceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 
@@ -66,6 +84,8 @@ partnerRoutes.get('/me', async (c) => {
     statusMessage: (settings.statusMessage as string) ?? null,
     statusActionUrl: (settings.statusActionUrl as string) ?? null,
     statusActionLabel: (settings.statusActionLabel as string) ?? null,
+    statusMeetingUrl: pendingAccountMeetingUrl(),
+    statusMeetingLabel: process.env.PENDING_ACCOUNT_MEETING_LABEL?.trim() || null,
   });
 });
 

@@ -149,6 +149,8 @@ export function SystemsScreen() {
     loading,
     refreshing,
     error,
+    activeAlertsTruncated,
+    devicesTruncated,
     refresh,
     refreshIfStale,
   } = useSystemsData();
@@ -558,6 +560,13 @@ export function SystemsScreen() {
           <FilterChip label={filterOrgName} onClear={() => setFilterOrgId(null)} />
         ) : null}
 
+        {/*
+          Renders the message the hook computed rather than one hardcoded
+          string. `ALL_FAILED_MESSAGE` ("nothing loaded") and
+          `PARTIAL_FAILED_MESSAGE` ("some of this is stale") were being
+          collapsed into the same sentence, so a screen showing NO real data
+          and a screen showing MOSTLY real data read identically.
+        */}
         {error ? (
           <View
             style={{
@@ -566,7 +575,29 @@ export function SystemsScreen() {
             }}
           >
             <Text style={[type.meta, { color: palette.deny.base }]}>
-              Couldn't refresh. Pull to try again.
+              {error} Pull to try again.
+            </Text>
+          </View>
+        ) : null}
+
+        {/*
+          Truncation is not an error — the rows shown are real. It still has to
+          be said, because Active Issues and every org issue count are computed
+          over this list, and a capped list renders as a confident total.
+        */}
+        {activeAlertsTruncated || devicesTruncated ? (
+          <View
+            style={{
+              paddingHorizontal: spacing[6],
+              paddingTop: spacing[4],
+            }}
+          >
+            <Text style={[type.meta, { color: palette.dark.textLo }]}>
+              {activeAlertsTruncated && devicesTruncated
+                ? 'Showing part of the fleet and part of the active alerts. Counts below are a partial view.'
+                : activeAlertsTruncated
+                  ? 'Showing the most recent active alerts only. Issue counts below are a partial view.'
+                  : 'Showing part of the fleet. Device counts below are a partial view.'}
             </Text>
           </View>
         ) : null}

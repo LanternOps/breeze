@@ -1400,8 +1400,18 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     }
   }
 
+  const [partnerRow] = await db
+    .select({ currencyCode: partners.currencyCode })
+    .from(partners)
+    .where(and(eq(partners.id, targetPartnerId), isNull(partners.deletedAt)))
+    .limit(1);
+  if (!partnerRow) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
   const insertValues = {
     partnerId: targetPartnerId,
+    currencyCode: partnerRow.currencyCode,
     name: data.name,
     slug: data.slug,
     type: data.type,

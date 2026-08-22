@@ -392,6 +392,11 @@ services:
       # (#3239; #3236 was one instance of the same shape). All are `${VAR:-}`
       # for the reason spelled out above — '' reads as absent to envStr /
       # envFlag / envInt, so an unset knob still gets its in-code default.
+      # Booking link on the pending-account screen, shown beside BILLING_URL's
+      # CTA so stopping at the payment step isn't a dead end. Operator-set and
+      # changeable without a redeploy; the API drops non-http(s) URLs.
+      PENDING_ACCOUNT_MEETING_URL: ${PENDING_ACCOUNT_MEETING_URL:-}
+      PENDING_ACCOUNT_MEETING_LABEL: ${PENDING_ACCOUNT_MEETING_LABEL:-}
       # Auth cookie + CORS hardening. AUTH_/PORTAL_-prefixed names override the
       # generic COOKIE_* pair; that precedence is resolved with envStr (NOT `??`)
       # precisely because '' must fall through rather than shadow — see

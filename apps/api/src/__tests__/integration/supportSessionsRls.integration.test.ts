@@ -70,6 +70,7 @@ async function seedQuickSupportOrg(partnerId: string): Promise<{ orgId: string; 
     db
       .insert(organizations)
       .values({
+        currencyCode: 'USD',
         partnerId,
         name: 'Quick Support',
         slug: `quick-support-${partnerId}`,
@@ -302,6 +303,7 @@ describe('organizations_partner_quick_support_uniq — one hidden org per partne
         db
           .insert(organizations)
           .values({
+            currencyCode: 'USD',
             partnerId: partner.id,
             name: 'Quick Support (duplicate)',
             // A DIFFERENT slug, so the failure can only come from the partial
@@ -340,11 +342,11 @@ describe('organizations_partner_quick_support_uniq — one hidden org per partne
     const [first, second] = await withDbAccessContext(SYSTEM_CTX, async () => {
       const [a] = await db
         .insert(organizations)
-        .values({ partnerId: partner.id, name: 'Cust A', slug: `cust-a-${partner.id}`, type: 'customer', status: 'active' })
+        .values({ currencyCode: 'USD', partnerId: partner.id, name: 'Cust A', slug: `cust-a-${partner.id}`, type: 'customer', status: 'active' })
         .returning();
       const [b] = await db
         .insert(organizations)
-        .values({ partnerId: partner.id, name: 'Cust B', slug: `cust-b-${partner.id}`, type: 'customer', status: 'active' })
+        .values({ currencyCode: 'USD', partnerId: partner.id, name: 'Cust B', slug: `cust-b-${partner.id}`, type: 'customer', status: 'active' })
         .returning();
       return [a, b];
     });

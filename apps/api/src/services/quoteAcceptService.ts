@@ -184,7 +184,7 @@ export async function acceptQuote(
   const totalsLines: { lineTotal: string; taxable: boolean; customerVisible: boolean }[] = [];
   for (let i = 0; i < oneTime.length; i++) {
     const l = oneTime[i]!;
-    const lineTotal = computeLineTotal(l.quantity, l.unitPrice);
+    const lineTotal = computeLineTotal(l.quantity, l.unitPrice, quote.currencyCode);
     await db.insert(invoiceLines).values({
       invoiceId: invoice!.id,
       orgId: quote.orgId,
@@ -218,7 +218,7 @@ export async function acceptQuote(
     });
     totalsLines.push({ lineTotal, taxable: l.taxable, customerVisible: true });
   }
-  const totals = computeInvoiceTotals(totalsLines, quote.taxRate ?? null);
+  const totals = computeInvoiceTotals(totalsLines, quote.taxRate ?? null, quote.currencyCode);
 
   // Auto-issue on accept (Phase 3): if the converted invoice has payable (one-time)
   // lines, ISSUE it now — allocate a gapless invoice number and flip to 'sent' — so

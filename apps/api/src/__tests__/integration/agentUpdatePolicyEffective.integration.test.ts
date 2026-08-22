@@ -67,6 +67,7 @@ async function seed(
     const [org] = await db
       .insert(organizations)
       .values({
+        currencyCode: 'USD',
         partnerId: partner.id,
         name: `AUP Org ${ts}-${rand}`,
         slug: `aup-org-${ts}-${rand}`,

@@ -37,9 +37,9 @@ beforeAll(async () => {
   await admin`INSERT INTO partners (id, name, slug)
               VALUES (${partnerA}, 'wsp-content-a', ${`wsp-content-a-${sfx}`}),
                      (${partnerB}, 'wsp-content-b', ${`wsp-content-b-${sfx}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${orgA}, ${partnerA}, 'wsp-content-org-a', ${`wsp-content-org-a-${sfx}`}),
-                     (${orgB}, ${partnerB}, 'wsp-content-org-b', ${`wsp-content-org-b-${sfx}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${orgA}, ${partnerA}, 'wsp-content-org-a', ${`wsp-content-org-a-${sfx}`}, 'USD'),
+                     (${orgB}, ${partnerB}, 'wsp-content-org-b', ${`wsp-content-org-b-${sfx}`}, 'USD')`;
   sourceA = randomUUID(); sourceB = randomUUID();
   await admin`INSERT INTO workspace_sources (id, org_id, kind, display_name, root_path)
               VALUES (${sourceA}, ${orgA}, 'smb_share', 'a share', '\\\\srv\\a'),

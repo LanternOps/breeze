@@ -2,7 +2,7 @@ import type { Alert, Device } from '../../services/api';
 import type { MobileSummary, OrganizationSummary } from '../../services/systems';
 
 /**
- * The four independent fetches behind the Systems screen, in the order
+ * The five independent fetches behind the Systems screen, in the order
  * `fetchAll` issues them.
  */
 export interface SystemsSlices {
@@ -39,11 +39,11 @@ function take<T>(result: PromiseSettledResult<T>, previous: T): T {
 }
 
 /**
- * Merge the settled results of the four Systems fetches over the previously
+ * Merge the settled results of the five Systems fetches over the previously
  * rendered data.
  *
  * The screen used to issue these through `Promise.all`, so a single rejection
- * discarded ALL FOUR results — a transient failure on, say, the summary call
+ * discarded ALL FIVE results — a transient failure on, say, the summary call
  * blanked a fleet of devices that had loaded perfectly well, and the user saw an
  * empty screen with a generic error. Each slice now stands on its own: whatever
  * arrived is rendered, whatever failed keeps its last-known value, and the error
@@ -91,4 +91,33 @@ export function rejectionReasons(results: {
     .map((k) => results[k])
     .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
     .map((r) => r.reason);
+}
+
+/**
+ * Distinct from 'Unknown organization' on purpose: that one means the org is
+ * genuinely absent from a list we successfully loaded, this one means we never
+ * loaded the list.
+ */
+export const ORG_NAME_UNAVAILABLE = 'Organization unavailable';
+export const ORG_NAME_UNKNOWN = 'Unknown organization';
+
+/**
+ * Resolve an org id to a display name, distinguishing "not in the list" from
+ * "there is no list".
+ *
+ * Both used to collapse to 'Unknown organization', so a failed `orgs` slice
+ * produced rows that looked exactly like real data about a genuinely unlisted
+ * org. The caller renders under a partial-failure banner in that case, and a
+ * confidently-labelled row directly contradicts it.
+ */
+export function resolveOrgName(
+  orgs: ReadonlyArray<{ id: string; name: string }>,
+  id: string,
+  orgsFailed: boolean
+): { name: string; unavailable: boolean } {
+  const resolved = orgs.find((o) => o.id === id)?.name;
+  if (resolved) return { name: resolved, unavailable: false };
+  return orgsFailed
+    ? { name: ORG_NAME_UNAVAILABLE, unavailable: true }
+    : { name: ORG_NAME_UNKNOWN, unavailable: false };
 }

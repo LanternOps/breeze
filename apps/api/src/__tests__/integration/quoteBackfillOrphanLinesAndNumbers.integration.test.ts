@@ -63,8 +63,8 @@ async function seedTenant(): Promise<{ partnerId: string; orgId: string }> {
     RETURNING id
   `;
   const [o] = await sql<{ id: string }[]>`
-    INSERT INTO organizations (partner_id, name, slug)
-    VALUES (${p!.id}, 'QB Org', ${`qb-org-${sfx}`})
+    INSERT INTO organizations (partner_id, name, slug, currency_code)
+    VALUES (${p!.id}, 'QB Org', ${`qb-org-${sfx}`}, 'USD')
     RETURNING id
   `;
   return { partnerId: p!.id, orgId: o!.id };
