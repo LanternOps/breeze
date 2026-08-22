@@ -220,6 +220,7 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([]); // lines — none at all, so dueOnAcceptanceTotal is $0
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
 
@@ -234,6 +235,7 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
 
@@ -253,6 +255,7 @@ describe('sendQuote deposit validation', () => {
     // A one-time line exists (so dueOnAcceptance > 0) but NONE are depositEligible.
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
 
@@ -267,6 +270,7 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
 
@@ -317,6 +321,7 @@ describe('sendQuote customer-facing PDF', () => {
     queueResult([]); // blocks
     queueResult([visibleLine, internalLine]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
@@ -377,6 +382,7 @@ describe('sendQuote email delivery status', () => {
     queueResult([]); // blocks
     queueResult([lineRow]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]); // getQuote's draft billTo org lookup
@@ -584,6 +590,7 @@ describe('sendQuote bill-to snapshot', () => {
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);    // getQuote's own draft billTo org lookup (status is 'draft' for every quote sent through this helper)
@@ -726,6 +733,7 @@ describe('sendQuote presentation snapshot', () => {
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
@@ -810,6 +818,7 @@ describe('sendQuote document_locale stamp', () => {
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
@@ -938,6 +947,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([contractBlock({})]);       // getQuote: blocks — governing_state left blank
     queueResult([]);                        // getQuote: lines
     queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([]);                        // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                     // getQuote's own draft billTo org lookup
@@ -958,6 +968,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([contractBlock({})]);
     queueResult([]);
     queueResult([]); // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);
@@ -975,6 +986,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([contractBlock({ governing_state: 'Texas' })]); // getQuote: blocks — filled in
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([]);                        // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                     // getQuote's own draft billTo org lookup
@@ -1015,6 +1027,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([contractBlock({})]);        // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);                         // getQuote: no staged Pax8 order
+    queueResult([]);                         // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                      // getQuote's own draft billTo org lookup
@@ -1069,6 +1082,7 @@ describe('resendQuote', () => {
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — headers
     queueResult([]); // listQuoteOrders — lines
   }
@@ -1231,6 +1245,7 @@ describe('getQuoteShareLink', () => {
     queueResult([]);
     queueResult([]);
     queueResult([]);
+    queueResult([]); // no successor revision
     queueResult([]);
     queueResult([]);
   }
