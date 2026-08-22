@@ -16,7 +16,7 @@ tracking_issue: LanternOps/breeze#3821
 
 ## Global Constraints
 
-- Migration filename: `2026-08-27-ai-agents.sql` (shipped files already run through `2026-08-26-`; `2026-08-06-` is a CLOSED block). Idempotent; no inner `BEGIN;`/`COMMIT;`; `GRANT SELECT, INSERT, UPDATE, DELETE ON <table> TO breeze_app;` for every new table.
+- Migration filename: `2026-09-01-ai-agents.sql` (shipped files already run through `2026-08-31-b-`; the `2026-08-27-a-`/`2026-08-27-b-` pair is an interdependent same-day block). Idempotent; no inner `BEGIN;`/`COMMIT;`; `GRANT SELECT, INSERT, UPDATE, DELETE ON <table> TO breeze_app;` for every new table.
 - Every new tenant table is registered in the same PR: `DUAL_AXIS_TENANT_TABLES` (ai_agents), `CORE_ORG_CASCADE_DELETE_ORDER` (both, alphabetical by `localeCompare`, `organizations` last), `CORE_DEVICE_CASCADE_DELETE_TABLES` + `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (ai_agent_runs), `CORE_TENANT_EXPORT_POLICY` (both; every `jsonb` column → `excludedOpen`).
 - Partner-wide writes gate on `canManagePartnerWidePolicies(auth)` (`services/partnerWideAccess.ts`). `ownerScope` is create-only; update schemas `.omit({ ownerScope: true, kind: true, orgId: true })`.
 - `SUPPORTED_AGENT_MODES = ['off', 'shadow']`. Any other mode → 422 `mode_not_supported`.
@@ -41,7 +41,7 @@ tracking_issue: LanternOps/breeze#3821
 |---|---|
 | `packages/shared/src/types/aiAgents.ts` | Kinds, modes, rank, run statuses, policy/snapshot TS types |
 | `packages/shared/src/validators/aiAgents.ts` | Zod schemas for jsonb shapes + create/update bodies |
-| `apps/api/migrations/2026-08-27-ai-agents.sql` | Tables, RLS, indexes, `ai_sessions.agent_id`, CHECKs, immutability trigger, grants |
+| `apps/api/migrations/2026-09-01-ai-agents.sql` | Tables, RLS, indexes, `ai_sessions.agent_id`, CHECKs, immutability trigger, grants |
 | `apps/api/src/db/schema/aiAgents.ts` | Drizzle `aiAgents`, `aiAgentRuns` |
 | `apps/api/src/db/schema/ai.ts` | `aiSessions.agentId` column |
 | `apps/api/src/services/aiAgents/constants.ts` | `SUPPORTED_AGENT_MODES` |
@@ -303,7 +303,7 @@ git commit -m "feat(shared): ai agent kinds, modes, policy validators (wave 1)"
 ### Task 2: Migration + Drizzle schema
 
 **Files:**
-- Create: `apps/api/migrations/2026-08-27-ai-agents.sql`
+- Create: `apps/api/migrations/2026-09-01-ai-agents.sql`
 - Create: `apps/api/src/db/schema/aiAgents.ts`
 - Modify: `apps/api/src/db/schema/ai.ts` (add `agentId` to `aiSessions`)
 - Modify: `apps/api/src/db/schema/index.ts` (add `export * from './aiAgents';` after `./ai`)
@@ -314,7 +314,7 @@ git commit -m "feat(shared): ai agent kinds, modes, policy validators (wave 1)"
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- apps/api/migrations/2026-08-27-ai-agents.sql
+-- apps/api/migrations/2026-09-01-ai-agents.sql
 -- AI Agents wave 1 (spec: docs/superpowers/specs/ai-mcp/2026-08-22-ai-agents-program-and-wave1-design.md)
 -- ai_agents: dual-owner config (org_id XOR partner_id), partner-wide first (#2135).
 -- ai_agent_runs: org-scoped ledger (Shape 1) with device_id + denormalized org_id.
@@ -519,7 +519,7 @@ import { users } from './users';
 
 // Dual-ownership (#2135, spec §4.1): an agent belongs to EITHER one org
 // (org_id set) OR a whole partner (partner_id set, org_id NULL). The XOR
-// CHECK `ai_agents_one_owner_chk` lives in 2026-08-27-ai-agents.sql.
+// CHECK `ai_agents_one_owner_chk` lives in 2026-09-01-ai-agents.sql.
 // Never hard-deleted: `disabled_at` is the soft delete and the partial
 // unique indexes only consider live rows.
 export const aiAgents = pgTable('ai_agents', {
@@ -598,7 +598,7 @@ In `apps/api/src/db/schema/ai.ts`, inside `aiSessions` after `workbookName`:
   // AI agent principal (spec §3.3). CHECK ai_sessions_single_principal_check
   // (at most one of user_id/client_user_id/agent_id) and
   // ai_sessions_agent_type_check (type='agent' ⇒ agent_id set) live in
-  // 2026-08-27-ai-agents.sql. FK is declared in SQL to avoid a circular import
+  // 2026-09-01-ai-agents.sql. FK is declared in SQL to avoid a circular import
   // (aiAgents.ts imports aiSessions for ai_agent_runs.session_id).
   agentId: uuid('agent_id'),
 ```
@@ -626,7 +626,7 @@ Expected: `ERROR: new row violates row-level security policy`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/migrations/2026-08-27-ai-agents.sql apps/api/src/db/schema/aiAgents.ts apps/api/src/db/schema/ai.ts apps/api/src/db/schema/index.ts
+git add apps/api/migrations/2026-09-01-ai-agents.sql apps/api/src/db/schema/aiAgents.ts apps/api/src/db/schema/ai.ts apps/api/src/db/schema/index.ts
 git commit -m "feat(api): ai_agents + ai_agent_runs tables, ai_sessions.agent_id (wave 1)"
 ```
 
@@ -676,7 +676,7 @@ Expected: failures naming `ai_agent_runs` (device lists), `ai_agents`/`ai_agent_
 ```ts
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR
   // partner-wide (partner_id set, org_id NULL). Created dual-axis from day one
-  // in 2026-08-27-ai-agents. Same blindspot as configuration_policies: the
+  // in 2026-09-01-ai-agents. Same blindspot as configuration_policies: the
   // org_id column means org-tenant auto-discovery already asserts the
   // breeze_has_org_access branch, so this entry is what asserts the
   // breeze_has_partner_access (partner-wide) branch. CHECK
@@ -744,7 +744,7 @@ async function creator(partnerId: string) {
 
 const BASE = { kind: 'triage' as const, name: 'Triage' };
 
-describe('ai_agents RLS — dual-axis (2026-08-27 migration)', () => {
+describe('ai_agents RLS — dual-axis (2026-09-01 migration)', () => {
   it('partner scope can INSERT a partner-wide agent', async () => {
     const partner = await createPartner();
     const by = await creator(partner.id);
