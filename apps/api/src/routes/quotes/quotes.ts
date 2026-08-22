@@ -12,7 +12,7 @@ import {
   changeCurrencySchema,
 } from '@breeze/shared';
 import {
-  createQuote, cloneQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
+  createQuote, cloneQuote, reviseQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
   reorderBlocks, reorderLines, moveLineToBlock, changeQuoteCurrency,
 } from '../../services/quoteService';
@@ -53,7 +53,9 @@ export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
   return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds, allowedSiteIds: auth.allowedSiteIds };
 }
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof QuoteServiceError) {
+    return c.json(err.meta ? { error: err.message, code: err.code, meta: err.meta } : { error: err.message, code: err.code }, err.status);
+  }
   if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
   // An unloadable/encrypted uploaded contract PDF surfaces as a 4xx (typed) here
   // rather than an uncaught 500 — uploads are validated at write time, so this is
@@ -89,6 +91,26 @@ quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idPara
   }
   try { return c.json({ data: await cloneQuote(c.req.valid('param').id, quoteActorFrom(c), input) }); }
   catch (err) { return handleServiceError(c, err); }
+});
+// POST /:id/revise — create a linked draft revision of an issued quote. The
+// parent stays live until the revision is SENT (sendQuote supersedes it).
+// quotes:write like clone; the send itself will require quotes:send.
+quoteCrudRoutes.post('/:id/revise', scopes, writePerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
+  try {
+    const actor = quoteActorFrom(c);
+    const { quote: parent } = await getQuote(id, actor);
+    const revision = await reviseQuote(id, actor);
+    writeRouteAudit(c, {
+      orgId: revision.orgId,
+      action: 'quote.revised',
+      resourceType: 'quote',
+      resourceId: revision.id,
+      result: 'success',
+      details: { parentQuoteId: id, revisionNumber: revision.revisionNumber, parentStatus: parent.status },
+    });
+    return c.json({ data: revision });
+  } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;

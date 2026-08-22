@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
+import { quotes, quoteLines, quoteBlocks, quoteImages, quoteRecipients } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
 import { organizations, partners } from '../db/schema/orgs';
 import { contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
@@ -776,6 +776,17 @@ export async function getQuote(id: string, actor: QuoteActor) {
         eq(pax8OrderLines.orgId, q.orgId),
       ))
     : [];
+  const revisionOf = q.revisionOfQuoteId ? await (async () => {
+    const [parent] = await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber })
+      .from(quotes).where(eq(quotes.id, q.revisionOfQuoteId!)).limit(1);
+    if (!parent) return null;
+    // Same-org by FK; safe unfiltered in this request context (see getQuoteRecipients).
+    const recipients = await db.select({ email: quoteRecipients.email }).from(quoteRecipients)
+      .where(eq(quoteRecipients.quoteId, parent.id)).orderBy(quoteRecipients.createdAt);
+    return { id: parent.id, quoteNumber: parent.quoteNumber, recipients: recipients.map((r) => r.email) };
+  })() : null;
+  const [successorRow] = await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber, status: quotes.status })
+    .from(quotes).where(eq(quotes.revisionOfQuoteId, q.id)).limit(1);
   // Procurement order tracking (Task 11): every PO header + its line-level
   // allocations recorded against this quote, so the editor can show fulfillment
   // status alongside the pax8 auto-order summary above.
@@ -855,6 +866,8 @@ export async function getQuote(id: string, actor: QuoteActor) {
     pax8Order: pax8OrderSummary
       ? { id: pax8OrderSummary.pax8OrderId, status: pax8OrderSummary.status, lines: pax8LineRows }
       : null,
+    revisionOf,
+    successor: successorRow ?? null,
   };
 }
 

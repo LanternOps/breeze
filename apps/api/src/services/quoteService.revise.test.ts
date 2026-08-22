@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Param, SQL } from 'drizzle-orm';
 
 // Controllable Drizzle chain mock (same pattern as quoteService.test.ts): every
 // builder method returns the same chain; a query resolves when awaited. The
@@ -44,7 +45,27 @@ import * as svc from './quoteService';
 type Chain = {
   set: { mock: { calls: unknown[][] } };
   values: { mock: { calls: unknown[][] } };
+  where: { mock: { calls: unknown[][] } };
 };
+
+function collectBoundParams(node: unknown): { column: string; value: unknown }[] {
+  const found: { column: string; value: unknown }[] = [];
+  const seen = new WeakSet<object>();
+  const visit = (value: unknown) => {
+    if (value == null || typeof value !== 'object' || seen.has(value as object)) return;
+    seen.add(value as object);
+    if (value instanceof Param) {
+      const encoder = (value as { encoder?: { name?: string } }).encoder;
+      found.push({ column: encoder?.name ?? '<unknown>', value: (value as { value: unknown }).value });
+      return;
+    }
+    if (value instanceof SQL) {
+      for (const chunk of (value as unknown as { queryChunks: unknown[] }).queryChunks) visit(chunk);
+    }
+  };
+  visit(node);
+  return found;
+}
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 const quote = (over: Record<string, unknown> = {}) => ({
@@ -74,6 +95,11 @@ function queueGetQuote(row: Record<string, unknown>) {
   queueResult([]); // blocks
   queueResult([]); // lines
   queueResult([]); // no staged Pax8 order
+  if (row.revisionOfQuoteId) {
+    queueResult([{ id: row.revisionOfQuoteId, quoteNumber: null }]); // immediate parent
+    queueResult([]); // parent recipients
+  }
+  queueResult([]); // no successor
   queueResult([]); // quote order headers
   queueResult([]); // quote order lines
   if (row.status === 'draft') queueResult([{ name: 'Customer' }]); // draft bill-to org
@@ -197,6 +223,51 @@ describe('reviseQuote', () => {
       code: 'REVISION_IN_PROGRESS',
       status: 409,
     });
+  });
+});
+
+describe('getQuote revision lineage', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+  });
+
+  it('populates the immediate parent recipients and immediate successor', async () => {
+    const child = quote({
+      id: 'q2',
+      status: 'sent',
+      quoteNumber: 'Q-2026-0042-R2',
+      revisionOfQuoteId: 'q1',
+      revisionNumber: 2,
+    });
+    queueResult([child]);
+    queueResult([]); // blocks
+    queueResult([]); // lines
+    queueResult([]); // no staged Pax8 order
+    queueResult([{ id: 'q1', quoteNumber: 'Q-2026-0042' }]);
+    queueResult([{ email: 'buyer@example.com' }, { email: 'cfo@example.com' }]);
+    queueResult([{ id: 'q3', quoteNumber: 'Q-2026-0042-R3', status: 'draft' }]);
+    queueResult([]); // quote order headers
+    queueResult([]); // quote order lines
+
+    const detail = await svc.getQuote('q2', actor);
+
+    expect(detail.revisionOf).toEqual({
+      id: 'q1',
+      quoteNumber: 'Q-2026-0042',
+      recipients: ['buyer@example.com', 'cfo@example.com'],
+    });
+    expect(detail.successor).toEqual({
+      id: 'q3',
+      quoteNumber: 'Q-2026-0042-R3',
+      status: 'draft',
+    });
+
+    const predicates = (db as unknown as Chain).where.mock.calls
+      .map(([where]) => collectBoundParams(where));
+    expect(predicates).toContainEqual([{ column: 'id', value: 'q1' }]);
+    expect(predicates).toContainEqual([{ column: 'quote_id', value: 'q1' }]);
+    expect(predicates).toContainEqual([{ column: 'revision_of_quote_id', value: 'q2' }]);
   });
 });
 
