@@ -126,11 +126,20 @@ CREATE INDEX IF NOT EXISTS ai_agent_runs_org_queued_idx ON ai_agent_runs(org_id,
 CREATE INDEX IF NOT EXISTS ai_agent_runs_device_id_idx ON ai_agent_runs(device_id);
 
 -- Immutable-after-insert columns (spec §4.2).
+--
+-- org_id is deliberately NOT guarded, though the spec lists it. ai_agent_runs
+-- denormalizes org_id for RLS and is registered in
+-- CORE_DEVICE_ORG_DENORMALIZED_TABLES, so moveOrg.ts re-stamps it in the same
+-- transaction that flips devices.org_id. Guarding it here made those two
+-- contracts mutually exclusive: the re-stamp raised 23000 and rolled the move
+-- back, permanently stranding any device an agent had ever run against.
+-- org_id is not defended by this trigger anyway — the RLS WITH CHECK requires
+-- breeze_has_org_access on the post-image, so a re-stamp into a foreign org
+-- fails 42501 regardless.
 CREATE OR REPLACE FUNCTION public.ai_agent_runs_immutable_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.agent_id IS DISTINCT FROM OLD.agent_id
-     OR NEW.org_id IS DISTINCT FROM OLD.org_id
      OR NEW.trigger_kind IS DISTINCT FROM OLD.trigger_kind
      OR NEW.trigger_event_id IS DISTINCT FROM OLD.trigger_event_id
      OR NEW.trigger_ref IS DISTINCT FROM OLD.trigger_ref

@@ -250,9 +250,13 @@ INDEX (agent_id, queued_at desc), INDEX (org_id, queued_at desc), INDEX (device_
   `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (`routes/devices/core.ts:118`),
   `CORE_TENANT_EXPORT_POLICY` (`trigger_ref`, `policy_snapshot`, `outcome` →
   `excludedOpen`).
-- `trigger_*`, `dedupe_key`, `agent_id`, `org_id`, `mode_at_start`,
-  `policy_snapshot` are immutable after insert (trigger like
-  `action_intents_immutable_trg`).
+- `trigger_*`, `dedupe_key`, `agent_id`, `mode_at_start`, `policy_snapshot`
+  are immutable after insert (trigger like `action_intents_immutable_trg`).
+  `org_id` is deliberately NOT in that set: the table is device-org
+  denormalized, so `moveOrg` re-stamps it in the same transaction that flips
+  `devices.org_id`. Guarding it makes the two contracts mutually exclusive and
+  permanently strands any device an agent has run against. RLS `WITH CHECK`
+  is what defends `org_id`.
 
 ### 4.3 JSONB shapes (Zod in `packages/shared/src/validators/aiAgents.ts`)
 

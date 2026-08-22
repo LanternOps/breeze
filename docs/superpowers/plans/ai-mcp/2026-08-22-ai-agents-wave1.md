@@ -442,7 +442,6 @@ CREATE OR REPLACE FUNCTION public.ai_agent_runs_immutable_guard() RETURNS trigge
 LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.agent_id IS DISTINCT FROM OLD.agent_id
-     OR NEW.org_id IS DISTINCT FROM OLD.org_id
      OR NEW.trigger_kind IS DISTINCT FROM OLD.trigger_kind
      OR NEW.trigger_event_id IS DISTINCT FROM OLD.trigger_event_id
      OR NEW.trigger_ref IS DISTINCT FROM OLD.trigger_ref
