@@ -287,6 +287,12 @@ export default function InvoiceSendComposer({
         {t('invoiceActions.composer.includePdfLabel')}
       </label>
 
+      {/* The email's CTA is the durable no-login view-and-pay link — say so, so
+          the sender knows the customer won't hit a portal login. */}
+      <p className="mt-2 text-xs text-muted-foreground" data-testid="invoice-send-paylink-note">
+        {t('invoiceActions.composer.payLinkNote')}
+      </p>
+
       <div className="mt-6 flex justify-end gap-3">
         <button
           type="button"

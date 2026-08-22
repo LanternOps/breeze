@@ -35,6 +35,10 @@ export const partners = pgTable('partners', {
   billingEmail: varchar('billing_email', { length: 255 }),
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature: text('email_signature'),
+  // Auto-email the issued invoice (with its public pay link) when a quote is
+  // accepted. Dedicated column, not settings JSONB — the settings cards replace
+  // sub-objects wholesale (#3597), and a column keeps gate === read-back.
+  autoEmailInvoiceOnQuoteAccept: boolean('auto_email_invoice_on_quote_accept').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),

@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
-import { db } from '../db';
-import { quotes, quoteBlocks, quoteLines, quoteAcceptances } from '../db/schema/quotes';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { quotes, quoteBlocks, quoteLines, quoteAcceptances, quoteRecipients } from '../db/schema/quotes';
 import { invoices, invoiceLines } from '../db/schema/invoices';
 import { partners } from '../db/schema/orgs';
 import { QuoteServiceError } from './quoteTypes';
@@ -16,6 +16,7 @@ import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
 import { captureException } from './sentry';
 import type { ContractBlockRenderData } from './contractTemplateRender';
+import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import {
   assertContractRenderDataComplete,
   buildContractHashParts,
@@ -428,6 +429,82 @@ export async function emitAcceptInvoiceIssued(
     await enqueueInvoicePdfRender(res.invoiceId);
   } catch (err) {
     console.error('[quoteAccept] enqueueInvoicePdfRender failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
+/**
+ * Mint (or reproduce) the just-issued invoice's durable public view-and-pay
+ * url — the accept response's replacement for the retired one-shot Stripe
+ * `payUrl` (2026-08-21 spec §8: the browser lands on the durable page, which
+ * offers payment; nothing lives only in one response). Post-commit,
+ * best-effort: returns null rather than failing an accept the customer
+ * already completed. Runs in its own system context.
+ */
+export async function resolveAcceptInvoiceUrl(
+  res: { invoiceId: string; invoiceIssued: boolean },
+): Promise<string | null> {
+  if (!res.invoiceIssued) return null;
+  try {
+    return await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const [inv] = await db.select({
+        id: invoices.id, dueDate: invoices.dueDate,
+        publicLinkTokenHash: invoices.publicLinkTokenHash,
+        publicLinkTokenCt: invoices.publicLinkTokenCt,
+        publicLinkExpiresAt: invoices.publicLinkExpiresAt,
+      }).from(invoices).where(eq(invoices.id, res.invoiceId)).limit(1);
+      if (!inv) return null;
+      const link = await getOrMintInvoiceLink(inv);
+      return buildPublicInvoiceUrl(link.token);
+    }));
+  } catch (err) {
+    console.error('[quoteAccept] public invoice link mint failed after accept', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
+
+/**
+ * Auto-email the just-issued invoice (with its public pay link) after an
+ * accept — DEFAULT ON, gated by partners.auto_email_invoice_on_quote_accept.
+ * This is what makes closing the confirmation tab harmless: the durable link
+ * lands in the customer's inbox without the MSP doing anything.
+ *
+ * Recipients: the quote's recorded send recipients ∪ the org billing contact
+ * (deliverInvoiceEmail's own fallback when the quote has none on record) —
+ * KNOWN addresses only, never the unverified signer-entered email.
+ *
+ * Post-commit and best-effort like every other accept side effect: a failure
+ * is logged + captured, never surfaced to the accepting customer. Runs in its
+ * own system context (the accept transaction is already committed and closed).
+ */
+export async function autoEmailAcceptedInvoice(
+  res: { invoiceId: string; invoiceIssued: boolean; quote: QuoteRow },
+): Promise<void> {
+  if (!res.invoiceIssued) return;
+  try {
+    await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const [partner] = await db.select({ auto: partners.autoEmailInvoiceOnQuoteAccept })
+        .from(partners).where(eq(partners.id, res.quote.partnerId)).limit(1);
+      // Same `!== false` shape as the settings read-back — default ON.
+      if (partner?.auto === false) return;
+      const recips = await db.select({ email: quoteRecipients.email })
+        .from(quoteRecipients).where(eq(quoteRecipients.quoteId, res.quote.id));
+      const to = Array.from(new Set(recips.map((r) => r.email.trim().toLowerCase()).filter(Boolean)));
+      // Lazy import mirrors sendInvoiceEmail's own issueInvoice import — the
+      // invoicePdf module pulls the whole email/PDF stack.
+      const { sendInvoiceEmail } = await import('./invoicePdf');
+      const result = await sendInvoiceEmail(
+        res.invoiceId,
+        { userId: null, partnerId: res.quote.partnerId, accessibleOrgIds: [res.quote.orgId] },
+        to.length > 0 ? { to } : {},
+      );
+      if (!result.emailed) {
+        console.warn('[quoteAccept] auto-email skipped', `invoiceId=${res.invoiceId}`, `reason=${result.reason}`);
+      }
+    }));
+  } catch (err) {
+    console.error('[quoteAccept] auto-email failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 }

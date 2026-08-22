@@ -353,6 +353,7 @@ const partnerPublicColumns = () => ({
   invoiceNumberPrefix: partners.invoiceNumberPrefix,
   invoiceTermsDays: partners.invoiceTermsDays,
   invoiceFooter: partners.invoiceFooter,
+  autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
   documentTheme: partners.documentTheme,
   documentPageSize: partners.documentPageSize,
   billingCompanyName: partners.billingCompanyName,

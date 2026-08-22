@@ -33,6 +33,9 @@ vi.mock('../services/quoteAcceptToken', () => ({
   revokeQuoteAcceptJti: vi.fn(),
 }));
 vi.mock('../services/quoteLifecycle', () => ({ markQuoteViewed: vi.fn() }));
+// Post-commit notify runs its own queries — mock it so where-call assertions
+// against the decline UPDATE stay pointed at the decline UPDATE.
+vi.mock('../services/quoteOutcomeNotify', () => ({ notifyQuoteOutcome: vi.fn().mockResolvedValue(undefined) }));
 
 import { quotesPublicRoutes } from './quotesPublic';
 import { db } from '../db';

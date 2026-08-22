@@ -48,6 +48,9 @@ export interface InvoiceEmailParams {
   pdfAttached?: boolean;
   /** Partner's configured plain-text signature, rendered muted under the CTA. */
   signature?: string;
+  /** True when the linked page can take payment (payable status + partner has
+   *  Stripe connected) — flips the CTA to "View & pay invoice". */
+  payEnabled?: boolean;
 }
 
 export interface PasswordResetEmailParams {
@@ -896,8 +899,8 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
       ${messageBlock}
       ${dueLine}
       ${paidLine}
-      ${renderButton('View invoice', params.portalUrl)}
-      <p style="${MUTED_PARA}">You can view this invoice and download a copy any time from your customer portal.</p>
+      ${renderButton(params.payEnabled ? 'View & pay invoice' : 'View invoice', params.portalUrl)}
+      <p style="${MUTED_PARA}">You can view this invoice and download a copy any time using this link — no sign-in needed.</p>
       ${signatureBlock}
   `;
   const html = renderLayout({
@@ -917,13 +920,72 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
     note || null,
     params.dueDate ? `Amount due now: ${dueNow} by ${params.dueDate}.` : `Amount due now: ${dueNow}.`,
     params.amountPaid ? `Paid to date: ${params.amountPaid} of ${params.total}.` : null,
-    `View invoice: ${params.portalUrl}`,
+    `${params.payEnabled ? 'View & pay invoice' : 'View invoice'}: ${params.portalUrl}`,
     signature || null,
     support ? `Questions about this invoice? Contact ${support}.` : null,
   ]
     .filter(Boolean)
     .join('\n');
 
+  return { subject, html, text };
+}
+
+export interface QuoteOutcomeEmailParams {
+  outcome: 'accepted' | 'declined';
+  quoteNumber: string;
+  /** Customer organization name — the subject's "who". */
+  orgName: string;
+  /** Signer name when the customer path recorded one. */
+  signerName?: string | null;
+  /** Verbatim customer note from a decline. Escaped; newlines preserved. */
+  declineReason?: string | null;
+  /** Invoice auto-issued by the accept, when one was. */
+  invoiceNumber?: string | null;
+  /** Deep link to the quote in the web app; omitted when no app base is configured. */
+  quoteUrl?: string | null;
+}
+
+/**
+ * INTERNAL notification to the MSP tech who sent a quote — the customer
+ * responded (2026-08-21 decline-completion spec §A). Breeze-branded (default
+ * brand: this goes TO the MSP, unlike the customer-facing templates above).
+ * Before this, both outcomes were silent: a decline wrote the row and returned,
+ * and the reason the customer typed was never shown to anyone.
+ */
+export function buildQuoteOutcomeTemplate(params: QuoteOutcomeEmailParams): EmailTemplate {
+  const verb = params.outcome === 'accepted' ? 'accepted' : 'declined';
+  const subject = `Quote ${params.quoteNumber} ${verb} — ${params.orgName}`;
+  const who = params.signerName?.trim()
+    ? `${params.signerName.trim()} at ${params.orgName}`
+    : params.orgName;
+  const reason = params.declineReason?.trim();
+  const reasonBlock = reason
+    ? `<p style="${BODY_PARA}">Their note:</p>
+       <blockquote style="margin: 0 0 12px; padding: 10px 14px; border-left: 3px solid #d1d5db; font-size: 14px; line-height: 1.55; color: #374151;">${escapeHtml(reason).replace(/\r?\n/g, '<br>')}</blockquote>`
+    : '';
+  const invoiceLine = params.outcome === 'accepted' && params.invoiceNumber
+    ? `<p style="${BODY_PARA}">Invoice <strong>${escapeHtml(params.invoiceNumber)}</strong> has been issued and emailed to the customer.</p>`
+    : '';
+  const body = `
+      <p style="${BODY_PARA}">${escapeHtml(who)} has <strong>${verb}</strong> quote <strong>${escapeHtml(params.quoteNumber)}</strong>.</p>
+      ${reasonBlock}
+      ${invoiceLine}
+      ${params.quoteUrl ? renderButton('View quote', params.quoteUrl) : ''}
+  `;
+  const html = renderLayout({
+    title: subject,
+    preheader: `${params.orgName} ${verb} ${params.quoteNumber}.`,
+    heading: `Quote ${verb}`,
+    body,
+  });
+  const text = [
+    `${who} has ${verb} quote ${params.quoteNumber}.`,
+    reason ? `Their note: ${reason}` : null,
+    params.outcome === 'accepted' && params.invoiceNumber ? `Invoice ${params.invoiceNumber} has been issued and emailed to the customer.` : null,
+    params.quoteUrl ? `View quote: ${params.quoteUrl}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
   return { subject, html, text };
 }
 

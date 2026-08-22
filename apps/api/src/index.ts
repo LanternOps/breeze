@@ -35,6 +35,7 @@ import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { quoteRoutes } from './routes/quotes';
 import { quotesPublicRoutes } from './routes/quotesPublic';
+import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
@@ -966,6 +967,10 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets/mailbox', mailboxRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
+// Public, token-gated invoice view-and-pay (no auth) — MUST precede the
+// auth-gated /invoices router so the unauthenticated /invoices/public/* sub-path
+// isn't swallowed by invoiceRoutes' auth middleware (mirrors /quotes/public).
+api.route('/invoices/public', invoicesPublicRoutes);
 api.route('/invoices', invoiceRoutes);
 // Public, token-gated quote acceptance (no auth) — MUST precede the auth-gated
 // /quotes router so the unauthenticated /quotes/public/* sub-path isn't swallowed

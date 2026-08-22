@@ -1044,7 +1044,13 @@
         "title": "Totaux"
       },
       "viewInvoice": "Voir la facture",
-      "sentTo": "Envoyé à"
+      "sentTo": "Envoyé à",
+      "declinedBanner": {
+        "title": "Refusée le {{date}}",
+        "reasonLabel": "Note du client :",
+        "revise": "Dupliquer et réviser",
+        "revising": "Duplication…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} dispo",
@@ -1408,9 +1414,11 @@
       "invalidEmail": "Adresse courriel non valide : {{addresses}}",
       "tooManyRecipients": "Jusqu’à {{max}} adresses.",
       "recipientRequired": "Ajoutez au moins un destinataire.",
-      "noBillingContactHint": "Cette entreprise n’a pas encore de contact de facturation — <orgLink>ajoutez-en un</orgLink> ou saisissez une adresse ci-dessus."
+      "noBillingContactHint": "Cette entreprise n’a pas encore de contact de facturation — <orgLink>ajoutez-en un</orgLink> ou saisissez une adresse ci-dessus.",
+      "payLinkNote": "Le courriel contient un lien sécurisé permettant à votre client de consulter, télécharger et payer cette facture — sans connexion."
     },
-    "copyPaymentLink": "Copier le lien de paiement",
+    "copyInvoiceLink": "Copier le lien de la facture",
+    "copyInvoiceLinkTitle": "Copie le lien client pour consulter et payer — sans connexion",
     "copyingPaymentLink": "Copie en cours…",
     "deleteConfirm": {
       "message": "Cette action supprime définitivement la facture brouillon. Elle est irréversible.",
@@ -1553,7 +1561,15 @@
     },
     "empty": "Cette facture n'a encore aucune ligne.",
     "addContentInEditor": "Ajouter des lignes dans l'Éditeur",
-    "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes"
+    "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes",
+    "resetLink": {
+      "button": "Réinitialiser le lien client",
+      "title": "Réinitialiser le lien client ?",
+      "description": "Toute personne disposant du lien actuel perdra l'accès, y compris via les courriels déjà envoyés. Le prochain envoi ou la prochaine copie créera un nouveau lien.",
+      "confirm": "Réinitialiser le lien",
+      "success": "Lien réinitialisé — les anciens liens ne fonctionnent plus",
+      "error": "Impossible de réinitialiser le lien"
+    }
   },
   "invoiceDocument": {
     "billTo": "Facturer à",
@@ -1742,6 +1758,8 @@
       "aiStylePlaceholder": "Par défaut : le nom de l'article est un nom court, générique et compréhensible par le client (\"Point d'accès sans fil\") ; la description commence par le nom complet du produit, puis des spécifications en puces assez précises pour vérifier une commande. Décrivez ici votre propre style pour le remplacer.",
       "autoTaxHardware": "Taxer automatiquement le matériel",
       "autoTaxHardwareHelp": "Le nouveau matériel importé est taxable par défaut.",
+      "autoEmailInvoice": "Envoyer automatiquement la facture par courriel à l'acceptation d'une soumission",
+      "autoEmailInvoiceHelp": "Lorsqu'un client accepte une proposition, la facture émise est envoyée immédiatement par courriel avec un lien sécurisé pour consulter et payer — sans connexion.",
       "currencyCode": "Code devise",
       "defaultMarkup": "Marge par défaut (%)",
       "defaultTaxRate": "Taux de taxe par défaut (%)",

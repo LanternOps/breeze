@@ -34,6 +34,12 @@ vi.mock('./email', async (importOriginal) => {
 
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn() }));
 vi.mock('./portalUrl', () => ({ portalBase: () => 'https://portal.example.test/portal' }));
+// Deterministic public link; also keeps the "re-send writes nothing" invariant
+// meaningful — the (idempotent) link mint is invoiceLinkToken's own concern.
+vi.mock('./invoiceLinkToken', () => ({
+  getOrMintInvoiceLink: vi.fn().mockResolvedValue({ token: 'tok-abc', expiresAt: new Date('2027-08-01T00:00:00Z'), origin: 'reproduced' }),
+  buildPublicInvoiceUrl: (t: string) => `https://portal.example.test/portal/invoice/${t}`,
+}));
 
 import { resendInvoiceEmail } from './invoicePdf';
 import { InvoiceServiceError } from './invoiceTypes';

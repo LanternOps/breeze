@@ -1044,7 +1044,13 @@
         "title": "Totali"
       },
       "viewInvoice": "Visualizza fattura",
-      "sentTo": "Inviato a"
+      "sentTo": "Inviato a",
+      "declinedBanner": {
+        "title": "Rifiutato il {{date}}",
+        "reasonLabel": "Nota del cliente:",
+        "revise": "Duplica e rivedi",
+        "revising": "Duplicazione…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} disp.",
@@ -1408,9 +1414,11 @@
       "invalidEmail": "Indirizzo e-mail non valido: {{addresses}}",
       "tooManyRecipients": "Fino a {{max}} indirizzi.",
       "recipientRequired": "Aggiungi almeno un destinatario.",
-      "noBillingContactHint": "Questa azienda non ha ancora un contatto di fatturazione — <orgLink>aggiungine uno</orgLink> o digita un indirizzo sopra."
+      "noBillingContactHint": "Questa azienda non ha ancora un contatto di fatturazione — <orgLink>aggiungine uno</orgLink> o digita un indirizzo sopra.",
+      "payLinkNote": "L'email include un link sicuro con cui il cliente può visualizzare, scaricare e pagare questa fattura — senza accesso."
     },
-    "copyPaymentLink": "Copia link di pagamento",
+    "copyInvoiceLink": "Copia link fattura",
+    "copyInvoiceLinkTitle": "Copia il link del cliente per visualizzare e pagare — senza accesso",
     "copyingPaymentLink": "Copia in corso…",
     "deleteConfirm": {
       "message": "La fattura in bozza verrà eliminata definitivamente. L'operazione non può essere annullata.",
@@ -1553,7 +1561,15 @@
     },
     "empty": "Questa fattura non ha ancora righe.",
     "addContentInEditor": "Aggiungi righe nell'Editor",
-    "linesScrollAria": "Righe della fattura — scorri lateralmente per altre colonne"
+    "linesScrollAria": "Righe della fattura — scorri lateralmente per altre colonne",
+    "resetLink": {
+      "button": "Reimposta link cliente",
+      "title": "Reimpostare il link cliente?",
+      "description": "Chiunque abbia il link attuale perderà l'accesso, incluso il link nelle email già inviate. Il prossimo invio o la prossima copia creerà un nuovo link.",
+      "confirm": "Reimposta link",
+      "success": "Link reimpostato — i link precedenti non funzionano più",
+      "error": "Impossibile reimpostare il link"
+    }
   },
   "invoiceDocument": {
     "billTo": "Fattura a",
@@ -1742,6 +1758,8 @@
       "aiStylePlaceholder": "Predefinito: il nome dell'elemento è un nome breve, generico e comprensibile per il cliente (\"Access point wireless\"); la descrizione inizia con il nome completo del prodotto, poi elenca specifiche puntuali sufficienti per verificare un ordine. Descrivi qui il tuo stile per sovrascriverlo.",
       "autoTaxHardware": "Applica automaticamente l'imposta agli elementi hardware",
       "autoTaxHardwareHelp": "I nuovi hardware importati sono imponibili per impostazione predefinita.",
+      "autoEmailInvoice": "Invia automaticamente la fattura via email all'accettazione di un preventivo",
+      "autoEmailInvoiceHelp": "Quando un cliente accetta una proposta, la fattura emessa viene inviata subito via email con un link sicuro per visualizzare e pagare — senza accesso.",
       "currencyCode": "Codice valuta",
       "defaultMarkup": "Ricarico predefinito (%)",
       "defaultTaxRate": "Aliquota fiscale predefinita (%)",

@@ -19,6 +19,8 @@ import PDFDocument from 'pdfkit';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { invoices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding } from '../db/schema';
+import { stripeConnectAccounts } from '../db/schema/stripePayments';
+import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { escapeHtml } from './emailLayout';
 import { getEmailService, buildInvoiceTemplate } from './email';
 import { emitInvoiceEvent } from './invoiceEvents';
@@ -38,6 +40,10 @@ export interface InvoiceBranding {
   primaryColor?: string | null;
   footerText?: string | null;
   currencyCode?: string | null;
+  /** Public view-and-pay url printed on the document ("Pay online: …"). Null
+   *  for drafts (no link exists) and when minting fails — the PDF renders
+   *  without the line rather than failing. */
+  payOnlineUrl?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +203,7 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
       </div>
       ${invoice.notes ? `<div style="padding:0 24px 16px;font-size:13px;color:#4b5563;">${escapeHtml(invoice.notes)}</div>` : ''}
       ${invoice.termsAndConditions ? `<div style="padding:0 24px 16px;font-size:12px;color:#6b7280;"><div style="font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">Terms &amp; Conditions</div>${escapeHtml(invoice.termsAndConditions)}</div>` : ''}
+      ${branding.payOnlineUrl ? `<div style="padding:0 24px 16px;font-size:12px;color:#4b5563;"><strong>Pay online:</strong> <a href="${escapeHtml(branding.payOnlineUrl)}" style="color:#2563eb;">${escapeHtml(branding.payOnlineUrl)}</a></div>` : ''}
       ${(invoice.terms || branding.footerText) ? `<div style="padding:16px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;">${escapeHtml(invoice.terms ?? branding.footerText ?? '')}</div>` : ''}
     </div>
   </div>
@@ -354,6 +361,14 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
         doc.fillColor('#6b7280').fontSize(9).font('Helvetica').text(invoice.termsAndConditions, left, y, { width: contentWidth });
         y = doc.y + 8;
       }
+      // Public view-and-pay link — the paper copy's route back to the online
+      // invoice (the emailed CTA is the same url).
+      if (branding.payOnlineUrl) {
+        y += 10;
+        doc.fillColor('#4b5563').fontSize(9).font('Helvetica-Bold').text('Pay online: ', left, y, { continued: true })
+          .font('Helvetica').fillColor('#2563eb').text(branding.payOnlineUrl, { link: branding.payOnlineUrl });
+        y = doc.y + 4;
+      }
       const footer = invoice.terms ?? branding.footerText ?? null;
       if (footer) {
         doc.fillColor('#9ca3af').fontSize(9).font('Helvetica').text(footer, left, Math.max(y, doc.page.height - 110), { width: contentWidth });
@@ -420,6 +435,23 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
 export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId: string | null; sha256: string; pdf: Buffer }> {
   const loaded = await loadInvoiceForRender(invoiceId);
   if (!loaded) throw new Error(`Invoice ${invoiceId} not found for PDF render`);
+  // Print the public view-and-pay link on issued documents (never drafts — no
+  // link should exist for a document that hasn't been issued). Mint-or-reproduce
+  // is idempotent, so re-renders keep the same url; a mint failure only drops
+  // the line, never the render.
+  if (loaded.invoice.status !== 'draft') {
+    try {
+      const link = await getOrMintInvoiceLink({
+        id: loaded.invoice.id, dueDate: loaded.invoice.dueDate,
+        publicLinkTokenHash: loaded.invoice.publicLinkTokenHash,
+        publicLinkTokenCt: loaded.invoice.publicLinkTokenCt,
+        publicLinkExpiresAt: loaded.invoice.publicLinkExpiresAt,
+      });
+      loaded.branding.payOnlineUrl = buildPublicInvoiceUrl(link.token);
+    } catch (err) {
+      console.error(`[invoicePdf] could not mint public link for PDF of invoice ${invoiceId} — rendering without the pay-online line`, err);
+    }
+  }
   const pdf = await renderInvoicePdfBuffer(loaded.invoice, loaded.lines, loaded.branding);
   const sha256 = createHash('sha256').update(pdf).digest('hex');
 
@@ -458,7 +490,7 @@ export async function getInvoicePdf(invoiceId: string): Promise<Buffer | null> {
  *  (the caller is mid-issue and must learn the send failed), while a re-send
  *  changes no invoice state and so has nothing to roll back — reporting the
  *  failure honestly beats a 500 on an invoice that is already issued. */
-export type SendInvoiceEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed';
+export type SendInvoiceEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed' | 'pdf_render_failed';
 
 /** Result of a send attempt: the (issued) invoice plus an honest signal of
  *  whether an email was actually dispatched. `emailed:false` means the invoice
@@ -537,16 +569,45 @@ async function deliverInvoiceEmail(
 ): Promise<{ emailed: boolean; reason?: SendInvoiceEmailReason; recipients: string[] }> {
   const invoiceId = invoice.id;
 
+  // Mint/reproduce the public link FIRST, from the row snapshot we hold — a
+  // fresh render below also resolves the link (for the PDF's "Pay online"
+  // line), and doing ours after it would hand getOrMintInvoiceLink a stale
+  // snapshot that loses its own claim race on every first send.
+  // (See §7 below for what the link is; failure falls back to the portal url.)
+  let portalLink = `${portalBase()}/invoices/${invoiceId}`;
+  let publicLinked = false;
+  try {
+    const link = await getOrMintInvoiceLink({
+      id: invoice.id, dueDate: invoice.dueDate,
+      publicLinkTokenHash: invoice.publicLinkTokenHash,
+      publicLinkTokenCt: invoice.publicLinkTokenCt,
+      publicLinkExpiresAt: invoice.publicLinkExpiresAt,
+    });
+    portalLink = buildPublicInvoiceUrl(link.token);
+    publicLinked = true;
+  } catch (err) {
+    console.error(`[invoicePdf] could not mint public link for invoice ${invoiceId} — emailing the portal url instead`, err);
+  }
+
   // Ensure the PDF exists (render synchronously if absent). Skipped entirely
   // when the composer dropped the attachment — there is nothing to attach and
-  // no reason to pay for a render.
+  // no reason to pay for a render. On the re-send path a render failure is
+  // part of the swallow contract (the invoice is already issued; nothing to
+  // roll back) — reported as reason 'pdf_render_failed', with the audit record
+  // still written by the route.
   const includePdf = opts.includePdf !== false;
   let pdf: Buffer | null = null;
   if (includePdf) {
-    pdf = await getInvoicePdf(invoiceId);
-    if (!pdf) {
-      await renderInvoicePdf(invoiceId);
+    try {
       pdf = await getInvoicePdf(invoiceId);
+      if (!pdf) {
+        await renderInvoicePdf(invoiceId);
+        pdf = await getInvoicePdf(invoiceId);
+      }
+    } catch (err) {
+      if (!swallowThrow) throw err;
+      console.error(`[invoicePdf] re-send PDF render failed for invoice ${invoiceId}:`, err);
+      return { emailed: false, reason: 'pdf_render_failed', recipients: [] };
     }
   }
 
@@ -576,11 +637,22 @@ async function deliverInvoiceEmail(
     return { emailed: false, reason: 'no_billing_contact', recipients: [] };
   }
 
-  // The invoice detail page lives at <portalBase>/invoices/<id>; portalBase()
-  // handles the PUBLIC_PORTAL_URL → app-origin fallback chain and appends the
-  // portal base path to app-origin fallbacks (previously this inline chain
-  // emitted links missing /portal when PUBLIC_PORTAL_URL was unset).
-  const portalLink = `${portalBase()}/invoices/${invoiceId}`;
+  // §7: the email CTA is the DURABLE PUBLIC LINK — view, PDF, and pay with no
+  // portal login (most invoice recipients have no portal account, and nothing
+  // in this path ever invited them to one). Minted/reproduced at the top of
+  // this function; `portalLink` holds the portal fallback if that failed.
+  // "View & pay" only when the page will actually offer payment: payable
+  // status with a balance, and the partner has a Stripe key on file. This read
+  // runs in the caller's context — the send routes are partner/system scoped,
+  // both of which can see the partner-axis stripe_connect_accounts row.
+  let payEnabled = false;
+  if (publicLinked && ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && Number(invoice.balance) > 0) {
+    try {
+      const [stripeRow] = await db.select({ id: stripeConnectAccounts.id })
+        .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, invoice.partnerId)).limit(1);
+      payEnabled = stripeRow != null;
+    } catch { /* label-only — never fail the send over it */ }
+  }
   // This IS the "Request balance payment" action for deposit invoices: the money
   // fields reflect the deposit-vs-balance split so the email states what's owed
   // NOW, not just the invoice total (which may already be partially covered).
@@ -597,6 +669,7 @@ async function deliverInvoiceEmail(
     message: opts.message,
     pdfAttached: includePdf && pdf != null,
     signature: partner?.emailSignature ?? undefined,
+    payEnabled,
   });
   try {
     await emailService.sendEmail({
@@ -645,6 +718,17 @@ export async function sendInvoiceEmail(
   // 404 not 403 — don't leak existence across tenants.
   if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(invoice.orgId)) {
     throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  }
+
+  // Server-side lifecycle gate (the web gate is advisory): /send is the
+  // FIRST-send path — it stamps sent_at and emits invoice.sent. A VOID invoice
+  // is a cancelled demand, and a PAID one would email "Amount due now: $0.00";
+  // a paid copy for the customer's records goes through /resend instead.
+  if (invoice.status === 'void') {
+    throw new InvoiceServiceError('Cannot send a void invoice', 409, 'INVALID_STATE');
+  }
+  if (invoice.status === 'paid') {
+    throw new InvoiceServiceError('This invoice is already paid — use re-send to email a copy', 409, 'INVALID_STATE');
   }
 
   if (invoice.status === 'draft') {

@@ -1044,7 +1044,13 @@
         "title": "Totais"
       },
       "viewInvoice": "Ver fatura",
-      "sentTo": "Enviado para"
+      "sentTo": "Enviado para",
+      "declinedBanner": {
+        "title": "Recusado em {{date}}",
+        "reasonLabel": "Observação do cliente:",
+        "revise": "Duplicar e revisar",
+        "revising": "Duplicando…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} disponíveis",
@@ -1408,9 +1414,11 @@
       "invalidEmail": "Endereço de e-mail inválido: {{addresses}}",
       "tooManyRecipients": "Até {{max}} endereços.",
       "recipientRequired": "Adicione pelo menos um destinatário.",
-      "noBillingContactHint": "Esta empresa ainda não tem contato de faturamento — <orgLink>adicione um</orgLink> ou digite um endereço acima."
+      "noBillingContactHint": "Esta empresa ainda não tem contato de faturamento — <orgLink>adicione um</orgLink> ou digite um endereço acima.",
+      "payLinkNote": "O e-mail inclui um link seguro para o cliente ver, baixar e pagar esta fatura — sem login."
     },
-    "copyPaymentLink": "Copiar link de pagamento",
+    "copyInvoiceLink": "Copiar link da fatura",
+    "copyInvoiceLinkTitle": "Copia o link do cliente para ver e pagar — sem login",
     "copyingPaymentLink": "Copiando…",
     "deleteConfirm": {
       "message": "Esta ação exclui permanentemente a fatura em rascunho. Não é possível desfazê-la.",
@@ -1553,7 +1561,15 @@
     },
     "empty": "Esta fatura ainda não tem linhas.",
     "addContentInEditor": "Adicionar linhas no Editor",
-    "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas"
+    "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas",
+    "resetLink": {
+      "button": "Redefinir link do cliente",
+      "title": "Redefinir o link do cliente?",
+      "description": "Quem tiver o link atual perderá o acesso, inclusive o link dos e-mails já enviados. O próximo envio ou cópia criará um novo link.",
+      "confirm": "Redefinir link",
+      "success": "Link redefinido — os links anteriores não funcionam mais",
+      "error": "Não foi possível redefinir o link"
+    }
   },
   "invoiceDocument": {
     "billTo": "Faturar para",
@@ -1742,6 +1758,8 @@
       "aiStylePlaceholder": "Padrão: o nome do item é um nome curto, genérico e adequado ao cliente (\"Ponto de acesso sem fio\"); a descrição começa com o nome completo do produto, seguido de especificações em tópicos, detalhadas o suficiente para conferir um pedido. Descreva aqui seu próprio estilo para substituí-lo.",
       "autoTaxHardware": "Aplicar imposto automaticamente a itens de hardware",
       "autoTaxHardwareHelp": "Itens de hardware recém-importados são marcados como tributáveis por padrão.",
+      "autoEmailInvoice": "Enviar a fatura por e-mail automaticamente quando um orçamento for aceito",
+      "autoEmailInvoiceHelp": "Quando um cliente aceita uma proposta, a fatura emitida é enviada imediatamente por e-mail com um link seguro para ver e pagar — sem login.",
       "currencyCode": "Código da moeda",
       "defaultMarkup": "Margem padrão (%)",
       "defaultTaxRate": "Alíquota de imposto padrão (%)",

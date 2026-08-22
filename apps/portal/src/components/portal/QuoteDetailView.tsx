@@ -91,9 +91,8 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
     setMsg('Accepted — an invoice has been created.');
   };
 
-  const decline = async () => {
+  const decline = async (reason?: string) => {
     if (busy) return;
-    const reason = window.prompt('Optionally, tell us why you are declining:') ?? undefined;
     setBusy(true);
     setMsg(null);
     setMsgError(false);
@@ -105,7 +104,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
       return;
     }
     setStatus('declined');
-    setMsg('Proposal declined.');
+    setMsg('Proposal declined — your provider has been notified.');
   };
 
   const pay = async () => {
@@ -295,7 +294,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
       {open && (
         <SignaturePanel
           onAccept={(signerName) => void accept(signerName)}
-          onDecline={() => void decline()}
+          onDecline={(reason) => void decline(reason)}
           busy={busy}
           testIdPrefix="quote"
         />

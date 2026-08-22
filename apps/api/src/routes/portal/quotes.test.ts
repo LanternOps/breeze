@@ -51,6 +51,7 @@ const { acceptQuoteMock, emitAcceptInvoiceIssuedMock, declineQuoteByActorMock } 
 vi.mock('../../services/quoteAcceptService', () => ({
   acceptQuote: acceptQuoteMock,
   emitAcceptInvoiceIssued: emitAcceptInvoiceIssuedMock,
+  autoEmailAcceptedInvoice: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../../services/quoteLifecycle', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/quoteLifecycle')>();

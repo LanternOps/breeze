@@ -1044,7 +1044,13 @@
         "title": "Summen"
       },
       "viewInvoice": "Rechnung ansehen",
-      "sentTo": "Gesendet an"
+      "sentTo": "Gesendet an",
+      "declinedBanner": {
+        "title": "Abgelehnt am {{date}}",
+        "reasonLabel": "Anmerkung des Kunden:",
+        "revise": "Duplizieren & überarbeiten",
+        "revising": "Wird dupliziert…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} verfügbar",
@@ -1408,9 +1414,11 @@
       "invalidEmail": "Keine gültige E-Mail-Adresse: {{addresses}}",
       "tooManyRecipients": "Maximal {{max}} Adressen.",
       "recipientRequired": "Mindestens einen Empfänger angeben.",
-      "noBillingContactHint": "Dieses Unternehmen hat noch keinen Rechnungskontakt – <orgLink>einen hinzufügen</orgLink> oder oben eine Adresse eingeben."
+      "noBillingContactHint": "Dieses Unternehmen hat noch keinen Rechnungskontakt – <orgLink>einen hinzufügen</orgLink> oder oben eine Adresse eingeben.",
+      "payLinkNote": "Die E-Mail enthält einen sicheren Link, über den Ihr Kunde diese Rechnung ansehen, herunterladen und bezahlen kann — ohne Anmeldung."
     },
-    "copyPaymentLink": "Zahlungslink kopieren",
+    "copyInvoiceLink": "Rechnungslink kopieren",
+    "copyInvoiceLinkTitle": "Kopiert den Ansichts- und Zahlungslink für den Kunden — keine Anmeldung nötig",
     "copyingPaymentLink": "Wird kopiert…",
     "deleteConfirm": {
       "message": "Dadurch wird der Rechnungsentwurf endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
@@ -1553,7 +1561,15 @@
     },
     "empty": "Diese Rechnung hat noch keine Positionen.",
     "addContentInEditor": "Positionen im Editor hinzufügen",
-    "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten"
+    "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten",
+    "resetLink": {
+      "button": "Kundenlink zurücksetzen",
+      "title": "Kundenlink zurücksetzen?",
+      "description": "Alle bisherigen Links verlieren den Zugriff — auch der Link in bereits gesendeten E-Mails. Beim nächsten Senden oder Kopieren wird ein neuer Link erstellt.",
+      "confirm": "Link zurücksetzen",
+      "success": "Link zurückgesetzt — alte Links funktionieren nicht mehr",
+      "error": "Link konnte nicht zurückgesetzt werden"
+    }
   },
   "invoiceDocument": {
     "billTo": "Bill zu",
@@ -1742,6 +1758,8 @@
       "aiStylePlaceholder": "Standard: Der Artikelname ist ein kurzer, allgemeiner, kundenfreundlicher Name („Wireless Access Point“); Die Beschreibung beginnt mit dem vollständigen Produktnamen, gefolgt von stichpunktartigen Spezifikationen, die präzise genug sind, um eine Bestellung anhand dieser zu überprüfen. Beschreiben Sie hier Ihren eigenen Stil, um ihn zu überschreiben.",
       "autoTaxHardware": "Hardware-Artikel automatisch besteuern",
       "autoTaxHardwareHelp": "Neu importierte Hardware ist standardmäßig steuerpflichtig.",
+      "autoEmailInvoice": "Rechnung bei Angebotsannahme automatisch per E-Mail senden",
+      "autoEmailInvoiceHelp": "Wenn ein Kunde ein Angebot annimmt, wird die erstellte Rechnung sofort mit einem sicheren Ansichts- und Zahlungslink per E-Mail versendet — ohne Anmeldung.",
       "currencyCode": "Währungscode",
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",

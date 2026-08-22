@@ -8,7 +8,8 @@ import { partners } from '../../db/schema/orgs';
 import { portalBranding } from '../../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
-import { acceptQuote, emitAcceptInvoiceIssued } from '../../services/quoteAcceptService';
+import { acceptQuote, emitAcceptInvoiceIssued, autoEmailAcceptedInvoice } from '../../services/quoteAcceptService';
+import { notifyQuoteOutcome } from '../../services/quoteOutcomeNotify';
 import { createQuotePayLink } from '../../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage, loadCustomerLineImage } from '../../services/quoteImageStorage';
@@ -249,6 +250,12 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
     // render, matching invoiceService.issueInvoice. Fire-and-forget; never fails the
     // accept the customer already completed.
     await emitAcceptInvoiceIssued(res, auth.user.id);
+    // Auto-email the issued invoice (public-link CTA) — same recovery/record
+    // email the public accept path sends; partner-gated inside, best-effort.
+    // UNAWAITED with notifyQuoteOutcome below: both end in SMTP round trips
+    // and must never delay the accept response; both swallow their own errors.
+    void autoEmailAcceptedInvoice(res);
+    void notifyQuoteOutcome({ quoteId: id, outcome: 'accepted', source: 'customer', signerName });
     return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -275,7 +282,7 @@ quoteRoutes.post('/quotes/:id/decline', zValidator('param', idParam), zValidator
   // inline update here previously let an authed portal user decline an
   // expired-but-not-yet-swept quote, diverging from "expired is terminal".
   try {
-    const updated = await declineQuoteByActor(id, reason ?? undefined, { userId: auth.user.id, partnerId: null, accessibleOrgIds: [auth.user.orgId] });
+    const updated = await declineQuoteByActor(id, reason ?? undefined, { userId: auth.user.id, partnerId: null, accessibleOrgIds: [auth.user.orgId] }, 'customer');
     return c.json({ data: { status: updated.status } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {

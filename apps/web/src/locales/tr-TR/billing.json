@@ -1044,7 +1044,13 @@
         "tax": "Vergi",
         "title": "Toplamlar"
       },
-      "viewInvoice": "Faturayı görüntüle"
+      "viewInvoice": "Faturayı görüntüle",
+      "declinedBanner": {
+        "title": "{{date}} tarihinde reddedildi",
+        "reasonLabel": "Müşterinin notu:",
+        "revise": "Çoğalt ve gözden geçir",
+        "revising": "Çoğaltılıyor…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} mevcut",
@@ -1408,9 +1414,11 @@
       "invalidEmail": "Geçerli bir e-posta adresi değil: {{addresses}}",
       "tooManyRecipients": "En fazla {{max}} adres.",
       "recipientRequired": "En az bir alıcı ekleyin.",
-      "noBillingContactHint": "Bu şirketin henüz bir fatura iletişim kişisi yok — <orgLink>bir tane ekleyin</orgLink> veya yukarıya bir adres yazın."
+      "noBillingContactHint": "Bu şirketin henüz bir fatura iletişim kişisi yok — <orgLink>bir tane ekleyin</orgLink> veya yukarıya bir adres yazın.",
+      "payLinkNote": "E-posta, müşterinizin bu faturayı görüntüleyebileceği, indirebileceği ve ödeyebileceği güvenli bir bağlantı içerir — oturum açma gerekmez."
     },
-    "copyPaymentLink": "Ödeme bağlantısını kopyala",
+    "copyInvoiceLink": "Fatura bağlantısını kopyala",
+    "copyInvoiceLinkTitle": "Müşterinin görüntüleme ve ödeme bağlantısını kopyalar — oturum açma gerekmez",
     "copyingPaymentLink": "Kopyalanıyor…",
     "deleteConfirm": {
       "message": "Bu, taslak faturayı kalıcı olarak siler. Bu geri alınamaz.",
@@ -1553,7 +1561,15 @@
     },
     "empty": "Bu faturada henüz satır yok.",
     "addContentInEditor": "Editör'e satır ekleme",
-    "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın"
+    "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın",
+    "resetLink": {
+      "button": "Müşteri bağlantısını sıfırla",
+      "title": "Müşteri bağlantısı sıfırlansın mı?",
+      "description": "Mevcut bağlantıya sahip olan herkes erişimi kaybeder — daha önce gönderilen e-postalardaki bağlantı dahil. Bir sonraki gönderim veya kopyalama yeni bir bağlantı oluşturur.",
+      "confirm": "Bağlantıyı sıfırla",
+      "success": "Bağlantı sıfırlandı — önceki bağlantılar artık çalışmıyor",
+      "error": "Bağlantı sıfırlanamadı"
+    }
   },
   "invoiceDocument": {
     "billTo": "Fatura Alıcısı",
@@ -1742,6 +1758,8 @@
       "aiStylePlaceholder": "Varsayılan: öğe adı kısa, genel, müşteri dostu bir addır (\"Kablosuz Erişim Noktası\"); Açıklama tam ürün adıyla başlar, ardından siparişi doğrulamaya yetecek kadar kesin olan maddeler halinde spesifikasyonlar belirtilir. Geçersiz kılmak için kendi stilinizi burada tanımlayın.",
       "autoTaxHardware": "Donanım öğelerini otomatik olarak vergilendirin",
       "autoTaxHardwareHelp": "Yeni içe aktarılan donanım varsayılan olarak vergiye tabidir.",
+      "autoEmailInvoice": "Teklif kabul edildiğinde faturayı otomatik olarak e-postayla gönder",
+      "autoEmailInvoiceHelp": "Bir müşteri teklifi kabul ettiğinde, düzenlenen fatura güvenli bir görüntüleme ve ödeme bağlantısıyla hemen e-postayla gönderilir — oturum açma gerekmez.",
       "currencyCode": "Para birimi kodu",
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",

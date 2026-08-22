@@ -450,6 +450,7 @@ export async function updatePartnerBillingSettings(
   patch: {
     currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
     invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
+    autoEmailInvoiceOnQuoteAccept?: boolean;
     catalogAiStyle?: string | null;
     invoiceFooter?: string | null;
     documentTheme?: 'classic' | 'condensed'; documentPageSize?: 'letter' | 'a4';
@@ -474,6 +475,7 @@ export async function updatePartnerBillingSettings(
     set.defaultMarkupPercent = patch.defaultMarkupPercent === null ? null : Number(patch.defaultMarkupPercent).toFixed(2);
   }
   if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
+  if (patch.autoEmailInvoiceOnQuoteAccept !== undefined) set.autoEmailInvoiceOnQuoteAccept = patch.autoEmailInvoiceOnQuoteAccept;
   if (patch.catalogAiStyle !== undefined) set.catalogAiStyle = patch.catalogAiStyle?.trim() || null;
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
   if (patch.documentTheme !== undefined) set.documentTheme = patch.documentTheme;
@@ -489,6 +491,7 @@ export async function updatePartnerBillingSettings(
     currencyCode: partners.currencyCode, defaultTaxRate: partners.defaultTaxRate,
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
     defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
+    autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
     documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
   });
