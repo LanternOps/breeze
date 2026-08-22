@@ -7,7 +7,8 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
-import { formatCurrency } from '@/lib/i18n/format';
+import { formatMoney } from '@/components/billing/shared/format';
+import { formatNumber } from '@/lib/i18n/format';
 
 interface Category {
   id: string;
@@ -84,16 +85,27 @@ export function moveWithinSiblings(cats: Category[], id: string, dir: -1 | 1): s
   return order;
 }
 
+/** Hourly rate for the summary cell. Until the partner currency is KNOWN the
+ *  rate renders as a bare number with no currency label — never a USD guess
+ *  (#3777 review F8): a EUR partner must not see `$150.00/h` because the
+ *  lookup is slow or failed. */
+function hourlyRateLabel(rate: string, currencyCode: string | null): string {
+  if (currencyCode) return formatMoney(rate, currencyCode);
+  const n = Number(rate);
+  return Number.isFinite(n) ? formatNumber(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : rate;
+}
+
 function defaultsSummary(c: Category, partnerCurrency: string | null): string {
   const parts: string[] = [];
   if (c.defaultPriority) parts.push(priorityConfig[c.defaultPriority as TicketPriority]?.label ?? c.defaultPriority);
   if (c.responseSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.responseMinutes', { count: c.responseSlaMinutes }));
   if (c.resolutionSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.resolveMinutes', { count: c.resolutionSlaMinutes }));
-  // A rated row always carries its own stamped currency; the partner fallback
-  // only covers the legacy/unrated display path — never a conversion.
+  // A rated row carries its own stamped currency (wave 4); the partner value
+  // only covers legacy/unrated rows — never a conversion. Until a currency is
+  // KNOWN the rate renders unlabelled rather than guessing USD (#3777 F8).
   if (c.defaultHourlyRate) {
     parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', {
-      rate: formatCurrency(parseFloat(c.defaultHourlyRate), c.rateCurrency ?? partnerCurrency ?? undefined)
+      rate: hourlyRateLabel(c.defaultHourlyRate, c.rateCurrency ?? partnerCurrency),
     }));
   }
   if (c.defaultBillable) parts.push('billable');

@@ -89,4 +89,71 @@ describe('StripePaymentsIntegration — account currency cache (#3777)', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(screen.getByTestId('stripe-connect-currency').textContent).toContain('EUR');
   });
+
+  it('a transient refresh failure (cacheState=stale) keeps the cached value and says so (review F4)', async () => {
+    fetchWithAuth.mockImplementation(async () =>
+      json({ ...connected, cacheState: 'stale', stale: true, error: { code: 'STRIPE_UNAVAILABLE', message: 'Could not reach Stripe right now — try again in a moment.' } }),
+    );
+    render(<StripePaymentsIntegration />);
+    const cell = await screen.findByTestId('stripe-connect-currency');
+    expect(cell.textContent).toContain('EUR');
+    expect(screen.getByTestId('stripe-connect-stale').textContent).toContain('could not be reached');
+    expect(screen.queryByTestId('stripe-connect-reconnect-required')).not.toBeInTheDocument();
+  });
+
+  it('a revoked/unreadable key (status=reconnect_required) is NOT shown as connected — prompts for a new key (review F4)', async () => {
+    fetchWithAuth.mockImplementation(async () =>
+      json({
+        ...connected,
+        status: 'reconnect_required',
+        cacheState: 'reconnect_required',
+        stale: true,
+        error: { code: 'INVALID_STRIPE_KEY', message: 'Stripe rejected the stored key — reconnect Stripe.' },
+      }),
+    );
+    render(<StripePaymentsIntegration />);
+    const banner = await screen.findByTestId('stripe-connect-reconnect-required');
+    expect(banner.textContent).toContain('Zz9q');
+    expect(banner.textContent).toContain('Stripe rejected the stored key');
+    // The key form is offered and the "connected" account row is not...
+    expect(screen.getByTestId('stripe-key-input')).toBeInTheDocument();
+    expect(screen.queryByTestId('stripe-connect-currency')).not.toBeInTheDocument();
+    // ...but Refresh and Disconnect stay reachable: reconnect_required can be a
+    // false positive, and hiding them leaves no in-page recovery (review F3).
+    expect(screen.getByTestId('stripe-connect-refresh-button')).toBeInTheDocument();
+    expect(screen.getByTestId('stripe-disconnect-button')).toBeInTheDocument();
+  });
+
+  it('Refresh from a reconnect_required panel re-checks and recovers to connected (review F3)', async () => {
+    let rechecked = false;
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/partner/stripe-connect/refresh' && init?.method === 'POST') {
+        rechecked = true;
+        return json({ ...connected, cacheState: 'fresh' });
+      }
+      if (url === '/partner/stripe-connect') {
+        return json(
+          rechecked
+            ? connected
+            : {
+                ...connected,
+                status: 'reconnect_required',
+                cacheState: 'reconnect_required',
+                error: { code: 'INVALID_STRIPE_KEY', message: 'Stripe rejected the stored key — reconnect Stripe.' },
+              },
+        );
+      }
+      return json({});
+    });
+    render(<StripePaymentsIntegration />);
+    await screen.findByTestId('stripe-connect-reconnect-required');
+
+    fireEvent.click(screen.getByTestId('stripe-connect-refresh-button'));
+
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/partner/stripe-connect/refresh', expect.objectContaining({ method: 'POST' })),
+    );
+    await waitFor(() => expect(screen.queryByTestId('stripe-connect-reconnect-required')).not.toBeInTheDocument());
+    expect(screen.getByTestId('stripe-connect-currency').textContent).toContain('EUR');
+  });
 });

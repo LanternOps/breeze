@@ -936,7 +936,8 @@
       "resendNewLinkOriginalDead": "Proposta reenviada, mas com um link NOVO. O link anterior não pode mais ser aberto, então quem o tiver precisa usar o novo.",
       "shareLinkNewLinkOriginalLive": "Um link NOVO foi copiado. Esta proposta é anterior ao rastreamento de links, então o link que o cliente já tinha não pôde ser reutilizado; ele continua funcionando junto com este.",
       "shareLinkNewLinkOriginalDead": "Um link NOVO foi copiado. O link anterior não pode mais ser aberto, então quem o tiver precisa usar este.",
-      "currencyMismatch": "Este orçamento está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta."
+      "currencyMismatch": "Este orçamento está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta.",
+      "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com este orçamento em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "detail": {
       "addContentInEditor": "Adicionar conteúdo no Editor",
@@ -1541,7 +1542,8 @@
       "shareLinkPrompt": "Compartilhe este link de pagamento com o cliente:",
       "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
       "title": "Pagamentos",
-      "viaStripe": "via Stripe"
+      "viaStripe": "via Stripe",
+      "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {
       "invoiceSent": "Fatura enviada",

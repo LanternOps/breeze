@@ -41,6 +41,9 @@ const CAT_CHILD = {
   defaultPriority: 'high', responseSlaMinutes: 60, resolutionSlaMinutes: 480,
   defaultBillable: true, defaultHourlyRate: '150.00', rateCurrency: 'USD', sortOrder: 0, isActive: true
 };
+// Legacy rated row: no stamped rateCurrency (pre-wave-4), so its label falls
+// back to the partner currency — the path #3777 F8 guards against USD-guessing.
+const CAT_LEGACY_RATE = { ...CAT_CHILD, id: 'c2', name: 'Legacy', rateCurrency: null };
 const CAT_ROOT2 = {
   id: 'r2', name: 'Software', color: '#0000ff', parentId: null,
   defaultPriority: null, responseSlaMinutes: null, resolutionSlaMinutes: null,
@@ -72,6 +75,47 @@ function mockGetCategories(cats: unknown[], partnersMe: Response = makeJsonRespo
 describe('TicketCategoriesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('renders the rate with NO currency label until the partner currency is known — never a USD guess (review F8)', async () => {
+    let resolvePartner: (r: Response) => void = () => {};
+    const partnerPending = new Promise<Response>((r) => { resolvePartner = r; });
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/orgs/partners/me') return partnerPending;
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [CAT_PARENT, CAT_LEGACY_RATE] });
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+    render(<TicketCategoriesPage />);
+    await screen.findByText('Legacy');
+    expect(document.body.textContent).toContain('150.00/h');
+    expect(document.body.textContent).not.toContain('$150.00/h');
+    expect(document.body.textContent).not.toContain('USD');
+
+    resolvePartner(makeJsonResponse({ id: 'p1', currencyCode: 'EUR' }));
+    await waitFor(() => expect(document.body.textContent).toContain('€150.00/h'));
+  });
+
+  it('a partner whose currency cannot be resolved keeps the bare rate — no USD relabel (review F8)', async () => {
+    // /orgs/partners/me answers WITHOUT a currencyCode (the default mock supplies
+    // one, which would resolve the label and defeat the point of this test).
+    mockGetCategories([CAT_PARENT, CAT_LEGACY_RATE], makeJsonResponse({ id: 'p1' }));
+    render(<TicketCategoriesPage />);
+    await screen.findByText('Legacy');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/orgs/partners/me'));
+    await waitFor(() => expect(document.body.textContent).toContain('150.00/h'));
+    expect(document.body.textContent).not.toContain('$150.00/h');
+  });
+
+  it('labels the rate input with the partner currency once it is known', async () => {
+    mockGetCategories([CAT_PARENT], makeJsonResponse({ currencyCode: 'EUR' }));
+    render(<TicketCategoriesPage />);
+
+    fireEvent.click(await screen.findByTestId(`ticket-category-edit-${CAT_PARENT.id}`));
+
+    expect(await screen.findByLabelText('Default hourly rate (EUR)')).toBe(
+      screen.getByTestId('ticket-category-edit-rate'),
+    );
   });
 
   // --- Existing tests preserved ---

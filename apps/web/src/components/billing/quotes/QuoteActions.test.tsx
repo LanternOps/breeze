@@ -250,12 +250,29 @@ describe('QuoteActions — Stripe currency-mismatch warning (#3777)', () => {
   const resp = (payload: unknown): Response =>
     ({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-  function mockStripe(defaultCurrency: string | null) {
+  /** The warning arrives PRECOMPUTED on the detail payload (GET /quotes/:id).
+   *  The composer must never call the BILLING_MANAGE-only
+   *  /partner/stripe-connect endpoint for it: `quotes:send` is independently
+   *  grantable, and a sender without billing admin got a silent 403 and no
+   *  warning (review F5). The mock below 403s that endpoint to prove it. */
+  function mockSenderWithoutBillingManage() {
     vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
-      if (url === '/partner/stripe-connect') return resp({ status: 'connected', defaultCurrency, accountCountry: 'US' });
+      if (url === '/partner/stripe-connect') {
+        return { ok: false, status: 403, statusText: 'Forbidden', json: vi.fn().mockResolvedValue({ error: 'Forbidden' }) } as unknown as Response;
+      }
       if (url === '/orgs/partners/me') return resp({ emailSignature: null });
       return resp({ data: {} });
     });
+  }
+
+  function withStripe(detail: QuoteDetailData, accountCurrency: string | null): QuoteDetailData {
+    const doc = detail.quote.currencyCode;
+    const currencyWarning: QuoteDetailData['currencyWarning'] = accountCurrency === null
+      ? { code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN', documentCurrency: doc, accountCurrency: null, message: 'not cached — refresh' }
+      : accountCurrency === doc
+        ? null
+        : { code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT', documentCurrency: doc, accountCurrency, message: 'differs' };
+    return { ...detail, stripeConnected: true, stripeAccountCurrency: accountCurrency, currencyWarning };
   }
 
   async function openComposer(detail: QuoteDetailData) {
@@ -265,31 +282,58 @@ describe('QuoteActions — Stripe currency-mismatch warning (#3777)', () => {
     await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
   }
 
-  it('warns when the quote currency differs from the Stripe account default', async () => {
+  beforeEach(() => { mockSenderWithoutBillingManage(); });
+
+  it('warns when the quote currency differs from the Stripe account default — for a quotes:send-only user, without calling /partner/stripe-connect', async () => {
     authState.tokens = PARTNER_TOKENS;
-    mockStripe('USD');
-    await openComposer({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } });
+    await openComposer(withStripe({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } }, 'USD'));
     const warning = await screen.findByTestId('quote-stripe-currency-warning');
     expect(warning.textContent).toContain('EUR');
     expect(warning.textContent).toContain('USD');
     // Warn, never block: the connected note still renders and Send stays armed.
     expect(screen.getByTestId('quote-send-payment-enabled')).toBeInTheDocument();
     expect(screen.getByTestId('quote-send-confirm')).not.toBeDisabled();
+    expect(vi.mocked(fetchWithAuth).mock.calls.map(([u]) => u)).not.toContain('/partner/stripe-connect');
   });
 
   it('stays silent when the currencies match', async () => {
     authState.tokens = PARTNER_TOKENS;
-    mockStripe('USD');
-    await openComposer(sendable());
+    await openComposer(withStripe(sendable(), 'USD'));
     await screen.findByTestId('quote-send-payment-enabled');
+    expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-stripe-currency-unknown')).not.toBeInTheDocument();
+  });
+
+  it('account currency not cached (null): shows an explicit "refresh required" note instead of silence (review F6)', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    await openComposer(withStripe({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } }, null));
+    await screen.findByTestId('quote-send-payment-enabled');
+    expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
+    const note = screen.getByTestId('quote-stripe-currency-unknown');
+    expect(note.textContent).toMatch(/refresh/i);
+    // Warn, never block.
+    expect(screen.getByTestId('quote-send-confirm')).not.toBeDisabled();
+  });
+
+  it('does not render the warning for an org-scoped token either — the payload decides, not the token', async () => {
+    authState.tokens = null;
+    await openComposer(withStripe({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } }, 'USD'));
+    expect(await screen.findByTestId('quote-stripe-currency-warning')).toBeInTheDocument();
+  });
+
+  it('stripeConnected unknown (null / omitted): neither the connected note nor a warning, even if a stale warning is present', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    const stale = withStripe({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } }, 'USD');
+    await openComposer({ ...stale, stripeConnected: null });
+    expect(screen.queryByTestId('quote-send-payment-enabled')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-send-payment-note')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
   });
 
-  it('stays silent when the account currency is not cached (null)', async () => {
+  it('stripeConnected false: the disconnected note renders and no currency warning can', async () => {
     authState.tokens = PARTNER_TOKENS;
-    mockStripe(null);
-    await openComposer({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } });
-    await screen.findByTestId('quote-send-payment-enabled');
+    await openComposer({ ...sendable(), stripeConnected: false, currencyWarning: null });
+    expect(await screen.findByTestId('quote-send-payment-note')).toBeInTheDocument();
     expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
   });
 });

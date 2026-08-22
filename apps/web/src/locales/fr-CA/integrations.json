@@ -812,7 +812,9 @@
     "refreshing": "Actualisation…",
     "refreshed": "Détails du compte Stripe actualisés",
     "couldNotRefresh": "Impossible d'actualiser les détails du compte Stripe.",
-    "notCached": "Devise pas encore en cache — actualisez pour la récupérer depuis Stripe."
+    "notCached": "Devise pas encore en cache — actualisez pour la récupérer depuis Stripe.",
+    "staleCache": "Stripe est injoignable — affichage des derniers détails de compte en cache.",
+    "reconnectRequired": "Votre clé Stripe enregistrée (•••• {{last4}}) ne fonctionne plus : {{reason}} Collez une nouvelle clé pour reconnecter; les paiements en ligne échoueront d'ici là."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossible d’enregistrer les associations de sites.",

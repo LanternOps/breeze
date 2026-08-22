@@ -936,7 +936,8 @@
       "resendNewLinkOriginalDead": "Proposta inviata di nuovo, ma con un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare quello nuovo.",
       "shareLinkNewLinkOriginalLive": "Copiato un link NUOVO. Questa proposta precede il tracciamento dei link, quindi non è stato possibile riutilizzare quello che il cliente aveva già; continua a funzionare insieme a questo.",
       "shareLinkNewLinkOriginalDead": "Copiato un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare questo.",
-      "currencyMismatch": "Questo preventivo è in {{documentCurrency}}, ma il tuo account Stripe regola in {{accountCurrency}}. Stripe presenterà {{documentCurrency}} al cliente e convertirà al momento del regolamento: lo spread di cambio ed eventuali commissioni di conversione sono a tuo carico."
+      "currencyMismatch": "Questo preventivo è in {{documentCurrency}}, ma il tuo account Stripe regola in {{accountCurrency}}. Stripe presenterà {{documentCurrency}} al cliente e convertirà al momento del regolamento: lo spread di cambio ed eventuali commissioni di conversione sono a tuo carico.",
+      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questo preventivo in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "detail": {
       "addContentInEditor": "Aggiungi contenuto nell'Editor",
@@ -1541,7 +1542,8 @@
       "shareLinkPrompt": "Condividi questo link di pagamento con il cliente:",
       "stripeNudge": "Collega Stripe per accettare pagamenti online con carta.",
       "title": "Pagamenti",
-      "viaStripe": "tramite Stripe"
+      "viaStripe": "tramite Stripe",
+      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questa fattura in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "requestPayment": {
       "invoiceSent": "Fattura inviata",

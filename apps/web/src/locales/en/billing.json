@@ -936,7 +936,8 @@
       "resendNewLinkOriginalDead": "Proposal re-sent — but with a NEW link. The previous link can no longer be opened, so anyone holding it must use the new one.",
       "shareLinkNewLinkOriginalLive": "Copied a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside this one.",
       "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one.",
-      "currencyMismatch": "This quote is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee."
+      "currencyMismatch": "This quote is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee.",
+      "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} quote. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -1541,7 +1542,8 @@
       "shareLinkPrompt": "Share this payment link with your customer:",
       "stripeNudge": "Connect Stripe to accept online card payments.",
       "title": "Payments",
-      "viaStripe": "via Stripe"
+      "viaStripe": "via Stripe",
+      "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "requestPayment": {
       "invoiceSent": "Invoice sent",

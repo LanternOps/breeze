@@ -1264,6 +1264,18 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
     expect(out.currencyWarning).toBeNull();
   });
 
+  it('connected but the account currency was never cached (pre-wave-5 row): explicit UNKNOWN warning, not "no warning" (review F6)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
+    queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: null, accountCountry: null }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.stripeConnected).toBe(true);
+    expect(out.stripeAccountCurrency).toBeNull();
+    expect(out.currencyWarning).toMatchObject({
+      code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN', documentCurrency: 'EUR', accountCurrency: null,
+    });
+  });
+
   it('both null when the partner is not connected', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);
