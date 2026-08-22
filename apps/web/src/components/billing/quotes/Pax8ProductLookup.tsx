@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { pax8Search, pax8Pricing, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
@@ -25,8 +25,9 @@ export default function Pax8ProductLookup({ blockId, busy, currencyCode, onImpor
   // Quote-currency gate: a Pax8 term priced in another (or an unknown) currency
   // never seeds the sell field and never feeds the margin preview — the
   // operator must type a price in the quote currency. Never a 'USD' fallback.
-  const defaultSellPrice = (opt: Pax8PriceOption | undefined): string =>
-    opt && feedMatchesCurrency(opt.currencyCode, currencyCode) ? (opt.suggestedRetailPrice ?? opt.partnerBuyRate ?? '') : '';
+  const defaultSellPrice = useCallback((opt: Pax8PriceOption | undefined): string =>
+    opt && feedMatchesCurrency(opt.currencyCode, currencyCode) ? (opt.suggestedRetailPrice ?? opt.partnerBuyRate ?? '') : '',
+  [currencyCode]);
   const [query, setQuery] = useState('');
   const [products, setProducts] = useState<Pax8Product[]>([]);
   const [pricing, setPricing] = useState<Record<string, Pax8PriceOption[]>>({});
@@ -34,6 +35,23 @@ export default function Pax8ProductLookup({ blockId, busy, currencyCode, onImpor
   const [prices, setPrices] = useState<Record<string, string>>({});
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The gate has to survive a currency change made AFTER the lookup (#3775
+  // review #4). `prices` was seeded only when pricing loaded or a term was
+  // picked, while the note and margin recompute every render — so switching the
+  // quote currency with results on screen left the foreign-currency number in
+  // the field for Import & add to stamp with the NEW currency. Re-derive
+  // against each product's SELECTED term, and only on an actual currency
+  // change, so a hand-typed price survives ordinary re-renders.
+  const prevCurrency = useRef(currencyCode);
+  useEffect(() => {
+    if (prevCurrency.current === currencyCode) return;
+    prevCurrency.current = currencyCode;
+    setPrices(Object.fromEntries(products.map((p) => {
+      const options = pricing[p.pax8ProductId] ?? [];
+      return [p.pax8ProductId, defaultSellPrice(options[termIndex[p.pax8ProductId] ?? 0])];
+    })));
+  }, [currencyCode, products, pricing, termIndex, defaultSellPrice]);
 
   const loadPricing = async (productId: string) => {
     if (pricing[productId]) return;

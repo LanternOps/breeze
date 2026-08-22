@@ -72,13 +72,29 @@ export default function DistributorLookup({ blockId, busy, currencyCode, onImpor
   // Quote-currency gate: a row priced in another (or an unknown) currency never
   // seeds the sell field — the operator must type a price in the quote
   // currency. Never a 'USD' fallback.
-  const applyResults = useCallback((next: Result[]) => {
-    setResults(next);
-    setPrices(Object.fromEntries(next.map((r) => [
+  const prefillFor = useCallback((rows: Result[]): Record<string, string> =>
+    Object.fromEntries(rows.map((r) => [
       r.product.synnexSku,
       feedMatchesCurrency(r.product.currency, currencyCode) ? sellPriceDefault(r.product) : '',
-    ])));
-  }, [currencyCode]);
+    ])), [currencyCode]);
+
+  const applyResults = useCallback((next: Result[]) => {
+    setResults(next);
+    setPrices(prefillFor(next));
+  }, [prefillFor]);
+
+  // The gate has to survive a currency change made AFTER the search (#3775
+  // review #4). sameCurrency and the note recompute every render, but `prices`
+  // was seeded once in applyResults — so switching the quote currency with
+  // results on screen left the foreign-currency number sitting in the field,
+  // and Import & add then stamped it with the NEW currency. Re-derive on an
+  // actual change only, so a hand-typed price survives ordinary re-renders.
+  const prevCurrency = useRef(currencyCode);
+  useEffect(() => {
+    if (prevCurrency.current === currencyCode) return;
+    prevCurrency.current = currencyCode;
+    setPrices(prefillFor(results));
+  }, [currencyCode, results, prefillFor]);
 
   const runSearch = useCallback(async (term: string, mode: LookupSource, stockOnly: boolean) => {
     const q = term.trim();

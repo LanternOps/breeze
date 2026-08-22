@@ -116,3 +116,64 @@ describe('Pax8ProductLookup', () => {
     });
   });
 });
+
+// #3775 review #4: same shape as DistributorLookup — `prices` was seeded only
+// when pricing loaded or a term was picked, never when the QUOTE currency
+// changed under results already on screen, while the note/margin gate
+// recomputed every render.
+describe('Pax8ProductLookup — quote currency changes with results on screen (#3775 review #4)', () => {
+  const searchUsdTerm = async (currencyCode: string) => {
+    pax8Pricing.mockResolvedValue(ok([{ commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', suggestedRetailPrice: '22.00', currencyCode: 'USD' }]));
+    const view = render(<Pax8ProductLookup blockId="b1" busy={false} currencyCode={currencyCode} onImportAdd={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('pax8-product-search-b1'), { target: { value: 'micro' } });
+    fireEvent.click(screen.getByTestId('pax8-product-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('pax8-product-term-p1'));
+    return view;
+  };
+
+  it('clears the stale prefill when the quote currency moves away from the term currency', async () => {
+    const { rerender } = await searchUsdTerm('USD');
+    expect((screen.getByTestId('pax8-product-price-p1') as HTMLInputElement).value).toBe('22.00');
+
+    rerender(<Pax8ProductLookup blockId="b1" busy={false} currencyCode="EUR" onImportAdd={vi.fn()} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('pax8-product-price-p1') as HTMLInputElement).value).toBe(''));
+    expect(screen.getByTestId('pax8-product-currency-note-p1')).toBeInTheDocument();
+    expect((screen.getByTestId('pax8-product-add-p1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('re-seeds the prefill when the quote currency comes back to the term currency', async () => {
+    const { rerender } = await searchUsdTerm('EUR');
+    expect((screen.getByTestId('pax8-product-price-p1') as HTMLInputElement).value).toBe('');
+
+    rerender(<Pax8ProductLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('pax8-product-price-p1') as HTMLInputElement).value).toBe('22.00'));
+  });
+
+  it('re-derives against the SELECTED term, not the first one', async () => {
+    pax8Pricing.mockResolvedValue(ok([
+      { commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', suggestedRetailPrice: '22.00', currencyCode: 'USD' },
+      { commitmentTerm: 'Annual', billingTerm: 'Annual', partnerBuyRate: '200.00', suggestedRetailPrice: '240.00', currencyCode: 'EUR' },
+    ]));
+    const { rerender } = render(<Pax8ProductLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('pax8-product-search-b1'), { target: { value: 'micro' } });
+    fireEvent.click(screen.getByTestId('pax8-product-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('pax8-product-term-p1'));
+    // Pick the EUR term while the quote is USD → blank.
+    fireEvent.change(screen.getByTestId('pax8-product-term-p1'), { target: { value: '1' } });
+    expect((screen.getByTestId('pax8-product-price-p1') as HTMLInputElement).value).toBe('');
+
+    // Quote moves to EUR → the SELECTED (EUR) term now matches and seeds 240.00.
+    rerender(<Pax8ProductLookup blockId="b1" busy={false} currencyCode="EUR" onImportAdd={vi.fn()} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('pax8-product-price-p1') as HTMLInputElement).value).toBe('240.00'));
+  });
+
+  it('leaves a hand-typed price alone while the currency is unchanged', async () => {
+    const { rerender } = await searchUsdTerm('USD');
+    fireEvent.change(screen.getByTestId('pax8-product-price-p1'), { target: { value: '19.00' } });
+    rerender(<Pax8ProductLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
+    expect((screen.getByTestId('pax8-product-price-p1') as HTMLInputElement).value).toBe('19.00');
+  });
+});

@@ -273,3 +273,63 @@ describe('DistributorLookup — quote currency gate (multi-currency wave 3, revi
     expect(screen.queryByTestId('quote-distributor-margin-ABC123')).toBeNull();
   });
 });
+
+// #3775 review #4: the quote-currency gate ran only at SEARCH time — `prices`
+// was seeded in applyResults and never recomputed, while sameCurrency and the
+// note recompute every render. Changing the quote currency with results on
+// screen left a foreign-currency number in the field, which Import & add then
+// stamped with the NEW currency — the exact bug this PR set out to fix.
+describe('DistributorLookup — quote currency changes with results on screen (#3775 review #4)', () => {
+  const searchUsdProduct = async (currencyCode: string) => {
+    ecExpressLookup.mockResolvedValue(ok([product])); // feed row priced in USD
+    const view = render(<DistributorLookup blockId="b1" busy={false} currencyCode={currencyCode} onImportAdd={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
+    return view;
+  };
+
+  it('clears the stale prefill when the quote currency moves away from the feed currency', async () => {
+    const { rerender } = await searchUsdProduct('USD');
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('100.00');
+
+    rerender(<DistributorLookup blockId="b1" busy={false} currencyCode="EUR" onImportAdd={vi.fn()} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe(''));
+    // The gate's own note agrees with the (now empty) field.
+    expect(screen.getByTestId('quote-distributor-currency-note-ABC123')).toBeInTheDocument();
+  });
+
+  it('re-seeds the prefill when the quote currency comes back to the feed currency', async () => {
+    const { rerender } = await searchUsdProduct('EUR');
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('');
+
+    rerender(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('100.00'));
+  });
+
+  it('never hands Import & add a foreign-currency number after a currency switch', async () => {
+    const onImportAdd = vi.fn();
+    ecExpressLookup.mockResolvedValue(ok([product]));
+    const { rerender } = render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={onImportAdd} />);
+    fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
+
+    rerender(<DistributorLookup blockId="b1" busy={false} currencyCode="EUR" onImportAdd={onImportAdd} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe(''));
+    // Empty price → Add is blocked, so the USD 100.00 can never be stamped EUR.
+    expect((screen.getByTestId('quote-distributor-add-ABC123') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('quote-distributor-add-ABC123'));
+    expect(onImportAdd).not.toHaveBeenCalled();
+  });
+
+  it('leaves a hand-typed price alone while the currency is unchanged', async () => {
+    const { rerender } = await searchUsdProduct('USD');
+    fireEvent.change(screen.getByTestId('quote-distributor-price-ABC123'), { target: { value: '133.00' } });
+    rerender(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('133.00');
+  });
+});
