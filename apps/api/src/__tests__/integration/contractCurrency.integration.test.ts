@@ -26,6 +26,8 @@ import {
 } from '../../services/contractService';
 import { addContractLine, issueInvoice } from '../../services/invoiceService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { createCatalogItem, setItemPrice, removeItemPrice, type CatalogActor } from '../../services/catalogService';
+import { invoiceLines } from '../../db/schema';
 
 const RUN = !!process.env.DATABASE_URL;
 
@@ -123,5 +125,89 @@ describe.runIf(RUN)('contract→invoice currency propagation (B2)', () => {
         sourceId: line!.id
       }, actor))
     ).rejects.toBeInstanceOf(InvoiceServiceError);
+  });
+});
+
+/**
+ * Multi-currency wave 3 (#3775): contract catalog lines price through the
+ * resolver in the CONTRACT's currency; a billing run that finds a price-book
+ * gap bills the contract line's stamped snapshot — never fails, never uses
+ * another currency — and reports the gap in `priceBookGaps`.
+ */
+describe.runIf(RUN)('contract catalog lines + billing-run price-book gap fallback (#3775)', () => {
+  it('stamps the EUR book price on add, bills the live EUR price, then falls back to the snapshot on a gap', async () => {
+    const { actor, orgId, partnerId } = await seedOrg();
+    const catalogActor: CatalogActor = { userId: null, partnerId, accessibleOrgIds: null };
+
+    // USD partner: the item carries a USD book row (partner currency) AND an EUR row.
+    const item = await withSystemDbAccessContext(() => createCatalogItem({
+      itemType: 'service', name: 'Managed endpoint', billingType: 'recurring', billingFrequency: 'monthly',
+      unitOfMeasure: 'each', taxable: true, isBundle: false, attributes: {},
+      prices: [{ currencyCode: 'USD', unitPrice: 100 }, { currencyCode: 'EUR', unitPrice: 90 }],
+    }, catalogActor));
+
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'Euro Managed', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    expect(c.currencyCode).toBe('EUR');
+
+    // No unitPrice from the client: the resolver stamps the EUR book price (and taxable).
+    const line = await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'flat', description: 'Managed endpoint', taxable: false, catalogItemId: item.id
+    }, actor));
+    expect(line.unitPrice).toBe('90.00');
+    expect(line.taxable).toBe(true);
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01T00:00:00Z')));
+
+    // Run 1: the price book has an EUR row → billed at the LIVE EUR price, no gap.
+    await withSystemDbAccessContext(() => setItemPrice(item.id, 'EUR', { unitPrice: 95 }, catalogActor));
+    const run1 = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T06:00:00Z'))));
+    expect(run1.generated).toBe(true);
+    expect(run1.priceBookGaps).toEqual([]);
+    const [inv1] = await withSystemDbAccessContext(() =>
+      db.select().from(invoices).where(eq(invoices.id, run1.invoiceId!)).limit(1));
+    expect(inv1!.currencyCode).toBe('EUR');
+    expect(inv1!.subtotal).toBe('95.00');
+
+    // Remove the EUR row → the next run bills the contract line's stamped
+    // snapshot (90.00 EUR), not the USD price, and does not fail.
+    await withSystemDbAccessContext(() => removeItemPrice(item.id, 'EUR', catalogActor));
+    const run2 = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-08-01T06:00:00Z'))));
+    expect(run2.generated).toBe(true);
+    expect(run2.priceBookGaps).toEqual([
+      { contractLineId: line.id, catalogItemId: item.id, itemName: 'Managed endpoint', currencyCode: 'EUR' },
+    ]);
+    const [inv2] = await withSystemDbAccessContext(() =>
+      db.select().from(invoices).where(eq(invoices.id, run2.invoiceId!)).limit(1));
+    expect(inv2!.currencyCode).toBe('EUR');
+    expect(inv2!.subtotal).toBe('90.00');
+    const [il] = await withSystemDbAccessContext(() =>
+      db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, run2.invoiceId!)).limit(1));
+    expect(il!.unitPrice).toBe('90.00');
+    expect(il!.taxable).toBe(true);
+    expect(il!.costBasis).toBeNull();
+    expect(il!.catalogItemId).toBe(item.id);
+  });
+
+  it('addContractLineToContract refuses a catalog item with no price in the contract currency (NO_PRICE_FOR_CURRENCY 409)', async () => {
+    const { actor, orgId, partnerId } = await seedOrg();
+    const catalogActor: CatalogActor = { userId: null, partnerId, accessibleOrgIds: null };
+    const item = await withSystemDbAccessContext(() => createCatalogItem({
+      itemType: 'service', name: 'USD only', billingType: 'one_time', unitOfMeasure: 'each',
+      taxable: true, isBundle: false, attributes: {}, prices: [{ currencyCode: 'USD', unitPrice: 100 }],
+    }, catalogActor));
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'Euro Contract', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    await expect(
+      withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+        lineType: 'flat', description: 'USD only', taxable: true, catalogItemId: item.id
+      }, actor))
+    ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409 });
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ id: contractLines.id }).from(contractLines).where(eq(contractLines.contractId, c.id)));
+    expect(rows).toEqual([]);
   });
 });

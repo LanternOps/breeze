@@ -40,7 +40,13 @@ vi.mock('./contacts/compat', () => ({
   mergeBillingContact: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('./catalogService', () => ({ resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() }));
+// Multi-currency wave 3 (#3775): the resolver + bundle economics are mocked;
+// CatalogServiceError stays real so the NO_PRICE_FOR_CURRENCY mapping path is
+// exercised with the genuine class (an `instanceof undefined` would throw).
+vi.mock('./catalogService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./catalogService')>();
+  return { ...actual, resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() };
+});
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 // issueInvoice enqueues an async PDF render; stub it so the unit path never
 // opens a BullMQ socket.
@@ -51,8 +57,16 @@ import type { Mock } from 'vitest';
 import * as svc from './invoiceService';
 import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
-import { resolvePrice } from './catalogService';
+import { resolvePrice, computeBundleEconomics, CatalogServiceError } from './catalogService';
 import { mergeBillingContact } from './contacts/compat';
+
+const resolvePriceMock = vi.mocked(resolvePrice);
+const bundleEconMock = vi.mocked(computeBundleEconomics);
+/** A price-book resolution in USD with margin available (cost in USD). */
+const resolvedUsd = (over: Partial<Awaited<ReturnType<typeof resolvePrice>>> = {}) => ({
+  unitPrice: '10.00', currencyCode: 'USD', costBasis: '4.00', costCurrency: 'USD',
+  marginAvailable: true, taxable: true, taxCategory: null, source: 'price_book' as const, ...over,
+});
 
 describe('invoiceService guards', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
@@ -98,7 +112,7 @@ describe('invoiceService guards', () => {
 
   it('addCatalogLine routes a bundle item to an INVALID_STATE error', async () => {
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]); // invoice
-    (resolvePrice as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ unitPrice: '10.00', costBasis: null, taxable: true, taxCategory: null, source: 'item' });
+    resolvePriceMock.mockResolvedValue(resolvedUsd({ costBasis: null }));
     queueResult([{ name: 'Bundle X', isBundle: true }]); // catalog item lookup
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     await expect(
@@ -675,6 +689,105 @@ describe('updateIssuedDueDate', () => {
   });
 });
 
+describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const values = () => (db as unknown as { values: Mock }).values;
+
+  function queueInsertAndRecompute(lineRow: { lineTotal: string } & Record<string, unknown>) {
+    queueResult([]);                    // sortOrder lookup
+    queueResult([lineRow]);             // insert returning
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'USD' }]);
+    queueResult([{ lineTotal: lineRow.lineTotal, taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]);                    // update invoices
+  }
+
+  it('addCatalogLine resolves in the INVOICE currency on the tx and snapshots cost only when margin is available', async () => {
+    resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '42.00', costBasis: '30.00' }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ name: 'Seat', description: null, isBundle: false }]);
+    queueInsertAndRecompute({ id: 'l1', unitPrice: '42.00', lineTotal: '84.00' });
+
+    const line = await svc.addCatalogLine('i1', 'cat-1', 2, actor);
+    expect(line.unitPrice).toBe('42.00');
+    expect(resolvePrice).toHaveBeenCalledWith(
+      'cat-1', 'USD', 'org1',
+      expect.objectContaining({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] }),
+      expect.anything()
+    );
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({
+      catalogItemId: 'cat-1', unitPrice: '42.00', costBasis: '30.00', taxable: true, lineTotal: '84.00'
+    }));
+  });
+
+  it('addCatalogLine inserts costBasis null when the cost currency differs (marginAvailable false)', async () => {
+    resolvePriceMock.mockResolvedValue(resolvedUsd({ costBasis: '30.00', costCurrency: 'CAD', marginAvailable: false }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ name: 'Seat', description: null, isBundle: false }]);
+    queueInsertAndRecompute({ id: 'l1', unitPrice: '10.00', lineTotal: '10.00' });
+
+    await svc.addCatalogLine('i1', 'cat-1', 1, actor);
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '10.00', costBasis: null }));
+  });
+
+  it('addCatalogLine maps a resolver gap to NO_PRICE_FOR_CURRENCY (409) and inserts nothing', async () => {
+    resolvePriceMock.mockRejectedValue(new CatalogServiceError('No EUR price', 409, 'NO_PRICE_FOR_CURRENCY'));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    await expect(svc.addCatalogLine('i1', 'cat-1', 1, actor))
+      .rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409 });
+    await expect(svc.addCatalogLine('i1', 'cat-1', 1, actor)).rejects.toBeInstanceOf(InvoiceServiceError);
+    expect(values()).not.toHaveBeenCalled();
+  });
+
+  const econUsd = (over: Partial<Awaited<ReturnType<typeof computeBundleEconomics>>> = {}) => ({
+    currencyCode: 'USD', headlinePrice: '100.00', priceBookComplete: true, marginAvailable: true,
+    totalCost: '40.00', margin: '60.00', marginPct: 60, allocationTotal: '100.00',
+    allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[], ...over,
+  });
+
+  it('addBundleLine computes economics in the INVOICE currency and snapshots child cost only in the same currency', async () => {
+    bundleEconMock.mockResolvedValue(econUsd());
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ name: 'Bundle', description: null }]);
+    queueInsertAndRecompute({ id: 'parent', sortOrder: 1, unitPrice: '100.00', lineTotal: '100.00' });
+    queueResult([
+      { componentItemId: 'c-usd', quantity: '1.00', showOnInvoice: true, revenueAllocation: null, name: 'A', description: null, costBasis: '10.00', costCurrency: 'USD' },
+      { componentItemId: 'c-cad', quantity: '1.00', showOnInvoice: false, revenueAllocation: null, name: 'B', description: null, costBasis: '30.00', costCurrency: 'CAD' },
+    ]);
+    queueResult([]); queueResult([]); // two child inserts
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'USD' }]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]);
+
+    const parent = await svc.addBundleLine('i1', 'b-1', 1, actor);
+    expect(parent.id).toBe('parent');
+    expect(computeBundleEconomics).toHaveBeenCalledWith(
+      'b-1', 'USD', 'org1', expect.objectContaining({ partnerId: 'p1' }), expect.anything()
+    );
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'b-1', unitPrice: '100.00', costBasis: '40.00' }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-usd', costBasis: '10.00' }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-cad', costBasis: null }));
+  });
+
+  it('addBundleLine throws NO_PRICE_FOR_CURRENCY (409) when the bundle has no headline price', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'EUR', headlinePrice: null, priceBookComplete: false, totalCost: null }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    await expect(svc.addBundleLine('i1', 'b-1', 1, actor))
+      .rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409 });
+    expect(values()).not.toHaveBeenCalled();
+  });
+
+  it('addBundleLine throws PRICE_BOOK_INCOMPLETE (409) when a component lacks a price and inserts nothing', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'EUR', priceBookComplete: false, totalCost: null, missingPriceComponentIds: ['c-2', 'c-3'] }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    await expect(svc.addBundleLine('i1', 'b-1', 1, actor))
+      .rejects.toMatchObject({ code: 'PRICE_BOOK_INCOMPLETE', status: 409, message: 'Bundle has no EUR price for 2 component(s)' });
+    expect(values()).not.toHaveBeenCalled();
+  });
+});
+
 describe('addContractLine', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
@@ -695,29 +808,28 @@ describe('addContractLine', () => {
       description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
       lineTotal: '500.00', taxable: false, customerVisible: true });
 
-    const line = await svc.addContractLine('i1', {
+    const { line, pricedFrom } = await svc.addContractLine('i1', {
       description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
       taxable: false, catalogItemId: null, sourceId: null
     }, actor);
 
     expect(line.sourceType).toBe('contract');
     expect(line.lineTotal).toBe('500.00');
+    expect(pricedFrom).toBe('contract_snapshot');
     expect(resolvePrice).not.toHaveBeenCalled();
   });
 
   it('catalog path: resolves price via resolvePrice and uses its unitPrice, taxable, costBasis (not caller-supplied)', async () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     // resolvePrice returns a known price that differs from what caller would supply
-    (resolvePrice as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      unitPrice: '99.00', taxable: true, costBasis: '45.00', taxCategory: null, source: 'item'
-    });
+    resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '99.00', costBasis: '45.00' }));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
     queueResult([{ currencyCode: 'USD' }]); // B2 guard: contract currency lookup via sourceId — matches
     queueInsertAndRecompute({ id: 'l2', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '3', unitPrice: '99.00',
       lineTotal: '297.00', taxable: true, customerVisible: true });
 
-    const line = await svc.addContractLine('i1', {
+    const { line, pricedFrom } = await svc.addContractLine('i1', {
       description: 'Managed endpoint',
       quantity: '3',
       unitPrice: '999.00', // caller-supplied price — must be ignored on catalog path
@@ -726,14 +838,50 @@ describe('addContractLine', () => {
       sourceId: 'cl-1',
     }, actor);
 
-    // resolvePrice must have been called with the correct org + actor
+    // resolvePrice must have been called in the INVOICE's currency, on the
+    // locked tx, with the correct org + actor (wave 3: price-book resolution).
     expect(resolvePrice).toHaveBeenCalledWith(
-      'cat-1', 'org1',
-      { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] }
+      'cat-1', 'USD', 'org1',
+      expect.objectContaining({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] }),
+      expect.anything()
     );
     // Line uses the resolved price, not the caller-supplied 999.00
     expect(line.unitPrice).toBe('99.00');
     expect(line.lineTotal).toBe('297.00');
+    expect(pricedFrom).toBe('price_book');
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '99.00', costBasis: '45.00', taxable: true }));
+  });
+
+  it('catalog path: a price-book gap falls back to the contract line snapshot (pricedFrom contract_snapshot, costBasis null)', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    resolvePriceMock.mockRejectedValue(new CatalogServiceError('No EUR price', 409, 'NO_PRICE_FOR_CURRENCY'));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([{ currencyCode: 'EUR' }]); // B2 guard: the snapshot is in the invoice currency
+    queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
+      description: 'Managed endpoint', quantity: '2', unitPrice: '80.00', lineTotal: '160.00', taxable: true, customerVisible: true });
+
+    const { line, pricedFrom } = await svc.addContractLine('i1', {
+      description: 'Managed endpoint', quantity: '2', unitPrice: '80', taxable: true,
+      catalogItemId: 'cat-1', sourceId: 'cl-1',
+    }, actor);
+
+    expect(pricedFrom).toBe('contract_snapshot');
+    expect(line.unitPrice).toBe('80.00');
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      unitPrice: '80.00', taxable: true, costBasis: null, catalogItemId: 'cat-1', lineTotal: '160.00'
+    }));
+  });
+
+  it('catalog path: a non-gap CatalogServiceError still propagates (no snapshot fallback)', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    resolvePriceMock.mockRejectedValue(new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND'));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    await expect(
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1' }, actor)
+    ).rejects.toMatchObject({ status: 404, code: 'ITEM_NOT_FOUND' });
+    expect((db as unknown as { values: Mock }).values).not.toHaveBeenCalled();
   });
 
   it('throws CURRENCY_MISMATCH (400) when the source contract currency differs from the invoice header', async () => {

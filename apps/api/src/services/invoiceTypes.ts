@@ -34,6 +34,13 @@ export type InvoiceServiceErrorCode =
   // Draft currency immutability (#3774): the change-currency op refused because
   // monetary lines exist and the caller didn't opt into clearLines.
   | 'CURRENCY_LOCKED'
+  // Multi-currency wave 3 (#3775): addCatalogLine / addBundleLine found no
+  // price-book row (and no org override) in the invoice's currency. Mapped 409
+  // from CatalogServiceError — never another currency's number, never converted.
+  | 'NO_PRICE_FOR_CURRENCY'
+  // Multi-currency wave 3 (#3775): addBundleLine — the bundle has a headline
+  // price but one or more components lack a price in the invoice's currency.
+  | 'PRICE_BOOK_INCOMPLETE'
   | 'NOT_A_DRAFT'
   | 'NOTHING_TO_INVOICE'
   | 'NO_VISIBLE_LINES'

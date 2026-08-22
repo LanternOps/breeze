@@ -6,7 +6,7 @@ import {
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
-import { resolvePrice, computeBundleEconomics } from './catalogService';
+import { resolvePrice, computeBundleEconomics, CatalogServiceError, type CatalogActor } from './catalogService';
 // formatInvoiceNumber is shared with the standalone allocator; issueInvoice
 // inlines the counter upsert itself (rather than calling allocateInvoiceCounter)
 // to keep allocation atomic with the number write inside its single transaction.
@@ -135,6 +135,28 @@ export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?
   }).where(eq(invoices.id, invoiceId));
 }
 
+/** The catalog-side actor for a price resolution on behalf of an invoice actor. */
+function catalogActorFrom(actor: InvoiceActor): CatalogActor {
+  return { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
+}
+
+/**
+ * Multi-currency wave 3 (#3775): resolve a catalog item's sell price in the
+ * INVOICE's currency on the already-locked tx (invoice → lines → catalog plain
+ * SELECTs — no new lock edge). A price-book gap is mapped to the invoice's own
+ * typed 409; every other catalog error propagates unchanged.
+ */
+async function resolveInvoicePrice(tx: DbExecutor, catalogItemId: string, inv: { currencyCode: string; orgId: string }, actor: InvoiceActor) {
+  try {
+    return await resolvePrice(catalogItemId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
+  } catch (err) {
+    if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
+      throw new InvoiceServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+    }
+    throw err;
+  }
+}
+
 async function insertLineAndRecompute(
   tx: DbExecutor,
   invoiceId: string,
@@ -165,14 +187,19 @@ export async function addManualLine(invoiceId: string, input: ManualLineInput, a
 export async function addCatalogLine(invoiceId: string, catalogItemId: string, quantity: number, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
-    const resolved = await resolvePrice(catalogItemId, inv.orgId, { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds });
+    // Price book in the invoice's currency (org override → catalog_item_prices),
+    // never the deprecated catalog_items.unit_price mirror, never converted.
+    const resolved = await resolveInvoicePrice(tx, catalogItemId, inv, actor);
     const [item] = await tx.select({ name: catalogItems.name, description: catalogItems.description, isBundle: catalogItems.isBundle }).from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
     if (item?.isBundle) throw new InvoiceServiceError('Use addBundleLine for bundles', 400, 'INVALID_STATE');
     const qty = String(quantity);
     return insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'catalog', sourceId: null, catalogItemId, parentLineId: null, ticketId: null,
       name: item?.name ?? 'Catalog item', description: item?.description ?? null, quantity: qty, unitPrice: resolved.unitPrice,
-      costBasis: resolved.costBasis, taxable: resolved.taxable, customerVisible: true,
+      // Cost is only meaningful in the line's currency: a cost stamped in another
+      // currency makes the margin unavailable (no conversion), so snapshot null.
+      costBasis: resolved.marginAvailable ? resolved.costBasis : null,
+      taxable: resolved.taxable, customerVisible: true,
       lineTotal: computeLineTotal(qty, resolved.unitPrice, inv.currencyCode), isUnapprovedTime: false
     });
   });
@@ -181,21 +208,34 @@ export async function addCatalogLine(invoiceId: string, catalogItemId: string, q
 export async function addBundleLine(invoiceId: string, bundleId: string, quantity: number, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
-    const catalogActor = { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
-    const econ = await computeBundleEconomics(bundleId, inv.orgId, catalogActor); // throws NOT_A_BUNDLE etc.
+    // Economics in the INVOICE's currency on the locked tx (throws NOT_A_BUNDLE etc.).
+    // The bundle's own gap and any component gap are typed 409s — a bundle is
+    // never billed from a partial price book (wave 3, #3775).
+    const econ = await computeBundleEconomics(bundleId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
+    if (econ.headlinePrice === null) {
+      throw new InvoiceServiceError(`Bundle has no ${inv.currencyCode} price`, 409, 'NO_PRICE_FOR_CURRENCY');
+    }
+    if (!econ.priceBookComplete) {
+      throw new InvoiceServiceError(
+        `Bundle has no ${inv.currencyCode} price for ${econ.missingPriceComponentIds.length} component(s)`,
+        409, 'PRICE_BOOK_INCOMPLETE'
+      );
+    }
     const [bundle] = await tx.select({ name: catalogItems.name, description: catalogItems.description }).from(catalogItems).where(eq(catalogItems.id, bundleId)).limit(1);
     const qty = String(quantity);
     const parent = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'bundle', sourceId: null, catalogItemId: bundleId, parentLineId: null, ticketId: null,
       name: bundle?.name ?? 'Bundle', description: bundle?.description ?? null, quantity: qty, unitPrice: econ.headlinePrice,
-      costBasis: econ.totalCost, taxable: true, customerVisible: true,
+      costBasis: econ.totalCost, // null when any component's cost is in another currency (margin unavailable)
+      taxable: true, customerVisible: true,
       lineTotal: computeLineTotal(qty, econ.headlinePrice, inv.currencyCode), isUnapprovedTime: false
     });
     // child component lines (unit_price 0, visibility per show_on_invoice)
     const comps = await tx.select({
       componentItemId: catalogBundleComponents.componentItemId, quantity: catalogBundleComponents.quantity,
       showOnInvoice: catalogBundleComponents.showOnInvoice, revenueAllocation: catalogBundleComponents.revenueAllocation,
-      name: catalogItems.name, description: catalogItems.description, costBasis: catalogItems.costBasis
+      name: catalogItems.name, description: catalogItems.description,
+      costBasis: catalogItems.costBasis, costCurrency: catalogItems.costCurrency
     }).from(catalogBundleComponents)
       .innerJoin(catalogItems, eq(catalogItems.id, catalogBundleComponents.componentItemId))
       .where(eq(catalogBundleComponents.bundleItemId, bundleId));
@@ -203,7 +243,9 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
       await tx.insert(invoiceLines).values({
         invoiceId, orgId: inv.orgId, sourceType: 'bundle', sourceId: null, catalogItemId: comp.componentItemId,
         parentLineId: parent.id, ticketId: null, name: comp.name, description: comp.description ?? null, quantity: comp.quantity, unitPrice: '0.00',
-        costBasis: comp.costBasis, revenueAllocation: comp.revenueAllocation, taxable: false,
+        // Child cost snapshots only when stamped in the invoice's currency.
+        costBasis: comp.costCurrency === inv.currencyCode ? comp.costBasis : null,
+        revenueAllocation: comp.revenueAllocation, taxable: false,
         customerVisible: comp.showOnInvoice, lineTotal: '0.00', isUnapprovedTime: false,
         sortOrder: parent.sortOrder // children sort directly under the parent
       });
@@ -220,12 +262,23 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
  * originating contract_line). Do NOT wire this directly to an HTTP endpoint.
  *
  * When catalogItemId is supplied the price, taxable flag, and costBasis are
- * authoritative from resolvePrice (tenant-scoped; throws if inaccessible).
+ * authoritative from resolvePrice in the INVOICE's currency (tenant-scoped;
+ * throws if inaccessible). **Price-book gap fallback (wave 3, #3775):** when the
+ * catalog has no price in that currency (NO_PRICE_FOR_CURRENCY) the line is
+ * billed at the CONTRACT LINE's stamped snapshot (`input.unitPrice` /
+ * `input.taxable`, costBasis null) instead of failing the billing run or
+ * converting. The B2 guard below has already proven that snapshot is in the
+ * invoice's currency, so the fallback never crosses currencies. The gap is
+ * never silent: the result carries `pricedFrom: 'contract_snapshot'` so
+ * generateDueInvoice can report it (GenerateResult.priceBookGaps) and the
+ * contract worker can log it. Any other CatalogServiceError still propagates.
  * On the non-catalog path the caller-supplied unitPrice and taxable are used,
- * with numeric normalization and a non-negative guard applied.
+ * with numeric normalization and a non-negative guard applied (reported as
+ * `pricedFrom: 'contract_snapshot'` too — a non-catalog line IS its snapshot).
  * sourceId carries the originating contract_line id (already org-scoped by
  * the contract engine — no additional scoping is applied here).
  */
+export type ContractLinePricedFrom = 'org_override' | 'price_book' | 'contract_snapshot';
 export async function addContractLine(
   invoiceId: string,
   input: {
@@ -237,7 +290,7 @@ export async function addContractLine(
     sourceId?: string | null; // contract_line id
   },
   actor: InvoiceActor
-) {
+): Promise<{ line: typeof invoiceLines.$inferSelect; pricedFrom: ContractLinePricedFrom }> {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
 
@@ -264,33 +317,49 @@ export async function addContractLine(
     let unitPrice: string;
     let taxable: boolean;
     let costBasis: string | null = null;
+    let pricedFrom: ContractLinePricedFrom;
 
     if (input.catalogItemId) {
-      // Catalog path: resolve price through the tenant-scoped catalog service.
-      // resolvePrice throws if the item is not accessible to the actor's org/partner,
-      // closing the cross-tenant catalog reference hole (Finding 1).
-      const resolved = await resolvePrice(
-        input.catalogItemId, inv.orgId,
-        { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds }
-      );
-      unitPrice = resolved.unitPrice;
-      taxable = resolved.taxable;
-      costBasis = resolved.costBasis;
+      // Catalog path: resolve price through the tenant-scoped catalog service in
+      // the invoice's currency, on the locked tx. resolvePrice throws if the item
+      // is not accessible to the actor's org/partner, closing the cross-tenant
+      // catalog reference hole (Finding 1). A price-book GAP is not an error
+      // here — see the doc-comment: bill the contract line's stamped snapshot.
+      let resolved: Awaited<ReturnType<typeof resolvePrice>> | null;
+      try {
+        resolved = await resolvePrice(input.catalogItemId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
+      } catch (err) {
+        if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') resolved = null;
+        else throw err;
+      }
+      if (resolved) {
+        unitPrice = resolved.unitPrice;
+        taxable = resolved.taxable;
+        costBasis = resolved.marginAvailable ? resolved.costBasis : null;
+        pricedFrom = resolved.source;
+      } else {
+        unitPrice = Number(input.unitPrice).toFixed(2);
+        taxable = input.taxable;
+        costBasis = null;
+        pricedFrom = 'contract_snapshot';
+      }
     } else {
       // Non-catalog path: normalize like addManualLine/updateLine (Finding 2).
       unitPrice = Number(input.unitPrice).toFixed(2);
       taxable = input.taxable;
+      pricedFrom = 'contract_snapshot';
       if (Number(quantity) < 0 || Number(unitPrice) < 0) {
         throw new InvoiceServiceError('Negative amounts not allowed', 400, 'INVALID_AMOUNT');
       }
     }
 
-    return insertLineAndRecompute(tx, invoiceId, inv.orgId, {
+    const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'contract', sourceId: input.sourceId ?? null, catalogItemId: input.catalogItemId ?? null,
       parentLineId: null, ticketId: null, description: input.description, quantity,
       unitPrice, costBasis, taxable, customerVisible: true,
       lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode), isUnapprovedTime: false
     });
+    return { line, pricedFrom };
   });
 }
 
