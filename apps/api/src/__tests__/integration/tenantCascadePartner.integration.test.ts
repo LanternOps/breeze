@@ -95,6 +95,20 @@ async function seedPartner(label: string): Promise<PartnerSeed> {
     VALUES (${orgId}, 'user', ${userId}, 'test.seed', 'test', 'success', now())
   `);
 
+  // Partner-axis catalog item + one price-book row (multi-currency wave 3,
+  // #3775). catalog_item_prices is swept by the dynamic partner_id sweep, not a
+  // cascade list — this is the only functional proof that the purge reaches it.
+  // (Task 2 adds cost_currency to catalog_items and extends this INSERT.)
+  const [item] = (await testDb.execute(sql`
+    INSERT INTO catalog_items (partner_id, item_type, name, unit_price)
+    VALUES (${partnerId}, 'service', ${`Item ${label}`}, 10.00)
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  await testDb.execute(sql`
+    INSERT INTO catalog_item_prices (item_id, partner_id, currency_code, unit_price)
+    VALUES (${item!.id}, ${partnerId}, 'USD', 10.00)
+  `);
+
   return { partnerId, userId, roleId, orgId, siteId };
 }
 
@@ -131,6 +145,8 @@ describe('cascadeDeletePartner — end-to-end', () => {
     expect(await countById('sites', 'id', purge.siteId)).toBe(0);
     expect(await countById('alert_templates', 'org_id', purge.orgId)).toBe(0);
     expect(await countById('audit_logs', 'org_id', purge.orgId)).toBe(0);
+    expect(await countById('catalog_items', 'partner_id', purge.partnerId)).toBe(0);
+    expect(await countById('catalog_item_prices', 'partner_id', purge.partnerId)).toBe(0);
 
     // Control partner: every row untouched (no cross-tenant leak).
     expect(await countById('partners', 'id', control.partnerId)).toBe(1);
@@ -141,6 +157,8 @@ describe('cascadeDeletePartner — end-to-end', () => {
     expect(await countById('sites', 'id', control.siteId)).toBe(1);
     expect(await countById('alert_templates', 'org_id', control.orgId)).toBe(1);
     expect(await countById('audit_logs', 'org_id', control.orgId)).toBe(1);
+    expect(await countById('catalog_items', 'partner_id', control.partnerId)).toBe(1);
+    expect(await countById('catalog_item_prices', 'partner_id', control.partnerId)).toBe(1);
   });
 
   it('writes purge_started and purged audit rows with org_id = NULL', async () => {
