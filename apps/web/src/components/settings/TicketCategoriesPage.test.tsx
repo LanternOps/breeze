@@ -14,8 +14,11 @@ vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
+type Claims = { scope: 'system' | 'partner' | 'organization' | null; orgId: string | null; partnerId: string | null };
+const jwtClaims = vi.fn<() => Claims>(() => ({ scope: 'partner', orgId: null, partnerId: 'partner-1' }));
 vi.mock('../../lib/authScope', () => ({
-  loginPathWithNext: () => '/login?next=%2Fsettings%2Ftickets'
+  loginPathWithNext: () => '/login?next=%2Fsettings%2Ftickets',
+  getJwtClaims: () => jwtClaims()
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -31,24 +34,27 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 const CAT_PARENT = {
   id: 'p1', name: 'Hardware', color: '#ff0000', parentId: null,
   defaultPriority: null, responseSlaMinutes: null, resolutionSlaMinutes: null,
-  defaultBillable: false, defaultHourlyRate: null, sortOrder: 0, isActive: true
+  defaultBillable: false, defaultHourlyRate: null, rateCurrency: null, sortOrder: 0, isActive: true
 };
 const CAT_CHILD = {
   id: 'c1', name: 'Printers', color: '#00ff00', parentId: 'p1',
   defaultPriority: 'high', responseSlaMinutes: 60, resolutionSlaMinutes: 480,
-  defaultBillable: true, defaultHourlyRate: '150.00', sortOrder: 0, isActive: true
+  defaultBillable: true, defaultHourlyRate: '150.00', rateCurrency: 'USD', sortOrder: 0, isActive: true
 };
 const CAT_ROOT2 = {
   id: 'r2', name: 'Software', color: '#0000ff', parentId: null,
   defaultPriority: null, responseSlaMinutes: null, resolutionSlaMinutes: null,
-  defaultBillable: false, defaultHourlyRate: null, sortOrder: 1, isActive: true
+  defaultBillable: false, defaultHourlyRate: null, rateCurrency: null, sortOrder: 1, isActive: true
 };
 
-function mockGetCategories(cats: unknown[]) {
+function mockGetCategories(cats: unknown[], partnersMe: Response = makeJsonResponse({ currencyCode: 'USD' })) {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
     if (url === '/ticket-categories' && !init?.method) {
       return makeJsonResponse({ data: cats });
+    }
+    if (url === '/orgs/partners/me' && !init?.method) {
+      return partnersMe;
     }
     if (url === '/ticket-categories' && init?.method === 'POST') {
       return makeJsonResponse({ data: { id: 'new-1', ...(cats[0] as object) } });
@@ -481,5 +487,46 @@ describe('reorder buttons', () => {
     expect(screen.getByTestId('ticket-category-move-up-p1')).toBeDisabled();
     expect(screen.getByTestId('ticket-category-move-down-p1')).not.toBeDisabled();
     expect(screen.getByTestId('ticket-category-move-down-r2')).toBeDisabled();
+  });
+});
+
+describe('multi-currency (#3776)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('formats an existing rate in the category\'s own stamped currency', async () => {
+    mockGetCategories([{ ...CAT_CHILD, defaultHourlyRate: '100.00', rateCurrency: 'CAD' }]);
+    render(<TicketCategoriesPage />);
+    const row = await screen.findByTestId(`ticket-category-row-${CAT_CHILD.id}`);
+    expect(row.textContent).toMatch(/CA\$|CAD/);
+    expect(row.textContent).not.toMatch(/US\$/);
+  });
+
+  it('labels the rate input with the partner currency from /orgs/partners/me', async () => {
+    mockGetCategories([CAT_CHILD], makeJsonResponse({ currencyCode: 'EUR' }));
+    render(<TicketCategoriesPage />);
+    await screen.findByTestId(`ticket-category-edit-${CAT_CHILD.id}`);
+    fireEvent.click(screen.getByTestId(`ticket-category-edit-${CAT_CHILD.id}`));
+    await waitFor(() => expect(screen.getByText(/Default hourly rate \(EUR\)/)).toBeInTheDocument());
+    expect(fetchMock.mock.calls.filter(([u]) => String(u) === '/orgs/partners/me')).toHaveLength(1);
+  });
+
+  it('still renders without a toast when /orgs/partners/me returns 403', async () => {
+    mockGetCategories([{ ...CAT_CHILD, rateCurrency: 'CAD' }], makeJsonResponse({ error: 'forbidden' }, false, 403));
+    render(<TicketCategoriesPage />);
+    const row = await screen.findByTestId(`ticket-category-row-${CAT_CHILD.id}`);
+    expect(row.textContent).toMatch(/CA\$|CAD/);
+    expect(showToast).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ticket-categories-error')).toBeNull();
+  });
+
+  it('never calls /orgs/partners/me for a non-partner session', async () => {
+    jwtClaims.mockReturnValueOnce({ scope: 'system', orgId: null, partnerId: null });
+    mockGetCategories([CAT_CHILD]);
+    render(<TicketCategoriesPage />);
+    await screen.findByTestId(`ticket-category-row-${CAT_CHILD.id}`);
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === '/orgs/partners/me')).toBe(false);
+    expect(showToast).not.toHaveBeenCalled();
   });
 });
