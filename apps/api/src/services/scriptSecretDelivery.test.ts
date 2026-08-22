@@ -23,6 +23,7 @@ import {
   AGENT_UPGRADE_REQUIRED_MESSAGE,
   SCRIPT_SECRET_ENV_REQUIRED_VERSION,
   SECRET_DELIVERY_UNAVAILABLE_MESSAGE,
+  SECRET_GATE_UNAVAILABLE_MESSAGE,
   SECRETS_RUN_AS_MESSAGE,
   failClaimedSecretCommandsForUnsupportedAgent,
   loadScriptSecretEnvVersion,
@@ -282,6 +283,25 @@ describe('secretDeliveryPreflight', () => {
     mockSelect(() => []);
     const r = await secretDeliveryPreflight({ deviceId: DEVICE_A, runAs: 'system' });
     expect(r).toEqual({ ok: false, code: 'agent_upgrade_required', error: AGENT_UPGRADE_REQUIRED_MESSAGE });
+  });
+
+  // #3409 PR4c-2 review finding 3: the ENQUEUE preflight keeps
+  // 'agent_upgrade_required' — it returns before any row is written, so the
+  // fan-out must take the ordinary per-device failure insert for it. Only the
+  // CLAIM-time gate's refusal (scriptDispatch's
+  // 'agent_upgrade_required_recorded') arrives with rows already written.
+  it('never returns the claim-time-only code from the enqueue preflight', async () => {
+    mockSelect(() => capabilityRows({ [DEVICE_A]: 0 }));
+    const r = await secretDeliveryPreflight({ deviceId: DEVICE_A, runAs: 'system' });
+    expect(r).not.toMatchObject({ code: 'agent_upgrade_required_recorded' });
+  });
+
+  // The infrastructure-fault message must NOT tell the operator to upgrade an
+  // agent that may be perfectly current.
+  it('SECRET_GATE_UNAVAILABLE_MESSAGE is distinct and does not blame the agent version', () => {
+    expect(SECRET_GATE_UNAVAILABLE_MESSAGE).not.toBe(AGENT_UPGRADE_REQUIRED_MESSAGE);
+    expect(SECRET_GATE_UNAVAILABLE_MESSAGE).not.toMatch(/upgrade/i);
+    expect(SECRET_GATE_UNAVAILABLE_MESSAGE).toMatch(/not executed/i);
   });
 
   it('passes at the required version', async () => {

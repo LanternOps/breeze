@@ -18,10 +18,15 @@ import { captureException } from './sentry';
  * script with the credential UNSET — so the rule is "fail loudly, never run":
  *
  *   - `secretDeliveryPreflight` at ENQUEUE (scriptDispatch), before the
- *     execution row exists, so a refused dispatch leaves no orphan.
+ *     execution row exists, so a refused dispatch leaves no orphan. This is
+ *     the ORDINARY case for any pre-PR4b agent, and it refuses with
+ *     `agent_upgrade_required`.
  *   - `failClaimedSecretCommandsForUnsupportedAgent` at CLAIM (commandDelivery),
  *     because the capability is non-sticky (devices.ts: written every beat)
- *     and an agent can be downgraded between enqueue and delivery.
+ *     and an agent can be downgraded between enqueue and delivery. RARE (it
+ *     needs a downgrade race), and by the time it refuses it has already
+ *     written both the command and the execution row — which is why dispatch
+ *     reports it under the distinct `agent_upgrade_required_recorded` code.
  *
  * User-context runs — `user`, any explicit username, any targeted session —
  * are refused too: they execute through the helper IPC (or a `sudo -n`
@@ -44,11 +49,46 @@ export const SECRETS_RUN_AS_MESSAGE =
 export const SECRET_DELIVERY_UNAVAILABLE_MESSAGE =
   'Secret delivery is not configured on this server (no active secret-encryption key); script not executed';
 
+/**
+ * Shared by BOTH agent-capability refusals — the enqueue preflight's
+ * `agent_upgrade_required` and the claim-time gate's
+ * `agent_upgrade_required_recorded` (scriptDispatch.ts). The two codes exist
+ * to say WHO already wrote the failure rows, which is a server-side
+ * bookkeeping distinction; to the operator the remediation is identical, so
+ * the text must not fork.
+ */
 export const AGENT_UPGRADE_REQUIRED_MESSAGE =
   'Agent upgrade required: this script uses secret variables and the device agent does not support secure secret delivery; script not executed';
 
+/**
+ * The claim-time gate FAULTED (its capability select threw, or its
+ * single-agent contract was violated) rather than returning a verdict.
+ *
+ * Deliberately says nothing about the agent's version: the agent may be
+ * perfectly current, and `AGENT_UPGRADE_REQUIRED_MESSAGE` would send the
+ * operator to upgrade software over what is a server-side fault. Nothing is
+ * written on that path, so the refusal it carries
+ * (`secret_gate_unavailable`) takes the ordinary per-device failure row.
+ */
+export const SECRET_GATE_UNAVAILABLE_MESSAGE =
+  'The server could not verify this device\'s secret-delivery capability, and this script uses secret variables; script not executed';
+
 export type ScriptRunAs = 'system' | 'user' | 'elevated';
 
+/**
+ * The ENQUEUE-time refusals only. All three return BEFORE the
+ * `script_executions` insert, so each one leaves NO rows behind and the
+ * fan-out owes the device its ordinary failure row — including
+ * `agent_upgrade_required`, which is the ordinary outcome for any pre-PR4b
+ * agent and therefore the common case, not an edge one.
+ *
+ * The claim-time gate's refusal is deliberately NOT in this union: it arrives
+ * with the command AND execution rows already written, so it carries the
+ * distinct `agent_upgrade_required_recorded` code (declared on
+ * `DispatchScriptResult` in scriptDispatch.ts, and the sole member of
+ * `DISPATCH_CODES_ALREADY_RECORDED` in scriptExecution.ts). Sharing one code
+ * between the two suppressed the enqueue case's failure row entirely.
+ */
 export type SecretDeliveryPreflightFailureCode =
   | 'secrets_unsupported_run_as'
   | 'secret_delivery_unavailable'
@@ -129,6 +169,10 @@ export function normalizeReportedScriptSecretEnvVersion(reported: unknown): numb
 /**
  * Enqueue-time gate. Checks are ordered cheapest / most deterministic first so
  * a refused dispatch costs no query: run-as → server key → agent capability.
+ *
+ * Returns `agent_upgrade_required` (never the claim-time
+ * `agent_upgrade_required_recorded`): nothing has been written when this
+ * refuses, so the caller must record the device's failure itself.
  */
 export async function secretDeliveryPreflight(input: {
   deviceId: string;
