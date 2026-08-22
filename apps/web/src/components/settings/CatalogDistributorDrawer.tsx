@@ -10,6 +10,7 @@ import { ecExpressImport, type EcProduct } from '../../lib/api/distributors';
 import type { CatalogItem } from '../../lib/api/catalog';
 import DistributorLookup from '../billing/quotes/DistributorLookup';
 import { feedCurrencyCode } from './marginMath';
+import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -33,6 +34,11 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
   const { t } = useTranslation('settings');
   const [busy, setBusy] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  // The sell price typed in the lookup is posted as a bare `unitPrice`, which
+  // the API stores as the PARTNER-currency price-book row — so the lookup's
+  // currency gate must be the partner currency (#3775 review #3). No 'USD'
+  // fallback: while it is unresolved the lookup is not rendered at all.
+  const { currency: partnerCurrency, failed: partnerCurrencyFailed, retry: retryPartnerCurrency } = usePartnerCurrency(open);
 
   useEffect(() => {
     if (!open) return;
@@ -109,7 +115,19 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
           </button>
         </div>
         <div className="p-5">
-          <DistributorLookup blockId="catalog-import" busy={busy} onImportAdd={importAdd} />
+          {partnerCurrency == null ? (
+            partnerCurrencyFailed ? (
+              <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" data-testid="catalog-distributor-currency-error">
+                {t('catalogItemEditorDrawer.partnerCurrencyUnavailable')}{' '}
+                <button type="button" onClick={retryPartnerCurrency} className="underline hover:text-foreground">{t('catalogItemEditorDrawer.retry')}</button>
+              </p>
+            ) : (
+              <p className="py-2 text-center text-xs text-muted-foreground" data-testid="catalog-distributor-currency-loading">
+                {t('catalogItemEditorDrawer.loadingPartnerCurrency')}</p>
+            )
+          ) : (
+            <DistributorLookup blockId="catalog-import" busy={busy} currencyCode={partnerCurrency} onImportAdd={importAdd} />
+          )}
         </div>
       </div>
     </div>,
