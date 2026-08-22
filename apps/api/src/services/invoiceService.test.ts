@@ -42,6 +42,15 @@ vi.mock('./contacts/compat', () => ({
 
 vi.mock('./catalogService', () => ({ resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() }));
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
+// Assembly gathers are module-mocked: the partition/rounding contract is proven
+// in invoiceAssembly.test.ts; here we lock how the service consumes
+// `{ included, blockedByCurrency }` (Task 11, #3776).
+vi.mock('./invoiceAssembly', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./invoiceAssembly')>()),
+  gatherOrgTimeEntries: vi.fn(),
+  gatherOrgParts: vi.fn(),
+  gatherTicketBillables: vi.fn(),
+}));
 
 import { SQL } from 'drizzle-orm';
 import type { Mock } from 'vitest';
@@ -50,6 +59,7 @@ import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice } from './catalogService';
 import { mergeBillingContact } from './contacts/compat';
+import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 
 describe('invoiceService guards', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
@@ -797,5 +807,162 @@ describe('changeInvoiceCurrency (draft currency immutability, #3774)', () => {
     await expect(
       svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, denied)
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+});
+
+describe('assembly consumers — currency override + blocked-by-currency groups (#3776)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const spec = (lineTotal: string, sourceId = 'te1'): DraftLineSpec => ({
+    sourceType: 'time_entry', sourceId, catalogItemId: null, ticketId: null, description: 'Work',
+    quantity: '1.00', unitPrice: lineTotal, costBasis: null, taxable: false, customerVisible: true,
+    lineTotal, isUnapprovedTime: false
+  });
+  const empty = () => ({ included: [], blockedByCurrency: {} });
+  const draftRow = (currencyCode = 'USD') => ({
+    id: 'inv1', partnerId: 'p1', orgId: 'org1', siteId: null, status: 'draft', currencyCode,
+    taxRate: null, amountPaid: '0.00', subtotal: '0.00', total: '0.00', balance: '0.00'
+  });
+  const queueTail = (currencyCode = 'USD') => {
+    queueResult([]);                  // materializeLines insert
+    queueResult([draftRow(currencyCode)]); // recompute: owned invoice
+    queueResult([]);                  // recompute: lines
+    queueResult([]);                  // recompute: org tax rate
+    queueResult([]);                  // recompute: update
+    queueResult([draftRow(currencyCode)]); // getInvoice: owned invoice
+    queueResult([]);                  // getInvoice: lines
+    queueResult([]);                  // getInvoice: stripe connection
+  };
+
+  it('summarizeBlocked counts and sums per currency at that currency\'s minor unit', () => {
+    const out = svc.summarizeBlocked({
+      EUR: [spec('100.00'), spec('0.50', 'te2')],
+      JPY: [spec('330.00', 'te3')],
+      UNKNOWN: [spec('2.50', 'te4')],
+    });
+    expect(out).toEqual([
+      { currencyCode: 'EUR', count: 2, amount: '100.50' },
+      { currencyCode: 'JPY', count: 1, amount: '330.00' },
+      { currencyCode: 'UNKNOWN', count: 1, amount: '2.50' },
+    ]);
+    expect(svc.summarizeBlocked({})).toEqual([]);
+  });
+
+  it('(a) org: every gathered row blocked → ALL_BLOCKED_BY_CURRENCY 409 with a summary, transient draft deleted', async () => {
+    queueResult([{ currencyCode: 'USD' }]);   // org currency
+    queueResult([draftRow('USD')]);            // draft insert returning
+    queueResult([]);                           // delete transient draft
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [], blockedByCurrency: { EUR: [spec('100.00')] } });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    await expect(
+      svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor)
+    ).rejects.toMatchObject({
+      code: 'ALL_BLOCKED_BY_CURRENCY', status: 409,
+      details: { blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }] }
+    });
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).toHaveBeenCalledTimes(1);
+    // No lines were materialized (the only insert is the draft header).
+    const insertMock = (db as unknown as { insert: Mock }).insert;
+    expect(insertMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) org: nothing gathered at all → NOTHING_TO_INVOICE (no details)', async () => {
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([draftRow('USD')]);
+    queueResult([]);
+    (gatherOrgTimeEntries as Mock).mockResolvedValue(empty());
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    const err = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor).catch((e) => e);
+    expect(err).toBeInstanceOf(InvoiceServiceError);
+    expect(err).toMatchObject({ code: 'NOTHING_TO_INVOICE', status: 409 });
+    expect(err.details).toBeUndefined();
+  });
+
+  it('(c) org: currencyCode override stamps the draft and drives the gathers (old-currency draft path, spec §7)', async () => {
+    queueResult([{ currencyCode: 'GBP' }]);   // org is GBP now
+    queueResult([draftRow('EUR')]);            // insert returning (header EUR)
+    queueTail('EUR');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {} });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30', currencyCode: 'EUR' }, actor);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'EUR', orgId: 'org1', status: 'draft' }));
+    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'EUR');
+    expect(gatherOrgParts).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'EUR');
+    expect(out.blockedByCurrency).toEqual([]);
+    expect(out.invoice.currencyCode).toBe('EUR');
+  });
+
+  it('(c\') org: no override → the org currency is the header', async () => {
+    queueResult([{ currencyCode: 'GBP' }]);
+    queueResult([draftRow('GBP')]);
+    queueTail('GBP');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {} });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'GBP' }));
+    expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP');
+  });
+
+  it('(d) org: mixed → only included specs materialize; blocked groups come back summarized, never as lines', async () => {
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([draftRow('USD')]);
+    queueTail('USD');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({
+      included: [spec('50.00', 'te-usd')], blockedByCurrency: { EUR: [spec('100.00', 'te-eur')] }
+    });
+    (gatherOrgParts as Mock).mockResolvedValue({
+      included: [], blockedByCurrency: { EUR: [spec('25.00', 'part-eur')], JPY: [spec('330.00', 'part-jpy')] }
+    });
+    const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
+    expect(out.blockedByCurrency).toEqual([
+      { currencyCode: 'EUR', count: 2, amount: '125.00' },
+      { currencyCode: 'JPY', count: 1, amount: '330.00' },
+    ]);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    // calls[0] = draft header; calls[1] = materialized lines
+    const lines = valuesMock.mock.calls[1]![0] as Array<{ sourceId: string }>;
+    expect(lines.map((l) => l.sourceId)).toEqual(['te-usd']);
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('(e) ticket: all blocked → ALL_BLOCKED_BY_CURRENCY with details, draft deleted', async () => {
+    queueResult([{ orgId: 'org1' }]);          // ticket
+    queueResult([{ currencyCode: 'GBP' }]);    // org currency
+    queueResult([draftRow('GBP')]);            // insert returning
+    queueResult([]);                           // delete
+    (gatherTicketBillables as Mock).mockResolvedValue({ included: [], blockedByCurrency: { EUR: [spec('100.00')] } });
+    await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({
+      code: 'ALL_BLOCKED_BY_CURRENCY', status: 409,
+      details: { blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }] }
+    });
+    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'GBP');
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('(f) ticket: currencyCode override stamps the draft and drives the gather', async () => {
+    queueResult([{ orgId: 'org1' }]);
+    queueResult([{ currencyCode: 'GBP' }]);
+    queueResult([draftRow('EUR')]);
+    queueTail('EUR');
+    (gatherTicketBillables as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {} });
+    const out = await svc.assembleDraftFromTicket('t1', actor, { currencyCode: 'EUR' });
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'EUR', orgId: 'org1' }));
+    expect(gatherTicketBillables).toHaveBeenCalledWith('t1', 'EUR');
+    expect(out.blockedByCurrency).toEqual([]);
+  });
+
+  it('(g) ticket: nothing gathered → NOTHING_TO_INVOICE', async () => {
+    queueResult([{ orgId: 'org1' }]);
+    queueResult([{ currencyCode: 'GBP' }]);
+    queueResult([draftRow('GBP')]);
+    queueResult([]);
+    (gatherTicketBillables as Mock).mockResolvedValue(empty());
+    await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({ code: 'NOTHING_TO_INVOICE', status: 409 });
   });
 });

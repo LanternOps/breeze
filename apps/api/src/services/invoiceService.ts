@@ -13,13 +13,13 @@ import { resolvePrice, computeBundleEconomics } from './catalogService';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
-import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
+import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type DraftLineSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import { isRepresentableInCurrency, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, roundToCurrency, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -710,7 +710,54 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
   })));
 }
 
-export async function assembleDraftFromOrg(input: { orgId: string; siteId?: string; from: string; to: string }, actor: InvoiceActor) {
+/** One blocked group on an assembly response: unbilled work snapshotted in a
+ *  currency other than the draft header's (multi-currency wave 4, #3776). */
+export interface BlockedCurrencySummary { currencyCode: string; count: number; amount: string }
+
+/** Count + sum the blocked specs per currency, rounded at THAT currency's minor
+ *  unit. The defensive `UNKNOWN` key (null snapshot — impossible while the DB
+ *  CHECK holds) is summed at the 2-decimal exponent via 'USD'. */
+export function summarizeBlocked(blocked: Record<string, DraftLineSpec[]>): BlockedCurrencySummary[] {
+  return Object.entries(blocked).map(([currencyCode, specs]) => ({
+    currencyCode,
+    count: specs.length,
+    amount: roundToCurrency(
+      specs.reduce((sum, sp) => sum + Number(sp.lineTotal), 0),
+      currencyCode === 'UNKNOWN' ? 'USD' : currencyCode
+    )
+  }));
+}
+
+/** Shared tail of both assembly paths: materialize only the header-currency
+ *  specs; on an empty `included` delete the transient draft and explain WHY
+ *  (blocked groups → ALL_BLOCKED_BY_CURRENCY with details; nothing at all →
+ *  NOTHING_TO_INVOICE). Never converts, never silently drops a blocked row. */
+async function finishAssembly(
+  inv: { id: string; orgId: string; currencyCode: string },
+  gathered: { included: DraftLineSpec[]; blockedByCurrency: Record<string, DraftLineSpec[]> },
+  nothingMessage: string,
+  actor: InvoiceActor
+) {
+  const blockedByCurrency = summarizeBlocked(gathered.blockedByCurrency);
+  if (gathered.included.length === 0) {
+    await db.delete(invoices).where(eq(invoices.id, inv.id));
+    if (blockedByCurrency.length > 0) {
+      throw new InvoiceServiceError(
+        `All unbilled work is in ${blockedByCurrency.map((b) => b.currencyCode).join(', ')}; this draft is in ${inv.currencyCode} — assemble a draft in that currency instead`,
+        409, 'ALL_BLOCKED_BY_CURRENCY', { blockedByCurrency }
+      );
+    }
+    throw new InvoiceServiceError(nothingMessage, 409, 'NOTHING_TO_INVOICE');
+  }
+  await materializeLines(inv.id, inv.orgId, gathered.included);
+  await recomputeInvoiceTotals(inv.id);
+  return { ...(await getInvoice(inv.id, actor)), blockedByCurrency };
+}
+
+export async function assembleDraftFromOrg(
+  input: { orgId: string; siteId?: string; from: string; to: string; currencyCode?: string },
+  actor: InvoiceActor
+) {
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
   requireSiteAccess(actor, input.siteId ?? null);
@@ -718,27 +765,24 @@ export async function assembleDraftFromOrg(input: { orgId: string; siteId?: stri
   const to = new Date(input.to + 'T23:59:59Z');
   // Create the draft FIRST so the gathered line totals are rounded in the
   // invoice row's actual currency (JPY drafts must not persist cent-fraction
-  // line totals). On an empty range the transient draft is deleted again.
-  // The draft is stamped with the ORG's currency at creation (spec §5).
+  // line totals). On an empty gather the transient draft is deleted again.
   const [org] = await db.select({ currencyCode: organizations.currencyCode })
     .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
   if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode: org.currencyCode, createdBy: actor.userId }).returning();
-  // Task 11 consumes `blockedByCurrency`; until then only header-currency rows are materialized.
-  const specs = [
-    ...(await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode)).included,
-    ...(await gatherOrgParts(input.orgId, from, to, inv!.currencyCode)).included
-  ];
-  if (specs.length === 0) {
-    await db.delete(invoices).where(eq(invoices.id, inv!.id));
-    throw new InvoiceServiceError('No unbilled billable work in range', 409, 'NOTHING_TO_INVOICE');
-  }
-  await materializeLines(inv!.id, input.orgId, specs);
-  await recomputeInvoiceTotals(inv!.id);
-  return getInvoice(inv!.id, actor);
+  // Header currency: the org's current currency (spec §5), or an explicit
+  // override so pre-change billables (snapshotted in the org's OLD currency)
+  // stay invoiceable (spec §7). Never a conversion — rows in any other currency
+  // are returned under `blockedByCurrency`.
+  const currencyCode = input.currencyCode ?? org.currencyCode;
+  const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  const gathered = mergeAssembly(
+    await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode),
+    await gatherOrgParts(input.orgId, from, to, inv!.currencyCode)
+  );
+  return finishAssembly(inv!, gathered, 'No unbilled billable work in range', actor);
 }
 
-export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceActor) {
+export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceActor, opts: { currencyCode?: string } = {}) {
   const partnerId = requirePartner(actor);
   const [tk] = await db.select({ orgId: tickets.orgId }).from(tickets).where(eq(tickets.id, ticketId)).limit(1);
   if (!tk) throw new InvoiceServiceError('Ticket not found', 404, 'INVOICE_NOT_FOUND');
@@ -748,20 +792,14 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   requireSiteAccess(actor, null);
   // Draft first: gathered line totals must round in the invoice row's actual
   // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
-  // Stamped with the ticket org's currency at creation (spec §5).
   const [org] = await db.select({ currencyCode: organizations.currencyCode })
     .from(organizations).where(eq(organizations.id, tk.orgId)).limit(1);
   if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode: org.currencyCode, createdBy: actor.userId }).returning();
-  // Task 11 consumes `blockedByCurrency`; until then only header-currency rows are materialized.
-  const specs = (await gatherTicketBillables(ticketId, inv!.currencyCode)).included;
-  if (specs.length === 0) {
-    await db.delete(invoices).where(eq(invoices.id, inv!.id));
-    throw new InvoiceServiceError('Nothing billable on this ticket', 409, 'NOTHING_TO_INVOICE');
-  }
-  await materializeLines(inv!.id, tk.orgId, specs);
-  await recomputeInvoiceTotals(inv!.id);
-  return getInvoice(inv!.id, actor);
+  // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7).
+  const currencyCode = opts.currencyCode ?? org.currencyCode;
+  const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  const gathered = await gatherTicketBillables(ticketId, inv!.currencyCode);
+  return finishAssembly(inv!, gathered, 'Nothing billable on this ticket', actor);
 }
 
 // ---------------------------------------------------------------------------

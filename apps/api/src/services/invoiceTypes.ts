@@ -36,6 +36,11 @@ export type InvoiceServiceErrorCode =
   | 'CURRENCY_LOCKED'
   | 'NOT_A_DRAFT'
   | 'NOTHING_TO_INVOICE'
+  // Multi-currency wave 4 (#3776): assembly found unbilled work, but every row
+  // is snapshotted in a currency other than the draft header's. Carries
+  // `details.blockedByCurrency` (per-currency count + amount) so the caller can
+  // assemble a separate draft in that currency instead.
+  | 'ALL_BLOCKED_BY_CURRENCY'
   | 'NO_VISIBLE_LINES'
   | 'SOURCE_ALREADY_BILLED'
   // B10 (#3774): a line's source row no longer exists (or belongs to another
@@ -60,7 +65,10 @@ export class InvoiceServiceError extends Error {
   constructor(
     message: string,
     public status: 400 | 403 | 404 | 409 | 500 = 400,
-    public code?: InvoiceServiceErrorCode
+    public code?: InvoiceServiceErrorCode,
+    /** Structured, JSON-safe payload surfaced verbatim on the error body (e.g.
+     *  `ALL_BLOCKED_BY_CURRENCY.blockedByCurrency`). Never carries secrets. */
+    public details?: Record<string, unknown>
   ) {
     super(message);
     this.name = 'InvoiceServiceError';

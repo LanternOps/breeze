@@ -45,7 +45,7 @@ vi.mock('../../services/auditEvents', () => ({
 // InvoiceServiceError lives in invoiceTypes; routes import the class from there.
 vi.mock('../../services/invoiceTypes', () => ({
   InvoiceServiceError: class InvoiceServiceError extends Error {
-    constructor(msg: string, public status = 400, public code?: string) { super(msg); }
+    constructor(msg: string, public status = 400, public code?: string, public details?: Record<string, unknown>) { super(msg); }
   }
 }));
 
@@ -518,9 +518,49 @@ describe('invoice assembly routes', () => {
     const body = await res.json();
     expect(body.data.id).toBe(INV_ID);
     expect(svc.assembleDraftFromOrg).toHaveBeenCalledWith(
-      { orgId: ORG_ID, from: '2026-06-01', to: '2026-06-14' },
+      expect.objectContaining({ orgId: ORG_ID, from: '2026-06-01', to: '2026-06-14' }),
       expect.anything()
     );
+  });
+
+  it('POST /orgs/:orgId/invoices/assemble forwards a normalized currencyCode override (#3776)', async () => {
+    (svc.assembleDraftFromOrg as any).mockResolvedValue({ id: INV_ID, status: 'draft', blockedByCurrency: [] });
+    const res = await invoiceAssemblyRoutes.request(`/orgs/${ORG_ID}/invoices/assemble`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from: '2026-06-01', to: '2026-06-14', currencyCode: 'eur' })
+    });
+    expect(res.status).toBe(200);
+    expect(svc.assembleDraftFromOrg).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG_ID, currencyCode: 'EUR' }),
+      expect.anything()
+    );
+  });
+
+  it('POST /orgs/:orgId/invoices/assemble rejects an unsupported currencyCode (→ 400, no service call)', async () => {
+    const res = await invoiceAssemblyRoutes.request(`/orgs/${ORG_ID}/invoices/assemble`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from: '2026-06-01', to: '2026-06-14', currencyCode: 'ZZZ' })
+    });
+    expect(res.status).toBe(400);
+    expect(svc.assembleDraftFromOrg).not.toHaveBeenCalled();
+  });
+
+  it('surfaces ALL_BLOCKED_BY_CURRENCY details (blocked groups) on the 409 body', async () => {
+    (svc.assembleDraftFromOrg as any).mockRejectedValue(
+      new InvoiceServiceError('All blocked', 409, 'ALL_BLOCKED_BY_CURRENCY',
+        { blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }] })
+    );
+    const res = await invoiceAssemblyRoutes.request(`/orgs/${ORG_ID}/invoices/assemble`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from: '2026-06-01', to: '2026-06-14' })
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('ALL_BLOCKED_BY_CURRENCY');
+    expect(body.details).toEqual({ blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }] });
   });
 
   it('POST /orgs/:orgId/invoices/assemble rejects a missing date range (→ 400, no service call)', async () => {
@@ -539,7 +579,20 @@ describe('invoice assembly routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(INV_ID);
-    expect(svc.assembleDraftFromTicket).toHaveBeenCalledWith(TICKET_ID, expect.anything());
+    expect(svc.assembleDraftFromTicket).toHaveBeenCalledWith(TICKET_ID, expect.anything(), { currencyCode: undefined });
+  });
+
+  it('POST /tickets/:ticketId/invoice?currencyCode=eur forwards the normalized override (#3776)', async () => {
+    (svc.assembleDraftFromTicket as any).mockResolvedValue({ id: INV_ID });
+    const res = await invoiceAssemblyRoutes.request(`/tickets/${TICKET_ID}/invoice?currencyCode=eur`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(svc.assembleDraftFromTicket).toHaveBeenCalledWith(TICKET_ID, expect.anything(), { currencyCode: 'EUR' });
+  });
+
+  it('POST /tickets/:ticketId/invoice?currencyCode=ZZZ → 400, no service call', async () => {
+    const res = await invoiceAssemblyRoutes.request(`/tickets/${TICKET_ID}/invoice?currencyCode=ZZZ`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(svc.assembleDraftFromTicket).not.toHaveBeenCalled();
   });
 
   it('maps a NOTHING_TO_INVOICE InvoiceServiceError from ticket assembly to 409', async () => {

@@ -118,6 +118,25 @@ describe('manage_invoices', () => {
     expect(JSON.parse(out)).toMatchObject({ id: 'inv-1', status: 'draft' });
   });
 
+  it('assemble_from_org forwards the currencyCode override and surfaces blockedByCurrency (#3776)', async () => {
+    vi.mocked(invoiceService.assembleDraftFromOrg).mockResolvedValueOnce({
+      invoice: { id: 'inv-1', currencyCode: 'EUR' }, lines: [], stripeConnected: false,
+      blockedByCurrency: [{ currencyCode: 'USD', count: 2, amount: '40.00' }],
+    } as any);
+    const out = await getTool().handler(
+      { action: 'assemble_from_org', orgId: 'org-1', from: '2026-06-01', to: '2026-06-30', currencyCode: 'EUR' }, auth);
+    expect(invoiceService.assembleDraftFromOrg).toHaveBeenCalledWith(
+      { orgId: 'org-1', siteId: undefined, from: '2026-06-01', to: '2026-06-30', currencyCode: 'EUR' }, actor);
+    expect(JSON.parse(out).blockedByCurrency).toEqual([{ currencyCode: 'USD', count: 2, amount: '40.00' }]);
+  });
+
+  it('assemble_from_ticket forwards the currencyCode override as opts (#3776)', async () => {
+    await getTool().handler({ action: 'assemble_from_ticket', ticketId: 't-1', currencyCode: 'EUR' }, auth);
+    expect(invoiceService.assembleDraftFromTicket).toHaveBeenCalledWith('t-1', actor, { currencyCode: 'EUR' });
+    await getTool().handler({ action: 'assemble_from_ticket', ticketId: 't-1' }, auth);
+    expect(invoiceService.assembleDraftFromTicket).toHaveBeenLastCalledWith('t-1', actor, { currencyCode: undefined });
+  });
+
   it('add_contract_line resolves authoritative contract line values before calling addContractLine', async () => {
     vi.mocked(contractService.getContract).mockResolvedValueOnce({
       contract: contractRow(),

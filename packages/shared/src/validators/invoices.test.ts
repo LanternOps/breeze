@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  assembleFromOrgSchema, manualLineSchema, recordPaymentSchema,
+  assembleFromOrgSchema, assembleFromTicketQuerySchema, manualLineSchema, recordPaymentSchema,
   partnerBillingSettingsSchema, orgBillingSettingsSchema,
   createManualInvoiceSchema, updateInvoiceSchema, listInvoicesQuerySchema
 } from './invoices';
@@ -13,6 +13,24 @@ describe('assembleFromOrgSchema', () => {
   });
   it('rejects missing orgId', () => {
     expect(assembleFromOrgSchema.safeParse({ from: '2026-06-01', to: '2026-06-30' }).success).toBe(false);
+  });
+  it('accepts an optional currencyCode override, normalized via currencyCodeSchema (#3776)', () => {
+    const base = { orgId: '11111111-1111-1111-1111-111111111111', from: '2026-06-01', to: '2026-06-30' };
+    const r = assembleFromOrgSchema.safeParse({ ...base, currencyCode: 'eur' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.currencyCode).toBe('EUR');
+    expect(assembleFromOrgSchema.safeParse({ ...base, currencyCode: 'ZZZ' }).success).toBe(false);
+    const none = assembleFromOrgSchema.safeParse(base);
+    expect(none.success && none.data.currencyCode).toBeUndefined();
+  });
+});
+
+describe('assembleFromTicketQuerySchema', () => {
+  it('is empty-safe and normalizes currencyCode (#3776)', () => {
+    expect(assembleFromTicketQuerySchema.safeParse({}).success).toBe(true);
+    const r = assembleFromTicketQuerySchema.safeParse({ currencyCode: 'eur' });
+    expect(r.success && r.data.currencyCode).toBe('EUR');
+    expect(assembleFromTicketQuerySchema.safeParse({ currencyCode: 'ZZZ' }).success).toBe(false);
   });
 });
 
