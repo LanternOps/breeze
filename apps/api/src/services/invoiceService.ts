@@ -644,7 +644,12 @@ export async function getCustomerInvoice(invoiceId: string, orgId?: string) {
     lineTotal: invoiceLines.lineTotal,
   }).from(invoiceLines).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.customerVisible, true))).orderBy(invoiceLines.sortOrder);
   const lines = rows.map(toCustomerInvoiceLine);
-  return { invoice: toCustomerInvoiceHeader(inv), lines };
+  // partnerId rides OUTSIDE the serialized header: the portal route needs it
+  // for the partner-name branding lookup, but CustomerInvoiceHeader is the
+  // customer payload and internal ids stay out of it. Reading it off the
+  // header (`result.invoice.partnerId`) compiled as `undefined` and made
+  // every portal invoice-detail request 500 in the partners query.
+  return { invoice: toCustomerInvoiceHeader(inv), lines, partnerId: inv.partnerId };
 }
 
 export async function listInvoices(query: { orgId?: string; status?: string; limit: number; cursor?: string }, actor: InvoiceActor) {

@@ -140,7 +140,7 @@ export async function portalLogin(
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Login failed' };
+      return { success: false, error: data.error || 'That email and password don\'t match our records. Try again, or reset your password.' };
     }
 
     const mappedUser: PortalUser = {

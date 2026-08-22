@@ -452,7 +452,7 @@
     "loadFailed": "Couldn't load your current branding — reload the page before saving, or you may overwrite existing settings.",
     "logoUrl": "Logo URL",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "An <code>https://</code> URL to your logo. Leave blank for no logo.",
+    "logoHelp": "SVG or PNG. Wide logos work best: the portal shows it at a fixed height, so aim for roughly 4:1 and at least 320px wide.",
     "accentColor": "Accent color",
     "colorPicker": "Accent color picker",
     "colorHelp": "A <code>#rrggbb</code> hex color.",

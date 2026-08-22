@@ -452,7 +452,7 @@
     "loadFailed": "Ihr aktuelles Branding konnte nicht geladen werden. Laden Sie die Seite vor dem Speichern neu, da sonst möglicherweise vorhandene Einstellungen überschrieben werden.",
     "logoUrl": "Logo URL",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "Eine <code>https://</code>-URL zum Logo. Leer lassen, wenn kein Logo angezeigt werden soll.",
+    "logoHelp": "SVG oder PNG. Breite Logos funktionieren am besten: Das Portal zeigt es in fester Höhe, daher etwa 4:1 und mindestens 320px breit.",
     "accentColor": "Akzentfarbe",
     "colorPicker": "Akzentfarbenauswahl",
     "colorHelp": "Eine <code>#rrggbb</code> Hex-Farbe.",
