@@ -7,7 +7,11 @@ import { eq, and, inArray } from "drizzle-orm";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import { isS3Configured, syncDirectory } from "./s3Storage";
-import { getBinarySource, getAgentAutoPromote } from "./binarySource";
+import {
+  getBinarySource,
+  getAgentAutoPromote,
+  getGithubReleaseVersion,
+} from "./binarySource";
 import { getBinaryEdition } from "./binaryEdition";
 import {
   isReleaseArtifactManifestVerificationConfigured,
@@ -570,14 +574,38 @@ async function registerFromOfficialManifest(args: {
   return { registeredFilenames };
 }
 
+/**
+ * The GitHub release tag boot-time sync is pinned to (#3742).
+ *
+ * Every `/api/v1/agents/download/*` redirect is built from
+ * getGithubReleaseVersion() (BINARY_VERSION || BREEZE_VERSION), so that is the
+ * only release whose bytes this server can actually serve. Boot sync used to
+ * fetch `/releases/latest` unconditionally, which — with AGENT_AUTO_PROMOTE
+ * defaulting to true — promoted isLatest past the deployed images on a mere
+ * API restart: the heartbeat then told agents to upgrade to a version whose
+ * assets the redirect couldn't serve, and every attempt died on checksum
+ * mismatch. Pinning sync to the same version as the redirect makes "a
+ * self-hoster's fleet moves when THEY upgrade their server" the default.
+ *
+ * Returns undefined when no version is pinned (BREEZE_VERSION unset or
+ * literally "latest"), preserving the previous /releases/latest behaviour for
+ * deployments that deliberately float.
+ */
+export function pinnedGithubReleaseTag(): string | undefined {
+  const version = getGithubReleaseVersion().trim();
+  if (!version || version === "latest") return undefined;
+  return `v${version.replace(/^v/, "")}`;
+}
+
 export async function syncBinaries(): Promise<void> {
   if (getBinarySource() === "github") {
+    const pinnedTag = pinnedGithubReleaseTag();
     console.log(
-      "[binarySync] BINARY_SOURCE=github, syncing from GitHub releases",
+      `[binarySync] BINARY_SOURCE=github, syncing from GitHub release ${pinnedTag ?? "latest"}`,
     );
-    await syncFromGitHub();
-    // Safety net: syncFromGitHub() with no args hits /releases/latest which
-    // EXCLUDES pre-releases, so RC deploys (APP_VERSION=x.y.z-rc.N) would
+    await syncFromGitHub(pinnedTag);
+    // Safety net: with no pinned version syncFromGitHub() hits /releases/latest
+    // which EXCLUDES pre-releases, so RC deploys (APP_VERSION=x.y.z-rc.N) would
     // otherwise never land in agent_versions. ensureCurrentVersionRegistered()
     // reads APP_VERSION and explicitly fetches that tag if it's missing.
     // It's idempotent and cheap for non-RC releases (early-returns on hit).
@@ -626,7 +654,8 @@ export async function syncBinaries(): Promise<void> {
         `Falling back to GitHub release sync. To fix, run: docker compose up -d --force-recreate binaries-init`,
     );
     try {
-      await syncFromGitHub();
+      // Pinned to the redirect's version, not /releases/latest (#3742).
+      await syncFromGitHub(pinnedGithubReleaseTag());
       return;
     } catch (err) {
       // Compound failure — stale binaries volume AND GitHub fallback failed.
@@ -811,7 +840,8 @@ export async function syncBinaries(): Promise<void> {
     console.log(
       "[binarySync] No local agent binaries found, falling back to GitHub sync",
     );
-    await syncFromGitHub();
+    // Pinned to the redirect's version, not /releases/latest (#3742).
+    await syncFromGitHub(pinnedGithubReleaseTag());
   }
 
   // Verify the current version is registered — catches stale volumes and missed syncs.

@@ -40,7 +40,7 @@ manifest key.
 On startup, the API calls GitHub's Releases API to register the current version's checksums in the `agent_versions` table, so agents know when a new version is available.
 
 <Aside type="note">
-  In both modes, registering a release also promotes it to the fleet upgrade target by default. Set `AGENT_AUTO_PROMOTE=false` to register binaries without promoting them, then promote explicitly once you've verified — see [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout).
+  In both modes, registering a release also promotes it to the fleet upgrade target by default — and boot-time sync only registers the release matching your own `BREEZE_VERSION`/`BINARY_VERSION`, never a newer public release. Set `AGENT_AUTO_PROMOTE=false` to register binaries without promoting them, then promote explicitly once you've verified — see [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout).
 </Aside>
 
 #### Manifest trust root
