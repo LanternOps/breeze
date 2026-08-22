@@ -1,9 +1,8 @@
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../db';
 import { pax8Integrations, pax8ProductMappings } from '../db/schema/pax8';
-import { catalogItems } from '../db/schema/catalog';
 import { createPax8ClientForIntegration } from './pax8SyncService';
-import { createCatalogItem, CatalogServiceError, type CatalogActor } from './catalogService';
+import { applyImportedPricingBySku, createCatalogItem, CatalogServiceError, type CatalogActor } from './catalogService';
 import type { Pax8ProductRecord, Pax8ProductPriceRecord } from './pax8Client';
 import { getRedis } from './redis';
 import { enrichDistributorListing } from './catalogEnrichmentService';
@@ -130,7 +129,7 @@ function mapBillingFrequency(billingTerm: string | null): 'monthly' | 'annual' {
 // enrichment, under NO ambient context — the catalog-item write and the product-
 // mapping upsert run together in a second short context (same atomicity as
 // before, when both lived in the single ambient request transaction).
-export async function importPax8CatalogItem(input: Pax8ImportInput, actor: CatalogActor, dbCtx: DbAccessContext): Promise<typeof catalogItems.$inferSelect> {
+export async function importPax8CatalogItem(input: Pax8ImportInput, actor: CatalogActor, dbCtx: DbAccessContext): Promise<Awaited<ReturnType<typeof createCatalogItem>>> {
   const integration = await withDbAccessContext(dbCtx, () => getActiveIntegration(actor));
   if (!integration) throw new Pax8CatalogError('Pax8 is not connected', 400, 'PAX8_NOT_CONFIGURED');
   const { product, item } = input;
@@ -194,17 +193,17 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
   };
 
   return withDbAccessContext(dbCtx, async () => {
-    let created: typeof catalogItems.$inferSelect;
+    let created: Awaited<ReturnType<typeof createCatalogItem>>;
     try {
       created = await createCatalogItem(payload, actor);
     } catch (err) {
       const sku = payload.sku;
       if (err instanceof CatalogServiceError && err.code === 'DUPLICATE_SKU' && sku) {
-        const [existing] = await db.select().from(catalogItems)
-          .where(and(eq(catalogItems.partnerId, integration.partnerId), eq(catalogItems.sku, sku)))
-          .limit(1);
-        if (!existing) throw err;
-        created = existing;
+        // Re-import of a SKU the partner already owns (#3775 review #9): apply
+        // the requested sell-currency price + the freshly fetched feed cost to
+        // the existing item under its row lock instead of silently dropping them,
+        // and return the same item-plus-price-book shape a fresh create does.
+        created = await applyImportedPricingBySku(sku, payload, actor);
       } else {
         throw err;
       }

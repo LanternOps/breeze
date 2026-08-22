@@ -33,6 +33,7 @@ import {
 import { catalogItems, catalogItemOrgPricing, catalogItemPrices, catalogBundleComponents } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import {
+  applyImportedPricingBySku,
   createCatalogItem,
   updateCatalogItem,
   setOrgPriceOverride,
@@ -853,6 +854,33 @@ describe('catalogService (breeze_app, real DB)', () => {
     expect(outcome.caught).toBeInstanceOf(CatalogServiceError);
     expect(outcome.caught).toMatchObject({ status: 409, code: 'DUPLICATE_SKU' });
     expect(outcome.rowCount).toBe(1); // only the first import persisted
+  });
+
+  runDb('applyImportedPricingBySku (#3775 review #9): a re-import adds the requested sell-currency row + feed cost to the existing item and keeps its other rows', async () => {
+    const fx = await seedFixture();
+    const first = await withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem({ ...dupInput('First import', 'REIMPORT-1'), costBasis: 80, costCurrency: 'USD' }, fx.actorA));
+    expect(first.prices).toEqual([{ currencyCode: 'USD', unitPrice: '100.00' }]);
+
+    // Second import from a quote in EUR, feed now reports a CAD cost.
+    const merged = await withDbAccessContext(fx.ctxA, () =>
+      applyImportedPricingBySku('REIMPORT-1', { prices: [{ currencyCode: 'EUR', unitPrice: 95 }], costBasis: 110.25, costCurrency: 'CAD' }, fx.actorA));
+    expect(merged.id).toBe(first.id);
+    expect(merged).toMatchObject({ costBasis: '110.25', costCurrency: 'CAD', unitPrice: '100.00' }); // mirror untouched (EUR ≠ partner currency)
+    expect(merged.prices).toEqual([
+      { currencyCode: 'EUR', unitPrice: '95.00' },
+      { currencyCode: 'USD', unitPrice: '100.00' },
+    ]);
+
+    const detail = await withDbAccessContext(fx.ctxA, () => getCatalogItem(first.id, fx.actorA));
+    expect(detail.prices.map((p) => [p.currencyCode, p.unitPrice])).toEqual([['EUR', '95.00'], ['USD', '100.00']]);
+    expect(detail.item.costCurrency).toBe('CAD');
+
+    // Another partner cannot reach the row through its SKU (ownership + RLS).
+    const actorB: CatalogActor = { userId: null as unknown as string, partnerId: fx.partnerB.id, accessibleOrgIds: null };
+    const ctxB: DbAccessContext = { scope: 'partner', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: [fx.partnerB.id], userId: null };
+    await expect(withDbAccessContext(ctxB, () => applyImportedPricingBySku('REIMPORT-1', { unitPrice: 1 }, actorB)))
+      .rejects.toMatchObject({ status: 404, code: 'ITEM_NOT_FOUND' });
   });
 
   runDb('createCatalogItem: same sku under a DIFFERENT partner is not a conflict', async () => {

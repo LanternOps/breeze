@@ -269,6 +269,68 @@ export async function removeItemPrice(itemId: string, currencyCode: string, acto
   return { ok: true };
 }
 
+/**
+ * Importer duplicate-SKU recovery (#3775 review #9). When a distributor / Pax8
+ * import hits a SKU the partner already owns, the requested pricing must not be
+ * silently discarded: the requested sell-currency rows (explicit `prices`, or a
+ * legacy `unitPrice` in the partner currency) are upserted onto the existing
+ * item and the freshly fetched feed cost + currency replaces the stored cost.
+ * No cost × markup derivation here — on a re-import that would clobber a
+ * price-book row the operator may have adjusted by hand; only amounts the
+ * caller stated explicitly are written. A cost without a currency (the
+ * importedCost gap) leaves the stored cost untouched. Runs under the
+ * catalog-side lock order (item row FIRST, price rows, mirror LAST) and returns
+ * the same item-plus-price-book shape createCatalogItem does.
+ */
+export async function applyImportedPricingBySku(
+  sku: string,
+  input: Pick<CreateCatalogItemInput, 'unitPrice' | 'prices' | 'costBasis' | 'costCurrency' | 'markupPercent'>,
+  actor: CatalogActor
+) {
+  const partnerId = requirePartner(actor);
+  const result = await db.transaction(async (tx) => {
+    const [existing] = await tx.select().from(catalogItems)
+      .where(and(eq(catalogItems.partnerId, partnerId), eq(catalogItems.sku, sku))).limit(1).for('update');
+    if (!existing) throw new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND');
+    const partnerCurrency = await resolvePartnerCurrency(partnerId, tx);
+
+    const priceMap = new Map<string, string>();
+    for (const p of input.prices ?? []) priceMap.set(p.currencyCode, p.unitPrice.toFixed(2));
+    if (input.unitPrice !== undefined && !priceMap.has(partnerCurrency)) {
+      priceMap.set(partnerCurrency, Number(input.unitPrice).toFixed(2));
+    }
+    for (const [code, v] of priceMap) {
+      assertPriceInRange(v);
+      assertRepresentable(v, code);
+    }
+    const costPatch: Partial<typeof catalogItems.$inferInsert> = {};
+    if (input.costBasis != null && input.costCurrency) {
+      const costBasis = input.costBasis.toFixed(2);
+      assertRepresentable(costBasis, input.costCurrency);
+      costPatch.costBasis = costBasis;
+      costPatch.costCurrency = input.costCurrency;
+      if (input.markupPercent != null) costPatch.markupPercent = input.markupPercent.toFixed(2);
+    }
+
+    let item: typeof catalogItems.$inferSelect = existing;
+    for (const [currencyCode, unitPrice] of priceMap) {
+      await upsertPriceRow(tx, existing.id, partnerId, currencyCode, unitPrice);
+    }
+    if (Object.keys(costPatch).length > 0) {
+      const rows = await tx.update(catalogItems).set({ ...costPatch, updatedAt: new Date() })
+        .where(and(eq(catalogItems.id, existing.id), eq(catalogItems.partnerId, partnerId))).returning();
+      item = rows[0] ?? item;
+    }
+    const mirror = priceMap.get(partnerCurrency);
+    if (mirror !== undefined) item = (await writeUnitPriceMirror(tx, existing.id, partnerId, mirror)) ?? item; // mirror LAST
+    const prices = await tx.select({ currencyCode: catalogItemPrices.currencyCode, unitPrice: catalogItemPrices.unitPrice })
+      .from(catalogItemPrices).where(eq(catalogItemPrices.itemId, existing.id)).orderBy(asc(catalogItemPrices.currencyCode));
+    return { ...item, prices };
+  });
+  await emitCatalogEvent({ type: 'catalog.item.price_changed', catalogItemId: result.id, partnerId, actorUserId: actor.userId });
+  return result;
+}
+
 export async function listItemPrices(itemId: string, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
   await getOwnedItemOr404(itemId, partnerId);
