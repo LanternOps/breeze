@@ -19,7 +19,7 @@ async function seed() {
     ]).returning({ id: organizations.id });
     const [c] = await db.insert(contracts).values({
       partnerId: p!.id, orgId: orgA!.id, name: 'rn', status: 'active',
-      intervalMonths: 1, startDate: '2026-07-01', endDate: '2027-07-01',
+      intervalMonths: 1, startDate: '2026-07-01', endDate: '2027-07-01', currencyCode: 'USD',
       autoRenew: true, renewalTermMonths: 12, renewalNoticeDays: 30
     }).returning({ id: contracts.id });
     return { partnerId: p!.id, orgAId: orgA!.id, orgBId: orgB!.id, contractId: c!.id };

@@ -3131,7 +3131,7 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
     let caught: unknown;
     try {
       await withDbAccessContext(orgContext(orgBId), async () =>
-        db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' })
+        db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft', currencyCode: 'USD' })
       );
     } catch (err) { caught = err; }
     expect(caught).toBeDefined();
@@ -3144,7 +3144,7 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
     await ensureFixtures();
     let createdId = '';
     await withSystemDbAccessContext(async () => {
-      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft', currencyCode: 'USD' }).returning({ id: invoices.id });
       createdId = inv!.id;
     });
     const visible = await withDbAccessContext(orgContext(orgBId), async () =>
@@ -3163,7 +3163,7 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
     // it is committed before we attempt the forged line.
     let invoiceId = '';
     await withSystemDbAccessContext(async () => {
-      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft', currencyCode: 'USD' }).returning({ id: invoices.id });
       invoiceId = inv!.id;
     });
     // The FK violation aborts the surrounding transaction, so postgres.js may
@@ -3223,7 +3223,7 @@ describe('contracts RLS forge (shape 1, org-axis)', () => {
       // Seed an org-A contract so we can hang line/period cross-org attempts on it.
       const [c] = await db.insert(contracts).values({
         partnerId: partner.id, orgId: orgAId, name: 'forge-seed',
-        intervalMonths: 1, startDate: '2026-07-01'
+        intervalMonths: 1, startDate: '2026-07-01', currencyCode: 'USD'
       }).returning({ id: contracts.id });
       if (!c) throw new Error('failed to seed contract for contracts forge');
       contractAId = c.id;
@@ -3246,7 +3246,7 @@ describe('contracts RLS forge (shape 1, org-axis)', () => {
       await withDbAccessContext(orgContext(orgBId), async () =>
         db.insert(contracts).values({
           partnerId, orgId: orgAId, name: 'forge-crossorg',
-          intervalMonths: 1, startDate: '2026-07-01'
+          intervalMonths: 1, startDate: '2026-07-01', currencyCode: 'USD'
         })
       );
     } catch (err) { caught = err; }
@@ -3332,7 +3332,7 @@ describe('invoice_documents RLS forge (shape 1, org-axis)', () => {
       ]).returning({ id: organizations.id });
       if (!orgA || !orgB) throw new Error('failed to seed orgs for invoice_documents forge');
       orgAId = orgA.id; orgBId = orgB.id;
-      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft', currencyCode: 'USD' }).returning({ id: invoices.id });
       invoiceAId = inv!.id;
     });
   }

@@ -43,7 +43,8 @@ describe('runContractBillingSweep', () => {
           billingTiming: 'advance',
           intervalMonths: 1,
           startDate: '2026-07-01',
-          nextBillingAt: '2026-07-01'
+          nextBillingAt: '2026-07-01',
+          currencyCode: 'USD'
         }).returning({ id: contracts.id });
         contractId = ctr!.id;
 

@@ -31,7 +31,11 @@ export const invoices = pgTable('invoices', {
   siteId: uuid('site_id'),
   invoiceNumber: varchar('invoice_number', { length: 40 }),
   status: invoiceStatusEnum('status').notNull().default('draft'),
-  currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
+  // Multi-currency (spec §5): stamped from the org (or copied from the source
+  // document) at creation and immutable once monetary lines exist. Deliberately
+  // NO .default() — every creation path must stamp it explicitly, so a missed
+  // path is a loud insert failure, never a silent USD document.
+  currencyCode: char('currency_code', { length: 3 }).notNull(),
   issueDate: date('issue_date'),
   dueDate: date('due_date'),
   subtotal: numeric('subtotal', { precision: 12, scale: 2 }).notNull().default('0'),
