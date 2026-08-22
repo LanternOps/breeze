@@ -4,11 +4,11 @@ import { z } from 'zod';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
-  createContractSchema, updateContractSchema, listContractsQuerySchema
+  createContractSchema, updateContractSchema, listContractsQuerySchema, changeCurrencySchema
 } from '@breeze/shared';
 import {
   createContract, getContract, listContracts, updateContract, deleteDraftContract,
-  computeContractEstimate
+  computeContractEstimate, changeContractCurrency
 } from '../../services/contractService';
 import { ContractServiceError, type ContractActor } from '../../services/contractTypes';
 
@@ -49,5 +49,12 @@ contractCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam)
 });
 contractCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
   try { await deleteDraftContract(c.req.valid('param').id, contractActorFrom(c)); return c.json({ data: { ok: true } }); }
+  catch (err) { return handleContractError(c, err); }
+});
+// Draft-only atomic change-currency op (#3774) — the ONLY mutation path for a
+// document's stamped currency. CURRENCY_LOCKED (409) when contract lines exist
+// and clearLines wasn't passed; clearLines deletes lines + restamps atomically.
+contractCrudRoutes.post('/:id/currency', scopes, writePerm, zValidator('param', idParam), zValidator('json', changeCurrencySchema), async (c) => {
+  try { return c.json({ data: await changeContractCurrency(c.req.valid('param').id, c.req.valid('json'), contractActorFrom(c)) }); }
   catch (err) { return handleContractError(c, err); }
 });

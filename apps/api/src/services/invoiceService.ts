@@ -314,6 +314,61 @@ export async function updateInvoice(
 }
 
 /**
+ * Draft-only atomic change-currency operation (multi-currency wave 2, #3774).
+ * A draft's stamped currency is immutable through every other mutation path —
+ * no PATCH schema admits currencyCode — so this is the ONLY way the stamp
+ * moves, and only while the document is a draft. With monetary lines present
+ * the change is refused (CURRENCY_LOCKED 409) unless the caller opts into
+ * `clearLines`, which deletes the lines and restamps in ONE transaction.
+ * Amounts are never converted or reinterpreted; repricing arrives with the
+ * wave-3 price books — wave 2 ships clear-and-restamp only.
+ */
+export async function changeInvoiceCurrency(
+  invoiceId: string,
+  input: { currencyCode: string; clearLines?: boolean },
+  actor: InvoiceActor
+) {
+  return db.transaction(async (tx) => {
+    // Invoice row lock FIRST (Task 8 lock order: invoices → invoice_lines) so a
+    // concurrent issue or line write serializes against the restamp instead of
+    // deadlocking or observing a half-changed draft.
+    const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
+    if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    assertDraft(inv);
+    requireInvoiceAccess(actor, inv);
+    if (inv.currencyCode === input.currencyCode) return inv; // no-op restamp
+
+    const lineRows = await tx.select({ id: invoiceLines.id }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
+    if (lineRows.length > 0) {
+      if (!input.clearLines) {
+        throw new InvoiceServiceError(
+          `Invoice has ${lineRows.length} line(s) priced in ${inv.currencyCode} — pass clearLines to remove them, or delete the draft`,
+          409, 'CURRENCY_LOCKED'
+        );
+      }
+      // Clear-and-restamp. Draft gathering never flips source billing_status
+      // (time entries/parts stay 'not_billed' until issueInvoice flips them),
+      // so a draft holds no billed claim and there is nothing to release here.
+      // Deliberately NOT mirroring voidInvoice's unconditional reset: another
+      // invoice may have legitimately billed these sources since this draft
+      // gathered them, and resetting would corrupt that claim (#3774 addendum).
+      await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
+    }
+
+    // Lines are guaranteed gone (or never existed): totals recompute to zero,
+    // rounded in the NEW currency. The draft-time taxRate snapshot is kept.
+    const totals = computeInvoiceTotals([], inv.taxRate, input.currencyCode);
+    const balance = fromCents(toCents(totals.total) - toCents(inv.amountPaid));
+    const [updated] = await tx.update(invoices).set({
+      currencyCode: input.currencyCode,
+      subtotal: totals.subtotal, taxTotal: totals.taxTotal, total: totals.total, balance,
+      updatedAt: new Date(),
+    }).where(eq(invoices.id, invoiceId)).returning();
+    return updated!;
+  });
+}
+
+/**
  * Due-date carve-out (deposit spec): the ONE field editable on an ISSUED invoice.
  * Due date is scheduling metadata, not signed financial content — the immutability
  * rule (billing-v1.1 roadmap) covers money/lines, which stay locked. Status is

@@ -688,3 +688,78 @@ describe('addContractLine', () => {
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 });
+
+describe('changeInvoiceCurrency (draft currency immutability, #3774)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('rejects a non-draft invoice with NOT_A_DRAFT (409)', async () => {
+    // locked invoice select → issued row
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    await expect(
+      svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
+  });
+
+  it('throws INVOICE_NOT_FOUND (404) when the invoice is absent', async () => {
+    queueResult([]);
+    await expect(
+      svc.changeInvoiceCurrency('missing', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
+  });
+
+  it('refuses to restamp over monetary lines without clearLines (CURRENCY_LOCKED 409)', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' }]);
+    queueResult([{ id: 'l1' }]); // one monetary line
+    await expect(
+      svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409 });
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('restamps a line-less draft and returns the new currency', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' }]);
+    queueResult([]); // no lines
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // update returning
+    const updated = await svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    const setMock = (db as unknown as { set: Mock }).set;
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'EUR' }));
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('clearLines: true deletes the lines and restamps atomically', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' }]);
+    queueResult([{ id: 'l1' }, { id: 'l2' }]); // two monetary lines
+    queueResult([]); // delete
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY', total: '0.00' }]); // update returning
+    const updated = await svc.changeInvoiceCurrency('i1', { currencyCode: 'JPY', clearLines: true }, actor);
+    expect(updated.currencyCode).toBe('JPY');
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).toHaveBeenCalledTimes(1);
+    const setMock = (db as unknown as { set: Mock }).set;
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      currencyCode: 'JPY', subtotal: '0.00', taxTotal: '0.00', total: '0.00', balance: '0.00'
+    }));
+  });
+
+  it('same-currency change is a no-op (returns the row untouched)', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR', taxRate: null, amountPaid: '0.00' }]);
+    const updated = await svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: true }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    const setMock = (db as unknown as { set: Mock }).set;
+    expect(setMock).not.toHaveBeenCalled();
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an actor without access to the invoice org (ORG_DENIED 403)', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' }]);
+    const denied = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(
+      svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, denied)
+    ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+});

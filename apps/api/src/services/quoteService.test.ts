@@ -890,3 +890,74 @@ describe('sanitizeBlockContentForWrite loss reporting (#3520)', () => {
     expect(warnings).toEqual([]);
   });
 });
+
+describe('changeQuoteCurrency (draft currency immutability, #3774)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('rejects a non-draft quote with NOT_A_DRAFT (409)', async () => {
+    queueResult([{ id: 'q1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' }]);
+    await expect(
+      svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
+  });
+
+  it('throws QUOTE_NOT_FOUND (404) when the quote is absent', async () => {
+    queueResult([]);
+    await expect(
+      svc.changeQuoteCurrency('missing', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'QUOTE_NOT_FOUND', status: 404 });
+  });
+
+  it('refuses to restamp over monetary lines without clearLines (CURRENCY_LOCKED 409)', async () => {
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' }]);
+    queueResult([{ id: 'l1' }]); // one monetary line
+    await expect(
+      svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409 });
+    expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(0);
+  });
+
+  it('restamps a line-less draft and returns the new currency', async () => {
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' }]);
+    queueResult([]); // no lines
+    queueResult([]); // header currency update
+    // recomputeAndPersist: header select, lines select, totals update
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'EUR' }]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', currencyCode: 'EUR' }]); // final re-select
+    const updated = await svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', clearLines: false }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ currencyCode: 'EUR' });
+  });
+
+  it('clearLines: true deletes the lines, restamps, and re-totals atomically', async () => {
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'EUR' }]);
+    queueResult([{ id: 'l1' }, { id: 'l2' }]); // two monetary lines
+    queueResult([]); // delete
+    queueResult([]); // header currency update
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null, currencyCode: 'JPY' }]);
+    queueResult([]); // recompute lines select (now empty)
+    queueResult([]); // recompute totals update
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', currencyCode: 'JPY', total: '0.00' }]);
+    const updated = await svc.changeQuoteCurrency('q1', { currencyCode: 'JPY', clearLines: true }, actor);
+    expect(updated.currencyCode).toBe('JPY');
+    expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(1);
+  });
+
+  it('same-currency change is a no-op (returns the row untouched)', async () => {
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'EUR' }]);
+    const updated = await svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', clearLines: true }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(0);
+  });
+
+  it('denies an actor without access to the quote org (ORG_DENIED 403)', async () => {
+    queueResult([{ id: 'q1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' }]);
+    const denied = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(
+      svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', clearLines: false }, denied)
+    ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+});

@@ -880,6 +880,52 @@ export async function deleteDraftQuote(id: string, actor: QuoteActor) {
   await db.delete(quotes).where(eq(quotes.id, id)); // blocks/lines cascade
 }
 
+/**
+ * Draft-only atomic change-currency operation (multi-currency wave 2, #3774).
+ * A draft's stamped currency is immutable through every other mutation path —
+ * updateQuoteSchema never admitted currencyCode — so this is the ONLY way the
+ * stamp moves, and only while the quote is a draft. With monetary lines
+ * present the change is refused (CURRENCY_LOCKED 409) unless the caller opts
+ * into `clearLines`, which deletes the quote's lines (blocks stay — an empty
+ * line-items block is valid) and restamps in ONE transaction. Amounts are
+ * never converted or reinterpreted; repricing arrives with the wave-3 price
+ * books — wave 2 ships clear-and-restamp only.
+ */
+export async function changeQuoteCurrency(
+  quoteId: string,
+  input: { currencyCode: string; clearLines?: boolean },
+  actor: QuoteActor
+) {
+  return db.transaction(async (tx) => {
+    // Quote row lock FIRST (document → lines, the same order the accept path
+    // takes) so a concurrent send/accept/line write serializes against the
+    // restamp instead of observing a half-changed draft.
+    const [q] = await tx.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
+    if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+    assertQuoteAccess(actor, q);
+    if (q.status !== 'draft') throw new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT');
+    if (q.currencyCode === input.currencyCode) return q; // no-op restamp
+
+    const lineRows = await tx.select({ id: quoteLines.id }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
+    if (lineRows.length > 0) {
+      if (!input.clearLines) {
+        throw new QuoteServiceError(
+          `Quote has ${lineRows.length} line(s) priced in ${q.currencyCode} — pass clearLines to remove them, or delete the draft`,
+          409, 'CURRENCY_LOCKED'
+        );
+      }
+      await tx.delete(quoteLines).where(eq(quoteLines.quoteId, quoteId));
+    }
+
+    await tx.update(quotes).set({ currencyCode: input.currencyCode, updatedAt: new Date() }).where(eq(quotes.id, quoteId));
+    // Lines are guaranteed gone (or never existed): totals recompute to zero
+    // in the NEW currency, inside the same transaction as the restamp.
+    await recomputeAndPersist(quoteId, tx);
+    const [updated] = await tx.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+    return updated!;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Blocks
 // ---------------------------------------------------------------------------

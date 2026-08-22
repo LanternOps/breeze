@@ -199,6 +199,50 @@ export async function deleteDraftContract(contractId: string, actor: ContractAct
   await db.delete(contracts).where(eq(contracts.id, contractId)); // lines cascade
 }
 
+/**
+ * Draft-only atomic change-currency operation (multi-currency wave 2, #3774).
+ * A draft's stamped currency is immutable through every other mutation path —
+ * updateContract explicitly whitelists away currencyCode — so this is the
+ * ONLY way the stamp moves, and only while the contract is a draft. With
+ * lines present the change is refused (CURRENCY_LOCKED 409) unless the caller
+ * opts into `clearLines`, which deletes the contract's lines and restamps in
+ * ONE transaction. Unit prices are never converted or reinterpreted;
+ * repricing arrives with the wave-3 price books — wave 2 ships
+ * clear-and-restamp only. Contracts store no header totals, so there is
+ * nothing further to recompute.
+ */
+export async function changeContractCurrency(
+  contractId: string,
+  input: { currencyCode: string; clearLines?: boolean },
+  actor: ContractActor
+) {
+  return db.transaction(async (tx) => {
+    // Contract row lock FIRST (document → lines) so a concurrent activate or
+    // line write serializes against the restamp.
+    const [c] = await tx.select().from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
+    if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
+    requireOrgAccess(actor, c.orgId);
+    assertDraft(c);
+    if (c.currencyCode === input.currencyCode) return c; // no-op restamp
+
+    const lineRows = await tx.select({ id: contractLines.id }).from(contractLines).where(eq(contractLines.contractId, contractId));
+    if (lineRows.length > 0) {
+      if (!input.clearLines) {
+        throw new ContractServiceError(
+          `Contract has ${lineRows.length} line(s) priced in ${c.currencyCode} — pass clearLines to remove them, or delete the draft`,
+          409, 'CURRENCY_LOCKED'
+        );
+      }
+      await tx.delete(contractLines).where(eq(contractLines.contractId, contractId));
+    }
+
+    const [updated] = await tx.update(contracts)
+      .set({ currencyCode: input.currencyCode, updatedAt: new Date() })
+      .where(eq(contracts.id, contractId)).returning();
+    return updated!;
+  });
+}
+
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
   assertEditable(c);

@@ -47,6 +47,9 @@ export type QuoteServiceErrorCode =
   // than the document's stamp. Blocked outright — a quote's amounts are never
   // silently restamped into another currency, and never converted.
   | 'CURRENCY_MISMATCH'
+  // Draft currency immutability (#3774): changeQuoteCurrency refused because
+  // monetary lines exist and the caller didn't opt into clearLines.
+  | 'CURRENCY_LOCKED'
   // Durable single-use replay backstop (#2875, quoteAcceptService): the public
   // response token's jti was already consumed on the quote row (2026-08-06-c
   // columns) — a replayed link, rejected 401 even when the Redis revocation
