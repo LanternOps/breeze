@@ -961,3 +961,107 @@ describe('changeQuoteCurrency (draft currency immutability, #3774)', () => {
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 });
+
+// #3774 phantom-line race: every quote LINE writer must take the quote row
+// lock (SELECT ... FOR UPDATE) as the FIRST statement of a transaction, then
+// mutate lines + recompute inside that same transaction — the same discipline
+// changeQuoteCurrency uses, so a restamp can never interleave between a
+// writer's currency read and its line write.
+describe('quote line writers lock the quote row first (#3774)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  type LockChain = Chain & {
+    for: { mock: { calls: unknown[][] } };
+    transaction: { mock: { calls: unknown[][] } };
+    delete: { mock: { calls: unknown[][] } };
+  };
+
+  it('addManualLine runs in a transaction and takes the quote row FOR UPDATE', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' }]); // lockDraftQuote
+    queueResult([{ id: 'blk1' }]); // resolveLineBlockId
+    queueResult([{ max: -1 }]); // nextLineSortOrder
+    queueResult([{ id: 'l1', blockId: 'blk1' }]); // insert returning
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+
+    await svc.addManualLine('q1', { sourceType: 'manual', name: 'Widget', quantity: 1, unitPrice: 10, taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false } as never, actor);
+
+    const chain = db as unknown as LockChain;
+    expect(chain.transaction.mock.calls.length).toBe(1);
+    expect(chain.for.mock.calls[0]).toEqual(['update']);
+  });
+
+  it('addManualLine computes lineTotal from the LOCKED row currency (JPY rounds to whole units)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'JPY' }]); // lockDraftQuote — restamped JPY
+    queueResult([{ id: 'blk1' }]); // resolveLineBlockId
+    queueResult([{ max: -1 }]); // nextLineSortOrder
+    queueResult([{ id: 'l1' }]); // insert returning
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+
+    await svc.addManualLine('q1', { sourceType: 'manual', name: 'Widget', quantity: 3, unitPrice: 33.35, taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false } as never, actor);
+
+    const valuesMock = (db as unknown as Chain).values;
+    // 3 × 33.35 = 100.05 → '100.00' under JPY, '100.05' under a 2-decimal stamp.
+    expect((valuesMock.mock.calls.at(-1)![0] as { lineTotal: string }).lineTotal).toBe('100.00');
+  });
+
+  it('updateLine locks first and recomputes lineTotal with the locked row currency', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'JPY' }]); // lockDraftQuote
+    queueResult([{ id: 'l1', quoteId: 'q1', name: 'W', description: null, quantity: '3', unitPrice: '33.35', taxable: false, customerVisible: true, recurrence: 'one_time' }]); // existing line
+    queueResult([]); // line update (unused result)
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'l1', lineTotal: '100.00' }]); // final line re-select
+
+    const updated = await svc.updateLine('q1', 'l1', { quantity: 3 }, actor);
+    expect(updated.lineTotal).toBe('100.00');
+
+    const chain = db as unknown as LockChain;
+    expect(chain.transaction.mock.calls.length).toBe(1);
+    expect(chain.for.mock.calls[0]).toEqual(['update']);
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ lineTotal: '100.00' });
+  });
+
+  it('updateLine surfaces NOT_A_DRAFT off the locked row (no line write)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', currencyCode: 'USD' }]); // lockDraftQuote → 409
+    await expect(svc.updateLine('q1', 'l1', { quantity: 2 }, actor))
+      .rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
+
+  it('removeLine locks the quote row, deletes, and recomputes inside one transaction', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' }]); // lockDraftQuote
+    queueResult([]); // delete (unused result)
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+
+    await svc.removeLine('q1', 'l1', actor);
+
+    const chain = db as unknown as LockChain;
+    expect(chain.transaction.mock.calls.length).toBe(1);
+    expect(chain.for.mock.calls[0]).toEqual(['update']);
+    expect(chain.delete.mock.calls.length).toBe(1);
+  });
+
+  it('deleteBlock (removes a section\'s lines) locks the quote row first too', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' }]); // lockDraftQuote
+    queueResult([]); // delete lines
+    queueResult([]); // delete block
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+
+    await svc.deleteBlock('q1', 'blk1', actor);
+
+    const chain = db as unknown as LockChain;
+    expect(chain.transaction.mock.calls.length).toBe(1);
+    expect(chain.for.mock.calls[0]).toEqual(['update']);
+    expect(chain.delete.mock.calls.length).toBe(2);
+  });
+});

@@ -266,16 +266,38 @@ async function loadDraft(quoteId: string, actor: QuoteActor) {
   return q;
 }
 
-async function nextBlockSortOrder(quoteId: string): Promise<number> {
-  const rows = await db
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Lock-order anchor (#3774, mirrors invoiceService.lockDraftInvoice): SELECT
+ * the QUOTE row FOR UPDATE as the FIRST statement of the enclosing
+ * transaction, assert access + draft, and return the locked row. Every draft
+ * line writer (add/update/remove, plus deleteBlock, which removes a section's
+ * lines) takes this lock before touching quote_lines, then recomputes totals
+ * inside the same transaction — and always computes lineTotal from the LOCKED
+ * row's currencyCode. changeQuoteCurrency takes the identical lock, so a
+ * restamp can never interleave between a writer's currency read and its line
+ * write (no JPY-stamped quote carrying a USD-rounded line), and a line can
+ * never phantom-insert past the restamp's "no monetary lines" check.
+ */
+async function lockDraftQuote(tx: DbExecutor, quoteId: string, actor: QuoteActor) {
+  const [q] = await tx.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
+  if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  assertQuoteAccess(actor, q);
+  if (q.status !== 'draft') throw new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT');
+  return q;
+}
+
+async function nextBlockSortOrder(quoteId: string, dbc: DbExecutor = db): Promise<number> {
+  const rows = await dbc
     .select({ max: sql<number>`COALESCE(MAX(${quoteBlocks.sortOrder}), -1)` })
     .from(quoteBlocks)
     .where(eq(quoteBlocks.quoteId, quoteId));
   return Number(rows[0]?.max ?? -1) + 1;
 }
 
-async function nextLineSortOrder(quoteId: string): Promise<number> {
-  const rows = await db
+async function nextLineSortOrder(quoteId: string, dbc: DbExecutor = db): Promise<number> {
+  const rows = await dbc
     .select({ max: sql<number>`COALESCE(MAX(${quoteLines.sortOrder}), -1)` })
     .from(quoteLines)
     .where(eq(quoteLines.quoteId, quoteId));
@@ -898,12 +920,10 @@ export async function changeQuoteCurrency(
 ) {
   return db.transaction(async (tx) => {
     // Quote row lock FIRST (document → lines, the same order the accept path
-    // takes) so a concurrent send/accept/line write serializes against the
-    // restamp instead of observing a half-changed draft.
-    const [q] = await tx.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
-    if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
-    assertQuoteAccess(actor, q);
-    if (q.status !== 'draft') throw new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT');
+    // takes). Every line writer takes the same lock via lockDraftQuote, so a
+    // concurrent send/accept/line write serializes against the restamp
+    // instead of observing a half-changed draft.
+    const q = await lockDraftQuote(tx, quoteId, actor);
     if (q.currencyCode === input.currencyCode) return q; // no-op restamp
 
     const lineRows = await tx.select({ id: quoteLines.id }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
@@ -1055,10 +1075,12 @@ export async function updateBlock(quoteId: string, blockId: string, input: Quote
  * header totals from the lines that remain.
  */
 export async function deleteBlock(quoteId: string, blockId: string, actor: QuoteActor) {
-  await loadDraft(quoteId, actor);
-  await db.delete(quoteLines).where(and(eq(quoteLines.quoteId, quoteId), eq(quoteLines.blockId, blockId)));
-  await db.delete(quoteBlocks).where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)));
-  await recomputeAndPersist(quoteId);
+  await db.transaction(async (tx) => {
+    await lockDraftQuote(tx, quoteId, actor); // removes lines + recomputes → takes the quote lock first
+    await tx.delete(quoteLines).where(and(eq(quoteLines.quoteId, quoteId), eq(quoteLines.blockId, blockId)));
+    await tx.delete(quoteBlocks).where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)));
+    await recomputeAndPersist(quoteId, tx);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,17 +1098,17 @@ export async function deleteBlock(quoteId: string, blockId: string, actor: Quote
  * only walks line_items blocks). The result was a quote showing a real dollar
  * total while the builder said "No content yet", uneditable from the UI (#2553).
  */
-async function resolveLineBlockId(quoteId: string, orgId: string, blockId: string | null | undefined): Promise<string> {
+async function resolveLineBlockId(quoteId: string, orgId: string, blockId: string | null | undefined, dbc: DbExecutor = db): Promise<string> {
   if (blockId) return blockId;
-  const [existing] = await db
+  const [existing] = await dbc
     .select({ id: quoteBlocks.id })
     .from(quoteBlocks)
     .where(and(eq(quoteBlocks.quoteId, quoteId), eq(quoteBlocks.blockType, 'line_items')))
     .orderBy(quoteBlocks.sortOrder)
     .limit(1);
   if (existing) return existing.id;
-  const sortOrder = await nextBlockSortOrder(quoteId);
-  const [block] = await db
+  const sortOrder = await nextBlockSortOrder(quoteId, dbc);
+  const [block] = await dbc
     .insert(quoteBlocks)
     .values({ quoteId, orgId, blockType: 'line_items', content: {}, sortOrder })
     .returning({ id: quoteBlocks.id });
@@ -1094,39 +1116,41 @@ async function resolveLineBlockId(quoteId: string, orgId: string, blockId: strin
 }
 
 export async function addManualLine(quoteId: string, input: QuoteLineInput, actor: QuoteActor) {
-  const q = await loadDraft(quoteId, actor);
-  const quantity = String(input.quantity);
-  const unitPrice = Number(input.unitPrice).toFixed(2);
-  const blockId = await resolveLineBlockId(quoteId, q.orgId, input.blockId);
-  const sortOrder = await nextLineSortOrder(quoteId);
-  const [row] = await db.insert(quoteLines).values({
-    quoteId,
-    orgId: q.orgId,
-    blockId,
-    sourceType: input.sourceType,
-    catalogItemId: input.catalogItemId ?? null,
-    name: input.name ?? null,
-    description: input.description ?? null,
-    quantity,
-    unitPrice,
-    taxable: input.taxable,
-    customerVisible: input.customerVisible,
-    lineTotal: computeLineTotal(quantity, unitPrice, q.currencyCode),
-    recurrence: input.recurrence,
-    termMonths: input.termMonths ?? null,
-    billingFrequency: input.billingFrequency ?? null,
-    unitCost: input.unitCost != null ? Number(input.unitCost).toFixed(2) : null,
-    sku: input.sku ?? null,
-    partNumber: input.partNumber ?? null,
-    procurementSource: input.procurementSource ?? null,
-    vendorSku: input.vendorSku ?? null,
-    manufacturer: input.manufacturer ?? null,
-    depositEligible: input.depositEligible ?? false,
-    itemType: null,
-    sortOrder,
-  }).returning();
-  await recomputeAndPersist(quoteId);
-  return row!;
+  return db.transaction(async (tx) => {
+    const q = await lockDraftQuote(tx, quoteId, actor);
+    const quantity = String(input.quantity);
+    const unitPrice = Number(input.unitPrice).toFixed(2);
+    const blockId = await resolveLineBlockId(quoteId, q.orgId, input.blockId, tx);
+    const sortOrder = await nextLineSortOrder(quoteId, tx);
+    const [row] = await tx.insert(quoteLines).values({
+      quoteId,
+      orgId: q.orgId,
+      blockId,
+      sourceType: input.sourceType,
+      catalogItemId: input.catalogItemId ?? null,
+      name: input.name ?? null,
+      description: input.description ?? null,
+      quantity,
+      unitPrice,
+      taxable: input.taxable,
+      customerVisible: input.customerVisible,
+      lineTotal: computeLineTotal(quantity, unitPrice, q.currencyCode),
+      recurrence: input.recurrence,
+      termMonths: input.termMonths ?? null,
+      billingFrequency: input.billingFrequency ?? null,
+      unitCost: input.unitCost != null ? Number(input.unitCost).toFixed(2) : null,
+      sku: input.sku ?? null,
+      partNumber: input.partNumber ?? null,
+      procurementSource: input.procurementSource ?? null,
+      vendorSku: input.vendorSku ?? null,
+      manufacturer: input.manufacturer ?? null,
+      depositEligible: input.depositEligible ?? false,
+      itemType: null,
+      sortOrder,
+    }).returning();
+    await recomputeAndPersist(quoteId, tx);
+    return row!;
+  });
 }
 
 /**
@@ -1144,63 +1168,65 @@ export async function addCatalogLine(
   actor: QuoteActor,
   options?: { partNumber?: string | null }
 ) {
-  const q = await loadDraft(quoteId, actor);
-  // Scope the catalog lookup to the quote's OWN partner. catalog_items is
-  // partner-axis RLS, which contains a foreign item for a partner-scope caller —
-  // but under SYSTEM scope the partner predicate short-circuits, so without this
-  // explicit filter a system-scope request could snapshot another partner's
-  // catalog item (name/price/taxable/billingType) into the quote line and bind a
-  // foreign catalog_item_id FK. Mirrors invoiceService → catalogService's
-  // getOwnedItemOr404(id, partnerId): a foreign item resolves to not-found
-  // regardless of read scope.
-  const [item] = await db.select().from(catalogItems)
-    .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, q.partnerId)))
-    .limit(1);
-  if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
-  const vendor = vendorIdentityFromAttributes(item.attributes);
-  // Phase 1 recurrence is monthly|annual only; quarterly is not offered (dropped
-  // from the catalog Zod enum). The DB enum retains 'quarterly' for a future phase.
-  const recurrence = item.billingType === 'recurring'
-    ? (item.billingFrequency === 'annual' ? 'annual' : 'monthly')
-    : 'one_time';
-  const qty = String(quantity);
-  const resolvedBlockId = await resolveLineBlockId(quoteId, q.orgId, blockId);
-  const sortOrder = await nextLineSortOrder(quoteId);
-  const [row] = await db.insert(quoteLines).values({
-    quoteId,
-    orgId: q.orgId,
-    blockId: resolvedBlockId,
-    sourceType: 'catalog',
-    catalogItemId,
-    // Mirror the catalog item: its name is the line title, its description the blurb.
-    name: item.name,
-    description: item.description ?? null,
-    quantity: qty,
-    unitPrice: item.unitPrice,
-    taxable: item.taxable,
-    customerVisible: true,
-    lineTotal: computeLineTotal(qty, item.unitPrice, q.currencyCode),
-    recurrence,
-    termMonths: item.commitmentTermMonths ?? null,
-    billingFrequency: item.billingFrequency ?? null,
-    // Snapshot internal economics from the catalog item at add-time so a later
-    // catalog edit never mutates existing quote line cost/sku data.
-    unitCost: item.costBasis ?? null,
-    sku: item.sku ?? null,
-    partNumber: options?.partNumber ?? vendor.mfgPartNo,
-    procurementSource: vendor.procurementSource,
-    vendorSku: vendor.vendorSku,
-    manufacturer: vendor.manufacturer,
-    // Deposit eligibility defaults from the catalog item's type — hardware is the
-    // one category a deposit typically secures (custom order, restocking risk).
-    // itemType is snapshotted at add-time so a later catalog recategorization
-    // never reshuffles an existing quote's category breakdown or deposit math.
-    depositEligible: item.itemType === 'hardware',
-    itemType: item.itemType,
-    sortOrder,
-  }).returning();
-  await recomputeAndPersist(quoteId);
-  return row!;
+  return db.transaction(async (tx) => {
+    const q = await lockDraftQuote(tx, quoteId, actor);
+    // Scope the catalog lookup to the quote's OWN partner. catalog_items is
+    // partner-axis RLS, which contains a foreign item for a partner-scope caller —
+    // but under SYSTEM scope the partner predicate short-circuits, so without this
+    // explicit filter a system-scope request could snapshot another partner's
+    // catalog item (name/price/taxable/billingType) into the quote line and bind a
+    // foreign catalog_item_id FK. Mirrors invoiceService → catalogService's
+    // getOwnedItemOr404(id, partnerId): a foreign item resolves to not-found
+    // regardless of read scope.
+    const [item] = await tx.select().from(catalogItems)
+      .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, q.partnerId)))
+      .limit(1);
+    if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+    const vendor = vendorIdentityFromAttributes(item.attributes);
+    // Phase 1 recurrence is monthly|annual only; quarterly is not offered (dropped
+    // from the catalog Zod enum). The DB enum retains 'quarterly' for a future phase.
+    const recurrence = item.billingType === 'recurring'
+      ? (item.billingFrequency === 'annual' ? 'annual' : 'monthly')
+      : 'one_time';
+    const qty = String(quantity);
+    const resolvedBlockId = await resolveLineBlockId(quoteId, q.orgId, blockId, tx);
+    const sortOrder = await nextLineSortOrder(quoteId, tx);
+    const [row] = await tx.insert(quoteLines).values({
+      quoteId,
+      orgId: q.orgId,
+      blockId: resolvedBlockId,
+      sourceType: 'catalog',
+      catalogItemId,
+      // Mirror the catalog item: its name is the line title, its description the blurb.
+      name: item.name,
+      description: item.description ?? null,
+      quantity: qty,
+      unitPrice: item.unitPrice,
+      taxable: item.taxable,
+      customerVisible: true,
+      lineTotal: computeLineTotal(qty, item.unitPrice, q.currencyCode),
+      recurrence,
+      termMonths: item.commitmentTermMonths ?? null,
+      billingFrequency: item.billingFrequency ?? null,
+      // Snapshot internal economics from the catalog item at add-time so a later
+      // catalog edit never mutates existing quote line cost/sku data.
+      unitCost: item.costBasis ?? null,
+      sku: item.sku ?? null,
+      partNumber: options?.partNumber ?? vendor.mfgPartNo,
+      procurementSource: vendor.procurementSource,
+      vendorSku: vendor.vendorSku,
+      manufacturer: vendor.manufacturer,
+      // Deposit eligibility defaults from the catalog item's type — hardware is the
+      // one category a deposit typically secures (custom order, restocking risk).
+      // itemType is snapshotted at add-time so a later catalog recategorization
+      // never reshuffles an existing quote's category breakdown or deposit math.
+      depositEligible: item.itemType === 'hardware',
+      itemType: item.itemType,
+      sortOrder,
+    }).returning();
+    await recomputeAndPersist(quoteId, tx);
+    return row!;
+  });
 }
 
 export async function updateLine(
@@ -1218,54 +1244,58 @@ export async function updateLine(
   },
   actor: QuoteActor
 ) {
-  const q = await loadDraft(quoteId, actor);
-  const [existing] = await db.select().from(quoteLines)
-    .where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId))).limit(1);
-  if (!existing) throw new QuoteServiceError('Line not found', 404, 'LINE_NOT_FOUND');
-  const quantity = input.quantity != null ? String(input.quantity) : existing.quantity;
-  const unitPrice = input.unitPrice != null ? Number(input.unitPrice).toFixed(2) : existing.unitPrice;
-  const set: Record<string, unknown> = {
-    // name/description are independently patchable; undefined leaves them as-is,
-    // an explicit null clears them (the refine on the route schema keeps ≥1 set).
-    name: input.name !== undefined ? input.name : existing.name,
-    description: input.description !== undefined ? input.description : existing.description,
-    quantity,
-    unitPrice,
-    taxable: input.taxable ?? existing.taxable,
-    customerVisible: input.customerVisible ?? existing.customerVisible,
-    recurrence: input.recurrence ?? existing.recurrence,
-    lineTotal: computeLineTotal(quantity, unitPrice, q.currencyCode),
-  };
-  if (input.termMonths !== undefined) set.termMonths = input.termMonths;
-  if (input.sortOrder !== undefined) set.sortOrder = input.sortOrder;
-  if (input.unitCost !== undefined) set.unitCost = input.unitCost != null ? Number(input.unitCost).toFixed(2) : null;
-  if (input.sku !== undefined) set.sku = input.sku;
-  if (input.partNumber !== undefined) set.partNumber = input.partNumber;
-  if (input.procurementSource !== undefined) set.procurementSource = input.procurementSource;
-  if (input.vendorSku !== undefined) set.vendorSku = input.vendorSku;
-  if (input.manufacturer !== undefined) set.manufacturer = input.manufacturer;
-  if (input.depositEligible !== undefined) set.depositEligible = input.depositEligible;
-  if (input.imageId !== undefined) {
-    // Ownership check: the image must be a quote_images row on THIS quote, or a
-    // caller could point a line at another tenant's image and exfiltrate its
-    // bytes through the customer document/PDF.
-    if (input.imageId !== null) {
-      const [img] = await db.select({ id: quoteImages.id }).from(quoteImages)
-        .where(and(eq(quoteImages.id, input.imageId), eq(quoteImages.quoteId, quoteId))).limit(1);
-      if (!img) throw new QuoteServiceError('Image not found on this quote', 404, 'IMAGE_NOT_FOUND');
+  return db.transaction(async (tx) => {
+    const q = await lockDraftQuote(tx, quoteId, actor);
+    const [existing] = await tx.select().from(quoteLines)
+      .where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId))).limit(1);
+    if (!existing) throw new QuoteServiceError('Line not found', 404, 'LINE_NOT_FOUND');
+    const quantity = input.quantity != null ? String(input.quantity) : existing.quantity;
+    const unitPrice = input.unitPrice != null ? Number(input.unitPrice).toFixed(2) : existing.unitPrice;
+    const set: Record<string, unknown> = {
+      // name/description are independently patchable; undefined leaves them as-is,
+      // an explicit null clears them (the refine on the route schema keeps ≥1 set).
+      name: input.name !== undefined ? input.name : existing.name,
+      description: input.description !== undefined ? input.description : existing.description,
+      quantity,
+      unitPrice,
+      taxable: input.taxable ?? existing.taxable,
+      customerVisible: input.customerVisible ?? existing.customerVisible,
+      recurrence: input.recurrence ?? existing.recurrence,
+      lineTotal: computeLineTotal(quantity, unitPrice, q.currencyCode),
+    };
+    if (input.termMonths !== undefined) set.termMonths = input.termMonths;
+    if (input.sortOrder !== undefined) set.sortOrder = input.sortOrder;
+    if (input.unitCost !== undefined) set.unitCost = input.unitCost != null ? Number(input.unitCost).toFixed(2) : null;
+    if (input.sku !== undefined) set.sku = input.sku;
+    if (input.partNumber !== undefined) set.partNumber = input.partNumber;
+    if (input.procurementSource !== undefined) set.procurementSource = input.procurementSource;
+    if (input.vendorSku !== undefined) set.vendorSku = input.vendorSku;
+    if (input.manufacturer !== undefined) set.manufacturer = input.manufacturer;
+    if (input.depositEligible !== undefined) set.depositEligible = input.depositEligible;
+    if (input.imageId !== undefined) {
+      // Ownership check: the image must be a quote_images row on THIS quote, or a
+      // caller could point a line at another tenant's image and exfiltrate its
+      // bytes through the customer document/PDF.
+      if (input.imageId !== null) {
+        const [img] = await tx.select({ id: quoteImages.id }).from(quoteImages)
+          .where(and(eq(quoteImages.id, input.imageId), eq(quoteImages.quoteId, quoteId))).limit(1);
+        if (!img) throw new QuoteServiceError('Image not found on this quote', 404, 'IMAGE_NOT_FOUND');
+      }
+      set.imageId = input.imageId;
     }
-    set.imageId = input.imageId;
-  }
-  await db.update(quoteLines).set(set).where(eq(quoteLines.id, lineId));
-  await recomputeAndPersist(quoteId);
-  const [updated] = await db.select().from(quoteLines).where(eq(quoteLines.id, lineId)).limit(1);
-  return updated!;
+    await tx.update(quoteLines).set(set).where(eq(quoteLines.id, lineId));
+    await recomputeAndPersist(quoteId, tx);
+    const [updated] = await tx.select().from(quoteLines).where(eq(quoteLines.id, lineId)).limit(1);
+    return updated!;
+  });
 }
 
 export async function removeLine(quoteId: string, lineId: string, actor: QuoteActor) {
-  await loadDraft(quoteId, actor);
-  await db.delete(quoteLines).where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId)));
-  await recomputeAndPersist(quoteId);
+  await db.transaction(async (tx) => {
+    await lockDraftQuote(tx, quoteId, actor);
+    await tx.delete(quoteLines).where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId)));
+    await recomputeAndPersist(quoteId, tx);
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -108,3 +108,66 @@ describe('changeContractCurrency (draft currency immutability, #3774)', () => {
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 });
+
+// #3774 phantom-line race: contract line writers must take the contract row
+// lock (SELECT ... FOR UPDATE) as the FIRST statement of a transaction — the
+// same lock changeContractCurrency takes — so a restamp can never interleave
+// between a writer's read of the contract and its line insert/delete.
+describe('contract line writers lock the contract row first (#3774)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  type LockChain = Chain & {
+    for: { mock: { calls: unknown[][] } };
+    transaction: { mock: { calls: unknown[][] } };
+    values: { mock: { calls: unknown[][] } };
+  };
+
+  it('addContractLineToContract runs in a transaction and takes the contract row FOR UPDATE', async () => {
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]); // lockContract
+    queueResult([{ id: 'l1', contractId: 'c1' }]); // insert returning
+
+    const row = await svc.addContractLineToContract('c1', {
+      lineType: 'manual', description: 'Managed services', unitPrice: '500.00',
+      taxable: false, manualQuantity: '1',
+    } as never, actor);
+    expect(row).toMatchObject({ id: 'l1' });
+
+    const chain = db as unknown as LockChain;
+    expect(chain.transaction.mock.calls.length).toBe(1);
+    expect(chain.for.mock.calls[0]).toEqual(['update']);
+    expect(chain.values.mock.calls[0]![0]).toMatchObject({ contractId: 'c1', orgId: 'org1', unitPrice: '500.00' });
+  });
+
+  it('addContractLineToContract rejects a cancelled contract off the locked row (INVALID_STATE, no insert)', async () => {
+    queueResult([{ id: 'c1', status: 'cancelled', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]); // lockContract
+    await expect(
+      svc.addContractLineToContract('c1', {
+        lineType: 'manual', description: 'X', unitPrice: '1.00', taxable: false, manualQuantity: '1',
+      } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+    expect((db as unknown as LockChain).values.mock.calls.length).toBe(0);
+  });
+
+  it('addContractLineToContract denies an out-of-scope actor before writing (ORG_DENIED 403)', async () => {
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]); // lockContract
+    const denied = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(
+      svc.addContractLineToContract('c1', {
+        lineType: 'manual', description: 'X', unitPrice: '1.00', taxable: false, manualQuantity: '1',
+      } as never, denied)
+    ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+    expect((db as unknown as LockChain).values.mock.calls.length).toBe(0);
+  });
+
+  it('removeContractLine locks the contract row FOR UPDATE before deleting', async () => {
+    queueResult([{ id: 'c1', status: 'active', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]); // lockContract (active is line-editable)
+    queueResult([]); // delete (unused result)
+
+    await svc.removeContractLine('c1', 'l1', actor);
+
+    const chain = db as unknown as LockChain;
+    expect(chain.transaction.mock.calls.length).toBe(1);
+    expect(chain.for.mock.calls[0]).toEqual(['update']);
+    expect((db as unknown as Chain).delete.mock.calls.length).toBe(1);
+  });
+});

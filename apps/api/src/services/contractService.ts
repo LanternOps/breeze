@@ -35,6 +35,26 @@ function assertEditable(c: { status: string }): void {
   }
 }
 
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Lock-order anchor (#3774, mirrors invoiceService.lockDraftInvoice): SELECT
+ * the CONTRACT row FOR UPDATE as the FIRST statement of the enclosing
+ * transaction, 404 + org-access check, and return the locked row. Every line
+ * writer takes this lock before touching contract_lines (asserting the
+ * status itself — draft/active for line edits, draft-only for the currency
+ * restamp), so a concurrent changeContractCurrency can never restamp between
+ * a writer's read of the contract and its line write — no JPY-stamped
+ * contract silently keeping a line priced under the old currency, and no
+ * line phantom-inserting past the restamp's "no lines" check.
+ */
+async function lockContract(tx: DbExecutor, contractId: string, actor: ContractActor) {
+  const [c] = await tx.select().from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
+  if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
+  requireOrgAccess(actor, c.orgId);
+  return c;
+}
+
 export async function createContract(input: {
   orgId: string; name: string; billingTiming: 'advance' | 'arrears'; intervalMonths: number;
   startDate: string; endDate?: string | null; autoIssue?: boolean; currencyCode?: string; notes?: string | null; terms?: string | null;
@@ -217,11 +237,10 @@ export async function changeContractCurrency(
   actor: ContractActor
 ) {
   return db.transaction(async (tx) => {
-    // Contract row lock FIRST (document → lines) so a concurrent activate or
-    // line write serializes against the restamp.
-    const [c] = await tx.select().from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
-    if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
-    requireOrgAccess(actor, c.orgId);
+    // Contract row lock FIRST (document → lines). The line writers take the
+    // same lock via lockContract, so a concurrent activate or line write
+    // serializes against the restamp.
+    const c = await lockContract(tx, contractId, actor);
     assertDraft(c);
     if (c.currencyCode === input.currencyCode) return c; // no-op restamp
 
@@ -244,22 +263,26 @@ export async function changeContractCurrency(
 }
 
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  assertEditable(c);
-  const [row] = await db.insert(contractLines).values({
-    contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
-    catalogItemId: input.catalogItemId ?? null, unitPrice: input.unitPrice,
-    manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
-    siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
-    taxable: input.taxable, sortOrder: input.sortOrder ?? 0
-  }).returning();
-  return row!;
+  return db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    assertEditable(c);
+    const [row] = await tx.insert(contractLines).values({
+      contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
+      catalogItemId: input.catalogItemId ?? null, unitPrice: input.unitPrice,
+      manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+      siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
+      taxable: input.taxable, sortOrder: input.sortOrder ?? 0
+    }).returning();
+    return row!;
+  });
 }
 
 export async function removeContractLine(contractId: string, lineId: string, actor: ContractActor) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  assertEditable(c);
-  await db.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+  await db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    assertEditable(c);
+    await tx.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+  });
 }
 
 function todayISO(asOf: Date = new Date()): string {

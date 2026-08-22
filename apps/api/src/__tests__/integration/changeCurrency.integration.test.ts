@@ -1,18 +1,23 @@
 import './setup';
 import { describe, it, expect } from 'vitest';
 
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import postgres, { type Sql } from 'postgres';
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   partners, organizations, users, timeEntries, invoices, invoiceLines,
-  quotes, quoteLines, contractLines,
+  quotes, quoteLines, contracts, contractLines,
 } from '../../db/schema';
 import * as invoiceSvc from '../../services/invoiceService';
 import * as quoteSvc from '../../services/quoteService';
 import * as contractSvc from '../../services/contractService';
+import { computeLineTotal } from '../../services/invoiceMath';
 import type { InvoiceActor } from '../../services/invoiceTypes';
+import { getTestDb } from './setup';
 
 const RUN = !!process.env.DATABASE_URL;
+const DATABASE_URL = process.env.DATABASE_URL
+  ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 
 interface Fixture {
   partnerId: string;
@@ -223,4 +228,213 @@ describe.runIf(RUN)('changeContractCurrency (atomic clear-and-restamp, #3774)', 
       expect(lines.length).toBe(1);
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Phantom-line race (#3774 wave-3 review): a line writer racing the restamp
+// must serialize on the DOCUMENT row lock. Harness pattern from
+// invoiceIssueRace.integration.test.ts — a dedicated admin postgres.js client
+// pre-holds the contended document row lock, both racers are started against
+// the app pool, and pg_blocking_pids proves BOTH are queued behind the lock
+// (pre-fix, the line writer never blocked — this barrier would time out)
+// before the holder releases. No sleeps.
+// ---------------------------------------------------------------------------
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>['resolve'];
+  let reject!: Deferred<T>['reject'];
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function closeRaceClients(...clients: Sql[]): Promise<void> {
+  const results = await Promise.allSettled(
+    clients.map((client) => client.end({ timeout: 1 })),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : []
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'failed to close change-currency race client(s)');
+  }
+}
+
+/** Wait until at least `min` backends in this database are actively blocked on
+ *  a lock. The idle-in-transaction holder never matches — only the racers
+ *  queued behind it can, which makes the release deterministic. */
+async function waitForBlockedBackends(min: number): Promise<void> {
+  const admin = getTestDb();
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const rows = await admin.execute<{ waiting: number }>(sql`
+      SELECT count(*)::int AS waiting
+      FROM pg_catalog.pg_stat_activity
+      WHERE datname = current_database()
+        AND state = 'active'
+        AND cardinality(pg_catalog.pg_blocking_pids(pid)) > 0
+    `);
+    if ((rows[0]?.waiting ?? 0) >= min) return;
+    if (Date.now() > deadline) {
+      throw new Error(`expected >= ${min} lock-blocked backends within 10s`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function errorCode(result: PromiseSettledResult<unknown>): string | undefined {
+  if (result.status !== 'rejected') return undefined;
+  const reason = result.reason as { code?: string };
+  return reason?.code;
+}
+
+describe.runIf(RUN)('change-currency vs line-writer race (#3774)', () => {
+  it('quote: addManualLine racing changeQuoteCurrency serializes on the quote row — never a mixed-currency line', async () => {
+    const f = await seedFixture(); // EUR org
+    const quote = await withDbAccessContext(ctx(f), () =>
+      quoteSvc.createQuote({ orgId: f.orgId }, actor(f)));
+    expect(quote.currencyCode).toBe('EUR');
+
+    const locksHeld = deferred<void>();
+    const releaseLocks = deferred<void>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    let settled: PromiseSettledResult<unknown>[] | undefined;
+    try {
+      // Barrier: pre-hold the QUOTE row so both racers queue behind it.
+      holderWork = holder.begin(async (htx) => {
+        await htx`SELECT id FROM public.quotes WHERE id = ${quote.id} FOR UPDATE`;
+        locksHeld.resolve();
+        await releaseLocks.promise;
+      });
+      await locksHeld.promise;
+
+      // 3 × 33.35 = 100.05 — rounds to '100.05' under EUR but '100.00' under
+      // JPY, so the persisted lineTotal proves WHICH stamp the writer saw.
+      const addLine = withDbAccessContext(ctx(f), () =>
+        quoteSvc.addManualLine(quote.id, {
+          sourceType: 'manual', name: 'Discriminator', description: null, quantity: 3, unitPrice: 33.35,
+          taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false,
+        } as never, actor(f)));
+      const change = withDbAccessContext(ctx(f), () =>
+        quoteSvc.changeQuoteCurrency(quote.id, { currencyCode: 'JPY', clearLines: false }, actor(f)));
+      // BOTH must be lock-waiting on the quote row. Pre-fix the line writer
+      // used an unlocked read + bare insert and never blocked here.
+      await waitForBlockedBackends(2);
+      releaseLocks.resolve();
+      await holderWork;
+      settled = await Promise.allSettled([addLine, change]);
+    } finally {
+      releaseLocks.resolve();
+      if (holderWork) await Promise.allSettled([holderWork]);
+      await closeRaceClients(holder);
+    }
+
+    const [addResult, changeResult] = settled!;
+    // The add always succeeds: the quote stays a draft in every interleaving.
+    expect(addResult!.status).toBe('fulfilled');
+
+    const persisted = await withSystemDbAccessContext(async () => {
+      const [q] = await db.select({ currencyCode: quotes.currencyCode, subtotal: quotes.subtotal })
+        .from(quotes).where(eq(quotes.id, quote.id)).limit(1);
+      const lines = await db.select({ quantity: quoteLines.quantity, unitPrice: quoteLines.unitPrice, lineTotal: quoteLines.lineTotal })
+        .from(quoteLines).where(eq(quoteLines.quoteId, quote.id));
+      return { q: q!, lines };
+    });
+
+    // THE invariant: every persisted line was totaled under the quote's
+    // CURRENT stamp — a JPY quote can never carry an EUR-rounded line.
+    for (const line of persisted.lines) {
+      expect(line.lineTotal).toBe(computeLineTotal(line.quantity, line.unitPrice, persisted.q.currencyCode));
+    }
+
+    if (changeResult!.status === 'rejected') {
+      // Line landed first: the restamp saw it and refused (CURRENCY_LOCKED).
+      expect(errorCode(changeResult!)).toBe('CURRENCY_LOCKED');
+      expect(persisted.q.currencyCode).toBe('EUR');
+      expect(persisted.lines).toHaveLength(1);
+      expect(persisted.lines[0]!.lineTotal).toBe('100.05');
+    } else {
+      // Restamp won: the line writer re-read the NEW currency off the locked
+      // row and rounded to whole yen.
+      expect(persisted.q.currencyCode).toBe('JPY');
+      expect(persisted.lines).toHaveLength(1);
+      expect(persisted.lines[0]!.lineTotal).toBe('100.00');
+    }
+  }, 30_000);
+
+  it('contract: addContractLineToContract racing changeContractCurrency serializes on the contract row', async () => {
+    const f = await seedFixture(); // EUR org
+    const contract = await withDbAccessContext(ctx(f), () =>
+      contractSvc.createContract({
+        orgId: f.orgId, name: 'Race MSA', billingTiming: 'advance', intervalMonths: 1,
+        startDate: new Date().toISOString().slice(0, 10),
+      }, actor(f)));
+    expect(contract.currencyCode).toBe('EUR');
+
+    const locksHeld = deferred<void>();
+    const releaseLocks = deferred<void>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    let settled: PromiseSettledResult<unknown>[] | undefined;
+    try {
+      holderWork = holder.begin(async (htx) => {
+        await htx`SELECT id FROM public.contracts WHERE id = ${contract.id} FOR UPDATE`;
+        locksHeld.resolve();
+        await releaseLocks.promise;
+      });
+      await locksHeld.promise;
+
+      const addLine = withDbAccessContext(ctx(f), () =>
+        contractSvc.addContractLineToContract(contract.id, {
+          lineType: 'manual', description: 'Managed services', unitPrice: '500.00',
+          taxable: false, manualQuantity: '1',
+        } as never, actor(f)));
+      const change = withDbAccessContext(ctx(f), () =>
+        contractSvc.changeContractCurrency(contract.id, { currencyCode: 'JPY', clearLines: false }, actor(f)));
+      // Pre-fix the line writer never blocked on the contract row; this
+      // barrier is the regression proof that both now serialize on it.
+      await waitForBlockedBackends(2);
+      releaseLocks.resolve();
+      await holderWork;
+      settled = await Promise.allSettled([addLine, change]);
+    } finally {
+      releaseLocks.resolve();
+      if (holderWork) await Promise.allSettled([holderWork]);
+      await closeRaceClients(holder);
+    }
+
+    const [addResult, changeResult] = settled!;
+    // The add always succeeds (draft contracts are line-editable either way).
+    expect(addResult!.status).toBe('fulfilled');
+
+    const persisted = await withSystemDbAccessContext(async () => {
+      const [c] = await db.select({ currencyCode: contracts.currencyCode })
+        .from(contracts).where(eq(contracts.id, contract.id)).limit(1);
+      const lines = await db.select({ id: contractLines.id })
+        .from(contractLines).where(eq(contractLines.contractId, contract.id));
+      return { c: c!, lines };
+    });
+    expect(persisted.lines).toHaveLength(1);
+
+    if (changeResult!.status === 'rejected') {
+      // Line landed first: the restamp saw it under the lock and refused —
+      // pre-fix this interleaving restamped anyway (phantom line: a JPY
+      // contract keeping a line priced in EUR with a success response).
+      expect(errorCode(changeResult!)).toBe('CURRENCY_LOCKED');
+      expect(persisted.c.currencyCode).toBe('EUR');
+    } else {
+      // Restamp won on the empty draft; the line writer then re-read the
+      // locked row and landed its line on the JPY contract.
+      expect(persisted.c.currencyCode).toBe('JPY');
+    }
+  }, 30_000);
 });
