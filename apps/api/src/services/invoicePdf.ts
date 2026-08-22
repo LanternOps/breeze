@@ -453,6 +453,13 @@ export async function getInvoicePdf(invoiceId: string): Promise<Buffer | null> {
 // Email delivery
 // ---------------------------------------------------------------------------
 
+/** Why the best-effort email step did not deliver. `send_failed` is reachable
+ *  only on the re-send path: a first send lets a transport throw propagate
+ *  (the caller is mid-issue and must learn the send failed), while a re-send
+ *  changes no invoice state and so has nothing to roll back — reporting the
+ *  failure honestly beats a 500 on an invoice that is already issued. */
+export type SendInvoiceEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed';
+
 /** Result of a send attempt: the (issued) invoice plus an honest signal of
  *  whether an email was actually dispatched. `emailed:false` means the invoice
  *  IS issued (sent_at stamped, invoice.sent emitted) but no email left the box,
@@ -460,7 +467,28 @@ export async function getInvoicePdf(invoiceId: string): Promise<Buffer | null> {
 export interface SendInvoiceResult {
   invoice: InvoiceRow;
   emailed: boolean;
-  reason?: 'no_email_service' | 'no_billing_contact';
+  reason?: SendInvoiceEmailReason;
+  /** Addresses the envelope actually went to (empty when nothing was sent). */
+  recipients: string[];
+}
+
+/**
+ * Composer fields for the customer email, shared by the send and re-send paths
+ * and mirroring `SendQuoteEmailOptions`. Every field is optional: an options-less
+ * call reproduces the classic "email the org billing contact with the PDF"
+ * behaviour, which is what bulk-send, the MCP tools and the contract worker do.
+ */
+export interface SendInvoiceEmailOptions {
+  /** Explicit recipients — override the org billing-contact fallback. */
+  to?: string[];
+  /** Extra recipients on the same envelope. */
+  cc?: string[];
+  /** Overrides the default "Invoice <number> from <partner>" subject. */
+  subject?: string;
+  /** Personal note rendered above the amounts in the customer email. */
+  message?: string;
+  /** false skips the PDF attachment (and its "a copy is attached" copy). */
+  includePdf?: boolean;
 }
 
 /**
@@ -488,14 +516,124 @@ export function buildInvoiceEmailAmounts(inv: {
 }
 
 /**
+ * Render (if needed) and deliver the customer invoice email.
+ *
+ * Shared by `sendInvoiceEmail` and `resendInvoiceEmail` — extracted so the two
+ * paths can never drift on the attachment, the branded envelope, the
+ * deposit-aware amounts or the recipient precedence: the details that decide
+ * what a customer actually receives. Mirrors `deliverQuoteEmail`
+ * (services/quoteLifecycle.ts).
+ *
+ * Delivery is best-effort by contract on the RE-SEND path only: `swallowThrow`
+ * turns a transport failure into `reason: 'send_failed'` so an invoice that is
+ * already issued isn't reported as a 500. A first send leaves it false — the
+ * caller is mid-issue and a silent swallow there would mark an invoice sent
+ * with nobody any the wiser.
+ */
+async function deliverInvoiceEmail(
+  invoice: InvoiceRow,
+  opts: SendInvoiceEmailOptions,
+  { swallowThrow }: { swallowThrow: boolean },
+): Promise<{ emailed: boolean; reason?: SendInvoiceEmailReason; recipients: string[] }> {
+  const invoiceId = invoice.id;
+
+  // Ensure the PDF exists (render synchronously if absent). Skipped entirely
+  // when the composer dropped the attachment — there is nothing to attach and
+  // no reason to pay for a render.
+  const includePdf = opts.includePdf !== false;
+  let pdf: Buffer | null = null;
+  if (includePdf) {
+    pdf = await getInvoicePdf(invoiceId);
+    if (!pdf) {
+      await renderInvoicePdf(invoiceId);
+      pdf = await getInvoicePdf(invoiceId);
+    }
+  }
+
+  // Resolve recipient + partner name for the email body.
+  const [org] = await db.select({ billingContact: organizations.billingContact, name: organizations.name }).from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
+  const [partner] = await db.select({ name: partners.name, billingEmail: partners.billingEmail, emailSignature: partners.emailSignature }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  const billingRecipient = resolveBillingEmail(org?.billingContact);
+  // Composer picks win; the org's billing contact is the fallback so a bare
+  // send keeps working exactly as before. Normalized here (not only in the
+  // route's zod schema) so a service-layer caller — MCP, bulk send — cannot
+  // put a differently-cased or duplicated address on the envelope.
+  const normalizedTo = Array.from(new Set(
+    (opts.to ?? []).map((email) => email.trim().toLowerCase()).filter((email) => email.length > 0),
+  ));
+  const recipients = normalizedTo.length > 0 ? normalizedTo : (billingRecipient ? [billingRecipient] : []);
+  const cc = Array.from(new Set(
+    (opts.cc ?? []).map((email) => email.trim().toLowerCase()).filter((email) => email.length > 0),
+  ));
+
+  const emailService = getEmailService();
+  if (!emailService) {
+    console.warn(`[invoicePdf] Email not configured — invoice ${invoiceId} issued but not emailed`);
+    return { emailed: false, reason: 'no_email_service', recipients: [] };
+  }
+  if (recipients.length === 0) {
+    console.warn(`[invoicePdf] No billing email for org ${invoice.orgId} — invoice ${invoiceId} issued but not emailed`);
+    return { emailed: false, reason: 'no_billing_contact', recipients: [] };
+  }
+
+  // The invoice detail page lives at <portalBase>/invoices/<id>; portalBase()
+  // handles the PUBLIC_PORTAL_URL → app-origin fallback chain and appends the
+  // portal base path to app-origin fallbacks (previously this inline chain
+  // emitted links missing /portal when PUBLIC_PORTAL_URL was unset).
+  const portalLink = `${portalBase()}/invoices/${invoiceId}`;
+  // This IS the "Request balance payment" action for deposit invoices: the money
+  // fields reflect the deposit-vs-balance split so the email states what's owed
+  // NOW, not just the invoice total (which may already be partially covered).
+  const amounts = buildInvoiceEmailAmounts(invoice);
+  const template = buildInvoiceTemplate({
+    invoiceNumber: invoice.invoiceNumber ?? '',
+    partnerName: partner?.name ?? 'your provider',
+    total: amounts.total,
+    dueDate: formatDate(invoice.dueDate),
+    portalUrl: portalLink,
+    amountDueNow: amounts.amountDueNow,
+    amountPaid: amounts.amountPaid,
+    subject: opts.subject,
+    message: opts.message,
+    pdfAttached: includePdf && pdf != null,
+    signature: partner?.emailSignature ?? undefined,
+  });
+  try {
+    await emailService.sendEmail({
+      to: recipients,
+      cc: cc.length > 0 ? cc : undefined,
+      // MSP-branded envelope, mirroring the quote send path: display name
+      // "<Partner> via Breeze" on the platform address (SPF/DKIM stays
+      // aligned), replies routed to the MSP's billing inbox.
+      from: partner?.name ? emailService.fromWithDisplayName(`${partner.name} via Breeze`) : undefined,
+      replyTo: partner?.billingEmail?.trim() || undefined,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      attachments: pdf ? [{ filename: `${invoice.invoiceNumber ?? 'invoice'}.pdf`, content: pdf, contentType: 'application/pdf' }] : undefined,
+    });
+  } catch (err) {
+    if (!swallowThrow) throw err;
+    console.error(`[invoicePdf] re-send email failed for invoice ${invoiceId}:`, err);
+    return { emailed: false, reason: 'send_failed', recipients };
+  }
+  return { emailed: true, recipients };
+}
+
+/**
  * Issue the invoice if it is still a draft, ensure a PDF artifact exists
  * (rendered synchronously — the email path must NOT depend on the async worker),
  * email it to the org billing contact with the PDF attached, and stamp sent_at.
  * Returns { emailed } so callers can tell the user the truth when the email
  * could not be dispatched (no email service / no billing contact) — issuance
  * still succeeds in that case (the invoice IS issued; we just couldn't email it).
+ *
+ * `opts` carries the composer fields when a human sent this from the web UI;
+ * every caller that passes nothing gets the historical behaviour unchanged.
  */
-export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): Promise<SendInvoiceResult> {
+export async function sendInvoiceEmail(
+  invoiceId: string, actor: InvoiceActor, opts: SendInvoiceEmailOptions = {},
+): Promise<SendInvoiceResult> {
   const { issueInvoice } = await import('./invoiceService');
 
   // 1. Issue if still draft. issueInvoice asserts draft but intentionally does
@@ -515,68 +653,16 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
     if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   }
 
-  // 2. Ensure the PDF exists (render synchronously if absent).
-  let pdf = await getInvoicePdf(invoiceId);
-  if (!pdf) {
-    await renderInvoicePdf(invoiceId);
-    pdf = await getInvoicePdf(invoiceId);
-  }
-
-  // 3. Resolve recipient + partner name for the email body.
-  const [org] = await db.select({ billingContact: organizations.billingContact, name: organizations.name }).from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
-  const [partner] = await db.select({ name: partners.name, billingEmail: partners.billingEmail }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
-  const recipient = resolveBillingEmail(org?.billingContact);
-
-  // 4. Send (graceful no-op if email is not configured or no recipient is known).
-  //    Track whether an email actually went out so the caller can report honestly.
-  const emailService = getEmailService();
-  let emailed = false;
-  let reason: SendInvoiceResult['reason'];
-  if (emailService && recipient) {
-    // The invoice detail page lives at <portalBase>/invoices/<id>; portalBase()
-    // handles the PUBLIC_PORTAL_URL → app-origin fallback chain and appends the
-    // portal base path to app-origin fallbacks (previously this inline chain
-    // emitted links missing /portal when PUBLIC_PORTAL_URL was unset).
-    const portalLink = `${portalBase()}/invoices/${invoiceId}`;
-    // This IS the "Request balance payment" action for deposit invoices: the money
-    // fields reflect the deposit-vs-balance split so the email states what's owed
-    // NOW, not just the invoice total (which may already be partially covered).
-    const amounts = buildInvoiceEmailAmounts(invoice);
-    const template = buildInvoiceTemplate({
-      invoiceNumber: invoice.invoiceNumber ?? '',
-      partnerName: partner?.name ?? 'your provider',
-      total: amounts.total,
-      dueDate: formatDate(invoice.dueDate),
-      portalUrl: portalLink,
-      amountDueNow: amounts.amountDueNow,
-      amountPaid: amounts.amountPaid,
-    });
-    await emailService.sendEmail({
-      to: recipient,
-      // MSP-branded envelope, mirroring the quote send path: display name
-      // "<Partner> via Breeze" on the platform address (SPF/DKIM stays
-      // aligned), replies routed to the MSP's billing inbox.
-      from: partner?.name ? emailService.fromWithDisplayName(`${partner.name} via Breeze`) : undefined,
-      replyTo: partner?.billingEmail?.trim() || undefined,
-      subject: template.subject,
-      html: template.html,
-      text: template.text,
-      attachments: pdf ? [{ filename: `${invoice.invoiceNumber ?? 'invoice'}.pdf`, content: pdf, contentType: 'application/pdf' }] : undefined,
-    });
-    emailed = true;
-  } else if (!emailService) {
-    reason = 'no_email_service';
-    console.warn(`[invoicePdf] Email not configured — invoice ${invoiceId} issued but not emailed`);
-  } else {
-    reason = 'no_billing_contact';
-    console.warn(`[invoicePdf] No billing email for org ${invoice.orgId} — invoice ${invoiceId} issued but not emailed`);
-  }
+  // 2-4. Ensure the PDF, resolve recipients, send (graceful no-op if email is
+  //      not configured or no recipient is known).
+  const { emailed, reason, recipients } = await deliverInvoiceEmail(invoice, opts, { swallowThrow: false });
 
   // 5. Stamp sent_at. This is the SOLE place sent_at is set — issueInvoice
   //    leaves it null on purpose so a plain Issue reads "Issued", and only an
   //    explicit send (this path) marks it. sent_at means "send attempted",
   //    so it's stamped even when no email service / billing contact exists
-  //    (see the emailed:false case + invoicePdf.integration.test).
+  //    (see the emailed:false case + invoicePdf.integration.test). A RE-SEND
+  //    deliberately does NOT re-stamp it — see resendInvoiceEmail.
   await db.update(invoices).set({ sentAt: new Date(), updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
 
   // 6. Emit the invoice.sent lifecycle event (spec §16). The send action has
@@ -586,7 +672,55 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
   await emitInvoiceEvent({ type: 'invoice.sent', invoiceId, orgId: invoice.orgId, partnerId: invoice.partnerId, actorUserId: actor.userId });
 
   const [updated] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
-  return { invoice: updated!, emailed, reason };
+  return { invoice: updated!, emailed, reason, recipients };
+}
+
+/**
+ * Re-email an already-issued invoice — the bounced address, the deleted mail,
+ * the "can you send that again?" call.
+ *
+ * Deliberately NOT a second send. It writes NOTHING: `sent_at` stays pinned to
+ * the original issue (it means "when this invoice was first put in front of the
+ * customer", and a re-send is the same document, not a new one), no
+ * `invoice.sent` lifecycle event is re-emitted, and the number, snapshots and
+ * status are untouched. Mirrors `resendQuote` (services/quoteLifecycle.ts).
+ *
+ * Refused for a DRAFT (nothing has been issued to re-send) and for a VOID
+ * invoice (emailing a customer a demand we have already cancelled). A PAID
+ * invoice IS re-sendable: "send me a copy for our records" is the single most
+ * common reason a customer asks, and unlike a quote's accept link the invoice
+ * email dispenses no credential — the portal link is gated on a portal login.
+ *
+ * Delivery failures are swallowed into `reason` rather than thrown: the invoice
+ * is already issued, so there is no state to roll back, and a 500 here would
+ * tell the tech "could not re-send" for a message that may well have gone out.
+ */
+export async function resendInvoiceEmail(
+  invoiceId: string, actor: InvoiceActor, opts: SendInvoiceEmailOptions = {},
+): Promise<SendInvoiceResult> {
+  const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+
+  // Org-access backstop (defense-in-depth over RLS). 404 not 403 — don't leak
+  // existence across tenants.
+  if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(invoice.orgId)) {
+    throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  }
+
+  if (invoice.status === 'draft') {
+    throw new InvoiceServiceError('This invoice has not been issued yet — issue it before re-sending', 409, 'INVALID_STATE');
+  }
+  if (invoice.status === 'void') {
+    throw new InvoiceServiceError('Cannot re-send a void invoice', 409, 'INVALID_STATE');
+  }
+  if (!invoice.invoiceNumber) {
+    // An issued invoice always has a number (issueInvoice allocates one on the
+    // way through). Missing here means the row was tampered with or half-migrated.
+    throw new InvoiceServiceError('This invoice has no invoice number and cannot be re-sent', 409, 'INVALID_STATE');
+  }
+
+  const { emailed, reason, recipients } = await deliverInvoiceEmail(invoice, opts, { swallowThrow: true });
+  return { invoice, emailed, reason, recipients };
 }
 
 /** Pull an email address out of the organizations.billing_contact JSONB blob. */

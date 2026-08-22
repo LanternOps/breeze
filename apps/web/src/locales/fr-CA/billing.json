@@ -1393,6 +1393,25 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "À",
+      "toPlaceholder": "facturation@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Objet",
+      "subjectPlaceholder": "Facture {{number}} de votre fournisseur",
+      "subjectPlaceholderNoNumber": "Votre facture",
+      "messageLabel": "Message (facultatif)",
+      "messagePlaceholder": "Ajoutez une courte note pour le client…",
+      "includePdfLabel": "Joindre le PDF de la facture",
+      "signaturePreviewLabel": "Votre signature sera ajoutée :",
+      "invalidEmail": "Adresse courriel non valide : {{addresses}}",
+      "tooManyRecipients": "Jusqu’à {{max}} adresses.",
+      "recipientRequired": "Ajoutez au moins un destinataire.",
+      "noBillingContactHint": "Cette entreprise n’a pas encore de contact de facturation — <orgLink>ajoutez-en un</orgLink> ou saisissez une adresse ci-dessus."
+    },
+    "copyPaymentLink": "Copier le lien de paiement",
+    "copyingPaymentLink": "Copie en cours…",
     "deleteConfirm": {
       "message": "Cette action supprime définitivement la facture brouillon. Elle est irréversible.",
       "title": "Supprimer la facture brouillon"
@@ -1404,6 +1423,9 @@
     "downloadPdfError": "Impossible de télécharger le PDF de la facture.",
     "issue": "Émettre",
     "issueAndSend": "Émettre et envoyer",
+    "issueBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la, puis émettez.",
+    "issueCanceledSaveFailed": "Une modification n'a pas pu être enregistrée, l'émission a donc été annulée. Corrigez le champ signalé et réessayez.",
+    "issueCanceledStillSaving": "Vos modifications sont toujours en cours d'enregistrement — l'émission a été annulée. Réessayez une fois tout enregistré.",
     "issueError": "Impossible d'émettre la facture.",
     "issueNoEmailWarning": "Facture émise — mais aucun courriel n'a été envoyé (aucun contact de facturation / courriel non configuré)",
     "issueSendConfirm": {
@@ -1416,12 +1438,21 @@
     "issueSuccess": "Facture émise",
     "issuing": "Émission…",
     "noVisibleLineHint": "Ajoutez au moins une ligne visible par le client pour émettre.",
+    "paymentLinkCopyFailed": "Copie automatique impossible. Lien de paiement : {{url}}",
     "preparing": "Préparation…",
+    "resend": "Renvoyer",
+    "resendConfirm": {
+      "title": "Renvoyer cette facture?",
+      "message": "Une autre copie de {{amount}} sera envoyée à {{customer}}. Rien ne change sur la facture : même numéro, mêmes dates, mêmes montants."
+    },
+    "resendSuccess": "Facture renvoyée",
+    "resending": "Envoi en cours…",
     "savingHint": "Enregistrement des modifications… L'émission sera disponible une fois tout enregistré.",
     "savingTitle": "Enregistrement de vos modifications — l'émission sera disponible une fois tout enregistré.",
-    "issueCanceledSaveFailed": "Une modification n'a pas pu être enregistrée, l'émission a donc été annulée. Corrigez le champ signalé et réessayez.",
-    "issueCanceledStillSaving": "Vos modifications sont toujours en cours d'enregistrement — l'émission a été annulée. Réessayez une fois tout enregistré.",
-    "issueBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la, puis émettez.",
+    "sendConfirm": {
+      "title": "Envoyer cette facture?",
+      "message": "La facture de {{amount}} sera envoyée par courriel à {{customer}}."
+    },
     "unsavedHint": "« {{field}} » contient une modification non enregistrée — l'émission sera disponible une fois enregistrée.",
     "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l'émission sera disponible une fois enregistrée."
   },

@@ -1393,6 +1393,25 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "Para",
+      "toPlaceholder": "facturacion@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Asunto",
+      "subjectPlaceholder": "Factura {{number}} de su proveedor",
+      "subjectPlaceholderNoNumber": "Su factura",
+      "messageLabel": "Mensaje (opcional)",
+      "messagePlaceholder": "Agregue una nota breve para el cliente…",
+      "includePdfLabel": "Adjuntar el PDF de la factura",
+      "signaturePreviewLabel": "Se agregará su firma:",
+      "invalidEmail": "Dirección de correo no válida: {{addresses}}",
+      "tooManyRecipients": "Hasta {{max}} direcciones.",
+      "recipientRequired": "Agregue al menos un destinatario.",
+      "noBillingContactHint": "Esta empresa aún no tiene contacto de facturación: <orgLink>agregue uno</orgLink> o escriba una dirección arriba."
+    },
+    "copyPaymentLink": "Copiar enlace de pago",
+    "copyingPaymentLink": "Copiando…",
     "deleteConfirm": {
       "message": "Esto elimina permanentemente el borrador de la factura. Esto no se puede deshacer.",
       "title": "Eliminar borrador de factura"
@@ -1404,6 +1423,9 @@
     "downloadPdfError": "No se pudo descargar la factura PDF.",
     "issue": "Emitir",
     "issueAndSend": "Emitir y enviar",
+    "issueBlockedUnsaved": "«{{field}}» tiene un cambio sin guardar. Corríjalo allí y luego emita.",
+    "issueCanceledSaveFailed": "Un cambio no se pudo guardar, por lo que se canceló la emisión. Corrija el campo resaltado e inténtelo de nuevo.",
+    "issueCanceledStillSaving": "Sus cambios aún se están guardando; la emisión se canceló. Inténtelo de nuevo cuando todo esté guardado.",
     "issueError": "No se pudo emitir la factura.",
     "issueNoEmailWarning": "Factura emitida, pero no se envió ningún correo electrónico (no hay contacto de facturación/correo electrónico no configurado)",
     "issueSendConfirm": {
@@ -1416,12 +1438,21 @@
     "issueSuccess": "Factura emitida",
     "issuing": "Emitiendo…",
     "noVisibleLineHint": "Agregue al menos una línea visible para el cliente para emitir.",
+    "paymentLinkCopyFailed": "No se pudo copiar automáticamente. Enlace de pago: {{url}}",
     "preparing": "Preparando…",
+    "resend": "Reenviar",
+    "resendConfirm": {
+      "title": "¿Reenviar esta factura?",
+      "message": "Se enviará otra copia por {{amount}} a {{customer}}. La factura no cambia: mismo número, mismas fechas, mismos montos."
+    },
+    "resendSuccess": "Factura reenviada",
+    "resending": "Enviando…",
     "savingHint": "Guardando cambios… Emitir se desbloqueará cuando todo esté guardado.",
     "savingTitle": "Guardando sus cambios: Emitir se desbloqueará cuando todo esté guardado.",
-    "issueCanceledSaveFailed": "Un cambio no se pudo guardar, por lo que se canceló la emisión. Corrija el campo resaltado e inténtelo de nuevo.",
-    "issueCanceledStillSaving": "Sus cambios aún se están guardando; la emisión se canceló. Inténtelo de nuevo cuando todo esté guardado.",
-    "issueBlockedUnsaved": "«{{field}}» tiene un cambio sin guardar. Corríjalo allí y luego emita.",
+    "sendConfirm": {
+      "title": "¿Enviar esta factura?",
+      "message": "Se enviará la factura por {{amount}} por correo a {{customer}}."
+    },
     "unsavedHint": "«{{field}}» tiene un cambio sin guardar: emitir se desbloqueará cuando se guarde.",
     "unsavedTitle": "«{{field}}» tiene un cambio sin guardar: emitir se desbloqueará cuando se guarde."
   },

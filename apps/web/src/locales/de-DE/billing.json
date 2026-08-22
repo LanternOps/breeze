@@ -1393,6 +1393,25 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "An",
+      "toPlaceholder": "buchhaltung@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Betreff",
+      "subjectPlaceholder": "Rechnung {{number}} von Ihrem Dienstleister",
+      "subjectPlaceholderNoNumber": "Ihre Rechnung",
+      "messageLabel": "Nachricht (optional)",
+      "messagePlaceholder": "Kurze Notiz für den Kunden hinzufügen…",
+      "includePdfLabel": "Rechnungs-PDF anhängen",
+      "signaturePreviewLabel": "Ihre Signatur wird angehängt:",
+      "invalidEmail": "Keine gültige E-Mail-Adresse: {{addresses}}",
+      "tooManyRecipients": "Maximal {{max}} Adressen.",
+      "recipientRequired": "Mindestens einen Empfänger angeben.",
+      "noBillingContactHint": "Dieses Unternehmen hat noch keinen Rechnungskontakt – <orgLink>einen hinzufügen</orgLink> oder oben eine Adresse eingeben."
+    },
+    "copyPaymentLink": "Zahlungslink kopieren",
+    "copyingPaymentLink": "Wird kopiert…",
     "deleteConfirm": {
       "message": "Dadurch wird der Rechnungsentwurf endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
       "title": "Rechnungsentwurf löschen"
@@ -1404,6 +1423,9 @@
     "downloadPdfError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
     "issue": "Ausstellen",
     "issueAndSend": "Ausstellen und senden",
+    "issueBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und stellen Sie dann aus.",
+    "issueCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Ausstellen abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
+    "issueCanceledStillSaving": "Ihre Änderungen werden noch gespeichert – das Ausstellen wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist.",
     "issueError": "Rechnung konnte nicht ausgestellt werden.",
     "issueNoEmailWarning": "Rechnung ausgestellt – aber keine E-Mail gesendet (kein Rechnungskontakt/E-Mail nicht konfiguriert)",
     "issueSendConfirm": {
@@ -1416,12 +1438,21 @@
     "issueSuccess": "Rechnung ausgestellt",
     "issuing": "Wird ausgestellt…",
     "noVisibleLineHint": "Mindestens eine für Kunden sichtbare Position zum Ausstellen hinzufügen.",
+    "paymentLinkCopyFailed": "Automatisches Kopieren nicht möglich. Zahlungslink: {{url}}",
     "preparing": "Vorbereiten…",
+    "resend": "Erneut senden",
+    "resendConfirm": {
+      "title": "Diese Rechnung erneut senden?",
+      "message": "Eine weitere Kopie über {{amount}} wird an {{customer}} gesendet. An der Rechnung ändert sich nichts – gleiche Nummer, gleiche Daten, gleiche Beträge."
+    },
+    "resendSuccess": "Rechnung erneut gesendet",
+    "resending": "Wird gesendet…",
     "savingHint": "Änderungen werden gespeichert… Ausstellen wird freigegeben, sobald alles gespeichert ist.",
     "savingTitle": "Ihre Änderungen werden gespeichert – Ausstellen wird freigegeben, sobald alles gespeichert ist.",
-    "issueCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Ausstellen abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
-    "issueCanceledStillSaving": "Ihre Änderungen werden noch gespeichert – das Ausstellen wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist.",
-    "issueBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und stellen Sie dann aus.",
+    "sendConfirm": {
+      "title": "Diese Rechnung senden?",
+      "message": "Die Rechnung über {{amount}} wird per E-Mail an {{customer}} gesendet."
+    },
     "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist.",
     "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },

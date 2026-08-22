@@ -1393,6 +1393,25 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "A",
+      "toPlaceholder": "amministrazione@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Oggetto",
+      "subjectPlaceholder": "Fattura {{number}} dal tuo fornitore",
+      "subjectPlaceholderNoNumber": "La tua fattura",
+      "messageLabel": "Messaggio (facoltativo)",
+      "messagePlaceholder": "Aggiungi una breve nota per il cliente…",
+      "includePdfLabel": "Allega il PDF della fattura",
+      "signaturePreviewLabel": "La tua firma verrà aggiunta:",
+      "invalidEmail": "Indirizzo e-mail non valido: {{addresses}}",
+      "tooManyRecipients": "Fino a {{max}} indirizzi.",
+      "recipientRequired": "Aggiungi almeno un destinatario.",
+      "noBillingContactHint": "Questa azienda non ha ancora un contatto di fatturazione — <orgLink>aggiungine uno</orgLink> o digita un indirizzo sopra."
+    },
+    "copyPaymentLink": "Copia link di pagamento",
+    "copyingPaymentLink": "Copia in corso…",
     "deleteConfirm": {
       "message": "La fattura in bozza verrà eliminata definitivamente. L'operazione non può essere annullata.",
       "title": "Elimina fattura in bozza"
@@ -1404,6 +1423,9 @@
     "downloadPdfError": "Impossibile scaricare il PDF della fattura.",
     "issue": "Emetti",
     "issueAndSend": "Emetti e invia",
+    "issueBlockedUnsaved": "\"{{field}}\" contiene una modifica non salvata. Correggila lì, poi emetti.",
+    "issueCanceledSaveFailed": "Una modifica non è stata salvata, quindi l'emissione è stata annullata. Correggi il campo evidenziato e riprova.",
+    "issueCanceledStillSaving": "Le modifiche sono ancora in fase di salvataggio — l'emissione è stata annullata. Riprova quando tutto è salvato.",
     "issueError": "Impossibile emettere la fattura.",
     "issueNoEmailWarning": "Fattura emessa, ma nessuna email è stata inviata (nessun contatto di fatturazione / email non configurata)",
     "issueSendConfirm": {
@@ -1416,12 +1438,21 @@
     "issueSuccess": "Fattura emessa",
     "issuing": "Emissione…",
     "noVisibleLineHint": "Aggiungi almeno una riga visibile al cliente per emettere.",
+    "paymentLinkCopyFailed": "Copia automatica non riuscita. Link di pagamento: {{url}}",
     "preparing": "Preparazione…",
+    "resend": "Invia di nuovo",
+    "resendConfirm": {
+      "title": "Inviare di nuovo questa fattura?",
+      "message": "Verrà inviata un’altra copia da {{amount}} a {{customer}}. Nulla cambia nella fattura: stesso numero, stesse date, stessi importi."
+    },
+    "resendSuccess": "Fattura inviata di nuovo",
+    "resending": "Invio in corso…",
     "savingHint": "Salvataggio delle modifiche… L'emissione si sblocca quando tutto è salvato.",
     "savingTitle": "Salvataggio delle modifiche — l'emissione si sblocca quando tutto è salvato.",
-    "issueCanceledSaveFailed": "Una modifica non è stata salvata, quindi l'emissione è stata annullata. Correggi il campo evidenziato e riprova.",
-    "issueCanceledStillSaving": "Le modifiche sono ancora in fase di salvataggio — l'emissione è stata annullata. Riprova quando tutto è salvato.",
-    "issueBlockedUnsaved": "\"{{field}}\" contiene una modifica non salvata. Correggila lì, poi emetti.",
+    "sendConfirm": {
+      "title": "Inviare questa fattura?",
+      "message": "La fattura da {{amount}} verrà inviata via e-mail a {{customer}}."
+    },
     "unsavedHint": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata.",
     "unsavedTitle": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata."
   },

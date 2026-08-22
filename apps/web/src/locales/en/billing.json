@@ -1393,6 +1393,25 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "To",
+      "toPlaceholder": "billing@customer.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Subject",
+      "subjectPlaceholder": "Invoice {{number}} from your provider",
+      "subjectPlaceholderNoNumber": "Your invoice",
+      "messageLabel": "Message (optional)",
+      "messagePlaceholder": "Add a short note for the customer…",
+      "includePdfLabel": "Attach the invoice PDF",
+      "signaturePreviewLabel": "Your signature will be added:",
+      "invalidEmail": "Not a valid email address: {{addresses}}",
+      "tooManyRecipients": "Up to {{max}} addresses.",
+      "recipientRequired": "Add at least one recipient.",
+      "noBillingContactHint": "This company has no billing contact yet — <orgLink>add one</orgLink> or type an address above."
+    },
+    "copyPaymentLink": "Copy payment link",
+    "copyingPaymentLink": "Copying…",
     "deleteConfirm": {
       "message": "This permanently deletes the draft invoice. This cannot be undone.",
       "title": "Delete draft invoice"
@@ -1404,6 +1423,9 @@
     "downloadPdfError": "Could not download the invoice PDF.",
     "issue": "Issue",
     "issueAndSend": "Issue & Send",
+    "issueBlockedUnsaved": "“{{field}}” has a change that hasn’t saved. Fix it there, then Issue.",
+    "issueCanceledSaveFailed": "A change failed to save, so Issue was canceled. Fix the highlighted field and try again.",
+    "issueCanceledStillSaving": "Still saving your changes — Issue was canceled. Try again once everything is saved.",
     "issueError": "Could not issue invoice.",
     "issueNoEmailWarning": "Invoice issued — but no email was sent (no billing contact / email not configured)",
     "issueSendConfirm": {
@@ -1416,12 +1438,21 @@
     "issueSuccess": "Invoice issued",
     "issuing": "Issuing…",
     "noVisibleLineHint": "Add at least one customer-visible line to issue.",
+    "paymentLinkCopyFailed": "Couldn’t copy automatically. Payment link: {{url}}",
     "preparing": "Preparing…",
+    "resend": "Re-send",
+    "resendConfirm": {
+      "title": "Re-send this invoice?",
+      "message": "This emails another copy to {{customer}} for {{amount}}. Nothing about the invoice changes — same number, same dates, same amounts."
+    },
+    "resendSuccess": "Invoice re-sent",
+    "resending": "Sending…",
     "savingHint": "Saving changes… Issue unlocks when everything is saved.",
     "savingTitle": "Saving your changes — Issue unlocks when everything is saved.",
-    "issueCanceledSaveFailed": "A change failed to save, so Issue was canceled. Fix the highlighted field and try again.",
-    "issueCanceledStillSaving": "Still saving your changes — Issue was canceled. Try again once everything is saved.",
-    "issueBlockedUnsaved": "“{{field}}” has a change that hasn’t saved. Fix it there, then Issue.",
+    "sendConfirm": {
+      "title": "Send this invoice?",
+      "message": "This emails the invoice to {{customer}} for {{amount}}."
+    },
     "unsavedHint": "“{{field}}” has an unsaved change — Issue unlocks once it saves.",
     "unsavedTitle": "“{{field}}” has an unsaved change — Issue unlocks once it saves."
   },
