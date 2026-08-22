@@ -1,5 +1,5 @@
 import { formatMoney } from '@breeze/shared';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from '../db/schema/quotes';
 import { organizations, partners } from '../db/schema/orgs';
@@ -56,15 +56,49 @@ export interface SendQuoteEmailOptions {
 }
 
 /** Issue (if draft) + send: assign number, status→sent, sentAt, mint token, best-effort email. */
+/**
+ * Parent statuses a revision send is allowed to retire. `accepted`/`converted`
+ * are deliberately absent — those are settled outcomes with an invoice or
+ * contract behind them, and are refused with PARENT_CONVERTED instead.
+ */
+const SUPERSEDABLE = ['sent', 'viewed', 'declined', 'expired'] as const;
+
 export async function sendQuote(
   id: string,
   actor: QuoteActor,
   opts: SendQuoteEmailOptions = {},
-): Promise<{ quote: QuoteRow; emailed: boolean; emailReason?: SendQuoteEmailReason; acceptUrl: string }> {
+): Promise<{
+  quote: QuoteRow;
+  emailed: boolean;
+  emailReason?: SendQuoteEmailReason;
+  acceptUrl: string;
+  superseded?: { parentQuoteId: string; previousStatus: string };
+}> {
   const { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
     throw new QuoteServiceError(`Cannot send a quote in status ${quote.status}`, 409, 'INVALID_STATE');
+  }
+
+  // ---- Revision supersede, part 1: lock + validate the parent -------------
+  // Runs INSIDE the ambient request/system transaction so the parent flip and
+  // the child's draft→sent claim commit or roll back together. Lock order
+  // (parent first) matches acceptQuote's FOR UPDATE on the same row, so a
+  // concurrent accept and this send serialize instead of deadlocking.
+  let parentToSupersede: { id: string; status: string } | null = null;
+  if (quote.revisionOfQuoteId) {
+    const [parent] = await db.select({ id: quotes.id, status: quotes.status })
+      .from(quotes).where(eq(quotes.id, quote.revisionOfQuoteId)).limit(1).for('update');
+    if (!parent) throw new QuoteServiceError('Original quote not found', 409, 'INVALID_STATE');
+    if (parent.status === 'converted' || parent.status === 'accepted') {
+      throw new QuoteServiceError(
+        'The original quote was accepted while this revision was being drafted — it can no longer be sent',
+        409, 'PARENT_CONVERTED');
+    }
+    if (!(SUPERSEDABLE as readonly string[]).includes(parent.status)) {
+      throw new QuoteServiceError(`Cannot supersede a quote in status ${parent.status}`, 409, 'INVALID_STATE');
+    }
+    parentToSupersede = parent;
   }
 
   // Send-time contract-variable gate (Task 12): a contract block's declared
@@ -162,8 +196,19 @@ export async function sendQuote(
   // allowed to accept/decline this quote. Persist a canonical set at send time;
   // CC recipients are informational and intentionally do not gain signer power.
   const billingRecipient = resolveBillingEmail(org?.billingContact);
+  // A revision goes back to whoever received the original, not to the org's
+  // billing contact — the people already in the conversation. Explicitly
+  // org-filtered: this also runs under the send worker's SYSTEM context, where
+  // getQuoteRecipients' unfiltered read would be cross-tenant.
+  const parentRecipients = parentToSupersede
+    ? (await db.select({ email: quoteRecipients.email }).from(quoteRecipients)
+        .where(and(eq(quoteRecipients.quoteId, parentToSupersede.id), eq(quoteRecipients.orgId, quote.orgId)))
+        .orderBy(quoteRecipients.createdAt)).map((r) => r.email)
+    : [];
   const recipientEmails = Array.from(new Set(
-    (opts.to && opts.to.length > 0 ? opts.to : (billingRecipient ? [billingRecipient] : []))
+    (opts.to && opts.to.length > 0 ? opts.to
+      : parentRecipients.length > 0 ? parentRecipients
+      : (billingRecipient ? [billingRecipient] : []))
       .map((email) => email.trim().toLowerCase())
       .filter((email) => email.length > 0),
   ));
@@ -217,6 +262,25 @@ export async function sendQuote(
     throw new QuoteServiceError('Quote was already sent', 409, 'INVALID_STATE');
   }
 
+  // ---- Revision supersede, part 2: retire the parent ----------------------
+  // The predicate re-asserts the allowed set even under the lock (belt to the
+  // FOR UPDATE strap). public_link_revoked_at is the DB-authoritative
+  // revocation for the parent's public link — deliberately NO Redis revoke:
+  // Redis cannot join this transaction, and every public route loads the row.
+  // Columns left untouched on purpose: declinedAt, declineReason, expiryDate,
+  // viewedAt are the parent's historical record.
+  let supersededResult: { parentQuoteId: string; previousStatus: string } | undefined;
+  if (parentToSupersede) {
+    const flipped = await db.update(quotes)
+      .set({ status: 'superseded', publicLinkRevokedAt: now, updatedAt: now })
+      .where(and(eq(quotes.id, parentToSupersede.id), inArray(quotes.status, [...SUPERSEDABLE])))
+      .returning({ id: quotes.id });
+    if (flipped.length === 0) {
+      throw new QuoteServiceError('The original quote settled while sending the revision', 409, 'PARENT_CONVERTED');
+    }
+    supersededResult = { parentQuoteId: parentToSupersede.id, previousStatus: parentToSupersede.status };
+  }
+
   if (recipientEmails.length > 0) {
     await db.insert(quoteRecipients).values(
       recipientEmails.map((email) => ({ quoteId: id, orgId: quote.orgId, email })),
@@ -245,8 +309,16 @@ export async function sendQuote(
     documentLocale,
   };
 
+  // A revision arrives in the same thread as the original, so the default
+  // subject says it replaces something rather than reading as a duplicate
+  // first-time proposal. An explicit opts.subject always wins.
+  const effectiveOpts = parentToSupersede && !opts.subject
+    ? { ...opts, subject: `Updated proposal ${quoteNumber} from ${partnerRow?.name ?? 'your provider'}` }
+    : opts;
+
   const { emailed, emailReason } = await deliverQuoteEmail({
-    quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient, opts,
+    quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient,
+    opts: effectiveOpts,
   });
 
   // Persist THIS attempt's outcome, matching resendQuote and the scheduled-send
@@ -277,7 +349,7 @@ export async function sendQuote(
   }
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
-  return { quote: updated!, emailed, emailReason, acceptUrl };
+  return { quote: updated!, emailed, emailReason, acceptUrl, superseded: supersededResult };
 }
 
 /** The `quotes` column patch that persists a freshly-minted token's identity. */

@@ -35,6 +35,7 @@ import { captureException } from '../services/sentry';
 import { db, withSystemDbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
 import { sendQuote, type SendQuoteEmailOptions } from '../services/quoteLifecycle';
+import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { QuoteServiceError, type QuoteActor } from '../services/quoteTypes';
 
 const QUOTE_SEND_QUEUE = 'quote-send';
@@ -181,6 +182,29 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
     // out — the delayed path has no request to return `emailed:false` to.
     // (Success needs no write: the flip already cleared the marker.)
     const result = await sendQuote(quoteId, actor, emailOpts);
+    // Mirror the direct-send route's supersede audit: a scheduled send retires
+    // the parent just as permanently, and that must be traceable regardless of
+    // which path issued it. Wrapped because an audit failure must never fail a
+    // send that has already committed and emailed.
+    if (result.superseded) {
+      try {
+        await writeAuditEvent(requestLikeFromSnapshot({}), {
+          orgId: result.quote.orgId,
+          action: 'quote.superseded',
+          resourceType: 'quote',
+          resourceId: result.superseded.parentQuoteId,
+          result: 'success',
+          details: {
+            supersededByQuoteId: quoteId,
+            previousStatus: result.superseded.previousStatus,
+            revisionNumber: result.quote.revisionNumber,
+            emailed: result.emailed,
+          },
+        });
+      } catch (auditErr) {
+        console.error('[quotes] failed to audit supersede for quote', quoteId, auditErr);
+      }
+    }
     if (!result.emailed) {
       await db.update(quotes)
         .set({ sendEmailReason: result.emailReason ?? 'send_failed' })

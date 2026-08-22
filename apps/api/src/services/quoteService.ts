@@ -710,12 +710,24 @@ async function resolveQuoteLineageRoot(
 const REVISABLE_STATUSES = new Set(['sent', 'viewed', 'declined', 'expired']);
 
 /**
- * Create a linked draft revision without touching the live parent. Superseding
- * the parent on send belongs to a later wave; see
- * docs/superpowers/plans/2026-08-17-quote-revisions.md.
+ * Create a linked draft revision without touching the live parent. The parent
+ * stays live until this revision is SENT — sendQuote flips it to 'superseded'
+ * atomically with the child's draft→sent claim.
  */
 export async function reviseQuote(id: string, actor: QuoteActor) {
-  const { quote: parent } = await getQuote(id, actor);
+  const { quote: parentRow } = await getQuote(id, actor);
+  // Lock the parent for the rest of this transaction and re-read its status.
+  // getQuote's snapshot is unlocked, so a customer accept committing between
+  // that read and the clone insert would otherwise let a revision draft attach
+  // to an ACCEPTED quote — precisely the state PARENT_CONVERTED exists to
+  // prevent, and one nothing downstream would flag. Lock order (parent row
+  // first) matches acceptQuote and sendQuote's supersede, so those serialize
+  // against this instead of deadlocking. Every gate below reads the LOCKED
+  // status, never the snapshot.
+  const [locked] = await db.select({ status: quotes.status }).from(quotes)
+    .where(eq(quotes.id, parentRow.id)).limit(1).for('update');
+  if (!locked) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  const parent = { ...parentRow, status: locked.status };
   if (parent.status === 'draft') {
     throw new QuoteServiceError('This quote is still a draft — edit it directly', 409, 'INVALID_STATE');
   }
