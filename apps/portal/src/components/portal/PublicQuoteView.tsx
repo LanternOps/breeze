@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { portalApi, buildPortalApiUrl, type PublicQuoteDetail } from '@/lib/api';
+import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
@@ -153,9 +153,9 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
           lines={lines}
           currency={currency}
           imageUrl={(imageId) =>
-            buildPortalApiUrl(`/quotes/public/${encodeURIComponent(token)}/images/${imageId}`)
+            publicApiPath(`/quotes/public/${encodeURIComponent(token)}/images/${imageId}`)
           }
-          buildUrl={buildPortalApiUrl}
+          buildUrl={publicApiPath}
           taxRate={taxRate}
           showTax={showTax}
         />

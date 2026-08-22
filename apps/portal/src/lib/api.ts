@@ -99,6 +99,24 @@ function buildQueryString(query?: Record<string, string | number | undefined>): 
   return serialized ? `?${serialized}` : '';
 }
 
+/**
+ * Browser-facing API path for hrefs, image `src`, and download links that end
+ * up IN the rendered HTML. Always same-origin relative (`/api/v1/...`), so the
+ * reverse proxy routes it. `buildPortalApiUrl` below resolves the SSR-internal
+ * base (e.g. http://api:3001) for server-side fetches — rendering THAT into an
+ * href leaked the internal hostname into customer HTML and tripped a hydration
+ * mismatch on every document page.
+ */
+export function publicApiPath(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const cleanPath = normalizedPath === '/api'
+    ? ''
+    : normalizedPath.startsWith('/api/')
+      ? normalizedPath.slice(4)
+      : normalizedPath;
+  return `/api/v1${cleanPath}`;
+}
+
 export function buildPortalApiUrl(path: string): string {
   if (path.startsWith('http://') || path.startsWith('https://')) {
     return path;

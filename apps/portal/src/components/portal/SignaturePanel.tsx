@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { BTN_PRIMARY, BTN_SECONDARY, INPUT } from './ui';
 
@@ -38,7 +38,13 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
   const [touched, setTouched] = useState(false);
   const [declining, setDeclining] = useState(false);
   const [declineReason, setDeclineReason] = useState('');
-  const date = useMemo(() => today(), []);
+  // The signature date is the signer's local day, which the server can't know:
+  // SSR rendered it in the container's zone and the browser re-rendered it in
+  // the customer's, tripping a hydration mismatch across midnight. Render it
+  // only once mounted so server and first client paint agree (empty), then
+  // fill in the local date.
+  const [date, setDate] = useState('');
+  useEffect(() => setDate(today()), []);
 
   const trimmed = name.trim();
   const canSign = trimmed.length > 0 && agreed && !busy;

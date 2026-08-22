@@ -1,7 +1,7 @@
 import { withBase } from '@/lib/basePath';
 import { useState } from 'react';
 import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
-import { type QuoteDetail, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { type QuoteDetail, publicApiPath, portalApi } from '@/lib/api';
 import { shortDate } from '@/lib/format';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
@@ -192,7 +192,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
           Back to proposals
         </a>
         <a
-          href={buildPortalApiUrl(`/portal/quotes/${quote.id}/pdf`)}
+          href={publicApiPath(`/portal/quotes/${quote.id}/pdf`)}
           download={`${quote.quoteNumber ?? `quote-${quote.id}`}.pdf`}
           target="_blank"
           rel="noreferrer"
@@ -226,8 +226,8 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
           blocks={blocks}
           lines={lines}
           currency={currency}
-          imageUrl={(imageId) => buildPortalApiUrl(`/portal/quotes/${quote.id}/images/${imageId}`)}
-          buildUrl={buildPortalApiUrl}
+          imageUrl={(imageId) => publicApiPath(`/portal/quotes/${quote.id}/images/${imageId}`)}
+          buildUrl={publicApiPath}
           taxRate={taxRate}
           showTax={showTax}
         />
