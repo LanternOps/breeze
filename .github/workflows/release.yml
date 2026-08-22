@@ -16,6 +16,11 @@ env:
   GO_VERSION: '1.26.6'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Publisher every Windows signing provider must produce. Asserted by both
+  # signing jobs via .github/scripts/Verify-WindowsSignature.ps1 so a
+  # misconfigured endpoint or certificate profile cannot ship under another
+  # identity. Change here, not per job.
+  WINDOWS_SIGNING_EXPECTED_SUBJECT: LanternOps LLC
 
 # SR-007: least-privilege default for every job. Build jobs only need to read
 # the repo + exchange artifacts. Jobs that publish override this with their
@@ -1503,20 +1508,52 @@ jobs:
           path: apps/helper/breeze-helper-macos.dmg
           retention-days: 30
 
-  sign-windows-tauri:
-    name: Sign Windows Tauri Artifacts
+  resolve-windows-signing-provider:
+    name: Resolve Windows signing provider
     if: >-
       vars.ENABLE_WINDOWS_SIGNING == 'true'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      provider: ${{ steps.provider.outputs.provider }}
+    steps:
+      - name: Checkout resolver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Validate provider
+        id: provider
+        shell: bash
+        env:
+          RAW_PROVIDER: ${{ vars.WINDOWS_SIGNING_PROVIDER }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/resolve-windows-signing-provider.mjs "$RAW_PROVIDER" >> "$GITHUB_OUTPUT"
+
+  sign-windows-tauri-azure:
+    name: Sign Windows Tauri artifacts (Azure)
+    needs: [build-viewer, build-helper, resolve-windows-signing-provider]
+    if: >-
+      needs.resolve-windows-signing-provider.outputs.provider == 'azure'
+      && github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
-    needs: [build-viewer, build-helper]
     permissions:
       contents: read
       id-token: write
     environment:
       name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
+      - name: Checkout signature verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       - name: Download viewer Windows MSI
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1529,47 +1566,27 @@ jobs:
           name: breeze-helper-windows.msi
           path: staging/
 
-      # WINDOWS SIGNING PROVIDER SWITCH (#3708)
-      #
-      # `vars.WINDOWS_SIGNING_PROVIDER` selects the CA. Unset or anything other
-      # than "sslcom" means Azure, so the existing path is the default and an
-      # absent variable cannot silently disable signing.
-      #
-      # Both providers write an Authenticode signature in place over the same two
-      # staged MSIs, and the shared "Verify signatures" step below validates the
-      # result with Get-AuthenticodeSignature regardless of who produced it — so
-      # the provider swap cannot quietly ship an unsigned artifact.
-      #
-      # Stable vs prerelease certificates are selected by the job's GitHub
-      # Environment (signing-production / signing-prerelease), which is why the
-      # ssl.com path needs one step per file rather than Azure's one per
-      # file-and-profile: the environment already scopes SSLCOM_CREDENTIAL_ID.
       - name: Validate signing configuration (Azure)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' }}
         shell: pwsh
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           AZURE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERT_PROFILE_PROD: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+          AZURE_CERT_PROFILE_PRERELEASE: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
+          IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
         run: |
           $required = @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT_NAME")
-          foreach ($name in $required) {
-            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
-              throw "Missing required signing secret: $name"
-            }
+          # The certificate profile selects WHICH certificate signs. Omitting it
+          # here let a half-populated signing environment surface as an opaque
+          # failure inside azure/artifact-signing-action instead of a named
+          # missing secret.
+          if ($env:IS_PRERELEASE -eq "true") {
+            $required += "AZURE_CERT_PROFILE_PRERELEASE"
+          } else {
+            $required += "AZURE_CERT_PROFILE_PROD"
           }
-
-      - name: Validate signing configuration (SSL.com)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
-        shell: pwsh
-        env:
-          SSLCOM_USERNAME: ${{ secrets.SSLCOM_USERNAME }}
-          SSLCOM_PASSWORD: ${{ secrets.SSLCOM_PASSWORD }}
-          SSLCOM_CREDENTIAL_ID: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
-          SSLCOM_TOTP_SECRET: ${{ secrets.SSLCOM_TOTP_SECRET }}
-        run: |
-          $required = @("SSLCOM_USERNAME", "SSLCOM_PASSWORD", "SSLCOM_CREDENTIAL_ID", "SSLCOM_TOTP_SECRET")
           foreach ($name in $required) {
             if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
               throw "Missing required signing secret: $name"
@@ -1577,7 +1594,6 @@ jobs:
           }
 
       - name: Azure Login (OIDC)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' }}
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -1585,7 +1601,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Sign viewer MSI (stable profile)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && !contains(github.ref_name, '-') }}
+        if: ${{ !contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1597,7 +1613,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign viewer MSI (prerelease profile)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && contains(github.ref_name, '-') }}
+        if: ${{ contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1609,7 +1625,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign helper MSI (stable profile)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && !contains(github.ref_name, '-') }}
+        if: ${{ !contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1621,7 +1637,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign helper MSI (prerelease profile)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && contains(github.ref_name, '-') }}
+        if: ${{ contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1632,53 +1648,15 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      # SSL.com eSigner. `override: true` signs in place, matching what the Azure
-      # action does, so the staged paths the verify step checks are unchanged.
-      # No file-digest/timestamp inputs: eSigner timestamps internally rather
-      # than taking an RFC-3161 URL the way azure/artifact-signing-action does.
-      - name: Sign viewer MSI (SSL.com)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
-        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
-        with:
-          command: sign
-          username: ${{ secrets.SSLCOM_USERNAME }}
-          password: ${{ secrets.SSLCOM_PASSWORD }}
-          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
-          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
-          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi
-          override: true
-          malware_block: false
-
-      - name: Sign helper MSI (SSL.com)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
-        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
-        with:
-          command: sign
-          username: ${{ secrets.SSLCOM_USERNAME }}
-          password: ${{ secrets.SSLCOM_PASSWORD }}
-          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
-          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
-          file_path: ${{ github.workspace }}/staging/breeze-helper-windows.msi
-          override: true
-          malware_block: false
-
       - name: Verify signatures
         shell: pwsh
+        env:
+          EXPECTED_SUBJECT: ${{ env.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
         run: |
-          $targets = @(
-            (Join-Path $env:GITHUB_WORKSPACE "staging\breeze-viewer-windows.msi"),
-            (Join-Path $env:GITHUB_WORKSPACE "staging\breeze-helper-windows.msi")
-          )
-          foreach ($target in $targets) {
-            $sig = Get-AuthenticodeSignature -FilePath $target
-            if ($sig.Status -ne "Valid" -and $sig.Status -ne "UnknownError") {
-              throw "Signature validation failed for $target. Status: $($sig.Status)"
-            }
-            if ($sig.Status -eq "UnknownError") {
-              Write-Host "::warning::$target signed but root cert not yet trusted locally (Status: UnknownError)."
-            }
-            Write-Host "Verified: $target - Status: $($sig.Status) - Signer: $($sig.SignerCertificate.Subject)"
-          }
+          & .github/scripts/Verify-WindowsSignature.ps1 `
+            -Path "staging/breeze-viewer-windows.msi", "staging/breeze-helper-windows.msi" `
+            -ExpectedSubject $env:EXPECTED_SUBJECT `
+            -AllowUnpinnedLeaf
 
       - name: Upload signed viewer MSI
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -1695,6 +1673,209 @@ jobs:
           path: staging/breeze-helper-windows.msi
           overwrite: true
           retention-days: 30
+
+  sign-windows-tauri-sslcom:
+    name: Sign Windows Tauri artifacts (SSL.com)
+    needs: [build-viewer, build-helper, resolve-windows-signing-provider]
+    if: >-
+      needs.resolve-windows-signing-provider.outputs.provider == 'sslcom'
+      && github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
+    steps:
+      - name: Checkout signature verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Download viewer Windows MSI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: breeze-viewer-windows.msi
+          path: staging/
+
+      - name: Download helper Windows MSI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: breeze-helper-windows.msi
+          path: staging/
+
+      - name: Validate signing configuration (SSL.com)
+        shell: pwsh
+        env:
+          SSLCOM_USERNAME: ${{ secrets.SSLCOM_USERNAME }}
+          SSLCOM_PASSWORD: ${{ secrets.SSLCOM_PASSWORD }}
+          SSLCOM_CREDENTIAL_ID: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          SSLCOM_TOTP_SECRET: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          SSLCOM_CERT_SHA256: ${{ secrets.SSLCOM_CERT_SHA256 }}
+          SSLCOM_ENVIRONMENT_LABEL: ${{ secrets.SSLCOM_ENVIRONMENT_LABEL }}
+          EXPECTED_ENVIRONMENT: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
+        run: |
+          $required = @("SSLCOM_USERNAME", "SSLCOM_PASSWORD", "SSLCOM_CREDENTIAL_ID", "SSLCOM_TOTP_SECRET", "SSLCOM_CERT_SHA256", "SSLCOM_ENVIRONMENT_LABEL")
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              throw "Missing required signing secret: $name"
+            }
+          }
+
+          # Stable and prerelease tags MUST resolve different eSigner
+          # credentials, and the only thing that separates them is which GitHub
+          # Environment the secrets live in. Nothing about the YAML differs
+          # between the two, so if an operator adds SSLCOM_* at REPOSITORY level
+          # -- the path of least resistance, and how every AZURE_* secret is
+          # stored today -- both environments would silently resolve the same
+          # credential and a prerelease tag would be signed with the production
+          # certificate. This label can only match one environment, so putting
+          # all six at repository level fails one of them loudly instead.
+          #
+          # Scope, honestly: this catches the LIKELY mistake, not every one. An
+          # operator who scopes only this label per environment while leaving
+          # the four credentials at repository level still passes. Environment
+          # variables and environment secrets have identical override
+          # semantics, so storing it as a secret buys no extra guarantee -- it
+          # is kept alongside the credentials as a nudge, and it costs the
+          # ability to echo the value (GitHub masks it), which is why the error
+          # below names the environment rather than the label.
+          if ($env:SSLCOM_ENVIRONMENT_LABEL -ne $env:EXPECTED_ENVIRONMENT) {
+            # Do not interpolate the label: it is stored as a secret, so its
+            # value is masked in the log and would print as '***'.
+            throw "SSLCOM_ENVIRONMENT_LABEL does not match '$($env:EXPECTED_ENVIRONMENT)', the environment this job is running in. Add the SSLCOM_* secrets to the signing-production and signing-prerelease environments individually -- not to the repository -- and set SSLCOM_ENVIRONMENT_LABEL in each to that environment's own name."
+          }
+
+      # SUPPLY CHAIN: the action pin below is a 40-char commit SHA, but at
+      # runtime that action fetches CodeSignTool from a MUTABLE GitHub release
+      # asset with no checksum and executes it in this job, alongside the
+      # eSigner credentials. The pin does not cover that download. Pre-stage the
+      # archive here with a verified digest and export CODESIGNTOOL_PATH, which
+      # the action honours to skip its own fetch.
+      #
+      # JAVA_VERSION suppresses a second unverified download: the action installs
+      # Amazon Corretto resolved from a floating "latest" index (and reads, but
+      # never compares, the checksum that index publishes) whenever JAVA_VERSION
+      # is below 11. Nothing needs it -- CodeSignTool.bat runs the jdk-11.0.2
+      # bundled inside the verified archive.
+      - name: Stage CodeSignTool (pinned + checksum-verified)
+        shell: pwsh
+        env:
+          CODESIGNTOOL_URL: https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.0/CodeSignTool-v1.3.0-windows.zip
+          CODESIGNTOOL_SHA256: e22094505decbe622afe5b0c27abc618ed2ba179bd94f3450490352399d5ef2a
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $archive = Join-Path $env:RUNNER_TEMP "CodeSignTool-v1.3.0-windows.zip"
+          $target = Join-Path $env:RUNNER_TEMP "CodeSignTool-v1.3.0"
+
+          # No degraded path exists downstream: this step failing aborts the
+          # whole tag release. The digest check below makes a retry safe.
+          Invoke-WebRequest -Uri $env:CODESIGNTOOL_URL -OutFile $archive `
+            -MaximumRetryCount 3 -RetryIntervalSec 15 -TimeoutSec 900
+          $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:CODESIGNTOOL_SHA256) {
+            throw "CodeSignTool digest mismatch. Expected $($env:CODESIGNTOOL_SHA256); got $actual"
+          }
+
+          Expand-Archive -Path $archive -DestinationPath $target -Force
+          foreach ($required in @("CodeSignTool.bat", "conf", "jar", "jdk-11.0.2")) {
+            if (-not (Test-Path (Join-Path $target $required))) {
+              throw "CodeSignTool archive verified but missing expected entry: $required"
+            }
+          }
+
+          "CODESIGNTOOL_PATH=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "JAVA_VERSION=17" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # SSL.com eSigner signs each staged MSI in place. `malware_block: true`
+      # aborts the release if the eSigner malware scan flags a payload.
+      #
+      # `clean_logs` is deliberately NOT set: it is a no-op in this action.
+      # main.ts computes `path.dirname(command)` where `command` is the whole
+      # command STRING, so it truncates inside the quoted -input_file_path and
+      # deletes a nonexistent directory that `force: true` then swallows.
+      - name: Sign viewer MSI (SSL.com)
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.SSLCOM_USERNAME }}
+          password: ${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi
+          override: true
+          malware_block: true
+
+      - name: Sign helper MSI (SSL.com)
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.SSLCOM_USERNAME }}
+          password: ${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/staging/breeze-helper-windows.msi
+          override: true
+          malware_block: true
+
+      # No leaf pin on the Azure twin: Azure Artifact Signing certificates are
+      # short-lived and rotate automatically, so identity is asserted by subject
+      # there and by subject + pin here.
+      - name: Verify signatures
+        shell: pwsh
+        env:
+          EXPECTED_SUBJECT: ${{ env.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          SSLCOM_CERT_SHA256: ${{ secrets.SSLCOM_CERT_SHA256 }}
+        run: |
+          & .github/scripts/Verify-WindowsSignature.ps1 `
+            -Path "staging/breeze-viewer-windows.msi", "staging/breeze-helper-windows.msi" `
+            -ExpectedSubject $env:EXPECTED_SUBJECT `
+            -ExpectedThumbprintSha256 $env:SSLCOM_CERT_SHA256
+
+      - name: Upload signed viewer MSI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-viewer-windows.msi
+          path: staging/breeze-viewer-windows.msi
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload signed helper MSI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-helper-windows.msi
+          path: staging/breeze-helper-windows.msi
+          overwrite: true
+          retention-days: 30
+
+  sign-windows-tauri:
+    name: Windows Tauri signing convergence gate
+    needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
+    if: ${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Republished so the release manifest can record which CA vouched for the
+    # Windows artifacts. Without it a provider switch is invisible to every
+    # downstream verifier holding the manifest signing key.
+    outputs:
+      provider: ${{ needs.resolve-windows-signing-provider.outputs.provider }}
+    steps:
+      - name: Checkout convergence assertion
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Assert single-provider convergence
+        shell: bash
+        env:
+          PROVIDER: ${{ needs.resolve-windows-signing-provider.outputs.provider }}
+          AZURE_RESULT: ${{ needs.sign-windows-tauri-azure.result }}
+          SSLCOM_RESULT: ${{ needs.sign-windows-tauri-sslcom.result }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/assert-windows-signing-convergence.mjs "$PROVIDER" "$AZURE_RESULT" "$SSLCOM_RESULT"
 
   package-windows-updater:
     name: Package Windows Updater Bundle
@@ -1958,6 +2139,10 @@ jobs:
           merge-multiple: false
 
       - name: Prepare release assets
+        env:
+          # Empty when Windows signing was skipped; the manifest then simply
+          # omits the field rather than asserting a provider that never ran.
+          WINDOWS_SIGNING_PROVIDER_USED: ${{ needs.sign-windows-tauri.outputs.provider }}
         run: |
           mkdir -p release-assets
 
@@ -2105,6 +2290,12 @@ jobs:
                   return "macos-developer-id-notarization-required"
               return "release-workflow-produced"
 
+          windows_signing_provider = os.environ.get("WINDOWS_SIGNING_PROVIDER_USED", "").strip()
+          if windows_signing_provider not in ("", "azure", "sslcom"):
+              raise SystemExit(
+                  f"unexpected Windows signing provider: {windows_signing_provider!r}"
+              )
+
           assets = []
           for path in sorted(release_dir.iterdir(), key=lambda item: item.name):
               if not path.is_file() or path.name in excluded:
@@ -2123,6 +2314,14 @@ jobs:
               }
               if is_signing_input(path.name):
                   entry["intendedUse"] = "signing-input"
+              # Which CA actually vouched for this artifact. Recorded only where
+              # Authenticode is required, so a provider switch is auditable from
+              # the signed manifest rather than only from workflow logs.
+              if (
+                  entry["platformTrust"] == "windows-authenticode-required"
+                  and windows_signing_provider
+              ):
+                  entry["signingProvider"] = windows_signing_provider
               assets.append(entry)
 
           manifest = {
