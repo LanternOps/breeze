@@ -1062,7 +1062,8 @@
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+      "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
+      "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
       "available": "{{count}} mevcut",
       "cost": "maliyet {{currency}} {{amount}}",
       "endOfLife": "Hayatın sonu",
@@ -1230,7 +1231,8 @@
       "tryAgain": "Tekrar deneyin"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+      "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
+      "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
       "cost": "maliyet {{currency}} {{amount}}",
       "importAndAdd": "İçe aktar ve ekle",
       "option": "Seçenek {{number}}",

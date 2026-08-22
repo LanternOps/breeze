@@ -1062,7 +1062,8 @@
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
+      "feedPriceCurrencyUnknown": "Moeda do preço do feed desconhecida — informe um preço em {{currency}}",
+      "feedPriceIn": "O preço do feed está em {{feedCurrency}} — informe um preço em {{currency}}",
       "available": "{{count}} disponíveis",
       "cost": "custo {{currency}} {{amount}}",
       "endOfLife": "Fim de vida",
@@ -1230,7 +1231,8 @@
       "tryAgain": "Tentar novamente"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
+      "feedPriceCurrencyUnknown": "Moeda do preço do feed desconhecida — informe um preço em {{currency}}",
+      "feedPriceIn": "O preço do feed está em {{feedCurrency}} — informe um preço em {{currency}}",
       "cost": "custo {{currency}} {{amount}}",
       "importAndAdd": "Importar e adicionar",
       "option": "Opção {{number}}",

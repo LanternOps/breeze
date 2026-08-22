@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { pax8Search, pax8Pricing, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
-import { computeMarginBreakdown, formatMarginSummary, feedCurrencyCode, marginGuard } from '../../settings/marginMath';
-import { usePartnerCurrency } from '../../../lib/usePartnerCurrency';
+import { computeMarginBreakdown, formatMarginSummary, feedCurrencyCode, feedMatchesCurrency } from '../../settings/marginMath';
 
 function toMoney(value: string): number | null {
   if (!value.trim()) return null;
@@ -14,15 +13,20 @@ function toMoney(value: string): number | null {
 interface Props {
   blockId: string;
   busy: boolean;
+  /** The QUOTE's currency — the sell price typed here is stamped with it by
+   *  the caller, so a feed number is only prefilled/compared when the Pax8
+   *  term is priced in the same currency (no conversion, ever). */
+  currencyCode: string;
   onImportAdd: (product: Pax8Product, term: Pax8PriceOption, sellPrice: number) => void;
 }
 
-export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props) {
+export default function Pax8ProductLookup({ blockId, busy, currencyCode, onImportAdd }: Props) {
   const { t } = useTranslation('billing');
-  // Partner billing currency gates the margin preview — a Pax8 buy rate in
-  // another currency is never compared against the sell price (no conversion).
-  // No 'USD' fallback; while unknown the preview is simply not rendered.
-  const { currency: partnerCurrency } = usePartnerCurrency();
+  // Quote-currency gate: a Pax8 term priced in another (or an unknown) currency
+  // never seeds the sell field and never feeds the margin preview — the
+  // operator must type a price in the quote currency. Never a 'USD' fallback.
+  const defaultSellPrice = (opt: Pax8PriceOption | undefined): string =>
+    opt && feedMatchesCurrency(opt.currencyCode, currencyCode) ? (opt.suggestedRetailPrice ?? opt.partnerBuyRate ?? '') : '';
   const [query, setQuery] = useState('');
   const [products, setProducts] = useState<Pax8Product[]>([]);
   const [pricing, setPricing] = useState<Record<string, Pax8PriceOption[]>>({});
@@ -40,7 +44,7 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
       setPricing((s) => ({ ...s, [productId]: options }));
       setTermIndex((s) => ({ ...s, [productId]: 0 }));
       const first = options[0];
-      if (first) setPrices((s) => ({ ...s, [productId]: first.suggestedRetailPrice ?? first.partnerBuyRate ?? '' }));
+      if (first) setPrices((s) => ({ ...s, [productId]: defaultSellPrice(first) }));
     } catch {
       setPricing((s) => ({ ...s, [productId]: [] }));
     }
@@ -103,7 +107,9 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
         const cost = term?.partnerBuyRate != null ? Number(term.partnerBuyRate) : null;
         const priceVal = prices[p.pax8ProductId] ?? '';
         const parsed = toMoney(priceVal);
-        const margin = computeMarginBreakdown(cost, parsed);
+        const sameCurrency = term ? feedMatchesCurrency(term.currencyCode, currencyCode) : true;
+        const margin = sameCurrency ? computeMarginBreakdown(cost, parsed) : null;
+        const feedCurrency = feedCurrencyCode(term?.currencyCode);
         return (
           <div key={p.pax8ProductId} data-testid={`pax8-product-result-${p.pax8ProductId}`} className="rounded-md border bg-background/40 p-3 text-sm">
             <div className="font-medium">{p.name}</div>
@@ -120,14 +126,14 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
                     const next = Number(e.target.value);
                     setTermIndex((s) => ({ ...s, [p.pax8ProductId]: next }));
                     const opt = options[next];
-                    if (opt) setPrices((s) => ({ ...s, [p.pax8ProductId]: opt.suggestedRetailPrice ?? opt.partnerBuyRate ?? '' }));
+                    if (opt) setPrices((s) => ({ ...s, [p.pax8ProductId]: defaultSellPrice(opt) }));
                   }}
                   className="h-9 rounded-md border bg-background px-2 text-sm"
                 >
                   {options.map((o, i) => (
                     <option key={i} value={i}>
                       {[o.commitmentTerm, o.billingTerm].filter(Boolean).join(' / ') || t('quotes.pax8ProductLookup.option', { number: i + 1 })}
-                      {o.partnerBuyRate ? ` — ${t('quotes.pax8ProductLookup.cost', { currency: o.currencyCode ?? 'USD', amount: o.partnerBuyRate })}` : ''}
+                      {o.partnerBuyRate ? ` — ${t('quotes.pax8ProductLookup.cost', { currency: feedCurrencyCode(o.currencyCode) ?? '?', amount: o.partnerBuyRate })}` : ''}
                     </option>
                   ))}
                 </select>
@@ -152,15 +158,18 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
                 {t('quotes.pax8ProductLookup.importAndAdd')}
               </button>
             </div>
-            {margin && partnerCurrency !== null && (marginGuard(term?.currencyCode ?? null, partnerCurrency) ? (
+            {term && !sameCurrency && (
+              <p className="mt-1.5 text-xs text-muted-foreground" data-testid={`pax8-product-currency-note-${p.pax8ProductId}`}>
+                {feedCurrency
+                  ? t('quotes.pax8ProductLookup.feedPriceIn', { feedCurrency, currency: currencyCode })
+                  : t('quotes.pax8ProductLookup.feedPriceCurrencyUnknown', { currency: currencyCode })}
+              </p>
+            )}
+            {margin && (
               <p className={`mt-1.5 text-xs tabular-nums ${margin.profit < 0 ? 'text-destructive' : 'text-muted-foreground'}`} data-testid={`pax8-product-margin-${p.pax8ProductId}`}>
-                {formatMarginSummary(margin, partnerCurrency)}
+                {formatMarginSummary(margin, currencyCode)}
               </p>
-            ) : (
-              <p className="mt-1.5 text-xs text-muted-foreground" data-testid={`pax8-product-margin-unavailable-${p.pax8ProductId}`}>
-                {t('quotes.pax8ProductLookup.marginUnavailableCostIn', { currency: feedCurrencyCode(term?.currencyCode) })}
-              </p>
-            ))}
+            )}
           </div>
         );
       })}
