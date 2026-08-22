@@ -159,6 +159,10 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
     billingFrequency: mapBillingFrequency(product.billingTerm),
     unitPrice: item.unitPrice,
     costBasis: item.costBasis ?? (product.partnerBuyRate != null ? Number(product.partnerBuyRate) : undefined),
+    // B4 (#3775): partnerBuyRate is denominated in the feed currency — store it
+    // as the cost currency (real column) so margin math can refuse cross-currency
+    // comparisons. Null → omit (service defaults to the partner currency).
+    costCurrency: product.currency ? product.currency.trim().toUpperCase() : undefined,
     unitOfMeasure: 'each',
     taxable: item.taxable ?? true,
     isBundle: false,
