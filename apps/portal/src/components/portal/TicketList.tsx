@@ -24,16 +24,9 @@ export function TicketList({ tickets, error }: TicketListProps) {
 
   return (
     <div>
-      <PageHeader
-        title="Support"
-        lede="Tell us what you need — we'll take it from there."
-        action={
-          <a href={withBase('/tickets/new')} className={BTN_PRIMARY}>
-            <Plus className="h-4 w-4" />
-            New ticket
-          </a>
-        }
-      />
+      {/* No page-level "New ticket" here: the header quick action is on every
+          page, and two identical primary buttons on one screen read as noise. */}
+      <PageHeader title="Support" lede="Tell us what you need — we'll take it from there." />
 
       {tickets.length === 0 ? (
         <EmptyState icon={<Ticket className="h-10 w-10" strokeWidth={1.5} />} title="No tickets">

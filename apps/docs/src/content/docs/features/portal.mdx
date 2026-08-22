@@ -28,7 +28,7 @@ Each organization can enable or disable portal features independently through th
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `enableTickets` | `true` | Allow portal users to submit and track support tickets |
-| `enableAssetCheckout` | `true` | Allow portal users to check out and return shared devices |
+| `enableAssetCheckout` | `false` | Allow portal users to check out and return shared devices (parked: API only, no portal UI yet) |
 | `enableSelfService` | `true` | Allow portal users to view organization devices |
 | `enablePasswordReset` | `true` | Allow portal users to reset their password via email |
 
@@ -167,6 +167,10 @@ Only issued invoices appear in the portal -- drafts are never shown. The **Pay n
 ---
 
 ## Asset Checkout
+
+<Aside type="caution">
+  Parked. The checkout/check-in API and the admin toggle exist, but the customer portal does not yet offer the Check Out / Check In actions described below, so the setting defaults to off. Enabling it today only adds an "Equipment" page that mirrors Devices.
+</Aside>
 
 The asset checkout system lets portal users borrow shared devices from their organization's inventory and return them when finished.
 

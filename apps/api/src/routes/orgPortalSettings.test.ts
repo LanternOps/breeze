@@ -153,7 +153,7 @@ describe('GET /organizations/:id/portal-settings', () => {
     expect(body.data).toEqual({
       orgId: ORG_ID,
       enableTickets: true,
-      enableAssetCheckout: true,
+      enableAssetCheckout: false, // parked — API has no portal UI yet
       enableSelfService: true,
       enablePasswordReset: true,
       supportEmail: null,
