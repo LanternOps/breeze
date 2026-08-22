@@ -229,11 +229,16 @@ describe.runIf(RUN)('document_locale backfill (2026-09-01-b)', () => {
     const fr = await seedFixture('fr-FR');
     const quoteId = await legacySentQuote(fr, 'monthly');
     await attachContractBlock(fr, quoteId);
-    // Legacy accept: the quote carries no stamp, so the hash + executed PDF were
-    // computed under 'en'. Then wipe render_locale to model a pre-backfill row.
+    // Legacy accept: neither the quote nor the partner carried a non-English
+    // locale at signing, so the hash + executed PDF were computed under 'en'.
+    // (Pre-#3777 the accept path hard-coded that fallback; today it follows the
+    // partner language, which is what this fixture pins to 'en' for the accept.)
+    // Then wipe render_locale to model a pre-backfill row and restore fr-FR.
+    await setPartnerLanguage(fr.partnerId, 'en');
     const { res, renderData } = await acceptWithContract(quoteId);
     expect((await acceptanceRow(res.acceptanceId)).renderLocale).toBe('en');
     await unstampAcceptance(res.acceptanceId);
+    await setPartnerLanguage(fr.partnerId, 'fr-FR');
 
     const warnings = await runBackfill();
     expect(warnings).toContain('document-locale: stamped render_locale on 1 legacy quote_acceptances');
@@ -255,6 +260,31 @@ describe.runIf(RUN)('document_locale backfill (2026-09-01-b)', () => {
     const effectiveDate = quote.acceptedAt!.toISOString().slice(0, 10);
     const underFr = computeQuoteSha256(quote as any, blocks as any, lines as any, buildContractHashParts(blocks as any, renderData, quote as any, effectiveDate, 'fr-FR'));
     expect(underFr).not.toBe(result.storedSha256);
+  });
+
+  // #3777 post-merge review, finding 1: accept-time renderLocale must fall back
+  // to the PARTNER language, exactly like the portal/public render the signer
+  // saw — not to 'en'. Historical rows are unaffected (they carry a persisted
+  // render_locale from this very migration), which is what makes the change safe.
+  it('an UNSTAMPED quote is hashed under the partner language it was rendered in, not en', async () => {
+    const fr = await seedFixture('fr-FR');
+    const quoteId = await legacySentQuote(fr, 'monthly'); // sent then unstamped
+    expect((await quoteRow(quoteId)).documentLocale).toBeNull();
+    await attachContractBlock(fr, quoteId);
+
+    const { res, renderData } = await acceptWithContract(quoteId);
+    expect((await acceptanceRow(res.acceptanceId)).renderLocale).toBe('fr-FR');
+
+    // Verifies under the persisted locale, and the English fallback would NOT
+    // have produced this signature — the divergence the finding describes.
+    const result = await verify(res.acceptanceId);
+    expect(result).toMatchObject({ renderLocale: 'fr-FR', matches: true });
+    const quote = await quoteRow(quoteId);
+    const blocks = await sys(() => db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quoteId)).orderBy(quoteBlocks.sortOrder));
+    const lines = await sys(() => db.select().from(quoteLines).where(eq(quoteLines.quoteId, quoteId)).orderBy(quoteLines.sortOrder));
+    const effectiveDate = quote.acceptedAt!.toISOString().slice(0, 10);
+    const underEn = computeQuoteSha256(quote as any, blocks as any, lines as any, buildContractHashParts(blocks as any, renderData, quote as any, effectiveDate, 'en'));
+    expect(underEn).not.toBe(result.storedSha256);
   });
 
   it('a quote accepted AFTER stamping persists its fr-FR render locale and verifies under it', async () => {
