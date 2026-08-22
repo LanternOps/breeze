@@ -19,6 +19,9 @@ export type ContractServiceErrorCode =
   | 'CONTRACT_CREATE_FAILED'
   | 'CONTRACT_LINE_CREATE_FAILED'
   | 'NOT_A_DRAFT'
+  // Draft currency immutability (#3774): changeContractCurrency refused because
+  // contract lines exist and the caller didn't opt into clearLines.
+  | 'CURRENCY_LOCKED'
   | 'NO_LINES'
   | 'INVALID_STATE'
   | 'LINE_NOT_FOUND'

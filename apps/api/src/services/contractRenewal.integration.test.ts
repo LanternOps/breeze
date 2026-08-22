@@ -20,7 +20,7 @@ async function seedAutoRenew(opts: { nextBillingAt: string; endDate: string; not
     const [o] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: p!.id, name: 'ROrg', slug: `ro-${sfx}` }).returning({ id: organizations.id });
     const [c] = await db.insert(contracts).values({
       partnerId: p!.id, orgId: o!.id, name: 'Renew Me', status: 'active', billingTiming: 'advance',
-      intervalMonths: 1, startDate: '2026-07-01', endDate: opts.endDate, nextBillingAt: opts.nextBillingAt,
+      intervalMonths: 1, startDate: '2026-07-01', endDate: opts.endDate, nextBillingAt: opts.nextBillingAt, currencyCode: 'USD',
       autoRenew: true, renewalTermMonths: 12, renewalNoticeDays: opts.noticeDays ?? 30
     }).returning({ id: contracts.id });
     await db.insert(contractLines).values({ contractId: c!.id, orgId: o!.id, lineType: 'flat', description: 'svc', unitPrice: '500.00' });

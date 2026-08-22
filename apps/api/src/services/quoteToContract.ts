@@ -7,7 +7,7 @@ export interface QuoteForContract {
   orgId: string;
   partnerId: string;
   quoteNumber: string;
-  currencyCode: string | null;
+  currencyCode: string;
   terms: string | null;
 }
 
@@ -45,7 +45,7 @@ export interface NewContractSpec {
   intervalMonths: number;
   startDate: string;
   endDate?: string | null;
-  currencyCode?: string;
+  currencyCode: string;
   notes?: string | null;
   terms?: string | null;
   createdBy?: string | null;
@@ -96,7 +96,7 @@ export function buildContractSpecsFromQuote(
       intervalMonths: cadence.intervalMonths,
       startDate,
       endDate,
-      currencyCode: quote.currencyCode ?? 'USD',
+      currencyCode: quote.currencyCode,
       notes: `Auto-created from accepted quote ${quote.quoteNumber}`,
       terms: quote.terms ?? null,
       createdBy,

@@ -110,16 +110,54 @@ describe('invoiceService guards', () => {
     ).rejects.toBeInstanceOf(InvoiceServiceError);
   });
 
+  it('createManualInvoice stamps the draft with the org currency (spec §5)', async () => {
+    queueResult([{ currencyCode: 'EUR' }]); // org lookup
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // insert returning
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await svc.createManualInvoice({ orgId: 'org1' }, actor);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'EUR' }));
+  });
+
+  it('createManualInvoice: an explicit currencyCode wins over the org currency', async () => {
+    // No org lookup is queued: the override short-circuits the org read, so the
+    // only db call is the insert. GBP in the insert values proves the override
+    // wins even for an org whose currency differs.
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'GBP' }]); // insert returning
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await svc.createManualInvoice({ orgId: 'org1', currencyCode: 'GBP' }, actor);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'GBP' }));
+  });
+
+  it('createManualInvoice throws ORG_NOT_FOUND (404) when the org row is missing', async () => {
+    queueResult([]); // org lookup finds nothing (RLS-scoped empty)
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    await expect(
+      svc.createManualInvoice({ orgId: 'missing-org' }, actor)
+    ).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
+  });
+
+  // recordPayment runs in ONE transaction (B10). In-tx query order:
+  //   1. invoices lock select (FOR UPDATE) → invoice row
+  //   2. invoice_payments sum select → prior payments (balance = total − sum)
+  //   3. payment insert returning → payment row
+  //   4-6. recomputeInvoiceStatus(tx): invoice re-read, payments re-read, update
+  //   7. final invoice re-read (returned to the caller)
+  // Guard rejections consume only entries 1-2. The mock rows must carry `total`
+  // + `currencyCode` — the header's balance column is no longer read.
+
   it('recordPayment rejects payment on a draft (INVALID_STATE 409)', async () => {
-    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', balance: '0.00' }]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '0.00' }]); // lock select
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     await expect(
       svc.recordPayment('i1', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, actor)
     ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
   });
 
-  it('recordPayment rejects an overpayment (OVERPAYMENT 400)', async () => {
-    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', balance: '50.00' }]);
+  it('recordPayment rejects an overpayment against the in-tx balance (OVERPAYMENT 400)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '80.00' }]); // lock select
+    queueResult([{ amount: '30.00' }]); // prior payments → balance 50.00, NOT the header column
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     await expect(
       svc.recordPayment('i1', { amount: 60, method: 'check', receivedAt: '2026-06-14' }, actor)
@@ -127,7 +165,8 @@ describe('invoiceService guards', () => {
   });
 
   it('recordPayment rejects exact-cents overpayment at +0.01 (OVERPAYMENT 400)', async () => {
-    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', balance: '50.00' }]);
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '50.00' }]); // lock select
+    queueResult([]); // no prior payments → balance 50.00
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     await expect(
       svc.recordPayment('i1', { amount: 50.01, method: 'check', receivedAt: '2026-06-14' }, actor)
@@ -151,12 +190,8 @@ describe('invoiceService guards', () => {
       paidAt: null,
       markedOverdueAt: null,
     };
-    queueResult([invoice]);
-    queueResult([{ id: 'pay1', amount: '100.50', method: 'cash', reference: null, recordedBy: actor.userId }]);
-    queueResult([invoice]);
-    queueResult([{ amount: '100.50' }]);
-    queueResult([]);
-    queueResult([{ ...invoice, status: 'partially_paid', amountPaid: '100.50', balance: '1899.50' }]);
+    queueResult([invoice]); // lock select
+    queueResult([]); // no prior payments → balance 2000 (representable JPY)
 
     await expect(recordPayment(invoiceId, { amount: '100.50', method: 'cash', receivedAt: new Date() } as any, actor))
       .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
@@ -182,10 +217,11 @@ describe('invoiceService guards', () => {
       paidAt: null,
       markedOverdueAt: null,
     };
-    queueResult([invoice]); // getOwnedInvoiceOr404 (guards)
+    queueResult([invoice]); // lock select (guards + balance base)
+    queueResult([]); // no prior payments → in-tx balance 1000.50 (non-representable)
     queueResult([{ id: 'pay1', amount: '1000.50', method: 'cash', reference: null, recordedBy: actor.userId }]); // payment insert
-    queueResult([invoice]); // recomputeInvoiceStatus → invoice
-    queueResult([{ amount: '1000.50' }]); // payments sum
+    queueResult([invoice]); // recomputeInvoiceStatus → invoice re-read
+    queueResult([{ amount: '1000.50' }]); // recompute payments sum
     queueResult([]); // invoice status update
     queueResult([{ ...invoice, status: 'paid', amountPaid: '1000.50', balance: '0.00' }]); // final read
 
@@ -198,8 +234,36 @@ describe('invoiceService guards', () => {
     queueResult([{
       id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
       currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
-    }]);
+    }]); // lock select
+    queueResult([]); // no prior payments → in-tx balance 1000.50
     await expect(recordPayment(invoiceId, { amount: '500.50', method: 'cash', receivedAt: new Date() } as any, actor))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
+  });
+
+  it('rejects a REPRESENTABLE underpayment when the locked balance is non-representable (would strand a residue)', async () => {
+    // JPY balance 1000.50: paying 500 (perfectly representable) would leave
+    // '500.50' — a residue no later payment could clear. Only the exact payoff
+    // may land on a non-representable balance.
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // lock select
+    queueResult([]); // no prior payments → in-tx balance 1000.50
+    await expect(recordPayment(invoiceId, { amount: '500', method: 'cash', receivedAt: new Date() } as any, actor))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
+  });
+
+  it('evaluates the representability escape against the IN-TX balance, not the stale header column', async () => {
+    // Header still says balance '1000.50', but a concurrent (already-committed)
+    // payment of the exact payoff exists in invoice_payments. The re-derived
+    // balance is 0.00 — representable — so this second exact-payoff attempt
+    // must fall through to the overpay check, NOT ride the legacy escape hatch.
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // lock select (stale header balance)
+    queueResult([{ amount: '1000.50' }]); // prior payment already landed → in-tx balance 0.00
+    await expect(recordPayment(invoiceId, { amount: '1000.50', method: 'cash', receivedAt: new Date() } as any, actor))
       .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
   });
 
@@ -591,7 +655,8 @@ describe('addContractLine', () => {
     (resolvePrice as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       unitPrice: '99.00', taxable: true, costBasis: '45.00', taxCategory: null, source: 'item'
     });
-    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ currencyCode: 'USD' }]); // B2 guard: contract currency lookup via sourceId — matches
     queueInsertAndRecompute({ id: 'l2', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '3', unitPrice: '99.00',
       lineTotal: '297.00', taxable: true, customerVisible: true });
@@ -613,6 +678,18 @@ describe('addContractLine', () => {
     // Line uses the resolved price, not the caller-supplied 999.00
     expect(line.unitPrice).toBe('99.00');
     expect(line.lineTotal).toBe('297.00');
+  });
+
+  it('throws CURRENCY_MISMATCH (400) when the source contract currency differs from the invoice header', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'GBP' }]);
+    queueResult([{ currencyCode: 'EUR' }]); // B2 guard: contract is EUR, invoice is GBP
+    await expect(
+      svc.addContractLine('i1', {
+        description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
+        taxable: false, catalogItemId: null, sourceId: 'cl-1'
+      }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_MISMATCH', status: 400 });
   });
 
   it('non-catalog path: throws INVALID_AMOUNT (400) when unitPrice is negative', async () => {
@@ -644,6 +721,81 @@ describe('addContractLine', () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
     await expect(
       svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false }, actor)
+    ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+});
+
+describe('changeInvoiceCurrency (draft currency immutability, #3774)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('rejects a non-draft invoice with NOT_A_DRAFT (409)', async () => {
+    // locked invoice select → issued row
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    await expect(
+      svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
+  });
+
+  it('throws INVOICE_NOT_FOUND (404) when the invoice is absent', async () => {
+    queueResult([]);
+    await expect(
+      svc.changeInvoiceCurrency('missing', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
+  });
+
+  it('refuses to restamp over monetary lines without clearLines (CURRENCY_LOCKED 409)', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' }]);
+    queueResult([{ id: 'l1' }]); // one monetary line
+    await expect(
+      svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409 });
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('restamps a line-less draft and returns the new currency', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' }]);
+    queueResult([]); // no lines
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // update returning
+    const updated = await svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    const setMock = (db as unknown as { set: Mock }).set;
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'EUR' }));
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('clearLines: true deletes the lines and restamps atomically', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' }]);
+    queueResult([{ id: 'l1' }, { id: 'l2' }]); // two monetary lines
+    queueResult([]); // delete
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY', total: '0.00' }]); // update returning
+    const updated = await svc.changeInvoiceCurrency('i1', { currencyCode: 'JPY', clearLines: true }, actor);
+    expect(updated.currencyCode).toBe('JPY');
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).toHaveBeenCalledTimes(1);
+    const setMock = (db as unknown as { set: Mock }).set;
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      currencyCode: 'JPY', subtotal: '0.00', taxTotal: '0.00', total: '0.00', balance: '0.00'
+    }));
+  });
+
+  it('same-currency change is a no-op (returns the row untouched)', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR', taxRate: null, amountPaid: '0.00' }]);
+    const updated = await svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: true }, actor);
+    expect(updated.currencyCode).toBe('EUR');
+    const setMock = (db as unknown as { set: Mock }).set;
+    expect(setMock).not.toHaveBeenCalled();
+    const deleteMock = (db as unknown as { delete: Mock }).delete;
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an actor without access to the invoice org (ORG_DENIED 403)', async () => {
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', taxRate: null, amountPaid: '0.00' }]);
+    const denied = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(
+      svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, denied)
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 });

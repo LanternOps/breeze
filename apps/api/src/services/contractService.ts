@@ -35,6 +35,26 @@ function assertEditable(c: { status: string }): void {
   }
 }
 
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Lock-order anchor (#3774, mirrors invoiceService.lockDraftInvoice): SELECT
+ * the CONTRACT row FOR UPDATE as the FIRST statement of the enclosing
+ * transaction, 404 + org-access check, and return the locked row. Every line
+ * writer takes this lock before touching contract_lines (asserting the
+ * status itself — draft/active for line edits, draft-only for the currency
+ * restamp), so a concurrent changeContractCurrency can never restamp between
+ * a writer's read of the contract and its line write — no JPY-stamped
+ * contract silently keeping a line priced under the old currency, and no
+ * line phantom-inserting past the restamp's "no lines" check.
+ */
+async function lockContract(tx: DbExecutor, contractId: string, actor: ContractActor) {
+  const [c] = await tx.select().from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
+  if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
+  requireOrgAccess(actor, c.orgId);
+  return c;
+}
+
 export async function createContract(input: {
   orgId: string; name: string; billingTiming: 'advance' | 'arrears'; intervalMonths: number;
   startDate: string; endDate?: string | null; autoIssue?: boolean; currencyCode?: string; notes?: string | null; terms?: string | null;
@@ -43,14 +63,14 @@ export async function createContract(input: {
   requireOrgAccess(actor, input.orgId);
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
   // Derive partnerId from the org row — never trust actor.partnerId for the contract's FK.
-  const [org] = await db.select({ partnerId: organizations.partnerId })
+  const [org] = await db.select({ partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
     .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
   if (!org) throw new ContractServiceError('Organization not found', 404, 'CONTRACT_NOT_FOUND');
   const [row] = await db.insert(contracts).values({
     partnerId: org.partnerId, orgId: input.orgId, name: input.name, status: 'draft',
     billingTiming: input.billingTiming, intervalMonths: input.intervalMonths,
     startDate: input.startDate, endDate: input.endDate ?? null,
-    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? 'USD',
+    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? org.currencyCode,
     notes: input.notes ?? null, terms: input.terms ?? null, createdBy: actor.userId,
     autoRenew: input.autoRenew ?? false, renewalTermMonths: input.renewalTermMonths ?? null,
     renewalNoticeDays: input.renewalNoticeDays ?? null,
@@ -199,23 +219,70 @@ export async function deleteDraftContract(contractId: string, actor: ContractAct
   await db.delete(contracts).where(eq(contracts.id, contractId)); // lines cascade
 }
 
+/**
+ * Draft-only atomic change-currency operation (multi-currency wave 2, #3774).
+ * A draft's stamped currency is immutable through every other mutation path —
+ * updateContract explicitly whitelists away currencyCode — so this is the
+ * ONLY way the stamp moves, and only while the contract is a draft. With
+ * lines present the change is refused (CURRENCY_LOCKED 409) unless the caller
+ * opts into `clearLines`, which deletes the contract's lines and restamps in
+ * ONE transaction. Unit prices are never converted or reinterpreted;
+ * repricing arrives with the wave-3 price books — wave 2 ships
+ * clear-and-restamp only. Contracts store no header totals, so there is
+ * nothing further to recompute.
+ */
+export async function changeContractCurrency(
+  contractId: string,
+  input: { currencyCode: string; clearLines?: boolean },
+  actor: ContractActor
+) {
+  return db.transaction(async (tx) => {
+    // Contract row lock FIRST (document → lines). The line writers and
+    // activateContract take the same lock via lockContract, so a concurrent
+    // activate or line write serializes against the restamp.
+    const c = await lockContract(tx, contractId, actor);
+    assertDraft(c);
+    if (c.currencyCode === input.currencyCode) return c; // no-op restamp
+
+    const lineRows = await tx.select({ id: contractLines.id }).from(contractLines).where(eq(contractLines.contractId, contractId));
+    if (lineRows.length > 0) {
+      if (!input.clearLines) {
+        throw new ContractServiceError(
+          `Contract has ${lineRows.length} line(s) priced in ${c.currencyCode} — pass clearLines to remove them, or delete the draft`,
+          409, 'CURRENCY_LOCKED'
+        );
+      }
+      await tx.delete(contractLines).where(eq(contractLines.contractId, contractId));
+    }
+
+    const [updated] = await tx.update(contracts)
+      .set({ currencyCode: input.currencyCode, updatedAt: new Date() })
+      .where(eq(contracts.id, contractId)).returning();
+    return updated!;
+  });
+}
+
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  assertEditable(c);
-  const [row] = await db.insert(contractLines).values({
-    contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
-    catalogItemId: input.catalogItemId ?? null, unitPrice: input.unitPrice,
-    manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
-    siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
-    taxable: input.taxable, sortOrder: input.sortOrder ?? 0
-  }).returning();
-  return row!;
+  return db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    assertEditable(c);
+    const [row] = await tx.insert(contractLines).values({
+      contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
+      catalogItemId: input.catalogItemId ?? null, unitPrice: input.unitPrice,
+      manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+      siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
+      taxable: input.taxable, sortOrder: input.sortOrder ?? 0
+    }).returning();
+    return row!;
+  });
 }
 
 export async function removeContractLine(contractId: string, lineId: string, actor: ContractActor) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  assertEditable(c);
-  await db.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+  await db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    assertEditable(c);
+    await tx.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+  });
 }
 
 function todayISO(asOf: Date = new Date()): string {
@@ -223,23 +290,29 @@ function todayISO(asOf: Date = new Date()): string {
 }
 
 export async function activateContract(contractId: string, actor: ContractActor, asOf: Date = new Date()) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  if (c.status !== 'draft' && c.status !== 'paused') {
-    throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
-  }
-  // Count lines via a lightweight id-only select (simple + explicit).
-  const lineRows = await db.select({ id: contractLines.id }).from(contractLines)
-    .where(eq(contractLines.contractId, contractId));
-  if (lineRows.length === 0) {
-    throw new ContractServiceError('Contract needs at least one line', 409, 'NO_LINES');
-  }
-  const idx = periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf));
-  const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
-  const [row] = await db.update(contracts)
-    .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
-    .where(eq(contracts.id, contractId)).returning();
+  // Contract row lock FIRST (document → lines) so the line-count check and the
+  // status flip can't interleave with changeContractCurrency's clear-and-restamp
+  // or a concurrent line write (same lock order as every other contract writer).
+  const { row, c } = await db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    if (c.status !== 'draft' && c.status !== 'paused') {
+      throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
+    }
+    // Count lines via a lightweight id-only select (simple + explicit).
+    const lineRows = await tx.select({ id: contractLines.id }).from(contractLines)
+      .where(eq(contractLines.contractId, contractId));
+    if (lineRows.length === 0) {
+      throw new ContractServiceError('Contract needs at least one line', 409, 'NO_LINES');
+    }
+    const idx = periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf));
+    const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
+    const [row] = await tx.update(contracts)
+      .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
+      .where(eq(contracts.id, contractId)).returning();
+    return { row: row!, c };
+  });
   await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
-  return row!;
+  return row;
 }
 
 export async function pauseContract(contractId: string, actor: ContractActor) {
@@ -360,8 +433,11 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
   //    (the engine has no terms param on create).
   const noteParts = [c.notes, c.terms].filter(Boolean) as string[];
+  // B2: the invoice copies the CONTRACT's stamped currency (spec §5 snapshots
+  // rule) — never the org's current setting, which may have changed since the
+  // contract was created.
   const inv = await createManualInvoice(
-    { orgId: c.orgId, notes: noteParts.length ? noteParts.join('\n\n') : undefined },
+    { orgId: c.orgId, notes: noteParts.length ? noteParts.join('\n\n') : undefined, currencyCode: c.currencyCode },
     actor
   );
 
@@ -455,7 +531,7 @@ export async function createContractWithLinesDetailed(
       startDate: spec.startDate,
       endDate: spec.endDate ?? null,
       autoIssue: false,
-      currencyCode: spec.currencyCode ?? 'USD',
+      currencyCode: spec.currencyCode,
       notes: spec.notes ?? null,
       terms: spec.terms ?? null,
       createdBy: spec.createdBy ?? null,

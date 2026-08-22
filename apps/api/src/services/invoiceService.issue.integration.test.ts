@@ -124,7 +124,7 @@ describe.runIf(RUN)('issueInvoice', () => {
     // Forge a second draft that references the SAME (now-billed) source rows by
     // cloning inv1's lines into a fresh draft, then attempt to issue it.
     const forgedId = await withSystemDbAccessContext(async () => {
-      const [draft] = await db.insert(invoices).values({ partnerId: f.partnerId, orgId: f.orgId, status: 'draft' }).returning({ id: invoices.id });
+      const [draft] = await db.insert(invoices).values({ partnerId: f.partnerId, orgId: f.orgId, status: 'draft', currencyCode: 'USD' }).returning({ id: invoices.id });
       const srcLines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, inv1.id));
       await db.insert(invoiceLines).values(srcLines.map((l) => ({
         invoiceId: draft!.id, orgId: l.orgId, sourceType: l.sourceType, sourceId: l.sourceId, catalogItemId: l.catalogItemId,

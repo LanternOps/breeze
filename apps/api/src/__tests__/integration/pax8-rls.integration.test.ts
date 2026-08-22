@@ -189,7 +189,7 @@ describe('pax8 partner-axis RLS (breeze_app)', () => {
     // org_id) FK resolves — isolating RLS as the only reason the insert fails.
     const lineId = await withSystemDbAccessContext(async () => {
       const [contract] = await db.insert(contracts).values({
-        partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01',
+        partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01', currencyCode: 'USD',
       }).returning({ id: contracts.id });
       const [line] = await db.insert(contractLines).values({
         contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'L', unitPrice: '0.00',
@@ -220,7 +220,7 @@ describe('recordPax8SubscriptionObservations gate (breeze_app, real SQL)', () =>
         .set({ quantityKnown: true })
         .where(eq(pax8SubscriptionSnapshots.id, snapshotA.id));
       const [contract] = await db.insert(contracts).values({
-        partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01',
+        partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01', currencyCode: 'USD',
       }).returning({ id: contracts.id });
 
       // (1) manual line linked to a mapped snapshot → observed, never applied
@@ -308,7 +308,7 @@ describe('recordPax8SubscriptionObservations gate (breeze_app, real SQL)', () =>
 
     const { lineId, secondSnapshotId } = await withSystemDbAccessContext(async () => {
       const [contract] = await db.insert(contracts).values({
-        partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01',
+        partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01', currencyCode: 'USD',
       }).returning({ id: contracts.id });
       const [line] = await db.insert(contractLines).values({
         contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'L', unitPrice: '0.00',
@@ -348,6 +348,7 @@ describe('detectPax8Drift (breeze_app, real SQL)', () => {
         name: 'Drift contract',
         intervalMonths: 1,
         startDate: '2026-01-01',
+        currencyCode: 'USD',
       }).returning({ id: contracts.id });
       const [line] = await db.insert(contractLines).values({
         contractId: contract!.id,

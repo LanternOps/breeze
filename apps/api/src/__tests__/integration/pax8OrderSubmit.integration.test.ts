@@ -80,6 +80,7 @@ async function seedOrder(options: {
       name: 'Pax8 contract',
       intervalMonths: 1,
       startDate: '2026-07-14',
+      currencyCode: 'USD',
     }).returning();
     if (!contract) throw new Error('failed to seed contract');
     const [contractLine] = await db.insert(contractLines).values({

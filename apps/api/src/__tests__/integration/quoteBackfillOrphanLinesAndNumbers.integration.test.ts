@@ -75,14 +75,15 @@ async function seedQuote(
   opts: { quoteNumber?: string | null; sentAt?: string | null; createdAt?: string; status?: string } = {}
 ): Promise<string> {
   const [q] = await sql<{ id: string }[]>`
-    INSERT INTO quotes (partner_id, org_id, quote_number, status, sent_at, created_at)
+    INSERT INTO quotes (partner_id, org_id, quote_number, status, sent_at, created_at, currency_code)
     VALUES (
       ${t.partnerId},
       ${t.orgId},
       ${opts.quoteNumber ?? null},
       ${(opts.status ?? 'draft') as string}::quote_status,
       ${opts.sentAt ?? null},
-      ${opts.createdAt ?? '2026-01-15 10:00:00'}
+      ${opts.createdAt ?? '2026-01-15 10:00:00'},
+      'USD'
     )
     RETURNING id
   `;

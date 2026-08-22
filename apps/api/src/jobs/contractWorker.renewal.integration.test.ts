@@ -44,6 +44,7 @@ it.runIf(!!process.env.DATABASE_URL)(
         billingTiming: 'advance',
         intervalMonths: 1,
         startDate: '2026-07-01',
+        currencyCode: 'USD',
         endDate: '2027-07-01',
         nextBillingAt: '2027-07-01',
         autoRenew: true,

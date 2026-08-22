@@ -328,6 +328,7 @@ describe('Pax8 ordering partner-axis RLS and integrity (breeze_app)', () => {
           name: 'Pax8 contract',
           intervalMonths: 1,
           startDate: '2026-07-14',
+          currencyCode: 'USD',
         })
         .returning({ id: contracts.id });
       if (!contract) throw new Error('failed to seed contract');

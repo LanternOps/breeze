@@ -126,6 +126,20 @@ describe('buildContractSpecsFromQuote', () => {
     expect(annual.lines).toHaveLength(1);
   });
 
+  it('carries the quote currency verbatim onto every cadence-split spec', () => {
+    const specs = buildContractSpecsFromQuote(
+      { ...quote, currencyCode: 'EUR' },
+      [
+        line({ recurrence: 'monthly', description: 'EDR' }),
+        line({ recurrence: 'annual', description: 'License', unitPrice: '1200.00' }),
+      ],
+      '2026-06-21',
+      'user-1',
+    );
+    expect(specs).toHaveLength(2);
+    expect(specs.map((s) => s.currencyCode)).toEqual(['EUR', 'EUR']);
+  });
+
   it('excludes non-customer-visible recurring lines', () => {
     const specs = buildContractSpecsFromQuote(
       quote,
@@ -171,16 +185,6 @@ describe('buildContractSpecsFromQuote', () => {
       'user-1',
     );
     expect(specs[0]!.endDate).toBeNull();
-  });
-
-  it('falls back to USD when the quote has no currency', () => {
-    const specs = buildContractSpecsFromQuote(
-      { ...quote, currencyCode: null },
-      [line({ recurrence: 'monthly' })],
-      '2026-06-21',
-      'user-1',
-    );
-    expect(specs[0]!.currencyCode).toBe('USD');
   });
 
   it('drops catalogItemId to keep the frozen quote price and carries an in-memory source reference', () => {

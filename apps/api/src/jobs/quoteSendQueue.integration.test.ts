@@ -96,7 +96,7 @@ async function seedDraftQuote(): Promise<Fixture> {
   const org = await createOrganization({ partnerId: partner.id });
   const [quote] = await getTestDb()
     .insert(quotes)
-    .values({ partnerId: partner.id, orgId: org.id, title: 'Undo-send integration quote' })
+    .values({ partnerId: partner.id, orgId: org.id, title: 'Undo-send integration quote', currencyCode: 'USD' })
     .returning({ id: quotes.id });
   return {
     partnerId: partner.id,

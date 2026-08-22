@@ -9,11 +9,12 @@ import {
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema, type CloneQuoteInput,
   createQuoteOrderSchema, updateQuoteOrderSchema, updateQuoteOrderLineSchema,
+  changeCurrencySchema,
 } from '@breeze/shared';
 import {
   createQuote, cloneQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
-  reorderBlocks, reorderLines, moveLineToBlock,
+  reorderBlocks, reorderLines, moveLineToBlock, changeQuoteCurrency,
 } from '../../services/quoteService';
 import { createQuoteOrder, updateQuoteOrder, updateQuoteOrderLine } from '../../services/quoteOrderService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
@@ -143,6 +144,13 @@ quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), z
 });
 quoteCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
   try { await deleteDraftQuote(c.req.valid('param').id, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+// Draft-only atomic change-currency op (#3774) — the ONLY mutation path for a
+// document's stamped currency. CURRENCY_LOCKED (409) when monetary lines exist
+// and clearLines wasn't passed; clearLines deletes lines + restamps atomically.
+quoteCrudRoutes.post('/:id/currency', scopes, writePerm, zValidator('param', idParam), zValidator('json', changeCurrencySchema), async (c) => {
+  try { return c.json({ data: await changeQuoteCurrency(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 // Block writes answer `{ data, warnings }`. `warnings` is always present (often
