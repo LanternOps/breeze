@@ -276,13 +276,21 @@ export async function removeItemPrice(itemId: string, currencyCode: string, acto
  * import hits a SKU the partner already owns, the requested pricing must not be
  * silently discarded: the requested sell-currency rows (explicit `prices`, or a
  * legacy `unitPrice` in the partner currency) are upserted onto the existing
- * item and the freshly fetched feed cost + currency replaces the stored cost.
- * No cost × markup derivation here — on a re-import that would clobber a
- * price-book row the operator may have adjusted by hand; only amounts the
- * caller stated explicitly are written. A cost without a currency (the
- * importedCost gap) leaves the stored cost untouched. Runs under the
- * catalog-side lock order (item row FIRST, price rows, mirror LAST) and returns
- * the same item-plus-price-book shape createCatalogItem does.
+ * item, and the freshly fetched feed cost + currency replaces the stored cost.
+ *
+ * A re-import NEVER overwrites an existing price-book row (#3775 review #3).
+ * The distributor feed is authoritative for COST, never for the partner's sell
+ * price: an operator who hand-adjusted the EUR row would otherwise have it
+ * silently reset to Pax8 MSRP by a re-import, reported as a plain "Imported"
+ * toast. Only a currency with no row at all is added; existing rows are left
+ * alone (and reported back as `preserved` so the caller can say so), and the
+ * deprecated unit_price mirror is rewritten only when the partner-currency row
+ * is one of the ADDED ones. No cost × markup derivation here either. A cost
+ * without a currency (the importedCost gap) leaves the stored cost untouched.
+ *
+ * Runs under the catalog-side lock order (item row FIRST, price rows, mirror
+ * LAST) and returns the same item-plus-price-book shape createCatalogItem does,
+ * plus `pricingApplied`.
  */
 export async function applyImportedPricingBySku(
   sku: string,
@@ -314,20 +322,32 @@ export async function applyImportedPricingBySku(
       if (input.markupPercent != null) costPatch.markupPercent = input.markupPercent.toFixed(2);
     }
 
+    // Which currencies already have a row? Read under the item lock, before any
+    // write, so the add/preserve split is decided against a stable price book.
+    const existingRows = await tx.select({ currencyCode: catalogItemPrices.currencyCode })
+      .from(catalogItemPrices).where(eq(catalogItemPrices.itemId, existing.id));
+    const existingCodes = new Set(existingRows.map((r) => r.currencyCode));
+    const added: string[] = [];
+    const preserved: string[] = [];
+    for (const code of priceMap.keys()) (existingCodes.has(code) ? preserved : added).push(code);
+    added.sort(); preserved.sort();
+
     let item: typeof catalogItems.$inferSelect = existing;
-    for (const [currencyCode, unitPrice] of priceMap) {
-      await upsertPriceRow(tx, existing.id, partnerId, currencyCode, unitPrice);
+    for (const currencyCode of added) {
+      await upsertPriceRow(tx, existing.id, partnerId, currencyCode, priceMap.get(currencyCode)!);
     }
     if (Object.keys(costPatch).length > 0) {
       const rows = await tx.update(catalogItems).set({ ...costPatch, updatedAt: new Date() })
         .where(and(eq(catalogItems.id, existing.id), eq(catalogItems.partnerId, partnerId))).returning();
       item = rows[0] ?? item;
     }
-    const mirror = priceMap.get(partnerCurrency);
+    // Mirror only a row we actually added — rewriting it for a PRESERVED row
+    // would reset the mirror to the feed price the price book just refused.
+    const mirror = added.includes(partnerCurrency) ? priceMap.get(partnerCurrency) : undefined;
     if (mirror !== undefined) item = (await writeUnitPriceMirror(tx, existing.id, partnerId, mirror)) ?? item; // mirror LAST
     const prices = await tx.select({ currencyCode: catalogItemPrices.currencyCode, unitPrice: catalogItemPrices.unitPrice })
       .from(catalogItemPrices).where(eq(catalogItemPrices.itemId, existing.id)).orderBy(asc(catalogItemPrices.currencyCode));
-    return { ...item, prices };
+    return { ...item, prices, pricingApplied: { added, preserved } };
   });
   await emitCatalogEvent({ type: 'catalog.item.price_changed', catalogItemId: result.id, partnerId, actorUserId: actor.userId });
   return result;

@@ -1031,6 +1031,7 @@ describe('catalogService (breeze_app, real DB)', () => {
       { currencyCode: 'EUR', unitPrice: '95.00' },
       { currencyCode: 'USD', unitPrice: '100.00' },
     ]);
+    expect(merged.pricingApplied).toEqual({ added: ['EUR'], preserved: [] });
 
     const detail = await withDbAccessContext(fx.ctxA, () => getCatalogItem(first.id, fx.actorA));
     expect(detail.prices.map((p) => [p.currencyCode, p.unitPrice])).toEqual([['EUR', '95.00'], ['USD', '100.00']]);
@@ -1041,6 +1042,46 @@ describe('catalogService (breeze_app, real DB)', () => {
     const ctxB: DbAccessContext = { scope: 'partner', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: [fx.partnerB.id], userId: null };
     await expect(withDbAccessContext(ctxB, () => applyImportedPricingBySku('REIMPORT-1', { unitPrice: 1 }, actorB)))
       .rejects.toMatchObject({ status: 404, code: 'ITEM_NOT_FOUND' });
+  });
+
+  // #3775 review #3: a re-import must not reset a hand-adjusted price-book row
+  // to distributor MSRP. Only a currency with no row is added; the feed COST
+  // (real feed truth) still lands.
+  runDb('applyImportedPricingBySku (#3775 review #3): a re-import preserves hand-adjusted rows and only adds missing currencies', async () => {
+    const fx = await seedFixture();
+    const first = await withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem({ ...dupInput('First import', 'REIMPORT-2'), costBasis: 80, costCurrency: 'USD' }, fx.actorA));
+    // The partner hand-adjusts the USD row well away from the feed's 100.00.
+    await withDbAccessContext(fx.ctxA, () => setItemPrice(first.id, 'USD', { unitPrice: 149.99 }, fx.actorA));
+
+    const merged = await withDbAccessContext(fx.ctxA, () => applyImportedPricingBySku(
+      'REIMPORT-2',
+      { prices: [{ currencyCode: 'USD', unitPrice: 100 }, { currencyCode: 'EUR', unitPrice: 95 }], costBasis: 70.5, costCurrency: 'USD' },
+      fx.actorA
+    ));
+
+    expect(merged.pricingApplied).toEqual({ added: ['EUR'], preserved: ['USD'] });
+    // The operator's 149.99 survives; the missing EUR row is added.
+    expect(merged.prices).toEqual([
+      { currencyCode: 'EUR', unitPrice: '95.00' },
+      { currencyCode: 'USD', unitPrice: '149.99' },
+    ]);
+    // The preserved partner-currency row leaves the deprecated mirror alone too.
+    expect(merged.unitPrice).toBe('149.99');
+    // Cost IS feed truth and is applied.
+    expect(merged).toMatchObject({ costBasis: '70.50', costCurrency: 'USD' });
+
+    const detail = await withDbAccessContext(fx.ctxA, () => getCatalogItem(first.id, fx.actorA));
+    expect(detail.prices.map((p) => [p.currencyCode, p.unitPrice])).toEqual([['EUR', '95.00'], ['USD', '149.99']]);
+
+    // A third import now preserves BOTH — nothing left to add.
+    const again = await withDbAccessContext(fx.ctxA, () => applyImportedPricingBySku(
+      'REIMPORT-2', { prices: [{ currencyCode: 'USD', unitPrice: 1 }, { currencyCode: 'EUR', unitPrice: 2 }] }, fx.actorA));
+    expect(again.pricingApplied).toEqual({ added: [], preserved: ['EUR', 'USD'] });
+    expect(again.prices).toEqual([
+      { currencyCode: 'EUR', unitPrice: '95.00' },
+      { currencyCode: 'USD', unitPrice: '149.99' },
+    ]);
   });
 
   runDb('createCatalogItem: same sku under a DIFFERENT partner is not a conflict', async () => {

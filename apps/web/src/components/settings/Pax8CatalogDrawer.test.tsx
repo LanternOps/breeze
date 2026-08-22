@@ -9,7 +9,8 @@ vi.mock('../../lib/api/distributors', () => ({
   pax8Search: (...a: unknown[]) => pax8Search(...a),
   pax8Pricing: (...a: unknown[]) => pax8Pricing(...a),
 }));
-vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+const showToast = vi.fn();
+vi.mock('../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 // Controllable partner currency — the drawer's sell price is a PARTNER-currency
 // price-book write, so the lookup is gated on it (#3775 review #3).
 const partnerCurrency = { currency: 'USD' as string | null, failed: false, retry: vi.fn() };
@@ -23,7 +24,7 @@ const term = (currencyCode: string | null) =>
   ({ commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', suggestedRetailPrice: '22.00', currencyCode });
 
 beforeEach(() => {
-  pax8Import.mockReset(); pax8Search.mockReset(); pax8Pricing.mockReset();
+  pax8Import.mockReset(); pax8Search.mockReset(); pax8Pricing.mockReset(); showToast.mockReset();
   partnerCurrency.currency = 'USD'; partnerCurrency.failed = false; partnerCurrency.retry = vi.fn();
   pax8Search.mockResolvedValue(ok([{ pax8ProductId: 'p1', name: 'Microsoft 365', vendorName: 'Microsoft', vendorSku: 'CFQ7', shortDescription: null, raw: {} }]));
   pax8Pricing.mockResolvedValue(ok([term('USD')]));
@@ -47,6 +48,39 @@ describe('Pax8CatalogDrawer', () => {
     expect(body.product.source).toBe('pax8');
     expect(body.item).toMatchObject({ unitPrice: 22, costBasis: 18.5 });
     await waitFor(() => expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ id: 'item-1' })));
+  });
+
+  // #3775 review #3: a re-import of a SKU already in the catalog must not reset a
+  // hand-adjusted price-book row. The server now preserves it — the drawer has to
+  // SAY so, or the operator reads a plain "Imported" and assumes their price moved.
+  it('warns which currencies were left alone when the server preserved existing rows', async () => {
+    pax8Import.mockResolvedValue(ok({
+      id: 'item-1', name: 'Microsoft 365',
+      attributes: { pax8: { aiEnriched: true } },
+      pricingApplied: { added: ['EUR'], preserved: ['USD'] },
+    }));
+    render(<Pax8CatalogDrawer open onClose={vi.fn()} onImported={vi.fn()} />);
+    await openAndSearch();
+    fireEvent.click(screen.getByTestId('pax8-product-add-p1'));
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+
+    const toast = showToast.mock.calls[0][0] as { message: string; type: string };
+    expect(toast.type).toBe('warning');
+    expect(toast.message).toContain('USD');
+    expect(toast.message).toContain('Microsoft 365');
+  });
+
+  it('reports a plain success when every requested currency was added', async () => {
+    pax8Import.mockResolvedValue(ok({
+      id: 'item-1', name: 'Microsoft 365',
+      attributes: { pax8: { aiEnriched: true } },
+      pricingApplied: { added: ['USD'], preserved: [] },
+    }));
+    render(<Pax8CatalogDrawer open onClose={vi.fn()} onImported={vi.fn()} />);
+    await openAndSearch();
+    fireEvent.click(screen.getByTestId('pax8-product-add-p1'));
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    expect((showToast.mock.calls[0][0] as { type: string }).type).toBe('success');
   });
 
   it('prefills the sell price from the feed only when the term is in the PARTNER currency', async () => {

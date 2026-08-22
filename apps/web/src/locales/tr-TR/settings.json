@@ -1741,6 +1741,7 @@
     "close": "Kapat",
     "imported": "\"{{name}}\" kataloğa aktarıldı",
     "importedWithoutCleanup": "İçe aktarıldı \"{{name}}\" — Yapay zeka temizleme kullanılamıyordu, orijinal ad korundu.",
+    "importedPricePreserved": "\"{{name}}\" içe aktarıldı — mevcut {{currencies}} fiyatınız korundu; yalnızca maliyet Pax8'den güncellendi.",
     "couldNotImportThePax8Product": "Pax8 ürünü içe aktarılamadı."
   },
   "profilePage": {

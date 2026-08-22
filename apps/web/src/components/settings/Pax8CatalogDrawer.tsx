@@ -76,9 +76,18 @@ export default function Pax8CatalogDrawer({ open, onClose, onImported }: Props) 
         // pax8.aiEnriched:false and keeps the raw vendor name — surface that.
         const aiEnriched = (saved as { attributes?: { pax8?: { aiEnriched?: boolean } } })
           .attributes?.pax8?.aiEnriched === true;
-        showToast(aiEnriched
-          ? { message: t('pax8CatalogDrawer.imported', { name: saved.name }), type: 'success' }
-          : { message: t('pax8CatalogDrawer.importedWithoutCleanup', { name: saved.name }), type: 'warning' });
+        // #3775 review #3: re-importing a SKU already in the catalog no longer
+        // overwrites a price-book row the partner may have hand-adjusted. Say
+        // which currencies were left alone — a plain "Imported" would read as
+        // "your sell price is now the Pax8 rate", which is exactly wrong.
+        const preserved = (saved as { pricingApplied?: { preserved?: string[] } }).pricingApplied?.preserved ?? [];
+        showToast(
+          preserved.length > 0
+            ? { message: t('pax8CatalogDrawer.importedPricePreserved', { name: saved.name, currencies: preserved.join(', ') }), type: 'warning' }
+            : aiEnriched
+              ? { message: t('pax8CatalogDrawer.imported', { name: saved.name }), type: 'success' }
+              : { message: t('pax8CatalogDrawer.importedWithoutCleanup', { name: saved.name }), type: 'warning' }
+        );
         onImported(saved);
         onClose();
       } catch (err) {
