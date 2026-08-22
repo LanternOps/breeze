@@ -398,14 +398,19 @@
       "create": "Create invoice",
       "creating": "Creating…",
       "createFailed": "Could not create an invoice from this ticket.",
-      "created": "Draft invoice created"
+      "created": "Draft invoice created",
+      "allBlockedByCurrency": "All billable work on this ticket is priced in another currency than the organization bills in. Assemble a draft in that currency instead:",
+      "assembleIn": "Assemble in {{code}} ({{count}} items, {{amount}})"
     },
     "move": {
       "open": "Move to another org…",
       "label": "Move to organization",
       "selectOrganization": "Select organization…",
       "confirm": "Move",
-      "failed": "Move failed. Retry."
+      "failed": "Move failed. Retry.",
+      "blockedCurrency": "This ticket has {{timeCount}} unbilled time entries and {{partCount}} unbilled parts priced in {{sourceCurrency}}, but {{targetOrg}} bills in {{targetCurrency}}. Bill them first, or move anyway — the amounts stay in {{sourceCurrency}} and can only be invoiced on a {{sourceCurrency}} draft.",
+      "acceptCurrency": "I understand these amounts stay in {{sourceCurrency}} and are not converted.",
+      "moveAnyway": "Move anyway"
     },
     "triage": {
       "title": "Suggested triage",
