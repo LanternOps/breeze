@@ -98,7 +98,7 @@ describe('manage_quotes', () => {
     const properties = tool.definition.input_schema.properties as Record<string, { description?: string }>;
 
     expect(tool.definition.description).toContain('currencyCode');
-    expect(properties.line.description).toContain("unitPrice (in the quote's currencyCode)");
+    expect(properties.line?.description).toContain("unitPrice (in the quote's currencyCode)");
   });
 
   it('create_draft calls createQuote with input payload and actor built from auth', async () => {

@@ -77,11 +77,12 @@ stripeConnectRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    const partnerId = auth.partnerId;
     const status = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() => getPartnerStripeStatus(auth.partnerId))
+      withSystemDbAccessContext(() => getPartnerStripeStatus(partnerId))
     );
     if (!status.connected) return c.json({ status: 'disconnected', last4: status.last4 });
-    const account = await getStripeAccountCurrency(auth.partnerId);
+    const account = await getStripeAccountCurrency(partnerId);
     return c.json({
       status: 'connected',
       stripeAccountId: status.stripeAccountId,

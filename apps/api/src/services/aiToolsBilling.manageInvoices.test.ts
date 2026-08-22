@@ -114,7 +114,7 @@ describe('manage_invoices', () => {
 
     expect(tool.definition.description).toContain('currencyCode');
     expect(tool.definition.description).toContain('CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT');
-    expect(properties.payment.description).toContain("invoice's currencyCode");
+    expect(properties.payment?.description).toContain("invoice's currencyCode");
   });
 
   it('create_draft calls createManualInvoice with an actor built from auth', async () => {

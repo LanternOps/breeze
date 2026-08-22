@@ -482,7 +482,7 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
   it("documents hourlyRate in the ticket organization's currency", () => {
     const properties = getTool().definition.input_schema.properties as Record<string, { description?: string }>;
 
-    expect(properties.hourlyRate.description).toContain("organization's currency");
+    expect(properties.hourlyRate?.description).toContain("organization's currency");
   });
 
   // log_time_entry
