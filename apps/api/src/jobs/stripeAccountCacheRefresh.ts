@@ -65,8 +65,9 @@ export interface StripeAccountCacheRefreshStats {
   transientFailures: number;
   /** Revoked or unreadable key — the partner must reconnect; retried daily only to notice when they do. */
   permanentFailures: number;
-  /** Stripe answered but would not describe the account (restricted key, unknown error).
-   *  The connection is NOT presumed broken — the currency cache just stays unknown (review F2). */
+  /** The account facts could not be read, for a reason that is NOT a dead key and NOT a
+   *  Stripe outage: a restricted key / unknown error (review F2), or a local key-replacement
+   *  race (STRIPE_CONNECTION_CHANGED, review F4). Next sweep picks the row up again. */
   unknownFailures: number;
   unexpectedFailures: number;
 }
@@ -93,9 +94,10 @@ export async function refreshUncachedStripeAccounts(): Promise<StripeAccountCach
       if (err instanceof PartnerStripeError) {
         if (err.code === 'STRIPE_UNAVAILABLE') {
           stats.transientFailures += 1;
-        } else if (err.code === 'STRIPE_ACCOUNT_UNKNOWN') {
-          // Restricted key / unknown error: the connection is not presumed
-          // broken, the account facts are just unreadable (review F2).
+        } else if (err.code === 'STRIPE_ACCOUNT_UNKNOWN' || err.code === 'STRIPE_CONNECTION_CHANGED') {
+          // Restricted key / unknown error (F2) or a local key-replacement race
+          // (F4): neither is a transient STRIPE failure and neither means the
+          // partner must reconnect.
           stats.unknownFailures += 1;
         } else {
           // INVALID_STRIPE_KEY / STRIPE_KEY_UNREADABLE / NO_STRIPE_KEY (raced a

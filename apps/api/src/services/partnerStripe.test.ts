@@ -358,7 +358,10 @@ describe('refreshPartnerStripeAccount', () => {
     expect(collectSqlTerms(dbMocks.updateWheres[1]).params).toEqual(expect.arrayContaining(['acct_new']));
   });
 
-  it('zero rows updated twice: throws a transient error rather than inventing a result', async () => {
+  // Review F4: an exhausted RETURNING guard is a local key-replacement race, not
+  // a Stripe outage — it must not claim "could not reach Stripe" (nor be counted
+  // as a transient Stripe failure by the sweep).
+  it('zero rows updated twice: throws STRIPE_CONNECTION_CHANGED (409), never STRIPE_UNAVAILABLE', async () => {
     dbMocks.selectResults.push([connectedRow()], [connectedRow()]);
     accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'gbp', country: 'GB' });
     dbMocks.updateReturning.push([], []);
@@ -367,7 +370,9 @@ describe('refreshPartnerStripeAccount', () => {
     try {
       await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({
         name: 'PartnerStripeError',
-        code: 'STRIPE_UNAVAILABLE',
+        code: 'STRIPE_CONNECTION_CHANGED',
+        status: 409,
+        message: 'Your Stripe connection changed while it was being refreshed — reload the page and try again.',
       });
     } finally {
       warnSpy.mockRestore();
@@ -591,6 +596,29 @@ describe('getPartnerStripeAccountSnapshot', () => {
       });
     } finally {
       errSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  // Review F4: the same local race seen through the snapshot — an unknown cache,
+  // not "Stripe is down" and not "reconnect".
+  it('a key-replacement race reports cacheState unknown with STRIPE_CONNECTION_CHANGED', async () => {
+    const accountRefreshedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    dbMocks.selectResults.push(
+      [statusRow({ accountRefreshedAt })],
+      [{ apiKey: 'enc(sk_test_x)', status: 'connected', stripeAccountId: 'acct_unit', defaultCurrency: 'USD' }],
+      [{ apiKey: 'enc(sk_test_x)', status: 'connected', stripeAccountId: 'acct_unit', defaultCurrency: 'USD' }],
+    );
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'usd', country: 'US' });
+    dbMocks.updateReturning.push([], []); // both guarded updates hit zero rows
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toMatchObject({
+        connected: true,
+        cacheState: 'unknown',
+        error: { code: 'STRIPE_CONNECTION_CHANGED' },
+      });
+    } finally {
       warnSpy.mockRestore();
     }
   });

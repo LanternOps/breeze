@@ -12,6 +12,8 @@ export type PartnerStripeErrorCode =
   | 'NO_STRIPE_KEY'        // partner never configured a key / disconnected
   | 'INVALID_STRIPE_KEY'   // key rejected by Stripe (at save time, or later revoked) — PERMANENT until the key is replaced
   | 'STRIPE_KEY_UNREADABLE' // stored ciphertext can't be decrypted (corrupt / KEK rotated away) — PERMANENT
+  | 'STRIPE_CONNECTION_CHANGED' // the stored connection was replaced/disconnected mid-operation —
+                                 // a purely LOCAL race, nothing to do with Stripe's availability
   | 'STRIPE_ACCOUNT_UNKNOWN' // Stripe answered, but not with the account: restricted key without
                              // accounts.retrieve, an untyped/unknown error. The KEY MAY BE FINE
                              // (checkout can still work) — never tell the partner to reconnect.
@@ -23,6 +25,7 @@ const STATUS_FOR_CODE: Record<PartnerStripeErrorCode, 400 | 409 | 500 | 503> = {
   NO_STRIPE_KEY: 409,
   INVALID_STRIPE_KEY: 400,
   STRIPE_KEY_UNREADABLE: 500,
+  STRIPE_CONNECTION_CHANGED: 409,
   STRIPE_ACCOUNT_UNKNOWN: 503,
   STRIPE_UNAVAILABLE: 503,
 };
@@ -369,7 +372,14 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
 
   console.warn('[partnerStripe] account refresh raced a key replacement or disconnect — re-reading the current row', { partnerId, stripeAccountId, attempt });
   if (attempt < 1) return refreshPartnerStripeAccount(partnerId, attempt + 1);
-  throw new PartnerStripeError('Stripe connection changed while refreshing — try again.', 'STRIPE_UNAVAILABLE');
+  // An exhausted RETURNING guard is a LOCAL key-replacement/disconnect race, not
+  // a Stripe outage: reporting it as STRIPE_UNAVAILABLE told the partner "we
+  // could not reach Stripe" and made the sweep count a transient Stripe failure
+  // that never happened (review F4). Its own code, its own message.
+  throw new PartnerStripeError(
+    'Your Stripe connection changed while it was being refreshed — reload the page and try again.',
+    'STRIPE_CONNECTION_CHANGED',
+  );
 }
 
 /**
@@ -432,10 +442,10 @@ export async function getPartnerStripeAccountSnapshot(partnerId: string): Promis
       console.warn('[partnerStripe] account cache refresh failed transiently — serving cached value flagged stale', { partnerId, message: err.message });
       return { ...status, cacheState: 'stale', error: { code: err.code, message: err.message } };
     }
-    if (err.code === 'STRIPE_ACCOUNT_UNKNOWN') {
+    if (err.code === 'STRIPE_ACCOUNT_UNKNOWN' || err.code === 'STRIPE_CONNECTION_CHANGED') {
       // The key may be perfectly usable for checkout; we just can't read the
       // account. Report the cache as unknown, NOT the connection as broken (F2).
-      console.warn('[partnerStripe] account facts unavailable — cache reported as unknown', { partnerId, message: err.message });
+      console.warn('[partnerStripe] account facts unavailable — cache reported as unknown', { partnerId, code: err.code, message: err.message });
       return { ...status, cacheState: 'unknown', error: { code: err.code, message: err.message } };
     }
     // INVALID_STRIPE_KEY / STRIPE_KEY_UNREADABLE: already logged at error level
