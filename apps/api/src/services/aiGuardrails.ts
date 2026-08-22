@@ -11,16 +11,18 @@
  */
 
 import type { AiApprovalScope } from '@breeze/shared/types/ai';
+import type { AiAgentProtectedResources } from '@breeze/shared';
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
 import { getRedis } from './redis';
+import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
 // Tools that are always blocked (Tier 4)
-const BLOCKED_TOOLS = new Set<string>([
+export const BLOCKED_TOOLS: ReadonlySet<string> = new Set<string>([
   // No tools are explicitly blocked at the tool level —
   // cross-org access is enforced by orgCondition in each handler
 ]);
@@ -1284,6 +1286,215 @@ export function checkGuardrails(
     ...(baseTier === 2 && TIER2_READONLY_TOOLS.has(toolName) ? { readOnly: true } : {}),
     description: buildApprovalDescription(toolName, action, input)
   };
+}
+
+export interface AgentGuardrailPolicy {
+  toolAllowlist: string[];
+  protectedResources: AiAgentProtectedResources;
+  /** Resolved from the run device, not from caller-controlled tool input. */
+  deviceSiteId?: string | null;
+}
+
+const SERVICE_INPUT_KEYS = ['serviceName', 'service', 'name'];
+const PATH_INPUT_KEYS = ['path', 'filePath', 'source', 'destination', 'directory'];
+const REGISTRY_INPUT_KEYS = ['key', 'registryKey', 'keyPath'];
+const DEVICE_TAG_INPUT_KEYS = ['deviceTag', 'tag', 'tagName'];
+const DEVICE_TAG_ARRAY_INPUT_KEYS = ['deviceTags', 'tags'];
+const SITE_INPUT_KEYS = ['siteId', 'site_id', 'targetSiteId'];
+const SITE_ARRAY_INPUT_KEYS = ['siteIds', 'site_ids'];
+
+function inputStrings(input: Record<string, unknown>, keys: string[]): string[] {
+  return keys.map((key) => input[key]).filter((value): value is string => typeof value === 'string');
+}
+
+function inputStringArrays(input: Record<string, unknown>, keys: string[]): string[] {
+  return keys.flatMap((key) => {
+    const value = input[key];
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  });
+}
+
+function isWindowsStylePath(value: string): boolean {
+  return /^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.includes('\\');
+}
+
+function normalizeHierarchy(value: string, separator: '\\' | '/', caseInsensitive: boolean): string {
+  const separatorPattern = separator === '\\' ? /[\\/]+/g : /\/+/g;
+  let normalized = value.trim().replace(separatorPattern, separator);
+  while (normalized.length > 1 && normalized.endsWith(separator)) {
+    normalized = normalized.slice(0, -1);
+  }
+  return caseInsensitive ? normalized.toLowerCase() : normalized;
+}
+
+function normalizePath(value: string, separator: '\\' | '/', caseInsensitive: boolean): string {
+  const normalized = normalizeHierarchy(value, separator, caseInsensitive);
+  const segments: string[] = [];
+
+  for (const segment of normalized.split(separator)) {
+    if (segment === '.') continue;
+    if (segment === '..' && segments.length > 0) {
+      const previous = segments[segments.length - 1];
+      if (previous !== undefined && previous !== '' && !previous.endsWith(':') && previous !== '..') {
+        segments.pop();
+        continue;
+      }
+    }
+    segments.push(segment);
+  }
+
+  return segments.join(separator) || separator;
+}
+
+function isSameOrDescendant(candidate: string, root: string, separator: '\\' | '/'): boolean {
+  return candidate === root || candidate.startsWith(root === separator ? root : `${root}${separator}`);
+}
+
+function pathIsProtected(candidate: string, protectedPath: string): boolean {
+  const windowsStyle = isWindowsStylePath(candidate) || isWindowsStylePath(protectedPath);
+  const separator = windowsStyle ? '\\' : '/';
+  return isSameOrDescendant(
+    normalizePath(candidate, separator, windowsStyle),
+    normalizePath(protectedPath, separator, windowsStyle),
+    separator,
+  );
+}
+
+function registryKeyIsProtected(candidate: string, protectedKey: string): boolean {
+  return isSameOrDescendant(
+    normalizeHierarchy(candidate, '\\', true),
+    normalizeHierarchy(protectedKey, '\\', true),
+    '\\',
+  );
+}
+
+function touchesProtected(
+  input: Record<string, unknown>,
+  protectedResources: AiAgentProtectedResources,
+): string | null {
+  for (const serviceName of inputStrings(input, SERVICE_INPUT_KEYS)) {
+    if (protectedResources.services.some(
+      (protectedService) => protectedService.toLowerCase() === serviceName.toLowerCase(),
+    )) {
+      return `service "${serviceName}" is protected`;
+    }
+  }
+
+  for (const path of inputStrings(input, PATH_INPUT_KEYS)) {
+    if (protectedResources.paths.some((protectedPath) => pathIsProtected(path, protectedPath))) {
+      return `path "${path}" is protected`;
+    }
+  }
+
+  for (const registryKey of inputStrings(input, REGISTRY_INPUT_KEYS)) {
+    if (protectedResources.registryKeys.some(
+      (protectedKey) => registryKeyIsProtected(registryKey, protectedKey),
+    )) {
+      return `registry key "${registryKey}" is protected`;
+    }
+  }
+
+  const deviceTags = [
+    ...inputStrings(input, DEVICE_TAG_INPUT_KEYS),
+    ...inputStringArrays(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
+  ];
+  for (const deviceTag of deviceTags) {
+    if (protectedResources.deviceTags.includes(deviceTag)) {
+      return `device tag "${deviceTag}" is protected`;
+    }
+  }
+
+  return null;
+}
+
+function isAgentGuardrailPolicy(
+  policy: AgentGuardrailPolicy | null | undefined,
+): policy is AgentGuardrailPolicy {
+  if (!policy || !Array.isArray(policy.toolAllowlist)) return false;
+  if (!policy.toolAllowlist.every((toolName) => typeof toolName === 'string')) return false;
+
+  const resources = policy.protectedResources;
+  if (!resources || typeof resources !== 'object') return false;
+  return [resources.services, resources.paths, resources.registryKeys, resources.deviceTags]
+    .every((values) => Array.isArray(values) && values.every((value) => typeof value === 'string'));
+}
+
+function siteScopeDenial(
+  input: Record<string, unknown>,
+  deviceSiteId: string | null | undefined,
+): string | null {
+  const selectedSiteIds: string[] = [];
+
+  for (const key of SITE_INPUT_KEYS) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    if (typeof value !== 'string') return `site selector "${key}" is invalid`;
+    selectedSiteIds.push(value);
+  }
+
+  for (const key of SITE_ARRAY_INPUT_KEYS) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    if (!Array.isArray(value) || !value.every((siteId) => typeof siteId === 'string')) {
+      return `site selector "${key}" is invalid`;
+    }
+    selectedSiteIds.push(...value);
+  }
+
+  if (selectedSiteIds.length === 0) return null;
+  if (!deviceSiteId) return 'run device site is unavailable';
+  const outsideSite = selectedSiteIds.find((siteId) => siteId !== deviceSiteId);
+  return outsideSite ? `site "${outsideSite}" is outside the run device site` : null;
+}
+
+/**
+ * Structural guardrails for the ai_agent principal. This path intentionally
+ * never consults user RBAC: an agent has no user role to authorize against.
+ */
+export function checkAgentGuardrails(
+  toolName: string,
+  input: Record<string, unknown>,
+  policy: AgentGuardrailPolicy | null | undefined,
+): GuardrailCheck {
+  const base = checkGuardrails(toolName, input);
+  const deny = (reason: string): GuardrailCheck => {
+    if (base.tier === 3) {
+      return { ...base, allowed: false, requiresApproval: false, reason };
+    }
+    return { ...base, allowed: false, requiresApproval: false, reason };
+  };
+
+  if (process.env.BREEZE_AI_AGENTS_ENABLED !== 'true') {
+    return deny('Autonomous AI agents are disabled');
+  }
+  if (!isAgentGuardrailPolicy(policy)) {
+    return deny('AI agent run policy snapshot is missing or invalid');
+  }
+  if (!base.allowed || base.tier === 4 || BLOCKED_TOOLS.has(toolName)) {
+    return deny(base.reason ?? `Tool "${toolName}" is not available to agents`);
+  }
+  if (isSecretBearingTool(toolName)) {
+    return deny(`Tool "${toolName}" is secret-bearing and never available to agents`);
+  }
+
+  const siteDenial = siteScopeDenial(input, policy.deviceSiteId);
+  if (siteDenial) return deny(`Denied: ${siteDenial}`);
+
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  const action = typeof actionValue === 'string' ? actionValue : undefined;
+  const readOnly = base.tier === 1
+    || (base.tier === 2 && (base.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+  const allowlisted = policy.toolAllowlist.includes(toolName)
+    || (action !== undefined && policy.toolAllowlist.includes(`${toolName}:${action}`));
+  if (!readOnly && !allowlisted) {
+    return deny(`Tool "${toolName}"${action ? `:${action}` : ''} is not in the agent's allowlist`);
+  }
+
+  const protectedHit = touchesProtected(input, policy.protectedResources);
+  if (protectedHit) return deny(`Denied: ${protectedHit}`);
+
+  return base;
 }
 
 /**
