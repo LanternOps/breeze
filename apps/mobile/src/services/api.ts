@@ -4,6 +4,7 @@ import * as Sentry from '@sentry/react-native';
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
 import { fetchWithTimeout } from './fetchWithTimeout';
+import { currentTruncationEpoch, trackTruncation } from './truncationReporting';
 import {
   applyCsrfSignal,
   forgetCsrfToken,
@@ -484,15 +485,22 @@ const ALERT_PAGE_LIMIT = 100;
 export async function getAlertsPaged(
   status: 'active' | 'all' = 'active'
 ): Promise<PagedResult<Alert>> {
+  // Captured BEFORE the request: a result that arrives after a sign-out must
+  // not repopulate the tracker for the next session.
+  const epoch = currentTruncationEpoch();
   const { rows, total, truncated } = await fetchPage<MobileAlertRecord>((params) => {
     if (status === 'active') params.set('status', 'active');
     return `/alerts/inbox?${params.toString()}`;
   }, ALERT_PAGE_LIMIT);
 
-  if (truncated) {
+  // Change-only, as above (#3783). Keyed per status: the active inbox and the
+  // full history are different sets, and one being partial says nothing about
+  // the other.
+  const alertTruncation = trackTruncation(`alert-inbox:${status}`, total, rows.length, epoch);
+  if (alertTruncation) {
     Sentry.captureMessage('alert inbox is showing a partial set', {
       level: 'warning',
-      tags: { area: 'alert-inbox' },
+      tags: { area: 'alert-inbox', truncation: alertTruncation },
       extra: { returned: rows.length, total, status, pageLimit: ALERT_PAGE_LIMIT },
     });
   }
@@ -640,15 +648,33 @@ async function fetchPage<TRow>(
  * machines sat below the cut rendered as empty.
  */
 export async function getDevicesPaged(orgId?: string | null): Promise<PagedResult<Device>> {
+  // See getAlertsPaged: captured before the request, checked after it resolves.
+  const epoch = currentTruncationEpoch();
   const { rows, total, truncated } = await fetchPage<MobileDeviceRecord>((params) => {
     if (orgId) params.set('orgId', orgId);
     return `/devices?${params.toString()}`;
   }, DEVICE_PAGE_LIMIT);
 
-  if (truncated) {
+  // Only on a CHANGE of truncation state: any tenant above the page limit is
+  // permanently truncated, and this runs on mount, tab focus, pull-to-refresh,
+  // push delivery and WS updates, so reporting every time buried the signal
+  // under its own volume (#3783).
+  // Keyed by orgId because it is sent to the SERVER above: a scoped fetch and
+  // the unscoped fleet are different result sets, and one being partial says
+  // nothing about the other. Sharing one key broke both ways — an org's first
+  // partial was swallowed by the fleet's state, and a small complete org reset
+  // the key so the unchanged fleet reported again on every return to Systems,
+  // rebuilding the flood this fixes.
+  const deviceTruncation = trackTruncation(
+    `device-list:${orgId ?? 'all'}`,
+    total,
+    rows.length,
+    epoch
+  );
+  if (deviceTruncation) {
     Sentry.captureMessage('device list is showing a partial fleet', {
       level: 'warning',
-      tags: { area: 'device-list' },
+      tags: { area: 'device-list', truncation: deviceTruncation },
       extra: { returned: rows.length, total, pageLimit: DEVICE_PAGE_LIMIT },
     });
   }

@@ -170,6 +170,7 @@ export async function getSystemStatusId(
  */
 export async function getOrgBillingDefaults(orgId: string): Promise<{
   defaultHourlyRate: string | null;
+  rateCurrency: string;
   defaultBillable: boolean | null;
 } | null> {
   const rows = await runOutsideDbContext(() =>
@@ -177,6 +178,7 @@ export async function getOrgBillingDefaults(orgId: string): Promise<{
       db
         .select({
           defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
+          rateCurrency: orgTicketSettings.rateCurrency,
           defaultBillable: orgTicketSettings.defaultBillable,
         })
         .from(orgTicketSettings)
@@ -590,26 +592,55 @@ function toOrgTicketSettingsResponse(orgId: string, row?: {
   slaOverrides?: unknown;
   defaultHourlyRate?: string | null;
   defaultBillable?: boolean | null;
+  rateCurrency?: string | null;
 }) {
   return {
     orgId,
     slaOverrides: (row?.slaOverrides ?? {}) as Record<string, unknown>,
     defaultHourlyRate: row?.defaultHourlyRate ?? null,
     defaultBillable: row?.defaultBillable ?? null,
+    rateCurrency: row?.rateCurrency ?? null,
   };
 }
 
 export async function getOrgTicketSettings(orgId: string) {
+  // Settings + org currency are read under the caller's RLS context. The
+  // owning partner's currency is read in a system context on purpose:
+  // organization-scoped tokens carry an EMPTY accessible-partner list
+  // (`computeAccessiblePartnerIds`), so a join on `partners` would yield zero
+  // rows for them and silently blank the whole response. A currency code is
+  // not tenant-sensitive; the org row itself was already resolved under RLS.
   const rows = await db
     .select({
+      partnerId: organizations.partnerId,
+      orgCurrency: organizations.currencyCode,
       slaOverrides: orgTicketSettings.slaOverrides,
       defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
       defaultBillable: orgTicketSettings.defaultBillable,
+      rateCurrency: orgTicketSettings.rateCurrency,
     })
-    .from(orgTicketSettings)
-    .where(eq(orgTicketSettings.orgId, orgId))
+    .from(organizations)
+    .leftJoin(orgTicketSettings, eq(orgTicketSettings.orgId, organizations.id))
+    .where(eq(organizations.id, orgId))
     .limit(1);
-  return toOrgTicketSettingsResponse(orgId, rows[0]);
+  const row = rows[0];
+  if (!row) throw new Error('Organization not found');
+  const partnerRows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ currencyCode: partners.currencyCode })
+        .from(partners)
+        .where(eq(partners.id, row.partnerId))
+        .limit(1)
+    )
+  );
+  const partnerCurrency = partnerRows[0]?.currencyCode;
+  if (!partnerCurrency) throw new Error('Partner not found');
+  return {
+    ...toOrgTicketSettingsResponse(orgId, row),
+    orgCurrency: row.orgCurrency,
+    partnerCurrency,
+  };
 }
 
 /**
@@ -618,7 +649,11 @@ export async function getOrgTicketSettings(orgId: string) {
  * desired override map. defaultHourlyRate is a numeric column, so Drizzle wants
  * a string; we convert with String() (null stays null).
  */
-export async function upsertOrgTicketSettings(orgId: string, input: OrgTicketSettingsInput) {
+export async function upsertOrgTicketSettings(
+  orgId: string,
+  input: OrgTicketSettingsInput,
+  orgCurrencyCode: string,
+) {
   const fields: Record<string, unknown> = {};
   if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
   if (input.defaultHourlyRate !== undefined) {
@@ -626,12 +661,24 @@ export async function upsertOrgTicketSettings(orgId: string, input: OrgTicketSet
   }
   if (input.defaultBillable !== undefined) fields.defaultBillable = input.defaultBillable;
 
+  // rate_currency is a snapshot of the org currency the rate was entered under
+  // (spec §7). Stamped on insert; restamped on conflict ONLY when the stored
+  // rate actually changes — the editor resends the rate on every save, so a
+  // same-value PATCH (SLA/billability edit after an org currency change) must
+  // leave the historical pair intact. Decided in SQL so it is race-free.
+  const restamp = input.defaultHourlyRate !== undefined
+    ? {
+        rateCurrency: sql`CASE WHEN ${orgTicketSettings.defaultHourlyRate} IS DISTINCT FROM excluded.default_hourly_rate
+                               THEN excluded.rate_currency ELSE ${orgTicketSettings.rateCurrency} END`,
+      }
+    : {};
+
   const [row] = await db
     .insert(orgTicketSettings)
-    .values({ orgId, ...fields })
+    .values({ orgId, rateCurrency: orgCurrencyCode, ...fields })
     .onConflictDoUpdate({
       target: orgTicketSettings.orgId,
-      set: { ...fields, updatedAt: new Date() },
+      set: { ...fields, ...restamp, updatedAt: new Date() },
     })
     .returning();
   return toOrgTicketSettingsResponse(orgId, row);

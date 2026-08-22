@@ -32,8 +32,15 @@ The list shows every invoice with its number, organization, status, issue and du
 1. Go to **Billing → Invoices** and click **New invoice**.
 2. Choose **Assemble from work** to pull in tracked time and parts, or **Blank invoice** to start empty.
 3. Select the customer organization the invoice is for.
-4. The invoice opens as a **draft** for editing.
+4. When assembling from work, choose the draft's **Currency**. **Organization default** uses the currency the organization bills in today; pick an explicit currency only when you need to bill work that was priced in a currency the organization no longer uses.
+5. The invoice opens as a **draft** for editing.
 </Steps>
+
+### Assembling across currencies
+
+Tracked time and parts keep the currency they were priced in when they were logged. Assembling only pulls in work whose currency matches the draft's currency; nothing is ever converted. If some unbilled work in the range is priced in another currency, the draft is still created and a notice tells you how many items were left out and in which currency -- assemble a separate draft in that currency to bill them. If *all* the unbilled work is in another currency, nothing is assembled and the dialog offers an **Assemble in …** button for each currency found (with the item count and total); clicking it creates a draft in that currency containing exactly those items. The same **Assemble in** shortcut appears on a ticket's **Create invoice** action when its unbilled work is in a different currency than the organization now bills in.
+
+Once an invoice is issued, the time entries and parts it billed are locked: their hours, rates, quantities, and prices can no longer be edited (descriptions and notes still can). Void and reissue the invoice if an amount needs to change.
 
 ### Adding Line Items
 

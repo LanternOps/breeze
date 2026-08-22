@@ -1,6 +1,7 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { withBase } from '../../lib/basePath';
+import { redirectToLoginAfter401 } from '../../lib/session';
 import TicketList from '../../components/portal/TicketList';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -11,7 +12,8 @@ const response = await portalApi.getTickets(
 );
 
 if (response.statusCode === 401) {
-  return Astro.redirect(withBase('/login'));
+  // Dead session: clear the stale cookie and come back here after sign-in.
+  return redirectToLoginAfter401(Astro);
 }
 
 // #2345 — the enable_tickets gate 403s with code PORTAL_TICKETS_DISABLED;
@@ -23,6 +25,6 @@ if (response.statusCode === 403 && response.code === 'PORTAL_TICKETS_DISABLED') 
 }
 ---
 
-<PortalLayout title="Support Tickets">
+<PortalLayout title="Support">
   <TicketList tickets={response.data ?? []} error={response.error} />
 </PortalLayout>

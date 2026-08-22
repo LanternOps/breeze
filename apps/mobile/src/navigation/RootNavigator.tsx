@@ -14,6 +14,7 @@ import {
 } from '../store/authSlice';
 import { getStoredToken, getStoredUser, clearAuthData, SecureWipeError } from '../services/auth';
 import { getCurrentUser, onDeviceBlocked } from '../services/api';
+import { resetTruncationTracking } from '../services/truncationReporting';
 import { spacing, type } from '../theme';
 import { identify as analyticsIdentify, reset as analyticsReset } from '../lib/analytics';
 import {
@@ -91,6 +92,11 @@ export function RootNavigator() {
     } else {
       Sentry.setUser(null);
       analyticsReset();
+      // Same reason, one layer down: the truncation tracker is module scope and
+      // outlives the session, so a previous account's "already reported" state
+      // would silently swallow the FIRST report for the next one — and the
+      // login screen can point at a different server entirely.
+      resetTruncationTracking();
     }
   }, [user]);
 

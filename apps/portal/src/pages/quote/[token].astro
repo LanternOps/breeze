@@ -14,9 +14,15 @@ const response = await portalApi.getPublicQuote(token!, buildServerApiConfig(Ast
 const initial = response.data?.data ?? null;
 const error = response.statusCode === 401 ? undefined : response.error;
 const partnerName = initial?.branding?.partnerName;
-const title = partnerName ? `Proposal — ${partnerName}` : 'Proposal';
+const title = partnerName ? `Proposal from ${partnerName}` : 'Proposal';
 ---
 
-<PublicDocumentLayout title={title}>
+<PublicDocumentLayout
+  title={title}
+  docAccent={initial?.branding?.primaryColor}
+  supportEmail={initial?.branding?.supportEmail}
+  supportPhone={initial?.branding?.supportPhone}
+  partnerName={partnerName}
+>
   <PublicQuoteView token={token!} initial={initial} error={error} client:load />
 </PublicDocumentLayout>

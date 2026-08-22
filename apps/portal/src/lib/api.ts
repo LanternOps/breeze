@@ -99,20 +99,36 @@ function buildQueryString(query?: Record<string, string | number | undefined>): 
   return serialized ? `?${serialized}` : '';
 }
 
+/**
+ * Browser-facing API path for hrefs, image `src`, and download links that end
+ * up IN the rendered HTML. Always same-origin relative (`/api/v1/...`), so the
+ * reverse proxy routes it. `buildPortalApiUrl` below resolves the SSR-internal
+ * base (e.g. http://api:3001) for server-side fetches — rendering THAT into an
+ * href leaked the internal hostname into customer HTML and tripped a hydration
+ * mismatch on every document page.
+ */
+export type PublicApiPath = string & { readonly __brand: 'PublicApiPath' };
+
+function stripApiPrefix(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return normalizedPath === '/api'
+    ? ''
+    : normalizedPath.startsWith('/api/')
+      ? normalizedPath.slice(4)
+      : normalizedPath;
+}
+
+export function publicApiPath(path: string): PublicApiPath {
+  return `/api/v1${stripApiPrefix(path)}` as PublicApiPath;
+}
+
 export function buildPortalApiUrl(path: string): string {
   if (path.startsWith('http://') || path.startsWith('https://')) {
     return path;
   }
 
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  const cleanPath = normalizedPath === '/api'
-    ? ''
-    : normalizedPath.startsWith('/api/')
-      ? normalizedPath.slice(4)
-      : normalizedPath;
-
   const apiBase = resolveApiBase();
-  return `${apiBase}/api/v1${cleanPath}`;
+  return `${apiBase}/api/v1${stripApiPrefix(path)}`;
 }
 
 export function buildServerForwardHeaders(request: Request): Headers {
@@ -208,7 +224,7 @@ export async function apiRequest<T>(
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
       return {
-        error: body?.error || 'Request failed',
+        error: body?.error || 'That didn\'t go through. Nothing was lost — try again in a moment.',
         code: typeof body?.code === 'string' ? body.code : undefined,
         statusCode: response.status,
         headers: response.headers
@@ -285,7 +301,11 @@ export interface Device {
   lastSeenAt: string | null;
 }
 
-export type TicketStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
+/** Mirrors the API's ticket_status enum. A freshly submitted ticket is 'new'
+ *  (it becomes 'open' when a technician picks it up); 'pending' is waiting on
+ *  the customer, 'on_hold' on something else. Keep in sync with
+ *  apps/api/src/db/schema/portal.ts ticketStatusEnum. */
+export type TicketStatus = 'new' | 'open' | 'pending' | 'on_hold' | 'resolved' | 'closed';
 export type TicketPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export interface TicketSummary {
@@ -301,6 +321,8 @@ export interface TicketSummary {
 export interface TicketComment {
   id: string;
   authorName: string;
+  /** 'portal' is the customer's own reply; anything else came from the IT team. */
+  authorType: string | null;
   content: string;
   createdAt: string;
 }
@@ -350,6 +372,10 @@ export type { InvoiceStatus, PublicQuoteHeader };
 export interface InvoiceSummary {
   id: string;
   invoiceNumber: string | null;
+  /** Derived human handle: the accepted proposal's title, else the first
+   *  customer-visible line's name. Always present on list rows; null for a
+   *  bare invoice. */
+  title: string | null;
   status: InvoiceStatus;
   currencyCode: string;
   issueDate: string | null;
@@ -391,7 +417,9 @@ export interface InvoiceLine {
 }
 
 export interface InvoiceDetail {
-  invoice: InvoiceSummary & {
+  // The detail header is a separate serialization boundary on the API and
+  // does not carry the list's derived `title`.
+  invoice: Omit<InvoiceSummary, 'title'> & {
     subtotal: string;
     taxTotal: string;
     taxRate: string | null;
@@ -401,6 +429,10 @@ export interface InvoiceDetail {
     termsAndConditions?: string | null;
   };
   lines: InvoiceLine[];
+  /** Partner branding for the document shell, matching QuoteDetail. Optional:
+   *  older API responses and fixtures predate it, in which case the view falls
+   *  back to GET /portal/branding. */
+  branding?: QuoteBranding;
 }
 
 export type QuoteStatus =
@@ -410,12 +442,18 @@ export type QuoteStatus =
   | 'accepted'
   | 'declined'
   | 'expired'
-  | 'converted';
+  | 'converted'
+  // The portal list returns every non-draft quote, so it will receive this the
+  // moment quotes can be superseded. Declared here to keep the union honest;
+  // the dedicated "replaced" rendering lands with the rest of the portal work.
+  | 'superseded';
 
 export interface QuoteSummary {
   id: string;
   quoteNumber: string | null;
-  status: string;
+  /** The proposal's own title (quotes.title); null when the MSP gave it none. */
+  title: string | null;
+  status: QuoteStatus;
   currencyCode: string;
   issueDate: string | null;
   expiryDate: string | null;
@@ -518,6 +556,11 @@ export interface QuoteBranding {
   partnerName: string;
   logoUrl: string | null;
   primaryColor: string | null;
+  /** The MSP's published support contact, so the PUBLIC proposal page can offer
+   *  a prospect a way to reach the company asking them to sign. Optional: older
+   *  API responses and fixtures predate these fields. */
+  supportEmail?: string | null;
+  supportPhone?: string | null;
 }
 
 export interface QuoteDetail {
@@ -726,6 +769,33 @@ export const portalApi = {
 
     return {
       data: response.data.ticket,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  /** Customer reply on their own ticket. The API (POST /portal/tickets/:id/comments)
+   *  only accepts comments on tickets the session's portal user submitted, caps
+   *  content at 5,000 chars, and returns the created public comment. */
+  addTicketComment: async (
+    ticketId: string,
+    content: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<TicketComment>> => {
+    const response = await apiPost<{ comment: TicketComment }>(
+      `/portal/tickets/${ticketId}/comments`,
+      { content },
+      config
+    );
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+    return {
+      data: response.data.comment,
       statusCode: response.statusCode,
       headers: response.headers
     };

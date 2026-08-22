@@ -19,6 +19,7 @@ vi.mock('./fetchWithTimeout', () => ({
 }));
 
 import { getDevices, getDevicesPaged, getAlertsPaged } from './api';
+import { resetTruncationTracking } from './truncationReporting';
 
 const row = (id: string) => ({ id, hostname: id, status: 'online', orgId: 'o1' });
 const rows = (n: number) => Array.from({ length: n }, (_, i) => row(`d${i}`));
@@ -46,6 +47,12 @@ function page(data: unknown[], total: number | null) {
 beforeEach(() => {
   fetchWithTimeout.mockReset();
   captureMessage.mockReset();
+  // Truncation reporting is throttled to a state CHANGE (#3783), and that state
+  // is module scope so it survives between cases. Without this reset the second
+  // case to fetch the same list sees "already reported" and stays silent, so an
+  // assertion that the warning fires would fail for a reason that has nothing
+  // to do with what it is testing.
+  resetTruncationTracking();
 });
 
 describe('device list paging', () => {

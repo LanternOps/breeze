@@ -83,6 +83,8 @@ export interface AddinTimeEntry {
   description: string | null;
   isBillable: boolean;
   hourlyRate: string | null;
+  /** Currency the entry's money is expressed in (server-stamped snapshot); null only for standalone, money-less entries. */
+  currencyCode: string | null;
   billingStatus: string;
   isApproved: boolean;
   approvedBy: string | null;

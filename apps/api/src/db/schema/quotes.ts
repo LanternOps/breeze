@@ -10,7 +10,7 @@ import { users, bytea } from './users';
 import { catalogItemTypeEnum } from './catalog';
 
 export const quoteStatusEnum = pgEnum('quote_status', [
-  'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted'
+  'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded'
 ]);
 export const quoteLineSourceTypeEnum = pgEnum('quote_line_source_type', ['catalog', 'bundle', 'manual']);
 export const quoteLineRecurrenceEnum = pgEnum('quote_line_recurrence', ['one_time', 'monthly', 'annual']);
@@ -111,6 +111,16 @@ export const quotes = pgTable('quotes', {
   publicResponseConsumedAt: timestamp('public_response_consumed_at', { withTimezone: true }),
   publicResponseOutcome: varchar('public_response_outcome', { length: 16 }),
   publicLinkRevokedAt: timestamp('public_link_revoked_at', { withTimezone: true }),
+  // Quote revisions: immediate-parent link + 1-based position in the lineage.
+  // Schema and constraints only so far — nothing writes a non-null parent yet.
+  // Enforced TODAY: linearity via quotes_revision_of_uq (one successor ever),
+  // root-vs-revision via quotes_revision_number_chk, and same-tenant lineage
+  // via the composite FK to (id, org_id).
+  // PLANNED (docs/superpowers/plans/2026-08-17-quote-revisions.md): a revision
+  // will keep the root's number with an -R<n> suffix, and sending one will flip
+  // its parent to 'superseded'. Neither behavior exists in sendQuote yet.
+  revisionOfQuoteId: uuid('revision_of_quote_id'),
+  revisionNumber: integer('revision_number').notNull().default(1),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
@@ -120,7 +130,13 @@ export const quotes = pgTable('quotes', {
   index('quotes_org_issue_date_idx').on(t.orgId, t.issueDate),
   index('quotes_expiry_idx').on(t.expiryDate).where(sqlOpenForExpiry(t)),
   uniqueIndex('quotes_partner_number_uq').on(t.partnerId, t.quoteNumber).where(sqlNumberPresent(t)),
-  uniqueIndex('quotes_id_org_uq').on(t.id, t.orgId)
+  uniqueIndex('quotes_id_org_uq').on(t.id, t.orgId),
+  uniqueIndex('quotes_revision_of_uq').on(t.revisionOfQuoteId).where(sql`${t.revisionOfQuoteId} IS NOT NULL`),
+  foreignKey({
+    columns: [t.revisionOfQuoteId, t.orgId],
+    foreignColumns: [t.id, t.orgId],
+    name: 'quotes_revision_of_fk',
+  }),
 ]);
 
 export const quoteBlocks = pgTable('quote_blocks', {

@@ -1254,7 +1254,8 @@
       "accepted": "Accepté",
       "declined": "Refusé",
       "expired": "Expiré",
-      "converted": "Converti"
+      "converted": "Converti",
+      "superseded": "Remplacé"
     },
     "workspace": {
       "backLabel": "Devis",
@@ -1660,16 +1661,21 @@
       "unpaid": "Acompte impayé"
     },
     "dialog": {
+      "allBlockedByCurrency": "Tout le travail non facturé de cette période est valorisé dans une autre devise, donc rien n’a pu être assemblé. Assemblez plutôt un brouillon dans cette devise :",
       "allSites": "Tous les sites",
       "assemble": "Assembler",
       "assembleError": "Impossible d'assembler une facture pour cette plage.",
       "assembleFromWork": "Assembler depuis les travaux",
+      "assembleIn": "Assembler en {{code}} ({{count}} éléments, {{amount}})",
       "assembleSuccess": "Facture brouillon assemblée",
       "blankInvoice": "Facture vierge",
+      "blockedByCurrency": "{{count}} éléments non facturés valorisés en {{code}} ont été exclus : assemblez un brouillon distinct en {{code}} pour les facturer.",
       "createDraft": "Créer un brouillon",
       "createError": "Impossible de créer une facture brouillon.",
       "createGenericError": "Impossible de créer la facture.",
       "createSuccess": "Facture brouillon créée",
+      "currency": "Devise",
+      "currencyOrgDefault": "Devise par défaut de l’organisation",
       "description": "Assemblez les travaux non facturés dans un brouillon ou démarrez une facture vierge.",
       "from": "De",
       "selectOrganization": "Sélectionner une organisation…",

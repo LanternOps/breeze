@@ -9,7 +9,7 @@ import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 
 export const ticketExportRoutes = new Hono();
 
-const CSV_HEADERS = ['type', 'date', 'organization', 'ticket', 'description', 'technician', 'quantity', 'rate', 'amount', 'billing_status', 'approved'];
+const CSV_HEADERS = ['type', 'date', 'organization', 'ticket', 'description', 'technician', 'quantity', 'rate', 'amount', 'currency', 'billing_status', 'approved'];
 
 ticketExportRoutes.get(
   '/export/billables.csv',
@@ -26,13 +26,14 @@ ticketExportRoutes.get(
     if (q.orgId && !auth.canAccessOrg(q.orgId)) {
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
-    const rows = await listBillables(q.from, q.to, q.orgId, auth.accessibleOrgIds);
+    const { rows } = await listBillables(q.from, q.to, q.orgId, auth.accessibleOrgIds);
     const lines = [CSV_HEADERS.join(',')];
     for (const r of rows) {
       lines.push(csvRow([
         r.kind, r.date.toISOString(), r.orgName ?? '', r.ticketNumber ?? '',
         r.description ?? '', r.technician ?? '', r.quantity, r.rate ?? '',
-        r.amount, r.billingStatus, r.isApproved === null ? '' : String(r.isApproved)
+        r.amount, r.currencyCode ?? '', r.billingStatus,
+        r.isApproved === null ? '' : String(r.isApproved)
       ]));
     }
     const body = lines.join('\n');

@@ -129,7 +129,7 @@ describe('portal quotes GET /quotes/:id', () => {
     dbResults.push([]); // quoteLines SELECT
     dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
-    dbResults.push([{ logoUrl: 'https://cdn.example.test/logo.png', primaryColor: '#123456' }]); // portalBranding SELECT
+    dbResults.push([{ logoUrl: 'https://cdn.example.test/logo.png', primaryColor: '#123456', supportEmail: 'help@lantern.test', supportPhone: '+1 555 0100' }]); // portalBranding SELECT
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -138,6 +138,10 @@ describe('portal quotes GET /quotes/:id', () => {
       partnerName: 'Lantern IT',
       logoUrl: 'https://cdn.example.test/logo.png',
       primaryColor: '#123456',
+      // Support contact rides along so the public proposal page can offer a
+      // prospect a way to reach the company asking them to sign.
+      supportEmail: 'help@lantern.test',
+      supportPhone: '+1 555 0100',
       theme: 'classic',
       pageSize: 'a4',
     });
@@ -179,7 +183,7 @@ describe('portal quotes GET /quotes/:id', () => {
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'a4' });
+    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, supportEmail: null, supportPhone: null, theme: 'classic', pageSize: 'a4' });
   });
 
   it('serializes an authored contract block with renderedHtml containing the substituted client name; no raw {{ tokens }} anywhere in the payload', async () => {

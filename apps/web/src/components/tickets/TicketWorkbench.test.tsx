@@ -1731,6 +1731,100 @@ describe('TicketWorkbench move-org action', () => {
     expect(options).toContain('org-2');
   });
 
+  // Multi-currency wave 4 (#3776): a cross-currency move with unbilled monetary
+  // rows answers 409 TICKET_MOVE_CURRENCY_BLOCKED. The dialog must stay mounted
+  // so the guidance has somewhere to render, and "move anyway" is a deliberate
+  // two-step (checkbox + button) that re-POSTs acceptCurrencyMismatch: true.
+  const BLOCKED_409 = {
+    error: 'Ticket has unbilled EUR work; Globex Inc bills in USD',
+    code: 'TICKET_MOVE_CURRENCY_BLOCKED',
+    details: { sourceCurrency: 'EUR', targetCurrency: 'USD', unbilledTimeEntries: 2, unbilledParts: 1, accepted: false },
+  };
+  const moveCalls = () =>
+    fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/move-org'));
+  const ticketGets = () =>
+    fetchMock.mock.calls.filter(([url, init]) => (!init?.method || init.method === 'GET') && String(url) === '/tickets/tk-1');
+
+  /** Like mockTicketApiWithOrgs, but the FIRST move-org POST answers 409 blocked. */
+  function mockBlockedMove(ticket: TicketDetail) {
+    let moves = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/orgs/organizations')) {
+        return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme Corp' }, { id: 'org-2', name: 'Globex Inc' }] });
+      }
+      if (!init?.method || init.method === 'GET') {
+        const match = url.match(/^\/tickets\/([^/]+)$/);
+        if (match && match[1] === ticket.id) return makeJsonResponse({ data: ticket });
+      }
+      if (init?.method === 'POST' && url.includes('/move-org')) {
+        moves += 1;
+        if (moves === 1) return makeJsonResponse(BLOCKED_409, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('a successful first move closes the form', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockTicketApiWithOrgs(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+    fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+    await waitFor(() => expect(screen.queryByTestId('ticket-workbench-move-org-form')).toBeNull());
+    expect(moveCalls()).toHaveLength(1);
+  });
+
+  it('on 409 TICKET_MOVE_CURRENCY_BLOCKED the form stays open with guidance and a gated "move anyway"', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockBlockedMove(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+    fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+
+    const guidance = await screen.findByTestId('ticket-move-blocked-currency');
+    expect(screen.getByTestId('ticket-workbench-move-org-confirm')).toBeInTheDocument();
+    expect(guidance).toHaveTextContent('EUR');
+    expect(guidance).toHaveTextContent('USD');
+    expect(guidance).toHaveTextContent('Globex Inc');
+    // The server message was toasted by runAction (bill first, or explicitly accept).
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: BLOCKED_409.error }));
+
+    const accept = screen.getByTestId('ticket-workbench-move-org-accept');
+    expect(accept).toBeDisabled();
+    fireEvent.click(screen.getByTestId('ticket-move-accept-currency'));
+    expect(accept).not.toBeDisabled();
+
+    const getsBefore = ticketGets().length;
+    fireEvent.click(accept);
+    await waitFor(() => expect(moveCalls()).toHaveLength(2));
+    expect(JSON.parse(String(moveCalls()[1][1]?.body))).toEqual({ orgId: 'org-2', acceptCurrencyMismatch: true });
+    await waitFor(() => expect(screen.queryByTestId('ticket-workbench-move-org-form')).toBeNull());
+    await waitFor(() => expect(ticketGets().length).toBeGreaterThan(getsBefore));
+  });
+
+  it('changing the target org after a block resets the acceptance checkbox', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockBlockedMove(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+    const picker = await screen.findByTestId('ticket-workbench-move-org-select');
+    fireEvent.change(picker, { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+    await screen.findByTestId('ticket-move-blocked-currency');
+    fireEvent.click(screen.getByTestId('ticket-move-accept-currency'));
+    expect(screen.getByTestId('ticket-workbench-move-org-accept')).not.toBeDisabled();
+
+    fireEvent.change(picker, { target: { value: '' } });
+    expect(screen.queryByTestId('ticket-move-blocked-currency')).toBeNull();
+    expect(screen.queryByTestId('ticket-workbench-move-org-accept')).toBeNull();
+  });
+
   it('cancel button closes the move-org form without POSTing', async () => {
     const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
     mockTicketApiWithOrgs(ticket);
@@ -1748,6 +1842,181 @@ describe('TicketWorkbench move-org action', () => {
     expect(
       fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/move-org'))
     ).toHaveLength(0);
+  });
+});
+
+describe('TicketWorkbench create-invoice blocked by currency (#3776)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const invoiceCalls = () =>
+    fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/invoice'));
+
+  it('on 409 ALL_BLOCKED_BY_CURRENCY offers to assemble in the blocked currency via ?currencyCode=', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (!init?.method || init.method === 'GET') {
+        if (url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      }
+      if (init?.method === 'POST' && url.startsWith('/tickets/tk-1/invoice')) {
+        posts += 1;
+        if (posts === 1) {
+          return makeJsonResponse({
+            error: 'All unbilled work is in EUR; this draft is in USD',
+            code: 'ALL_BLOCKED_BY_CURRENCY',
+            details: { blockedByCurrency: [{ currencyCode: 'EUR', count: 2, amount: '250.00' }] },
+          }, false, 409);
+        }
+        return makeJsonResponse({ data: { invoice: { id: 'inv-eur' }, lines: [], blockedByCurrency: [] } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    const btn = await screen.findByTestId('ticket-assemble-in-EUR');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(invoiceCalls()[0][0]).toBe('/tickets/tk-1/invoice');
+
+    fireEvent.click(btn);
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-eur'));
+    expect(invoiceCalls()).toHaveLength(2);
+    expect(invoiceCalls()[1][0]).toBe('/tickets/tk-1/invoice?currencyCode=EUR');
+  });
+
+  // Review #3 (#3776): a partial success carries BOTH the draft and the rows it
+  // left out. Navigating straight to the draft would hide them — the draft
+  // itself gives no hint that EUR work is still unbilled.
+  it('on partial success keeps the user here, offers the per-currency shortcut and an "open draft" link', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (!init?.method || init.method === 'GET') {
+        if (url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      }
+      if (init?.method === 'POST' && url.startsWith('/tickets/tk-1/invoice')) {
+        posts += 1;
+        if (posts === 1) {
+          return makeJsonResponse({
+            data: {
+              invoice: { id: 'inv-usd' }, lines: [],
+              blockedByCurrency: [{ currencyCode: 'EUR', count: 3, amount: '410.00' }],
+              missingRate: [],
+            },
+          });
+        }
+        return makeJsonResponse({ data: { invoice: { id: 'inv-eur' }, lines: [], blockedByCurrency: [], missingRate: [] } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    const panel = await screen.findByTestId('ticket-invoice-blocked');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(panel.textContent).toContain('EUR');
+    expect(screen.getByTestId('ticket-invoice-open-draft').getAttribute('href')).toBe('/billing/invoices/inv-usd');
+
+    fireEvent.click(screen.getByTestId('ticket-assemble-in-EUR'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-eur'));
+    expect(invoiceCalls()[1][0]).toBe('/tickets/tk-1/invoice?currencyCode=EUR');
+  });
+
+  it('navigates straight to the draft when nothing was left out', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({ data: { invoice: { id: 'inv-1' }, lines: [], blockedByCurrency: [], missingRate: [] } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-1'));
+    expect(screen.queryByTestId('ticket-invoice-blocked')).toBeNull();
+  });
+
+  // Review #1 (#3776): rate-less entries are never billed at zero; the response
+  // lists them under missingRate so the tech can set a rate and try again.
+  it('lists missingRate entries from a partial success with a link to set a rate', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          data: {
+            invoice: { id: 'inv-1' }, lines: [], blockedByCurrency: [],
+            missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '1.50' }],
+          },
+        });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    const row = await screen.findByTestId('ticket-invoice-missing-rate-te-9');
+    expect(row.textContent).toContain('Unrated work');
+    expect(row.textContent).toContain('1.50');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ticket-invoice-set-rate').getAttribute('href')).toBe('/timesheet');
+    expect(screen.getByTestId('ticket-invoice-open-draft').getAttribute('href')).toBe('/billing/invoices/inv-1');
+  });
+
+  it('on 409 ALL_MISSING_RATE lists the entries with the set-rate link and no draft link', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          error: '1 billable time entry has no hourly rate in USD',
+          code: 'ALL_MISSING_RATE',
+          details: { missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '0.25' }] },
+        }, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await screen.findByTestId('ticket-invoice-missing-rate-te-9');
+    expect(screen.getByTestId('ticket-invoice-set-rate')).toBeTruthy();
+    expect(screen.queryByTestId('ticket-invoice-open-draft')).toBeNull();
+    expect(screen.queryByTestId(/^ticket-assemble-in-/)).toBeNull();
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('on 409 ALL_BLOCKED_BY_CURRENCY also lists the missingRate entries carried in details', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          error: 'All unbilled work is in EUR',
+          code: 'ALL_BLOCKED_BY_CURRENCY',
+          details: {
+            blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }],
+            missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '0.25' }],
+          },
+        }, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await screen.findByTestId('ticket-assemble-in-EUR');
+    expect(screen.getByTestId('ticket-invoice-missing-rate-te-9')).toBeTruthy();
   });
 });
 

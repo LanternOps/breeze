@@ -3,9 +3,10 @@ import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Loader2, AlertCircle, CheckCircle, ArrowLeft } from 'lucide-react';
+import { Loader2, AlertCircle, ArrowLeft } from 'lucide-react';
 import { portalForgotPassword } from '@/lib/auth';
 import { cn } from '@/lib/utils';
+import { BTN_PRIMARY, INPUT } from './ui';
 
 const forgotPasswordSchema = z.object({
   email: z.string().email('Please enter a valid email address')
@@ -35,7 +36,7 @@ export function ForgotPasswordForm() {
     if (result.success) {
       setSuccess(true);
     } else {
-      setError(result.error || 'Failed to send reset email');
+      setError(result.error || 'We couldn\'t send the reset link. Check the address and try again.');
     }
 
     setIsLoading(false);
@@ -43,23 +44,15 @@ export function ForgotPasswordForm() {
 
   if (success) {
     return (
-      <div className="space-y-6">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/10">
-            <CheckCircle className="h-6 w-6 text-success" />
-          </div>
-          <div>
-            <h3 className="text-lg font-medium">Check your email</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              We've sent you a password reset link. Please check your inbox and
-              follow the instructions.
-            </p>
-          </div>
-        </div>
-
+      <div role="status" className="border-y border-border/70 py-12 text-center">
+        <h3 className="font-display text-lg font-semibold text-foreground">Check your email</h3>
+        <p className="mx-auto mt-1 max-w-[38ch] text-sm text-muted-foreground">
+          We've sent a reset link to your inbox. The link inside brings you
+          right back here.
+        </p>
         <a
           href={withBase("/login")}
-          className="flex items-center justify-center gap-2 text-sm text-primary hover:text-primary/80"
+          className="mt-4 inline-flex items-center justify-center gap-2 text-sm font-medium text-primary-on-tint underline-offset-4 hover:underline"
         >
           <ArrowLeft className="h-4 w-4" />
           Back to login
@@ -69,7 +62,9 @@ export function ForgotPasswordForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+    // Pre-hydration safety net, same rationale as AcceptInviteForm (#2868): a
+    // native submit must never be a GET carrying credentials in the URL.
+    <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-6 rounded-lg border border-border/70 bg-card p-6 sm:p-8">
       <div className="text-center">
         <p className="text-sm text-muted-foreground">
           Enter your email address and we'll send you a link to reset your
@@ -78,7 +73,7 @@ export function ForgotPasswordForm() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           <AlertCircle className="h-4 w-4" />
           {error}
         </div>
@@ -96,30 +91,22 @@ export function ForgotPasswordForm() {
           type="email"
           autoComplete="email"
           {...register('email')}
-          className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
-            errors.email && 'border-destructive'
-          )}
+          className={cn(INPUT, errors.email && 'border-destructive')}
         />
         {errors.email && (
-          <p className="mt-1 text-sm text-destructive">{errors.email.message}</p>
+          <p className="mt-1 text-sm text-destructive-on-tint">{errors.email.message}</p>
         )}
       </div>
 
       <button
         type="submit"
         disabled={isLoading}
-        className={cn(
-          'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-          'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
-          'disabled:cursor-not-allowed disabled:opacity-50'
-        )}
+        className={cn(BTN_PRIMARY, 'w-full')}
       >
         {isLoading ? (
           <>
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Sending...
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Sending
           </>
         ) : (
           'Send reset link'

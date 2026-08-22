@@ -7,6 +7,11 @@ export type BillingStatus = z.infer<typeof billingStatusSchema>;
 const CLOCK_SKEW_MS = 5 * 60_000;
 const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
 
+// Currency is never accepted from the client on entries or parts: the server
+// stamps `currency_code` once (ticket org currency at creation / first attach,
+// partner currency when a standalone entry first carries a rate) and never
+// restamps it (multi-currency spec §7). Editing hourlyRate/unitPrice does not
+// change the snapshot; billed rows reject monetary edits (ENTRY_BILLED / PART_BILLED).
 export const createTimeEntrySchema = z.object({
   ticketId: z.string().guid().optional(),
   startedAt: z.coerce.date().refine(notFarFuture, { message: 'startedAt cannot be in the future' }),
@@ -66,6 +71,7 @@ export const timesheetQuerySchema = z.object({
   weekStart: z.coerce.date()
 });
 
+// No currency field by design — see the note above createTimeEntrySchema.
 export const ticketPartSchema = z.object({
   description: z.string().min(1).max(2_000),
   partNumber: z.string().max(100).optional(),

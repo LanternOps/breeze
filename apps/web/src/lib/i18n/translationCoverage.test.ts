@@ -63,7 +63,11 @@ const namespaceDuplicateBaselines = {
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
     'settings.json': 112,
-    'tickets.json': 13,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 13,
   },
   'es-419': {
@@ -119,7 +123,11 @@ const namespaceDuplicateBaselines = {
     'security.json': 114,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
     'settings.json': 115,
-    'tickets.json': 13,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
@@ -183,7 +191,11 @@ const namespaceDuplicateBaselines = {
     // and is already the reviewed value for the eight other table
     // action-column headers in this namespace.
     'settings.json': 151,
-    'tickets.json': 21,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 23,
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
@@ -241,7 +253,11 @@ const namespaceDuplicateBaselines = {
     // and is already the reviewed value for the other table action-column
     // headers in this namespace.
     'settings.json': 156,
-    'tickets.json': 20,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 22,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
@@ -290,7 +306,11 @@ const namespaceDuplicateBaselines = {
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     'settings.json': 167,
-    'tickets.json': 13,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 20,
   },
   'it-IT': {
@@ -331,7 +351,11 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 59,
     'security.json': 163,
     'settings.json': 156,
-    'tickets.json': 6,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 8,
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
@@ -368,7 +392,9 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 38,
     'security.json': 86,
     'settings.json': 64,
-    'tickets.json': 11,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    'tickets.json': 12,
     'vulnerabilities.json': 11,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;

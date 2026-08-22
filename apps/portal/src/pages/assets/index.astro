@@ -1,6 +1,7 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { withBase } from '../../lib/basePath';
+import { redirectToLoginAfter401 } from '../../lib/session';
 import AssetList from '../../components/portal/AssetList';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -11,10 +12,11 @@ const response = await portalApi.getAssets(
 );
 
 if (response.statusCode === 401) {
-  return Astro.redirect(withBase('/login'));
+  // Dead session: clear the stale cookie and come back here after sign-in.
+  return redirectToLoginAfter401(Astro);
 }
 ---
 
-<PortalLayout title="Assets">
+<PortalLayout title="Equipment">
   <AssetList assets={response.data ?? []} error={response.error} />
 </PortalLayout>

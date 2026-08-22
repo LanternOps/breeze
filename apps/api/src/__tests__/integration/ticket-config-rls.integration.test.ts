@@ -261,6 +261,7 @@ describe('org_ticket_settings RLS isolation (org-axis, Shape 1)', () => {
         db.insert(orgTicketSettings).values({
           orgId: orgB.id, // wrong org — RLS must reject
           slaOverrides: {},
+          rateCurrency: 'USD',
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
@@ -283,6 +284,7 @@ describe('system-context reads (scope=system) bypass partner/org RLS', () => {
       orgId: orgA.id,
       slaOverrides: { urgent: { responseMinutes: 120 } },
       defaultHourlyRate: '99.00',
+      rateCurrency: 'USD',
     });
 
     // System context must see the row.
@@ -493,6 +495,7 @@ describe('SLA chain end-to-end (D7 chain order, real DB)', () => {
     await adminDb.insert(orgTicketSettings).values({
       orgId: orgA.id,
       slaOverrides: { urgent: { responseMinutes: 120, resolutionMinutes: 480 } },
+      rateCurrency: 'USD',
     });
 
     await seedSystemStatuses(adminDb, partnerA.id);
@@ -565,6 +568,7 @@ describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
         name: `Cat-${unique}`,
         defaultBillable: true,
         defaultHourlyRate: '100.00',
+        rateCurrency: 'USD',
       })
       .returning();
 
@@ -573,6 +577,7 @@ describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
       orgId: orgA.id,
       slaOverrides: {},
       defaultHourlyRate: '150.00',
+      rateCurrency: 'USD',
       defaultBillable: true,
     });
 
@@ -623,6 +628,7 @@ describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
         name: `CatB-${unique}`,
         defaultBillable: true,
         defaultHourlyRate: '100.00',
+        rateCurrency: 'USD',
       })
       .returning();
 
@@ -631,6 +637,7 @@ describe('time-entry org-rate end-to-end (D6 chain, real DB)', () => {
       orgId: orgA.id,
       slaOverrides: {},
       defaultHourlyRate: null,
+      rateCurrency: 'USD',
       defaultBillable: null,
     });
 

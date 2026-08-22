@@ -121,6 +121,13 @@ export const bulkTicketActionSchema = z.object({
   { message: 'Resolving requires a per-ticket resolution note; resolve tickets individually', path: ['status'] }
 );
 
+/**
+ * Portal (customer) comment cap, enforced by the API on create and edit and
+ * mirrored by the portal composer's maxLength. Technician comments keep the
+ * wider 50,000 limit of addTicketCommentSchema.
+ */
+export const PORTAL_TICKET_COMMENT_MAX_CHARS = 5000;
+
 export const addTicketCommentSchema = z.object({
   content: z.string().min(1).max(50_000),
   isPublic: z.boolean().default(true)
@@ -131,7 +138,12 @@ export const editCommentSchema = z.object({
 });
 
 export const moveTicketOrgSchema = z.object({
-  orgId: z.string().guid()
+  orgId: z.string().guid(),
+  // Multi-currency (#3776): a cross-currency move with unbilled monetary rows
+  // is blocked (409 TICKET_MOVE_CURRENCY_BLOCKED) unless the caller explicitly
+  // accepts that those snapshots stay in the OLD currency. The API additionally
+  // gates `true` on invoices:write. Client never supplies a currency itself.
+  acceptCurrencyMismatch: z.boolean().optional()
 });
 
 export const listTicketsQuerySchema = z.object({
@@ -153,6 +165,7 @@ export const listTicketsQuerySchema = z.object({
 });
 
 export const ticketCategoryInputSchema = z.object({
+  // rateCurrency is server-managed; unknown client fields are stripped by Zod.
   name: z.string().min(1).max(100),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   parentId: z.string().guid().nullable().optional(),
