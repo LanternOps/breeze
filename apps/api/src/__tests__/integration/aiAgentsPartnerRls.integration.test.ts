@@ -130,6 +130,19 @@ describe('ai_agents RLS — dual-axis (2026-09-01 migration)', () => {
       db.select().from(aiAgents),
     );
     expect(seenByOrg.find((candidate) => candidate.id === row!.id)).toBeUndefined();
+    // Positive control: the org context must be able to see SOMETHING of its
+    // own, or the assertion above passes for the wrong reason.
+    const [ownRow] = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .insert(aiAgents)
+        .values({ ...BASE, kind: 'patch', orgId: org.id, partnerId: null, createdBy: by })
+        .returning(),
+    );
+    created.push(ownRow!.id);
+    const ownVisible = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db.select().from(aiAgents),
+    );
+    expect(ownVisible.find((candidate) => candidate.id === ownRow!.id)?.id).toBe(ownRow!.id);
     const seenByPartner = await withDbAccessContext(
       partnerContext(partner.id, [org.id]),
       () => db.select().from(aiAgents),
@@ -153,6 +166,52 @@ describe('ai_agents RLS — dual-axis (2026-09-01 migration)', () => {
       db.select().from(aiAgents),
     );
     expect(seen.find((candidate) => candidate.id === row!.id)).toBeUndefined();
+    // Positive control: without this, a breeze_has_org_access that denied
+    // EVERYTHING in org scope would still satisfy the assertion above.
+    const seenByOwner = await withDbAccessContext(orgContext(a.id, partner.id), () =>
+      db.select().from(aiAgents),
+    );
+    expect(seenByOwner.find((candidate) => candidate.id === row!.id)?.id).toBe(row!.id);
+  });
+
+  it('the org partial unique is per-org: two orgs may each hold a live triage agent', async () => {
+    const partner = await createPartner();
+    const a = await createOrganization({ partnerId: partner.id });
+    const b = await createOrganization({ partnerId: partner.id });
+    const by = await creator(partner.id);
+    for (const org of [a, b]) {
+      const [row] = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        db
+          .insert(aiAgents)
+          .values({ ...BASE, orgId: org.id, partnerId: null, createdBy: by })
+          .returning(),
+      );
+      created.push(row!.id);
+    }
+    // ...but a second LIVE agent of the same kind in one org collides, and the
+    // slot frees again once the first is soft-deleted (ai_agents_org_kind_uq
+    // has a different predicate from the partner index, so it needs its own case).
+    await expectSqlState(
+      () =>
+        withDbAccessContext(orgContext(a.id, partner.id), () =>
+          db
+            .insert(aiAgents)
+            .values({ ...BASE, orgId: a.id, partnerId: null, createdBy: by })
+            .returning(),
+        ),
+      '23505',
+    );
+    await withDbAccessContext(orgContext(a.id, partner.id), () =>
+      db.update(aiAgents).set({ disabledAt: new Date() }).where(inArray(aiAgents.id, created)),
+    );
+    const [revived] = await withDbAccessContext(orgContext(a.id, partner.id), () =>
+      db
+        .insert(aiAgents)
+        .values({ ...BASE, orgId: a.id, partnerId: null, createdBy: by })
+        .returning(),
+    );
+    created.push(revived!.id);
+    expect(revived!.orgId).toBe(a.id);
   });
 
   it('soft delete frees the (owner, kind) slot', async () => {
