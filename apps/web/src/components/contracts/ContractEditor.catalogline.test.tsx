@@ -139,6 +139,39 @@ describe('ContractEditor — catalog line pricing (#3775)', () => {
     expect(screen.getByTestId('contract-line-price')).not.toHaveAttribute('readonly');
   });
 
+  // #3775 review #2: a 409 PRICE_NOT_REPRESENTABLE is a GAP, not a transient
+  // failure. Falling through to the error branch showed "Could not look up the
+  // EUR price" plus a Retry that can never succeed — the row is wrong, not the
+  // network — and threw away the server's actionable text.
+  it('renders PRICE_NOT_REPRESENTABLE as its own gap with the server message and no Retry', async () => {
+    catalogRows.items = [catItem({ prices: [{ currencyCode: 'EUR', unitPrice: '100.50' }] })];
+    resolveMock.mockResolvedValue(resp({
+      error: 'Price-book price 100.50 for "Managed workstation" is not representable in EUR — correct the EUR price before using this item',
+      code: 'PRICE_NOT_REPRESENTABLE',
+    }, false, 409));
+    render(<ContractEditor detail={eurDraft} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('pick-cat-1'));
+
+    const gap = await screen.findByTestId('contract-line-price-not-representable');
+    expect(gap).toHaveTextContent('not representable in EUR');
+    // Not the transient-failure branch, and no Retry that can never succeed.
+    expect(screen.queryByTestId('contract-line-price-unavailable')).toBeNull();
+    expect(screen.queryByTestId('contract-line-price-retry')).toBeNull();
+    expect(screen.queryByTestId('contract-line-price-missing')).toBeNull();
+    expect(screen.getByTestId('add-line-btn')).toBeDisabled();
+    expect(screen.getByTestId('contract-line-price')).toHaveValue(null);
+  });
+
+  it('falls back to a generic representability message when the server sends no text', async () => {
+    catalogRows.items = [catItem({ prices: [{ currencyCode: 'EUR', unitPrice: '100.50' }] })];
+    resolveMock.mockResolvedValue(resp({ code: 'PRICE_NOT_REPRESENTABLE' }, false, 409));
+    render(<ContractEditor detail={eurDraft} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('pick-cat-1'));
+
+    expect(await screen.findByTestId('contract-line-price-not-representable')).toHaveTextContent('EUR');
+    expect(screen.queryByTestId('contract-line-price-retry')).toBeNull();
+  });
+
   it('uses the org override the server resolves even when the base price book has no EUR row', async () => {
     catalogRows.items = [catItem({ prices: [{ currencyCode: 'USD', unitPrice: '50.00' }], taxable: false })];
     resolveMock.mockResolvedValue(resp({ data: resolved({ unitPrice: '37.00', source: 'org_override', taxable: true }) }));

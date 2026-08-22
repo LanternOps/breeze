@@ -205,6 +205,7 @@
         "priceFromCatalog": "Birim fiyatı (katalogdan, {{currency}} cinsinden)",
         "resolvingPrice": "{{currency}} fiyatı aranıyor…",
         "priceLookupFailed": "{{currency}} fiyatı alınamadı.",
+        "priceNotRepresentable": "Bu ürün için kayıtlı {{currency}} fiyatı {{currency}} para biriminde geçerli değil — katalogda düzeltin ya da katalog bağlantısını kaldırıp elle satır girin.",
         "priceSourceOrgOverride": "{{org}} için kuruluşa özel fiyat"
       },
       "estimate": {

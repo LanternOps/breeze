@@ -205,6 +205,7 @@
         "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})",
         "resolvingPrice": "{{currency}}-Preis wird ermittelt…",
         "priceLookupFailed": "Der {{currency}}-Preis konnte nicht ermittelt werden.",
+        "priceNotRepresentable": "Der gespeicherte {{currency}}-Preis dieses Artikels ist in {{currency}} ungültig — korrigieren Sie ihn im Katalog oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
         "priceSourceOrgOverride": "Organisationsspezifischer Preis für {{org}}"
       },
       "estimate": {

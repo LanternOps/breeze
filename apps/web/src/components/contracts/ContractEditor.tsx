@@ -358,6 +358,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     | { status: 'loading' }
     | { status: 'resolved'; price: ResolvedCatalogPrice }
     | { status: 'gap' }
+    // #3775 review #2: the price-book row EXISTS but is wrong for this currency
+    // (a legacy fractional amount in a zero-decimal currency). That is a gap the
+    // operator has to fix in the catalog, never a transient failure — it gets its
+    // own message carrying the server's actionable text, and no Retry.
+    | { status: 'notRepresentable'; message: string | null }
     | { status: 'error' }
   >({ status: 'idle' });
   const resolveSeq = useRef(0);
@@ -375,9 +380,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         setCatalogResolution(body?.data ? { status: 'resolved', price: body.data } : { status: 'error' });
         return;
       }
-      const body = (await res.json().catch(() => null)) as { code?: string } | null;
+      const body = (await res.json().catch(() => null)) as { code?: string; error?: string } | null;
       if (seq !== resolveSeq.current) return;
-      setCatalogResolution(res.status === 409 && body?.code === 'NO_PRICE_FOR_CURRENCY' ? { status: 'gap' } : { status: 'error' });
+      if (res.status === 409 && body?.code === 'NO_PRICE_FOR_CURRENCY') { setCatalogResolution({ status: 'gap' }); return; }
+      if (res.status === 409 && body?.code === 'PRICE_NOT_REPRESENTABLE') {
+        setCatalogResolution({ status: 'notRepresentable', message: body.error?.trim() || null });
+        return;
+      }
+      setCatalogResolution({ status: 'error' });
     } catch {
       if (seq === resolveSeq.current) setCatalogResolution({ status: 'error' });
     }
@@ -1018,6 +1028,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     {catalogPriceGap && (
                       <span className="text-xs text-destructive" data-testid="contract-line-price-missing">
                         {t('contracts.contractEditor.addLine.noPriceInCurrency', { currency: contractCurrency })}
+                      </span>
+                    )}
+                    {catalogResolution.status === 'notRepresentable' && (
+                      <span className="text-xs text-destructive" data-testid="contract-line-price-not-representable">
+                        {catalogResolution.message
+                          ?? t('contracts.contractEditor.addLine.priceNotRepresentable', { currency: contractCurrency })}
                       </span>
                     )}
                     {catalogResolution.status === 'loading' && (

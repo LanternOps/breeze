@@ -205,6 +205,7 @@
         "priceFromCatalog": "Prezzo unitario (dal catalogo, in {{currency}})",
         "resolvingPrice": "Ricerca del prezzo in {{currency}}…",
         "priceLookupFailed": "Impossibile recuperare il prezzo in {{currency}}.",
+        "priceNotRepresentable": "Il prezzo in {{currency}} salvato per questo articolo non è valido in {{currency}}: correggilo nel catalogo oppure rimuovi il collegamento al catalogo e inserisci una riga manuale.",
         "priceSourceOrgOverride": "Prezzo specifico per l’organizzazione {{org}}"
       },
       "estimate": {

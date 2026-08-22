@@ -205,6 +205,7 @@
         "priceFromCatalog": "Unit price (from the catalog, in {{currency}})",
         "resolvingPrice": "Looking up the {{currency}} price…",
         "priceLookupFailed": "Could not look up the {{currency}} price.",
+        "priceNotRepresentable": "The saved {{currency}} price for this item is not valid in {{currency}} — correct it in the catalog, or clear the catalog link and enter a manual line.",
         "priceSourceOrgOverride": "Organization-specific price for {{org}}"
       },
       "estimate": {
