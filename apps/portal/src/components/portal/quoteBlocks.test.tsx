@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import type { QuoteBlock } from '@/lib/api';
+import type { PublicApiPath, QuoteBlock } from '@/lib/api';
 import { QuoteBlocks } from './quoteBlocks';
 
 afterEach(() => cleanup());
 
-const buildUrl = (path: string) => `https://portal.example.test${path}`;
+// Tests stamp the brand by hand: the contract the brand enforces (no absolute
+// internal origin in SSR href/src) is covered in basePathCoverage.test.ts.
+const buildUrl = (path: string) => `https://portal.example.test${path}` as PublicApiPath;
+const imageUrl = (imageId: string) => `https://portal.example.test/images/${imageId}` as PublicApiPath;
 
 function renderBlocks(blocks: QuoteBlock[]) {
   return render(
@@ -14,7 +17,7 @@ function renderBlocks(blocks: QuoteBlock[]) {
       blocks={blocks}
       lines={[]}
       currency="USD"
-      imageUrl={(imageId) => `https://portal.example.test/images/${imageId}`}
+      imageUrl={imageUrl}
       buildUrl={buildUrl}
     />
   );
@@ -101,7 +104,7 @@ describe('QuoteBlocks — line rendering (title/blurb + thumbnail)', () => {
         blocks={[lineItemsBlock]}
         lines={lines}
         currency="USD"
-        imageUrl={(imageId) => `https://portal.example.test/images/${imageId}`}
+        imageUrl={imageUrl}
         buildUrl={buildUrl}
       />
     );

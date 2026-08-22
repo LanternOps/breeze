@@ -14,6 +14,8 @@ const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially
 interface InvoiceDetailViewProps {
   detail: InvoiceDetail | null;
   error?: string | null;
+  /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
+  statusCode?: number;
 }
 
 /** The three fields the document shell actually needs, normalised from either
@@ -34,7 +36,7 @@ function lineTax(lineTotal: string | number, taxable: boolean, rate: number): nu
   return Math.round(cents * rate) / 100;
 }
 
-export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
+export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailViewProps) {
   // Partner branding for the document shell. Invoices used to render unbranded
   // while proposals rendered branded, because only the quote payloads carried
   // `branding`; GET /portal/invoices/:id now returns the same shape, so the
@@ -63,7 +65,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
   // Verify-on-return settle state. 'idle' until we detect the post-Checkout return.
-  const [settleState, setSettleState] = useState<'idle' | 'settling' | 'pending'>('idle');
+  const [settleState, setSettleState] = useState<'idle' | 'settling' | 'pending' | 'failed'>('idle');
 
   useEffect(() => {
     if (payloadBranding) return;
@@ -83,7 +85,13 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
     const params = new URLSearchParams(window.location.search);
     if (params.get('paid') !== '1') return;
     const sessionId = params.get('session_id');
-    if (!sessionId) return;
+    if (!sessionId) {
+      // Came back from Checkout without a session id: we can't confirm, but
+      // the customer just paid and must not see a silent "Sent".
+      console.error('[portal] checkout return without session_id', { invoiceId: detail.invoice.id });
+      setSettleState('pending');
+      return;
+    }
 
     const invoiceId = detail.invoice.id;
     let cancelled = false;
@@ -95,13 +103,21 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
           // Reload WITHOUT the return params (replace, not push) so the page re-fetches
           // fresh server data showing Paid — and a manual refresh won't re-trigger settle.
           window.location.replace(withBase(`/invoices/${invoiceId}`));
+        } else if (res.error) {
+          // A failed settle call is not "still confirming": say so, and log it.
+          console.error('[portal] settle failed', { invoiceId, sessionId, statusCode: res.statusCode, error: res.error });
+          setSettleState('failed');
         } else {
-          // Not yet settled (async method, or instant-settle hiccup) — the sweep will
-          // catch it. Tell the customer rather than silently leaving it "Sent".
+          // A genuine {settled:false}: async payment method — the reconcile sweep
+          // will catch it. Tell the customer rather than silently leaving it "Sent".
           setSettleState('pending');
         }
       })
-      .catch(() => { if (!cancelled) setSettleState('pending'); });
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('[portal] settle request threw', { invoiceId, sessionId, err });
+        setSettleState('failed');
+      });
     return () => { cancelled = true; };
   }, [detail]);
 
@@ -109,9 +125,13 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
     return (
       <div className="border-y border-border/70 py-14 text-center">
         <AlertCircle className="mx-auto h-10 w-10 text-destructive-on-tint" strokeWidth={1.5} />
-        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">Invoice not found</h3>
+        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">
+          {statusCode === 404 || !error ? 'Invoice not found' : "We couldn't load this invoice"}
+        </h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {error || "We couldn't find that invoice — it may have been reissued. Your invoice list is up to date."}
+          {statusCode === 404 || !error
+            ? "We couldn't find that invoice — it may have been reissued. Your invoice list is up to date."
+            : 'Something went wrong on our side. Try again in a moment; nothing about your account has changed.'}
         </p>
         <a href={withBase("/invoices")} className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary-on-tint underline-offset-4 hover:underline">
           <ArrowLeft className="h-4 w-4" />
@@ -155,6 +175,10 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
       window.location.href = result.data.url;
       return; // keep the button disabled while the browser navigates to Checkout
     }
+    if (!result.error) {
+      // A 200 without a Checkout URL is a contract error, not a customer condition.
+      console.error('[portal] pay returned no checkout url', { invoiceId: invoice.id, statusCode: result.statusCode });
+    }
     if (result.statusCode === 409) {
       // Terminal condition (online payment unavailable / invoice not payable). Show the
       // server's reason verbatim — "Please try again" would mislead since a retry won't help.
@@ -175,7 +199,8 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
         credentials: 'include',
       });
       if (!res.ok) {
-        setDownloadError('Could not download the invoice PDF.');
+        console.error('[portal] invoice pdf download failed', { invoiceId: invoice.id, status: res.status });
+        setDownloadError(res.status === 401 ? 'Your session has expired. Sign in again to download.' : 'Could not download the invoice PDF. Try again in a moment.');
         return;
       }
       const blob = await res.blob();
@@ -187,8 +212,9 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
-    } catch {
-      setDownloadError('Could not download the invoice PDF.');
+    } catch (err) {
+      console.error('[portal] invoice pdf download threw', { invoiceId: invoice.id, err });
+      setDownloadError('Could not download the invoice PDF. Try again in a moment.');
     } finally {
       setDownloading(false);
     }
@@ -229,6 +255,11 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
       {settleState === 'settling' && (
         <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-settle-confirming">
           Confirming your payment…
+        </div>
+      )}
+      {settleState === 'failed' && (
+        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint" data-testid="invoice-settle-failed">
+          We couldn't confirm your payment just now. If your card was charged, it will be applied shortly — and your IT team can confirm it for you.
         </div>
       )}
       {settleState === 'pending' && (

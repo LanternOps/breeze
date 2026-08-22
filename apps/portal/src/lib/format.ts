@@ -6,12 +6,19 @@
  */
 
 export function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
+  // Number(null) and Number('') are 0, which would dress a missing amount as a
+  // settled one; only an actual numeric value may format.
+  const n = value === null || value === undefined || value === '' ? NaN : Number(value);
+  if (!Number.isFinite(n)) {
+    // A figure that failed to parse must never read as "$0.00" on a bill —
+    // that hides the bug behind a settled-looking balance. Show a dash and log.
+    console.error('[portal] non-numeric money value', { value, currencyCode });
+    return '—';
+  }
   try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
+    return n.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
   } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
+    return `${n.toFixed(2)} ${currencyCode || ''}`.trim();
   }
 }
 

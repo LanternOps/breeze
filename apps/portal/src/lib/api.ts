@@ -107,14 +107,19 @@ function buildQueryString(query?: Record<string, string | number | undefined>): 
  * href leaked the internal hostname into customer HTML and tripped a hydration
  * mismatch on every document page.
  */
-export function publicApiPath(path: string): string {
+export type PublicApiPath = string & { readonly __brand: 'PublicApiPath' };
+
+function stripApiPrefix(path: string): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  const cleanPath = normalizedPath === '/api'
+  return normalizedPath === '/api'
     ? ''
     : normalizedPath.startsWith('/api/')
       ? normalizedPath.slice(4)
       : normalizedPath;
-  return `/api/v1${cleanPath}`;
+}
+
+export function publicApiPath(path: string): PublicApiPath {
+  return `/api/v1${stripApiPrefix(path)}` as PublicApiPath;
 }
 
 export function buildPortalApiUrl(path: string): string {
@@ -122,15 +127,8 @@ export function buildPortalApiUrl(path: string): string {
     return path;
   }
 
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  const cleanPath = normalizedPath === '/api'
-    ? ''
-    : normalizedPath.startsWith('/api/')
-      ? normalizedPath.slice(4)
-      : normalizedPath;
-
   const apiBase = resolveApiBase();
-  return `${apiBase}/api/v1${cleanPath}`;
+  return `${apiBase}/api/v1${stripApiPrefix(path)}`;
 }
 
 export function buildServerForwardHeaders(request: Request): Headers {
@@ -303,7 +301,11 @@ export interface Device {
   lastSeenAt: string | null;
 }
 
-export type TicketStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
+/** Mirrors the API's ticket_status enum. A freshly submitted ticket is 'new'
+ *  (it becomes 'open' when a technician picks it up); 'pending' is waiting on
+ *  the customer, 'on_hold' on something else. Keep in sync with
+ *  apps/api/src/db/schema/portal.ts ticketStatusEnum. */
+export type TicketStatus = 'new' | 'open' | 'pending' | 'on_hold' | 'resolved' | 'closed';
 export type TicketPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export interface TicketSummary {
@@ -369,8 +371,9 @@ export interface InvoiceSummary {
   id: string;
   invoiceNumber: string | null;
   /** Derived human handle: the accepted proposal's title, else the first
-   *  customer-visible line's name. Null for a bare invoice. */
-  title?: string | null;
+   *  customer-visible line's name. Always present on list rows; null for a
+   *  bare invoice. */
+  title: string | null;
   status: InvoiceStatus;
   currencyCode: string;
   issueDate: string | null;
@@ -412,7 +415,9 @@ export interface InvoiceLine {
 }
 
 export interface InvoiceDetail {
-  invoice: InvoiceSummary & {
+  // The detail header is a separate serialization boundary on the API and
+  // does not carry the list's derived `title`.
+  invoice: Omit<InvoiceSummary, 'title'> & {
     subtotal: string;
     taxTotal: string;
     taxRate: string | null;
@@ -440,8 +445,9 @@ export type QuoteStatus =
 export interface QuoteSummary {
   id: string;
   quoteNumber: string | null;
-  title?: string | null;
-  status: string;
+  /** The proposal's own title (quotes.title); null when the MSP gave it none. */
+  title: string | null;
+  status: QuoteStatus;
   currencyCode: string;
   issueDate: string | null;
   expiryDate: string | null;

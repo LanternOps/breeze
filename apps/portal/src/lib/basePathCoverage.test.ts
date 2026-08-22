@@ -70,3 +70,23 @@ describe('portal base-path coverage', () => {
     expect(violations, `Wrap these in withBase():\n${violations.join('\n')}`).toEqual([]);
   });
 });
+
+
+describe('rendered API links use publicApiPath, never the SSR-internal base', () => {
+  it('no href/src is built with buildPortalApiUrl', () => {
+    const { readdirSync, readFileSync, statSync } = require('node:fs') as typeof import('node:fs');
+    const { join } = require('node:path') as typeof import('node:path');
+    const root = new URL('../', import.meta.url).pathname;
+    const files: string[] = [];
+    const walk = (d: string) => {
+      for (const e of readdirSync(d)) {
+        const full = join(d, e);
+        if (statSync(full).isDirectory()) { if (e !== 'node_modules') walk(full); }
+        else if (/\.(tsx|astro)$/.test(e) && !/\.test\./.test(e)) files.push(full);
+      }
+    };
+    walk(root);
+    const offenders = files.filter((f) => /(href|src)=\{buildPortalApiUrl\(/.test(readFileSync(f, 'utf8')));
+    expect(offenders).toEqual([]);
+  });
+});

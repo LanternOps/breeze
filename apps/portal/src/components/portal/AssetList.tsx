@@ -10,8 +10,7 @@ interface AssetListProps {
   error?: string | null;
 }
 
-// Same reader-first formatting DeviceList carries: the portal's reader is the
-// customer's office manager, so the platform family replaces the raw osType id
+// Same OS label as DeviceList: the platform family replaces the raw osType id,
 // and the raw hostname only appears when a device was never given a display
 // name. Duplicated locally rather than shared, per repo convention.
 const OS_LABELS: Record<string, string> = {

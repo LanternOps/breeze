@@ -21,6 +21,26 @@ export function formatBytes(bytes: number, decimals = 2): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+export function formatDate(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  });
+}
+
+export function formatDateTime(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
 /** Whole calendar days between two dates, ignoring the time of day, so
  *  "Yesterday" stays correct for something that happened at 11pm and is read
  *  at 7am (a raw hour difference would call that "8 hours ago"). */
@@ -63,68 +83,4 @@ export function formatRelativeTime(date: Date | string): string {
   if (days < 7) return `Last ${d.toLocaleDateString('en-US', { weekday: 'long' })}`;
 
   return formatDate(d);
-}
-
-/**
- * Canonical short date for the portal's document surfaces (invoice/quote header
- * dates, list columns). Accepts a date-only string ('2026-08-21'), a full
- * timestamp, or null.
- *
- * Null/empty renders as '—' (an em dash placeholder, not user-facing prose) so a
- * missing date reads as "nothing here" instead of a silently blank cell. A
- * date-only string is pinned to local midnight so it never renders as the day
- * before in a negative-offset timezone. An unparseable value is echoed back
- * verbatim, which is more useful to support than 'Invalid Date'.
- *
- * This is the SSOT: five components carry private copies that disagree with each
- * other (PublicQuoteView returns '' for null; the rest return '—'). Migrate them
- * onto this one.
- */
-export function shortDate(value: string | Date | null | undefined): string {
-  if (!value) return '—';
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? '—' : value.toLocaleDateString();
-  }
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
-}
-
-/**
- * Canonical currency formatter for the portal. Amounts arrive from the API as
- * decimal strings, so this takes string | number and coerces once.
- *
- * A non-numeric amount formats as zero rather than 'NaN' — a customer-facing
- * total must never render as garbage. An unknown/invalid currency code falls
- * back to a plain two-decimal amount plus the code, since Intl throws on codes
- * it does not recognise.
- */
-export function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
-
-export function formatDate(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric'
-  });
-}
-
-export function formatDateTime(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
 }

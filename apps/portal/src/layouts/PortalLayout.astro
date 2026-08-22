@@ -14,6 +14,14 @@ interface Props {
   docAccent?: string | null;
 }
 
+// Design contract (The Guest Ledger) — a frontmatter comment so it stays out of
+// the HTML customers receive; apps/portal/DESIGN.md is the full record.
+// THESIS: the MSP as concierge; refuses the category default (white sidebar
+// shell, boxed tables, blue accents, pill badges). OWN-WORLD: warm plaster
+// ground, linen cards, deep service-green ink, hairline-ruled ledgers, Literata
+// for titles and money, Hanken Grotesk elsewhere, statuses as a dot plus
+// uppercase tracked text, 12px surfaces. FIRST VIEWPORT: quiet left rail with
+// the firm's name; serif page title + one line of service copy; the ledger.
 const { title, docAccent } = Astro.props;
 // Astro.url.pathname includes the base (e.g. /c/devices); strip it so the
 // active-nav comparison below stays base-agnostic.
@@ -46,26 +54,6 @@ const isActive = (href: string) => {
     <ClientRouter />
   </head>
   <body class="min-h-screen bg-background antialiased">
-    <!--
-      THESIS: The Guest Ledger — the MSP as concierge. The portal greets the
-      customer like a valued guest and handles money and requests with a front
-      desk's quiet precision. It refuses the category default: white sidebar
-      shell, boxed tables, blue accents, pill badges.
-      OWN-WORLD: warm plaster ground (40deg hue family), linen-white cards,
-      deep service-green working ink, hairline-ruled ledgers, Literata for
-      titles and money, Hanken Grotesk for everything else, statuses as dot
-      plus small-caps text, 12px surfaces.
-      STORY: a client arrives from an email, sees their own account laid out
-      like a well-kept register, approves or pays in one obvious step, and
-      leaves trusting the firm that keeps this file.
-      FIRST VIEWPORT: quiet left rail carrying the firm's name; content column
-      opens with a serif page title and one line of service copy; below it the
-      ledger of documents, figures right-aligned and tabular.
-      FORM: The Guest Ledger, candidate 7 of the round-3 grounded list, seed
-      key cfa5f0a1 (reroll 2).
-      FINISH: unreviewed and undocumented is unfinished; this build ends with
-      the finish review, the verdict, and DESIGN.md.
-    -->
     <a
       href="#portal-main"
       class="sr-only rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50"

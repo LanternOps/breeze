@@ -9,10 +9,8 @@ interface DeviceListProps {
   error?: string | null;
 }
 
-// The portal's reader is the customer's office manager, not a technician, so the
-// two formatters below are deliberately plainer than the shared helpers in
-// `@/lib/utils` (which render "3d ago" and the raw platform id). Kept local to
-// this component rather than changed in utils, which the rest of the app shares.
+// Local OS label + last-seen phrasing for the customer's office manager, kept
+// private rather than widening `@/lib/utils`, which the rest of the app shares.
 const OS_LABELS: Record<string, string> = {
   windows: 'Windows',
   macos: 'Mac',

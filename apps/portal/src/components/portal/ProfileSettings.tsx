@@ -8,9 +8,12 @@ import { portalApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { BTN_PRIMARY, INPUT } from './ui';
 
+// The API's updateProfile accepts `name` only (routes/portal/schemas.ts);
+// it used to strip a changed email silently and this form then said
+// "Details saved." with the old address still on file. Email is read-only here.
 const profileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
-  email: z.string().email('Please enter a valid email address')
+  email: z.string()
 });
 
 const passwordSchema = z
@@ -67,12 +70,13 @@ export function ProfileSettings() {
     setProfileError(null);
     setProfileSuccess(false);
 
-    const result = await portalApi.updateProfile(data);
+    const result = await portalApi.updateProfile({ name: data.name });
 
     if (result.error) {
       setProfileError(result.error);
     } else {
-      updateUser(data);
+      // Store what the server confirmed, not what was typed.
+      updateUser({ name: result.data?.name ?? data.name });
       setProfileSuccess(true);
     }
 
@@ -176,16 +180,14 @@ export function ProfileSettings() {
                 id="email"
                 type="email"
                 autoComplete="email"
-                aria-invalid={!!profileForm.formState.errors.email}
-                aria-describedby={
-                  profileForm.formState.errors.email ? 'email-error' : undefined
-                }
+                readOnly
+                aria-describedby="email-help"
                 {...profileForm.register('email')}
-                className={cn(
-                  INPUT,
-                  profileForm.formState.errors.email && 'border-destructive'
-                )}
+                className={cn(INPUT, 'bg-muted/60 text-muted-foreground')}
               />
+              <p id="email-help" className="mt-1 text-xs text-muted-foreground">
+                To change the email on your account, ask your IT team.
+              </p>
               {profileForm.formState.errors.email && (
                 <p id="email-error" role="alert" className="mt-1 text-sm text-destructive-on-tint">
                   {profileForm.formState.errors.email.message}

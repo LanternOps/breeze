@@ -43,9 +43,9 @@ export function PageHeader({
   return (
     <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
       <div>
-        <h2 className="font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-foreground">
+        <h1 className="font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-foreground">
           {title}
-        </h2>
+        </h1>
         {lede && <p className="mt-1.5 text-sm text-muted-foreground">{lede}</p>}
       </div>
       {action}
@@ -62,6 +62,7 @@ export function StatusMark({
   dotClass,
   textClass,
   children,
+  className,
   ...rest
 }: {
   dotClass: string;
@@ -71,7 +72,7 @@ export function StatusMark({
   return (
     <span
       {...rest}
-      className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold uppercase tracking-[0.08em]', textClass)}
+      className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold uppercase tracking-[0.08em]', textClass, className)}
     >
       <span aria-hidden="true" className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dotClass)} />
       {children}
@@ -84,6 +85,7 @@ export function EmptyState({
   icon,
   title,
   children,
+  className,
   ...rest
 }: {
   icon?: React.ReactNode;
@@ -91,7 +93,7 @@ export function EmptyState({
   children?: React.ReactNode;
 } & React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div {...rest} className="border-y border-border/70 py-14 text-center">
+    <div {...rest} className={cn('border-y border-border/70 py-14 text-center', className)}>
       {icon && <div className="mx-auto mb-4 flex justify-center text-muted-foreground/70">{icon}</div>}
       <h3 className="font-display text-lg font-semibold text-foreground">{title}</h3>
       {children}

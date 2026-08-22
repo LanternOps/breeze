@@ -12,6 +12,8 @@ import { SignaturePanel } from './SignaturePanel';
 interface QuoteDetailViewProps {
   detail: QuoteDetail | null;
   error?: string | null;
+  /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
+  statusCode?: number;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -42,14 +44,14 @@ function statusColor(status: string): string {
   }
 }
 
-export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
+export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewProps) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
   const [status, setStatus] = useState(detail?.quote.status ?? '');
   // Invoice created by THIS acceptance (the accept response's invoiceId). Null on a
-  // quote that was already converted when the page loaded — the quote payload carries
-  // no invoice id, so those customers get the invoice list instead of a deep link.
+  // quote that was already converted when the page loaded — the portal's QuoteHeader
+  // type doesn't expose convertedInvoiceId, so those customers get the invoice list.
   const [acceptedInvoiceId, setAcceptedInvoiceId] = useState<string | null>(null);
   // The pay route 409s when this proposal can't be paid online (no Stripe connection,
   // nothing left to charge). That's terminal, so drop the CTA instead of leaving a
@@ -60,9 +62,13 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
     return (
       <div className="border-y border-border/70 py-14 text-center">
         <AlertCircle className="mx-auto h-10 w-10 text-destructive-on-tint" strokeWidth={1.5} />
-        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">Proposal not found</h3>
+        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">
+          {statusCode === 404 || !error ? 'Proposal not found' : "We couldn't load this proposal"}
+        </h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {error || "We couldn't find that proposal — it may have been withdrawn or replaced. Your proposals list is current."}
+          {statusCode === 404 || !error
+            ? "We couldn't find that proposal — it may have been withdrawn or replaced. Your proposals list is current."
+            : 'Something went wrong on our side. Try again in a moment; your proposals list is unaffected.'}
         </p>
         <a href={withBase("/quotes")} className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary-on-tint underline-offset-4 hover:underline">
           <ArrowLeft className="h-4 w-4" />
@@ -133,9 +139,10 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
       window.location.href = url;
       return;
     }
-    // 409 (and a 200 that somehow carries no link) means payment is off the table for
-    // this proposal; anything else may be transient, so keep the button for a retry.
-    if (res.statusCode === 409 || !res.error) setPayUnavailable(true);
+    // 409 means payment is off the table for this proposal. A 200 with no link is a
+    // contract error on our side: log it and keep the button so a retry is possible.
+    if (!res.error) console.error('[portal] quote pay returned no checkout url', { quoteId: quote.id, statusCode: res.statusCode });
+    if (res.statusCode === 409) setPayUnavailable(true);
     setMsg(res.error ?? 'Online payment is not available for this proposal.');
     setMsgError(true);
   };

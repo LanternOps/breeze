@@ -2,7 +2,7 @@
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import NewTicketForm from '../../components/portal/NewTicketForm';
 import { withBase } from '../../lib/basePath';
-import { clearPortalSessionCookie } from '../../lib/session';
+import { redirectToLoginAfter401 } from '../../lib/session';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
 
@@ -15,9 +15,8 @@ import { buildServerApiConfig } from '../../lib/server';
 // POST /portal/tickets is the real enforcement.
 const formsResponse = await portalApi.getTicketForms(buildServerApiConfig(Astro.request));
 if (formsResponse.statusCode === 401) {
-  // The cookie outlived its session — clear it or /login bounces right back.
-  clearPortalSessionCookie(Astro.cookies);
-  return Astro.redirect(withBase('/login'));
+  // Dead session: clear the stale cookie and come back here after sign-in.
+  return redirectToLoginAfter401(Astro);
 }
 if (formsResponse.statusCode === 403 && formsResponse.code === 'PORTAL_TICKETS_DISABLED') {
   return Astro.redirect(withBase('/devices'));

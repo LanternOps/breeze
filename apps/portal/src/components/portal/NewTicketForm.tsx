@@ -175,7 +175,9 @@ export function NewTicketForm() {
               Choose what you need help with, and we'll get started.
             </p>
             {/* Request types as a ruled list, like every other register in the
-                portal — not a card grid. The last entry is the open door. */}
+                portal. (State/testids still say "grid"/"card" from the earlier
+                layout; the e2e selectors depend on them.) The last entry is the
+                open door. */}
             <div className="mt-6 divide-y divide-border/70 border-y border-border/70">
               {forms.map((form) => (
                 <button

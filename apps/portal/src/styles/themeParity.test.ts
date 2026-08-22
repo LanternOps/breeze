@@ -68,7 +68,7 @@ describe('theme token parity', () => {
     // A token copied verbatim into the dark block is usually an oversight (a
     // white --card left white on a dark surface). The exceptions are real and
     // deliberate: a near-white foreground sits on a dark-red fill in BOTH
-    // themes and is compliant on each (6.12:1 light, 9.56:1 dark), so forcing a
+    // themes and clears AA on each (6.3:1 light, 5.5:1 dark), so forcing a
     // difference would be change for its own sake.
     const SHARED_BY_DESIGN = new Set(['destructive-foreground']);
     const identical = [...dark.entries()]

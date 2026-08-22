@@ -52,7 +52,10 @@ describe('no inline style attributes (production CSP sets style-src-attr none)',
         .forEach((line, i) => {
           // JSX `style={...}` and plain HTML `style="..."`. Astro's `set:html`
           // and `is:inline` <style> ELEMENTS are fine — those are style-src-elem.
-          if (/\bstyle=\{/.test(line) || /<[a-z][^>]*\sstyle="/.test(line)) {
+          // JSX `style={...}` and HTML `style="..."` — on the element's own line
+          // (any tag case, so component tags count) OR as a Prettier-wrapped
+          // attribute line of its own.
+          if (/\bstyle=\{/.test(line) || /<[A-Za-z][^>]*\sstyle="/.test(line) || /^\s*style="/.test(line)) {
             violations.push(`${relative(SRC, file)}:${i + 1}  ${line.trim()}`);
           }
         });

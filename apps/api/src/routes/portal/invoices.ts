@@ -60,12 +60,13 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
       // recognizes — the accepted proposal's title (quotes.converted_invoice_id
       // points here), else the first customer-visible line's name. NULL for a
       // bare invoice; the portal falls back to the number.
-      // NOTE: the outer column must be written qualified by hand — Drizzle
-      // renders an interpolated column as bare `"id"`, which inside the
-      // subselect resolves to the SUBQUERY's table and correlates it with
-      // itself (always false, title always null).
+      // NOTE: the outer column must be written qualified by hand — in a
+      // join-free select Drizzle renders an interpolated column as bare `"id"`,
+      // which inside the subselect resolves to the SUBQUERY's table and
+      // correlates it with itself (always false, title always null). Adding a
+      // join later would make `${invoices.id}` appear to work; keep it literal.
       title: sql<string | null>`coalesce(
-        (select q.title from quotes q where q.converted_invoice_id = invoices.id limit 1),
+        (select q.title from quotes q where q.converted_invoice_id = invoices.id order by q.created_at desc limit 1),
         (select il.name from invoice_lines il where il.invoice_id = invoices.id and il.customer_visible order by il.sort_order limit 1)
       )`,
     })
@@ -124,13 +125,21 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   // `partners` is a partner-axis RLS table invisible to this org scope (#1375
   // class — 0 rows, no error), so the name reads under SYSTEM scope exactly as
   // portal/quotes.ts does; portal_branding is org-scoped and reads fine here.
-  const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.select({ name: partners.name }).from(partners).where(eq(partners.id, result.partnerId)).limit(1)));
-  const [brand] = await db
-    .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
-    .from(portalBranding)
-    .where(eq(portalBranding.orgId, auth.user.orgId))
-    .limit(1);
+  // Branding is decoration on top of a document the customer came to read or
+  // pay; a failure here is logged, never allowed to 500 the invoice.
+  let partner: { name: string | null } | undefined;
+  let brand: { logoUrl: string | null; primaryColor: string | null } | undefined;
+  try {
+    [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.select({ name: partners.name }).from(partners).where(eq(partners.id, result.partnerId)).limit(1)));
+    [brand] = await db
+      .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, auth.user.orgId))
+      .limit(1);
+  } catch (err) {
+    console.error('[portal/invoices] branding lookup failed', { invoiceId: id, partnerId: result.partnerId, err });
+  }
 
   return c.json({
     invoice: result.invoice,

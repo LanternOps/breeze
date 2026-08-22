@@ -5,7 +5,7 @@ import { type TicketSummary } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { ROW, CELL, TH, BTN_PRIMARY, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
-import { ticketStatusLabel, ticketStatusMark } from './ticketMarks';
+import { isTicketOpen, ticketStatusLabel, ticketStatusMark } from './ticketMarks';
 
 interface TicketListProps {
   tickets: TicketSummary[];
@@ -18,9 +18,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
     return <ErrorNotice>{error}</ErrorNotice>;
   }
 
-  const openCount = tickets.filter(
-    (t) => t.status === 'open' || t.status === 'in_progress'
-  ).length;
+  const openCount = tickets.filter((t) => isTicketOpen(t.status)).length;
 
   return (
     <div>

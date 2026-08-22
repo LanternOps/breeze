@@ -106,8 +106,8 @@
      linen) carries every neutral; the working ink is a deep service green
      (155°) rather than SaaS blue. Status hues are warm-shifted to sit in the
      same room: a brick red, a spruce green, an amber. No pure grey anywhere —
-     every neutral is tinted toward the paper. All foreground/background
-     ratios are asserted in tokenContrast.test.ts. */
+     every neutral is tinted toward the paper. The status, button, body and
+     hairline pairs (light theme) are asserted in tokenContrast.test.ts. */
   :root {
     --background: 40 28% 94%;
     --foreground: 30 12% 12%;
@@ -164,7 +164,7 @@
     --muted-foreground: 36 12% 68%;
     --accent: 30 9% 21%;
     --accent-foreground: 40 26% 92%;
-    --destructive: 8 58% 56%;
+    --destructive: 8 58% 44%;
     --destructive-foreground: 42 45% 98%;
     --success: 152 38% 58%;
     --success-foreground: 150 60% 8%;
@@ -204,7 +204,7 @@
       --muted-foreground: 36 12% 68%;
       --accent: 30 9% 21%;
       --accent-foreground: 40 26% 92%;
-      --destructive: 8 58% 56%;
+      --destructive: 8 58% 44%;
       --destructive-foreground: 42 45% 98%;
       --success: 152 38% 58%;
       --success-foreground: 150 60% 8%;
@@ -232,9 +232,9 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
-    /* Hanken Grotesk ships with old-style figures in some contexts; the portal
-       is full of dates, totals and balances, so lining figures are the
-       default and columns opt into tabular spacing via .text-figures. */
+    /* Pin lining figures regardless of face default; the portal is full of
+       dates, totals and balances, and columns opt into tabular spacing via
+       .text-figures. */
     font-variant-numeric: lining-nums;
   }
   /* Lets the UA theme scrollbars, form controls and the canvas to match. */
@@ -275,8 +275,8 @@
     font-variant-numeric: lining-nums tabular-nums;
   }
 
-  /* The ledger: rows ruled by hairlines, not boxed into chips. Applied to
-     tbody so the rules live between entries like a ruled register page. */
+  /* Row hover wash for the ledgers. The hairline rules themselves come from
+     `divide-y` on the tbody (see ROW in components/portal/ui.tsx). */
   .ledger-row {
     @apply transition-colors duration-150;
   }

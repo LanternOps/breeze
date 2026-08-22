@@ -9,6 +9,7 @@ import { Fragment } from 'react';
 import type { QuoteBlock, QuoteCalloutContent, QuoteContractBlockContent, QuoteLine, QuoteTableContent } from '@/lib/api';
 
 import { money } from '@/lib/format';
+import type { PublicApiPath } from '@/lib/api';
 export { money };
 
 /** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
@@ -56,7 +57,7 @@ function PricingTable({
   taxRate: number;
   showTax: boolean;
   /** Resolves a server-built relative line-image path into a fetchable URL. */
-  buildUrl: (path: string) => string;
+  buildUrl: (path: string) => PublicApiPath;
 }) {
   if (lines.length === 0) return null;
   // Preserve sortOrder within each recurrence group, in the canonical group order.
@@ -170,14 +171,14 @@ export function QuoteBlocks({
   lines: QuoteLine[];
   currency: string;
   // Builds the (authed or token-scoped) URL to fetch a quote image by id.
-  imageUrl: (imageId: string) => string;
+  imageUrl: (imageId: string) => PublicApiPath;
   // Resolves a server-returned relative route (e.g. a contract block's
   // `fileUrl`, already the full `/portal/quotes/:id/contract-file/:blockId` or
   // `/quotes/public/:token/contract-file/:blockId` path) into a fetchable URL —
-  // `buildPortalApiUrl` in both callers. Unlike `imageUrl`, the route itself
+  // `publicApiPath` in both callers. Unlike `imageUrl`, the route itself
   // (not just an id) comes from the API, since a contract block's fileUrl is
   // part of the serialization contract.
-  buildUrl: (path: string) => string;
+  buildUrl: (path: string) => PublicApiPath;
   /** Quote tax rate as a fraction (e.g. 0.085); used for the per-line Tax column. */
   taxRate?: number;
   /** Whether the quote carries tax — shows the per-line Tax column when true. */

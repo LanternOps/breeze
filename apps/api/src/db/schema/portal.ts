@@ -25,7 +25,7 @@ export const portalBranding = pgTable('portal_branding', {
   footerText: text('footer_text'),
   customCss: text('custom_css'),
   enableTickets: boolean('enable_tickets').notNull().default(true),
-  // Parked (2026-08-21): the checkout/checkin API and admin toggle exist, but
+  // Parked: the checkout/checkin API and admin toggle exist, but
   // the customer portal never received the Check out / Check in UI, so an org
   // with this on gets an "Equipment" page that duplicates Devices and can't
   // borrow anything. Off by default until the portal side ships.

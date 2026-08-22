@@ -16,22 +16,31 @@ import { ticketStatusLabel, ticketStatusMark } from './ticketMarks';
  *  sees the ticket record plus its public replies, so it must never assert that
  *  nothing has happened: the old hardcoded "No activity yet" told a customer with
  *  a resolved, long-since-answered ticket that their MSP had ignored them. */
-function activityStatusText(status: TicketStatus, updatedAt: string): string {
+function activityStatusText(status: TicketStatus, updatedAt: string | null): string {
+  const when = updatedAt ? ` Last updated ${formatDate(updatedAt)}.` : '';
   switch (status) {
-    case 'open':
+    case 'new':
       return 'We have your request. Our support team will follow up here.';
-    case 'in_progress':
-      return 'A technician is working on this now. Updates appear here.';
+    case 'open':
+      return 'A technician is on this. Updates appear here.';
+    case 'pending':
+      return 'We need something from you to keep going — see the latest reply below.';
+    case 'on_hold':
+      return `This request is on hold.${when}`;
     case 'resolved':
-      return `This ticket is resolved. Last updated ${formatDate(updatedAt)}.`;
+      return `This ticket is resolved.${when}`;
     case 'closed':
-      return `This ticket is closed. Last updated ${formatDate(updatedAt)}.`;
+      return `This ticket is closed.${when}`;
+    default:
+      return when.trim() || 'Updates appear here.';
   }
 }
 
 interface TicketDetailsProps {
   ticket: TicketDetailsType | null;
   error?: string | null;
+  /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
+  statusCode?: number;
 }
 
 /** The reply box that closes the loop the create-form promises ("say so in the
@@ -109,7 +118,7 @@ function ReplyComposer({
   );
 }
 
-export function TicketDetails({ ticket, error }: TicketDetailsProps) {
+export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps) {
   // The API returns public replies newest-first; this reads as a conversation
   // under the description, so show them oldest-first. `comments` is defensively
   // defaulted for any payload that predates the field. Local state so a reply
@@ -122,22 +131,25 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
   // Announced to screen readers when a reply lands; visually the thread itself
   // is the confirmation.
   const [posted, setPosted] = useState(false);
-  // Timestamps are formatted in the viewer's locale and timezone, which the
-  // server cannot know: the SSR pass renders them in the container's zone (UTC)
-  // and the browser in the customer's. Suppressing the hydration diff and
-  // re-rendering once mounted keeps React quiet during hydration and then
-  // patches every timestamp to the local values in the same frame.
+  // Timestamps are the viewer's local zone, which the server cannot know, and
+  // React 19 does NOT patch text whose hydration mismatch is merely suppressed —
+  // it only silences the diff. So render them only after mount: server and
+  // first client paint agree (empty), then the local values fill in.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  void mounted;
+  const when = (iso: string) => (mounted ? formatDateTime(iso) : '');
 
   if (error || !ticket) {
     return (
       <div className="border-y border-border/70 py-14 text-center">
         <AlertCircle className="mx-auto h-10 w-10 text-destructive-on-tint" strokeWidth={1.5} />
-        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">Ticket not found</h3>
+        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">
+          {statusCode === 404 || !error ? 'Ticket not found' : "We couldn't load this ticket"}
+        </h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {error || "We couldn't find that ticket — it may have been merged with another request. Your tickets list has the latest."}
+          {statusCode === 404 || !error
+            ? "We couldn't find that ticket — it may have been merged with another request. Your tickets list has the latest."
+            : 'Something went wrong on our side. Try again in a moment; your tickets list is unaffected.'}
         </p>
         <a
           href={withBase('/tickets')}
@@ -192,12 +204,12 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
         </div>
       </header>
 
-      <p className="mt-3 text-sm text-muted-foreground" suppressHydrationWarning>
-        Created {formatDateTime(ticket.createdAt)}
+      <p className="mt-3 text-sm text-muted-foreground">
+        Created {when(ticket.createdAt)}
         <span className="mx-2 text-border" aria-hidden="true">
           ·
         </span>
-        Updated {formatDateTime(ticket.updatedAt)}
+        Updated {when(ticket.updatedAt)}
       </p>
 
       <section className="mt-7 border-t border-border/70 pt-5">
@@ -216,9 +228,8 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
         <p
           className="mt-2 text-sm text-muted-foreground"
           data-testid="ticket-activity-status"
-          suppressHydrationWarning
         >
-          {activityStatusText(ticket.status, ticket.updatedAt)}
+          {activityStatusText(ticket.status, mounted ? ticket.updatedAt : null)}
         </p>
 
         {replies.length > 0 && (
@@ -229,7 +240,7 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
                   <span className="text-sm font-semibold text-foreground">
                     {c.authorName || 'Support'}
                   </span>
-                  <span className="text-xs text-muted-foreground" suppressHydrationWarning>{formatDateTime(c.createdAt)}</span>
+                  <span className="text-xs text-muted-foreground">{when(c.createdAt)}</span>
                 </div>
                 <div className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                   {c.content}
