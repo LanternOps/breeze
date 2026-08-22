@@ -188,6 +188,7 @@ export async function sendQuote(
     pageSize: resolvePageSize(partnerRow?.documentPageSize),
   };
 
+  const documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow);
   const claimed = await db
     .update(quotes)
     .set({
@@ -205,6 +206,10 @@ export async function sendQuote(
       termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
       terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
       presentationSnapshot,
+      // Render-locale snapshot (#3777): stamped ONCE at first send from the
+      // partner's language, never restamped (resendQuote does not write it);
+      // `??` keeps a locale the draft already carries.
+      documentLocale,
     })
     .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
     .returning({ id: quotes.id });
@@ -236,6 +241,8 @@ export async function sendQuote(
     billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
     sellerSnapshot,
     presentationSnapshot,
+    // The just-stamped locale, so the same-request PDF + email render with it.
+    documentLocale,
   };
 
   const { emailed, emailReason } = await deliverQuoteEmail({
