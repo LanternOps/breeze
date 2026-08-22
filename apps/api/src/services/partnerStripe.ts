@@ -35,7 +35,17 @@ export class PartnerStripeError extends Error {
 // leftovers (last4), never a stale account id.
 export type PartnerStripeStatus =
   | { connected: false; last4: string | null }
-  | { connected: true; stripeAccountId: string; last4: string | null; livemode: boolean };
+  | {
+      connected: true;
+      stripeAccountId: string;
+      last4: string | null;
+      livemode: boolean;
+      defaultCurrency: string | null;
+      accountCountry: string | null;
+      accountRefreshedAt: Date | null;
+    };
+
+export const STRIPE_ACCOUNT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Per-partner Stripe API-key model (replaces Connect OAuth). The partner pastes
@@ -48,19 +58,27 @@ export async function savePartnerStripeKey(input: {
   partnerId: string;
   apiKey: string;
   userId: string | null;
-}): Promise<{ stripeAccountId: string; last4: string; livemode: boolean }> {
+}): Promise<{
+  stripeAccountId: string;
+  last4: string;
+  livemode: boolean;
+  defaultCurrency: string | null;
+  accountCountry: string | null;
+  accountRefreshedAt: Date;
+}> {
   const apiKey = input.apiKey.trim();
 
   // Validate by retrieving the account the key belongs to. Any rejection (bad key,
   // revoked, insufficient scope) → INVALID_STRIPE_KEY rather than a 500.
-  let accountId: string;
+  let account: Stripe.Account;
   try {
     const probe = new Stripe(apiKey, { apiVersion: API_VERSION });
     // No-arg accounts.retrieve() hits GET /v1/account — the account the KEY belongs
     // to (the partner's own account). The SDK's typed overload requires an id (for
     // Connect), so cast to the documented no-arg form.
-    const account = await (probe.accounts.retrieve as unknown as () => Promise<Stripe.Account>)();
-    accountId = account.id;
+    account = await runOutsideDbContext(() =>
+      (probe.accounts.retrieve as unknown as () => Promise<Stripe.Account>)()
+    );
   } catch (err) {
     // Always log the real reason — a money-onboarding path must not swallow it. A
     // transient Stripe outage / rate-limit isn't the partner's fault, so say so
@@ -76,6 +94,9 @@ export async function savePartnerStripeKey(input: {
     );
   }
 
+  const accountId = account.id;
+  const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
+  const accountCountry = account.country ?? null;
   const last4 = apiKey.slice(-4);
   const livemode = apiKey.startsWith('sk_live') || apiKey.startsWith('rk_live');
   const encrypted = encryptSecret(apiKey);
@@ -88,11 +109,12 @@ export async function savePartnerStripeKey(input: {
   // consequences (issue #2189):
   //   1. an in-context pre-check SELECT would silently return zero rows and
   //      the upsert would still trip the constraint, and
-  //   2. letting the constraint raise doesn't work either: the request runs
-  //      inside the withDbAccessContext transaction, and postgres.js records
-  //      the raw 23505 and re-throws it at commit even after the catch below
-  //      maps it — the route's mapped 400 was deterministically clobbered
-  //      into a raw 500.
+  //   2. letting the constraint raise inside a request transaction doesn't
+  //      work either: postgres.js re-throws the raw 23505 at commit even after
+  //      the catch maps it, so the route's 400 was clobbered into a 500. The
+  //      route is now self-managed (#3777: no request transaction) and the
+  //      upsert below runs in its own short system-context transaction, so the
+  //      mapping survives — the pre-check stays as the deterministic guard.
   // So pre-check under a system context on its own short-lived transaction.
   // runOutsideDbContext is required: a nested withSystemDbAccessContext alone
   // short-circuits into the SAME partner-scoped request transaction. Only the
@@ -115,56 +137,70 @@ export async function savePartnerStripeKey(input: {
     );
   }
 
-  try {
-    await db
-      .insert(stripeConnectAccounts)
-      .values({
-        partnerId: input.partnerId,
-        stripeAccountId: accountId,
-        apiKey: encrypted,
-        keyLast4: last4,
-        livemode,
-        status: 'connected',
-        connectedBy: input.userId,
-        connectedAt: now,
-        disconnectedAt: null,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: stripeConnectAccounts.partnerId,
-        set: {
-          stripeAccountId: accountId,
-          apiKey: encrypted,
-          keyLast4: last4,
-          livemode,
-          status: 'connected',
-          connectedBy: input.userId,
-          connectedAt: now,
-          disconnectedAt: null,
-          updatedAt: now,
-        },
-      });
-  } catch (err) {
-    // Concurrent-writer backstop only: the system-context pre-check above
-    // catches the deterministic case, so acct_uq (23505) can now fire solely
-    // when another partner claims the same Stripe account BETWEEN the
-    // pre-check and this upsert. On this path the surrounding
-    // withDbAccessContext transaction is already aborted and postgres.js will
-    // re-throw the raw error at commit (the mapped error below does NOT reach
-    // the caller — they see a 500), but the window is a vanishing-probability
-    // race instead of the previously deterministic path. Kept for the log/
-    // intent trail; Drizzle wraps the postgres.js error, so the pg code/
-    // constraint live on `.cause` — isPgUniqueViolation walks the chain.
-    if (isPgUniqueViolation(err, 'stripe_connect_accounts_acct_uq')) {
-      throw new PartnerStripeError(
-        'That Stripe account is already connected to another partner. Use a key for a different Stripe account.',
-        'INVALID_STRIPE_KEY',
+  await runOutsideDbContext(async () => {
+    try {
+      await withSystemDbAccessContext(() =>
+        db
+          .insert(stripeConnectAccounts)
+          .values({
+            partnerId: input.partnerId,
+            stripeAccountId: accountId,
+            apiKey: encrypted,
+            keyLast4: last4,
+            livemode,
+            defaultCurrency,
+            accountCountry,
+            accountRefreshedAt: now,
+            status: 'connected',
+            connectedBy: input.userId,
+            connectedAt: now,
+            disconnectedAt: null,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: stripeConnectAccounts.partnerId,
+            set: {
+              stripeAccountId: accountId,
+              apiKey: encrypted,
+              keyLast4: last4,
+              livemode,
+              defaultCurrency,
+              accountCountry,
+              accountRefreshedAt: now,
+              status: 'connected',
+              connectedBy: input.userId,
+              connectedAt: now,
+              disconnectedAt: null,
+              updatedAt: now,
+            },
+          })
       );
+    } catch (err) {
+      // Concurrent-writer backstop only: the system-context pre-check above
+      // catches the deterministic case, so acct_uq (23505) can now fire solely
+      // when another partner claims the same Stripe account BETWEEN the
+      // pre-check and this upsert. Because this write has its own short system-
+      // context transaction, the mapped error reaches the caller. Drizzle wraps
+      // the postgres.js error, so the pg code/constraint live on `.cause` —
+      // isPgUniqueViolation walks the chain.
+      if (isPgUniqueViolation(err, 'stripe_connect_accounts_acct_uq')) {
+        throw new PartnerStripeError(
+          'That Stripe account is already connected to another partner. Use a key for a different Stripe account.',
+          'INVALID_STRIPE_KEY',
+        );
+      }
+      throw err;
     }
-    throw err;
-  }
+  });
 
-  return { stripeAccountId: accountId, last4, livemode };
+  return {
+    stripeAccountId: accountId,
+    last4,
+    livemode,
+    defaultCurrency,
+    accountCountry,
+    accountRefreshedAt: now,
+  };
 }
 
 /**
@@ -173,9 +209,18 @@ export async function savePartnerStripeKey(input: {
  * payment mapping — avoid a second query). Throws NO_STRIPE_KEY if unconfigured,
  * STRIPE_KEY_UNREADABLE if the stored ciphertext can't be decrypted.
  */
-export async function getPartnerStripeClient(partnerId: string): Promise<{ stripe: Stripe; stripeAccountId: string }> {
+export async function getPartnerStripeClient(partnerId: string): Promise<{
+  stripe: Stripe;
+  stripeAccountId: string;
+  defaultCurrency: string | null;
+}> {
   const [row] = await db
-    .select({ apiKey: stripeConnectAccounts.apiKey, status: stripeConnectAccounts.status, stripeAccountId: stripeConnectAccounts.stripeAccountId })
+    .select({
+      apiKey: stripeConnectAccounts.apiKey,
+      status: stripeConnectAccounts.status,
+      stripeAccountId: stripeConnectAccounts.stripeAccountId,
+      defaultCurrency: stripeConnectAccounts.defaultCurrency,
+    })
     .from(stripeConnectAccounts)
     .where(eq(stripeConnectAccounts.partnerId, partnerId))
     .limit(1);
@@ -197,7 +242,91 @@ export async function getPartnerStripeClient(partnerId: string): Promise<{ strip
     console.error('[partnerStripe] decrypt returned empty for connected partner', { partnerId });
     throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.', 'STRIPE_KEY_UNREADABLE');
   }
-  return { stripe: new Stripe(key, { apiVersion: API_VERSION }), stripeAccountId: row.stripeAccountId };
+  return {
+    stripe: new Stripe(key, { apiVersion: API_VERSION }),
+    stripeAccountId: row.stripeAccountId,
+    defaultCurrency: row.defaultCurrency,
+  };
+}
+
+/** Refresh cached Stripe account metadata without holding a DB context open during HTTP. */
+export async function refreshPartnerStripeAccount(partnerId: string): Promise<{
+  defaultCurrency: string | null;
+  accountCountry: string | null;
+  accountRefreshedAt: Date;
+}> {
+  const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
+
+  let account: Stripe.Account;
+  try {
+    account = await runOutsideDbContext(() =>
+      (stripe.accounts.retrieve as unknown as () => Promise<Stripe.Account>)()
+    );
+  } catch (err) {
+    const type = (err as { type?: string })?.type;
+    const transient = type === 'StripeConnectionError' || type === 'StripeAPIError' || type === 'StripeRateLimitError';
+    console.error('[partnerStripe] account refresh failed', { partnerId, type: type ?? 'unknown', transient, message: err instanceof Error ? err.message : String(err) });
+    throw new PartnerStripeError(
+      transient
+        ? 'Could not reach Stripe right now — try again in a moment.'
+        : 'Stripe rejected the stored key — reconnect Stripe.',
+      'INVALID_STRIPE_KEY',
+    );
+  }
+
+  const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
+  const accountCountry = account.country ?? null;
+  const now = new Date();
+
+  await withSystemDbAccessContext(() =>
+    db
+      .update(stripeConnectAccounts)
+      .set({ defaultCurrency, accountCountry, accountRefreshedAt: now, updatedAt: now })
+      .where(eq(stripeConnectAccounts.partnerId, partnerId))
+  );
+
+  return { defaultCurrency, accountCountry, accountRefreshedAt: now };
+}
+
+export async function getStripeAccountCurrency(partnerId: string): Promise<{
+  defaultCurrency: string | null;
+  accountCountry: string | null;
+  accountRefreshedAt: Date | null;
+  stale: boolean;
+}> {
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        defaultCurrency: stripeConnectAccounts.defaultCurrency,
+        accountCountry: stripeConnectAccounts.accountCountry,
+        accountRefreshedAt: stripeConnectAccounts.accountRefreshedAt,
+        status: stripeConnectAccounts.status,
+      })
+      .from(stripeConnectAccounts)
+      .where(eq(stripeConnectAccounts.partnerId, partnerId))
+      .limit(1)
+  );
+
+  if (!row || row.status !== 'connected') {
+    return { defaultCurrency: null, accountCountry: null, accountRefreshedAt: null, stale: false };
+  }
+
+  const cached = {
+    defaultCurrency: row.defaultCurrency,
+    accountCountry: row.accountCountry,
+    accountRefreshedAt: row.accountRefreshedAt,
+  };
+  const stale = row.accountRefreshedAt === null
+    || Date.now() - row.accountRefreshedAt.getTime() > STRIPE_ACCOUNT_CACHE_TTL_MS;
+  if (!stale) return { ...cached, stale: false };
+
+  try {
+    return { ...(await refreshPartnerStripeAccount(partnerId)), stale: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('[partnerStripe] account cache refresh failed — serving stale value', { partnerId, message });
+    return { ...cached, stale: true };
+  }
 }
 
 /** Build a Stripe client bound to the partner's own key. Throws NO_STRIPE_KEY if unconfigured. */
@@ -213,7 +342,15 @@ export async function getPartnerStripeStatus(partnerId: string): Promise<Partner
     .where(eq(stripeConnectAccounts.partnerId, partnerId))
     .limit(1);
   if (row && row.status === 'connected' && row.apiKey) {
-    return { connected: true, stripeAccountId: row.stripeAccountId, last4: row.keyLast4 ?? null, livemode: row.livemode };
+    return {
+      connected: true,
+      stripeAccountId: row.stripeAccountId,
+      last4: row.keyLast4 ?? null,
+      livemode: row.livemode,
+      defaultCurrency: row.defaultCurrency,
+      accountCountry: row.accountCountry,
+      accountRefreshedAt: row.accountRefreshedAt,
+    };
   }
   return { connected: false, last4: row?.keyLast4 ?? null };
 }

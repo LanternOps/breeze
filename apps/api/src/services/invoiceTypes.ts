@@ -54,7 +54,8 @@ export type InvoiceServiceErrorCode =
   | 'NOTHING_TO_PAY'
   | 'STRIPE_NOT_CONNECTED'
   | 'STRIPE_NO_URL'
-  | 'STRIPE_INIT_FAILED';
+  | 'STRIPE_INIT_FAILED'
+  | 'STRIPE_CURRENCY_UNSUPPORTED';
 
 export class InvoiceServiceError extends Error {
   constructor(
