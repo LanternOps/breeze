@@ -440,6 +440,23 @@ describe('PATCH /ticket-categories/:id', () => {
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
+  it('does not restamp currency when the resent rate differs only beyond the column scale (100.001 vs 100.00)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
+    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Renamed', partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
+
+    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed', defaultHourlyRate: 100.001 })
+    });
+
+    expect(res.status).toBe(200);
+    const { db } = await import('../db');
+    const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
+    expect(Object.prototype.hasOwnProperty.call(setArg, 'rateCurrency')).toBe(false);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
   it('clears rateCurrency when the hourly rate is cleared without reading the partner', async () => {
     dbSelectResult.mockResolvedValueOnce([{ partnerId: 'p-1', defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
     dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Updated', partnerId: 'p-1', defaultHourlyRate: null, rateCurrency: null }]);

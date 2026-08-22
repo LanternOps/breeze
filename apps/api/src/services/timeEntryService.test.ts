@@ -1040,6 +1040,20 @@ describe('query helpers', () => {
     ]);
   });
 
+  it('getTimesheet rounds each row at the currency minor unit before summing (sum of invoice lines, not a rounded sum)', async () => {
+    // 0.33 h × 100.50 = 33.165 → 33.17 per row; three rows = 99.51. Rounding the
+    // raw sum (99.495) would give 99.50 — a cent off the three invoice lines.
+    const row = (id: string) => ({
+      id, startedAt: new Date('2026-06-08T09:00:00Z'), durationMinutes: 20,
+      isBillable: true, hourlyRate: '100.50', currencyCode: 'USD'
+    });
+    dbMocks.selectResults.push([row('a'), row('b'), row('c')]);
+
+    const result = await getTimesheet('u-1', new Date('2026-06-08T00:00:00Z'));
+
+    expect(result.totals.billableAmounts).toEqual([{ currencyCode: 'USD', amount: '99.51' }]);
+  });
+
   it('getTicketBillingSummary returns per-currency aggregate rows', async () => {
     dbMocks.selectResults.push([{ totalMinutes: 90, billableMinutes: 60 }]);
     dbMocks.selectResults.push([
@@ -1367,6 +1381,19 @@ describe('currency snapshots (wave 4 / Task 7)', () => {
     dbMocks.updateResult = [stamped];
     await updateTimeEntry('te-1', { hourlyRate: 90 }, ACTOR);
     expect(dbMocks.updateSetArgs[0]!.currencyCode).toBe('CAD');
+    expect(dbMocks.selectResults).toHaveLength(0);
+  });
+
+  it('(d3) first money sent together with an explicit ticketId: null still stamps the partner currency', async () => {
+    // `{ ticketId: null, hourlyRate }` on a moneyless standalone entry ends standalone
+    // with money — without the stamp the DB CHECK (currency_required_when_rate) fires.
+    dbMocks.selectResults.push([{ ...stamped, orgId: null, ticketId: null, currencyCode: null, hourlyRate: null }]);
+    dbMocks.selectResults.push([{ currencyCode: 'CAD' }]); // partners read
+    dbMocks.updateResult = [stamped];
+    await updateTimeEntry('te-1', { ticketId: null, hourlyRate: 90 }, ACTOR);
+    const set = dbMocks.updateSetArgs[0]!;
+    expect(set.currencyCode).toBe('CAD');
+    expect(set.ticketId).toBeNull();
     expect(dbMocks.selectResults).toHaveLength(0);
   });
 

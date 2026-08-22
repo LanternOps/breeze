@@ -284,7 +284,11 @@ ticketCategoriesRoutes.patch(
       if (!existing) return c.json({ error: 'Category not found' }, 404);
       if (body.defaultHourlyRate === null) {
         set.rateCurrency = null;
-      } else if (existing.defaultHourlyRate == null || Number(existing.defaultHourlyRate) !== body.defaultHourlyRate) {
+      } else if (
+        existing.defaultHourlyRate == null ||
+        // Compare at the column's numeric(10,2) scale — what the DB will actually store.
+        Number(existing.defaultHourlyRate).toFixed(2) !== body.defaultHourlyRate.toFixed(2)
+      ) {
         // Snapshot rule: restamp ONLY when the number itself changes. The
         // editor resends the rate on every save (name/colour/SLA edits), and a
         // same-value resend after a partner currency change must not

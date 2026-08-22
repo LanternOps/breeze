@@ -1,9 +1,9 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
-import { roundToCurrency } from '@breeze/shared';
+import { CURRENCY_CODES, isZeroDecimal, roundToCurrency } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -241,6 +241,20 @@ async function resolveAndLockTicketLink(ticketId: string, actor: TimeEntryActor)
   const locked = await lockTicketRow(ticketId);
   if (locked.orgId !== link.ticket.orgId) link = await resolveTicketLink(ticketId, actor);
   return link;
+}
+
+/** Supported zero-decimal codes (JPY, KRW, …) — every other supported currency has 2 minor-unit digits (spec §12). */
+const ZERO_DECIMAL_CODES: string[] = CURRENCY_CODES.filter((code) => isZeroDecimal(code));
+
+/**
+ * SQL scale for a per-row ROUND at the row's own currency minor unit — the
+ * SQL twin of `roundToCurrency` (PG `ROUND(numeric, int)` is half away from
+ * zero, which is half-up for the non-negative amounts these rows carry).
+ */
+function minorUnitScaleSql(currencyColumn: AnyColumn): SQL<number> {
+  return ZERO_DECIMAL_CODES.length > 0
+    ? sql<number>`CASE WHEN ${currencyColumn} IN (${sql.join(ZERO_DECIMAL_CODES.map((code) => sql`${code}`), sql`, `)}) THEN 0 ELSE 2 END`
+    : sql<number>`2`;
 }
 
 /** Standalone entries: money still needs a currency (CHECK time_entries_currency_required_when_rate_chk). */
@@ -597,7 +611,9 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
     // Detach leaves currencyCode untouched (the snapshot outlives the link).
     changed.push('ticketId');
   }
-  if (input.hourlyRate != null && entry.ticketId == null && input.ticketId === undefined && entry.currencyCode == null) {
+  // Standalone after this edit: either detached in the same call or never linked.
+  const endsStandalone = input.ticketId === null || (input.ticketId === undefined && entry.ticketId == null);
+  if (input.hourlyRate != null && endsStandalone && entry.currencyCode == null) {
     // First money on a standalone entry stamps the partner currency; later
     // rate edits never touch the snapshot.
     set.currencyCode = await getPartnerCurrency(entry.partnerId);
@@ -961,8 +977,11 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
   const money = new Map<string, number>();
   for (const entry of entries) {
     if (!entry.isBillable || entry.hourlyRate == null || entry.currencyCode == null) continue;
+    // Labor rule: hours to 2 dp, then ONE round per row at the currency's minor
+    // unit — the same per-line figure invoice assembly produces, so the sum of
+    // rounded rows equals the invoice total (never "round the sum").
     const hours = Number(((entry.durationMinutes ?? 0) / 60).toFixed(2));
-    const amount = hours * Number(entry.hourlyRate);
+    const amount = Number(roundToCurrency(hours * Number(entry.hourlyRate), entry.currencyCode));
     money.set(entry.currencyCode, (money.get(entry.currencyCode) ?? 0) + amount);
   }
   const billableAmounts: CurrencyAmount[] = [...money].map(([currencyCode, amount]) => ({
@@ -993,8 +1012,9 @@ export async function getTicketBillingSummary(ticketId: string) {
   const timeMoney = await db
     .select({
       currencyCode: timeEntries.currencyCode,
-      // Labor rule: round hours to 2 dp first, then multiply by the rate.
-      amount: sql<string>`COALESCE(SUM(ROUND(${timeEntries.durationMinutes}::numeric / 60, 2) * ${timeEntries.hourlyRate}), 0)::numeric(12,2)`
+      // Labor rule: round hours to 2 dp first, then × rate, then ONE round per
+      // row at the currency's minor unit (the invoice-line figure) before summing.
+      amount: sql<string>`COALESCE(SUM(ROUND(ROUND(${timeEntries.durationMinutes}::numeric / 60, 2) * ${timeEntries.hourlyRate}, ${minorUnitScaleSql(timeEntries.currencyCode)})), 0)::numeric(12,2)`
     })
     .from(timeEntries)
     .where(and(
@@ -1014,7 +1034,8 @@ export async function getTicketBillingSummary(ticketId: string) {
   const partsMoney = await db
     .select({
       currencyCode: ticketParts.currencyCode,
-      amount: sql<string>`COALESCE(SUM(${ticketParts.quantity} * ${ticketParts.unitPrice}), 0)::numeric(12,2)`
+      // One round per row at the currency's minor unit (the invoice-line figure) before summing.
+      amount: sql<string>`COALESCE(SUM(ROUND(${ticketParts.quantity} * ${ticketParts.unitPrice}, ${minorUnitScaleSql(ticketParts.currencyCode)})), 0)::numeric(12,2)`
     })
     .from(ticketParts)
     .where(and(eq(ticketParts.ticketId, ticketId), eq(ticketParts.isBillable, true)))
