@@ -22,6 +22,7 @@ import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from '../../services/documentThemes';
+import { resolvePartnerDocumentLocale } from '../../services/documentLocale';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { normalizeEmail, portalFinancialMutationGuard } from './helpers';
 
@@ -120,6 +121,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
       currencyCode: partners.currencyCode,
       documentTheme: partners.documentTheme,
       documentPageSize: partners.documentPageSize,
+      settings: partners.settings,
     }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)
   ));
   const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
@@ -155,6 +157,8 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
     footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
     theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
     pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
+    // Send-time locale snapshot → partner language → 'en' (#3777).
+    locale: quote.documentLocale ?? resolvePartnerDocumentLocale(partner),
   };
   const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, undefined, contractRenderData);
   const { mergeUploadedContractPdfs } = await import('../../services/pdfMerge');

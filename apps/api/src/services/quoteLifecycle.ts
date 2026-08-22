@@ -14,6 +14,7 @@ import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from './documentThemes';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
@@ -408,6 +409,8 @@ async function deliverQuoteEmail(
             footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
             theme: resolveThemeId(presentationSnap?.theme ?? partnerRow?.documentTheme),
             pageSize: resolvePageSize(presentationSnap?.pageSize ?? partnerRow?.documentPageSize),
+            // Send-time locale snapshot → partner language → 'en' (#3777).
+            locale: frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow),
           };
           const rawPdf = await renderQuotePdf(
             frozenQuote,
