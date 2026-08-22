@@ -211,9 +211,9 @@ function errorCode(result: PromiseSettledResult<unknown>): string | undefined {
 }
 
 describe.runIf(RUN)('time entry / part race safety (wave 4, Task 7)', () => {
-  // Needs Task 13's locked moveTicketOrg guard (TICKET_MOVE_CURRENCY_BLOCKED).
-  // Un-todo there; the body below is the intended assertion set.
-  it.todo('(a) create vs move: the new entry is never stranded in the old currency under the new org', async () => {
+  // Task 13's locked moveTicketOrg guard (TICKET_MOVE_CURRENCY_BLOCKED) makes
+  // the interleaving deterministic in either order.
+  it('(a) create vs move: the new entry is never stranded in the old currency under the new org', async () => {
     const f = await seedFixture();
     const { moveTicketOrg } = await import('../../services/ticketService');
 

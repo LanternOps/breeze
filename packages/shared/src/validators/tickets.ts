@@ -131,7 +131,12 @@ export const editCommentSchema = z.object({
 });
 
 export const moveTicketOrgSchema = z.object({
-  orgId: z.string().guid()
+  orgId: z.string().guid(),
+  // Multi-currency (#3776): a cross-currency move with unbilled monetary rows
+  // is blocked (409 TICKET_MOVE_CURRENCY_BLOCKED) unless the caller explicitly
+  // accepts that those snapshots stay in the OLD currency. The API additionally
+  // gates `true` on invoices:write. Client never supplies a currency itself.
+  acceptCurrencyMismatch: z.boolean().optional()
 });
 
 export const listTicketsQuerySchema = z.object({

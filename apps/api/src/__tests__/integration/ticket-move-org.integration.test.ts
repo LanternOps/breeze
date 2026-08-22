@@ -8,6 +8,12 @@
  *   (3) A cross-partner target org is rejected with status 400.
  *   (4) ticket_comments (no org_id column; parent-join tenancy) remain visible to the
  *       target org scope after the move.
+ *   (5) Multi-currency (#3776, Task 13): a move into an org billing in another
+ *       currency is blocked (409 TICKET_MOVE_CURRENCY_BLOCKED) while unbilled
+ *       monetary rows exist — regardless of is_billable — and nothing moves;
+ *       with acceptCurrencyMismatch the move succeeds, the snapshots keep the
+ *       OLD currency, and the audit row records the accepted counts; billed rows
+ *       never block.
  *
  * Test strategy: seed all fixtures inside each `it` (setup.ts TRUNCATEs beforeEach).
  * Call moveTicketOrg directly at the service level — no HTTP — wrapped in
@@ -16,7 +22,7 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   tickets,
@@ -27,10 +33,13 @@ import {
   alerts,
   alertRules,
   alertTemplates,
+  auditLogs,
   devices,
+  organizations,
   sites,
 } from '../../db/schema';
 import { moveTicketOrg, TicketServiceError } from '../../services/ticketService';
+import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -334,5 +343,129 @@ describe('moveTicketOrg — service-level integration', () => {
     // moveTicketOrg should both appear.
     const commentIds = rows.map((r) => r.id);
     expect(commentIds).toContain(comment.id);
+  });
+});
+
+// ── Multi-currency guard (#3776, Task 13) ────────────────────────────────────
+
+async function setOrgCurrency(orgId: string, currencyCode: string) {
+  const adminDb = getTestDb() as any;
+  await adminDb.update(organizations).set({ currencyCode }).where(eq(organizations.id, orgId));
+}
+
+describe('moveTicketOrg — cross-currency guard (#3776)', () => {
+  it('blocks a USD→EUR move while an unbilled rated entry exists, even when it is not billable; nothing moves', async () => {
+    const adminDb = getTestDb() as any;
+    const { orgA, orgB, actor, ticket, timeEntry, ticketPart } = await seedMoveOrgFixture();
+    await setOrgCurrency(orgB.id, 'EUR');
+    // Rated, not_billed, NOT billable — the guard protects the snapshot regardless.
+    await adminDb.update(timeEntries)
+      .set({ hourlyRate: '100.00', isBillable: false, billingStatus: 'not_billed' })
+      .where(eq(timeEntries.id, timeEntry.id));
+    // The seeded part is unit_price NOT NULL (money) — drop it so the count
+    // isolates the time-entry case.
+    await adminDb.delete(ticketParts).where(eq(ticketParts.id, ticketPart.id));
+
+    const err = await withSystemDbAccessContext(() =>
+      moveTicketOrg(ticket.id, orgB.id, actor)
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(TicketMoveCurrencyBlockedError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('TICKET_MOVE_CURRENCY_BLOCKED');
+    expect(err.details).toEqual({
+      sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: false,
+    });
+
+    // The transaction rolled back: ticket, device link and children untouched.
+    const after = await readTicket(ticket.id);
+    expect(after?.orgId).toBe(orgA.id);
+    expect(after?.deviceId).toBe(ticket.deviceId);
+    const entryAfter = await readTimeEntry(timeEntry.id);
+    expect(entryAfter?.orgId).toBe(orgA.id);
+    expect(entryAfter?.currencyCode).toBe('USD');
+    // No "Moved to" feed entry either.
+    const feed = await adminDb.select({ id: ticketComments.id }).from(ticketComments).where(eq(ticketComments.ticketId, ticket.id));
+    expect(feed).toHaveLength(0);
+    // No audit row for the blocked move.
+    const audits = await adminDb.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.resourceId, ticket.id));
+    expect(audits).toHaveLength(0);
+  });
+
+  it('acceptCurrencyMismatch moves the ticket, keeps the USD snapshot under the EUR org, and audits the accepted counts', async () => {
+    const adminDb = getTestDb() as any;
+    const { orgB, actor, ticket, timeEntry, ticketPart } = await seedMoveOrgFixture();
+    await setOrgCurrency(orgB.id, 'EUR');
+    await adminDb.update(timeEntries)
+      .set({ hourlyRate: '100.00', isBillable: false, billingStatus: 'not_billed' })
+      .where(eq(timeEntries.id, timeEntry.id));
+    await adminDb.delete(ticketParts).where(eq(ticketParts.id, ticketPart.id));
+
+    const moved = await withSystemDbAccessContext(() =>
+      moveTicketOrg(ticket.id, orgB.id, actor, { acceptCurrencyMismatch: true })
+    );
+    expect(moved.orgId).toBe(orgB.id);
+
+    const entryAfter = await readTimeEntry(timeEntry.id);
+    expect(entryAfter?.orgId).toBe(orgB.id);
+    expect(entryAfter?.currencyCode).toBe('USD'); // snapshot never restamped
+    expect(entryAfter?.hourlyRate).toBe('100.00');
+
+    const [sourceAudit] = await adminDb
+      .select({ details: auditLogs.details })
+      .from(auditLogs)
+      .where(and(eq(auditLogs.resourceId, ticket.id), eq(auditLogs.action, 'ticket.move_org.source')));
+    expect(sourceAudit?.details).toMatchObject({
+      currencyMismatchAccepted: {
+        sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: true,
+      },
+    });
+
+    const feed = await adminDb
+      .select({ content: ticketComments.content })
+      .from(ticketComments)
+      .where(eq(ticketComments.ticketId, ticket.id));
+    expect(feed.some((r: { content: string }) => r.content.includes('1 unbilled items stay in USD'))).toBe(true);
+  });
+
+  it('a billed entry never blocks: the plain cross-currency move succeeds and the snapshot stays USD', async () => {
+    const adminDb = getTestDb() as any;
+    const { orgB, actor, ticket, timeEntry, ticketPart } = await seedMoveOrgFixture();
+    await setOrgCurrency(orgB.id, 'EUR');
+    await adminDb.update(timeEntries)
+      .set({ hourlyRate: '100.00', isBillable: true, billingStatus: 'billed' })
+      .where(eq(timeEntries.id, timeEntry.id));
+    await adminDb.update(ticketParts)
+      .set({ billingStatus: 'billed' })
+      .where(eq(ticketParts.id, ticketPart.id));
+
+    const moved = await withSystemDbAccessContext(() =>
+      moveTicketOrg(ticket.id, orgB.id, actor)
+    );
+    expect(moved.orgId).toBe(orgB.id);
+    const entryAfter = await readTimeEntry(timeEntry.id);
+    expect(entryAfter?.orgId).toBe(orgB.id);
+    expect(entryAfter?.currencyCode).toBe('USD');
+    const partAfter = await readTicketPart(ticketPart.id);
+    expect(partAfter?.orgId).toBe(orgB.id);
+    expect(partAfter?.currencyCode).toBe('USD');
+
+    const [sourceAudit] = await adminDb
+      .select({ details: auditLogs.details })
+      .from(auditLogs)
+      .where(and(eq(auditLogs.resourceId, ticket.id), eq(auditLogs.action, 'ticket.move_org.source')));
+    expect(sourceAudit?.details).not.toHaveProperty('currencyMismatchAccepted');
+  });
+
+  it('an unbilled part (unit_price is always money) blocks on its own', async () => {
+    const { orgA, orgB, actor, ticket, ticketPart } = await seedMoveOrgFixture();
+    await setOrgCurrency(orgB.id, 'EUR');
+    // Seeded entry carries no hourly_rate → not money; the part (unit_price NOT NULL) is.
+    const err = await withSystemDbAccessContext(() =>
+      moveTicketOrg(ticket.id, orgB.id, actor)
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(TicketMoveCurrencyBlockedError);
+    expect(err.details).toMatchObject({ unbilledTimeEntries: 0, unbilledParts: 1 });
+    expect((await readTicketPart(ticketPart.id))?.orgId).toBe(orgA.id);
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgA.id);
   });
 });

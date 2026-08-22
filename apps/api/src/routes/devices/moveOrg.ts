@@ -2,14 +2,14 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices, sites, organizations } from '../../db/schema';
+import { devices, sites, organizations, tickets } from '../../db/schema';
 import {
   authMiddleware,
   requireMfa,
   requirePermission,
   requireScope,
 } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { hasPermission, PERMISSIONS } from '../../services/permissions';
 import {
   getDeviceWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
@@ -25,6 +25,11 @@ import {
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { disconnectAgent } from '../agentWs';
 import { captureException } from '../../services/sentry';
+import {
+  assertTicketMoveCurrencyCompatible,
+  TicketMoveCurrencyBlockedError,
+  type MoveCurrencyGuardDetails,
+} from '../../services/ticketMoveCurrencyGuard';
 
 export const moveOrgRoutes = new Hono();
 
@@ -70,7 +75,18 @@ moveOrgRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
-    const { orgId: targetOrgId, siteId: targetSiteId } = c.req.valid('json');
+    const { orgId: targetOrgId, siteId: targetSiteId, acceptCurrencyMismatch } = c.req.valid('json');
+
+    // Multi-currency (#3776): tickets bound to this device move with it, and
+    // accepting that their unbilled monetary rows stay in the OLD currency is a
+    // billing decision — invoices:write on top of the move's own gates.
+    // `permissions` is populated by the requirePermission middleware above.
+    if (
+      acceptCurrencyMismatch === true &&
+      !hasPermission(c.get('permissions'), PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action)
+    ) {
+      return c.json({ error: 'Accepting a currency mismatch requires invoices:write' }, 403);
+    }
 
     // Source-side access check via the standard chokepoint.
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
@@ -97,7 +113,12 @@ moveOrgRoutes.post(
 
     // Look up both orgs to enforce cross-partner policy.
     const orgRows = await db
-      .select({ id: organizations.id, partnerId: organizations.partnerId })
+      .select({
+        id: organizations.id,
+        partnerId: organizations.partnerId,
+        name: organizations.name,
+        currencyCode: organizations.currencyCode,
+      })
       .from(organizations)
       .where(sql`${organizations.id} IN (${sourceOrgId}::uuid, ${targetOrgId}::uuid)`);
 
@@ -139,6 +160,9 @@ moveOrgRoutes.post(
     // when its HOST moved, unlinking every guest). Recorded in the audit
     // details so an un-grouped fleet is traceable to this move.
     let linkGroupDissolved = false;
+    // #3776 — non-null only when the caller accepted a cross-currency move
+    // that stranded unbilled monetary ticket rows in the source currency.
+    let currencyGuard: MoveCurrencyGuardDetails | null = null;
     try {
       await db.transaction(async (tx) => {
         // Flip the device row first so any concurrent agent heartbeat
@@ -197,6 +221,23 @@ moveOrgRoutes.post(
         // Ticket-linked billing rows denormalize org_id from their ticket (Phase 3 spec §2);
         // tickets bound to this device move org with it, so these must follow —
         // same stranded-org_id class as ticket_alert_links (#1261).
+        //
+        // Multi-currency (#3776): this IS a ticket org-move for every ticket
+        // bound to the device. The `tickets` rows were locked by the
+        // denormalized-table loop's UPDATE above (global lock order tickets →
+        // time_entries → ticket_parts); the guard now locks the unbilled
+        // monetary children and blocks unless the mismatch was accepted. The
+        // rewrites below touch org_id only — currency_code snapshots never move.
+        const ticketIds = (
+          await tx.select({ id: tickets.id }).from(tickets).where(eq(tickets.deviceId, deviceId))
+        ).map((r) => r.id);
+        currencyGuard = await assertTicketMoveCurrencyCompatible(tx, {
+          ticketIds,
+          sourceCurrency: sourceOrg.currencyCode,
+          targetCurrency: targetOrg.currencyCode,
+          targetOrgName: targetOrg.name,
+          acceptCurrencyMismatch: acceptCurrencyMismatch === true,
+        });
         await tx.execute(
           sql`UPDATE ${sql.identifier('time_entries')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
@@ -216,6 +257,12 @@ moveOrgRoutes.post(
         }
       });
     } catch (err) {
+      // A currency-policy block is not a failure: the transaction rolled back
+      // (device + tickets untouched), so report it and skip Sentry / the
+      // failed-move audit.
+      if (err instanceof TicketMoveCurrencyBlockedError) {
+        return c.json({ error: err.message, code: err.code, details: err.details }, 409);
+      }
       console.error(`[devices.moveOrg] failed for ${deviceId}:`, err);
       captureException(err, c);
       // Best-effort audit on the failed cross-tenant move — a rolled-back
@@ -243,6 +290,8 @@ moveOrgRoutes.post(
     }
 
     // Audit on BOTH orgs so the move shows up in source and target feeds.
+    // (Cast: TS narrows the closure-assigned `let` to its initial null.)
+    const acceptedGuard = currencyGuard as MoveCurrencyGuardDetails | null;
     const auditDetails = {
       deviceId,
       sourceOrgId,
@@ -256,6 +305,9 @@ moveOrgRoutes.post(
       ...(device.linkGroupId
         ? { linkGroupId: device.linkGroupId, linkGroupDissolved }
         : {}),
+      // #3776 — the caller knowingly left unbilled ticket money in the source
+      // currency; record the counts so the stranded snapshots are traceable.
+      ...(acceptedGuard?.accepted ? { currencyMismatchAccepted: acceptedGuard } : {}),
     } as const;
 
     writeRouteAudit(c, {

@@ -250,6 +250,15 @@ describe('ticket validators', () => {
     it('rejects a non-uuid orgId', () => {
       expect(moveTicketOrgSchema.safeParse({ orgId: 'nope' }).success).toBe(false);
     });
+    it('leaves acceptCurrencyMismatch undefined when omitted', () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      expect(moveTicketOrgSchema.parse({ orgId: id }).acceptCurrencyMismatch).toBeUndefined();
+    });
+    it('accepts a boolean acceptCurrencyMismatch and rejects a non-boolean', () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      expect(moveTicketOrgSchema.parse({ orgId: id, acceptCurrencyMismatch: true })).toEqual({ orgId: id, acceptCurrencyMismatch: true });
+      expect(moveTicketOrgSchema.safeParse({ orgId: id, acceptCurrencyMismatch: 'yes' }).success).toBe(false);
+    });
   });
 });
 

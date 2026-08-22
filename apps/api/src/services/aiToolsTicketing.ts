@@ -36,6 +36,7 @@ import {
   TimeEntryServiceError
 } from './timeEntryService';
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
+import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
 
 type ParseResult<T> = { value: T } | { error: string };
@@ -47,6 +48,11 @@ function actorFrom(auth: AuthContext) {
 function serviceErrorToJson(err: unknown): string | null {
   if (err instanceof TicketServiceError) {
     return JSON.stringify({ error: err.message, code: err.code });
+  }
+  // Cross-currency move block (#3776). The AI never passes
+  // acceptCurrencyMismatch — a human accepts a mismatch, with invoices:write.
+  if (err instanceof TicketMoveCurrencyBlockedError) {
+    return JSON.stringify({ error: err.message, code: err.code, details: err.details });
   }
   return null;
 }
