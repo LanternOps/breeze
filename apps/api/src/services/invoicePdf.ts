@@ -31,6 +31,7 @@ import type { BillToAddress } from './sellerSnapshot';
 import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
 import { computeChargeNow, formatMoney } from '@breeze/shared';
 import { formatMoneyForPdf } from './pdfMoney';
+import { fitFontSize } from './pdfFitText';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -382,12 +383,20 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
             doc.fillColor('#1f2937').fontSize(10);
           }
           doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
+          // Money cells: single line, shrink-to-fit. The boxes fit ~1M at 10pt
+          // but numeric(12,2) permits 9'999'999'999.99, and pdfkit TRUNCATES an
+          // over-wide lineBreak:false string (a different number on the invoice).
           if (showTax) {
             const t = lineTax(l.lineTotal, l.taxable, taxRate);
-            doc.fillColor('#6b7280').text(t === null ? '—' : formatMoneyForPdf(t, currency, locale), colTaxX, y, { width: colNumW, align: 'right' });
+            const taxText = t === null ? '—' : formatMoneyForPdf(t, currency, locale);
+            fitFontSize(doc, taxText, colNumW, 10);
+            doc.fillColor('#6b7280').text(taxText, colTaxX, y, { width: colNumW, align: 'right', lineBreak: false });
             doc.fillColor('#1f2937');
           }
-          doc.text(formatMoneyForPdf(l.lineTotal, currency, locale), colAmtX, y, { width: colNumW, align: 'right' });
+          const amountText = formatMoneyForPdf(l.lineTotal, currency, locale);
+          fitFontSize(doc, amountText, colNumW, 10);
+          doc.text(amountText, colAmtX, y, { width: colNumW, align: 'right', lineBreak: false });
+          doc.fontSize(10);
           y += Math.max(descHeight, 12) + 6;
         }
       }
@@ -401,9 +410,15 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
       const drawTotal = (label: string, amount: string | number, opts: { bold?: boolean; emphasis?: boolean } = {}) => {
         const { bold = false, emphasis = false } = opts;
         const strong = bold || emphasis;
-        doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(emphasis ? 14 : strong ? 12 : 10).fillColor(strong ? '#111827' : '#6b7280');
+        const size = emphasis ? 14 : strong ? 12 : 10;
+        doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(size).fillColor(strong ? '#111827' : '#6b7280');
         doc.text(label, labelX, y, { width: labelW, align: 'left' });
-        doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(formatMoneyForPdf(amount, currency, locale), colSummaryAmtX, y, { width: colSummaryNumW, align: 'right' });
+        // Shrink-to-fit + lineBreak:false: the rows advance by fixed constants,
+        // so a wrapped (or pdfkit-truncated) schema-maximum figure would either
+        // overprint the next row or print the wrong number.
+        const amountText = formatMoneyForPdf(amount, currency, locale);
+        fitFontSize(doc, amountText, colSummaryNumW, size);
+        doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(amountText, colSummaryAmtX, y, { width: colSummaryNumW, align: 'right', lineBreak: false });
         y += emphasis ? 20 : strong ? 18 : 14;
       };
       drawTotal('Subtotal', invoice.subtotal);

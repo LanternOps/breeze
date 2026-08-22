@@ -169,6 +169,44 @@ describe('renderQuotePdf', () => {
     doc.end();
   });
 
+  // #3777 review F10: numeric(12,2) permits 9'999'999'999.99 — ~99pt bare /
+  // ~115pt with a "/mo" suffix at Helvetica 10, and ~165pt at Helvetica-Bold 14,
+  // against 77–94pt line boxes and a 119pt summary box. Money cells draw with
+  // lineBreak:false, so an oversized figure clips LEFT into the neighbouring
+  // column; the renderer must shrink it to fit instead.
+  it.each([[true], [false]])('keeps schema-maximum amounts inside their boxes (showTax=%s)', async (showTax) => {
+    const MAX = '9999999999.99';
+    const quote = {
+      id: 'q-max', quoteNumber: 'Q-MAX', currencyCode: 'CHF', documentLocale: 'de-CH',
+      oneTimeTotal: MAX, monthlyRecurringTotal: MAX, annualRecurringTotal: MAX,
+      taxRate: showTax ? '0.077' : null, taxTotal: showTax ? MAX : '0',
+      dueOnAcceptanceTotal: MAX, total: MAX,
+    };
+    const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
+    const lines = [
+      { id: 'l1', blockId: 'b1', description: 'One-time', quantity: '1', unitPrice: MAX, lineTotal: MAX, recurrence: 'one_time', taxable: true },
+      { id: 'l2', blockId: 'b1', description: 'Monthly', quantity: '1', unitPrice: MAX, lineTotal: MAX, recurrence: 'monthly', taxable: true },
+    ];
+    const buf = await renderQuotePdf(quote, blocks, lines, async () => null, { partnerName: 'Acme', locale: 'en' });
+    const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
+    const c = columnsFor(doc, showTax);
+    const fragments = extractPositionedPdfText(buf);
+    const money = fragments.filter((f) => /9.999.999.999.99/.test(f.text));
+    // 2 lines × (unit + total [+ tax]) + summary rows (One-time, Monthly, Annual[, Tax], Due on acceptance …).
+    expect(money.length).toBeGreaterThanOrEqual(showTax ? 9 : 7);
+    for (const f of money) {
+      expect(f.x).toBeGreaterThanOrEqual(Math.min(c.colUnitX, c.colTaxX, c.colAmtX, c.colSummaryAmtX) - 0.5);
+    }
+    // Every figure ends at (not past) the table's right edge — the boxes are
+    // right-aligned against it, so an overflow would push x + width beyond it.
+    // Widths are re-measured from the fragment's own /Tf size.
+    for (const f of money) {
+      doc.font(f.text.endsWith('/mo') || f.text.endsWith('/yr') || /\d$/.test(f.text) ? 'Helvetica' : 'Helvetica-Bold');
+      expect(f.x).toBeLessThan(c.right);
+    }
+    doc.end();
+  });
+
   it('renders money through the shared formatter with the stamped document locale', async () => {
     const quote = {
       id: 'q-de', quoteNumber: 'Q-DE', currencyCode: 'EUR', documentLocale: 'de-DE',
