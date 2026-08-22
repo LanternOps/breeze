@@ -65,7 +65,9 @@ const namespaceDuplicateBaselines = {
     'settings.json': 112,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
-    'tickets.json': 14,
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 13,
   },
   'es-419': {
@@ -123,7 +125,9 @@ const namespaceDuplicateBaselines = {
     'settings.json': 115,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
-    'tickets.json': 14,
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
@@ -189,7 +193,9 @@ const namespaceDuplicateBaselines = {
     'settings.json': 151,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
-    'tickets.json': 22,
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 23,
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
@@ -249,7 +255,9 @@ const namespaceDuplicateBaselines = {
     'settings.json': 156,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
-    'tickets.json': 21,
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 22,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
@@ -300,7 +308,9 @@ const namespaceDuplicateBaselines = {
     'settings.json': 167,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
-    'tickets.json': 14,
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 20,
   },
   'it-IT': {
@@ -343,7 +353,9 @@ const namespaceDuplicateBaselines = {
     'settings.json': 156,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
-    'tickets.json': 7,
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 8,
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
