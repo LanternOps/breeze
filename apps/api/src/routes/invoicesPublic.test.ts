@@ -179,6 +179,31 @@ describe('POST /invoices/public/:token/pay', () => {
     expect(body.error).not.toContain('Stripe');
   });
 
+  it('maps STRIPE_CURRENCY_UNSUPPORTED to customer-safe wording (no account-setup detail)', async () => {
+    resolveMock.mockResolvedValue(invoice({ currencyCode: 'CHF' }));
+    payLinkMock.mockRejectedValue(new InvoiceServiceError(
+      'Your Stripe account cannot accept payments in CHF. Enable CHF in your Stripe Dashboard.', 409, 'STRIPE_CURRENCY_UNSUPPORTED'));
+    const res = await post();
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toEqual({
+      error: 'Online payment is not available for this invoice — please contact the sender.',
+      code: 'STRIPE_CURRENCY_UNSUPPORTED',
+    });
+    expect(body.error).not.toContain('Stripe');
+  });
+
+  it('returns only { data: { url } } — the partner currency-mismatch warning never reaches the customer', async () => {
+    resolveMock.mockResolvedValue(invoice({ currencyCode: 'EUR' }));
+    payLinkMock.mockResolvedValue({
+      url: 'https://checkout.stripe.com/c/x',
+      warning: { code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT', documentCurrency: 'EUR', accountCurrency: 'USD', message: 'FX spread' },
+    });
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { url: 'https://checkout.stripe.com/c/x' } });
+  });
+
   it('passes through NOT_PAYABLE', async () => {
     resolveMock.mockResolvedValue(invoice({ status: 'paid' }));
     payLinkMock.mockRejectedValue(new InvoiceServiceError('Invoice is not payable', 409, 'NOT_PAYABLE'));

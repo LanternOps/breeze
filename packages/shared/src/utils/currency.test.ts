@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   CURRENCY_CODES, isKnownCurrency, minorUnitExponent, isZeroDecimal,
   toMinorUnits, fromMinorUnits, roundToCurrency, formatCurrencyAmount, formatMoney,
+  buildStripeCurrencyWarning,
 } from './currency';
 
 describe('currency core', () => {
@@ -78,5 +79,30 @@ describe('formatMoney', () => {
 
   it('retains formatCurrencyAmount as an alias', () => {
     expect(formatCurrencyAmount).toBe(formatMoney);
+  });
+});
+
+describe('buildStripeCurrencyWarning', () => {
+  it('returns the warn-dont-block shape when the account settles in a different currency', () => {
+    const w = buildStripeCurrencyWarning('EUR', 'USD');
+    expect(w).toMatchObject({
+      code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
+      documentCurrency: 'EUR',
+      accountCurrency: 'USD',
+    });
+    expect(w?.message).toContain('FX spread');
+    expect(w?.message).toContain('EUR');
+    expect(w?.message).toContain('USD');
+  });
+
+  it('is null when the currencies match case-insensitively', () => {
+    expect(buildStripeCurrencyWarning('EUR', 'eur')).toBeNull();
+    expect(buildStripeCurrencyWarning('usd', 'USD')).toBeNull();
+  });
+
+  it('is null when the account currency is unknown', () => {
+    expect(buildStripeCurrencyWarning('EUR', null)).toBeNull();
+    expect(buildStripeCurrencyWarning('EUR', undefined)).toBeNull();
+    expect(buildStripeCurrencyWarning('EUR', '')).toBeNull();
   });
 });

@@ -20,7 +20,7 @@ import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import { isRepresentableInCurrency, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, buildStripeCurrencyWarning, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -433,7 +433,15 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // actor's own connection row is RLS-visible. Best-effort: a lookup failure
   // (e.g. Stripe unconfigured) just means "not connected".
   const conn = await getConnection(inv.partnerId).catch(() => null);
-  return { invoice: inv, lines, stripeConnected: conn?.status === 'connected' }; // accounting view (all lines)
+  const connected = conn?.status === 'connected';
+  // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
+  // warn-don't-block mismatch so the detail page can flag the FX spread before
+  // the partner sends a pay link. Cached columns only — no Stripe call here.
+  return {
+    invoice: inv, lines, stripeConnected: connected, // accounting view (all lines)
+    stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
+    currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
+  };
 }
 
 export type CustomerInvoiceLine = {

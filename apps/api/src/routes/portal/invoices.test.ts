@@ -396,6 +396,41 @@ describe('portal invoices routes', () => {
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });
 
+  it('POST /invoices/:id/pay maps a Stripe currency rejection to a customer-safe 409 STRIPE_CURRENCY_UNSUPPORTED', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'CHF', invoiceNumber: 'INV-CHF',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
+    sessionsCreateMock.mockRejectedValue(Object.assign(new Error('Invalid currency: chf'), {
+      type: 'StripeInvalidRequestError', code: 'currency_not_supported',
+    }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Online payment is not available for this invoice — please contact the sender.',
+      code: 'STRIPE_CURRENCY_UNSUPPORTED',
+    });
+    expect(insertValuesMock).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith('[portal/invoices] Stripe rejected currency', expect.objectContaining({ invoiceId: INV_ID, currency: 'CHF' }));
+    errSpy.mockRestore();
+  });
+
+  it('POST /invoices/:id/pay never surfaces the partner currency-mismatch warning to the customer', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_eur', url: 'https://checkout.stripe.com/c/cs_eur', payment_intent: 'pi_eur' });
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ url: 'https://checkout.stripe.com/c/cs_eur' });
+  });
+
   // ---- verify-on-return settle ----
 
   function settle(sessionId: unknown, orgId = ORG_ID) {

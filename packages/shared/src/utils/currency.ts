@@ -1,3 +1,5 @@
+import type { StripeCurrencyWarning } from '../types/stripeAccount';
+
 // Single source of truth for currency knowledge (multi-currency spec §4,
 // docs/superpowers/specs/billing/2026-08-21-multi-currency-design.md).
 // Moved from apps/web/src/lib/currencies.ts (issue #3204) + the zero-decimal
@@ -110,6 +112,26 @@ export function formatMoney(value: string | number | null | undefined, currency:
   } catch {
     return `${safe.toFixed(2)} ${code}`;
   }
+}
+
+/**
+ * Warn-don't-block (multi-currency spec §10). `null` when the account currency
+ * is unknown (nothing cached yet) or matches the document currency
+ * (case-insensitive); otherwise the single warning shape shared by the pay-link
+ * response, `getInvoice`, and the web. Never blocks and never converts.
+ */
+export function buildStripeCurrencyWarning(
+  documentCurrency: string, accountCurrency: string | null | undefined,
+): StripeCurrencyWarning | null {
+  const doc = String(documentCurrency ?? '').trim().toUpperCase();
+  const acc = String(accountCurrency ?? '').trim().toUpperCase();
+  if (!acc || !doc || acc === doc) return null;
+  return {
+    code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
+    documentCurrency: doc,
+    accountCurrency: acc,
+    message: `This document is in ${doc} but your Stripe account settles in ${acc}. Stripe will present ${doc} to the customer and convert it on settlement — you bear the FX spread and any conversion fee.`,
+  };
 }
 
 /** @deprecated use formatMoney — kept so no caller breaks mid-rename. */

@@ -855,3 +855,39 @@ describe('changeInvoiceCurrency (draft currency immutability, #3774)', () => {
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 });
+
+describe('getInvoice — Stripe account currency exposure (#3777)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('exposes the cached account currency and a warn-dont-block mismatch warning when connected', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // invoice
+    queueResult([]); // lines
+    queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'USD', accountCountry: 'US' }]); // stripe_connect_accounts
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.stripeConnected).toBe(true);
+    expect(out.stripeAccountCurrency).toBe('USD');
+    expect(out.currencyWarning).toMatchObject({
+      code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT', documentCurrency: 'EUR', accountCurrency: 'USD',
+    });
+  });
+
+  it('no warning when the account settles in the document currency', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
+    queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'EUR', accountCountry: 'DE' }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.stripeAccountCurrency).toBe('EUR');
+    expect(out.currencyWarning).toBeNull();
+  });
+
+  it('both null when the partner is not connected', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
+    queueResult([]); // no connection row
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.stripeConnected).toBe(false);
+    expect(out.stripeAccountCurrency).toBeNull();
+    expect(out.currencyWarning).toBeNull();
+  });
+});
