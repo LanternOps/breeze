@@ -71,7 +71,9 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     // Resolves every `contract` block's pinned template version (system context,
     // ahead of the response we're about to build below) and replaces its raw
     // authoring content with the render contract the portal understands.
-    const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`);
+    // Portal serves sent (stamped) quotes: quote.documentLocale is the render
+    // locale; null only for pre-wave-5 sends, which rendered 'en' before too.
+    const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`, quote.documentLocale);
     const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
     const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
     const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
@@ -147,7 +149,6 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   // from the same overlaid fields the page renderer uses — the portal only serves
   // frozen (sent+) quotes today, but the admin draft-PDF route shipped exactly
   // this raw-vs-overlaid split as a blank {{client.name}} in contract text.
-  const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender);
   // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
   // sent quote's frozen presentation always wins over the partner's live
   // theme/pageSize columns.
@@ -160,6 +161,9 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
     // Send-time locale snapshot → partner language → 'en' (#3777).
     locale: quote.documentLocale ?? resolvePartnerDocumentLocale(partner),
   };
+  // Same `branding.locale` the page renderer uses, so contract totals and the
+  // quote summary on the same PDF never disagree (#3777).
+  const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender, branding.locale);
   const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, undefined, contractRenderData);
   const { mergeUploadedContractPdfs } = await import('../../services/pdfMerge');
   const finalPdf = await mergeUploadedContractPdfs(pdf, uploads);

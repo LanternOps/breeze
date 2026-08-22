@@ -70,7 +70,9 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
       // Resolves every `contract` block's pinned template version (system context)
       // and replaces its raw authoring content with the token-gated render contract.
-      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);
+      // Public link serves sent (stamped) quotes: quote.documentLocale is the
+      // render locale; null only for pre-wave-5 sends, which rendered 'en' too.
+      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`, quote.documentLocale);
       const serializedLines = attachCustomerLineImages(lines, (lineId) => `/quotes/public/${encodeURIComponent(token)}/line-image/${lineId}`);
       // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
       // sent quote's frozen presentation always wins over the partner's live

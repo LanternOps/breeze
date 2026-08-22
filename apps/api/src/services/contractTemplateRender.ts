@@ -13,17 +13,18 @@
 //     org-scoped transaction is safe — it can never see a value that later
 //     changes underneath the caller.
 //  2. resolveAutoVariables — derive the AUTO_CONTRACT_VARIABLES values from a
-//     quote row (money via quotePdf's formatMoney so a contract's totals
-//     render byte-identical to the quote PDF's own summary).
+//     quote row (money via the shared formatMoney with the document's resolved
+//     locale so a contract's totals render byte-identical to the quote PDF's
+//     own summary on the same page).
 //  3. substituteVariables / findUnresolvedVariables — pure text substitution
 //     and unresolved-variable reporting, no DB involved.
 
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import type { ContractVariable } from '@breeze/shared';
+import { formatMoney, type ContractVariable } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contractTemplates, contractTemplateVersions, quotes } from '../db/schema';
 import { sanitizeRichTextHtml } from './richTextSanitize';
-import { formatMoney, formatDate, contractUploadedMarker, type ContractPdfBlockData } from './quotePdf';
+import { formatDate, contractUploadedMarker, type ContractPdfBlockData } from './quotePdf';
 import type { SellerSnapshot, BillToAddress } from './sellerSnapshot';
 import { ContractTemplateServiceError } from './contractTemplateService';
 import { QuoteServiceError } from './quoteTypes';
@@ -275,10 +276,21 @@ function formatAddressLine(addr: BillToAddress | null | undefined): string {
 }
 
 /** Resolve every AUTO_CONTRACT_VARIABLES entry from a quote row. Money is
- *  formatted via quotePdf's formatMoney (same helper the quote PDF's own
- *  summary uses) so a contract's totals never drift from the proposal's. */
-export function resolveAutoVariables(quote: QuoteRow, opts?: { effectiveDate?: string | Date }): Record<string, string> {
+ *  formatted via the shared formatMoney (same helper the quote PDF's own
+ *  summary uses) so a contract's totals never drift from the proposal's.
+ *
+ *  Locale precedence (#3777, identical to the quote/invoice PDFs): a stamped
+ *  `quote.documentLocale` (send-time snapshot) always wins; an unstamped draft
+ *  preview uses `opts.locale` — the locale the caller already resolved for the
+ *  surrounding quote PDF/detail (partner's CURRENT language) — so contract
+ *  totals never disagree with the quote totals on the same page; `'en'` only
+ *  when the caller has nothing (unit tests, legacy callers). */
+export function resolveAutoVariables(
+  quote: QuoteRow,
+  opts?: { effectiveDate?: string | Date; locale?: string | null }
+): Record<string, string> {
   const currency = quote.currencyCode ?? 'USD';
+  const locale = quote.documentLocale ?? opts?.locale ?? 'en';
   const address = (quote.billToAddress as BillToAddress | null) ?? null;
   const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
 
@@ -288,10 +300,10 @@ export function resolveAutoVariables(quote: QuoteRow, opts?: { effectiveDate?: s
     'seller.name': seller?.name ?? '',
     'quote.number': quote.quoteNumber ?? '',
     'quote.title': quote.title ?? '',
-    'totals.one_time': formatMoney(quote.oneTimeTotal, currency),
-    'totals.monthly': formatMoney(quote.monthlyRecurringTotal, currency),
-    'totals.annual': formatMoney(quote.annualRecurringTotal, currency),
-    'totals.total': formatMoney(quote.total, currency),
+    'totals.one_time': formatMoney(quote.oneTimeTotal, currency, locale),
+    'totals.monthly': formatMoney(quote.monthlyRecurringTotal, currency, locale),
+    'totals.annual': formatMoney(quote.annualRecurringTotal, currency, locale),
+    'totals.total': formatMoney(quote.total, currency, locale),
     'dates.effective': formatDate(opts?.effectiveDate ?? new Date()),
     'dates.expiry': formatDate(quote.expiryDate),
   };
@@ -477,12 +489,15 @@ function buildContractClientContent(
 export async function renderContractBlocksForClient<T extends { id: string; blockType: string; content: unknown }>(
   blocks: T[],
   quote: QuoteRow,
-  fileUrlFor: (blockId: string) => string
+  fileUrlFor: (blockId: string) => string,
+  /** Caller-resolved render locale for UNSTAMPED quotes (the same value the
+   *  surrounding quote detail/PDF resolved); ignored once documentLocale is set. */
+  locale?: string | null
 ): Promise<T[]> {
   const renderData = await loadContractBlockRenderData(blocks);
   if (renderData.length === 0) return blocks;
   const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
-  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote) });
+  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale });
 
   return blocks.map((block) => {
     const data = byBlockId.get(block.id);
@@ -541,7 +556,10 @@ export function attachContractAuthoring<T extends { id: string; blockType: strin
  *  function in this file that touches it). */
 export async function loadContractPdfInputs(
   blocks: Array<{ id: string; blockType: string; content: unknown }>,
-  quote: QuoteRow
+  quote: QuoteRow,
+  /** Caller-resolved render locale for UNSTAMPED quotes (pass the same
+   *  `branding.locale` the quote PDF renders with); ignored once stamped. */
+  locale?: string | null
 ): Promise<{ contractRenderData: Map<string, ContractPdfBlockData>; uploads: Array<{ afterMarker: string; data: Buffer }> }> {
   const contractRenderData = new Map<string, ContractPdfBlockData>();
   const uploads: Array<{ afterMarker: string; data: Buffer }> = [];
@@ -552,7 +570,7 @@ export async function loadContractPdfInputs(
   if (renderData.length === 0) return { contractRenderData, uploads };
 
   const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
-  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote) });
+  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale });
 
   for (const block of blocks) {
     const data = byBlockId.get(block.id);

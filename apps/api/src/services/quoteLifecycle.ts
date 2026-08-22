@@ -392,7 +392,6 @@ async function deliverQuoteEmail(
           // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
           // per authored contract block + any uploaded contract PDFs to append after
           // rendering, so the emailed attachment matches the on-demand download.
-          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
           const { renderQuotePdf } = await import('./quotePdf');
           // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding):
           // frozenQuote.presentationSnapshot is the send-stamped value on a first
@@ -407,6 +406,9 @@ async function deliverQuoteEmail(
             // Send-time locale snapshot → partner language → 'en' (#3777).
             locale: frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow),
           };
+          // Same `emailBranding.locale` the page renderer uses, so contract totals
+          // and the quote summary on the same PDF never disagree (#3777).
+          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote, emailBranding.locale);
           const rawPdf = await renderQuotePdf(
             frozenQuote,
             blocks, customerLines, loadImage, emailBranding, undefined, contractRenderData);
