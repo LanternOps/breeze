@@ -144,3 +144,52 @@ describe('ScriptExecutionModal sourced parameters (#3409 PR3)', () => {
     expect(onExecute).not.toHaveBeenCalled();
   });
 });
+
+// #3409 PR4c-2: secrets ride an env var the helper IPC cannot carry, so a
+// user-context run refuses them server-side. Warn before the operator submits.
+describe('ScriptExecutionModal secret parameters (#3409 PR4c-2)', () => {
+  const secretParam: ScriptParameter = {
+    name: 'api_token',
+    source: 'tenantSecret',
+    variableKey: 'vendor_password',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const selectRunAs = (value: 'system' | 'user') => {
+    fireEvent.change(screen.getByDisplayValue('System'), { target: { value } });
+  };
+
+  it('warns that secrets require system context once Run as user is selected', () => {
+    renderModal([secretParam]);
+    expect(screen.queryByTestId('script-secrets-require-system')).toBeNull();
+
+    selectRunAs('user');
+
+    expect(screen.getByTestId('script-secrets-require-system')).toHaveTextContent(
+      /secret variables/i
+    );
+  });
+
+  it('does not warn for a user run when no parameter is a secret', () => {
+    renderModal([
+      { name: 'api_key', type: 'string', source: 'tenantVariable', variableKey: 'vendor_token' },
+    ]);
+
+    selectRunAs('user');
+
+    expect(screen.queryByTestId('script-secrets-require-system')).toBeNull();
+  });
+
+  it('is a warning, not a block — the run still submits', async () => {
+    const { onExecute } = renderModal([secretParam]);
+    selectRunAs('user');
+
+    await execute();
+
+    await waitFor(() => expect(onExecute).toHaveBeenCalledTimes(1));
+    expect(onExecute.mock.calls[0][3]).toBe('user');
+  });
+});

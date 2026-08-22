@@ -797,6 +797,7 @@
       "systemDescription": "Wird im Agentendienstkontext ausgeführt.",
       "userDescription": "Wird im Kontext des aktuell angemeldeten Benutzers ausgeführt, wenn ein Benutzerhelfer verbunden ist."
     },
+    "secretsRequireSystem": "Dieses Skript verwendet geheime Variablen, die nur an Ausführungen im Systemkontext übergeben werden. Unter „Angemeldeter Benutzer“ schlagen die Geräte mit „nicht ausgeführt“ fehl.",
     "sections": {
       "selectDevices": "Wählen Sie Geräte aus"
     },
@@ -998,14 +999,15 @@
       "button": "Variablen",
       "insertTitle": "Variable einfügen",
       "empty": "Noch keine Variablen.",
-      "secretUnavailable": "Geheim – wird erst in einer späteren Version als Umgebungsvariable übergeben.",
+      "secretUnavailable": "Geheim – binden Sie sie über einen Parameter mit der Quelle „Aus einer geheimen Variablen“ ein.",
       "unknown": "Für {{keys}} existiert keine Variable – die Ausführung schlägt auf jedem Zielgerät fehl, bis Sie sie anlegen."
     },
     "parameterSources": {
       "runtime": "Wird bei der Ausführung abgefragt",
       "tenantVariable": "Aus einer Variablen",
       "deviceCustomField": "Aus einem benutzerdefinierten Gerätefeld",
-      "builtin": "Aus einer Geräteeigenschaft"
+      "builtin": "Aus einer Geräteeigenschaft",
+      "tenantSecret": "Aus einer geheimen Variablen (Umgebungsvariable)"
     },
     "parameterBinding": {
       "variableLabel": "Variablenschlüssel",
@@ -1015,6 +1017,9 @@
       "builtinLabel": "Eigenschaft",
       "chooseTitle": "Variable auswählen",
       "secretRejected": "„{{key}}“ ist geheim – das Speichern wird abgelehnt. Wählen Sie eine Variable, die nicht geheim ist.",
+      "notSecret": "„{{key}}“ ist nicht geheim. Wählen Sie eine geheime Variable oder stellen Sie die Quelle auf „Aus einer Variablen“ um.",
+      "notSecretRow": "Nicht geheim – „Aus einer Variablen“ verwenden",
+      "secretHint": "Wird ausschließlich als Umgebungsvariable {{env}} übergeben – niemals in das Skript geschrieben. Erfordert die Ausführung im Systemkontext und einen Agenten, der die sichere Übergabe von Geheimnissen unterstützt.",
       "hint": "Wird bei der Ausführung für jedes Zielgerät aufgelöst – niemand wird danach gefragt."
     }
   },
@@ -1077,7 +1082,8 @@
     "suppliedBy": {
       "tenantVariable": "Wird automatisch aus der Variablen {{key}} übernommen",
       "deviceCustomField": "Wird automatisch aus dem benutzerdefinierten Gerätefeld {{key}} übernommen",
-      "builtin": "Wird automatisch aus {{key}} übernommen"
+      "builtin": "Wird automatisch aus {{key}} übernommen",
+      "tenantSecret": "Wird sicher aus der geheimen Variablen {{key}} als Umgebungsvariable übergeben"
     }
   },
   "scriptTagManager": {

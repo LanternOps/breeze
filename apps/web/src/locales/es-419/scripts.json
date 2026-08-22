@@ -797,6 +797,7 @@
       "systemDescription": "Se ejecuta en el contexto del servicio del agente.",
       "userDescription": "Se ejecuta en el contexto del usuario actualmente conectado cuando se conecta un ayudante de usuario."
     },
+    "secretsRequireSystem": "Este script usa variables secretas, que solo se entregan en ejecuciones con contexto de sistema. Con \"Usuario registrado\" los dispositivos fallarán con \"no ejecutado\".",
     "sections": {
       "selectDevices": "Seleccionar dispositivos"
     },
@@ -998,14 +999,15 @@
       "button": "Variables",
       "insertTitle": "Insertar una variable",
       "empty": "Aún no hay variables.",
-      "secretUnavailable": "Secreto: una versión posterior lo entregará como variable de entorno.",
+      "secretUnavailable": "Secreto: vincúlalo con un parámetro cuyo origen sea \"Desde una variable secreta\".",
       "unknown": "No existe ninguna variable para {{keys}}: los dispositivos seleccionados fallarán hasta que la crees."
     },
     "parameterSources": {
       "runtime": "Se pregunta al ejecutar",
       "tenantVariable": "Desde una variable",
       "deviceCustomField": "Desde un campo personalizado del dispositivo",
-      "builtin": "Desde una propiedad del dispositivo"
+      "builtin": "Desde una propiedad del dispositivo",
+      "tenantSecret": "Desde una variable secreta (variable de entorno)"
     },
     "parameterBinding": {
       "variableLabel": "Clave de la variable",
@@ -1015,6 +1017,9 @@
       "builtinLabel": "Propiedad",
       "chooseTitle": "Elegir una variable",
       "secretRejected": "\"{{key}}\" es secreta: se rechazará el guardado. Elige una variable que no sea secreta.",
+      "notSecret": "\"{{key}}\" no es secreta. Elige una variable secreta o cambia el origen a \"Desde una variable\".",
+      "notSecretRow": "No es secreta: usa \"Desde una variable\"",
+      "secretHint": "Se entrega únicamente como la variable de entorno {{env}}: nunca se escribe en el script. Requiere ejecución en contexto de sistema y un agente compatible con la entrega segura de secretos.",
       "hint": "Se resuelve para cada dispositivo de destino al ejecutar el script: nadie tiene que indicarlo."
     }
   },
@@ -1077,7 +1082,8 @@
     "suppliedBy": {
       "tenantVariable": "Se completa automáticamente desde la variable {{key}}",
       "deviceCustomField": "Se completa automáticamente desde el campo personalizado del dispositivo {{key}}",
-      "builtin": "Se completa automáticamente desde {{key}}"
+      "builtin": "Se completa automáticamente desde {{key}}",
+      "tenantSecret": "Se entrega de forma segura desde la variable secreta {{key}} como variable de entorno"
     }
   },
   "scriptTagManager": {

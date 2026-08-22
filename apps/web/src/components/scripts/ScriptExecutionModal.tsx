@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
 import ProgressBar, { ProgressItemList, type ProgressItem } from '../shared/ProgressBar';
 import type { Script } from './ScriptList';
-import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
+import { hasSecretParameters, runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
@@ -254,6 +254,19 @@ export default function ScriptExecutionModal({
                 ? t('scriptExecutionModal.runAs.systemDescription')
                 : t('scriptExecutionModal.runAs.userDescription')}
             </p>
+            {/* Secrets ride an environment variable in the sealed command
+                envelope, which the user-context helper IPC cannot carry, so the
+                server refuses the run per device (#3409 PR4c-2). Advisory only:
+                the operator may still submit and get that same message back per
+                device — this just says it before the round trip. */}
+            {runAs === 'user' && hasSecretParameters(script.parameters) && (
+              <p
+                data-testid="script-secrets-require-system"
+                className="text-xs text-amber-600 dark:text-amber-500"
+              >
+                {t('scriptExecutionModal.secretsRequireSystem')}
+              </p>
+            )}
           </div>
 
           {/* Parameters — shown whenever the script HAS parameters, bound or

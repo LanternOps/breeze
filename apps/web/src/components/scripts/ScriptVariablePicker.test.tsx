@@ -88,7 +88,9 @@ describe('ScriptVariablePicker', () => {
     openMenu();
     const secret = screen.getByRole('menuitem', { name: /Vendor API password/i });
     expect(secret).toBeDisabled();
-    expect(secret).toHaveTextContent(/environment variable/i);
+    // Copy changed in #3409 PR4c-2: a secret is no longer "not yet available",
+    // it is bound through a `tenantSecret` PARAMETER instead of a content token.
+    expect(secret).toHaveTextContent(/From a secret variable/i);
 
     fireEvent.click(secret);
     expect(editor.executeEdits).not.toHaveBeenCalled();
