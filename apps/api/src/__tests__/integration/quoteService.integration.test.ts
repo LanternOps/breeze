@@ -27,7 +27,7 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { quotes, quoteLines, quoteBlocks } from '../../db/schema/quotes';
-import { catalogItems } from '../../db/schema/catalog';
+import { catalogItemOrgPricing, catalogItemPrices, catalogItems } from '../../db/schema/catalog';
 import { createOrganization, createPartner } from './db-utils';
 import {
   createQuote,
@@ -91,7 +91,7 @@ async function seedFixture(): Promise<Fixture> {
 /** Seed a catalog item directly under system scope (bypasses RLS for the seed). */
 async function seedCatalogItem(
   partnerId: string,
-  values: Partial<typeof catalogItems.$inferInsert> & { name: string; unitPrice: string }
+  values: Partial<typeof catalogItems.$inferInsert> & { name: string; unitPrice: string; priceCurrency?: string }
 ): Promise<{ id: string }> {
   return withSystemDbAccessContext(async () => {
     const [row] = await db.insert(catalogItems).values({
@@ -105,8 +105,17 @@ async function seedCatalogItem(
       taxable: values.taxable ?? true,
       isBundle: false,
       costBasis: values.costBasis ?? null,
+      costCurrency: values.costCurrency ?? 'USD',
       sku: values.sku ?? null,
     }).returning({ id: catalogItems.id });
+    // Price-book row (multi-currency wave 3): addCatalogLine resolves the sell
+    // price from catalog_item_prices, never from the deprecated unit_price mirror.
+    await db.insert(catalogItemPrices).values({
+      itemId: row!.id,
+      partnerId,
+      currencyCode: values.priceCurrency ?? 'USD',
+      unitPrice: values.unitPrice,
+    });
     return { id: row!.id };
   });
 }
@@ -693,6 +702,62 @@ describe('quoteService (breeze_app, real DB)', () => {
     expect(line.sku).toBe('SKU-1');
     // Sell price is unchanged.
     expect(line.unitPrice).toBe('130.00');
+  });
+
+  // Multi-currency wave 3 (#3775, B3): the sell price is resolved from the price
+  // book in the QUOTE's currency. An item priced only in USD cannot be added to a
+  // EUR quote — a typed NO_PRICE_FOR_CURRENCY gap, never USD's number, never a
+  // conversion. Adding the EUR row fixes it; an org override in EUR beats the book.
+  runDb('addCatalogLine: USD-only item on a EUR quote → NO_PRICE_FOR_CURRENCY; EUR book row lands; EUR org override wins', async () => {
+    const fx = await seedFixture();
+    const orgEur = await withSystemDbAccessContext(() =>
+      createOrganization({ partnerId: fx.partnerA.id, currencyCode: 'EUR' })
+    );
+    const ctxEur: DbAccessContext = { ...fx.ctxA, accessibleOrgIds: [fx.orgA.id, orgEur.id] };
+    // Cost in USD → margin unavailable on a EUR line → unitCost null.
+    const item = await seedCatalogItem(fx.partnerA.id, {
+      name: 'USD-only widget',
+      unitPrice: '100.00',
+      costBasis: '60.00',
+      costCurrency: 'USD',
+      priceCurrency: 'USD',
+    });
+    const quote = await withDbAccessContext(ctxEur, () =>
+      createQuote({ orgId: orgEur.id }, fx.actorA)
+    );
+    expect(quote.currencyCode).toBe('EUR');
+
+    await expect(
+      withDbAccessContext(ctxEur, () => addCatalogLine(quote.id, item.id, 3, undefined, fx.actorA))
+    ).rejects.toMatchObject({ name: 'QuoteServiceError', code: 'NO_PRICE_FOR_CURRENCY', status: 409 });
+    const after = await withDbAccessContext(ctxEur, () => getQuote(quote.id, fx.actorA));
+    expect(after.lines).toHaveLength(0);
+
+    // Add the EUR price-book row → the line lands at the EUR price (not 100.00 USD).
+    await withSystemDbAccessContext(() =>
+      db.insert(catalogItemPrices).values({ itemId: item.id, partnerId: fx.partnerA.id, currencyCode: 'EUR', unitPrice: '91.50' })
+    );
+    const line = await withDbAccessContext(ctxEur, () =>
+      addCatalogLine(quote.id, item.id, 3, undefined, fx.actorA)
+    );
+    expect(line.unitPrice).toBe('91.50');
+    expect(line.lineTotal).toBe('274.50');
+    expect(line.unitCost).toBeNull(); // cost is in USD — no margin on a EUR line
+
+    // An org override in EUR beats the book row.
+    await withSystemDbAccessContext(() =>
+      db.insert(catalogItemOrgPricing).values({
+        catalogItemId: item.id, orgId: orgEur.id, partnerId: fx.partnerA.id, currencyCode: 'EUR', unitPrice: '80.00',
+      })
+    );
+    const overridden = await withDbAccessContext(ctxEur, () =>
+      addCatalogLine(quote.id, item.id, 1, undefined, fx.actorA)
+    );
+    expect(overridden.unitPrice).toBe('80.00');
+    expect(overridden.lineTotal).toBe('80.00');
+    // The earlier line keeps its add-time snapshot.
+    const final = await withDbAccessContext(ctxEur, () => getQuote(quote.id, fx.actorA));
+    expect(final.lines.map((l) => l.unitPrice).sort()).toEqual(['80.00', '91.50']);
   });
 
   // No-DB required: toCustomerLines is a pure transformation — tests that the

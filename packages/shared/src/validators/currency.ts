@@ -22,6 +22,12 @@ export const currencyCodeSchema = z
 export const changeCurrencySchema = z.object({
   currencyCode: currencyCodeSchema,
   clearLines: z.boolean().default(false),
-}).strict();
+  // Wave 3: re-resolve catalog-sourced lines from the price book in the new
+  // currency inside the same transaction. Mutually exclusive with clearLines.
+  reprice: z.boolean().default(false),
+}).strict().refine((v) => !(v.clearLines && v.reprice), {
+  message: 'clearLines and reprice are mutually exclusive',
+  path: ['reprice'],
+});
 
 export type ChangeCurrencyInput = z.infer<typeof changeCurrencySchema>;

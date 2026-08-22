@@ -9,7 +9,8 @@ import {
   type EcProduct,
   type SftpProduct,
 } from '../../../lib/api/distributors';
-import { computeMarginBreakdown, formatMarginSummary } from '../../settings/marginMath';
+import { computeMarginBreakdown, formatMarginSummary, feedCurrencyCode, marginGuard } from '../../settings/marginMath';
+import { usePartnerCurrency } from '../../../lib/usePartnerCurrency';
 import { formatNumber } from '@/lib/i18n/format';
 import {
   freshnessOf,
@@ -53,6 +54,10 @@ interface DistributorLookupProps {
 
 export default function DistributorLookup({ blockId, busy, onImportAdd }: DistributorLookupProps) {
   const { t } = useTranslation('billing');
+  // Partner billing currency gates the margin preview — a cost in another
+  // currency is never compared against the sell price (no conversion). No
+  // 'USD' fallback; while unknown the preview is simply not rendered.
+  const { currency: partnerCurrency } = usePartnerCurrency();
   const [source, setSource] = useState<LookupSource>('ec_express');
   const [query, setQuery] = useState('');
   const [inStockOnly, setInStockOnly] = useState(false);
@@ -297,14 +302,18 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
                 {t('quotes.distributorLookup.importAndAdd')}
               </button>
             </div>
-            {margin && (
+            {margin && partnerCurrency !== null && (marginGuard(p.currency, partnerCurrency) ? (
               <p
                 className={`mt-1.5 text-xs tabular-nums ${margin.profit < 0 ? 'text-destructive' : 'text-muted-foreground'}`}
                 data-testid={`quote-distributor-margin-${p.synnexSku}`}
               >
-                {formatMarginSummary(margin, p.currency ?? 'USD')}
+                {formatMarginSummary(margin, partnerCurrency)}
               </p>
-            )}
+            ) : (
+              <p className="mt-1.5 text-xs text-muted-foreground" data-testid={`quote-distributor-margin-unavailable-${p.synnexSku}`}>
+                {t('quotes.distributorLookup.marginUnavailableCostIn', { currency: feedCurrencyCode(p.currency) })}
+              </p>
+            ))}
           </div>
         );
       })}

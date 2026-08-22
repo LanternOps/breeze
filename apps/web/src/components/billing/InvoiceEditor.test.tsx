@@ -417,4 +417,53 @@ describe('InvoiceEditor', () => {
     expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/lines') && (c[1] as RequestInit)?.method === 'POST')).toBe(false);
     expect(screen.queryByTestId('invoice-editor-last-saved')).not.toBeInTheDocument();
   });
+
+  it('toasts the currency-gap message when the catalog add answers NO_PRICE_FOR_CURRENCY (#3775)', async () => {
+    const catItem = {
+      id: 'cat-1', partnerId: 'p1', itemType: 'service', name: 'Onboarding', sku: 'ONB-1',
+      description: null, billingType: 'one_time', unitPrice: '500.00', costBasis: null, costCurrency: 'USD',
+      markupPercent: null, unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      isBundle: false, isActive: true, createdAt: '', updatedAt: '', prices: [{ currencyCode: 'USD', unitPrice: '500.00' }],
+    };
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [catItem] });
+      if (input === '/invoices/inv-1/lines/catalog' && opts?.method === 'POST') {
+        return json({ error: 'No price in EUR', code: 'NO_PRICE_FOR_CURRENCY' }, false, 409);
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([], { currencyCode: 'EUR' })} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('invoice-catalog-picker-input'), { target: { value: 'Onb' } });
+    // The picker shows the EUR gap rather than the USD row or the unitPrice mirror.
+    expect(await screen.findByTestId('invoice-catalog-picker-noprice-cat-1')).toHaveTextContent('No EUR price');
+    fireEvent.click(screen.getByTestId('invoice-catalog-picker-option-cat-1'));
+    fireEvent.click(screen.getByTestId('invoice-catalog-add'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: 'No EUR price for this item. Add one in the catalog or enter a manual line.',
+    })));
+  });
+
+  it('shows the price-book price in the invoice currency in the picker', async () => {
+    const catItem = {
+      id: 'cat-1', partnerId: 'p1', itemType: 'service', name: 'Onboarding', sku: 'ONB-1',
+      description: null, billingType: 'one_time', unitPrice: '500.00', costBasis: null, costCurrency: 'USD',
+      markupPercent: null, unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      isBundle: false, isActive: true, createdAt: '', updatedAt: '',
+      prices: [{ currencyCode: 'EUR', unitPrice: '420.00' }, { currencyCode: 'USD', unitPrice: '500.00' }],
+    };
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/catalog')) return json({ data: [catItem] });
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([], { currencyCode: 'EUR' })} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('invoice-catalog-picker-input'), { target: { value: 'Onb' } });
+    const price = await screen.findByTestId('invoice-catalog-picker-price-cat-1');
+    expect(price).toHaveTextContent('420.00');
+    expect(price).not.toHaveTextContent('500');
+  });
 });

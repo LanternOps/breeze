@@ -10,6 +10,9 @@ vi.mock('../../../lib/api/distributors', async (orig) => ({
   tdSynnexSftpProducts: (...a: unknown[]) => tdSynnexSftpProducts(...a),
 }));
 
+const partnerCurrency = vi.fn(() => 'USD');
+vi.mock('../../../lib/usePartnerCurrency', () => ({ usePartnerCurrency: () => ({ currency: partnerCurrency(), failed: false, retry: () => {} }) }));
+
 import DistributorLookup from './DistributorLookup';
 import type { EcProduct, SftpProduct } from '../../../lib/api/distributors';
 
@@ -37,6 +40,7 @@ const selectNightly = (blockId = 'b1') =>
   fireEvent.change(screen.getByTestId(`quote-distributor-source-${blockId}`), { target: { value: 'nightly' } });
 
 beforeEach(() => {
+  partnerCurrency.mockReset(); partnerCurrency.mockReturnValue('USD');
   ecExpressLookup.mockReset();
   tdSynnexSftpProducts.mockReset();
   tdSynnexSftpProducts.mockResolvedValue(ok([]));
@@ -222,5 +226,42 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
     await waitFor(() => screen.getByTestId('quote-distributor-result-NF001'));
     fireEvent.change(screen.getByTestId('quote-distributor-source-b1'), { target: { value: 'ec_express' } });
     expect(screen.queryByTestId('quote-distributor-result-NF001')).toBeNull();
+  });
+});
+
+describe('DistributorLookup — margin guard (multi-currency wave 3)', () => {
+  const lookup = async (p: EcProduct) => {
+    ecExpressLookup.mockResolvedValue(ok([p]));
+    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
+  };
+
+  it('hides the margin and names the cost currency when the feed currency differs from the partner currency', async () => {
+    await lookup({ ...product, currency: 'CAD' });
+    const guard = await screen.findByTestId('quote-distributor-margin-unavailable-ABC123');
+    expect(guard.textContent).toContain('Cost in CAD');
+    expect(screen.queryByTestId('quote-distributor-margin-ABC123')).toBeNull();
+  });
+
+  it('shows the margin in the partner currency when the feed currency matches', async () => {
+    await lookup({ ...product, currency: 'usd' });
+    const margin = await screen.findByTestId('quote-distributor-margin-ABC123');
+    expect(margin.textContent).toContain('Profit USD 20.00');
+    expect(screen.queryByTestId('quote-distributor-margin-unavailable-ABC123')).toBeNull();
+  });
+
+  it('shows the margin when the feed has no currency (assumes the partner currency)', async () => {
+    await lookup({ ...product, currency: null });
+    const margin = await screen.findByTestId('quote-distributor-margin-ABC123');
+    expect(margin.textContent).toContain('Profit USD 20.00');
+  });
+
+  it('renders neither the margin nor the guard while the partner currency is unknown', async () => {
+    partnerCurrency.mockReturnValue(null as unknown as string);
+    await lookup({ ...product, currency: 'USD' });
+    expect(screen.queryByTestId('quote-distributor-margin-ABC123')).toBeNull();
+    expect(screen.queryByTestId('quote-distributor-margin-unavailable-ABC123')).toBeNull();
   });
 });

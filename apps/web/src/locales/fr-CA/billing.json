@@ -141,7 +141,8 @@
         "saveContract": "Impossible d'enregistrer le contrat.",
         "addLine": "Impossible d'ajouter la ligne.",
         "removeLine": "Impossible de supprimer la ligne.",
-        "activateContract": "Impossible d'activer le contrat."
+        "activateContract": "Impossible d'activer le contrat.",
+        "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou supprimez le lien vers le catalogue."
       },
       "toast": {
         "contractCreated": "Contrat créé",
@@ -198,7 +199,9 @@
         "taxable": "Taxable",
         "quantityResolvedAutomatically": "Quantité résolue automatiquement au moment de la facturation.",
         "lineTotal": "Total de la ligne : {{total}}",
-        "addLine": "Ajouter la ligne"
+        "addLine": "Ajouter la ligne",
+        "noPriceInCurrency": "Aucun prix en {{currency}} pour cet article — ajoutez-en un au catalogue, ou supprimez le lien vers le catalogue et saisissez une ligne manuelle.",
+        "priceFromCatalog": "Prix unitaire (du catalogue, en {{currency}})"
       },
       "estimate": {
         "title": "Estimé pour cette période",
@@ -607,7 +610,8 @@
         "updateDeposit": "Impossible de mettre à jour l'acompte.",
         "updateLine": "Impossible de mettre à jour la ligne.",
         "updateSection": "Impossible de mettre à jour la section.",
-        "uploadImage": "Impossible de téléverser l'image."
+        "uploadImage": "Impossible de téléverser l'image.",
+        "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle."
       },
       "image": {
         "alt": "Image du devis",
@@ -1054,6 +1058,7 @@
       }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
       "available": "{{count}} dispo",
       "cost": "coût {{currency}} {{amount}}",
       "endOfLife": "Fin de vie",
@@ -1221,6 +1226,7 @@
       "tryAgain": "Réessayer"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
       "cost": "coût {{currency}} {{amount}}",
       "importAndAdd": "Importer et ajouter",
       "option": "Option {{number}}",
@@ -1331,7 +1337,8 @@
       "removeLine": "Impossible de supprimer la ligne.",
       "saveNotes": "Impossible d'enregistrer les notes.",
       "saveTerms": "Impossible d'enregistrer les conditions.",
-      "updateLine": "Impossible de mettre à jour la ligne."
+      "updateLine": "Impossible de mettre à jour la ligne.",
+      "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle."
     },
     "fields": {
       "descriptionOptional": "Description (facultatif)",

@@ -41,6 +41,8 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
 catalogItemRoutes.get('/', scopes, readPerm, zValidator('query', listCatalogQuerySchema), async (c) => {
   try {
     const query = c.req.valid('query');
+    // Pass the entire validated query through, including currencyCode; the service applies
+    // the currency filter and returns the matching prices with each catalog item.
     const rows = await listCatalogItems(query, catalogActorFrom(c));
     // A full page implies there may be more rows; expose the last id as the cursor so
     // the documented `cursor` query param is usable. `data` shape is unchanged (web reads body.data).

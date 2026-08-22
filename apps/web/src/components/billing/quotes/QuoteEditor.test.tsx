@@ -5,6 +5,8 @@ import QuoteEditor from './QuoteEditor';
 import { QuoteHeaderMeta } from './QuoteHeaderMeta';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { fetchWithAuth } from '../../../stores/auth';
+import { listCatalog } from '../../../lib/api/catalog';
+import { addCatalogLine } from '../../../lib/api/quotes';
 
 vi.mock('../../../stores/auth', () => ({
   // orgStore (imported by QuoteEditor for the customer select) registers an
@@ -21,7 +23,8 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const showToast = vi.fn();
 vi.mock('../../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
-vi.mock('../../../lib/api/catalog', () => ({
+vi.mock('../../../lib/api/catalog', async (orig) => ({
+  ...(await orig<typeof import('../../../lib/api/catalog')>()),
   listCatalog: vi.fn().mockResolvedValue(
     { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: [] }) } as unknown as Response,
   ),
@@ -176,5 +179,37 @@ describe('QuoteEditor', () => {
 
     const textarea = screen.getByTestId('quote-terms') as HTMLTextAreaElement;
     expect(textarea.value).toBe('Payment due in 30 days');
+  });
+
+  it('toasts the currency-gap message when the catalog add answers NO_PRICE_FOR_CURRENCY (#3775)', async () => {
+    const catItem = {
+      id: 'cat-1', partnerId: 'p-1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
+      billingType: 'one_time', unitPrice: '150.00', costBasis: null, costCurrency: 'USD', markupPercent: null,
+      unitOfMeasure: 'each', taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
+      prices: [{ currencyCode: 'USD', unitPrice: '150.00' }],
+    };
+    vi.mocked(listCatalog).mockResolvedValueOnce(json({ data: [catItem] }));
+    vi.mocked(addCatalogLine).mockResolvedValueOnce(
+      json({ error: 'No price in EUR', code: 'NO_PRICE_FOR_CURRENCY' }, false, 409),
+    );
+    const detail = draftDetail({ currencyCode: 'EUR' });
+    detail.blocks = [
+      { id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },
+    ];
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => screen.getByTestId('quote-block-add-catalog-b-1'));
+    fireEvent.click(screen.getByTestId('quote-block-add-catalog-b-1'));
+
+    // The picker renders the EUR gap (not the USD row, not the unitPrice mirror)…
+    fireEvent.change(await screen.findByTestId('quote-catalog-picker-b-1-input'), { target: { value: 'NV' } });
+    expect(await screen.findByTestId('quote-catalog-picker-b-1-noprice-cat-1')).toHaveTextContent('No EUR price');
+    // …but the item stays selectable; the server answers the gap and the editor names the currency.
+    fireEvent.click(screen.getByTestId('quote-catalog-picker-b-1-option-cat-1'));
+
+    await waitFor(() => expect(addCatalogLine).toHaveBeenCalledWith('q-1', expect.objectContaining({ catalogItemId: 'cat-1', blockId: 'b-1' })));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: 'No EUR price for this item. Add one in the catalog or enter a manual line.',
+    })));
   });
 });

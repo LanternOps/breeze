@@ -22,6 +22,11 @@ export type ContractServiceErrorCode =
   // Draft currency immutability (#3774): changeContractCurrency refused because
   // contract lines exist and the caller didn't opt into clearLines.
   | 'CURRENCY_LOCKED'
+  // Multi-currency wave 3 (#3775): addContractLineToContract found no price-book
+  // row (and no org override) for the catalog item in the contract's currency.
+  // Mapped 409 from CatalogServiceError — never converted; add a non-catalog
+  // line or fill the price book.
+  | 'NO_PRICE_FOR_CURRENCY'
   | 'NO_LINES'
   | 'INVALID_STATE'
   | 'LINE_NOT_FOUND'

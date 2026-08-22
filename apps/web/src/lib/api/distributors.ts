@@ -45,6 +45,9 @@ export interface EcImportItem {
   sku: string | null;
   description: string | null;
   unitPrice: number;
+  /** ISO code the sell price is denominated in (document currency when importing
+   *  from a quote). Omitted → the partner currency. */
+  sellCurrency?: string;
   costBasis: number | null;
 }
 
@@ -214,6 +217,9 @@ export interface Pax8ImportItem {
   sku: string | null;
   description: string | null;
   unitPrice: number;
+  /** ISO code the sell price is denominated in (document currency when importing
+   *  from a quote). Omitted → the partner currency. */
+  sellCurrency?: string;
   costBasis: number | null;
 }
 

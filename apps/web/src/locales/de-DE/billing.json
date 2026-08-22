@@ -141,7 +141,8 @@
         "saveContract": "Der Vertrag konnte nicht gespeichert werden.",
         "addLine": "Die Position konnte nicht hinzugefügt werden.",
         "removeLine": "Die Position konnte nicht entfernt werden.",
-        "activateContract": "Der Vertrag konnte nicht aktiviert werden."
+        "activateContract": "Der Vertrag konnte nicht aktiviert werden.",
+        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf."
       },
       "toast": {
         "contractCreated": "Vertrag erstellt",
@@ -198,7 +199,9 @@
         "taxable": "Steuerpflichtig",
         "quantityResolvedAutomatically": "Die Menge wird zum Zeitpunkt der Abrechnung automatisch aufgelöst.",
         "lineTotal": "Positionssumme: {{total}}",
-        "addLine": "Position hinzufügen"
+        "addLine": "Position hinzufügen",
+        "noPriceInCurrency": "Kein Preis in {{currency}} für dieses Element — legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
+        "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})"
       },
       "estimate": {
         "title": "Geschätzter Zeitraum",
@@ -627,7 +630,8 @@
         "updateDeposit": "Die Anzahlung konnte nicht aktualisiert werden.",
         "updateLine": "Die Position konnte nicht aktualisiert werden.",
         "updateSection": "Der Abschnitt konnte nicht aktualisiert werden.",
-        "uploadImage": "Das Bild konnte nicht hochgeladen werden."
+        "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
+        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position."
       },
       "image": {
         "alt": "Angebotsbild",
@@ -1054,6 +1058,7 @@
       }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
       "available": "{{count}} verfügbar",
       "cost": "kostet {{currency}} {{amount}}",
       "endOfLife": "Auslaufmodell",
@@ -1221,6 +1226,7 @@
       "tryAgain": "Versuchen Sie es erneut"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
       "cost": "kostet {{currency}} {{amount}}",
       "importAndAdd": "Importieren und hinzufügen",
       "option": "Option {{number}}",
@@ -1331,7 +1337,8 @@
       "removeLine": "Position konnte nicht entfernt werden.",
       "saveNotes": "Notizen konnten nicht gespeichert werden.",
       "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
-      "updateLine": "Position konnte nicht aktualisiert werden."
+      "updateLine": "Position konnte nicht aktualisiert werden.",
+      "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position."
     },
     "fields": {
       "descriptionOptional": "Beschreibung (optional)",

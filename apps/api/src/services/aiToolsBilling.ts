@@ -206,7 +206,14 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
         'actions finalize financial state and require approval. Assembly responses carry `blockedByCurrency` ' +
         'listing unbilled work in other currencies — assemble a separate draft with `currencyCode` set; never ' +
         'sum across currencies.' +
-        ' Money inputs (line unitPrice, payment amount) are in the invoice\'s currencyCode. create_pay_link may return a `warning` (code CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT) when the invoice currency differs from the partner\'s Stripe account currency — relay it to the user; it does not block the link.',
+        ' Money inputs (line unitPrice, payment amount) are in the invoice\'s currencyCode. create_pay_link may return a `warning` (code CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT) when the invoice currency differs from the partner\'s Stripe account currency — relay it to the user; it does not block the link. +
+        ' Catalog/bundle lines are priced from the ' +
+        'catalog price book in the INVOICE\'s currency — never converted: add_catalog_line fails with ' +
+        'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency, add_bundle_line with ' +
+        'NO_PRICE_FOR_CURRENCY (bundle headline missing) or PRICE_BOOK_INCOMPLETE (409, a component is ' +
+        'missing a price). Use add_manual_line instead, or fill the price book. add_contract_line returns ' +
+        '{ line, pricedFrom }; pricedFrom "contract_snapshot" on a catalog line means the price book had a ' +
+        'gap and the contract line\'s stamped price was billed.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -224,8 +231,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           invoiceId: { type: 'string', description: 'Invoice UUID; required for add_contract_line with contractId and contractLineId' },
           lineId: { type: 'string' },
           paymentId: { type: 'string' },
-          catalogItemId: { type: 'string' },
-          bundleId: { type: 'string' },
+          catalogItemId: { type: 'string', description: 'Catalog item UUID for add_catalog_line (priced in the invoice currency; NO_PRICE_FOR_CURRENCY on a gap)' },
+          bundleId: { type: 'string', description: 'Bundle item UUID for add_bundle_line (NO_PRICE_FOR_CURRENCY / PRICE_BOOK_INCOMPLETE on a gap)' },
           contractId: { type: 'string', description: 'Contract UUID for add_contract_line' },
           contractLineId: { type: 'string', description: 'Contract line UUID for add_contract_line' },
           ticketId: { type: 'string' },

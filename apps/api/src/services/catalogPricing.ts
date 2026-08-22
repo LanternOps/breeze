@@ -24,24 +24,42 @@ export function deriveUnitPrice(input: {
 }
 
 export interface ResolvedPrice {
-  unitPrice: string;
-  costBasis: string | null;
+  unitPrice: string;                 // fixed-2-decimal, in currencyCode
+  currencyCode: string;              // the TARGET currency the caller asked for
+  costBasis: string | null;          // the item's cost — may be in another currency
+  costCurrency: string;
+  /** true only when costCurrency === currencyCode; callers must not compute margin otherwise */
+  marginAvailable: boolean;
   taxable: boolean;
   taxCategory: string | null;
-  source: 'org_override' | 'item';
+  source: 'org_override' | 'price_book';
 }
 
+/**
+ * Pure resolution (spec §6): an org override IN THE TARGET CURRENCY wins; else
+ * the price-book row for the target currency; else null — the typed gap the
+ * caller turns into NO_PRICE_FOR_CURRENCY. Never converts, never falls
+ * through to another currency's number.
+ */
 export function resolvePriceFrom(
-  item: { unitPrice: string; costBasis: string | null; taxable: boolean; taxCategory: string | null },
-  override: { unitPrice: string } | null
-): ResolvedPrice {
-  return {
-    unitPrice: override ? override.unitPrice : item.unitPrice,
+  item: { costBasis: string | null; costCurrency: string; taxable: boolean; taxCategory: string | null },
+  override: { unitPrice: string; currencyCode: string } | null,
+  bookRow: { unitPrice: string } | null,
+  targetCurrency: string
+): ResolvedPrice | null {
+  const common = {
+    currencyCode: targetCurrency,
     costBasis: item.costBasis,
+    costCurrency: item.costCurrency,
+    marginAvailable: item.costCurrency === targetCurrency,
     taxable: item.taxable,
     taxCategory: item.taxCategory,
-    source: override ? 'org_override' : 'item'
   };
+  if (override && override.currencyCode === targetCurrency) {
+    return { ...common, unitPrice: override.unitPrice, source: 'org_override' };
+  }
+  if (bookRow) return { ...common, unitPrice: bookRow.unitPrice, source: 'price_book' };
+  return null;
 }
 
 export type BundleProblem =
@@ -71,17 +89,43 @@ export function detectBundleProblems(args: {
   return [...problems];
 }
 
-export function computeBundleEconomicsFrom(args: {
-  headlinePrice: string;
-  components: Array<{ quantity: string; costBasis: string | null; revenueAllocation: string | null }>;
-}): {
-  headlinePrice: string;
-  totalCost: string;
-  margin: string;
-  marginPct: number;
+export interface BundleEconomics {
+  currencyCode: string;
+  /** null when the bundle itself has no price in currencyCode */
+  headlinePrice: string | null;
+  /** every component has a price-book row in currencyCode AND headlinePrice !== null */
+  priceBookComplete: boolean;
+  /** every component's costCurrency === currencyCode (null cost still counts as 0, as before) */
+  marginAvailable: boolean;
+  /** null unless priceBookComplete && marginAvailable — never a partial sum */
+  totalCost: string | null;
+  margin: string | null;
+  marginPct: number | null;
   allocationTotal: string;
   allocationMatchesHeadline: boolean;
-} {
+  /** component item ids lacking a price in currencyCode (empty when complete) */
+  missingPriceComponentIds: string[];
+}
+
+export function computeBundleEconomicsFrom(args: {
+  currencyCode: string;
+  headlinePrice: string | null;
+  components: Array<{
+    componentItemId: string;
+    quantity: string;
+    costBasis: string | null;
+    costCurrency: string;
+    revenueAllocation: string | null;
+    hasPriceInCurrency: boolean;
+  }>;
+}): BundleEconomics {
+  const missingPriceComponentIds = args.components
+    .filter((component) => !component.hasPriceInCurrency)
+    .map((component) => component.componentItemId);
+  const priceBookComplete = args.headlinePrice !== null && missingPriceComponentIds.length === 0;
+  const marginAvailable = args.components.every(
+    (component) => component.costCurrency === args.currencyCode
+  );
   let costCents = 0;
   let allocCents = 0;
   let anyAllocation = false;
@@ -94,12 +138,25 @@ export function computeBundleEconomicsFrom(args: {
   }
   const headlineCents = toCents(args.headlinePrice);
   const marginCents = headlineCents - costCents;
+  const economicsAvailable = priceBookComplete && marginAvailable;
   return {
-    headlinePrice: fromCents(headlineCents),
-    totalCost: fromCents(costCents),
-    margin: fromCents(marginCents),
-    marginPct: headlineCents === 0 ? 0 : Math.round((marginCents / headlineCents) * 10000) / 100,
+    currencyCode: args.currencyCode,
+    headlinePrice: args.headlinePrice === null ? null : fromCents(headlineCents),
+    priceBookComplete,
+    marginAvailable,
+    totalCost: economicsAvailable ? fromCents(costCents) : null,
+    margin: economicsAvailable ? fromCents(marginCents) : null,
+    marginPct: economicsAvailable
+      ? headlineCents === 0
+        ? 0
+        : Math.round((marginCents / headlineCents) * 10000) / 100
+      : null,
     allocationTotal: fromCents(allocCents),
-    allocationMatchesHeadline: anyAllocation ? allocCents === headlineCents : true
+    allocationMatchesHeadline: args.headlinePrice === null
+      ? !anyAllocation
+      : anyAllocation
+        ? allocCents === headlineCents
+        : true,
+    missingPriceComponentIds
   };
 }

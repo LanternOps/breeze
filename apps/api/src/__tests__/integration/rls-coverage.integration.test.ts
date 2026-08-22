@@ -203,9 +203,16 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // denormalizes partner_id (rather than join through the bundle item) to
   // avoid the #1016 nested-EXISTS bound-param bug. catalog_item_org_pricing
   // is NOT here — it carries a direct org_id column and is auto-discovered
-  // as an ordinary shape-1 org-tenant table.
+  // as an ordinary shape-1 org-tenant table. Since wave 3 (#3775) it also
+  // carries a denormalized partner_id, but ONLY for the composite
+  // same-partner FKs (item_partner_fk / org_partner_fk) — the RLS axis stays
+  // org_id; it is NOT dual-axis and must not be promoted here.
+  // catalog_item_prices (wave 3, #3775) — per-currency price book, composite
+  // FK to catalog_items(id, partner_id). Functional proof:
+  // catalogItemPricesPartnerRls.integration.test.ts.
   ['catalog_items', 'partner_id'],
   ['catalog_item_images', 'partner_id'],
+  ['catalog_item_prices', 'partner_id'],
   ['catalog_bundle_components', 'partner_id'],
   ['td_synnex_digital_bridge_integrations', 'partner_id'],
   ['td_synnex_ec_express_integrations', 'partner_id'],

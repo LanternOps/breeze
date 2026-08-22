@@ -84,3 +84,30 @@ describe('contractLineInputSchema', () => {
     }).success).toBe(true);
   });
 });
+
+// Multi-currency wave 3 (#3775): a catalog-sourced contract line is priced by
+// the server-side resolver, so the client supplies no unitPrice; non-catalog
+// lines still carry their own price.
+describe('contractLineInputSchema — catalog lines omit unitPrice', () => {
+  it('accepts a flat catalog line without unitPrice', () => {
+    expect(contractLineInputSchema.safeParse({
+      lineType: 'flat', description: 'Managed services', taxable: true,
+      catalogItemId: '33333333-3333-3333-3333-333333333333'
+    }).success).toBe(true);
+  });
+  it('rejects a flat line with neither unitPrice nor catalogItemId', () => {
+    const r = contractLineInputSchema.safeParse({
+      lineType: 'flat', description: 'Managed services', taxable: false
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const issue = r.error.issues.find((i) => i.path.join('.') === 'unitPrice');
+      expect(issue?.message).toBe('unitPrice is required unless catalogItemId is set');
+    }
+  });
+  it('still accepts a non-catalog line carrying unitPrice', () => {
+    expect(contractLineInputSchema.safeParse({
+      lineType: 'per_seat', description: 'Seats', unitPrice: '12.00', taxable: true
+    }).success).toBe(true);
+  });
+});

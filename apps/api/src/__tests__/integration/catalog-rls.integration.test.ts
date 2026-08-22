@@ -98,6 +98,7 @@ async function seedFixture(): Promise<Fixture> {
         itemType: 'service',
         name: 'A-only service',
         unitPrice: '10.00',
+        costCurrency: 'USD',
       })
       .returning({ id: catalogItems.id });
     if (!itemA) throw new Error('failed to seed catalog item A');
@@ -113,6 +114,7 @@ async function seedFixture(): Promise<Fixture> {
         itemType: 'service',
         name: 'A-only component',
         unitPrice: '2.00',
+        costCurrency: 'USD',
       })
       .returning({ id: catalogItems.id });
     if (!componentA) throw new Error('failed to seed catalog component A');
@@ -123,6 +125,8 @@ async function seedFixture(): Promise<Fixture> {
       .values({
         catalogItemId: itemA.id,
         orgId: orgA.id,
+        partnerId: partnerA.id,
+        currencyCode: 'USD',
         unitPrice: '5.00',
       })
       .returning({ id: catalogItemOrgPricing.id });
@@ -307,6 +311,7 @@ describe('catalog RLS isolation (breeze_app)', () => {
           itemType: 'service',
           name: 'forged',
           unitPrice: '1.00',
+          costCurrency: 'USD',
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });

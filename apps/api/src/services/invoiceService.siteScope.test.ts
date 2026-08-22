@@ -34,7 +34,10 @@ vi.mock('../db', () => {
   };
 });
 
-vi.mock('./catalogService', () => ({ resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() }));
+vi.mock('./catalogService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./catalogService')>();
+  return { ...actual, resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() };
+});
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./stripeConnectService', () => ({ getConnection: vi.fn().mockResolvedValue(null) }));
 
