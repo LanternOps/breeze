@@ -22,6 +22,9 @@ const { dbMocks, accountsRetrieveMock, systemContextCalls } = vi.hoisted(() => (
     upsertConfigs: [] as Record<string, unknown>[],
     upsertErrors: [] as unknown[],
     updatedValues: [] as Record<string, unknown>[],
+    updateWheres: [] as unknown[],
+    // queue of rows for successive db.update()...returning() terminals
+    updateReturning: [] as unknown[][],
     callOrder: [] as string[],
     insertSystemContextDepths: [] as number[],
   },
@@ -38,7 +41,11 @@ vi.mock('stripe', () => ({
 
 vi.mock('./secretCrypto', () => ({
   encryptSecret: (x: string) => `enc(${x})`,
-  decryptSecret: (x: string) => x.replace(/^enc\((.*)\)$/, '$1'),
+  decryptSecret: (x: string) => {
+    const m = /^enc\((.*)\)$/.exec(x);
+    if (!m) throw new Error('bad ciphertext');
+    return m[1];
+  },
 }));
 
 vi.mock('../db', () => ({
@@ -81,7 +88,14 @@ vi.mock('../db', () => ({
       set: vi.fn((vals: Record<string, unknown>) => {
         dbMocks.callOrder.push('update');
         dbMocks.updatedValues.push(vals);
-        return { where: vi.fn(() => Promise.resolve()) };
+        return {
+          where: vi.fn((cond: unknown) => {
+            dbMocks.updateWheres.push(cond);
+            return {
+              returning: vi.fn(() => Promise.resolve(dbMocks.updateReturning.shift() ?? [])),
+            };
+          }),
+        };
       }),
     })),
   },
@@ -89,11 +103,26 @@ vi.mock('../db', () => ({
 
 import {
   getPartnerStripeStatus,
-  getStripeAccountCurrency,
+  getPartnerStripeAccountSnapshot,
   PartnerStripeError,
   refreshPartnerStripeAccount,
   savePartnerStripeKey,
 } from './partnerStripe';
+
+/**
+ * Walk a drizzle SQL tree and collect every bound parameter value + referenced
+ * column name, so where-clause assertions check the REAL guard rather than a
+ * vacuous "where was called" (see memory: vacuous Drizzle where-clause assertions).
+ */
+function collectSqlTerms(node: unknown, out: { params: unknown[]; columns: string[] } = { params: [], columns: [] }) {
+  if (!node || typeof node !== 'object') return out;
+  const n = node as Record<string, unknown>;
+  if (Array.isArray(n.queryChunks)) for (const c of n.queryChunks) collectSqlTerms(c, out);
+  else if (Array.isArray(node)) for (const c of node) collectSqlTerms(c, out);
+  else if ('value' in n && 'encoder' in n) out.params.push(n.value);
+  else if (typeof n.name === 'string' && 'table' in n) out.columns.push(n.name);
+  return out;
+}
 
 const TEST_KEY = ['sk', 'test', '51UNITtestKEY9999'].join('_');
 const CLAIM_MESSAGE =
@@ -105,6 +134,8 @@ beforeEach(() => {
   dbMocks.upsertConfigs.length = 0;
   dbMocks.upsertErrors.length = 0;
   dbMocks.updatedValues.length = 0;
+  dbMocks.updateWheres.length = 0;
+  dbMocks.updateReturning.length = 0;
   dbMocks.callOrder.length = 0;
   dbMocks.insertSystemContextDepths.length = 0;
   systemContextCalls.count = 0;
@@ -254,45 +285,118 @@ describe('getPartnerStripeStatus', () => {
 });
 
 describe('refreshPartnerStripeAccount', () => {
-  it('retrieves fresh account fields and updates the cache', async () => {
-    dbMocks.selectResults.push([{
-      apiKey: 'enc(sk_test_x)',
-      status: 'connected',
-      stripeAccountId: 'acct_unit',
-      defaultCurrency: 'USD',
-    }]);
+  const connectedRow = (stripeAccountId = 'acct_unit') => ({
+    apiKey: 'enc(sk_test_x)',
+    status: 'connected',
+    stripeAccountId,
+    defaultCurrency: 'USD',
+  });
+  const returnedRow = (over: Record<string, unknown> = {}) => ({
+    stripeAccountId: 'acct_unit',
+    keyLast4: '9999',
+    livemode: false,
+    defaultCurrency: 'GBP',
+    accountCountry: 'GB',
+    accountRefreshedAt: new Date(),
+    ...over,
+  });
+
+  it('retrieves fresh account fields, updates the cache via RETURNING, and returns the persisted row', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
     accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'gbp', country: 'GB' });
+    dbMocks.updateReturning.push([returnedRow()]);
 
     const res = await refreshPartnerStripeAccount(PARTNER_A);
 
     expect(res).toEqual({
+      stripeAccountId: 'acct_unit',
+      last4: '9999',
+      livemode: false,
       defaultCurrency: 'GBP',
       accountCountry: 'GB',
       accountRefreshedAt: expect.any(Date),
     });
     expect(dbMocks.updatedValues).toHaveLength(1);
-    expect(dbMocks.updatedValues[0]).toEqual({
+    const written = dbMocks.updatedValues[0]!;
+    expect(written).toEqual({
       defaultCurrency: 'GBP',
       accountCountry: 'GB',
-      accountRefreshedAt: res.accountRefreshedAt,
-      updatedAt: res.accountRefreshedAt,
+      accountRefreshedAt: expect.any(Date),
+      updatedAt: expect.any(Date),
     });
+    expect(written.updatedAt).toBe(written.accountRefreshedAt); // one `now` stamp
   });
 
-  it('maps transient Stripe failures and does not update the cache', async () => {
-    dbMocks.selectResults.push([{
-      apiKey: 'enc(sk_test_x)',
-      status: 'connected',
-      stripeAccountId: 'acct_unit',
-      defaultCurrency: 'USD',
-    }]);
+  it('guards the update on partner + account id + connected status (review F9)', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'gbp', country: 'GB' });
+    dbMocks.updateReturning.push([returnedRow()]);
+
+    await refreshPartnerStripeAccount(PARTNER_A);
+
+    const terms = collectSqlTerms(dbMocks.updateWheres[0]);
+    expect(terms.columns).toEqual(expect.arrayContaining(['partner_id', 'stripe_account_id', 'status']));
+    expect(terms.params).toEqual(expect.arrayContaining([PARTNER_A, 'acct_unit', 'connected']));
+  });
+
+  it('zero rows updated (key replaced mid-flight): retries against the NEW account instead of returning unpersisted values', async () => {
+    dbMocks.selectResults.push([connectedRow('acct_old')], [connectedRow('acct_new')]);
+    accountsRetrieveMock
+      .mockResolvedValueOnce({ id: 'acct_old', default_currency: 'usd', country: 'US' })
+      .mockResolvedValueOnce({ id: 'acct_new', default_currency: 'eur', country: 'DE' });
+    dbMocks.updateReturning.push([], [returnedRow({ stripeAccountId: 'acct_new', defaultCurrency: 'EUR', accountCountry: 'DE' })]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const res = await refreshPartnerStripeAccount(PARTNER_A);
+      expect(res).toMatchObject({ stripeAccountId: 'acct_new', defaultCurrency: 'EUR', accountCountry: 'DE' });
+    } finally {
+      warnSpy.mockRestore();
+    }
+    expect(accountsRetrieveMock).toHaveBeenCalledTimes(2);
+    // Second guard is keyed on the NEW account id.
+    expect(collectSqlTerms(dbMocks.updateWheres[1]).params).toEqual(expect.arrayContaining(['acct_new']));
+  });
+
+  it('zero rows updated twice: throws a transient error rather than inventing a result', async () => {
+    dbMocks.selectResults.push([connectedRow()], [connectedRow()]);
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'gbp', country: 'GB' });
+    dbMocks.updateReturning.push([], []);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({
+        name: 'PartnerStripeError',
+        code: 'STRIPE_UNAVAILABLE',
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('zero rows updated because the account was disconnected mid-flight: surfaces NO_STRIPE_KEY', async () => {
+    dbMocks.selectResults.push([connectedRow()], [{ ...connectedRow(), status: 'disconnected', apiKey: null }]);
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'gbp', country: 'GB' });
+    dbMocks.updateReturning.push([]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({ code: 'NO_STRIPE_KEY' });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('maps transient Stripe failures to STRIPE_UNAVAILABLE (503) and does not update the cache', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
     accountsRetrieveMock.mockRejectedValue({ type: 'StripeConnectionError' });
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
       await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({
         name: 'PartnerStripeError',
-        code: 'INVALID_STRIPE_KEY',
+        code: 'STRIPE_UNAVAILABLE',
+        status: 503,
         message: 'Could not reach Stripe right now — try again in a moment.',
       });
     } finally {
@@ -300,78 +404,177 @@ describe('refreshPartnerStripeAccount', () => {
     }
     expect(dbMocks.updatedValues).toHaveLength(0);
   });
+
+  it.each(['StripeAuthenticationError', 'StripePermissionError', 'StripeInvalidRequestError'])(
+    'maps a permanent %s to INVALID_STRIPE_KEY (400) — never a retry-later',
+    async (type) => {
+      dbMocks.selectResults.push([connectedRow()]);
+      accountsRetrieveMock.mockRejectedValue(Object.assign(new Error('nope'), { type }));
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({
+          code: 'INVALID_STRIPE_KEY',
+          status: 400,
+        });
+      } finally {
+        consoleSpy.mockRestore();
+      }
+      expect(dbMocks.updatedValues).toHaveLength(0);
+    },
+  );
 });
 
-describe('getStripeAccountCurrency', () => {
-  it('returns a fresh connected cache entry without calling Stripe', async () => {
-    const accountRefreshedAt = new Date();
-    dbMocks.selectResults.push([{
-      defaultCurrency: 'USD',
-      accountCountry: 'US',
-      accountRefreshedAt,
-      status: 'connected',
-    }]);
-
-    await expect(getStripeAccountCurrency(PARTNER_A)).resolves.toEqual({
-      defaultCurrency: 'USD',
-      accountCountry: 'US',
-      accountRefreshedAt,
-      stale: false,
-    });
-    expect(accountsRetrieveMock).not.toHaveBeenCalled();
+describe('getPartnerStripeAccountSnapshot', () => {
+  const statusRow = (over: Record<string, unknown> = {}) => ({
+    status: 'connected',
+    apiKey: 'enc(sk_test_x)',
+    stripeAccountId: 'acct_unit',
+    keyLast4: '9999',
+    livemode: false,
+    defaultCurrency: 'USD',
+    accountCountry: 'US',
+    accountRefreshedAt: new Date(),
+    ...over,
   });
 
-  it('refreshes a connected cache entry older than the TTL', async () => {
+  it('returns a fresh connected snapshot from ONE read without calling Stripe', async () => {
+    const accountRefreshedAt = new Date();
+    dbMocks.selectResults.push([statusRow({ accountRefreshedAt })]);
+
+    await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toEqual({
+      connected: true,
+      stripeAccountId: 'acct_unit',
+      last4: '9999',
+      livemode: false,
+      defaultCurrency: 'USD',
+      accountCountry: 'US',
+      accountRefreshedAt,
+      cacheState: 'fresh',
+      error: null,
+    });
+    expect(accountsRetrieveMock).not.toHaveBeenCalled();
+    expect(dbMocks.callOrder).toEqual(['select']);
+  });
+
+  it('returns disconnected when there is no connected key', async () => {
+    dbMocks.selectResults.push([{ status: 'disconnected', apiKey: null, keyLast4: '1234' }]);
+    await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toEqual({ connected: false, last4: '1234' });
+  });
+
+  it('refreshes a connected entry older than the TTL and returns the PERSISTED refreshed row as the snapshot', async () => {
     dbMocks.selectResults.push(
-      [{
-        defaultCurrency: 'USD',
-        accountCountry: 'US',
-        accountRefreshedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
-        status: 'connected',
-      }],
-      [{
-        apiKey: 'enc(sk_test_x)',
-        status: 'connected',
-        stripeAccountId: 'acct_unit',
-        defaultCurrency: 'USD',
-      }],
+      [statusRow({ accountRefreshedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) })],
+      [{ apiKey: 'enc(sk_test_x)', status: 'connected', stripeAccountId: 'acct_unit', defaultCurrency: 'USD' }],
     );
     accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'cad', country: 'CA' });
+    dbMocks.updateReturning.push([{
+      stripeAccountId: 'acct_unit', keyLast4: '7777', livemode: true,
+      defaultCurrency: 'CAD', accountCountry: 'CA', accountRefreshedAt: new Date(),
+    }]);
 
-    const res = await getStripeAccountCurrency(PARTNER_A);
+    const res = await getPartnerStripeAccountSnapshot(PARTNER_A);
 
     expect(res).toEqual({
+      connected: true,
+      stripeAccountId: 'acct_unit',
+      last4: '7777', // from the updated row, not the pre-refresh read
+      livemode: true,
       defaultCurrency: 'CAD',
       accountCountry: 'CA',
       accountRefreshedAt: expect.any(Date),
-      stale: false,
+      cacheState: 'fresh',
+      error: null,
     });
     expect(accountsRetrieveMock).toHaveBeenCalledTimes(1);
   });
 
-  it('serves stale cached values when refresh fails', async () => {
+  it('a legacy row (never cached, accountRefreshedAt null) is treated as stale and refreshed', async () => {
+    dbMocks.selectResults.push(
+      [statusRow({ defaultCurrency: null, accountCountry: null, accountRefreshedAt: null })],
+      [{ apiKey: 'enc(sk_test_x)', status: 'connected', stripeAccountId: 'acct_unit', defaultCurrency: null }],
+    );
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'eur', country: 'DE' });
+    dbMocks.updateReturning.push([{
+      stripeAccountId: 'acct_unit', keyLast4: '9999', livemode: false,
+      defaultCurrency: 'EUR', accountCountry: 'DE', accountRefreshedAt: new Date(),
+    }]);
+
+    await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toMatchObject({ defaultCurrency: 'EUR', cacheState: 'fresh' });
+  });
+
+  it('serves the cached value flagged stale ONLY for a transient Stripe failure (review F4)', async () => {
     const accountRefreshedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
     dbMocks.selectResults.push(
-      [{ defaultCurrency: 'USD', accountCountry: 'US', accountRefreshedAt, status: 'connected' }],
-      [{
-        apiKey: 'enc(sk_test_x)',
-        status: 'connected',
-        stripeAccountId: 'acct_unit',
-        defaultCurrency: 'USD',
-      }],
+      [statusRow({ accountRefreshedAt })],
+      [{ apiKey: 'enc(sk_test_x)', status: 'connected', stripeAccountId: 'acct_unit', defaultCurrency: 'USD' }],
     );
-    accountsRetrieveMock.mockRejectedValue({ type: 'StripeConnectionError' });
-    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    accountsRetrieveMock.mockRejectedValue({ type: 'StripeRateLimitError' });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
-      await expect(getStripeAccountCurrency(PARTNER_A)).resolves.toEqual({
+      await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toEqual({
+        connected: true,
+        stripeAccountId: 'acct_unit',
+        last4: '9999',
+        livemode: false,
         defaultCurrency: 'USD',
         accountCountry: 'US',
         accountRefreshedAt,
-        stale: true,
+        cacheState: 'stale',
+        error: { code: 'STRIPE_UNAVAILABLE', message: 'Could not reach Stripe right now — try again in a moment.' },
       });
     } finally {
-      consoleSpy.mockRestore();
+      warnSpy.mockRestore();
+      errSpy.mockRestore();
     }
+  });
+
+  it('a revoked/invalid key is NOT served as stale success — the snapshot says reconnect_required (review F4)', async () => {
+    const accountRefreshedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    dbMocks.selectResults.push(
+      [statusRow({ accountRefreshedAt })],
+      [{ apiKey: 'enc(sk_test_x)', status: 'connected', stripeAccountId: 'acct_unit', defaultCurrency: 'USD' }],
+    );
+    accountsRetrieveMock.mockRejectedValue(Object.assign(new Error('Invalid API Key provided'), { type: 'StripeAuthenticationError' }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toMatchObject({
+        connected: true,
+        last4: '9999',
+        cacheState: 'reconnect_required',
+        error: { code: 'INVALID_STRIPE_KEY', message: 'Stripe rejected the stored key — reconnect Stripe.' },
+      });
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('undecryptable stored ciphertext is NOT served as stale success — reconnect_required with STRIPE_KEY_UNREADABLE', async () => {
+    const accountRefreshedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    dbMocks.selectResults.push(
+      [statusRow({ accountRefreshedAt, apiKey: 'garbage' })],
+      [{ apiKey: 'garbage', status: 'connected', stripeAccountId: 'acct_unit', defaultCurrency: 'USD' }],
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toMatchObject({
+        connected: true,
+        cacheState: 'reconnect_required',
+        error: { code: 'STRIPE_KEY_UNREADABLE' },
+      });
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(accountsRetrieveMock).not.toHaveBeenCalled();
+  });
+
+  it('disconnected between the snapshot read and the refresh collapses to disconnected', async () => {
+    dbMocks.selectResults.push(
+      [statusRow({ accountRefreshedAt: null })],
+      [{ apiKey: null, status: 'disconnected', stripeAccountId: 'acct_unit', defaultCurrency: null }],
+    );
+    await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toEqual({ connected: false, last4: '9999' });
   });
 });

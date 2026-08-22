@@ -10,19 +10,32 @@ const API_VERSION = '2026-06-24.dahlia';
 
 export type PartnerStripeErrorCode =
   | 'NO_STRIPE_KEY'        // partner never configured a key / disconnected
-  | 'INVALID_STRIPE_KEY'   // key rejected by Stripe at save time
-  | 'STRIPE_KEY_UNREADABLE'; // stored ciphertext can't be decrypted (corrupt / KEK rotated away)
+  | 'INVALID_STRIPE_KEY'   // key rejected by Stripe (at save time, or later revoked) — PERMANENT until the key is replaced
+  | 'STRIPE_KEY_UNREADABLE' // stored ciphertext can't be decrypted (corrupt / KEK rotated away) — PERMANENT
+  | 'STRIPE_UNAVAILABLE';  // Stripe unreachable / 5xx / rate-limited — TRANSIENT, retry later
 
 // Status is a function of the code, not an independent field — keeps the pair on
 // its valid diagonal (no `('NO_STRIPE_KEY', 400)` foot-guns).
-const STATUS_FOR_CODE: Record<PartnerStripeErrorCode, 400 | 409 | 500> = {
+const STATUS_FOR_CODE: Record<PartnerStripeErrorCode, 400 | 409 | 500 | 503> = {
   NO_STRIPE_KEY: 409,
   INVALID_STRIPE_KEY: 400,
   STRIPE_KEY_UNREADABLE: 500,
+  STRIPE_UNAVAILABLE: 503,
 };
 
+/**
+ * Stripe's SDK tags every error with a `type`. Only these three mean "Stripe
+ * itself could not answer right now"; everything else (auth 401, permission 403,
+ * invalid request, unknown) is a property of the stored key and will not fix
+ * itself — a cache must never paper over those as "try again later".
+ */
+export function isTransientStripeError(err: unknown): boolean {
+  const type = (err as { type?: string } | null)?.type;
+  return type === 'StripeConnectionError' || type === 'StripeAPIError' || type === 'StripeRateLimitError';
+}
+
 export class PartnerStripeError extends Error {
-  readonly status: 400 | 409 | 500;
+  readonly status: 400 | 409 | 500 | 503;
   constructor(message: string, readonly code: PartnerStripeErrorCode) {
     super(message);
     this.name = 'PartnerStripeError';
@@ -249,12 +262,25 @@ export async function getPartnerStripeClient(partnerId: string): Promise<{
   };
 }
 
-/** Refresh cached Stripe account metadata without holding a DB context open during HTTP. */
-export async function refreshPartnerStripeAccount(partnerId: string): Promise<{
+export interface StripeAccountRefreshResult {
+  stripeAccountId: string;
+  last4: string | null;
+  livemode: boolean;
   defaultCurrency: string | null;
   accountCountry: string | null;
   accountRefreshedAt: Date;
-}> {
+}
+
+/**
+ * Refresh cached Stripe account metadata without holding a DB context open during
+ * HTTP. Returns what was actually PERSISTED (RETURNING), never what was merely
+ * retrieved: the cache write is guarded on (partner, account id, status =
+ * connected), so a key replacement or disconnect that lands while the Stripe
+ * round-trip is in flight updates zero rows. Zero rows → one retry against the
+ * row as it is now (a replaced key refreshes the NEW account; a disconnect
+ * surfaces NO_STRIPE_KEY). Review F9.
+ */
+export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0): Promise<StripeAccountRefreshResult> {
   const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
 
   let account: Stripe.Account;
@@ -264,72 +290,120 @@ export async function refreshPartnerStripeAccount(partnerId: string): Promise<{
     );
   } catch (err) {
     const type = (err as { type?: string })?.type;
-    const transient = type === 'StripeConnectionError' || type === 'StripeAPIError' || type === 'StripeRateLimitError';
+    const transient = isTransientStripeError(err);
     console.error('[partnerStripe] account refresh failed', { partnerId, type: type ?? 'unknown', transient, message: err instanceof Error ? err.message : String(err) });
-    throw new PartnerStripeError(
-      transient
-        ? 'Could not reach Stripe right now — try again in a moment.'
-        : 'Stripe rejected the stored key — reconnect Stripe.',
-      'INVALID_STRIPE_KEY',
-    );
+    // Transient → 503 (retry later; callers may serve a cached value flagged stale).
+    // Anything else is the stored key's fault (revoked, scoped down, wrong
+    // account) and must propagate as "reconnect" — never be absorbed as stale.
+    throw transient
+      ? new PartnerStripeError('Could not reach Stripe right now — try again in a moment.', 'STRIPE_UNAVAILABLE')
+      : new PartnerStripeError('Stripe rejected the stored key — reconnect Stripe.', 'INVALID_STRIPE_KEY');
   }
 
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
   const accountCountry = account.country ?? null;
   const now = new Date();
 
-  await withSystemDbAccessContext(() =>
+  const [updated] = await withSystemDbAccessContext(() =>
     db
       .update(stripeConnectAccounts)
       .set({ defaultCurrency, accountCountry, accountRefreshedAt: now, updatedAt: now })
-      // Guarded by the account id read BEFORE the Stripe round-trip: if an admin
-      // replaced the key (new account) while this refresh was in flight, the
-      // stale account's currency/country must not land on the new row (0-row
-      // no-op instead; the key save already cached the new account's values).
-      .where(and(eq(stripeConnectAccounts.partnerId, partnerId), eq(stripeConnectAccounts.stripeAccountId, stripeAccountId)))
-  );
-
-  return { defaultCurrency, accountCountry, accountRefreshedAt: now };
-}
-
-export async function getStripeAccountCurrency(partnerId: string): Promise<{
-  defaultCurrency: string | null;
-  accountCountry: string | null;
-  accountRefreshedAt: Date | null;
-  stale: boolean;
-}> {
-  const [row] = await withSystemDbAccessContext(() =>
-    db
-      .select({
+      // Guarded by the account id AND connected status read BEFORE the Stripe
+      // round-trip: if an admin replaced the key (new account) or disconnected
+      // while this refresh was in flight, the stale account's currency/country
+      // must not land on the new/disconnected row.
+      .where(and(
+        eq(stripeConnectAccounts.partnerId, partnerId),
+        eq(stripeConnectAccounts.stripeAccountId, stripeAccountId),
+        eq(stripeConnectAccounts.status, 'connected'),
+      ))
+      .returning({
+        stripeAccountId: stripeConnectAccounts.stripeAccountId,
+        keyLast4: stripeConnectAccounts.keyLast4,
+        livemode: stripeConnectAccounts.livemode,
         defaultCurrency: stripeConnectAccounts.defaultCurrency,
         accountCountry: stripeConnectAccounts.accountCountry,
         accountRefreshedAt: stripeConnectAccounts.accountRefreshedAt,
-        status: stripeConnectAccounts.status,
       })
-      .from(stripeConnectAccounts)
-      .where(eq(stripeConnectAccounts.partnerId, partnerId))
-      .limit(1)
   );
 
-  if (!row || row.status !== 'connected') {
-    return { defaultCurrency: null, accountCountry: null, accountRefreshedAt: null, stale: false };
+  if (updated) {
+    return {
+      stripeAccountId: updated.stripeAccountId,
+      last4: updated.keyLast4 ?? null,
+      livemode: updated.livemode,
+      defaultCurrency: updated.defaultCurrency,
+      accountCountry: updated.accountCountry,
+      accountRefreshedAt: updated.accountRefreshedAt ?? now,
+    };
   }
 
-  const cached = {
-    defaultCurrency: row.defaultCurrency,
-    accountCountry: row.accountCountry,
-    accountRefreshedAt: row.accountRefreshedAt,
-  };
-  const stale = row.accountRefreshedAt === null
-    || Date.now() - row.accountRefreshedAt.getTime() > STRIPE_ACCOUNT_CACHE_TTL_MS;
-  if (!stale) return { ...cached, stale: false };
+  console.warn('[partnerStripe] account refresh raced a key replacement or disconnect — re-reading the current row', { partnerId, stripeAccountId, attempt });
+  if (attempt < 1) return refreshPartnerStripeAccount(partnerId, attempt + 1);
+  throw new PartnerStripeError('Stripe connection changed while refreshing — try again.', 'STRIPE_UNAVAILABLE');
+}
+
+/**
+ * Cache health as the client must see it. `stale`: Stripe could not be reached
+ * right now, the cached value is shown with its age. `reconnect_required`: the
+ * stored key no longer works (revoked / scoped down / undecryptable) — the cached
+ * value is NOT trustworthy and checkout will fail until the key is replaced.
+ */
+export type StripeAccountCacheState = 'fresh' | 'stale' | 'reconnect_required';
+
+export type PartnerStripeAccountSnapshot =
+  | { connected: false; last4: string | null }
+  | {
+      connected: true;
+      stripeAccountId: string;
+      last4: string | null;
+      livemode: boolean;
+      defaultCurrency: string | null;
+      accountCountry: string | null;
+      accountRefreshedAt: Date | null;
+      cacheState: StripeAccountCacheState;
+      error: { code: PartnerStripeErrorCode; message: string } | null;
+    };
+
+/**
+ * ONE consistent snapshot of the partner's Stripe connection for the settings
+ * route: status + display fields + cached account facts come from a single row
+ * read; when the cache is past its TTL (or was never populated — pre-wave-5
+ * rows), the refreshed snapshot is the row RETURNING'd by the cache write, so
+ * status and cache can never come from two different rows (review F9).
+ *
+ * Cache-miss handling (review F4): only a TRANSIENT Stripe failure serves the
+ * cached value, flagged `stale`. A permanent failure (revoked key,
+ * undecryptable ciphertext) is reported as `reconnect_required` with the
+ * error — never as stale success. A disconnect that lands between the read
+ * and the refresh collapses to `connected: false`.
+ *
+ * Must be called with NO ambient request transaction (the GET route is
+ * self-managed) — the refresh path performs a Stripe round-trip.
+ */
+export async function getPartnerStripeAccountSnapshot(partnerId: string): Promise<PartnerStripeAccountSnapshot> {
+  const status = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => getPartnerStripeStatus(partnerId))
+  );
+  if (!status.connected) return status;
+
+  const stale = status.accountRefreshedAt === null
+    || Date.now() - status.accountRefreshedAt.getTime() > STRIPE_ACCOUNT_CACHE_TTL_MS;
+  if (!stale) return { ...status, cacheState: 'fresh', error: null };
 
   try {
-    return { ...(await refreshPartnerStripeAccount(partnerId)), stale: false };
+    const fresh = await refreshPartnerStripeAccount(partnerId);
+    return { connected: true, ...fresh, cacheState: 'fresh', error: null };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn('[partnerStripe] account cache refresh failed — serving stale value', { partnerId, message });
-    return { ...cached, stale: true };
+    if (!(err instanceof PartnerStripeError)) throw err;
+    if (err.code === 'NO_STRIPE_KEY') return { connected: false, last4: status.last4 };
+    if (err.code === 'STRIPE_UNAVAILABLE') {
+      console.warn('[partnerStripe] account cache refresh failed transiently — serving cached value flagged stale', { partnerId, message: err.message });
+      return { ...status, cacheState: 'stale', error: { code: err.code, message: err.message } };
+    }
+    // INVALID_STRIPE_KEY / STRIPE_KEY_UNREADABLE: already logged at error level
+    // by the refresh path. Surface the state; do NOT pretend the cache is good.
+    return { ...status, cacheState: 'reconnect_required', error: { code: err.code, message: err.message } };
   }
 }
 
