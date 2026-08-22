@@ -1879,8 +1879,15 @@ jobs:
 
   package-windows-updater:
     name: Package Windows Updater Bundle
+    # `!cancelled()` + an explicit result check, not the implicit `success()`:
+    # exactly one of sign-windows-tauri-{azure,sslcom} is always skipped (the
+    # non-selected provider), and the implicit success() is evaluated over the
+    # whole transitive needs chain, so without this the bundle job is skipped
+    # and release-integrity-gate fails closed on it (v0.107.0-rc.1).
     if: >-
-      vars.ENABLE_WINDOWS_SIGNING == 'true'
+      !cancelled()
+      && needs.sign-windows-tauri.result == 'success'
+      && vars.ENABLE_WINDOWS_SIGNING == 'true'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
