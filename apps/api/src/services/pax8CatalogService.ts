@@ -99,6 +99,8 @@ export interface Pax8ImportInput {
     sku?: string | null;
     description?: string | null;
     unitPrice: number;
+    /** ISO code the sell price is denominated in. Omitted → partner currency. */
+    sellCurrency?: string;
     costBasis?: number | null;
     taxable?: boolean;
   };
@@ -157,7 +159,9 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
     description,
     billingType: 'recurring',
     billingFrequency: mapBillingFrequency(product.billingTerm),
-    unitPrice: item.unitPrice,
+    ...(item.sellCurrency
+      ? { prices: [{ currencyCode: item.sellCurrency, unitPrice: item.unitPrice }] }
+      : { unitPrice: item.unitPrice }),
     costBasis: item.costBasis ?? (product.partnerBuyRate != null ? Number(product.partnerBuyRate) : undefined),
     // B4 (#3775): partnerBuyRate is denominated in the feed currency — store it
     // as the cost currency (real column) so margin math can refuse cross-currency

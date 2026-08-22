@@ -520,6 +520,8 @@ export interface ImportTdSynnexCatalogItemInput {
     sku?: string | null;
     description?: string | null;
     unitPrice: number;
+    /** ISO code the sell price is denominated in. Omitted → partner currency. */
+    sellCurrency?: string;
     costBasis?: number | null;
     markupPercent?: number | null;
     taxable: boolean;
@@ -570,7 +572,9 @@ export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItem
     sku: existingSku || null,
     description,
     billingType: 'one_time',
-    unitPrice: input.item.unitPrice,
+    ...(input.item.sellCurrency
+      ? { prices: [{ currencyCode: input.item.sellCurrency, unitPrice: input.item.unitPrice }] }
+      : { unitPrice: input.item.unitPrice }),
     costBasis: input.item.costBasis ?? null,
     markupPercent: input.item.markupPercent ?? null,
     // B4 (#3775): feed currency is the cost currency (real column, not jsonb-only).

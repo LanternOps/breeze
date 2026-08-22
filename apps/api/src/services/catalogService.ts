@@ -182,10 +182,15 @@ export async function createCatalogItem(input: CreateCatalogItemInput, actor: Ca
     if (!created) {
       throw new CatalogServiceError('An item with this SKU already exists', 409, 'DUPLICATE_SKU');
     }
-    await tx.insert(catalogItemPrices).values(
-      [...priceMap].map(([currencyCode, unitPrice]) => ({ itemId: created.id, partnerId, currencyCode, unitPrice }))
-    );
-    return created;
+    const priceRows = [...priceMap].map(([currencyCode, unitPrice]) => ({ itemId: created.id, partnerId, currencyCode, unitPrice }));
+    await tx.insert(catalogItemPrices).values(priceRows);
+    // Return the same shape as list/detail so an import-and-add flow can read the
+    // price book off the created item without a second fetch (codex review, T19).
+    return {
+      ...created,
+      prices: priceRows.map(({ currencyCode, unitPrice }) => ({ currencyCode, unitPrice }))
+        .sort((a, b) => a.currencyCode.localeCompare(b.currencyCode)),
+    };
   });
   await emitCatalogEvent({ type: 'catalog.item.created', catalogItemId: item.id, partnerId, actorUserId: actor.userId });
   return item;
@@ -301,7 +306,14 @@ export async function updateCatalogItem(id: string, input: UpdateCatalogItemInpu
     const nextMarkup = input.markupPercent !== undefined ? input.markupPercent : (existing.markupPercent != null ? Number(existing.markupPercent) : null);
     const nextCostCurrency = input.costCurrency ?? existing.costCurrency;
     if (nextCost != null) assertRepresentable(nextCost.toFixed(2), nextCostCurrency);
-    const driverChanged = input.unitPrice !== undefined || input.costBasis !== undefined || input.markupPercent !== undefined;
+    // "Touched" means the VALUE changed, not merely that the field was present:
+    // the web drawer (and any PATCH that echoes the stored cost) must not
+    // re-derive over an explicitly adjusted price-book row (codex review, T19).
+    const prevCost = existing.costBasis != null ? Number(existing.costBasis) : null;
+    const prevMarkup = existing.markupPercent != null ? Number(existing.markupPercent) : null;
+    const driverChanged = input.unitPrice !== undefined
+      || (input.costBasis !== undefined && nextCost !== prevCost)
+      || (input.markupPercent !== undefined && nextMarkup !== prevMarkup);
     let priceWrite: { currencyCode: string; unitPrice: string } | null = null;
     if (input.unitPrice !== undefined) {
       const unitPrice = input.unitPrice.toFixed(2);

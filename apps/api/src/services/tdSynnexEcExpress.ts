@@ -500,6 +500,9 @@ export interface EcImportInput {
     sku?: string | null;
     description?: string | null;
     unitPrice: number;
+    /** ISO code the sell price is denominated in (e.g. the quote's currency when
+     *  importing from a quote editor). Omitted → unitPrice is the partner currency. */
+    sellCurrency?: string;
     costBasis?: number | null;
     markupPercent?: number | null;
     taxable?: boolean;
@@ -549,7 +552,11 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
     sku: item.sku ?? product.synnexSku,
     description: description ?? undefined,
     billingType: 'one_time',
-    unitPrice: item.unitPrice,
+    // A sell price entered in a document's currency lands in THAT price-book row;
+    // the legacy unitPrice path means "partner currency" (wave 3, #3775).
+    ...(item.sellCurrency
+      ? { prices: [{ currencyCode: item.sellCurrency, unitPrice: item.unitPrice }] }
+      : { unitPrice: item.unitPrice }),
     // product.cost is numeric (numOrNull) — but guard a non-finite value out of
     // the catalog payload so it can never reach createCatalogItem as NaN.
     costBasis: item.costBasis ?? (Number.isFinite(product.cost as number) ? (product.cost as number) : undefined),

@@ -91,6 +91,17 @@ describe('importPax8CatalogItem', () => {
     expect(mocks.enrichDistributorListing).not.toHaveBeenCalled(); // aiCleanup unset → no AI
   });
 
+  it('stores a sell price entered in a document currency as that price-book row', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([integration]));
+    mocks.createCatalogItem.mockResolvedValue({ id: 'item-3', name: 'Microsoft 365 Business Premium' });
+    mocks.db.insert.mockReturnValueOnce(insertChain());
+    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw: {} };
+    await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22, sellCurrency: 'EUR' } }, actor, dbCtx);
+    const arg = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(arg.prices).toEqual([{ currencyCode: 'EUR', unitPrice: 22 }]);
+    expect(arg).not.toHaveProperty('unitPrice');
+  });
+
   it('omits cost currency when the Pax8 feed currency is null', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([integration]));
     mocks.createCatalogItem.mockResolvedValue({ id: 'item-2', name: 'Microsoft 365 Business Premium' });

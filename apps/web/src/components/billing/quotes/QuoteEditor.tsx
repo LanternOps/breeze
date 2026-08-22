@@ -1440,7 +1440,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
             },
             item: {
               name: product.name.slice(0, 255), sku: product.vendorSku, description: product.shortDescription,
-              unitPrice: sellPrice, costBasis: term.partnerBuyRate != null ? Number(term.partnerBuyRate) : null,
+              // The sell price was typed in the QUOTE's currency — store it in that
+              // price-book row, never as the partner-currency legacy unitPrice.
+              unitPrice: sellPrice, sellCurrency: quote.currencyCode,
+              costBasis: term.partnerBuyRate != null ? Number(term.partnerBuyRate) : null,
             },
             // Match the EC Express add-line and the settings drawers: web-enrich
             // the raw vendor listing on import (best-effort; falls back to raw).
@@ -1474,6 +1477,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               sku: product.synnexSku || product.mfgPartNo || null,
               description: product.description ?? null,
               unitPrice: sellPrice,
+              sellCurrency: quote.currencyCode,
               costBasis: product.cost != null && Number.isFinite(product.cost) ? Number(product.cost.toFixed(2)) : null,
             },
             // Tidy the raw distributor title into a readable name + description
@@ -1556,7 +1560,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               : form.recurrence === 'annual'
                 ? 'annual'
                 : null,
-            unitPrice: priceNum,
+            // Price-book row in the quote's currency (the legacy unitPrice would be
+            // stored as the PARTNER currency — wrong for a foreign-currency quote).
+            prices: [{ currencyCode: quote.currencyCode, unitPrice: priceNum }],
             taxable: form.taxable,
           }),
           errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),

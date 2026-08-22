@@ -124,7 +124,8 @@ describe('QuoteEditor distributor mode', () => {
     fireEvent.click(screen.getByTestId('quote-distributor-add-ABC123'));
     await waitFor(() => expect(ecExpressImport).toHaveBeenCalled());
     expect(ecExpressImport).toHaveBeenCalledWith(expect.objectContaining({
-      item: expect.objectContaining({ sku: 'ABC123', unitPrice: 150, costBasis: 80 }),
+      // The typed sell price is in the QUOTE's currency → price-book row, not the legacy partner-currency unitPrice.
+      item: expect.objectContaining({ sku: 'ABC123', unitPrice: 150, sellCurrency: 'USD', costBasis: 80 }),
     }));
   });
 

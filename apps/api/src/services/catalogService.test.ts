@@ -280,3 +280,58 @@ describe('setOrgPriceOverride', () => {
       .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
   });
 });
+
+describe('createCatalogItem return shape', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('returns the created row with its price-book rows (no second fetch for import-and-add flows)', async () => {
+    queueCreate('USD');
+    const created = await svc.createCatalogItem({ ...baseCreate, unitPrice: 10, costBasis: 8, markupPercent: 50, costCurrency: 'EUR' }, actor);
+    expect(created).toMatchObject({ id: 'i1' });
+    expect(created.prices).toEqual([
+      { currencyCode: 'EUR', unitPrice: '12.00' },
+      { currencyCode: 'USD', unitPrice: '10.00' },
+    ]);
+  });
+});
+
+describe('updateCatalogItem price drivers', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const existing = {
+    id: 'i1', partnerId: 'p1', sku: 'W-1', name: 'Widget', isBundle: false,
+    costBasis: '50.00', markupPercent: '20.00', costCurrency: 'USD',
+  };
+
+  it('a PATCH that merely echoes the stored cost does NOT re-derive over an explicit price', async () => {
+    queueResult([existing]); // lock
+    queueResult([{ currencyCode: 'USD' }]); // partner currency
+    queueResult([{ ...existing, name: 'Renamed' }]); // update returning
+    const row = await svc.updateCatalogItem('i1', { name: 'Renamed', costBasis: 50 }, actor);
+    expect(row).toMatchObject({ name: 'Renamed' });
+    expect(mock.onConflictDoUpdate).not.toHaveBeenCalled(); // no price-book write
+    expect(mock.update).toHaveBeenCalledTimes(1); // item patch only, no mirror
+  });
+
+  it('a changed cost re-derives cost × markup into the cost-currency row', async () => {
+    queueResult([existing]); // lock
+    queueResult([{ currencyCode: 'USD' }]); // partner currency
+    queueResult([{ ...existing, costBasis: '60.00' }]); // update returning
+    queueResult([{ id: 'pr1', currencyCode: 'USD', unitPrice: '72.00' }]); // price upsert returning
+    queueResult([{ ...existing, costBasis: '60.00', unitPrice: '72.00' }]); // mirror
+    await svc.updateCatalogItem('i1', { costBasis: 60 }, actor);
+    expect(mock.onConflictDoUpdate).toHaveBeenCalledTimes(1);
+    expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'USD', unitPrice: '72.00' }));
+  });
+
+  it('a changed markup re-derives; an unchanged markup echo does not', async () => {
+    queueResult([existing]); queueResult([{ currencyCode: 'USD' }]); queueResult([existing]);
+    await svc.updateCatalogItem('i1', { markupPercent: 20 }, actor);
+    expect(mock.onConflictDoUpdate).not.toHaveBeenCalled();
+
+    vi.clearAllMocks(); results.length = 0;
+    queueResult([existing]); queueResult([{ currencyCode: 'USD' }]); queueResult([existing]);
+    queueResult([{ id: 'pr1' }]); queueResult([existing]);
+    await svc.updateCatalogItem('i1', { markupPercent: 30 }, actor);
+    expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'USD', unitPrice: '65.00' }));
+  });
+});

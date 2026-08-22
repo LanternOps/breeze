@@ -482,6 +482,23 @@ describe('tdSynnexDigitalBridge service', () => {
     );
   });
 
+  it('stores a sell price entered in a document currency as that price-book row', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([enabledRow]));
+    mocks.createCatalogItem.mockResolvedValueOnce({ id: 'catalog-1' });
+    await importTdSynnexCatalogItem({
+      product: {
+        source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+        manufacturerPartNumber: 'MPN-1', vendor: 'Lenovo', name: 'Dock', description: 'desc',
+        cost: '100.00', currency: 'USD', availability: 4, warehouses: [{ code: 'A' }],
+        raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
+      },
+      item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, sellCurrency: 'EUR', taxable: true },
+    }, actor, dbCtx);
+    const input = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(input.prices).toEqual([{ currencyCode: 'EUR', unitPrice: 125 }]);
+    expect(input).not.toHaveProperty('unitPrice');
+  });
+
   it('web-enriches name + description when aiCleanup is set, anchoring on the MPN', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([enabledRow]));
     mocks.createCatalogItem.mockResolvedValueOnce({ id: 'catalog-2' });

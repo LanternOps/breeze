@@ -602,3 +602,14 @@ describe('lookupEcExpressProducts', () => {
       .rejects.toMatchObject({ code: 'EC_NO_RESULTS', status: 404 });
   });
 });
+
+it('stores a sell price entered in a document currency as that price-book row, not the partner-currency unitPrice', async () => {
+  const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item-sell-eur' } as any);
+  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938998', mfgPartNo: 'DELL-U2724D', manufacturer: 'Dell', status: 'ACTIVE', name: 'Dell U2724D', description: 'Dell U2724D', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: 20.50, parcelShippable: 'Y', raw: {} };
+  await importEcExpressCatalogItem({ product, item: { name: 'Dell U2724D', sku: '8938998', unitPrice: 499, sellCurrency: 'EUR', costBasis: 381.35, taxable: true } }, actor, dbCtx);
+
+  const arg = createSpy.mock.calls.at(-1)![0];
+  expect(arg.prices).toEqual([{ currencyCode: 'EUR', unitPrice: 499 }]);
+  expect(arg).toEqual(expect.not.objectContaining({ unitPrice: expect.anything() }));
+  expect(arg.costCurrency).toBe('USD');
+});

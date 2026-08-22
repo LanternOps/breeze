@@ -286,6 +286,26 @@ describe.each([
     });
   });
 
+  it('normalizes item.sellCurrency and passes it to the import service', async () => {
+    const res = await app().request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Imported product', unitPrice: 12, sellCurrency: 'eur' } }),
+    });
+    expect(res.status).toBe(200);
+    expect(importMock.mock.calls[0]?.[0]).toMatchObject({ item: expect.objectContaining({ sellCurrency: 'EUR' }) });
+  });
+
+  it('rejects a non-ISO item.sellCurrency', async () => {
+    const res = await app().request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Imported product', unitPrice: 12, sellCurrency: 'EU' } }),
+    });
+    expect(res.status).toBe(400);
+    expect(importMock).not.toHaveBeenCalled();
+  });
+
   it('rejects a non-ISO currency code', async () => {
     const res = await requestImport(path, { ...product, currency: 'CA$' });
 
