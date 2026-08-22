@@ -7,7 +7,7 @@ vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 import TicketPartsCard from './TicketPartsCard';
 
-const parts = [{ id: 'p-1', ticketId: 'tk-1', description: 'SSD 1TB', partNumber: null, vendor: null, quantity: '2.00', unitPrice: '99.00', costBasis: '60.00', isBillable: true, billingStatus: 'not_billed', notes: null }];
+const parts = [{ id: 'p-1', ticketId: 'tk-1', description: 'SSD 1TB', partNumber: null, vendor: null, quantity: '2.00', unitPrice: '99.00', costBasis: '60.00', isBillable: true, billingStatus: 'not_billed', notes: null, currencyCode: 'EUR' }];
 const jsonRes = (data: unknown, status = 200) => ({ ok: status < 400, status, json: async () => ({ data }) }) as Response;
 
 beforeEach(() => {
@@ -21,9 +21,26 @@ describe('TicketPartsCard', () => {
     render(<TicketPartsCard ticketId="tk-1" />);
     const row = await screen.findByTestId('ticket-part-p-1');
     expect(row.textContent).toContain('SSD 1TB');
-    expect(row.textContent).toContain('2 × $99.00');
-    expect(row.textContent).toContain('$198.00');
-    expect(row.textContent).toContain('$78.00');
+    expect(row.textContent).toContain('2 × €99.00');
+    expect(row.textContent).toContain('€198.00');
+    expect(row.textContent).toContain('€78.00');
+    expect(row.textContent).not.toContain('$');
+  });
+
+  it('formats each part in its own stamped currency', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === '/tickets/tk-1/parts'
+        ? jsonRes([
+            ...parts,
+            { ...parts[0], id: 'p-2', description: 'Cable', quantity: '3.00', unitPrice: '1000.00', costBasis: null, currencyCode: 'JPY' },
+          ])
+        : jsonRes({}));
+    render(<TicketPartsCard ticketId="tk-1" />);
+    const jpy = await screen.findByTestId('ticket-part-p-2');
+    expect(jpy.textContent).toContain('3 × ¥1,000');
+    expect(jpy.textContent).toContain('¥3,000');
+    expect(jpy.textContent).not.toContain('$');
+    expect(screen.getByTestId('ticket-part-p-1').textContent).toContain('€198.00');
   });
 
   it('adds a part', async () => {

@@ -184,6 +184,7 @@
     "totalTime": "Total time",
     "billable": "Billable",
     "timeAmount": "Time amount",
+    "noAmount": "—",
     "partsCount": "Parts ({{count}})",
     "partsCount_one": "Parts ({{count}})",
     "partsCount_other": "Parts ({{count}})",

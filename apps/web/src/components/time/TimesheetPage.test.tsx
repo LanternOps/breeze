@@ -8,14 +8,14 @@ vi.mock('../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(..
 
 import TimesheetPage from './TimesheetPage';
 
-const entry = { id: 'te-1', startedAt: '2026-06-08T09:00:00Z', endedAt: '2026-06-08T10:30:00Z', durationMinutes: 90, description: 'patching', isBillable: true, hourlyRate: '100.00', isApproved: false, ticketId: 'tk-1', ticketNumber: 'T-2026-0042', ticketSubject: 'x', userName: 'Todd', billingStatus: 'not_billed' };
+const entry = { id: 'te-1', startedAt: '2026-06-08T09:00:00Z', endedAt: '2026-06-08T10:30:00Z', durationMinutes: 90, description: 'patching', isBillable: true, hourlyRate: '100.00', currencyCode: 'EUR', isApproved: false, ticketId: 'tk-1', ticketNumber: 'T-2026-0042', ticketSubject: 'x', userName: 'Todd', billingStatus: 'not_billed' };
 const week = {
   weekStart: '2026-06-08',
   days: [
     { date: '2026-06-08', totalMinutes: 90, billableMinutes: 90, entries: [entry] },
     ...['09', '10', '11', '12', '13', '14'].map((d) => ({ date: `2026-06-${d}`, totalMinutes: 0, billableMinutes: 0, entries: [] }))
   ],
-  totals: { totalMinutes: 90, billableMinutes: 90 }
+  totals: { totalMinutes: 90, billableMinutes: 90, billableAmounts: [{ currencyCode: 'EUR', amount: '150.00' }, { currencyCode: 'USD', amount: '20.00' }] }
 };
 const jsonRes = (data: unknown, status = 200) => ({ ok: status < 400, status, json: async () => ({ data }) }) as Response;
 
@@ -36,6 +36,47 @@ describe('TimesheetPage', () => {
     expect((await screen.findByTestId('timesheet-day-2026-06-08')).textContent).toContain('1h 30m');
     expect(screen.getByTestId('timesheet-entry-te-1').textContent).toContain('T-2026-0042');
     expect(screen.getByTestId('timesheet-total').textContent).toContain('1h 30m');
+  });
+
+  it('renders one money chip per currency in the week total, never a summed figure', async () => {
+    render(<TimesheetPage />);
+    const amounts = await screen.findByTestId('timesheet-billable-amounts');
+    expect(amounts.textContent).toContain('€150.00');
+    expect(amounts.textContent).toContain('$20.00');
+    expect(amounts.textContent).not.toContain('170');
+    expect(screen.getByTestId('timesheet-billable-amount-EUR').textContent).toBe('€150.00');
+    expect(screen.getByTestId('timesheet-billable-amount-USD').textContent).toBe('$20.00');
+  });
+
+  it('omits the money chips when the week carries no billable amounts', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) return jsonRes({ ...week, totals: { totalMinutes: 90, billableMinutes: 90, billableAmounts: [] } });
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    const total = await screen.findByTestId('timesheet-total');
+    expect(total.textContent).toContain('1h 30m');
+    expect(screen.queryByTestId('timesheet-billable-amounts')).toBeNull();
+    expect(total.textContent).not.toContain('$');
+  });
+
+  it('renders each entry rate in its stamped currency and a dash when unrated — no USD fallback', async () => {
+    const jpy = { ...entry, id: 'te-2', hourlyRate: '50.00', currencyCode: 'JPY' };
+    const unrated = { ...entry, id: 'te-3', hourlyRate: null, currencyCode: null, isBillable: false };
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) {
+        return jsonRes({ ...week, days: [{ ...week.days[0], entries: [entry, jpy, unrated] }, ...week.days.slice(1)] });
+      }
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    expect((await screen.findByTestId('timesheet-rate-te-1')).textContent).toBe('€100.00');
+    expect(screen.getByTestId('timesheet-rate-te-2').textContent).toBe('¥50');
+    expect(screen.getByTestId('timesheet-rate-te-2').textContent).not.toContain('$');
+    expect(screen.getByTestId('timesheet-rate-te-3').textContent).toBe('—');
+    expect(screen.getByTestId('timesheet-entry-te-3').textContent).not.toContain('$');
   });
 
   it('week navigation updates the hash and refetches', async () => {

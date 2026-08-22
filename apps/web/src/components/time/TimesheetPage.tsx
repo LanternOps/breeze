@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { formatMinutes } from '../../lib/timeFormat';
+import { formatMoney } from '../billing/shared/format';
 import { onTimerChanged } from '../../lib/timerActions';
 import { useHashState } from '@/lib/useHashState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -23,6 +24,8 @@ interface TsEntry {
   description: string | null;
   isBillable: boolean;
   hourlyRate: string | null;
+  /** Snapshot stamped when the rate was set; null only while hourlyRate is null. */
+  currencyCode: string | null;
   isApproved: boolean;
   ticketId: string;
   ticketNumber: string;
@@ -37,10 +40,16 @@ interface TsDay {
   entries: TsEntry[];
 }
 
+/** Mirrors the API's `CurrencyAmount` — per-currency, never summed across. */
+interface CurrencyAmount {
+  currencyCode: string;
+  amount: string;
+}
+
 interface TsSheet {
   weekStart: string;
   days: TsDay[];
-  totals: { totalMinutes: number; billableMinutes: number };
+  totals: { totalMinutes: number; billableMinutes: number; billableAmounts: CurrencyAmount[] };
 }
 
 interface User {
@@ -530,6 +539,16 @@ export default function TimesheetPage() {
                             <span className="text-sm tabular-nums text-muted-foreground">
                               {entry.endedAt ? formatMinutes(entry.durationMinutes) : t('longTail.time.TimesheetPage.running')}
                             </span>
+                            {/* Rate in its stamped currency only — a rate without a currency
+                                cannot exist server-side, and guessing USD would relabel money. */}
+                            <span
+                              className="text-sm tabular-nums text-muted-foreground"
+                              data-testid={`timesheet-rate-${entry.id}`}
+                            >
+                              {entry.hourlyRate != null && entry.currencyCode != null
+                                ? formatMoney(entry.hourlyRate, entry.currencyCode)
+                                : t('tickets:ticketTimeBilling.noAmount')}
+                            </span>
                             <button
                               type="button"
                               onClick={() => startEdit(entry)}
@@ -560,6 +579,19 @@ export default function TimesheetPage() {
           <span>{t('longTail.time.TimesheetPage.total', { duration: formatMinutes(sheet.totals.totalMinutes) })}</span>
           {sheet.totals.billableMinutes > 0 && (
             <span className="text-muted-foreground">{t('longTail.time.TimesheetPage.billableTotal', { duration: formatMinutes(sheet.totals.billableMinutes) })}</span>
+          )}
+          {(sheet.totals.billableAmounts?.length ?? 0) > 0 && (
+            <span className="flex flex-wrap gap-1" data-testid="timesheet-billable-amounts">
+              {sheet.totals.billableAmounts.map((a) => (
+                <span
+                  key={a.currencyCode}
+                  className="rounded-full border bg-background px-2 py-0.5 text-xs tabular-nums"
+                  data-testid={`timesheet-billable-amount-${a.currencyCode}`}
+                >
+                  {formatMoney(a.amount, a.currencyCode)}
+                </span>
+              ))}
+            </span>
           )}
         </div>
       )}
