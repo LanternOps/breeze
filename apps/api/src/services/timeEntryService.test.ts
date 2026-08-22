@@ -1079,40 +1079,73 @@ describe('query helpers', () => {
   it('listBillables combines time and parts in date order', async () => {
     dbMocks.selectResults.push([
       {
-        date: new Date('2026-06-10T12:00:00Z'),
+        date: new Date('2026-06-10T11:00:00Z'),
         orgName: 'Acme',
         ticketNumber: 'T-1',
         description: 'labor',
         technician: 'Tess',
-        minutes: 90,
+        minutes: 30,
         rate: '100.00',
+        currencyCode: 'EUR',
         billingStatus: 'not_billed',
         isApproved: true
       }
     ]);
     dbMocks.selectResults.push([
       {
-        date: new Date('2026-06-10T11:00:00Z'),
+        date: new Date('2026-06-10T12:00:00Z'),
         orgName: 'Acme',
         ticketNumber: 'T-1',
         description: 'SSD',
         technician: 'Tess',
         quantity: '2.00',
-        unitPrice: '50.00',
+        unitPrice: '10.00',
+        currencyCode: 'USD',
         billingStatus: 'not_billed'
       }
     ]);
-    const rows = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
-    expect(rows.map((r) => r.kind)).toEqual(['part', 'time']);
-    expect(rows[0]).toMatchObject({ kind: 'part', amount: '100.00', isApproved: null });
-    expect(rows[1]).toMatchObject({ kind: 'time', quantity: '1.50', amount: '150.00', isApproved: true });
+    const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(result.rows.map((r) => r.kind)).toEqual(['time', 'part']);
+    expect(result.rows[0]).toMatchObject({
+      kind: 'time', quantity: '0.50', amount: '50.00', currencyCode: 'EUR', isApproved: true
+    });
+    expect(result.rows[1]).toMatchObject({
+      kind: 'part', amount: '20.00', currencyCode: 'USD', isApproved: null
+    });
+    expect(result.totalsByCurrency).toEqual([
+      { currencyCode: 'EUR', amount: '50.00' },
+      { currencyCode: 'USD', amount: '20.00' }
+    ]);
+  });
+
+  it('listBillables rounds hours to two decimals before currency-aware labor amounts', async () => {
+    dbMocks.selectResults.push([
+      {
+        date: new Date('2026-06-10T12:00:00Z'),
+        orgName: 'Acme',
+        ticketNumber: 'T-1',
+        description: 'labor',
+        technician: 'Tess',
+        minutes: 20,
+        rate: '1000.00',
+        currencyCode: 'JPY',
+        billingStatus: 'not_billed',
+        isApproved: true
+      }
+    ]);
+    dbMocks.selectResults.push([]);
+
+    const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+
+    expect(result.rows[0]).toMatchObject({ quantity: '0.33', amount: '330.00', currencyCode: 'JPY' });
+    expect(result.totalsByCurrency).toEqual([{ currencyCode: 'JPY', amount: '330.00' }]);
   });
 
   it('listBillables excludes running timers from billable time rows', async () => {
     dbMocks.selectResults.push([]);
     dbMocks.selectResults.push([]);
-    const rows = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
-    expect(rows).toEqual([]);
+    const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(result).toEqual({ rows: [], totalsByCurrency: [] });
     expect(inspect(dbMocks.whereArgs[0], { depth: 10 })).toContain('endedAt');
   });
 
@@ -1127,6 +1160,7 @@ describe('query helpers', () => {
         technician: 'Tess',
         minutes: 30,
         rate: 'not-a-rate',
+        currencyCode: null,
         billingStatus: 'not_billed',
         isApproved: false
       }
@@ -1140,12 +1174,13 @@ describe('query helpers', () => {
         technician: 'Tess',
         quantity: 'bad-qty',
         unitPrice: '50.00',
+        currencyCode: 'USD',
         billingStatus: 'not_billed'
       }
     ]);
-    const rows = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
-    expect(rows.map((r) => r.amount)).toEqual(['0.00', '0.00']);
-    expect(rows.map((r) => r.amount)).not.toContain('NaN');
+    const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(result.rows.map((r) => r.amount)).toEqual(['0.00', '0.00']);
+    expect(result.rows.map((r) => r.amount)).not.toContain('NaN');
     expect(consoleSpy).toHaveBeenCalledTimes(2);
     consoleSpy.mockRestore();
   });

@@ -1050,6 +1050,7 @@ interface BillableRowBase {
   quantity: string;       // hours for time rows, qty for parts
   rate: string | null;    // hourly rate / unit price
   amount: string;
+  currencyCode: string | null;
   billingStatus: BillingStatus;
 }
 
@@ -1072,7 +1073,7 @@ export async function listBillables(
   to: Date,
   orgId?: string,
   accessibleOrgIds?: string[] | null
-): Promise<BillableRow[]> {
+): Promise<{ rows: BillableRow[]; totalsByCurrency: CurrencyAmount[] }> {
   // Org-axis allowlist for the partner-axis time_entries half. RLS scopes
   // time_entries by partner only, so without this an orgAccess='selected'
   // partner admin omitting `orgId` would export billing data for every org
@@ -1101,6 +1102,7 @@ export async function listBillables(
       technician: users.name,
       minutes: timeEntries.durationMinutes,
       rate: timeEntries.hourlyRate,
+      currencyCode: timeEntries.currencyCode,
       billingStatus: timeEntries.billingStatus,
       isApproved: timeEntries.isApproved
     })
@@ -1131,6 +1133,7 @@ export async function listBillables(
       technician: users.name,
       quantity: ticketParts.quantity,
       unitPrice: ticketParts.unitPrice,
+      currencyCode: ticketParts.currencyCode,
       billingStatus: ticketParts.billingStatus
     })
     .from(ticketParts)
@@ -1142,7 +1145,7 @@ export async function listBillables(
 
   const rows: BillableRow[] = [];
   for (const r of timeRows) {
-    const hours = (r.minutes ?? 0) / 60;
+    const hours = Number(((r.minutes ?? 0) / 60).toFixed(2));
     const rate = toFinite(r.rate);
     rows.push({
       kind: 'time',
@@ -1153,7 +1156,15 @@ export async function listBillables(
       technician: r.technician,
       quantity: hours.toFixed(2),
       rate: r.rate,
-      amount: rate != null ? (hours * rate).toFixed(2) : '0.00',
+      // Labor rule (one rule everywhere): hours to 2 dp first, then round the
+      // product at the snapshot currency's minor unit. Standalone entries with
+      // no currency fall back to a plain 2-dp string.
+      amount: rate != null
+        ? r.currencyCode
+          ? roundToCurrency(hours * rate, r.currencyCode)
+          : (hours * rate).toFixed(2)
+        : '0.00',
+      currencyCode: r.currencyCode,
       billingStatus: r.billingStatus,
       isApproved: r.isApproved
     });
@@ -1170,11 +1181,25 @@ export async function listBillables(
       technician: r.technician,
       quantity: r.quantity,
       rate: r.unitPrice,
-      amount: quantity != null && unitPrice != null ? (quantity * unitPrice).toFixed(2) : '0.00',
+      amount: quantity != null && unitPrice != null
+        ? r.currencyCode
+          ? roundToCurrency(quantity * unitPrice, r.currencyCode)
+          : (quantity * unitPrice).toFixed(2)
+        : '0.00',
+      currencyCode: r.currencyCode,
       billingStatus: r.billingStatus,
       isApproved: null
     });
   }
   rows.sort((a, b) => a.date.getTime() - b.date.getTime());
-  return rows;
+  const totals = new Map<string, number>();
+  for (const r of rows) {
+    if (r.currencyCode == null) continue;
+    totals.set(r.currencyCode, (totals.get(r.currencyCode) ?? 0) + Number(r.amount));
+  }
+  const totalsByCurrency: CurrencyAmount[] = [...totals].map(([currencyCode, amount]) => ({
+    currencyCode,
+    amount: roundToCurrency(amount, currencyCode)
+  }));
+  return { rows, totalsByCurrency };
 }
