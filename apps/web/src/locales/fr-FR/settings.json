@@ -1273,6 +1273,93 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Comme Action Plan, plus des captures d’écran en direct entre les étapes et un bouton Stop persistant.",
     "untitled": "Sans titre"
   },
+  "aiAgentsPage": {
+    "title": "Agents IA",
+    "description": "Des travailleurs IA nommés, dotés d’une politique. Les partenaires définissent la référence ; les organisations peuvent seulement la restreindre.",
+    "empty": "Aucun agent pour l’instant.",
+    "allOrgs": "Toutes les organisations",
+    "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
+    "stateEnabled": "Activé",
+    "stateDisabled": "Désactivé",
+    "errors": {
+      "load": "Impossible de charger les agents."
+    },
+    "actions": {
+      "add": "Nouvel agent",
+      "edit": "Modifier",
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "disable": "Désactiver",
+      "confirmDisable": "Confirmer la désactivation"
+    },
+    "toasts": {
+      "saved": "Agent enregistré",
+      "saveFailed": "Impossible d’enregistrer l’agent.",
+      "disabled": "Agent désactivé",
+      "disableFailed": "Impossible de désactiver l’agent."
+    },
+    "issues": {
+      "name": "Donnez un nom à l’agent.",
+      "severities": "Sélectionnez au moins une gravité d’alerte.",
+      "org": "Sélectionnez une organisation avant de créer un agent appartenant à l’organisation."
+    },
+    "editor": {
+      "newTitle": "Nouvel agent",
+      "editTitle": "Modifier l’agent",
+      "scopeLegend": "S’applique à",
+      "allOrgs": "Toutes les organisations",
+      "allOrgsHint": "(référence à l’échelle du partenaire)",
+      "thisOrg": "Cette organisation uniquement"
+    },
+    "sections": {
+      "scope": "Quand il s’exécute",
+      "permissions": "Autorisations",
+      "limits": "Limites",
+      "notifications": "Notifications",
+      "instructions": "Consignes"
+    },
+    "kinds": {
+      "triage": "Tri des alertes",
+      "patch": "Correctifs",
+      "helpdesk": "Centre d’assistance"
+    },
+    "modes": {
+      "off": "Désactivé",
+      "shadow": "Observation — enquêter et proposer uniquement",
+      "act": "Agir — disponible dans une version ultérieure"
+    },
+    "severities": {
+      "critical": "Critique",
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "info": "Informative"
+    },
+    "fields": {
+      "kind": "Type",
+      "kindImmutable": "Le type d’un agent ne peut pas être modifié après sa création.",
+      "name": "Nom",
+      "mode": "Mode",
+      "enabled": "Activé",
+      "respectMaintenanceWindows": "Respecter les fenêtres de maintenance",
+      "toolAllowlist": "Outils autorisés",
+      "toolAllowlistHint": "Les outils en lecture seule sont toujours disponibles. Indiquez les outils modifiants que cet agent peut proposer, un par ligne.",
+      "protectedHint": "Jamais touchés, quelle que soit la proposition de l’agent. Une entrée par ligne.",
+      "protectedServices": "Services protégés",
+      "protectedPaths": "Chemins protégés",
+      "protectedRegistryKeys": "Clés de registre protégées",
+      "maxDevicesPerRun": "Appareils max. par exécution",
+      "maxRunsPerHour": "Exécutions max. par heure",
+      "maxBudgetCentsPerDay": "Budget quotidien (centimes)",
+      "wallClockSeconds": "Durée max. d’exécution (secondes)",
+      "maxFleetPercentPerDay": "Part max. du parc par jour (%)",
+      "cooldownSeconds": "Délai de repos par appareil (secondes)",
+      "recipientRolesHint": "Rôles notifiés lorsque cet agent formule une proposition.",
+      "recipientRolesEmpty": "Aucun rôle disponible.",
+      "instructionsHint": "Simples consignes — ton, ce qu’il faut vérifier en premier, conventions internes. N’accorde jamais d’autorisations.",
+      "charactersLeft": "{{count}} caractères restants"
+    }
+  },
   "apiKeyForm": {
     "devicesRead": "Appareils : Lecture",
     "viewDeviceInformationAndStatus": "Voir les informations et l’état des appareils",
