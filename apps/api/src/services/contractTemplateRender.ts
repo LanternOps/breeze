@@ -291,10 +291,21 @@ export function resolveAutoVariables(
   /** `pdf: true` when the values are drawn by pdfkit (WinAnsi Helvetica) —
    *  money goes through formatMoneyForPdf so fr-FR narrow spaces / non-WinAnsi
    *  symbols cannot corrupt the contract text. HTML callers leave it unset. */
-  opts?: { effectiveDate?: string | Date; locale?: string | null; pdf?: boolean }
+  opts?: {
+    effectiveDate?: string | Date;
+    locale?: string | null;
+    pdf?: boolean;
+    /** The locale PERSISTED on a quote_acceptances row (acceptanceRenderLocale).
+     *  Wins over everything — including a stamped `quote.documentLocale` — so a
+     *  legacy acceptance hashed under the pre-#3777 'en' fallback still
+     *  re-verifies after the 2026-09-01-b backfill stamped its quote with the
+     *  partner's language. Accept-time callers pass the value they are about
+     *  to persist; display callers never set it. */
+    renderLocale?: string | null;
+  }
 ): Record<string, string> {
   const currency = quote.currencyCode ?? 'USD';
-  const locale = quote.documentLocale ?? opts?.locale ?? 'en';
+  const locale = opts?.renderLocale ?? quote.documentLocale ?? opts?.locale ?? 'en';
   const money = opts?.pdf ? formatMoneyForPdf : formatMoney;
   const address = (quote.billToAddress as BillToAddress | null) ?? null;
   const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;

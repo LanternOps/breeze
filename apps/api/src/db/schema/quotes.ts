@@ -210,6 +210,11 @@ export const quoteAcceptances = pgTable('quote_acceptances', {
   userAgent: text('user_agent'),
   quoteSha256: char('quote_sha256', { length: 64 }).notNull(),
   acceptanceTokenJti: varchar('acceptance_token_jti', { length: 128 }),
+  // Render locale the acceptance hash + executed contract PDF were computed
+  // with (#3777 follow-up): the quote's send-time document_locale, or 'en'
+  // for a pre-stamp quote. NULL only on rows older than the backfill
+  // (2026-09-01-b) — read through acceptanceRenderLocale(), never directly.
+  renderLocale: varchar('render_locale', { length: 16 }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   index('quote_acceptances_quote_idx').on(t.quoteId),

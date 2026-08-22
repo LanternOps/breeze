@@ -516,9 +516,13 @@ describe('acceptQuote contract document snapshot', () => {
     const effectiveDate = new Date().toISOString().slice(0, 10);
     const expected = computeQuoteSha256(
       contractQuote as any, [contractBlock] as any, [monthlyLine] as any,
-      buildContractHashParts([contractBlock], renderData, contractQuote as any, effectiveDate),
+      buildContractHashParts([contractBlock], renderData, contractQuote as any, effectiveDate, 'en'),
     );
     expect(acceptanceValues.quoteSha256).toBe(expected);
+    // The locale the hash was computed under travels with it (#3777 follow-up):
+    // an unstamped quote falls back to 'en' and that fallback is persisted.
+    expect((acceptanceValues as { renderLocale?: string }).renderLocale).toBe('en');
+    expect(snapshotArgs[6]).toBe('en'); // createExecutedDocuments renders under the same locale
     // And that hash genuinely differs from the no-contract hash (proves folding).
     const withoutContracts = computeQuoteSha256(contractQuote as any, [contractBlock] as any, [monthlyLine] as any, []);
     expect(acceptanceValues.quoteSha256).not.toBe(withoutContracts);

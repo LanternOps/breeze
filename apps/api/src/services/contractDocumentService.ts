@@ -58,12 +58,14 @@ function manualValuesOf(content: unknown): Record<string, string> {
 }
 
 /** The fully-resolved variable set for a contract block: every AUTO variable
- *  derived from the quote (with `dates.effective` pinned to the accept date)
- *  overlaid with the block's MANUAL variableValues. Deterministic given the
- *  quote row + effectiveDate, so the accept path and any re-verification
- *  reconstruct the same map. */
-function resolvedValuesForBlock(content: unknown, quote: QuoteRow, effectiveDate: string): Record<string, string> {
-  return { ...resolveAutoVariables(quote, { effectiveDate }), ...manualValuesOf(content) };
+ *  derived from the quote (with `dates.effective` pinned to the accept date and
+ *  money formatted in `renderLocale`) overlaid with the block's MANUAL
+ *  variableValues. Deterministic given the quote row + effectiveDate +
+ *  renderLocale, so the accept path and any re-verification reconstruct the
+ *  same map. `renderLocale` is the value persisted on the acceptance row
+ *  (quote_acceptances.render_locale) — never the partner's live language. */
+function resolvedValuesForBlock(content: unknown, quote: QuoteRow, effectiveDate: string, renderLocale: string): Record<string, string> {
+  return { ...resolveAutoVariables(quote, { effectiveDate, renderLocale }), ...manualValuesOf(content) };
 }
 
 // ---------------------------------------------------------------------------
@@ -105,12 +107,15 @@ export function buildContractHashParts(
   renderData: ContractBlockRenderData[],
   quote: QuoteRow,
   effectiveDate: string,
+  /** Locale the hash is computed under — persisted alongside it on the
+   *  acceptance row. Re-verification MUST pass acceptanceRenderLocale(row). */
+  renderLocale: string,
 ): HashableContractPart[] {
   const contentByBlockId = new Map(blocks.map((b) => [b.id, b.content]));
   return renderData.map((data) => ({
     blockId: data.blockId,
     templateVersionSha256: data.versionSha256,
-    resolvedVariables: resolvedValuesForBlock(contentByBlockId.get(data.blockId), quote, effectiveDate),
+    resolvedVariables: resolvedValuesForBlock(contentByBlockId.get(data.blockId), quote, effectiveDate, renderLocale),
   }));
 }
 
@@ -185,6 +190,8 @@ export async function createExecutedDocuments(
   renderData: ContractBlockRenderData[],
   blocks: ContractBlockLike[],
   effectiveDate: string,
+  /** Same locale folded into the acceptance hash (quote_acceptances.render_locale). */
+  renderLocale: string,
 ): Promise<string[]> {
   if (renderData.length === 0) return [];
 
@@ -214,7 +221,7 @@ export async function createExecutedDocuments(
       pdf = data.fileData; // the stored file, verbatim
       renderedHtml = null;
     } else {
-      const values = resolvedValuesForBlock(contentByBlockId.get(data.blockId), quote, effectiveDate);
+      const values = resolvedValuesForBlock(contentByBlockId.get(data.blockId), quote, effectiveDate, renderLocale);
       const first = substituteVariables(data.bodyHtml ?? '', values);
       let html = first.html;
       if (first.missing.length > 0) {

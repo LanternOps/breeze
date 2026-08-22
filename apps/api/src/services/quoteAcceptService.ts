@@ -137,7 +137,13 @@ export async function acceptQuote(
   // so a later template republish or manual-variable edit invalidates the signature.
   assertContractRenderDataComplete(blocks, params.contractRenderData);
   const contractRenderData = params.contractRenderData ?? [];
-  const contractParts = buildContractHashParts(blocks, contractRenderData, quote, effectiveDate);
+  // Render locale for the contract parts + executed PDF: the quote's send-time
+  // snapshot (every non-draft quote carries one since 2026-09-01-b), with the
+  // pre-#3777 'en' fallback only for an unstamped row. Persisted on the
+  // acceptance so a re-verification never has to guess which locale the hash
+  // was computed under (see acceptanceRenderLocale / quoteAcceptanceVerify).
+  const renderLocale = quote.documentLocale ?? 'en';
+  const contractParts = buildContractHashParts(blocks, contractRenderData, quote, effectiveDate, renderLocale);
 
   const quoteSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, contractParts);
   const captured = await getAcceptanceProvider().capture({
@@ -164,6 +170,7 @@ export async function acceptQuote(
       userAgent: params.userAgent ?? null,
       quoteSha256,
       acceptanceTokenJti: params.acceptanceTokenJti ?? null,
+      renderLocale,
     })
     .returning({ id: quoteAcceptances.id });
 
@@ -377,6 +384,7 @@ export async function acceptQuote(
     contractRenderData,
     blocks,
     effectiveDate,
+    renderLocale,
   );
 
   // Phase 5: stage any Pax8-backed fulfillment in this exact transaction,

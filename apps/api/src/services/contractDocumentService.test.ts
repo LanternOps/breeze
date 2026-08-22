@@ -78,7 +78,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
 
   it('inserts one authored contract_documents row linked to the acceptance + FIRST contract, sha256 over the pdf bytes', async () => {
     const ids = await createExecutedDocuments(
-      makeQuote(), 'acc1', ['contractA', 'contractB'], [authoredRenderData()], [authoredBlock], EFFECTIVE,
+      makeQuote(), 'acc1', ['contractA', 'contractB'], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en',
     );
 
     expect(ids).toEqual(['doc-1']);
@@ -113,7 +113,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
     });
     const hostileBlock = { id: 'cb1', blockType: 'contract', content: { variableValues: { link: 'javascript:alert(1)' } } };
 
-    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE);
+    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE, 'en');
     const row = insertedValues[0]!;
 
     // Stored rendered_html carries no live javascript: link.
@@ -127,7 +127,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
   it('re-sanitizes a protocol-relative //host href variable value in the executed snapshot', async () => {
     const hrefRenderData = authoredRenderData({ bodyHtml: '<p>See <a href="{{link}}">the portal</a></p>' });
     const hostileBlock = { id: 'cb1', blockType: 'contract', content: { variableValues: { link: '//evil.example' } } };
-    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE);
+    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE, 'en');
     const row = insertedValues[0]!;
     expect(String(row.renderedHtml)).not.toContain('//evil.example');
     expect((row.pdfData as Buffer).toString('latin1')).not.toContain('//evil.example');
@@ -138,7 +138,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
     await createExecutedDocuments(
       makeQuote(), 'acc1', ['contractA'],
       [authoredRenderData({ blockId: 'cb2', sourceType: 'uploaded', bodyHtml: null, fileData })],
-      [{ id: 'cb2', blockType: 'contract', content: {} }], EFFECTIVE,
+      [{ id: 'cb2', blockType: 'contract', content: {} }], EFFECTIVE, 'en',
     );
     const row = insertedValues[0]!;
     expect(row.renderedHtml).toBeNull();
@@ -147,12 +147,12 @@ describe('contractDocumentService.createExecutedDocuments', () => {
   });
 
   it('links contract_id to null when no billing contract was created', async () => {
-    await createExecutedDocuments(makeQuote(), 'acc1', [], [authoredRenderData()], [authoredBlock], EFFECTIVE);
+    await createExecutedDocuments(makeQuote(), 'acc1', [], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en');
     expect(insertedValues[0]!.contractId).toBeNull();
   });
 
   it('inserts nothing when there is no contract render data', async () => {
-    const ids = await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [], [], EFFECTIVE);
+    const ids = await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [], [], EFFECTIVE, 'en');
     expect(ids).toEqual([]);
     expect(insertedValues).toHaveLength(0);
   });
@@ -160,7 +160,7 @@ describe('contractDocumentService.createExecutedDocuments', () => {
 
 describe('contractDocumentService.buildContractHashParts', () => {
   it('produces a hash part per render-data block with its version sha + resolved vars', () => {
-    const parts = buildContractHashParts([authoredBlock], [authoredRenderData()], makeQuote(), EFFECTIVE);
+    const parts = buildContractHashParts([authoredBlock], [authoredRenderData()], makeQuote(), EFFECTIVE, 'en');
     expect(parts).toHaveLength(1);
     expect(parts[0]!.blockId).toBe('cb1');
     expect(parts[0]!.templateVersionSha256).toBe('a'.repeat(64));
@@ -171,8 +171,19 @@ describe('contractDocumentService.buildContractHashParts', () => {
 
   it('merges manual variableValues over auto values', () => {
     const block = { id: 'cb1', blockType: 'contract', content: { variableValues: { 'client.name': 'Override Inc' } } };
-    const parts = buildContractHashParts([block], [authoredRenderData()], makeQuote(), EFFECTIVE);
+    const parts = buildContractHashParts([block], [authoredRenderData()], makeQuote(), EFFECTIVE, 'en');
     expect(parts[0]!.resolvedVariables['client.name']).toBe('Override Inc');
+  });
+
+  // #3777 follow-up: the hash is computed under the PERSISTED acceptance locale,
+  // which must beat a (later backfilled) quote.documentLocale — otherwise a
+  // legacy acceptance hashed under the old 'en' fallback stops verifying.
+  it('formats money in the explicit renderLocale even when the quote carries a different documentLocale', () => {
+    const quote = makeQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' });
+    const legacy = buildContractHashParts([authoredBlock], [authoredRenderData()], quote, EFFECTIVE, 'en');
+    expect(legacy[0]!.resolvedVariables['totals.total']).toBe('€1,000.00');
+    const stamped = buildContractHashParts([authoredBlock], [authoredRenderData()], quote, EFFECTIVE, 'fr-FR');
+    expect(stamped[0]!.resolvedVariables['totals.total']).toMatch(/^1\u202f000,00\s€$/);
   });
 });
 
