@@ -311,7 +311,7 @@ describe('sendQuote customer-facing PDF', () => {
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'none', depositPercent: null,
       quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
-      total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+      total: '1200.00', currencyCode: 'EUR', terms: null, termsAndConditions: null,
       sellerSnapshot: null,
     }]);
     queueResult([]); // blocks
@@ -321,14 +321,14 @@ describe('sendQuote customer-facing PDF', () => {
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
 
-    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'de-DE' } }]); // partnerRow (reused for partner name)
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)
     queueResult([]); // portalBranding — none configured
     queueResult([{ // final re-select
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
       taxRate: null, depositType: 'none', depositPercent: null,
-      quoteNumber: 'Q-2026-0001', total: '100.00', currencyCode: 'USD',
+      quoteNumber: 'Q-2026-0001', total: '1200.00', currencyCode: 'EUR',
     }]);
 
     const result = await sendQuote('q1', actor);
@@ -343,6 +343,7 @@ describe('sendQuote customer-facing PDF', () => {
     expect(renderedLines.some((l) => l.name === 'Internal markup buffer')).toBe(false);
     // toCustomerLines also strips the cost-basis field, same as the portal route.
     expect(renderedLines[0]).not.toHaveProperty('unitCost');
+    expect(sendEmailMock.mock.calls[0]![0].text).toContain('1.200,00 €');
   });
 });
 

@@ -1,3 +1,4 @@
+import { formatMoney } from '@breeze/shared';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from '../db/schema/quotes';
@@ -28,12 +29,6 @@ type QuoteRow = typeof quotes.$inferSelect;
 /** Build the public accept link emailed to the prospect: `<portalBase>/quote/<token>`. */
 export function buildPublicQuoteAcceptUrl(token: string): string {
   return `${portalBase()}/quote/${encodeURIComponent(token)}`;
-}
-
-/** Light money formatter for the email body (invoicePdf's formatMoney is module-private). */
-function formatMoneyish(n: string | null | undefined, currency: string): string {
-  const v = Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return currency === 'USD' ? `$${v}` : `${v} ${currency}`;
 }
 
 /** Why the best-effort email did not go out (mirrors invoicePdf's SendInvoiceResult
@@ -427,7 +422,7 @@ async function deliverQuoteEmail(
       if (!pdfBuildFailed) {
         const template = buildQuoteTemplate({
           quoteNumber, partnerName: partnerName ?? 'your provider',
-          total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
+          total: formatMoney(quote.total, quote.currencyCode, frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow)), acceptUrl,
           expiryDate: quote.expiryDate ?? undefined,
           message: opts.message,
           subject: opts.subject,
