@@ -43,7 +43,14 @@ param(
 
     [Parameter(Mandatory = $false)]
     [AllowEmptyString()]
-    [string] $ExpectedThumbprintSha256 = ''
+    [string] $ExpectedThumbprintSha256 = '',
+
+    # Required to verify without a leaf pin. GitHub renders an unset secret as
+    # an empty string, which binds to [string] as '' -- so without this switch a
+    # deleted or mis-scoped SSLCOM_CERT_SHA256 silently turned pinning off and
+    # still exited 0. Callers must now say so out loud.
+    [Parameter(Mandatory = $false)]
+    [switch] $AllowUnpinnedLeaf
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,6 +99,10 @@ if (-not [string]::IsNullOrWhiteSpace($ExpectedThumbprintSha256)) {
     }
 }
 
+if ($expectedPins.Count -eq 0 -and -not $AllowUnpinnedLeaf) {
+    throw 'ExpectedThumbprintSha256 is empty and -AllowUnpinnedLeaf was not supplied. A missing certificate pin must fail the release, not weaken it.'
+}
+
 $workspace = $env:GITHUB_WORKSPACE
 if ([string]::IsNullOrWhiteSpace($workspace)) { $workspace = (Get-Location).Path }
 
@@ -102,18 +113,35 @@ foreach ($item in $Path) {
         throw "Artifact to verify is missing: $target"
     }
 
-    $signature = Get-AuthenticodeSignature -FilePath $target
+    $signature = Get-AuthenticodeSignature -LiteralPath $target
 
-    # UnknownError is PowerShell's default bucket: it covers the benign
-    # "root not yet cached on this runner" case but also CERT_E_EXPIRED,
-    # CERT_E_REVOKED, CERT_E_UNTRUSTEDROOT and CERT_E_CHAINING. Tolerating it is
-    # only safe because the subject, validity and (where configured) pin checks
-    # below independently establish the publisher.
+    # UnknownError is PowerShell's catch-all bucket. It covers the benign
+    # "root not yet cached on this runner" case, but equally CERT_E_REVOKED,
+    # TRUST_E_EXPLICIT_DISTRUST, CERT_E_EXPIRED and CERT_E_CHAINING -- so on its
+    # own it establishes nothing. Subject and validity are self-asserted by the
+    # certificate and cannot substitute: a self-signed certificate claiming the
+    # expected subject satisfies both. Identity therefore has to come from
+    # either the leaf pin or a chain that actually builds.
     if ($signature.Status -ne 'Valid' -and $signature.Status -ne 'UnknownError') {
-        throw "Signature validation failed for $target. Status: $($signature.Status)"
+        throw "Signature validation failed for $target. Status: $($signature.Status) ($($signature.StatusMessage))"
     }
     if ($signature.Status -eq 'UnknownError') {
-        Write-Host "::warning::$target signed but chain not fully validated locally (Status: UnknownError)."
+        Write-Host "::warning::$target Authenticode status UnknownError: $($signature.StatusMessage)"
+        if ($expectedPins.Count -eq 0) {
+            # Unpinned: the chain is the only remaining binding, so require it to
+            # build. Only a revocation response we could not fetch is tolerable.
+            $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+            $chain.ChainPolicy.RevocationMode = 'Online'
+            $chain.ChainPolicy.RevocationFlag = 'EntireChain'
+            $built = $chain.Build($signature.SignerCertificate)
+            $statuses = @($chain.ChainStatus | ForEach-Object { $_.Status.ToString() })
+            $tolerable = @('NoError', 'RevocationStatusUnknown', 'OfflineRevocation')
+            $fatal = @($statuses | Where-Object { $tolerable -notcontains $_ })
+            if (-not $built -and $fatal.Count -gt 0) {
+                throw "Unpinned signature for $target did not build a trusted chain: $($statuses -join ', ')"
+            }
+            Write-Host "Chain built for $target (status: $(if ($statuses) { $statuses -join ', ' } else { 'NoError' }))"
+        }
     }
     if (-not $signature.SignerCertificate) {
         throw "Signer certificate missing for $target"

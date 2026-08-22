@@ -79,9 +79,11 @@ The MSI carries a **per-edition product identity**: the public release builds th
 
   `SSLCOM_CERT_SHA256` also accepts a comma-separated allowlist. Put the incoming thumbprint alongside the outgoing one ahead of a certificate renewal, then drop the old entry once the changeover is done — otherwise renewal becomes a release-day edit made *after* the signing steps have already run and consumed eSigner quota.
 
-  Only the first four are credentials. `SSLCOM_CERT_SHA256` is a public certificate hash and `SSLCOM_ENVIRONMENT_LABEL` is just the environment's own name — both are stored as secrets rather than variables so that they sit in the same place as the credentials they describe.
+  Only the first four are credentials. `SSLCOM_CERT_SHA256` is a public certificate hash and `SSLCOM_ENVIRONMENT_LABEL` is just the environment's own name; they are kept as secrets so they sit alongside the credentials they describe.
 
-  Nothing in the workflow differs between a stable and a prerelease tag except which environment supplies the credentials, so repository-level secrets would sign prereleases with the production certificate. `SSLCOM_ENVIRONMENT_LABEL` guards against exactly that: set it to the environment's own name (`signing-production` or `signing-prerelease`) and a repository-level secret will fail the other environment loudly instead of signing silently. Keeping it alongside the credentials is what makes the check meaningful — as a variable it could be scoped correctly while the credentials were not.
+  Nothing in the workflow differs between a stable and a prerelease tag except which environment supplies the credentials, so repository-level secrets would sign prereleases with the production certificate. `SSLCOM_ENVIRONMENT_LABEL` guards against that: set it to the environment's own name (`signing-production` or `signing-prerelease`) and putting all six at the repository level will fail one of the two environments loudly instead of signing silently.
+
+  It is a safety net for the common mistake, not a proof. Scoping only the label per environment while leaving the credentials at repository level would still pass, so place all six deliberately.
 </Aside>
 
 ---

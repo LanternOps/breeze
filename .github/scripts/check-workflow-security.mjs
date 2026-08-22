@@ -1194,6 +1194,24 @@ function publicReleaseSigningViolations(file, lines) {
     violations,
     file,
   );
+  // -AllowUnpinnedLeaf turns the certificate pin off. It is correct on the
+  // Azure path, whose leaves rotate, and never on the pinned one.
+  forbidPattern(
+    sslcom,
+    /-AllowUnpinnedLeaf/u,
+    SSLCOM_SIGNING_CERTIFICATE_PIN_RULE,
+    violations,
+    file,
+  );
+  // Verifying without a pin has to be an explicit, reviewable choice rather
+  // than the silent consequence of an empty secret.
+  requirePattern(
+    azure,
+    /-AllowUnpinnedLeaf/u,
+    WINDOWS_SIGNING_PUBLISHER_RULE,
+    violations,
+    file,
+  );
   // The stable/prerelease certificate split exists only in GitHub Environment
   // scoping, which is invisible in YAML. This label makes a repository-level
   // secret fail one of the two environments instead of silently signing a

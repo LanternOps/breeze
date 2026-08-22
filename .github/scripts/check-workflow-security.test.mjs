@@ -734,7 +734,8 @@ jobs:
         run: |
           & ${SHARED_VERIFIER} \`
             -Path "staging/breeze-viewer-windows.msi", "staging/breeze-helper-windows.msi" \`
-            -ExpectedSubject $env:EXPECTED_SUBJECT
+            -ExpectedSubject $env:EXPECTED_SUBJECT \`
+            -AllowUnpinnedLeaf
   sign-windows-tauri-sslcom:
     needs: [resolve-windows-signing-provider]
     if: needs.resolve-windows-signing-provider.outputs.provider == 'sslcom'
@@ -931,6 +932,8 @@ const PUBLIC_SIGNING_MUTATIONS = [
   ['azure drops the publisher assertion', (t) => replaceNth(t, '-ExpectedSubject $env:EXPECTED_SUBJECT', 1, '-Verbose:$false'), 'windows-signing-must-assert-publisher'],
   ['sslcom drops the publisher assertion', (t) => replaceNth(t, '-ExpectedSubject $env:EXPECTED_SUBJECT', 2, '-Verbose:$false'), 'windows-signing-must-assert-publisher'],
   ['sslcom drops the certificate pin', (t) => replaceOnce(t, '            -ExpectedThumbprintSha256 $env:SSLCOM_CERT_SHA256', '            -Verbose:$false'), 'sslcom-signing-must-pin-certificate'],
+  ['sslcom opts out of pinning', (t) => replaceOnce(t, '            -ExpectedThumbprintSha256 $env:SSLCOM_CERT_SHA256', '            -AllowUnpinnedLeaf'), 'sslcom-signing-must-pin-certificate'],
+  ['azure stops declaring it is unpinned', (t) => replaceOnce(t, '            -AllowUnpinnedLeaf\n', ''), 'windows-signing-must-assert-publisher'],
   ['sslcom action unpinned', (t) => t.split(SSL_ACTION).join('SSLcom/esigner-codesign@v1'), 'sslcom-signing-must-pin-certificate'],
   ['sslcom drops the environment label guard', (t) => replaceOnce(t, 'if ($env:SSLCOM_ENVIRONMENT_LABEL -ne $env:EXPECTED_ENVIRONMENT) {', 'if ($false) {'), 'sslcom-signing-must-pin-certificate'],
   ['CodeSignTool digest guard removed', (t) => replaceOnce(t, 'if ($actual -ne $env:CODESIGNTOOL_SHA256) {', 'if ($false) {'), 'sslcom-signing-must-pin-toolchain'],
@@ -963,7 +966,11 @@ for (const asset of PUBLIC_AGENT_WINDOWS_ASSETS) {
 for (const secret of SSLCOM_SECRET_NAMES) {
   PUBLIC_SIGNING_MUTATIONS.push([
     `sslcom stops reading ${secret}`,
-    (t) => t.split(`secrets.${secret} `).join('secrets.REMOVED '),
+    (t) => {
+      const mutated = t.split(`secrets.${secret}`).join('secrets.REMOVED');
+      assert.notEqual(mutated, t, `secret mutation for ${secret} did not apply`);
+      return mutated;
+    },
     'sslcom-signing-must-pin-certificate',
   ]);
 }
@@ -1021,7 +1028,7 @@ test('public signing rules survive a rename of every signing job', () => {
 });
 
 test('the real release workflow carries the full Windows signing topology', () => {
-  const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8');
+  const releaseWorkflow = readFileSync(new URL('../workflows/release.yml', import.meta.url), 'utf8');
   assert.deepEqual([...publicSigningRules(releaseWorkflow)], []);
   for (const marker of [
     'resolve-windows-signing-provider:',
@@ -1037,7 +1044,7 @@ test('the real release workflow carries the full Windows signing topology', () =
 // The verifier is the single place both providers assert publisher identity, so
 // a guard downgraded from `throw` to a warning would silently accept any signer.
 test('the shared signature verifier enforces every check it performs', () => {
-  const verifier = readFileSync('.github/scripts/Verify-WindowsSignature.ps1', 'utf8');
+  const verifier = readFileSync(new URL('./Verify-WindowsSignature.ps1', import.meta.url), 'utf8');
   const enforced = [
     [/\$signature\.Status -ne 'Valid'[\s\S]{0,200}throw/u, 'signature status'],
     [/-not \$signature\.SignerCertificate[\s\S]{0,120}throw/u, 'signer certificate present'],
@@ -1045,6 +1052,8 @@ test('the shared signature verifier enforces every check it performs', () => {
     [/NotAfter[\s\S]{0,160}throw/u, 'certificate not expired'],
     [/ExpectedSubject[\s\S]{0,200}throw/u, 'publisher subject'],
     [/\$expectedPins -notcontains \$actualPin[\s\S]{0,200}throw/u, 'certificate pin'],
+    [/\$expectedPins\.Count -eq 0 -and -not \$AllowUnpinnedLeaf[\s\S]{0,200}throw/u, 'refuses an unpinned run by default'],
+    [/\$expectedPins\.Count -eq 0\)\s*\{[\s\S]{0,1500}throw "Unpinned signature/u, 'requires a trusted chain when unpinned'],
     [/-notmatch '\^\[0-9a-f\]\{64\}\$'[\s\S]{0,160}throw/u, 'thumbprint format'],
   ];
   for (const [pattern, description] of enforced) {

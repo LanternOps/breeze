@@ -1655,7 +1655,8 @@ jobs:
         run: |
           & .github/scripts/Verify-WindowsSignature.ps1 `
             -Path "staging/breeze-viewer-windows.msi", "staging/breeze-helper-windows.msi" `
-            -ExpectedSubject $env:EXPECTED_SUBJECT
+            -ExpectedSubject $env:EXPECTED_SUBJECT `
+            -AllowUnpinnedLeaf
 
       - name: Upload signed viewer MSI
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -1729,14 +1730,17 @@ jobs:
           # -- the path of least resistance, and how every AZURE_* secret is
           # stored today -- both environments would silently resolve the same
           # credential and a prerelease tag would be signed with the production
-          # certificate. This label can only match one environment, so a
-          # repo-level secret fails the other one loudly instead.
+          # certificate. This label can only match one environment, so putting
+          # all six at repository level fails one of them loudly instead.
           #
-          # It is stored as a SECRET despite holding no secret value, because it
-          # only proves anything if it lives in the same store as the
-          # credentials. As a repository/environment variable an operator could
-          # scope the label correctly while still leaving the credentials at
-          # repository level, and this check would pass.
+          # Scope, honestly: this catches the LIKELY mistake, not every one. An
+          # operator who scopes only this label per environment while leaving
+          # the four credentials at repository level still passes. Environment
+          # variables and environment secrets have identical override
+          # semantics, so storing it as a secret buys no extra guarantee -- it
+          # is kept alongside the credentials as a nudge, and it costs the
+          # ability to echo the value (GitHub masks it), which is why the error
+          # below names the environment rather than the label.
           if ($env:SSLCOM_ENVIRONMENT_LABEL -ne $env:EXPECTED_ENVIRONMENT) {
             # Do not interpolate the label: it is stored as a secret, so its
             # value is masked in the log and would print as '***'.
@@ -1765,7 +1769,10 @@ jobs:
           $archive = Join-Path $env:RUNNER_TEMP "CodeSignTool-v1.3.0-windows.zip"
           $target = Join-Path $env:RUNNER_TEMP "CodeSignTool-v1.3.0"
 
-          Invoke-WebRequest -Uri $env:CODESIGNTOOL_URL -OutFile $archive
+          # No degraded path exists downstream: this step failing aborts the
+          # whole tag release. The digest check below makes a retry safe.
+          Invoke-WebRequest -Uri $env:CODESIGNTOOL_URL -OutFile $archive `
+            -MaximumRetryCount 3 -RetryIntervalSec 15 -TimeoutSec 900
           $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $env:CODESIGNTOOL_SHA256) {
             throw "CodeSignTool digest mismatch. Expected $($env:CODESIGNTOOL_SHA256); got $actual"

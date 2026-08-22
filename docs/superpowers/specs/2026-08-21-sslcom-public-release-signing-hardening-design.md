@@ -108,9 +108,18 @@ path of least resistance, and how every `AZURE_*` secret is stored today -- both
 environments resolve the same credential and a prerelease tag is signed with the
 production certificate, with every check passing. `SSLCOM_ENVIRONMENT_LABEL`
 holds the environment's own name (`signing-production` / `signing-prerelease`)
-and is compared against the environment the job actually runs in, so a
-repository-level secret fails one of the two loudly. No lint rule can detect
+and is compared against the environment the job actually runs in, so placing all
+six at repository level fails one of the two loudly. No lint rule can detect
 this from the YAML, which is why it is enforced at run time.
+
+The limit of that control, stated plainly: it catches the likely mistake, not
+every one. Environment variables and environment secrets share identical
+override semantics, so an operator who scopes only this label per environment
+while leaving the four credentials at repository level still passes. Proving
+env-scoping from inside the job is not possible with a static marker; binding a
+per-environment fingerprint to the credential value itself would be, and is the
+upgrade path if the two environments ever hold genuinely different eSigner
+credentials.
 
 The current SSL.com action remains pinned to the immutable commit behind its
 `v1.3.2` tag:
