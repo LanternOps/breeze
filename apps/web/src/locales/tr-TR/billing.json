@@ -1248,7 +1248,8 @@
       "accepted": "Kabul edildi",
       "declined": "Reddedildi",
       "expired": "Süresi Doldu",
-      "converted": "Dönüştürüldü"
+      "converted": "Dönüştürüldü",
+      "superseded": "Değiştirildi"
     },
     "workspace": {
       "backLabel": "Alıntılar",

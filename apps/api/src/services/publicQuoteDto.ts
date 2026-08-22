@@ -53,6 +53,15 @@ function toPublicStatus(status: QuoteRow['status']): PublicQuoteHeader['status']
   if (status === 'draft') {
     throw new Error('Draft quotes cannot be serialized for public access');
   }
+  // A superseded quote has been replaced by a newer revision, and its public
+  // link is revoked at the same moment. The public route answers 410 with no
+  // document body, so this serializer must never be reached for one — serving
+  // its content would hand the customer prices we have already withdrawn.
+  // Kept OUT of PublicQuoteHeader['status'] deliberately: the type is the
+  // contract, and this throw is what enforces it.
+  if (status === 'superseded') {
+    throw new Error('Superseded quotes cannot be serialized for public access');
+  }
   return status === 'sent' ? 'viewed' : status;
 }
 

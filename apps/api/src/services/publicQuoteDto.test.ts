@@ -165,6 +165,13 @@ describe('toPublicQuoteHeader', () => {
     },
   );
 
+  it('fails closed if a superseded row ever reaches the public mapper', () => {
+    // The public route answers 410 for a superseded quote and never renders a
+    // body; reaching this mapper would mean serving withdrawn prices.
+    expect(() => toPublicQuoteHeader(sourceRow({ status: 'superseded' }) as never, TOTALS))
+      .toThrow('Superseded quotes cannot be serialized for public access');
+  });
+
   it('fails closed if a draft row ever reaches the public mapper', () => {
     expect(() => toPublicQuoteHeader(sourceRow({ status: 'draft' }) as never, TOTALS))
       .toThrow('Draft quotes cannot be serialized for public access');
