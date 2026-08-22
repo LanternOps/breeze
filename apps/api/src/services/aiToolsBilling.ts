@@ -206,7 +206,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
         'actions finalize financial state and require approval. Assembly responses carry `blockedByCurrency` ' +
         'listing unbilled work in other currencies — assemble a separate draft with `currencyCode` set; never ' +
         'sum across currencies.' +
-        ' Money inputs (line unitPrice, payment amount) are in the invoice\'s currencyCode. create_pay_link may return a `warning` (code CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT) when the invoice currency differs from the partner\'s Stripe account currency — relay it to the user; it does not block the link. +
+        ' Money inputs (line unitPrice, payment amount) are in the invoice\'s currencyCode. create_pay_link may return a `warning` (code CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT) when the invoice currency differs from the partner\'s Stripe account currency — relay it to the user; it does not block the link.' +
         ' Catalog/bundle lines are priced from the ' +
         'catalog price book in the INVOICE\'s currency — never converted: add_catalog_line fails with ' +
         'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency, add_bundle_line with ' +
