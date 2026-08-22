@@ -17,7 +17,8 @@ export type TimeEntryServiceErrorCode =
   | 'NO_RUNNING_TIMER'
   | 'ENTRY_RUNNING'
   | 'PARTNER_UNRESOLVABLE'
-  | 'INVALID_RANGE';
+  | 'INVALID_RANGE'
+  | 'CURRENCY_MISMATCH';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -107,21 +108,33 @@ async function getTicketForTimeTracking(ticketId: string): Promise<TicketForTime
   return ticket;
 }
 
-async function resolveTicketPartner(ticket: TicketForTimeTracking): Promise<string | null> {
-  if (ticket.partnerId) return ticket.partnerId;
+/**
+ * Resolves the ticket's org: its partner (legacy tickets carry no partner_id
+ * and fall back to the org's) and — always — its currency. Every monetary
+ * value on a ticket-linked row is expressed in this currency (spec §7), so the
+ * org read is unconditional even when the ticket already names its partner.
+ * System-context read for the same reason as getTicketForTimeTracking.
+ */
+async function resolveTicketOrg(
+  ticket: TicketForTimeTracking
+): Promise<{ partnerId: string | null; currencyCode: string } | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ partnerId: organizations.partnerId })
+        .select({ partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
         .from(organizations)
         .where(eq(organizations.id, ticket.orgId))
         .limit(1)
     )
   );
-  return rows[0]?.partnerId ?? null;
+  const org = rows[0];
+  if (!org) return null;
+  return { partnerId: ticket.partnerId ?? org.partnerId ?? null, currencyCode: org.currencyCode };
 }
 
-async function getCategoryDefaults(categoryId: string): Promise<{ defaultBillable: boolean; defaultHourlyRate: string | null } | null> {
+async function getCategoryDefaults(
+  categoryId: string
+): Promise<{ defaultBillable: boolean; defaultHourlyRate: string | null; rateCurrency: string | null } | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
@@ -129,7 +142,8 @@ async function getCategoryDefaults(categoryId: string): Promise<{ defaultBillabl
           id: ticketCategories.id,
           partnerId: ticketCategories.partnerId,
           defaultBillable: ticketCategories.defaultBillable,
-          defaultHourlyRate: ticketCategories.defaultHourlyRate
+          defaultHourlyRate: ticketCategories.defaultHourlyRate,
+          rateCurrency: ticketCategories.rateCurrency
         })
         .from(ticketCategories)
         .where(eq(ticketCategories.id, categoryId))
@@ -151,9 +165,23 @@ async function getCategoryDefaults(categoryId: string): Promise<{ defaultBillabl
  * `accessibleOrgIds === null` is system scope (unrestricted) — behavior
  * unchanged. Mirrors getScopedTicketOr404 / auth.canAccessOrg semantics.
  */
+/** Spec §1.6 / §7 match-or-skip: a default rate applies only when it was
+ *  entered under the org's currency. Never converts, never falls through to a
+ *  wrong-currency number. */
+export function resolveDefaultRate(
+  orgCurrency: string,
+  org: { defaultHourlyRate: string | null; rateCurrency: string } | null,
+  category: { defaultHourlyRate: string | null; rateCurrency: string | null } | null
+): string | null {
+  if (org?.defaultHourlyRate != null && org.rateCurrency === orgCurrency) return org.defaultHourlyRate;
+  if (category?.defaultHourlyRate != null && category.rateCurrency === orgCurrency) return category.defaultHourlyRate;
+  return null;
+}
+
 async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
   const ticket = await getTicketForTimeTracking(ticketId);
-  const ticketPartnerId = await resolveTicketPartner(ticket);
+  const org = await resolveTicketOrg(ticket);
+  const ticketPartnerId = org?.partnerId ?? null;
   if (!ticketPartnerId) {
     throw new TimeEntryServiceError('Ticket partner is unresolvable', 400, 'PARTNER_UNRESOLVABLE');
   }
@@ -164,16 +192,19 @@ async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
   if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(ticket.orgId)) {
     throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_ORG_DENIED');
   }
-  const [org, category] = await Promise.all([
+  const [orgSettings, category] = await Promise.all([
     getOrgBillingDefaults(ticket.orgId),
     ticket.categoryId ? getCategoryDefaults(ticket.categoryId) : Promise.resolve(null)
   ]);
   return {
     ticket,
     partnerId: ticketPartnerId,
-    // D6: per-entry explicit override (applied by callers) → org default → category default → false/null
-    defaultBillable: org?.defaultBillable ?? category?.defaultBillable ?? false,
-    defaultHourlyRate: org?.defaultHourlyRate ?? category?.defaultHourlyRate ?? null
+    // The currency every monetary value on this link is expressed in (spec §7).
+    currencyCode: org!.currencyCode,
+    // D6: per-entry explicit override (applied by callers) → org default → category default → false
+    defaultBillable: orgSettings?.defaultBillable ?? category?.defaultBillable ?? false,
+    // D6 + match-or-skip: a default rate is used only when entered in the org's currency.
+    defaultHourlyRate: resolveDefaultRate(org!.currencyCode, orgSettings, category)
   };
 }
 

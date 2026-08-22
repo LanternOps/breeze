@@ -115,8 +115,8 @@ vi.mock('../db/schema', () => ({
     addedBy: 'addedBy', notes: 'notes', createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
   tickets: { id: 'id', partnerId: 'partnerId', orgId: 'orgId', categoryId: 'categoryId', internalNumber: 'internalNumber', subject: 'subject' },
-  ticketCategories: { id: 'id', partnerId: 'partnerId', defaultBillable: 'defaultBillable', defaultHourlyRate: 'defaultHourlyRate' },
-  organizations: { id: 'id', partnerId: 'partnerId', name: 'name' },
+  ticketCategories: { id: 'id', partnerId: 'partnerId', defaultBillable: 'defaultBillable', defaultHourlyRate: 'defaultHourlyRate', rateCurrency: 'rateCurrency' },
+  organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode' },
   users: { id: 'id', name: 'name' },
   ticketComments: {
     id: 'id', ticketId: 'ticketId', userId: 'userId', authorName: 'authorName',
@@ -128,7 +128,7 @@ vi.mock('../db/schema', () => ({
 import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
   updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart,
-  getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed
+  getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed, resolveDefaultRate
 } from './timeEntryService';
 
 describe('entryOrgAllowed (security review #1: time_entries org-axis allowlist)', () => {
@@ -182,10 +182,34 @@ describe('computeDurationMinutes', () => {
   });
 });
 
+describe('resolveDefaultRate (spec §1.6 / §7 match-or-skip)', () => {
+  it('org setting applies when entered under the org currency', () => {
+    expect(resolveDefaultRate('USD', { defaultHourlyRate: '150.00', rateCurrency: 'USD' }, { defaultHourlyRate: '125.00', rateCurrency: 'USD' })).toBe('150.00');
+  });
+
+  it('skips a wrong-currency org setting and falls to a matching category', () => {
+    expect(resolveDefaultRate('EUR', { defaultHourlyRate: '150.00', rateCurrency: 'USD' }, { defaultHourlyRate: '125.00', rateCurrency: 'EUR' })).toBe('125.00');
+  });
+
+  it('returns null when neither default matches — never a wrong-currency number', () => {
+    expect(resolveDefaultRate('EUR', { defaultHourlyRate: '150.00', rateCurrency: 'USD' }, { defaultHourlyRate: '125.00', rateCurrency: 'USD' })).toBeNull();
+  });
+
+  it('org setting with a null rate defers to a matching category', () => {
+    expect(resolveDefaultRate('USD', { defaultHourlyRate: null, rateCurrency: 'USD' }, { defaultHourlyRate: '75.00', rateCurrency: 'USD' })).toBe('75.00');
+  });
+
+  it('no org setting + category with no stamped currency yields null', () => {
+    expect(resolveDefaultRate('USD', null, { defaultHourlyRate: '75.00', rateCurrency: null })).toBeNull();
+    expect(resolveDefaultRate('USD', null, null)).toBeNull();
+  });
+});
+
 describe('createTimeEntry', () => {
   it('rejects a ticket from another partner', async () => {
     // 1st system read: the ticket
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-OTHER', orgId: 'o-1', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-OTHER', currencyCode: 'USD' }]); // org (system read)
     await expect(createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
       ACTOR
@@ -194,7 +218,8 @@ describe('createTimeEntry', () => {
 
   it('defaults billable + rate from the ticket category (D2) and denormalizes org_id', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
-    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
     dbMocks.insertResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: true }];
     const entry = await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -209,9 +234,24 @@ describe('createTimeEntry', () => {
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'time_entry.created' }));
   });
 
+  it('match-or-skip: a category rate entered in another currency is skipped (billable, no rate)', async () => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'EUR' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
+    dbMocks.insertResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: true }];
+    await createTimeEntry(
+      { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+      ACTOR
+    );
+    const vals = dbMocks.insertedValues[0]!;
+    expect(vals.hourlyRate).toBeNull();
+    expect(vals.isBillable).toBe(true); // billable without a rate is allowed
+  });
+
   it('explicit isBillable/hourlyRate override category defaults', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
-    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
     dbMocks.insertResult = [{ id: 'te-1' }];
     await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'), isBillable: false, hourlyRate: 80 },
@@ -253,7 +293,7 @@ describe('createTimeEntry', () => {
 
   it('resolves a legacy ticket partner through its organization fallback', async () => {
     dbMocks.selectResults.push([{ id: 't-legacy', partnerId: null, orgId: 'o-1', categoryId: null }]);
-    dbMocks.selectResults.push([{ partnerId: 'p-1' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.insertResult = [{ id: 'te-legacy', partnerId: 'p-1', ticketId: 't-legacy', userId: 'u-1', durationMinutes: 15, isBillable: false }];
     await createTimeEntry(
       { ticketId: 't-legacy', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:15:00Z') },
@@ -266,9 +306,10 @@ describe('createTimeEntry', () => {
   describe('D6 org billing defaults', () => {
     it('(a) org defaults win over category defaults when both are present', async () => {
       // org: rate=150, billable=true; category: rate=100, billable=false → org wins
-      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', defaultBillable: true });
+      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', rateCurrency: 'USD', defaultBillable: true });
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
-      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00' }]);
+      dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
       dbMocks.insertResult = [{ id: 'te-d6a', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: true }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -281,9 +322,10 @@ describe('createTimeEntry', () => {
 
     it('(b) org row exists but both fields null → category values win', async () => {
       // org row present with nulls; category has defaults → category wins
-      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: null, defaultBillable: null });
+      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: null, rateCurrency: 'USD', defaultBillable: null });
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
-      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '75.00' }]);
+      dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '75.00', rateCurrency: 'USD' }]);
       dbMocks.insertResult = [{ id: 'te-d6b' }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -297,7 +339,8 @@ describe('createTimeEntry', () => {
     it('(c) no org row → category values apply (existing behavior not regressed)', async () => {
       // configMocks.getOrgBillingDefaults returns null (default in beforeEach)
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
-      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00' }]);
+      dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
       dbMocks.insertResult = [{ id: 'te-d6c' }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -309,9 +352,10 @@ describe('createTimeEntry', () => {
     });
 
     it('(d) explicit input override wins over org AND category defaults', async () => {
-      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', defaultBillable: true });
+      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', rateCurrency: 'USD', defaultBillable: true });
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
-      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '100.00' }]);
+      dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
       dbMocks.insertResult = [{ id: 'te-d6d' }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'), isBillable: false, hourlyRate: 200 },
@@ -320,6 +364,22 @@ describe('createTimeEntry', () => {
       const vals = dbMocks.insertedValues[0]!;
       expect(vals.isBillable).toBe(false);
       expect(vals.hourlyRate).toBe('200.00');
+    });
+
+    it('(e) match-or-skip: org setting entered in CAD is skipped for a USD org; matching category applies', async () => {
+      configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', rateCurrency: 'CAD', defaultBillable: true });
+      dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+      dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+      dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
+      dbMocks.insertResult = [{ id: 'te-d6e' }];
+      await createTimeEntry(
+        { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
+        ACTOR
+      );
+      const vals = dbMocks.insertedValues[0]!;
+      // defaultBillable is non-monetary: the org setting still wins there.
+      expect(vals.isBillable).toBe(true);
+      expect(vals.hourlyRate).toBe('125.00');
     });
   });
 });
@@ -333,6 +393,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
 
   it('createTimeEntry rejects a same-partner ticket in a non-granted org (404 TICKET_ORG_DENIED)', async () => {
     dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     await expect(createTimeEntry(
       { ticketId: 't-x', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
       SELECTED
@@ -343,6 +404,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
 
   it('createTimeEntry allows a ticket in a granted org', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.insertResult = [{ id: 'te-ok', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: false }];
     const entry = await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -354,6 +416,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
 
   it('startTimer rejects a same-partner ticket in a non-granted org', async () => {
     dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     await expect(startTimer({ ticketId: 't-x' }, SELECTED))
       .rejects.toMatchObject({ code: 'TICKET_ORG_DENIED', status: 404 });
     expect(dbMocks.insertedValues).toHaveLength(0);
@@ -366,6 +429,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
       durationMinutes: 30, isApproved: false
     }]);
     dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     await expect(updateTimeEntry('te-1', { ticketId: 't-x' }, SELECTED))
       .rejects.toMatchObject({ code: 'TICKET_ORG_DENIED', status: 404 });
     expect(dbMocks.updateSetArgs).toHaveLength(0);
@@ -373,6 +437,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
 
   it('addTicketPart rejects a same-partner ticket in a non-granted org', async () => {
     dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     await expect(addTicketPart('t-x', { description: 'SSD', quantity: 1, unitPrice: 100 }, SELECTED))
       .rejects.toMatchObject({ code: 'TICKET_ORG_DENIED', status: 404 });
     expect(dbMocks.insertedValues).toHaveLength(0);
@@ -380,6 +445,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
 
   it('system scope (accessibleOrgIds null) is unrestricted across orgs', async () => {
     dbMocks.selectResults.push([{ id: 't-sys', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.insertResult = [{ id: 'te-sys', partnerId: 'p-1', ticketId: 't-sys', userId: 'u-admin', durationMinutes: 30, isBillable: false }];
     const entry = await createTimeEntry(
       { ticketId: 't-sys', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -402,9 +468,10 @@ describe('startTimer / stopTimer', () => {
   });
 
   it('D6 (a) startTimer with ticket uses org billing defaults when org row present', async () => {
-    configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', defaultBillable: true });
+    configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', rateCurrency: 'USD', defaultBillable: true });
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
-    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
     dbMocks.updateResult = []; // no running timer to stop
     dbMocks.insertResult = [{ id: 'te-timer', endedAt: null }];
     await startTimer({ ticketId: 't-1' }, ACTOR);
@@ -507,6 +574,7 @@ describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
   it('relinking to a ticket re-validates partner and re-denormalizes org', async () => {
     dbMocks.selectResults.push([baseEntry]); // the entry
     dbMocks.selectResults.push([{ id: 't-9', partnerId: 'p-1', orgId: 'o-9', categoryId: null }]); // ticket (system read)
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.updateResult = [baseEntry];
     await updateTimeEntry('te-1', { ticketId: 't-9' }, ACTOR);
     const setArgs = dbMocks.updateSetArgs.at(-1)!;
@@ -517,6 +585,7 @@ describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
   it('rejects system-scope relinks that would cross the entry partner boundary', async () => {
     dbMocks.selectResults.push([baseEntry]);
     dbMocks.selectResults.push([{ id: 't-cross', partnerId: 'p-OTHER', orgId: 'o-other', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-OTHER', currencyCode: 'USD' }]); // org (system read)
     await expect(updateTimeEntry(
       'te-1',
       { ticketId: 't-cross' },
@@ -601,6 +670,7 @@ describe('time-entry audit mutation recording', () => {
     dbMocks.selectResults.push([
       { id: 't-1', partnerId: 'p-1', orgId: 'o-create', categoryId: null },
     ]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.insertResult = [{
       id: 'te-create',
       orgId: 'o-create',
@@ -825,7 +895,8 @@ describe('time-entry audit mutation recording', () => {
 describe('addTicketPart', () => {
   it('denormalizes org_id and defaults billable from category', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
-    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: null, rateCurrency: null }]);
     dbMocks.insertResult = [{ id: 'part-1' }];
     await addTicketPart('t-1', { description: 'SSD 1TB', quantity: 1, unitPrice: 120 }, ACTOR);
     const vals = dbMocks.insertedValues.at(-1)!;
@@ -836,7 +907,8 @@ describe('addTicketPart', () => {
 
   it('sets addedBy from actor, defaults billingStatus to not_billed, and preserves null costBasis', async () => {
     dbMocks.selectResults.push([{ id: 't-2', partnerId: 'p-1', orgId: 'o-2', categoryId: 'cat-2' }]);
-    dbMocks.selectResults.push([{ id: 'cat-2', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 'cat-2', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: null, rateCurrency: null }]);
     dbMocks.insertResult = [{ id: 'part-2' }];
     await addTicketPart('t-2', { description: 'RAM 32GB', quantity: 2, unitPrice: 60 }, ACTOR);
     const vals = dbMocks.insertedValues.at(-1)!;
@@ -847,6 +919,7 @@ describe('addTicketPart', () => {
 
   it('fails loudly if insert returning yields no part row', async () => {
     dbMocks.selectResults.push([{ id: 't-3', partnerId: 'p-1', orgId: 'o-3', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.insertResult = [];
     await expect(addTicketPart('t-3', { description: 'Cable', quantity: 1, unitPrice: 5 }, ACTOR))
       .rejects.toThrow('Failed to create ticket part');
@@ -962,6 +1035,7 @@ describe('query helpers', () => {
 describe('time_entry feed comments', () => {
   it('createTimeEntry with ticketId inserts a ticketComments row (logged, billable suffix)', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.insertResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 45, isBillable: true }];
     await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:45:00Z'), isBillable: true },
@@ -1036,6 +1110,7 @@ describe('time_entry feed comments', () => {
 
   it('a feed-comment insert failure does not reject createTimeEntry and the event is still emitted', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.insertResult = [{ id: 'te-6', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: false }];
     // Make the ticketComments insert fail (first insert uses insertResult, second rejects).
     // We push null for the timeEntries returning() call (null is falsy → falls through to insertResult),
