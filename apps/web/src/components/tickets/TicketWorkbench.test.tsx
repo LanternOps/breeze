@@ -1885,6 +1885,139 @@ describe('TicketWorkbench create-invoice blocked by currency (#3776)', () => {
     expect(invoiceCalls()).toHaveLength(2);
     expect(invoiceCalls()[1][0]).toBe('/tickets/tk-1/invoice?currencyCode=EUR');
   });
+
+  // Review #3 (#3776): a partial success carries BOTH the draft and the rows it
+  // left out. Navigating straight to the draft would hide them — the draft
+  // itself gives no hint that EUR work is still unbilled.
+  it('on partial success keeps the user here, offers the per-currency shortcut and an "open draft" link', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (!init?.method || init.method === 'GET') {
+        if (url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      }
+      if (init?.method === 'POST' && url.startsWith('/tickets/tk-1/invoice')) {
+        posts += 1;
+        if (posts === 1) {
+          return makeJsonResponse({
+            data: {
+              invoice: { id: 'inv-usd' }, lines: [],
+              blockedByCurrency: [{ currencyCode: 'EUR', count: 3, amount: '410.00' }],
+              missingRate: [],
+            },
+          });
+        }
+        return makeJsonResponse({ data: { invoice: { id: 'inv-eur' }, lines: [], blockedByCurrency: [], missingRate: [] } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    const panel = await screen.findByTestId('ticket-invoice-blocked');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(panel.textContent).toContain('EUR');
+    expect(screen.getByTestId('ticket-invoice-open-draft').getAttribute('href')).toBe('/billing/invoices/inv-usd');
+
+    fireEvent.click(screen.getByTestId('ticket-assemble-in-EUR'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-eur'));
+    expect(invoiceCalls()[1][0]).toBe('/tickets/tk-1/invoice?currencyCode=EUR');
+  });
+
+  it('navigates straight to the draft when nothing was left out', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({ data: { invoice: { id: 'inv-1' }, lines: [], blockedByCurrency: [], missingRate: [] } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-1'));
+    expect(screen.queryByTestId('ticket-invoice-blocked')).toBeNull();
+  });
+
+  // Review #1 (#3776): rate-less entries are never billed at zero; the response
+  // lists them under missingRate so the tech can set a rate and try again.
+  it('lists missingRate entries from a partial success with a link to set a rate', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          data: {
+            invoice: { id: 'inv-1' }, lines: [], blockedByCurrency: [],
+            missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '1.50' }],
+          },
+        });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    const row = await screen.findByTestId('ticket-invoice-missing-rate-te-9');
+    expect(row.textContent).toContain('Unrated work');
+    expect(row.textContent).toContain('1.50');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ticket-invoice-set-rate').getAttribute('href')).toBe('/timesheet');
+    expect(screen.getByTestId('ticket-invoice-open-draft').getAttribute('href')).toBe('/billing/invoices/inv-1');
+  });
+
+  it('on 409 ALL_MISSING_RATE lists the entries with the set-rate link and no draft link', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          error: '1 billable time entry has no hourly rate in USD',
+          code: 'ALL_MISSING_RATE',
+          details: { missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '0.25' }] },
+        }, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await screen.findByTestId('ticket-invoice-missing-rate-te-9');
+    expect(screen.getByTestId('ticket-invoice-set-rate')).toBeTruthy();
+    expect(screen.queryByTestId('ticket-invoice-open-draft')).toBeNull();
+    expect(screen.queryByTestId(/^ticket-assemble-in-/)).toBeNull();
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('on 409 ALL_BLOCKED_BY_CURRENCY also lists the missingRate entries carried in details', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          error: 'All unbilled work is in EUR',
+          code: 'ALL_BLOCKED_BY_CURRENCY',
+          details: {
+            blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }],
+            missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '0.25' }],
+          },
+        }, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await screen.findByTestId('ticket-assemble-in-EUR');
+    expect(screen.getByTestId('ticket-invoice-missing-rate-te-9')).toBeTruthy();
+  });
 });
 
 describe('TicketWorkbench soft-delete (tickets:manage)', () => {

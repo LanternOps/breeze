@@ -400,7 +400,13 @@
       "createFailed": "Não foi possível criar uma fatura a partir deste chamado.",
       "created": "Rascunho de fatura criado",
       "allBlockedByCurrency": "Todo o trabalho faturável deste chamado está precificado em uma moeda diferente daquela em que a organização fatura. Em vez disso, monte um rascunho nessa moeda:",
-      "assembleIn": "Montar em {{code}} ({{count}} itens, {{amount}})"
+      "assembleIn": "Montar em {{code}} ({{count}} itens, {{amount}})",
+      "partialLeftOut": "Um rascunho de fatura foi criado, mas parte do trabalho faturável deste ticket ficou de fora e continua não faturada.",
+      "openDraft": "Abrir o rascunho",
+      "allMissingRate": "Nada pôde ser faturado: todos os lançamentos de tempo faturáveis deste ticket estão sem valor por hora.",
+      "missingRateHeading": "Lançamentos de tempo sem valor por hora (não faturados — defina um valor e crie a fatura novamente):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Definir um valor na folha de horas"
     },
     "move": {
       "open": "Mover para outra org…",

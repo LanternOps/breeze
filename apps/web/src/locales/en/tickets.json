@@ -400,7 +400,13 @@
       "createFailed": "Could not create an invoice from this ticket.",
       "created": "Draft invoice created",
       "allBlockedByCurrency": "All billable work on this ticket is priced in another currency than the organization bills in. Assemble a draft in that currency instead:",
-      "assembleIn": "Assemble in {{code}} ({{count}} items, {{amount}})"
+      "assembleIn": "Assemble in {{code}} ({{count}} items, {{amount}})",
+      "partialLeftOut": "A draft invoice was created, but some billable work on this ticket was left out of it and is still unbilled.",
+      "openDraft": "Open the draft",
+      "allMissingRate": "Nothing could be invoiced: every billable time entry on this ticket is missing an hourly rate.",
+      "missingRateHeading": "Time entries with no hourly rate (not invoiced — set a rate and create the invoice again):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Set a rate on the timesheet"
     },
     "move": {
       "open": "Move to another org…",

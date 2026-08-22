@@ -400,7 +400,13 @@
       "createFailed": "No se pudo crear una factura a partir de este ticket.",
       "created": "Borrador de factura creado",
       "allBlockedByCurrency": "Todo el trabajo facturable de este ticket está valorado en una moneda distinta de la que factura la organización. Arma un borrador en esa moneda en su lugar:",
-      "assembleIn": "Armar en {{code}} ({{count}} elementos, {{amount}})"
+      "assembleIn": "Armar en {{code}} ({{count}} elementos, {{amount}})",
+      "partialLeftOut": "Se creó un borrador de factura, pero parte del trabajo facturable de este ticket quedó fuera y sigue sin facturar.",
+      "openDraft": "Abrir el borrador",
+      "allMissingRate": "No se pudo facturar nada: a todas las entradas de tiempo facturables de este ticket les falta la tarifa por hora.",
+      "missingRateHeading": "Entradas de tiempo sin tarifa por hora (no facturadas; defina una tarifa y vuelva a crear la factura):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Definir una tarifa en la hoja de horas"
     },
     "move": {
       "open": "Mover a otra organización...",

@@ -400,7 +400,13 @@
       "createFailed": "Aus diesem Ticket konnte keine Rechnung erstellt werden.",
       "created": "Rechnungsentwurf erstellt",
       "allBlockedByCurrency": "Alle abrechenbaren Arbeiten an diesem Ticket sind in einer anderen Währung bepreist als der, in der die Organisation abrechnet. Erstellen Sie stattdessen einen Entwurf in dieser Währung:",
-      "assembleIn": "In {{code}} zusammenstellen ({{count}} Positionen, {{amount}})"
+      "assembleIn": "In {{code}} zusammenstellen ({{count}} Positionen, {{amount}})",
+      "partialLeftOut": "Ein Rechnungsentwurf wurde erstellt, aber ein Teil der abrechenbaren Arbeit an diesem Ticket wurde ausgelassen und ist weiterhin nicht abgerechnet.",
+      "openDraft": "Entwurf öffnen",
+      "allMissingRate": "Es konnte nichts abgerechnet werden: Bei jedem abrechenbaren Zeiteintrag dieses Tickets fehlt der Stundensatz.",
+      "missingRateHeading": "Zeiteinträge ohne Stundensatz (nicht abgerechnet — Satz festlegen und Rechnung erneut erstellen):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Satz im Stundenzettel festlegen"
     },
     "move": {
       "open": "In eine andere Organisation verschieben …",

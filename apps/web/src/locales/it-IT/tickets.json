@@ -400,7 +400,13 @@
       "createFailed": "Impossibile creare una fattura da questo ticket.",
       "created": "Bozza di fattura creata",
       "allBlockedByCurrency": "Tutto il lavoro fatturabile di questo ticket è valorizzato in una valuta diversa da quella in cui fattura l’organizzazione. Componi invece una bozza in quella valuta:",
-      "assembleIn": "Componi in {{code}} ({{count}} voci, {{amount}})"
+      "assembleIn": "Componi in {{code}} ({{count}} voci, {{amount}})",
+      "partialLeftOut": "È stata creata una bozza di fattura, ma parte del lavoro fatturabile di questo ticket è stata esclusa e risulta ancora non fatturata.",
+      "openDraft": "Apri la bozza",
+      "allMissingRate": "Non è stato possibile fatturare nulla: a ogni voce di tempo fatturabile di questo ticket manca la tariffa oraria.",
+      "missingRateHeading": "Voci di tempo senza tariffa oraria (non fatturate — imposta una tariffa e crea di nuovo la fattura):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Imposta una tariffa nel foglio ore"
     },
     "move": {
       "open": "Sposta in un'altra org...",

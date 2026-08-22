@@ -400,7 +400,13 @@
       "createFailed": "Bu biletten fatura oluşturulamadı.",
       "created": "Taslak fatura oluşturuldu",
       "allBlockedByCurrency": "Bu biletteki tüm faturalanabilir iş, kuruluşun faturalandırdığı para biriminden farklı bir para biriminde fiyatlandırılmış. Bunun yerine o para biriminde bir taslak oluşturun:",
-      "assembleIn": "{{code}} olarak oluştur ({{count}} öğe, {{amount}})"
+      "assembleIn": "{{code}} olarak oluştur ({{count}} öğe, {{amount}})",
+      "partialLeftOut": "Bir taslak fatura oluşturuldu, ancak bu biletteki faturalanabilir işin bir kısmı dışarıda bırakıldı ve hâlâ faturalanmadı.",
+      "openDraft": "Taslağı aç",
+      "allMissingRate": "Hiçbir şey faturalanamadı: bu biletteki her faturalanabilir zaman kaydının saatlik ücreti eksik.",
+      "missingRateHeading": "Saatlik ücreti olmayan zaman kayıtları (faturalanmadı — bir ücret belirleyip faturayı yeniden oluşturun):",
+      "missingRateEntry": "{{description}} — {{hours}} sa",
+      "setRate": "Zaman çizelgesinde bir ücret belirle"
     },
     "move": {
       "open": "Başka bir kuruluşa taşıyın…",
