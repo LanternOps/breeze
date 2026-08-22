@@ -33,6 +33,19 @@ const scopes = requireScope('organization', 'partner', 'system');
 
 type AiAgentRow = NonNullable<Awaited<ReturnType<typeof getAgent>>>;
 
+const UUID = z.string().guid();
+
+/**
+ * A path id that is not a uuid must never reach a query. Postgres raises
+ * 22P02 on the cast, and because the request runs inside one
+ * withDbAccessContext transaction that error poisons it — the COMMIT then
+ * 500s on what is really a 404.
+ */
+function uuidParam(c: Context, name: string): string | null {
+  const parsed = UUID.safeParse(c.req.param(name));
+  return parsed.success ? parsed.data : null;
+}
+
 function mapRow(row: AiAgentRow) {
   return {
     ...row,
@@ -96,10 +109,8 @@ aiAgentsRoutes.get(
 );
 
 aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
-  const runId = c.req.param('runId');
-  if (!z.string().guid().safeParse(runId).success) {
-    return c.json({ error: 'Run not found' }, 404);
-  }
+  const runId = uuidParam(c, 'runId');
+  if (!runId) return c.json({ error: 'Run not found' }, 404);
 
   const auth = c.get('auth');
   // orgCondition is defence-in-depth beside RLS, matching listAgents: without
@@ -115,7 +126,8 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
 
 aiAgentsRoutes.get('/:id', scopes, requireAiRead, async (c) => {
   const auth = c.get('auth');
-  const row = await getAgent(auth, c.req.param('id'));
+  const id = uuidParam(c, 'id');
+  const row = id ? await getAgent(auth, id) : null;
   if (!row) return c.json({ error: 'Agent not found' }, 404);
   return c.json({ data: mapRow(row) });
 });
@@ -129,7 +141,8 @@ aiAgentsRoutes.get(
   })),
   async (c) => {
     const auth = c.get('auth');
-    const row = await getAgent(auth, c.req.param('id'));
+    const id = uuidParam(c, 'id');
+    const row = id ? await getAgent(auth, id) : null;
     if (!row) return c.json({ error: 'Agent not found' }, 404);
 
     const { limit } = c.req.valid('query');
@@ -188,8 +201,10 @@ aiAgentsRoutes.patch(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+    const id = uuidParam(c, 'id');
+    if (!id) return c.json({ error: 'Agent not found' }, 404);
     try {
-      const row = await updateAgent(auth, c.req.param('id'), body);
+      const row = await updateAgent(auth, id, body);
       return c.json({ data: mapRow(row) });
     } catch (err) {
       return mapError(c, err);
@@ -199,8 +214,10 @@ aiAgentsRoutes.patch(
 
 aiAgentsRoutes.delete('/:id', scopes, requireAiWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
+  const id = uuidParam(c, 'id');
+  if (!id) return c.json({ error: 'Agent not found' }, 404);
   try {
-    const row = await disableAgent(auth, c.req.param('id'));
+    const row = await disableAgent(auth, id);
     return c.json({ data: mapRow(row) });
   } catch (err) {
     return mapError(c, err);

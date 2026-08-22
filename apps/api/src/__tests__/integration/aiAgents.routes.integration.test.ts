@@ -63,7 +63,8 @@ async function mfaClient(app: Hono, opts: {
       },
     };
     if (body !== undefined) requestOptions.body = JSON.stringify(body);
-    return app.request(path, requestOptions);
+    // app.request() is typed Response | Promise<Response>.
+    return Promise.resolve(app.request(path, requestOptions));
   };
 
   return {
