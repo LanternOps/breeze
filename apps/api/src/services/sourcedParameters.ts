@@ -95,6 +95,23 @@ export interface ResolveSourcedParametersInput {
    * and throws, matching the content-substitution path's contract.
    */
   variables?: ReadonlyMap<string, ResolvedVariable>;
+  /**
+   * Variable keys for this device's org whose row EXISTS but could not be
+   * decrypted — i.e. `unreadableForOrg(scope, device.orgId)` (#3409 PR4c-1).
+   *
+   * Deliberately a second collection rather than sentinel entries in
+   * {@link variables}: an unreadable variable must never resolve to a value,
+   * and `resolveForOrg`'s map is the "has a value" channel by contract.
+   *
+   * Optional, and omitting it is not a silent downgrade of anything the
+   * resolver would otherwise get right — a key that is unreadable is absent
+   * from `variables` either way, so the only difference is WHICH failure the
+   * operator is shown ({@link SourceLookup} `'unreadable'` vs `'missing'`).
+   * That difference matters: "not set" tells a tech to create the variable,
+   * while unreadable means the ciphertext is present and the KEY MATERIAL is
+   * wrong — and creating a duplicate mid-rotation is the opposite of the fix.
+   */
+  unreadableVariableKeys?: ReadonlySet<string>;
 }
 
 export interface ResolveSourcedParametersSuccess {
@@ -345,13 +362,37 @@ function readCustomField(customFields: unknown, fieldKey: string): unknown {
  *   through a path that promises protection.
  * - `secretValue`   — the only success path for `tenantSecret`. The value
  *   goes to `secretEnv`, never to `parameters`.
+ *
+ * `unreadable` is a third denial, and the reason it is not folded into
+ * `missing`: the variable's row exists, it simply could not be DECRYPTED
+ * (see `tenantVariableResolution.ts`'s `decryptRow`). Reported as "no value
+ * for required parameter", it sends a tech to create a duplicate variable —
+ * exactly the wrong remediation during a key rotation, and one that leaves
+ * the undecryptable row in place.
  */
 type SourceLookup =
   | { kind: 'value'; value: string; descriptor: ScriptParameterBindingDescriptor }
   | { kind: 'missing' }
+  | { kind: 'unreadable'; variableKey: string }
   | { kind: 'secretAsPlain'; variableKey: string }
   | { kind: 'notSecret'; variableKey: string }
   | { kind: 'secretValue'; value: string; descriptor: ScriptParameterBindingDescriptor };
+
+/**
+ * Why a variable key produced no entry in {@link ResolveSourcedParametersInput.variables}.
+ *
+ * Shared by both variable-backed arms, which had the identical confusion: the
+ * map is the "has a readable value" channel, so an unreadable row and a
+ * never-created one are both simply absent from it, and only the snapshot's
+ * unreadable set can tell them apart.
+ *
+ * The map wins when it HAS the key: a listing here is only consulted on
+ * absence, so a stale entry can never suppress a value that actually resolved.
+ */
+function lookupAbsent(variableKey: string, input: ResolveSourcedParametersInput): SourceLookup {
+  if (input.unreadableVariableKeys?.has(variableKey)) return { kind: 'unreadable', variableKey };
+  return { kind: 'missing' };
+}
 
 function lookupBoundSource(
   definition: Exclude<ScriptParameterDefinition, { source: 'runtime' }>,
@@ -365,7 +406,7 @@ function lookupBoundSource(
         );
       }
       const variable = input.variables.get(definition.variableKey);
-      if (!variable) return { kind: 'missing' };
+      if (!variable) return lookupAbsent(definition.variableKey, input);
       // PLAN §2.4 — a secret target is a POLICY DENIAL, not "missing". It must
       // not fall through to the definition default (which would silently
       // substitute a stale plaintext an operator deliberately reclassified),
@@ -396,7 +437,7 @@ function lookupBoundSource(
       // No default, no caller value, no omission — the arm is always
       // `required: true` and carries no `defaultValue` (the schema rejects
       // one), so a missing target can only fail the device.
-      if (!variable) return { kind: 'missing' };
+      if (!variable) return lookupAbsent(definition.variableKey, input);
       if (!variable.isSecret) return { kind: 'notSecret', variableKey: definition.variableKey };
       // The raw value, NOT `toNonBlankString`: a secret is delivered verbatim
       // or not at all, and silently trimming or blanking a credential would
@@ -446,6 +487,7 @@ export function resolveSourcedParameters(
   const missing: string[] = [];
   const secretDenied: Array<{ key: string; variableKey: string }> = [];
   const notSecret: Array<{ key: string; variableKey: string }> = [];
+  const unreadable: Array<{ key: string; variableKey: string }> = [];
 
   for (const definition of definitions) {
     const name = definition.name;
@@ -471,6 +513,15 @@ export function resolveSourcedParameters(
     } else {
       if (callerValue !== undefined) ignoredParameters.push(name);
       const lookup = lookupBoundSource(definition, input);
+      if (lookup.kind === 'unreadable') {
+        // A denial, exactly like the two secret denials below — never a
+        // fallthrough to the definition default. That default is the stale
+        // plaintext the operator's (now unreadable) row was created to
+        // replace, so shipping it would substitute the very value the
+        // binding overrode, under a variable the UI still shows as set.
+        unreadable.push({ key: name, variableKey: lookup.variableKey });
+        continue;
+      }
       if (lookup.kind === 'secretAsPlain') {
         secretDenied.push({ key: name, variableKey: lookup.variableKey });
         continue; // no default, no caller value, no omission — the device fails
@@ -517,11 +568,17 @@ export function resolveSourcedParameters(
   // undo the binding's authority. Fail the device instead.
   const malformedBound = malformed.filter((entry) => entry.boundSource !== null);
 
-  if (missing.length > 0 || secretDenied.length > 0 || notSecret.length > 0 || malformedBound.length > 0) {
+  if (
+    missing.length > 0 ||
+    unreadable.length > 0 ||
+    secretDenied.length > 0 ||
+    notSecret.length > 0 ||
+    malformedBound.length > 0
+  ) {
     return {
       ok: false,
       code: 'unresolved_parameters',
-      error: describeParameterFailure(missing, secretDenied, notSecret, malformedBound),
+      error: describeParameterFailure(missing, unreadable, secretDenied, notSecret, malformedBound),
       ignoredParameters,
     };
   }
@@ -545,6 +602,7 @@ const quoteList = (values: string[]): string => values.map((value) => `"${value}
  */
 function describeParameterFailure(
   missing: string[],
+  unreadable: Array<{ key: string; variableKey: string }>,
   secretDenied: Array<{ key: string; variableKey: string }>,
   notSecret: Array<{ key: string; variableKey: string }>,
   malformedBound: MalformedDefinition[],
@@ -552,6 +610,20 @@ function describeParameterFailure(
   const parts: string[] = [];
   if (missing.length > 0) {
     parts.push(`no value for required parameter(s) ${quoteList(missing)}`);
+  }
+  if (unreadable.length > 0) {
+    // Its own sentence, and pointedly NOT the "no value" wording above: the
+    // row exists, so the operator must go look at key material rather than
+    // create the variable again. Names both keys, never a value — there is
+    // no plaintext to leak here anyway, but the rule is unconditional.
+    parts.push(
+      unreadable
+        .map(
+          (entry) =>
+            `"${entry.key}" is bound to variable "${entry.variableKey}", whose stored value could not be read (check the server's encryption keys)`,
+        )
+        .join('; '),
+    );
   }
   if (secretDenied.length > 0) {
     parts.push(
