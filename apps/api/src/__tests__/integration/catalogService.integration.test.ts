@@ -458,7 +458,7 @@ describe('catalogService (breeze_app, real DB)', () => {
     const crossPartnerComp = await withSystemDbAccessContext(async () => {
       const [row] = await db
         .insert(catalogItems)
-        .values({ partnerId: fx.partnerB.id, itemType: 'service', name: 'B comp', unitPrice: '1.00' })
+        .values({ partnerId: fx.partnerB.id, itemType: 'service', name: 'B comp', unitPrice: '1.00', costCurrency: 'USD' })
         .returning({ id: catalogItems.id });
       return row!.id;
     });

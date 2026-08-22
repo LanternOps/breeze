@@ -82,7 +82,6 @@ async function seedFixture(): Promise<Fixture> {
     const partnerB = await createPartner();
     const orgB = await createOrganization({ partnerId: partnerB.id });
 
-    // Task 2 adds cost_currency to catalog_items and sweeps this fixture.
     const [itemA] = await db
       .insert(catalogItems)
       .values({
@@ -90,6 +89,7 @@ async function seedFixture(): Promise<Fixture> {
         itemType: 'service',
         name: 'A-only service',
         unitPrice: '10.00',
+        costCurrency: 'USD',
       })
       .returning({ id: catalogItems.id });
     if (!itemA) throw new Error('failed to seed catalog item A');

@@ -60,6 +60,7 @@ const item = (partnerId: string, name: string, sku: string) => ({
   name,
   sku,
   unitPrice: '1.00',
+  costCurrency: 'USD',
 });
 
 describe('postgres.js savepoint error isolation (real DB, breeze_app)', () => {

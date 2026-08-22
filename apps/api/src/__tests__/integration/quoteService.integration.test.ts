@@ -27,7 +27,7 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { quotes, quoteLines, quoteBlocks } from '../../db/schema/quotes';
-import { catalogItems } from '../../db/schema/catalog';
+import { catalogItemPrices, catalogItems } from '../../db/schema/catalog';
 import { createOrganization, createPartner } from './db-utils';
 import {
   createQuote,
@@ -91,7 +91,7 @@ async function seedFixture(): Promise<Fixture> {
 /** Seed a catalog item directly under system scope (bypasses RLS for the seed). */
 async function seedCatalogItem(
   partnerId: string,
-  values: Partial<typeof catalogItems.$inferInsert> & { name: string; unitPrice: string }
+  values: Partial<typeof catalogItems.$inferInsert> & { name: string; unitPrice: string; priceCurrency?: string }
 ): Promise<{ id: string }> {
   return withSystemDbAccessContext(async () => {
     const [row] = await db.insert(catalogItems).values({
@@ -105,8 +105,17 @@ async function seedCatalogItem(
       taxable: values.taxable ?? true,
       isBundle: false,
       costBasis: values.costBasis ?? null,
+      costCurrency: values.costCurrency ?? 'USD',
       sku: values.sku ?? null,
     }).returning({ id: catalogItems.id });
+    // Price-book row (multi-currency wave 3): addCatalogLine resolves the sell
+    // price from catalog_item_prices, never from the deprecated unit_price mirror.
+    await db.insert(catalogItemPrices).values({
+      itemId: row!.id,
+      partnerId,
+      currencyCode: values.priceCurrency ?? 'USD',
+      unitPrice: values.unitPrice,
+    });
     return { id: row!.id };
   });
 }

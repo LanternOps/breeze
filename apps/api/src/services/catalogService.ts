@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, ilike, inArray, ne } from 'drizzle-orm';
 import { db } from '../db';
-import { catalogItems, catalogItemOrgPricing, catalogBundleComponents } from '../db/schema';
+import { catalogItems, catalogItemOrgPricing, catalogBundleComponents, partners, organizations } from '../db/schema';
 import { emitCatalogEvent } from './catalogEvents';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
@@ -92,6 +92,10 @@ export async function createCatalogItem(input: CreateCatalogItemInput, actor: Ca
     markupPercent: input.markupPercent != null ? input.markupPercent.toFixed(2) : null
   });
   assertPriceInRange(unitPrice);
+  // Multi-currency wave 3 (Task 2 bridge — Task 5 replaces this with the
+  // price-map transaction): cost_currency is NOT NULL with no default, so stamp
+  // the partner's currency until the input carries costCurrency.
+  const costCurrency = await resolvePartnerCurrency(partnerId);
   // ON CONFLICT DO NOTHING instead of catch-and-map: the request runs inside the
   // withDbAccessContext transaction, and postgres.js re-throws any query error at
   // commit time even after it was caught here (begin() records it as
@@ -110,6 +114,7 @@ export async function createCatalogItem(input: CreateCatalogItemInput, actor: Ca
     unitPrice,
     costBasis: input.costBasis != null ? input.costBasis.toFixed(2) : null,
     markupPercent: input.markupPercent != null ? input.markupPercent.toFixed(2) : null,
+    costCurrency,
     unitOfMeasure: input.unitOfMeasure,
     taxable: input.taxable,
     taxCategory: input.taxCategory ?? null,
@@ -123,6 +128,13 @@ export async function createCatalogItem(input: CreateCatalogItemInput, actor: Ca
   }
   await emitCatalogEvent({ type: 'catalog.item.created', catalogItemId: item.id, partnerId, actorUserId: actor.userId });
   return item;
+}
+
+async function resolvePartnerCurrency(partnerId: string): Promise<string> {
+  const [row] = await db.select({ currencyCode: partners.currencyCode }).from(partners)
+    .where(eq(partners.id, partnerId)).limit(1);
+  if (!row) throw new CatalogServiceError('Partner not found', 404, 'PARTNER_UNRESOLVABLE');
+  return row.currencyCode;
 }
 
 async function getOwnedItemOr404(id: string, partnerId: string) {
@@ -258,8 +270,14 @@ export async function setOrgPriceOverride(itemId: string, orgId: string, input: 
   await getOwnedItemOr404(itemId, partnerId); // ensures the item is this partner's
   const unitPrice = input.unitPrice.toFixed(2);
   assertPriceInRange(unitPrice);
+  // Multi-currency wave 3 (Task 2 bridge — Task 5 makes the override currency
+  // explicit): overrides carry the org's currency + the denormalized partner_id
+  // that the composite same-partner FKs require.
+  const [org] = await db.select({ currencyCode: organizations.currencyCode }).from(organizations)
+    .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, partnerId))).limit(1);
+  if (!org) throw new CatalogServiceError('Organization not found for this partner', 403, 'ORG_DENIED');
   const rows = await db.insert(catalogItemOrgPricing)
-    .values({ catalogItemId: itemId, orgId, unitPrice })
+    .values({ catalogItemId: itemId, orgId, partnerId, currencyCode: org.currencyCode, unitPrice })
     .onConflictDoUpdate({
       target: [catalogItemOrgPricing.catalogItemId, catalogItemOrgPricing.orgId],
       set: { unitPrice, updatedAt: new Date() }

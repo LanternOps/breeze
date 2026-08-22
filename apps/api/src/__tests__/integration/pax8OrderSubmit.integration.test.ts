@@ -55,6 +55,7 @@ async function seedOrder(options: {
       billingType: 'recurring',
       billingFrequency: 'monthly',
       unitPrice: '10.00',
+      costCurrency: 'USD',
       taxable: false,
     }).returning();
     if (!catalogItem) throw new Error('failed to seed catalog item');
