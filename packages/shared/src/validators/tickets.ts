@@ -153,6 +153,7 @@ export const listTicketsQuerySchema = z.object({
 });
 
 export const ticketCategoryInputSchema = z.object({
+  // rateCurrency is server-managed; unknown client fields are stripped by Zod.
   name: z.string().min(1).max(100),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   parentId: z.string().guid().nullable().optional(),

@@ -180,6 +180,11 @@ describe('ticket validators', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
   });
 
+  it('category strips client-supplied rateCurrency', () => {
+    const parsed = ticketCategoryInputSchema.parse({ name: 'a', rateCurrency: 'EUR' });
+    expect(parsed).not.toHaveProperty('rateCurrency');
+  });
+
   describe('bulkTicketActionSchema', () => {
     const ID = '3f2f1d8e-1111-4222-8333-444455556666';
     const ASSIGNEE = '5a6b7c8d-1234-4321-abcd-000011112222';
