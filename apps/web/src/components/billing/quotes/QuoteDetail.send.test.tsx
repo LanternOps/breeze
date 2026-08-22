@@ -81,7 +81,6 @@ beforeEach(() => {
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
     if (url.startsWith('/orgs/organizations/')) return resp({ billingContact: { email: 'ap@customer.example' } });
     if (url === '/orgs/partners/me') return resp({ emailSignature: null });
-    if (url === '/partner/stripe-connect') return resp({ status: 'disconnected' });
     return resp({}, false);
   });
 });
@@ -513,11 +512,13 @@ describe('QuoteDetail — send proposal', () => {
   });
 
   it('warns when a deposit is configured but Stripe is not connected', async () => {
-    // Partner scope unlocks the Stripe-status fetch (mocked to 'disconnected').
+    // Stripe status arrives on the detail payload (GET /quotes/:id), never via
+    // the BILLING_MANAGE-only /partner/stripe-connect endpoint (#3777 F5).
     state.tokens = PARTNER_TOKENS;
     const withDeposit: QuoteDetailData = {
       ...filledDraft,
       quote: { ...filledDraft.quote, depositType: 'percent', depositPercent: '30.00' },
+      stripeConnected: false,
     };
 
     render(<QuoteDetail detail={withDeposit} onChanged={vi.fn()} />);
