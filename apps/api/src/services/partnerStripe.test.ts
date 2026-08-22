@@ -18,6 +18,7 @@ const { dbMocks, accountsRetrieveMock, systemContextCalls } = vi.hoisted(() => (
   dbMocks: {
     // queue of results for successive db.select()...limit() terminals
     selectResults: [] as unknown[][],
+    selectWheres: [] as unknown[],
     insertedValues: [] as Record<string, unknown>[],
     upsertConfigs: [] as Record<string, unknown>[],
     upsertErrors: [] as unknown[],
@@ -62,12 +63,18 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => {
+        where: vi.fn((cond: unknown) => {
+          dbMocks.selectWheres.push(cond);
+          const run = () => {
             dbMocks.callOrder.push('select');
             return Promise.resolve(dbMocks.selectResults.shift() ?? []);
-          }),
-        })),
+          };
+          return {
+            limit: vi.fn(run),
+            // listPartnersNeedingStripeAccountBootstrap terminates on orderBy.
+            orderBy: vi.fn(run),
+          };
+        }),
       })),
     })),
     insert: vi.fn(() => ({
@@ -102,9 +109,11 @@ vi.mock('../db', () => ({
 }));
 
 import {
+  STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS,
   getPartnerStripeStatus,
   getPartnerStripeAccountSnapshot,
   PartnerStripeError,
+  listPartnersNeedingStripeAccountBootstrap,
   refreshPartnerStripeAccount,
   savePartnerStripeKey,
 } from './partnerStripe';
@@ -130,6 +139,7 @@ const CLAIM_MESSAGE =
 
 beforeEach(() => {
   dbMocks.selectResults.length = 0;
+  dbMocks.selectWheres.length = 0;
   dbMocks.insertedValues.length = 0;
   dbMocks.upsertConfigs.length = 0;
   dbMocks.upsertErrors.length = 0;
@@ -648,5 +658,32 @@ describe('getPartnerStripeAccountSnapshot', () => {
       [{ apiKey: null, status: 'disconnected', stripeAccountId: 'acct_unit', defaultCurrency: null }],
     );
     await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toEqual({ connected: false, last4: '9999' });
+  });
+});
+
+/**
+ * Review F5: the bootstrap re-check window must be STRICTLY shorter than the
+ * sweep's own cadence. With both at 24h, a row stamped by yesterday's 03:45 run
+ * is a few seconds NEWER than `now - 24h`, so today's run skips it and the
+ * "daily" re-check silently becomes every other day.
+ */
+describe('listPartnersNeedingStripeAccountBootstrap', () => {
+  const DAILY_CRON_MS = 24 * 60 * 60 * 1000;
+
+  it('re-checks a row stamped by YESTERDAY\'s sweep (cutoff is strictly inside the cron period)', async () => {
+    const now = new Date('2026-08-22T03:45:00.000Z');
+    dbMocks.selectResults.push([]);
+
+    await listPartnersNeedingStripeAccountBootstrap(now);
+
+    const cutoff = collectSqlTerms(dbMocks.selectWheres[0]).params.find((p): p is Date => p instanceof Date);
+    expect(cutoff).toBeInstanceOf(Date);
+    // Yesterday's run stamped the row a beat AFTER its own tick; it must still
+    // fall before the cutoff, i.e. still be selected today.
+    const stampedByYesterdaysSweep = new Date(now.getTime() - DAILY_CRON_MS + 5_000);
+    expect(cutoff!.getTime()).toBeGreaterThan(stampedByYesterdaysSweep.getTime());
+    // ...and not so short that the same row is re-hammered within one sweep period.
+    expect(cutoff!.getTime()).toBe(now.getTime() - STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS);
+    expect(STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS).toBeLessThan(DAILY_CRON_MS);
   });
 });

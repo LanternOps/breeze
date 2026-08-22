@@ -81,6 +81,15 @@ export type PartnerStripeStatus =
 export const STRIPE_ACCOUNT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Age at which the daily bootstrap sweep re-checks an account it already
+ * stamped. Deliberately SHORTER than both the cache TTL and the sweep's own
+ * 24h cron: a row stamped by yesterday's run is a few seconds younger than
+ * `now - 24h`, so an equal window skipped it and the "daily" re-check ran every
+ * other day (review F5). One hour of slack absorbs cron drift and slow sweeps.
+ */
+export const STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS = 23 * 60 * 60 * 1000;
+
+/**
  * Per-partner Stripe API-key model (replaces Connect OAuth). The partner pastes
  * their OWN Stripe secret/restricted key; we validate it by retrieving the account
  * it belongs to, then store it ENCRYPTED (secretCrypto) — charges later run directly
@@ -457,12 +466,13 @@ export async function getPartnerStripeAccountSnapshot(partnerId: string): Promis
 /**
  * Connected accounts whose currency cache needs a bootstrap (#3777 review F6):
  * rows never refreshed (pre-cache connections migrate with every cache column
- * NULL), plus rows where Stripe reported no default currency and the TTL has
- * elapsed (re-checked daily, not hammered). Caller supplies the DB context
- * (system scope — this is a cross-partner sweep).
+ * NULL), plus rows where Stripe reported no default currency and the re-check
+ * window has elapsed (STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS — under the sweep's
+ * own cadence, so "daily" really is daily; review F5). Caller supplies the DB
+ * context (system scope — this is a cross-partner sweep).
  */
 export async function listPartnersNeedingStripeAccountBootstrap(now: Date = new Date()): Promise<{ partnerId: string }[]> {
-  const ttlAgo = new Date(now.getTime() - STRIPE_ACCOUNT_CACHE_TTL_MS);
+  const recheckBefore = new Date(now.getTime() - STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS);
   return db
     .select({ partnerId: stripeConnectAccounts.partnerId })
     .from(stripeConnectAccounts)
@@ -471,7 +481,7 @@ export async function listPartnersNeedingStripeAccountBootstrap(now: Date = new 
       isNotNull(stripeConnectAccounts.apiKey),
       or(
         isNull(stripeConnectAccounts.accountRefreshedAt),
-        and(isNull(stripeConnectAccounts.defaultCurrency), lt(stripeConnectAccounts.accountRefreshedAt, ttlAgo)),
+        and(isNull(stripeConnectAccounts.defaultCurrency), lt(stripeConnectAccounts.accountRefreshedAt, recheckBefore)),
       ),
     ))
     .orderBy(stripeConnectAccounts.partnerId);
