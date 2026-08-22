@@ -75,6 +75,8 @@ export const quotes = pgTable('quotes', {
   // Frozen { theme, pageSize } captured at send so sent quotes never restyle
   // when the partner later changes theme (sellerSnapshot pattern).
   presentationSnapshot: jsonb('presentation_snapshot'),
+  // Render-locale snapshot, stamped once at issue/send (#3777). NULL = resolve from partner at render.
+  documentLocale: varchar('document_locale', { length: 16 }),
   termsAndConditions: text('terms_and_conditions'),
   declineReason: text('decline_reason'),
   convertedInvoiceId: uuid('converted_invoice_id'),
