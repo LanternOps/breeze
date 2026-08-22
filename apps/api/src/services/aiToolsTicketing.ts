@@ -359,7 +359,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           hourlyRate: {
             type: 'number',
-            description: 'Override hourly rate in currency units (log_time_entry; defaults from ticket category)'
+            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from org/category settings only when their rate currency matches the org)'
           }
         },
         required: ['action']

@@ -222,12 +222,14 @@ moveOrgRoutes.post(
         // tickets bound to this device move org with it, so these must follow —
         // same stranded-org_id class as ticket_alert_links (#1261).
         //
-        // Multi-currency (#3776): this IS a ticket org-move for every ticket
-        // bound to the device. The `tickets` rows were locked by the
-        // denormalized-table loop's UPDATE above (global lock order tickets →
-        // time_entries → ticket_parts); the guard now locks the unbilled
-        // monetary children and blocks unless the mismatch was accepted. The
-        // rewrites below touch org_id only — currency_code snapshots never move.
+        // Wave 4 (#3776): org_id only — currency_code is a snapshot and is NOT
+        // rewritten. Lock order is global (tickets → time_entries → ticket_parts):
+        // the tickets row lock was taken by the denormalized-table loop above, the
+        // guard locks the two source tables in that order, and only then are they
+        // rewritten — the same order moveTicketOrg uses, so a concurrent ticket move
+        // or issueInvoice serializes instead of deadlocking. Accepted mismatches stay
+        // invoiceable only through an old-currency draft (assembleDraftFromOrg
+        // currencyCode override).
         const ticketIds = (
           await tx.select({ id: tickets.id }).from(tickets).where(eq(tickets.deviceId, deviceId))
         ).map((r) => r.id);

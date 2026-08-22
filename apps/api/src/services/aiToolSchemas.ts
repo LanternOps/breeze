@@ -233,6 +233,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     startedAt: z.string().datetime().optional(),
     endedAt: z.string().datetime().optional(),
     isBillable: z.boolean().optional(),
+    // Interpreted in the ticket org's currency (spec §9); the entry snapshots that currency.
     hourlyRate: z.number().nonnegative().optional(),
     fields: z.object({
       subject: z.string().min(1).max(255).optional(),
