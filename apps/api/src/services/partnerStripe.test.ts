@@ -244,6 +244,29 @@ describe('savePartnerStripeKey', () => {
       .rejects.toBe(dbDown);
   });
 
+  // Review F6: a Stripe outage at save time is not a bad paste. It used to
+  // reuse an inline copy of the transient predicate and still return
+  // INVALID_STRIPE_KEY/400, telling the partner to fix a key that is fine.
+  it.each(['StripeConnectionError', 'StripeAPIError', 'StripeRateLimitError'])(
+    'a transient %s during validation maps to STRIPE_UNAVAILABLE (503), not INVALID_STRIPE_KEY',
+    async (type) => {
+      accountsRetrieveMock.mockRejectedValue(Object.assign(new Error('stripe down'), { type }));
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await expect(savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID }))
+          .rejects.toMatchObject({
+            name: 'PartnerStripeError',
+            code: 'STRIPE_UNAVAILABLE',
+            status: 503,
+            message: 'Could not reach Stripe to verify the key right now — please try again in a moment.',
+          });
+      } finally {
+        consoleSpy.mockRestore();
+      }
+      expect(dbMocks.insertedValues).toHaveLength(0);
+    },
+  );
+
   it('a key Stripe rejects maps to INVALID_STRIPE_KEY without touching the DB', async () => {
     accountsRetrieveMock.mockRejectedValue(
       Object.assign(new Error('Invalid API Key provided'), { type: 'StripeAuthenticationError' })

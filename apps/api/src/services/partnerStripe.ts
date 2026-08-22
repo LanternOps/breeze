@@ -124,16 +124,21 @@ export async function savePartnerStripeKey(input: {
   } catch (err) {
     // Always log the real reason — a money-onboarding path must not swallow it. A
     // transient Stripe outage / rate-limit isn't the partner's fault, so say so
-    // rather than telling them to rotate a valid key.
+    // rather than telling them to rotate a valid key — and carry the TRANSIENT
+    // code (503) with that message, not INVALID_STRIPE_KEY/400 (review F6).
+    // Shared predicate, never a second inline copy that can drift from it.
     const type = (err as { type?: string })?.type;
-    const transient = type === 'StripeConnectionError' || type === 'StripeAPIError' || type === 'StripeRateLimitError';
+    const transient = isTransientStripeError(err);
     console.error('[partnerStripe] key validation failed', { partnerId: input.partnerId, type: type ?? 'unknown', transient, message: err instanceof Error ? err.message : String(err) });
-    throw new PartnerStripeError(
-      transient
-        ? 'Could not reach Stripe to verify the key right now — please try again in a moment.'
-        : 'That Stripe key was rejected — double-check it (and that it can read your account) and try again.',
-      'INVALID_STRIPE_KEY',
-    );
+    throw transient
+      ? new PartnerStripeError(
+          'Could not reach Stripe to verify the key right now — please try again in a moment.',
+          'STRIPE_UNAVAILABLE',
+        )
+      : new PartnerStripeError(
+          'That Stripe key was rejected — double-check it (and that it can read your account) and try again.',
+          'INVALID_STRIPE_KEY',
+        );
   }
 
   const accountId = account.id;
