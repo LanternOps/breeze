@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { formatMoney } from '@/components/billing/shared/format';
-import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
+import { usePartnerCurrencyOrDefault } from '../../lib/usePartnerCurrency';
 import {
   CATALOG_TYPE_CHIP,
   type CatalogItem,
@@ -36,7 +36,7 @@ export default function CatalogItemPicker({
   items, onSelect, includeBundles = true, placeholder, disabled, testId = 'catalog-picker', currencyCode,
 }: Props) {
   const { t } = useTranslation('common');
-  const partnerCurrency = usePartnerCurrency();
+  const partnerCurrency = usePartnerCurrencyOrDefault();
   const priceCurrency = currencyCode ?? partnerCurrency;
   const resolvedPlaceholder = placeholder ?? t('longTail.catalog.CatalogItemPicker.placeholder');
   const [query, setQuery] = useState('');

@@ -8,7 +8,7 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
 import { formatMoney } from '@/components/billing/shared/format';
-import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
+import { usePartnerCurrencyOrDefault } from '../../lib/usePartnerCurrency';
 
 interface Category {
   id: string;
@@ -98,7 +98,7 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 export default function TicketCategoriesPage() {
   const { t } = useTranslation('settings');
   // INTERIM (#3777): replaced by wave-4 rate currencies on ticket categories.
-  const currencyCode = usePartnerCurrency();
+  const currencyCode = usePartnerCurrencyOrDefault();
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);

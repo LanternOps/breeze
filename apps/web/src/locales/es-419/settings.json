@@ -1542,7 +1542,20 @@
     "saving": "Guardando…",
     "saveChanges": "Guardar cambios",
     "createItem": "Crear artículo",
-    "unknownItem": "Artículo desconocido"
+    "unknownItem": "Artículo desconocido",
+    "priceBook": "Lista de precios",
+    "addCurrencyPrice": "Agregar un precio en otra moneda…",
+    "removePrice": "Quitar el precio en {{currency}}",
+    "priceCurrency": "Moneda del precio",
+    "costCurrency": "Moneda del costo",
+    "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",
+    "overrideCurrency": "Moneda del precio especial",
+    "noPricesYet": "Aún no hay precios. Agrega al menos una moneda.",
+    "loadingPartnerCurrency": "Cargando la moneda del partner…",
+    "partnerCurrencyUnavailable": "No se pudo cargar la moneda de tu partner.",
+    "retry": "Reintentar",
+    "priceCouldNotBeSavedRetry": "No se pudo guardar el precio en {{currency}}. Reintenta.",
+    "priceCouldNotBeRemovedRetry": "No se pudo quitar el precio en {{currency}}. Reintenta."
   },
   "catalogItemsTab": {
     "itemArchived": "Artículo archivado",
@@ -1589,7 +1602,12 @@
     "margin": "Margen",
     "unknownItem": "Artículo desconocido",
     "collapseBundle": "Contraer paquete",
-    "expandBundle": "Expandir paquete"
+    "expandBundle": "Expandir paquete",
+    "nMoreCurrencies_one": "+{{count}} moneda",
+    "nMoreCurrencies_other": "+{{count}} monedas",
+    "incompletePriceBook": "Lista de precios incompleta",
+    "marginUnavailable": "Margen no disponible",
+    "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catálogo de productos",

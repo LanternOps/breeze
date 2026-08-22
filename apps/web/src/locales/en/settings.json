@@ -1542,7 +1542,20 @@
     "saving": "Saving…",
     "saveChanges": "Save changes",
     "createItem": "Create item",
-    "unknownItem": "Unknown item"
+    "unknownItem": "Unknown item",
+    "priceBook": "Price book",
+    "addCurrencyPrice": "Add a price in another currency…",
+    "removePrice": "Remove {{currency}} price",
+    "priceCurrency": "Price currency",
+    "costCurrency": "Cost currency",
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
+    "overrideCurrency": "Override currency",
+    "noPricesYet": "No prices yet. Add at least one currency.",
+    "loadingPartnerCurrency": "Loading partner currency…",
+    "partnerCurrencyUnavailable": "Could not load your partner currency.",
+    "retry": "Retry",
+    "priceCouldNotBeSavedRetry": "The {{currency}} price could not be saved. Retry.",
+    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry."
   },
   "catalogItemsTab": {
     "itemArchived": "Item archived",
@@ -1589,7 +1602,12 @@
     "margin": "Margin",
     "unknownItem": "Unknown item",
     "collapseBundle": "Collapse bundle",
-    "expandBundle": "Expand bundle"
+    "expandBundle": "Expand bundle",
+    "nMoreCurrencies_one": "+{{count}} currency",
+    "nMoreCurrencies_other": "+{{count}} currencies",
+    "incompletePriceBook": "Incomplete price book",
+    "marginUnavailable": "Margin unavailable",
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable"
   },
   "catalogSettingsPage": {
     "productCatalog": "Product Catalog",

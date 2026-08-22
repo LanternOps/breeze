@@ -1537,7 +1537,20 @@
     "saving": "Enregistrement...",
     "saveChanges": "Enregistrer les modifications",
     "createItem": "Créer un élément",
-    "unknownItem": "élément inconnu"
+    "unknownItem": "élément inconnu",
+    "priceBook": "Liste de prix",
+    "addCurrencyPrice": "Ajouter un prix dans une autre devise…",
+    "removePrice": "Supprimer le prix en {{currency}}",
+    "priceCurrency": "Devise du prix",
+    "costCurrency": "Devise du coût",
+    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
+    "overrideCurrency": "Devise du prix spécifique",
+    "noPricesYet": "Aucun prix pour l’instant. Ajoutez au moins une devise.",
+    "loadingPartnerCurrency": "Chargement de la devise du partenaire…",
+    "partnerCurrencyUnavailable": "Impossible de charger la devise de votre partenaire.",
+    "retry": "Réessayer",
+    "priceCouldNotBeSavedRetry": "Le prix en {{currency}} n’a pas pu être enregistré. Réessayez.",
+    "priceCouldNotBeRemovedRetry": "Le prix en {{currency}} n’a pas pu être supprimé. Réessayez."
   },
   "catalogItemsTab": {
     "itemArchived": "Article archivé",
@@ -1584,7 +1597,12 @@
     "margin": "Marge",
     "unknownItem": "élément inconnu",
     "collapseBundle": "Réduire le lot",
-    "expandBundle": "Fibré expanseur"
+    "expandBundle": "Fibré expanseur",
+    "nMoreCurrencies_one": "+{{count}} devise",
+    "nMoreCurrencies_other": "+{{count}} devises",
+    "incompletePriceBook": "Liste de prix incomplète",
+    "marginUnavailable": "Marge indisponible",
+    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",
