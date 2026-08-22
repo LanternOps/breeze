@@ -111,6 +111,7 @@ async function seedMoveOrgFixture(): Promise<MoveOrgFixture> {
       startedAt: new Date(Date.now() - 60_000),
       endedAt: new Date(),
       durationMinutes: 1,
+      currencyCode: 'USD',
     })
     .returning();
 
@@ -122,6 +123,7 @@ async function seedMoveOrgFixture(): Promise<MoveOrgFixture> {
       orgId: orgA.id,
       description: 'test part',
       quantity: '1.00',
+      currencyCode: 'USD',
     })
     .returning();
 

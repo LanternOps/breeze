@@ -126,7 +126,8 @@ describe.runIf(RUN)('changeInvoiceCurrency (atomic clear-and-restamp, #3774)', (
       const [te] = await db.insert(timeEntries).values({
         partnerId: f.partnerId, orgId: f.orgId, userId: f.userId, startedAt: now, endedAt: now,
         durationMinutes: 60, description: 'Work', isBillable: true,
-        hourlyRate: '100.00', billingStatus: 'billed', isApproved: true
+        hourlyRate: '100.00', billingStatus: 'billed', isApproved: true,
+        currencyCode: 'EUR'
       }).returning({ id: timeEntries.id });
       return te!.id;
     });

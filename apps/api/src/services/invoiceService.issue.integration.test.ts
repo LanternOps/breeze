@@ -61,7 +61,8 @@ async function seedFixture(opts?: {
         partnerId, orgId, userId, startedAt: now, endedAt: now,
         durationMinutes: e.durationMinutes, description: 'Work', isBillable: true,
         hourlyRate: e.hourlyRate, billingStatus: e.billed ? 'billed' : 'not_billed',
-        isApproved: e.isApproved ?? true
+        isApproved: e.isApproved ?? true,
+        currencyCode: 'USD'
       }).returning({ id: timeEntries.id });
       timeEntryIds.push(te!.id);
     }
