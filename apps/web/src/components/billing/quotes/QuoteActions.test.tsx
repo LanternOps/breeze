@@ -285,11 +285,15 @@ describe('QuoteActions — Stripe currency-mismatch warning (#3777)', () => {
     expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
   });
 
-  it('stays silent when the account currency is not cached (null)', async () => {
+  it('account currency not cached (null): shows an explicit "refresh required" note instead of silence (review F6)', async () => {
     authState.tokens = PARTNER_TOKENS;
     mockStripe(null);
     await openComposer({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } });
     await screen.findByTestId('quote-send-payment-enabled');
     expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
+    const note = screen.getByTestId('quote-stripe-currency-unknown');
+    expect(note.textContent).toMatch(/refresh/i);
+    // Warn, never block.
+    expect(screen.getByTestId('quote-send-confirm')).not.toBeDisabled();
   });
 });

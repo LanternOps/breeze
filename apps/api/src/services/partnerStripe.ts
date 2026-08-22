@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { stripeConnectAccounts } from '../db/schema/stripePayments';
 import { encryptSecret, decryptSecret } from './secretCrypto';
@@ -405,6 +405,29 @@ export async function getPartnerStripeAccountSnapshot(partnerId: string): Promis
     // by the refresh path. Surface the state; do NOT pretend the cache is good.
     return { ...status, cacheState: 'reconnect_required', error: { code: err.code, message: err.message } };
   }
+}
+
+/**
+ * Connected accounts whose currency cache needs a bootstrap (#3777 review F6):
+ * rows never refreshed (pre-cache connections migrate with every cache column
+ * NULL), plus rows where Stripe reported no default currency and the TTL has
+ * elapsed (re-checked daily, not hammered). Caller supplies the DB context
+ * (system scope — this is a cross-partner sweep).
+ */
+export async function listPartnersNeedingStripeAccountBootstrap(now: Date = new Date()): Promise<{ partnerId: string }[]> {
+  const ttlAgo = new Date(now.getTime() - STRIPE_ACCOUNT_CACHE_TTL_MS);
+  return db
+    .select({ partnerId: stripeConnectAccounts.partnerId })
+    .from(stripeConnectAccounts)
+    .where(and(
+      eq(stripeConnectAccounts.status, 'connected'),
+      isNotNull(stripeConnectAccounts.apiKey),
+      or(
+        isNull(stripeConnectAccounts.accountRefreshedAt),
+        and(isNull(stripeConnectAccounts.defaultCurrency), lt(stripeConnectAccounts.accountRefreshedAt, ttlAgo)),
+      ),
+    ))
+    .orderBy(stripeConnectAccounts.partnerId);
 }
 
 /** Build a Stripe client bound to the partner's own key. Throws NO_STRIPE_KEY if unconfigured. */

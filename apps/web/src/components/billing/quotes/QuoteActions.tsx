@@ -1304,6 +1304,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         {/* Warn-don't-block (#3777): the quote's currency differs from the
             account's cached settlement currency. Amber info only — Send stays
             armed; the web never computes this from anything but the API cache. */}
+        {/* Unknown is NOT "matches" (#3777 review F6): a connection that predates
+            the currency cache, or an account Stripe reports no default for, gets
+            an explicit "refresh required" note rather than silence. */}
+        {stripeStatus === 'connected' && !stripeDefaultCurrency && (
+          <p
+            className="mt-2 text-xs text-muted-foreground"
+            role="status"
+            data-testid="quote-stripe-currency-unknown"
+          >
+            {t('quotes.actions.currencyUnknown', { documentCurrency: quote.currencyCode })}
+          </p>
+        )}
         {stripeStatus === 'connected' && stripeDefaultCurrency && stripeDefaultCurrency !== quote.currencyCode && (
           <div
             className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300"

@@ -569,10 +569,14 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 role="status"
                 data-testid="invoice-stripe-currency-warning"
               >
-                {t('invoiceDetail.payments.currencyMismatch', {
-                  documentCurrency: currencyWarning.documentCurrency,
-                  accountCurrency: currencyWarning.accountCurrency,
-                })}
+                {currencyWarning.code === 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN'
+                  ? t('invoiceDetail.payments.currencyUnknown', {
+                      documentCurrency: currencyWarning.documentCurrency,
+                    })
+                  : t('invoiceDetail.payments.currencyMismatch', {
+                      documentCurrency: currencyWarning.documentCurrency,
+                      accountCurrency: currencyWarning.accountCurrency,
+                    })}
               </p>
             )}
 
