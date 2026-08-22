@@ -16,6 +16,7 @@ vi.mock('../../services/catalogService', () => ({
   listItemPrices: vi.fn(),
   setOrgPriceOverride: vi.fn(),
   removeOrgPriceOverride: vi.fn(),
+  resolvePrice: vi.fn(),
   setBundleComponents: vi.fn(),
   computeBundleEconomics: vi.fn(),
   CatalogServiceError: class CatalogServiceError extends Error {
@@ -546,6 +547,38 @@ describe('catalog pricing routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: rows });
     expect(svc.listItemPrices).toHaveBeenCalledWith(ITEM_ID, expect.anything());
+  });
+
+  // Post-merge review #6: the contract editor gates Add / previews the price on
+  // the SERVER's resolution (org override → price book), never on item.prices.
+  it('GET /:id/resolve returns the resolver result for an org + normalized currency', async () => {
+    const resolved = { unitPrice: '37.00', currencyCode: 'EUR', costBasis: null, costCurrency: 'USD', marginAvailable: false, taxable: true, taxCategory: null, source: 'org_override' };
+    (svc.resolvePrice as any).mockResolvedValue(resolved);
+    const res = await app().request(`/${ITEM_ID}/resolve?currencyCode=eur&orgId=${ORG_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: resolved });
+    expect(svc.resolvePrice).toHaveBeenCalledWith(ITEM_ID, 'EUR', ORG_ID, expect.anything());
+  });
+
+  it('GET /:id/resolve without orgId resolves the base price book', async () => {
+    (svc.resolvePrice as any).mockResolvedValue({ unitPrice: '42.00', source: 'price_book' });
+    const res = await app().request(`/${ITEM_ID}/resolve?currencyCode=EUR`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(svc.resolvePrice).toHaveBeenCalledWith(ITEM_ID, 'EUR', null, expect.anything());
+  });
+
+  it('GET /:id/resolve maps a price-book gap to the typed 409', async () => {
+    (svc.resolvePrice as any).mockRejectedValue(new (svc as any).CatalogServiceError('No price', 409, 'NO_PRICE_FOR_CURRENCY'));
+    const res = await app().request(`/${ITEM_ID}/resolve?currencyCode=EUR&orgId=${ORG_ID}`, { method: 'GET' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('NO_PRICE_FOR_CURRENCY');
+  });
+
+  it('GET /:id/resolve requires a supported currencyCode and a UUID orgId (400, no service call)', async () => {
+    expect((await app().request(`/${ITEM_ID}/resolve`, { method: 'GET' })).status).toBe(400);
+    expect((await app().request(`/${ITEM_ID}/resolve?currencyCode=zzz`, { method: 'GET' })).status).toBe(400);
+    expect((await app().request(`/${ITEM_ID}/resolve?currencyCode=EUR&orgId=nope`, { method: 'GET' })).status).toBe(400);
+    expect(svc.resolvePrice).not.toHaveBeenCalled();
   });
 });
 

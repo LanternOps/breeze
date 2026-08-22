@@ -107,6 +107,22 @@ export interface OrgPriceOverride {
   unitPrice: string;
 }
 
+/** Shape of `GET /catalog/:id/resolve` — the server's spec-§6 resolution for one
+ *  org + currency: an org override in that currency wins, else the price-book
+ *  row, else the endpoint answers 409 `NO_PRICE_FOR_CURRENCY` (a gap — never a
+ *  converted or other-currency number). Document editors gate on THIS, not on
+ *  `item.prices`, which cannot see org overrides. */
+export interface ResolvedCatalogPrice {
+  unitPrice: string;
+  currencyCode: string;
+  costBasis: string | null;
+  costCurrency: string;
+  marginAvailable: boolean;
+  taxable: boolean;
+  taxCategory: string | null;
+  source: 'org_override' | 'price_book';
+}
+
 /** Shape of `GET /catalog/:id` — `{ data: { item, prices, overrides, components } }`. */
 export interface CatalogItemDetail {
   item: CatalogItem;
@@ -171,6 +187,19 @@ export function listCatalog(query: ListCatalogQuery = {}): Promise<Response> {
 
 export function getCatalogItem(id: string): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}`);
+}
+
+/** Resolve an item's price for `currencyCode` as `orgId` would be billed (org
+ *  override → price book). `orgId` is sent explicitly — or injection is skipped
+ *  for a partner-level lookup — so the active-org auto-injection can never swap
+ *  in a different org's overrides. 409 `NO_PRICE_FOR_CURRENCY` is the gap. */
+export function resolveCatalogPrice(id: string, currencyCode: string, orgId: string | null): Promise<Response> {
+  const params = new URLSearchParams({ currencyCode: currencyCode.trim().toUpperCase() });
+  if (orgId) {
+    params.set('orgId', orgId);
+    return fetchWithAuth(`/catalog/${id}/resolve?${params.toString()}`);
+  }
+  return fetchWithAuth(`/catalog/${id}/resolve?${params.toString()}`, { skipOrgIdInjection: true });
 }
 
 export function createCatalogItem(body: unknown): Promise<Response> {

@@ -96,6 +96,7 @@
           "cancel": "Contrat annulé"
         },
         "invoiceGenerated": "Facture générée",
+        "priceBookGaps": "{{count}} ligne(s) de catalogue facturée(s) au prix figé du contrat — aucun prix en {{currency}} dans le catalogue : {{lines}}",
         "draftDeleted": "Brouillon supprimé"
       },
       "cancelConfirm": {
@@ -201,7 +202,10 @@
         "lineTotal": "Total de la ligne : {{total}}",
         "addLine": "Ajouter la ligne",
         "noPriceInCurrency": "Aucun prix en {{currency}} pour cet article — ajoutez-en un au catalogue, ou supprimez le lien vers le catalogue et saisissez une ligne manuelle.",
-        "priceFromCatalog": "Prix unitaire (du catalogue, en {{currency}})"
+        "priceFromCatalog": "Prix unitaire (du catalogue, en {{currency}})",
+        "resolvingPrice": "Recherche du prix en {{currency}}…",
+        "priceLookupFailed": "Impossible d’obtenir le prix en {{currency}}.",
+        "priceSourceOrgOverride": "Prix propre à l’organisation {{org}}"
       },
       "estimate": {
         "title": "Estimé pour cette période",

@@ -96,6 +96,7 @@
           "cancel": "Vertrag gekündigt"
         },
         "invoiceGenerated": "Rechnung erstellt",
+        "priceBookGaps": "{{count}} Katalogposition(en) zum Vertrags-Snapshot abgerechnet — kein {{currency}}-Preis im Katalog: {{lines}}",
         "draftDeleted": "Entwurf gelöscht"
       },
       "cancelConfirm": {
@@ -201,7 +202,10 @@
         "lineTotal": "Positionssumme: {{total}}",
         "addLine": "Position hinzufügen",
         "noPriceInCurrency": "Kein Preis in {{currency}} für dieses Element — legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
-        "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})"
+        "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})",
+        "resolvingPrice": "{{currency}}-Preis wird ermittelt…",
+        "priceLookupFailed": "Der {{currency}}-Preis konnte nicht ermittelt werden.",
+        "priceSourceOrgOverride": "Organisationsspezifischer Preis für {{org}}"
       },
       "estimate": {
         "title": "Geschätzter Zeitraum",

@@ -96,6 +96,7 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Factura generada",
+        "priceBookGaps": "{{count}} línea(s) de catálogo facturada(s) con el precio guardado en el contrato — no hay precio en {{currency}} en el catálogo: {{lines}}",
         "draftDeleted": "Borrador eliminado"
       },
       "cancelConfirm": {
@@ -201,7 +202,10 @@
         "lineTotal": "Total de líneas: {{total}}",
         "addLine": "Agregar línea",
         "noPriceInCurrency": "Este elemento no tiene precio en {{currency}}: agregue uno en el catálogo, o borre el enlace del catálogo e ingrese una línea manual.",
-        "priceFromCatalog": "Precio unitario (del catálogo, en {{currency}})"
+        "priceFromCatalog": "Precio unitario (del catálogo, en {{currency}})",
+        "resolvingPrice": "Buscando el precio en {{currency}}…",
+        "priceLookupFailed": "No se pudo obtener el precio en {{currency}}.",
+        "priceSourceOrgOverride": "Precio específico de la organización {{org}}"
       },
       "estimate": {
         "title": "Estimado este periodo",

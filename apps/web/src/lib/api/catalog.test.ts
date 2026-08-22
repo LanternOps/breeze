@@ -3,6 +3,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import {
   computeMargin, formatMargin, marginTone,
   getBundleEconomics, setItemPrice, removeItemPrice, listItemPrices, setOrgPriceOverride,
+  resolveCatalogPrice,
 } from './catalog';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
@@ -79,6 +80,15 @@ describe('price-book requests', () => {
     expect(fetchMock).toHaveBeenCalledWith('/catalog/ID/prices/EUR', { method: 'DELETE' });
     await listItemPrices('ID');
     expect(fetchMock).toHaveBeenCalledWith('/catalog/ID/prices');
+  });
+
+  it('resolveCatalogPrice GETs /catalog/:id/resolve with the currency and (always) the org', async () => {
+    // orgId is passed explicitly so fetchWithAuth's active-org injection can
+    // never substitute a different org's overrides for the contract's.
+    await resolveCatalogPrice('ID', 'EUR', 'org-1');
+    expect(fetchMock).toHaveBeenLastCalledWith('/catalog/ID/resolve?currencyCode=EUR&orgId=org-1');
+    await resolveCatalogPrice('ID', 'cad', null);
+    expect(fetchMock).toHaveBeenLastCalledWith('/catalog/ID/resolve?currencyCode=CAD', { skipOrgIdInjection: true });
   });
 
   it('getBundleEconomics passes currencyCode / orgId as query params', async () => {

@@ -96,6 +96,7 @@
           "cancel": "Contract cancelled"
         },
         "invoiceGenerated": "Invoice generated",
+        "priceBookGaps": "{{count}} catalog line(s) billed at the contract snapshot — no {{currency}} price in the catalog: {{lines}}",
         "draftDeleted": "Draft deleted"
       },
       "cancelConfirm": {
@@ -201,7 +202,10 @@
         "lineTotal": "Line total: {{total}}",
         "addLine": "Add line",
         "noPriceInCurrency": "No {{currency}} price for this item — add one in the catalog, or clear the catalog link and enter a manual line.",
-        "priceFromCatalog": "Unit price (from the catalog, in {{currency}})"
+        "priceFromCatalog": "Unit price (from the catalog, in {{currency}})",
+        "resolvingPrice": "Looking up the {{currency}} price…",
+        "priceLookupFailed": "Could not look up the {{currency}} price.",
+        "priceSourceOrgOverride": "Organization-specific price for {{org}}"
       },
       "estimate": {
         "title": "Estimated this period",
