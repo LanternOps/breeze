@@ -50,7 +50,9 @@ type ExecuteScriptOnDevicesSuccess = {
   // devices are excluded from `executions` but still counted in
   // `devicesTargeted` — they were targeted, just failed to dispatch. Each one
   // gets its own 'failed' script_executions row (see the dispatch loop below)
-  // so `devicesTargeted` never outlives the rows a caller can find.
+  // so `devicesTargeted` never outlives the rows a caller can find — except
+  // for the codes in DISPATCH_CODES_ALREADY_RECORDED, whose row the dispatch
+  // core's own gate already wrote.
   failures: Array<{ deviceId: string; code: string; error: string }>;
   // Bound parameter keys the caller supplied a value for, unioned across the
   // fan-out and de-duplicated (#3409 PR3 §2.2). The binding is authoritative,
@@ -76,6 +78,30 @@ type ExecuteScriptOnDevicesSuccess = {
 };
 
 export type ExecuteScriptOnDevicesResult = ExecuteScriptOnDevicesSuccess | ExecuteScriptOnDevicesFailure;
+
+/**
+ * Dispatch failure codes whose `script_executions` row and `devicesFailed`
+ * batch increment were ALREADY written before `dispatchScriptToDevice`
+ * returned — so this fan-out must record the device in `failures` but must
+ * NOT write its own duplicate row or double-spend the batch slot.
+ *
+ * Today that is exactly the claim-time secret gate's refusal (#3409 PR4c-2):
+ * `failClaimedSecretCommandsForUnsupportedAgent` drives the command AND its
+ * linked execution row to 'failed' and bumps the batch itself before dispatch
+ * turns that into an 'agent_upgrade_required' refusal.
+ *
+ * The SAME code is also produced by the ENQUEUE preflight, which refuses
+ * before any row exists, and the code alone cannot tell the two apart — so
+ * this set errs toward NOT writing. A duplicate row plus a double-spent batch
+ * slot (the operator sees the device fail twice, and `devicesFailed` can
+ * exceed `devicesTargeted`) is worse than an enqueue-refused device that
+ * surfaces only in the returned `failures`. If the enqueue refusal ever needs
+ * a row of its own, give it a distinct code rather than dropping this entry.
+ *
+ * A named set rather than an inline `===` so a future code is added here
+ * deliberately, with that ownership question answered.
+ */
+const DISPATCH_CODES_ALREADY_RECORDED: ReadonlySet<string> = new Set(['agent_upgrade_required']);
 
 function ensureOrgAccess(orgId: string, auth: Pick<ScriptExecutionAuth, 'canAccessOrg'>) {
   return auth.canAccessOrg(orgId);
@@ -273,6 +299,12 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       // softwareDeployment.ts:399-414 for the pattern this mirrors.
       if (dispatch.code === 'insert_failed') {
         throw new Error(dispatch.error);
+      }
+      // The device still lands in `failures` — the operator must see it — but
+      // its row and batch slot are already spent by whoever owns this code.
+      if (DISPATCH_CODES_ALREADY_RECORDED.has(dispatch.code)) {
+        failures.push({ deviceId: device.id, code: dispatch.code, error: dispatch.error });
+        continue;
       }
       await db.insert(scriptExecutions).values({
         scriptId: input.scriptId,

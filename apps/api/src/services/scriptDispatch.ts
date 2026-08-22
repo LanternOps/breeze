@@ -24,6 +24,7 @@ import {
   type TenantVariableScope,
 } from './tenantVariableResolution';
 import {
+  AGENT_UPGRADE_REQUIRED_MESSAGE,
   failClaimedSecretCommandsForUnsupportedAgent,
   secretDeliveryPreflight,
   type SecretDeliveryPreflightFailureCode,
@@ -94,21 +95,17 @@ export type DispatchScriptResult =
       // 'send_failed' all mean we had a connected agent and still failed to
       // reach it — operationally different, and worth a log line (see below).
       //
-      // 'agent_unsupported' (#3409 PR4c-2) is the only outcome that is
-      // TERMINAL rather than retryable: the claim-time secret gate found the
-      // agent's `scriptSecretEnvVersion` had dropped below the floor between
-      // enqueue and delivery, and already drove BOTH the command row and the
-      // linked execution row to 'failed' (with the payload erased). The
-      // dispatch still returns `ok: true` because the rows exist and carry
-      // the outcome — the caller reads execution history for the reason
-      // rather than getting a `code` here; the command is NOT released back
-      // to pending, since the same agent would only re-claim it.
+      // Every value here is a QUEUED outcome: the command exists and can
+      // still reach the agent. A terminal refusal is never reported on this
+      // arm — the claim-time secret gate's outcome is an `ok: false` /
+      // 'agent_upgrade_required' refusal (see below), because every caller
+      // branches on `ok` alone and would otherwise report a run that had
+      // already been failed as successfully queued.
       deliveryOutcome:
         | 'sent'
         | 'claim_lost'
         | 'decrypt_failed'
         | 'send_failed'
-        | 'agent_unsupported'
         | 'no_agent';
       executedAt: Date | null;
       // Bound parameter keys the caller supplied a value for (#3409 PR3
@@ -151,6 +148,14 @@ export type DispatchScriptResult =
         //       credential UNSET.
         // All three are per-device and refuse BEFORE the execution insert, so
         // a refused device leaves no orphan 'pending' row.
+        //
+        // 'agent_upgrade_required' is ALSO returned from the claim-time gate
+        // on the immediate-send path below, where it is the one refusal whose
+        // rows were written by someone else: the gate already drove the
+        // command AND the linked execution row to 'failed' and already spent
+        // the batch's `devicesFailed` slot. A fan-out caller must therefore
+        // record it WITHOUT writing its own failure row (see
+        // DISPATCH_CODES_ALREADY_RECORDED in scriptExecution.ts).
         | SecretDeliveryPreflightFailureCode;
       error: string;
     };
@@ -424,7 +429,6 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     | 'claim_lost'
     | 'decrypt_failed'
     | 'send_failed'
-    | 'agent_unsupported'
     | 'no_agent' = 'no_agent';
   if (device.agentId) {
     const claimed = await claimPendingCommandForDelivery(command.id);
@@ -439,10 +443,22 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       // A `[]` return means the gate already drove the command AND its
       // execution row terminal: do not send, and do NOT release the claim
       // back to pending (an incapable agent would just re-claim it).
-      const gated =
-        hasSecrets &&
-        (
-          await failClaimedSecretCommandsForUnsupportedAgent([
+      //
+      // The gate's own try/catch covers only its writes — the capability
+      // SELECT (and its multi-device contract-violation throw) propagates
+      // out of here. Left bare that would escape AFTER
+      // `claimPendingCommandForDelivery` already flipped the row to 'sent',
+      // 500 the caller, and abort a large fan-out mid-run. So a throw is
+      // treated exactly like a gate refusal: fail CLOSED (never decrypt,
+      // never send) and return the per-device refusal so the fan-out
+      // continues. The command row is deliberately LEFT 'sent' with its
+      // envelope intact for the stale-command reaper to strip — this path
+      // cannot know whether the gate's terminal write landed, and writing
+      // over it blind could clobber a row something else already moved.
+      let gated = false;
+      if (hasSecrets) {
+        try {
+          const survivors = await failClaimedSecretCommandsForUnsupportedAgent([
             {
               id: command.id,
               type: 'script',
@@ -450,19 +466,22 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
               payload,
               executedAt: claimed.executedAt,
             },
-          ])
-        ).length === 0;
+          ]);
+          gated = survivors.length === 0;
+        } catch (gateErr) {
+          // ids only — never the payload, sealed or otherwise.
+          console.error('[scriptDispatch] secret claim gate threw; refusing delivery', {
+            commandId: command.id,
+            deviceId: device.id,
+            executionId,
+            error: gateErr instanceof Error ? gateErr.message : String(gateErr),
+          });
+          captureException(gateErr);
+          gated = true;
+        }
+      }
       if (gated) {
-        deliveryOutcome = 'agent_unsupported';
-        return {
-          ok: true,
-          commandId: command.id,
-          executionId,
-          delivered,
-          deliveryOutcome,
-          executedAt,
-          ignoredParameters,
-        };
+        return { ok: false, code: 'agent_upgrade_required', error: AGENT_UPGRADE_REQUIRED_MESSAGE };
       }
       const deliverable = decryptCommandForDelivery({
         id: command.id,

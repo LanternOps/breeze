@@ -22,6 +22,10 @@ vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValu
 // file tests the WIRING — that dispatch calls them at the right two points,
 // only for a secret-bearing script, and honours their verdicts.
 vi.mock('./scriptSecretDelivery', () => ({
+  // The real constant's text is asserted in scriptSecretDelivery.test.ts; the
+  // dispatch refusal only has to carry it through verbatim, so a stand-in
+  // string is enough here and keeps this file free of the real module.
+  AGENT_UPGRADE_REQUIRED_MESSAGE: 'Agent upgrade required: mocked message',
   secretDeliveryPreflight: vi.fn().mockResolvedValue({ ok: true }),
   failClaimedSecretCommandsForUnsupportedAgent: vi.fn((claimed: unknown[]) => Promise.resolve(claimed)),
 }));
@@ -34,6 +38,7 @@ import { decryptCommandForDelivery, encryptSensitivePayloadFields } from './sens
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
 import {
+  AGENT_UPGRADE_REQUIRED_MESSAGE,
   failClaimedSecretCommandsForUnsupportedAgent,
   secretDeliveryPreflight,
 } from './scriptSecretDelivery';
@@ -1055,7 +1060,13 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
   // itself and never reaches decryptClaimedCommandsForDelivery, so without
   // this gate a downgraded agent would receive the script with the credential
   // unset.
-  it('immediate send: withholds and reports agent_unsupported when the claim gate fails the command', async () => {
+  //
+  // The gate outcome is TERMINAL, and every caller of dispatchScriptToDevice
+  // branches on `ok` alone — so reporting it as `ok: true` told the operator
+  // "queued on N devices" for a credentialed run that had already been failed.
+  // It is a refusal (`ok: false`), and 'agent_unsupported' no longer exists as
+  // a deliveryOutcome.
+  it('immediate send: refuses with agent_upgrade_required when the claim gate fails the command', async () => {
     mockSealOnce();
     const executedAt = new Date('2026-08-22T00:00:00Z');
     vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt } as any);
@@ -1072,13 +1083,43 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
     expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
     // ...and the execution row is NOT flipped to 'running' here.
     expect(db.update).not.toHaveBeenCalled();
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.delivered).toBe(false);
-      expect(r.deliveryOutcome).toBe('agent_unsupported');
-      expect(r.commandId).toBe('cmd-1');
-      expect(r.executionId).toBe('exec-1');
-      expect(r.executedAt).toBeNull();
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('agent_upgrade_required');
+      expect(r.error).toBe(AGENT_UPGRADE_REQUIRED_MESSAGE);
     }
+  });
+
+  // The gate's own try/catch covers only its writes: the capability SELECT
+  // (and its multi-device contract-violation throw) can propagate out AFTER
+  // `claimPendingCommandForDelivery` already flipped the row to 'sent'. Left
+  // bare, that 500s the caller and aborts a large fan-out mid-run.
+  it('immediate send: a gate throw becomes the same refusal, reported to Sentry, nothing sent', async () => {
+    mockSealOnce();
+    const executedAt = new Date('2026-08-22T00:00:00Z');
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt } as any);
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+    const boom = new Error('capability select exploded');
+    vi.mocked(failClaimedSecretCommandsForUnsupportedAgent).mockRejectedValue(boom);
+    const { releaseClaimedCommandDelivery } = await import('./commandDispatch');
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const r = await dispatchSecret({ device: device({ agentId: 'agent-1' }) });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('agent_upgrade_required');
+      expect(r.error).toBe(AGENT_UPGRADE_REQUIRED_MESSAGE);
+    }
+    // Fail CLOSED: an unknown gate verdict must never decrypt or send.
+    expect(decryptCommandForDelivery).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(boom);
+    // Log line carries ids only — never the sealed payload or the plaintext.
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET_VALUE);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('sealed-envelope');
+    warn.mockRestore();
   });
 });
