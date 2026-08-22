@@ -396,6 +396,7 @@ describe('quoteService deposits', () => {
     queueResult(blocks); // getQuote: blocks
     queueResult(lines); // getQuote: lines
     queueResult([]); // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Org Inc' }]); // getQuote: draft bill-to org lookup
@@ -480,6 +481,7 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([
       { id: 'ord-1', quoteId: 'q1', orgId: 'org1', clientRequestId: 'c1' },
       { id: 'ord-2', quoteId: 'q1', orgId: 'org1', clientRequestId: 'c2' },
@@ -507,6 +509,7 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — order headers
     queueResult([]); // listQuoteOrders — order lines
 
@@ -527,6 +530,9 @@ describe('quoteService deposits', () => {
       { sourceQuoteLineId: 'ql-1', submitState: 'pending', quantity: '1.00' },
       { sourceQuoteLineId: 'ql-2', submitState: 'pending', quantity: '2.00' },
     ]);
+    queueResult([]); // no successor revision
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
 
     const detail = await svc.getQuote('q1', actor);
 
@@ -547,6 +553,9 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // quote lines
     queueResult([]); // no Pax8 order for this quote/tenant
+    queueResult([]); // no successor revision
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
 
     const detail = await svc.getQuote('q1', actor);
 
@@ -563,6 +572,9 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
     // Deliberately queue NO org row: a sent quote must not query the live org at all.
 
     const { billTo } = await svc.getQuote('q1', actor);
@@ -576,6 +588,7 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — order headers
     queueResult([]); // listQuoteOrders — order lines
     queueResult([{ name: 'Org Inc', taxId: 'ORG-TAX', billingAddressLine1: 'Org St', billingAddressLine2: null, billingAddressCity: 'Berthoud', billingAddressRegion: 'CO', billingAddressPostalCode: '80513', billingAddressCountry: 'US' }]); // org billing
@@ -667,6 +680,9 @@ describe('quoteService deposits', () => {
     ]); // blocks (one legacy dirty row, one unrelated block type)
     queueResult([]); // quote lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
 
     const { blocks } = await svc.getQuote('q1', actor);
 

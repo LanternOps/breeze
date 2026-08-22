@@ -42,6 +42,9 @@ export type QuoteServiceErrorCode =
   // partner). Any violation collapses to this single 422 code.
   | 'INVALID_CONTRACT_TEMPLATE'
   | 'INVALID_STATE'
+  | 'PARENT_CONVERTED'
+  | 'ALREADY_SUPERSEDED'
+  | 'REVISION_IN_PROGRESS'
   // Multi-currency wave 2 (#3774): a cross-org retarget (cloneQuote input.orgId,
   // updateQuote org move) whose target org is billed in a different currency
   // than the document's stamp. Blocked outright — a quote's amounts are never
@@ -109,11 +112,22 @@ export type QuoteServiceErrorCode =
   // status. Reject it explicitly instead.
   | 'QUOTE_ORDER_LINE_CANCELLED';
 
+export type QuoteServiceErrorMeta = {
+  successorQuoteId?: string;
+  revisionQuoteId?: string;
+};
+
 export class QuoteServiceError extends Error {
   constructor(
     message: string,
     public status: 400 | 401 | 403 | 404 | 409 | 410 | 422 | 500 = 400,
-    public code?: QuoteServiceErrorCode
+    public code?: QuoteServiceErrorCode,
+    /**
+     * Optional machine-readable context for typed conflict recovery. This is
+     * spliced verbatim into HTTP response bodies by handleServiceError; never
+     * include data the caller is not already authorized to see.
+     */
+    public meta?: QuoteServiceErrorMeta,
   ) {
     super(message);
     this.name = 'QuoteServiceError';
