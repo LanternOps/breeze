@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users, ticketComments } from '../db/schema';
+import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
@@ -18,7 +18,10 @@ export type TimeEntryServiceErrorCode =
   | 'ENTRY_RUNNING'
   | 'PARTNER_UNRESOLVABLE'
   | 'INVALID_RANGE'
-  | 'CURRENCY_MISMATCH';
+  | 'CURRENCY_MISMATCH'
+  /** 409 — issueInvoice already flipped the row to `billed`; only description-class fields may change. */
+  | 'ENTRY_BILLED'
+  | 'PART_BILLED';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -208,6 +211,53 @@ async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
   };
 }
 
+/**
+ * Lock the ticket row on the REQUEST transaction (global order: tickets →
+ * time_entries → ticket_parts). Held until request commit (withDbAccessContext
+ * is one transaction, db/index.ts), so a concurrent moveTicketOrg / device move
+ * — which UPDATE tickets first — queues behind this create/relink and then sees
+ * the new row under its guard. RLS still scopes the read to the caller's axis.
+ */
+async function lockTicketRow(ticketId: string): Promise<{ id: string; orgId: string }> {
+  const rows = await db
+    .select({ id: tickets.id, orgId: tickets.orgId })
+    .from(tickets)
+    .where(eq(tickets.id, ticketId))
+    .limit(1)
+    .for('update');
+  const row = rows[0];
+  if (!row) throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_NOT_FOUND');
+  return row;
+}
+
+/**
+ * resolveTicketLink (access gates, unlocked system-context reads) THEN the
+ * lock; if the ticket moved between the two, resolve once more under the lock
+ * so the stamped currency is the org the row will actually land in.
+ */
+async function resolveAndLockTicketLink(ticketId: string, actor: TimeEntryActor) {
+  let link = await resolveTicketLink(ticketId, actor);
+  const locked = await lockTicketRow(ticketId);
+  if (locked.orgId !== link.ticket.orgId) link = await resolveTicketLink(ticketId, actor);
+  return link;
+}
+
+/** Standalone entries: money still needs a currency (CHECK time_entries_currency_required_when_rate_chk). */
+async function getPartnerCurrency(partnerId: string): Promise<string> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db.select({ currencyCode: partners.currencyCode }).from(partners).where(eq(partners.id, partnerId)).limit(1)
+    )
+  );
+  const code = rows[0]?.currencyCode;
+  if (!code) throw new TimeEntryServiceError('Partner is unresolvable for this entry', 400, 'PARTNER_UNRESOLVABLE');
+  return code;
+}
+
+/** Fields a `billed` row refuses to change (issueInvoice froze the money). */
+const BILLED_LOCKED_ENTRY_FIELDS = ['startedAt', 'endedAt', 'isBillable', 'hourlyRate', 'billingStatus', 'ticketId'] as const;
+const BILLED_LOCKED_PART_FIELDS = ['quantity', 'unitPrice', 'costBasis', 'isBillable', 'billingStatus', 'catalogItemId'] as const;
+
 /** "45m", "1h 30m", "2h" — shared wording for feed comments. */
 function fmtMinutes(minutes: number | null): string {
   const m = Math.max(0, minutes ?? 0);
@@ -247,11 +297,15 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
   let orgId: string | null = null;
   let defaultBillable = false;
   let defaultRate: string | null = null;
+  let currencyCode: string | null = null;
 
   if (input.ticketId) {
-    const link = await resolveTicketLink(input.ticketId, actor);
+    // Lock order tickets → time_entries: the ticket row is held until request
+    // commit, so a concurrent org-move cannot slip between stamping and insert.
+    const link = await resolveAndLockTicketLink(input.ticketId, actor);
     partnerId = link.partnerId;
     orgId = link.ticket.orgId;
+    currencyCode = link.currencyCode;
     defaultBillable = link.defaultBillable;
     defaultRate = link.defaultHourlyRate;
   }
@@ -261,6 +315,10 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
 
   if (input.endedAt.getTime() <= input.startedAt.getTime()) {
     throw new TimeEntryServiceError('endedAt must be after startedAt', 400, 'INVALID_RANGE');
+  }
+  if (!input.ticketId && input.hourlyRate != null) {
+    // Standalone money is entered in the technician's partner currency.
+    currencyCode = await getPartnerCurrency(partnerId);
   }
 
   const rows = await db
@@ -277,6 +335,8 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
       // D2: apply category defaults only when input omits the field
       isBillable: input.isBillable !== undefined ? input.isBillable : defaultBillable,
       hourlyRate: input.hourlyRate !== undefined ? toRate(input.hourlyRate) : defaultRate,
+      // Snapshot (spec §7): null only for standalone, money-less entries; never restamped.
+      currencyCode,
       billingStatus: input.billingStatus ?? 'not_billed'
     })
     .returning();
@@ -330,16 +390,22 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   let orgId: string | null = null;
   let defaultBillable = false;
   let defaultRate: string | null = null;
+  let currencyCode: string | null = null;
 
   if (input.ticketId) {
-    const link = await resolveTicketLink(input.ticketId, actor);
+    // Same lock discipline as createTimeEntry (tickets → time_entries).
+    const link = await resolveAndLockTicketLink(input.ticketId, actor);
     partnerId = link.partnerId;
     orgId = link.ticket.orgId;
+    currencyCode = link.currencyCode;
     defaultBillable = link.defaultBillable;
     defaultRate = link.defaultHourlyRate;
   }
   if (!partnerId) {
     throw new TimeEntryServiceError('Partner is unresolvable for this entry', 400, 'PARTNER_UNRESOLVABLE');
+  }
+  if (!input.ticketId && defaultRate != null) {
+    currencyCode = await getPartnerCurrency(partnerId);
   }
 
   const attempt = async () => {
@@ -378,6 +444,9 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         description: input.description ?? null,
         isBillable: defaultBillable,
         hourlyRate: defaultRate,
+        // Snapshot (spec §7): the ticket org's currency, or null for a
+        // standalone timer (no rate yet); never restamped.
+        currencyCode,
         billingStatus: 'not_billed'
       })
       .onConflictDoNothing()
@@ -459,7 +528,10 @@ export function entryOrgAllowed(entry: { orgId: string | null }, accessibleOrgId
 async function getEntryOr404(id: string, actor: TimeEntryActor) {
   // RLS (partner-axis) scopes this read to the actor's partner; the org-axis
   // allowlist is enforced here because RLS does not constrain it.
-  const rows = await db.select().from(timeEntries).where(eq(timeEntries.id, id)).limit(1);
+  // FOR UPDATE on the request transaction: every mutation locks-and-re-reads
+  // the row, so an edit cannot resume on stale state after issueInvoice has
+  // locked, validated and flipped it to `billed` (wave 2 lock discipline).
+  const rows = await db.select().from(timeEntries).where(eq(timeEntries.id, id)).limit(1).for('update');
   const entry = rows[0];
   if (!entry) throw new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
   if (!entryOrgAllowed(entry, actor.accessibleOrgIds)) {
@@ -478,8 +550,13 @@ function assertCanMutate(entry: { userId: string; isApproved: boolean }, actor: 
 }
 
 export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, actor: TimeEntryActor) {
-  const entry = await getEntryOr404(id, actor);
+  // Global lock order: the TARGET ticket (relink) before the entry row.
+  const link = typeof input.ticketId === 'string' ? await resolveAndLockTicketLink(input.ticketId, actor) : null;
+  const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
   assertCanMutate(entry, actor);
+  if (entry.billingStatus === 'billed' && BILLED_LOCKED_ENTRY_FIELDS.some((k) => input[k] !== undefined)) {
+    throw new TimeEntryServiceError('This entry has been invoiced; only its description can change', 409, 'ENTRY_BILLED');
+  }
 
   const startedAt = input.startedAt ?? entry.startedAt;
   const endedAt = input.endedAt !== undefined ? input.endedAt : entry.endedAt;
@@ -501,14 +578,28 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
       set.ticketId = null;
       set.orgId = null;
     } else {
-      const link = await resolveTicketLink(input.ticketId, actor);
-      if (link.partnerId !== entry.partnerId) {
+      if (link!.partnerId !== entry.partnerId) {
         throw new TimeEntryServiceError('Ticket must belong to the same partner as the time entry', 400, 'TICKET_WRONG_PARTNER');
       }
       set.ticketId = input.ticketId;
-      set.orgId = link.ticket.orgId;
+      set.orgId = link!.ticket.orgId;
+      if (entry.currencyCode == null) {
+        set.currencyCode = link!.currencyCode; // first attach stamps the snapshot
+      } else if (entry.currencyCode !== link!.currencyCode) {
+        // Snapshots are never restamped — relinking across currencies is an error, not a conversion.
+        throw new TimeEntryServiceError(
+          `This entry is in ${entry.currencyCode}; the ticket's organization bills in ${link!.currencyCode} — snapshots are never restamped`,
+          409, 'CURRENCY_MISMATCH'
+        );
+      }
     }
+    // Detach leaves currencyCode untouched (the snapshot outlives the link).
     changed.push('ticketId');
+  }
+  if (input.hourlyRate != null && entry.ticketId == null && input.ticketId === undefined && entry.currencyCode == null) {
+    // First money on a standalone entry stamps the partner currency; later
+    // rate edits never touch the snapshot.
+    set.currencyCode = await getPartnerCurrency(entry.partnerId);
   }
   if ((input.startedAt !== undefined || input.endedAt !== undefined) && endedAt) {
     set.durationMinutes = computeDurationMinutes(startedAt, endedAt);
@@ -649,12 +740,15 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
 // ── Parts ────────────────────────────────────────────────────────────────
 
 export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
-  const link = await resolveTicketLink(ticketId, actor);
+  // Lock order tickets → ticket_parts (see lockTicketRow).
+  const link = await resolveAndLockTicketLink(ticketId, actor);
   const rows = await db
     .insert(ticketParts)
     .values({
       ticketId,
       orgId: link.ticket.orgId,
+      // Snapshot of the org currency at creation; never restamped.
+      currencyCode: link.currencyCode,
       description: input.description,
       partNumber: input.partNumber ?? null,
       vendor: input.vendor ?? null,
@@ -676,14 +770,19 @@ export async function addTicketPart(ticketId: string, input: TicketPartInput, ac
 }
 
 async function getPartOr404(id: string) {
-  const rows = await db.select().from(ticketParts).where(eq(ticketParts.id, id)).limit(1);
+  // FOR UPDATE — lock-and-re-read before every part mutation (see getEntryOr404).
+  const rows = await db.select().from(ticketParts).where(eq(ticketParts.id, id)).limit(1).for('update');
   const part = rows[0];
   if (!part) throw new TimeEntryServiceError('Part not found', 404, 'PART_NOT_FOUND');
   return part;
 }
 
+/** `set` must never contain currencyCode: the part's currency is a creation-time snapshot. */
 export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, _actor: TimeEntryActor) {
   const part = await getPartOr404(id);
+  if (part.billingStatus === 'billed' && BILLED_LOCKED_PART_FIELDS.some((k) => input[k] !== undefined)) {
+    throw new TimeEntryServiceError('This part has been invoiced; only its description, vendor, part number and notes can change', 409, 'PART_BILLED');
+  }
   const set: Record<string, unknown> = {};
   if (input.description !== undefined) set.description = input.description;
   if (input.partNumber !== undefined) set.partNumber = input.partNumber;
@@ -742,6 +841,7 @@ function entrySelection() {
     description: timeEntries.description,
     isBillable: timeEntries.isBillable,
     hourlyRate: timeEntries.hourlyRate,
+    currencyCode: timeEntries.currencyCode,
     billingStatus: timeEntries.billingStatus,
     isApproved: timeEntries.isApproved,
     approvedBy: timeEntries.approvedBy,

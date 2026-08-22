@@ -16,6 +16,7 @@ const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
     updateSetArgs: [] as Record<string, unknown>[],
     whereArgs: [] as unknown[],
     onConflictDoNothingCalls: 0,
+    forUpdateCalls: 0,
     deleteError: null as Error | null,
     deleteResult: [] as unknown[],
   };
@@ -42,8 +43,17 @@ vi.mock('../db', () => ({
           where: vi.fn((arg: unknown) => {
             dbMocks.whereArgs.push(arg);
             const result = dbMocks.selectResults.shift() ?? [];
+            // `.for('update')` is valid after `.limit()` and directly after
+            // `.where()`; it resolves the result already shifted above so one
+            // queued row serves one locked select. forUpdateCalls counts locks.
+            const lockable = () => ({
+              then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
+                Promise.resolve(result).then(res, rej),
+              for: vi.fn(() => { dbMocks.forUpdateCalls += 1; return Promise.resolve(result); })
+            });
             const terminal: any = {
-              limit: vi.fn(() => Promise.resolve(result)),
+              limit: vi.fn(() => lockable()),
+              for: vi.fn(() => { dbMocks.forUpdateCalls += 1; return Promise.resolve(result); }),
               orderBy: vi.fn(() => ({
                 limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve(result)) })),
                 then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
@@ -104,19 +114,20 @@ vi.mock('../db/schema', () => ({
     id: 'id', partnerId: 'partnerId', orgId: 'orgId', ticketId: 'ticketId',
     userId: 'userId', startedAt: 'startedAt', endedAt: 'endedAt',
     durationMinutes: 'durationMinutes', description: 'description',
-    isBillable: 'isBillable', hourlyRate: 'hourlyRate', billingStatus: 'billingStatus',
+    isBillable: 'isBillable', hourlyRate: 'hourlyRate', currencyCode: 'currencyCode', billingStatus: 'billingStatus',
     isApproved: 'isApproved', approvedBy: 'approvedBy', approvedAt: 'approvedAt',
     createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
   ticketParts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', description: 'description',
-    partNumber: 'partNumber', vendor: 'vendor', quantity: 'quantity', unitPrice: 'unitPrice',
+    partNumber: 'partNumber', vendor: 'vendor', quantity: 'quantity', unitPrice: 'unitPrice', currencyCode: 'currencyCode',
     costBasis: 'costBasis', isBillable: 'isBillable', billingStatus: 'billingStatus',
     addedBy: 'addedBy', notes: 'notes', createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
   tickets: { id: 'id', partnerId: 'partnerId', orgId: 'orgId', categoryId: 'categoryId', internalNumber: 'internalNumber', subject: 'subject' },
   ticketCategories: { id: 'id', partnerId: 'partnerId', defaultBillable: 'defaultBillable', defaultHourlyRate: 'defaultHourlyRate', rateCurrency: 'rateCurrency' },
   organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode' },
+  partners: { id: 'id', currencyCode: 'currencyCode' },
   users: { id: 'id', name: 'name' },
   ticketComments: {
     id: 'id', ticketId: 'ticketId', userId: 'userId', authorName: 'authorName',
@@ -127,7 +138,7 @@ vi.mock('../db/schema', () => ({
 
 import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
-  updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart,
+  updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart, updateTicketPart,
   getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed, resolveDefaultRate
 } from './timeEntryService';
 
@@ -169,6 +180,7 @@ beforeEach(() => {
   dbMocks.insertResult = [];
   dbMocks.updateResult = [];
   dbMocks.onConflictDoNothingCalls = 0;
+  dbMocks.forUpdateCalls = 0;
   dbMocks.deleteError = null;
   dbMocks.deleteResult = [];
   emitMock.mockClear();
@@ -220,6 +232,7 @@ describe('createTimeEntry', () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: true }];
     const entry = await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -238,6 +251,7 @@ describe('createTimeEntry', () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'EUR' }]); // org (system read)
     dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: true }];
     await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -252,6 +266,7 @@ describe('createTimeEntry', () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-1' }];
     await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'), isBillable: false, hourlyRate: 80 },
@@ -294,6 +309,7 @@ describe('createTimeEntry', () => {
   it('resolves a legacy ticket partner through its organization fallback', async () => {
     dbMocks.selectResults.push([{ id: 't-legacy', partnerId: null, orgId: 'o-1', categoryId: null }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-legacy', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-legacy', partnerId: 'p-1', ticketId: 't-legacy', userId: 'u-1', durationMinutes: 15, isBillable: false }];
     await createTimeEntry(
       { ticketId: 't-legacy', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:15:00Z') },
@@ -310,6 +326,7 @@ describe('createTimeEntry', () => {
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
       dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
       dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
+      dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
       dbMocks.insertResult = [{ id: 'te-d6a', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: true }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -326,6 +343,7 @@ describe('createTimeEntry', () => {
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
       dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
       dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '75.00', rateCurrency: 'USD' }]);
+      dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
       dbMocks.insertResult = [{ id: 'te-d6b' }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -341,6 +359,7 @@ describe('createTimeEntry', () => {
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
       dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
       dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
+      dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
       dbMocks.insertResult = [{ id: 'te-d6c' }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -356,6 +375,7 @@ describe('createTimeEntry', () => {
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
       dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
       dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
+      dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
       dbMocks.insertResult = [{ id: 'te-d6d' }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'), isBillable: false, hourlyRate: 200 },
@@ -371,6 +391,7 @@ describe('createTimeEntry', () => {
       dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
       dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
       dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '125.00', rateCurrency: 'USD' }]);
+      dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
       dbMocks.insertResult = [{ id: 'te-d6e' }];
       await createTimeEntry(
         { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -405,6 +426,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
   it('createTimeEntry allows a ticket in a granted org', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-ok', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: false }];
     const entry = await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -423,11 +445,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
   });
 
   it('updateTimeEntry rejects relinking to a ticket in a non-granted org', async () => {
-    dbMocks.selectResults.push([{
-      id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: null, userId: 'u-1',
-      startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'),
-      durationMinutes: 30, isApproved: false
-    }]);
+    // The target ticket is resolved (and gated) before the entry is ever read.
     dbMocks.selectResults.push([{ id: 't-x', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     await expect(updateTimeEntry('te-1', { ticketId: 't-x' }, SELECTED))
@@ -446,6 +464,7 @@ describe('org-axis ticket gate (orgAccess=selected)', () => {
   it('system scope (accessibleOrgIds null) is unrestricted across orgs', async () => {
     dbMocks.selectResults.push([{ id: 't-sys', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-sys', orgId: 'o-OTHER' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-sys', partnerId: 'p-1', ticketId: 't-sys', userId: 'u-admin', durationMinutes: 30, isBillable: false }];
     const entry = await createTimeEntry(
       { ticketId: 't-sys', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') },
@@ -472,6 +491,7 @@ describe('startTimer / stopTimer', () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.updateResult = []; // no running timer to stop
     dbMocks.insertResult = [{ id: 'te-timer', endedAt: null }];
     await startTimer({ ticketId: 't-1' }, ACTOR);
@@ -572,9 +592,11 @@ describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
   });
 
   it('relinking to a ticket re-validates partner and re-denormalizes org', async () => {
-    dbMocks.selectResults.push([baseEntry]); // the entry
+    // Lock order: target ticket resolve + lock first, then the entry FOR UPDATE.
     dbMocks.selectResults.push([{ id: 't-9', partnerId: 'p-1', orgId: 'o-9', categoryId: null }]); // ticket (system read)
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-9', orgId: 'o-9' }]); // ticket lock row (FOR UPDATE)
+    dbMocks.selectResults.push([baseEntry]); // the entry
     dbMocks.updateResult = [baseEntry];
     await updateTimeEntry('te-1', { ticketId: 't-9' }, ACTOR);
     const setArgs = dbMocks.updateSetArgs.at(-1)!;
@@ -583,9 +605,10 @@ describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
   });
 
   it('rejects system-scope relinks that would cross the entry partner boundary', async () => {
-    dbMocks.selectResults.push([baseEntry]);
     dbMocks.selectResults.push([{ id: 't-cross', partnerId: 'p-OTHER', orgId: 'o-other', categoryId: null }]);
     dbMocks.selectResults.push([{ partnerId: 'p-OTHER', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-cross', orgId: 'o-other' }]); // ticket lock row (FOR UPDATE)
+    dbMocks.selectResults.push([baseEntry]);
     await expect(updateTimeEntry(
       'te-1',
       { ticketId: 't-cross' },
@@ -671,6 +694,7 @@ describe('time-entry audit mutation recording', () => {
       { id: 't-1', partnerId: 'p-1', orgId: 'o-create', categoryId: null },
     ]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-create' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{
       id: 'te-create',
       orgId: 'o-create',
@@ -897,6 +921,7 @@ describe('addTicketPart', () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: null, rateCurrency: null }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'part-1' }];
     await addTicketPart('t-1', { description: 'SSD 1TB', quantity: 1, unitPrice: 120 }, ACTOR);
     const vals = dbMocks.insertedValues.at(-1)!;
@@ -909,6 +934,7 @@ describe('addTicketPart', () => {
     dbMocks.selectResults.push([{ id: 't-2', partnerId: 'p-1', orgId: 'o-2', categoryId: 'cat-2' }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
     dbMocks.selectResults.push([{ id: 'cat-2', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: null, rateCurrency: null }]);
+    dbMocks.selectResults.push([{ id: 't-2', orgId: 'o-2' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'part-2' }];
     await addTicketPart('t-2', { description: 'RAM 32GB', quantity: 2, unitPrice: 60 }, ACTOR);
     const vals = dbMocks.insertedValues.at(-1)!;
@@ -920,6 +946,7 @@ describe('addTicketPart', () => {
   it('fails loudly if insert returning yields no part row', async () => {
     dbMocks.selectResults.push([{ id: 't-3', partnerId: 'p-1', orgId: 'o-3', categoryId: null }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-3', orgId: 'o-3' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [];
     await expect(addTicketPart('t-3', { description: 'Cable', quantity: 1, unitPrice: 5 }, ACTOR))
       .rejects.toThrow('Failed to create ticket part');
@@ -1036,6 +1063,7 @@ describe('time_entry feed comments', () => {
   it('createTimeEntry with ticketId inserts a ticketComments row (logged, billable suffix)', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 45, isBillable: true }];
     await createTimeEntry(
       { ticketId: 't-1', startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:45:00Z'), isBillable: true },
@@ -1111,6 +1139,7 @@ describe('time_entry feed comments', () => {
   it('a feed-comment insert failure does not reject createTimeEntry and the event is still emitted', async () => {
     dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
     dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]); // org (system read)
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // ticket lock row (FOR UPDATE)
     dbMocks.insertResult = [{ id: 'te-6', partnerId: 'p-1', ticketId: 't-1', userId: 'u-1', durationMinutes: 30, isBillable: false }];
     // Make the ticketComments insert fail (first insert uses insertResult, second rejects).
     // We push null for the timeEntries returning() call (null is falsy → falls through to insertResult),
@@ -1130,5 +1159,157 @@ describe('time_entry feed comments', () => {
     expect(dbMocks.insertedValues).toHaveLength(2);
     expect(dbMocks.insertedValues[0]!.billingStatus).toBe('not_billed'); // timeEntries row
     expect(dbMocks.insertedValues[1]!.commentType).toBe('time_entry'); // ticketComments row attempted
+  });
+});
+
+// ── Wave 4 (#3776) Task 7: currency snapshots under the ticket lock ─────────
+// Queue order for a linked create/relink: ticket → org → [category] → ticket
+// LOCK row (FOR UPDATE on the request tx). Standalone money: one partners read.
+describe('currency snapshots (wave 4 / Task 7)', () => {
+  const RANGE = { startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z') };
+  const queueLink = (currencyCode: string, lockOrgId = 'o-1') => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode }]);
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: currencyCode }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: lockOrgId }]); // lock row
+  };
+
+  it('(a) ticket-linked create stamps the org currency and takes the ticket row lock', async () => {
+    queueLink('EUR');
+    dbMocks.insertResult = [{ id: 'te-1', partnerId: 'p-1', ticketId: 't-1', durationMinutes: 30, isBillable: true }];
+    await createTimeEntry({ ticketId: 't-1', ...RANGE }, ACTOR);
+    expect(dbMocks.insertedValues[0]!.currencyCode).toBe('EUR');
+    expect(dbMocks.selectResults).toHaveLength(0); // all 4 queued selects consumed
+    expect(dbMocks.forUpdateCalls).toBe(1);
+  });
+
+  it('(b) standalone create without a rate stamps no currency', async () => {
+    dbMocks.insertResult = [{ id: 'te-2' }];
+    await createTimeEntry({ ...RANGE }, ACTOR);
+    expect(dbMocks.insertedValues[0]!.currencyCode).toBeNull();
+    expect(dbMocks.forUpdateCalls).toBe(0);
+  });
+
+  it('(b2) standalone create with a rate stamps the partner currency', async () => {
+    dbMocks.selectResults.push([{ currencyCode: 'CAD' }]); // partners read
+    dbMocks.insertResult = [{ id: 'te-2' }];
+    await createTimeEntry({ ...RANGE, hourlyRate: 80 }, ACTOR);
+    expect(dbMocks.insertedValues[0]!.currencyCode).toBe('CAD');
+    expect(dbMocks.insertedValues[0]!.hourlyRate).toBe('80.00');
+    expect(dbMocks.selectResults).toHaveLength(0);
+  });
+
+  it('(c) startTimer with a ticket stamps the org currency', async () => {
+    queueLink('EUR');
+    dbMocks.insertResult = [{ id: 'te-3', ticketId: 't-1', isBillable: true }];
+    await startTimer({ ticketId: 't-1' }, ACTOR);
+    expect(dbMocks.insertedValues[0]!.currencyCode).toBe('EUR');
+    expect(dbMocks.forUpdateCalls).toBe(1);
+  });
+
+  it('(c2) re-resolves under the lock when the ticket moved between resolve and lock', async () => {
+    queueLink('USD', 'o-2'); // first resolution says o-1/USD, lock row says o-2
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-2', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'EUR' }]);
+    dbMocks.insertResult = [{ id: 'te-4', ticketId: 't-1' }];
+    await createTimeEntry({ ticketId: 't-1', ...RANGE }, ACTOR);
+    const vals = dbMocks.insertedValues[0]!;
+    expect(vals.currencyCode).toBe('EUR');
+    expect(vals.orgId).toBe('o-2');
+    expect(dbMocks.selectResults).toHaveLength(0);
+  });
+
+  const stamped = {
+    id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: 't-1', userId: 'u-1',
+    startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T09:30:00Z'),
+    durationMinutes: 30, isApproved: false, billingStatus: 'not_billed', currencyCode: 'EUR', hourlyRate: '100.00'
+  };
+
+  it('(d) a rate edit never restamps an already-stamped entry', async () => {
+    dbMocks.selectResults.push([stamped]);
+    dbMocks.updateResult = [stamped];
+    await updateTimeEntry('te-1', { hourlyRate: 200 }, ACTOR);
+    expect(dbMocks.updateSetArgs[0]!).not.toHaveProperty('currencyCode');
+    expect(dbMocks.updateSetArgs[0]!.hourlyRate).toBe('200.00');
+    expect(dbMocks.forUpdateCalls).toBe(1); // entry read FOR UPDATE
+  });
+
+  it('(d2) first money on a standalone entry stamps the partner currency', async () => {
+    dbMocks.selectResults.push([{ ...stamped, orgId: null, ticketId: null, currencyCode: null, hourlyRate: null }]);
+    dbMocks.selectResults.push([{ currencyCode: 'CAD' }]); // partners read
+    dbMocks.updateResult = [stamped];
+    await updateTimeEntry('te-1', { hourlyRate: 90 }, ACTOR);
+    expect(dbMocks.updateSetArgs[0]!.currencyCode).toBe('CAD');
+    expect(dbMocks.selectResults).toHaveLength(0);
+  });
+
+  it('(e) first attach of an unstamped standalone entry stamps the ticket org currency; lock precedes the entry read', async () => {
+    queueLink('USD');
+    dbMocks.selectResults.push([{ ...stamped, orgId: null, ticketId: null, currencyCode: null, hourlyRate: null }]);
+    dbMocks.updateResult = [stamped];
+    await updateTimeEntry('te-1', { ticketId: 't-1' }, ACTOR);
+    const set = dbMocks.updateSetArgs[0]!;
+    expect(set.currencyCode).toBe('USD');
+    expect(set.ticketId).toBe('t-1');
+    expect(set.orgId).toBe('o-1');
+    expect(dbMocks.selectResults).toHaveLength(0);
+    expect(dbMocks.forUpdateCalls).toBe(2); // ticket lock, then entry lock
+  });
+
+  it('(f) relinking a stamped entry to an org in another currency rejects CURRENCY_MISMATCH 409', async () => {
+    queueLink('USD');
+    dbMocks.selectResults.push([stamped]); // EUR entry
+    await expect(updateTimeEntry('te-1', { ticketId: 't-1' }, ACTOR))
+      .rejects.toMatchObject({ code: 'CURRENCY_MISMATCH', status: 409 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
+  it('(g) detach leaves the snapshot untouched', async () => {
+    dbMocks.selectResults.push([stamped]);
+    dbMocks.updateResult = [stamped];
+    await updateTimeEntry('te-1', { ticketId: null }, ACTOR);
+    const set = dbMocks.updateSetArgs[0]!;
+    expect(set).not.toHaveProperty('currencyCode');
+    expect(set.ticketId).toBeNull();
+    expect(dbMocks.forUpdateCalls).toBe(1);
+  });
+
+  it('(h) addTicketPart stamps the org currency under the ticket lock', async () => {
+    queueLink('EUR');
+    dbMocks.insertResult = [{ id: 'part-1' }];
+    await addTicketPart('t-1', { description: 'SSD', quantity: 1, unitPrice: 120 }, ACTOR);
+    expect(dbMocks.insertedValues[0]!.currencyCode).toBe('EUR');
+    expect(dbMocks.forUpdateCalls).toBe(1);
+  });
+
+  it('(i) a part price edit never touches currencyCode and reads the part FOR UPDATE', async () => {
+    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'EUR' }]);
+    dbMocks.updateResult = [{ id: 'part-1' }];
+    await updateTicketPart('part-1', { unitPrice: 5 }, ACTOR);
+    expect(dbMocks.updateSetArgs[0]!).not.toHaveProperty('currencyCode');
+    expect(dbMocks.updateSetArgs[0]!.unitPrice).toBe('5.00');
+    expect(dbMocks.forUpdateCalls).toBe(1);
+  });
+
+  it('(j) monetary edit of a billed entry rejects ENTRY_BILLED 409 without updating', async () => {
+    dbMocks.selectResults.push([{ ...stamped, billingStatus: 'billed' }]);
+    await expect(updateTimeEntry('te-1', { hourlyRate: 200 }, ACTOR))
+      .rejects.toMatchObject({ code: 'ENTRY_BILLED', status: 409 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
+  it('(j2) description-only edit of a billed entry still goes through', async () => {
+    dbMocks.selectResults.push([{ ...stamped, billingStatus: 'billed' }]);
+    dbMocks.updateResult = [{ ...stamped, description: 'x' }];
+    await updateTimeEntry('te-1', { description: 'x' }, ACTOR);
+    expect(dbMocks.updateSetArgs).toHaveLength(1);
+    expect(dbMocks.updateSetArgs[0]!.description).toBe('x');
+  });
+
+  it('(k) quantity edit of a billed part rejects PART_BILLED 409', async () => {
+    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'billed', currencyCode: 'EUR' }]);
+    await expect(updateTicketPart('part-1', { quantity: 3 }, ACTOR))
+      .rejects.toMatchObject({ code: 'PART_BILLED', status: 409 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
   });
 });
