@@ -102,8 +102,8 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
     setPayUrl(res.data?.data?.payUrl ?? null);
     setMsg(
       res.data?.data?.payDeferred
-        ? 'Thank you. Your acceptance has been recorded and we’ll email you a payment link shortly.'
-        : 'Thank you. Your acceptance has been recorded.'
+        ? "Signed and accepted. We'll email you a payment link shortly."
+        : 'Signed and accepted. Thank you.'
     );
   };
 

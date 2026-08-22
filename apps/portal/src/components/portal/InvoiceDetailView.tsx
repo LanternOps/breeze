@@ -2,10 +2,11 @@ import { withBase } from '@/lib/basePath';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
 import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { money, shortDate } from '@/lib/format';
 import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
-import { cn } from '@/lib/utils';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
 
 // Invoice statuses that can be paid online (mirrors the API's PAYABLE set).
 const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially_paid', 'overdue']);
@@ -23,16 +24,6 @@ interface DocBranding {
   primaryColor: string | null;
 }
 
-function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
-
 /** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
  *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
  *  as '—'). The header Tax stays invoice.taxTotal (authoritative). */
@@ -41,13 +32,6 @@ function lineTax(lineTotal: string | number, taxable: boolean, rate: number): nu
   const cents = Math.round(Number(lineTotal) * 100);
   if (!Number.isFinite(cents)) return null;
   return Math.round(cents * rate) / 100;
-}
-
-function shortDate(value: string | null): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
 }
 
 export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
@@ -123,13 +107,13 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
 
   if (error || !detail) {
     return (
-      <div className="text-center">
-        <AlertCircle className="mx-auto h-12 w-12 text-destructive" />
-        <h3 className="mt-4 text-lg font-medium">Invoice not found</h3>
+      <div className="border-y border-border/70 py-14 text-center">
+        <AlertCircle className="mx-auto h-10 w-10 text-destructive-on-tint" strokeWidth={1.5} />
+        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">Invoice not found</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {error || 'The invoice you are looking for does not exist.'}
+          {error || "We couldn't find that invoice — it may have been reissued. Your invoice list is up to date."}
         </p>
-        <a href={withBase("/invoices")} className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+        <a href={withBase("/invoices")} className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary-on-tint underline-offset-4 hover:underline">
           <ArrowLeft className="h-4 w-4" />
           Back to invoices
         </a>
@@ -213,7 +197,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+        <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
           <ArrowLeft className="h-4 w-4" />
           Back to invoices
         </a>
@@ -224,44 +208,39 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
               onClick={() => void payInvoice()}
               disabled={paying}
               data-testid="invoice-pay-button"
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className={BTN_PRIMARY}
             >
               <CreditCard className="h-4 w-4" />
-              {paying ? 'Redirecting…' : payLabel}
+              {paying ? 'Opening secure checkout' : payLabel}
             </button>
           )}
           <button
             type="button"
             onClick={() => void downloadPdf()}
             disabled={downloading}
-            className={cn(
-              'inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50',
-              canPay
-                ? 'border text-foreground hover:bg-muted'
-                : 'bg-primary text-primary-foreground'
-            )}
+            className={canPay ? BTN_SECONDARY : BTN_PRIMARY}
           >
             <Download className="h-4 w-4" />
-            {downloading ? 'Preparing…' : 'Download PDF'}
+            {downloading ? 'Preparing' : 'Download PDF'}
           </button>
         </div>
       </div>
 
       {settleState === 'settling' && (
-        <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="invoice-settle-confirming">
+        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-settle-confirming">
           Confirming your payment…
         </div>
       )}
       {settleState === 'pending' && (
-        <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="invoice-settle-pending">
+        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-settle-pending">
           Thanks! We're still confirming your payment — this can take a moment. Refresh shortly to see it applied.
         </div>
       )}
       {payError && (
-        <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive" data-testid="invoice-pay-error">{payError}</div>
+        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint" data-testid="invoice-pay-error">{payError}</div>
       )}
       {downloadError && (
-        <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{downloadError}</div>
+        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint">{downloadError}</div>
       )}
 
       <DocumentPaper testId="invoice-document" primaryColor={branding?.primaryColor}>
@@ -326,7 +305,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
             )}
             <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
               <span className="text-sm font-semibold text-foreground">Balance due</span>
-              <span className="doc-accent-text text-2xl font-semibold tabular-nums" data-testid="invoice-balance-due">{money(invoice.balance, currency)}</span>
+              <span className="doc-accent-text font-display text-2xl font-semibold tabular-nums" data-testid="invoice-balance-due">{money(invoice.balance, currency)}</span>
             </div>
             {hasDeposit && (
               <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="invoice-deposit-strip">

@@ -36,7 +36,7 @@ quoteRoutes.get('/quotes', async (c) => {
   const auth = c.get('portalAuth');
   const conditions = and(eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'));
   const data = await db.select({
-    id: quotes.id, quoteNumber: quotes.quoteNumber, status: quotes.status, currencyCode: quotes.currencyCode,
+    id: quotes.id, quoteNumber: quotes.quoteNumber, title: quotes.title, status: quotes.status, currencyCode: quotes.currencyCode,
     issueDate: quotes.issueDate, expiryDate: quotes.expiryDate, total: quotes.total,
   }).from(quotes).where(conditions).orderBy(desc(quotes.issueDate), desc(quotes.createdAt)).limit(200);
   return c.json({ data, pagination: { page: 1, limit: 200, total: data.length } });

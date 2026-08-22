@@ -1,4 +1,5 @@
 import type { TicketFormField } from '@breeze/shared';
+import { BTN_PRIMARY, INPUT } from './ui';
 
 // Deliberate duplicate of apps/web/src/components/tickets/TicketFormFields.tsx
 // (the portal cannot share web React components — no runtime package spans
@@ -16,7 +17,7 @@ interface Props {
 // Controlled, stateless renderer for a ticket form's fields. Styling mirrors the
 // portal's NewTicketForm inputs so intake fields match the rest of the portal.
 const inputCls =
-  'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary';
+  INPUT;
 
 export default function TicketFormFields({ fields, values, errors, onChange }: Props) {
   return (
@@ -53,7 +54,7 @@ export default function TicketFormFields({ fields, values, errors, onChange }: P
                   {f.label}
                   {/* Decorative: requiredness is carried by aria-required on the
                       control, so the red glyph is not the only signal. */}
-                  {f.required && <span aria-hidden="true" className="text-destructive"> *</span>}
+                  {f.required && <span aria-hidden="true" className="text-destructive-on-tint"> *</span>}
                 </span>
               </label>
             ) : (
@@ -62,7 +63,7 @@ export default function TicketFormFields({ fields, values, errors, onChange }: P
                   {f.label}
                   {/* Decorative: requiredness is carried by aria-required on the
                       control, so the red glyph is not the only signal. */}
-                  {f.required && <span aria-hidden="true" className="text-destructive"> *</span>}
+                  {f.required && <span aria-hidden="true" className="text-destructive-on-tint"> *</span>}
                 </label>
                 {f.type === 'textarea' && (
                   <textarea
@@ -110,7 +111,7 @@ export default function TicketFormFields({ fields, values, errors, onChange }: P
               <p
                 id={errId}
                 role="alert"
-                className="mt-1 text-xs text-destructive"
+                className="mt-1 text-xs font-medium text-destructive-on-tint"
                 data-testid={`ticket-form-field-error-${f.key}`}
               >
                 {err}

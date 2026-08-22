@@ -33,7 +33,7 @@ const portalName = branding.name || 'Customer Portal';
   </head>
   <body class="min-h-dvh bg-background antialiased">
     <main class="flex min-h-dvh items-center justify-center px-4 py-12">
-      <div class="w-full max-w-md space-y-8">
+      <div class="settle-in w-full max-w-md space-y-8">
         <div class="text-center">
           {branding.logoUrl ? (
             <img
@@ -42,10 +42,10 @@ const portalName = branding.name || 'Customer Portal';
               class="mx-auto h-12 w-auto max-w-[220px] object-contain"
             />
           ) : (
-            <div class="doc-accent-bg mx-auto h-1.5 w-16 rounded-full" aria-hidden="true"></div>
+            <div class="doc-accent-bg mx-auto h-1 w-12 rounded-full" aria-hidden="true"></div>
           )}
-          <h1 class="mt-4 text-2xl font-bold tracking-tight">{portalName}</h1>
-          <p class="mt-1 text-sm text-muted-foreground">Sign in to view your proposals, invoices and support requests.</p>
+          <h1 class="mt-5 font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-foreground">{portalName}</h1>
+          <p class="mt-2 text-sm text-muted-foreground">Sign in to review proposals, pay invoices, and reach your IT team.</p>
         </div>
 
         <slot />

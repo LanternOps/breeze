@@ -208,7 +208,7 @@ export async function apiRequest<T>(
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
       return {
-        error: body?.error || 'Request failed',
+        error: body?.error || 'That didn\'t go through. Nothing was lost — try again in a moment.',
         code: typeof body?.code === 'string' ? body.code : undefined,
         statusCode: response.status,
         headers: response.headers
@@ -350,6 +350,9 @@ export type { InvoiceStatus, PublicQuoteHeader };
 export interface InvoiceSummary {
   id: string;
   invoiceNumber: string | null;
+  /** Derived human handle: the accepted proposal's title, else the first
+   *  customer-visible line's name. Null for a bare invoice. */
+  title?: string | null;
   status: InvoiceStatus;
   currencyCode: string;
   issueDate: string | null;
@@ -419,6 +422,7 @@ export type QuoteStatus =
 export interface QuoteSummary {
   id: string;
   quoteNumber: string | null;
+  title?: string | null;
   status: string;
   currencyCode: string;
   issueDate: string | null;
@@ -696,6 +700,33 @@ export const portalApi = {
 
     return {
       data: response.data.ticket,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  /** Customer reply on their own ticket. The API (POST /portal/tickets/:id/comments)
+   *  only accepts comments on tickets the session's portal user submitted, caps
+   *  content at 5,000 chars, and returns the created public comment. */
+  addTicketComment: async (
+    ticketId: string,
+    content: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<TicketComment>> => {
+    const response = await apiPost<{ comment: TicketComment }>(
+      `/portal/tickets/${ticketId}/comments`,
+      { content },
+      config
+    );
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+    return {
+      data: response.data.comment,
       statusCode: response.statusCode,
       headers: response.headers
     };

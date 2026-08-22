@@ -1,7 +1,8 @@
 import React from 'react';
-import { Monitor, Wifi, WifiOff, AlertTriangle } from 'lucide-react';
+import { Monitor } from 'lucide-react';
 import { type Device } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
 
 interface DeviceListProps {
   devices: Device[];
@@ -42,102 +43,109 @@ function lastSeenLabel(value: string | null): string {
   return `On ${d.toLocaleDateString()}`;
 }
 
+// StatusMark pairings: the background-tuned status token as the dot, the
+// AA-safe `-on-tint` variant as the text (asserted in tokenContrast.test.ts).
+function statusMark(status: Device['status']): { dot: string; text: string; label: string } {
+  switch (status) {
+    case 'online':
+      return { dot: 'bg-success', text: 'text-success-on-tint', label: 'Online' };
+    case 'offline':
+      return { dot: 'bg-muted-foreground/60', text: 'text-muted-foreground', label: 'Offline' };
+    case 'warning':
+      return { dot: 'bg-warning', text: 'text-warning-on-tint', label: 'Warning' };
+  }
+}
+
 export function DeviceList({ devices, error }: DeviceListProps) {
-
   if (error) {
-    return (
-      <div role="alert" className="rounded-md bg-destructive/10 p-4 text-center text-destructive-on-tint">
-        {error}
-      </div>
-    );
+    return <ErrorNotice>{error}</ErrorNotice>;
   }
 
-  if (devices.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed p-8 text-center">
-        <Monitor className="mx-auto h-12 w-12 text-muted-foreground" />
-        <h3 className="mt-4 text-lg font-medium">No devices</h3>
-        <p className="mt-1 text-sm text-muted-foreground">
-          No devices are currently associated with your account.
-        </p>
-      </div>
-    );
-  }
-
-  // These sit on the card's plain background, not on a /10 tint, but the base
-  // `success`/`warning` tokens are background-tuned and fail AA (and the 3:1
-  // graphics threshold) there too; the `-on-tint` variants are darker.
-  const getStatusIcon = (status: Device['status']) => {
-    switch (status) {
-      case 'online':
-        return <Wifi className="h-4 w-4 text-success-on-tint" />;
-      case 'offline':
-        return <WifiOff className="h-4 w-4 text-muted-foreground" />;
-      case 'warning':
-        return <AlertTriangle className="h-4 w-4 text-warning-on-tint" />;
-    }
-  };
-
-  const getStatusLabel = (status: Device['status']) => {
-    switch (status) {
-      case 'online':
-        return 'Online';
-      case 'offline':
-        return 'Offline';
-      case 'warning':
-        return 'Warning';
-    }
-  };
+  // The register's foot: what a glancing reader wants is one health sentence.
+  const online = devices.filter((d) => d.status === 'online').length;
+  const footLine =
+    devices.length === 0
+      ? null
+      : online === devices.length
+        ? devices.length === 1
+          ? 'Your device is online'
+          : `All ${devices.length} devices online`
+        : `${online} of ${devices.length} online`;
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {devices.map((device) => (
-          <div
-            key={device.id}
-            className="rounded-lg border bg-card p-4 shadow-xs transition-shadow hover:shadow-md"
-          >
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                  <Monitor className="h-5 w-5 text-muted-foreground" />
-                </div>
-                {/* The friendly name only; the raw hostname used to sit under it
-                    as a subtitle, which is a technician's handle for the machine
-                    and means nothing to the reader. It stays as the fallback
-                    heading for a device that was never given a display name. */}
-                <h3 className="font-medium">{device.displayName || device.hostname}</h3>
-              </div>
-              <div className="flex items-center gap-1">
-                {getStatusIcon(device.status)}
-                <span
-                  className={cn(
-                    'text-xs font-medium',
-                    device.status === 'online' && 'text-success-on-tint',
-                    device.status === 'offline' && 'text-muted-foreground',
-                    device.status === 'warning' && 'text-warning-on-tint'
-                  )}
-                >
-                  {getStatusLabel(device.status)}
-                </span>
-              </div>
-            </div>
+    <div>
+      <PageHeader title="Devices" lede="The machines your IT team looks after for you." />
 
-            <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-              <div>
-                {/* Platform family only. The build number ("10.0.19045") means
-                    nothing to the person reading this. */}
-                <span className="text-muted-foreground">Type:</span>{' '}
-                <span>{osLabel(device.osType)}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Last seen:</span>{' '}
-                <span>{lastSeenLabel(device.lastSeenAt)}</span>
-              </div>
+      {devices.length === 0 ? (
+        <EmptyState icon={<Monitor className="h-10 w-10" strokeWidth={1.5} />} title="No devices">
+          <p className="mt-1 text-sm text-muted-foreground">
+            Your IT team hasn't linked any devices to your account yet.
+          </p>
+        </EmptyState>
+      ) : (
+        <div className="overflow-x-auto">
+          {/* One inventory, one treatment: the same hairline-ruled ledger the
+              rest of the portal keeps (Equipment reads these machines the same
+              way) — not a card grid holding a second belief about this data. */}
+          <table className="block w-full sm:table sm:min-w-[36rem]">
+            <thead className="hidden border-b border-border sm:table-header-group">
+              <tr>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Device
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Type
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Status
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Last online
+                </th>
+              </tr>
+            </thead>
+            <tbody className="block divide-y divide-border/70 sm:table-row-group">
+              {devices.map((device) => {
+                const mark = statusMark(device.status);
+                return (
+                  <tr key={device.id} className={ROW}>
+                    {/* order-* reorders the phone card: name and status share
+                        the first line, platform and last-seen trail muted. The
+                        friendly name only — the raw hostname is a technician's
+                        handle and stays the fallback, not a subtitle. */}
+                    <td className={cn(CELL, 'order-1 grow')}>
+                      <span className="font-semibold text-foreground">
+                        {device.displayName || device.hostname}
+                      </span>
+                    </td>
+                    <td className={cn(CELL, 'order-3 text-xs text-muted-foreground sm:text-sm')}>
+                      <span className="sm:hidden">Type </span>
+                      {osLabel(device.osType)}
+                    </td>
+                    <td className={cn(CELL, 'order-2 shrink-0')}>
+                      <StatusMark dotClass={mark.dot} textClass={mark.text}>
+                        {mark.label}
+                      </StatusMark>
+                    </td>
+                    <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-sm')}>
+                      <span className="sm:hidden">Last online </span>
+                      {lastSeenLabel(device.lastSeenAt)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {footLine && (
+            <div
+              className="border-t border-border px-4 pt-3.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground"
+              data-testid="device-ledger-foot"
+            >
+              {footLine}
             </div>
-          </div>
-        ))}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

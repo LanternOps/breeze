@@ -8,6 +8,7 @@ import { portalLogin, usePortalAuth } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { safeNextPath } from '@/lib/nextPath';
+import { BTN_PRIMARY, INPUT } from './ui';
 
 const loginSchema = z.object({
   email: z.string().email('Please enter a valid email address'),
@@ -44,7 +45,7 @@ export function LoginForm() {
       const next = safeNextPath(new URLSearchParams(window.location.search).get('next'));
       await navigateTo(next ?? '/quotes', { replace: true });
     } else {
-      setError(result.error || 'Login failed');
+      setError(result.error || 'That email and password don\'t match our records. Try again, or reset your password.');
     }
 
     setIsLoading(false);
@@ -57,10 +58,14 @@ export function LoginForm() {
     // react-hook-form's handleSubmit preventDefaults and fetch() takes over.
     // AcceptInviteForm has carried this guard for a while; the other password
     // forms never got it.
-    <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+    <form
+      method="post"
+      onSubmit={handleSubmit(onSubmit)}
+      className="space-y-6 rounded-lg border border-border/70 bg-card p-6 sm:p-8"
+    >
       {error && (
-        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
-          <AlertCircle className="h-4 w-4" />
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint">
+          <AlertCircle className="h-4 w-4 shrink-0" />
           {error}
         </div>
       )}
@@ -77,14 +82,10 @@ export function LoginForm() {
           type="email"
           autoComplete="email"
           {...register('email')}
-          className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
-            errors.email && 'border-destructive'
-          )}
+          className={cn(INPUT, errors.email && 'border-destructive')}
         />
         {errors.email && (
-          <p className="mt-1 text-sm text-destructive">{errors.email.message}</p>
+          <p className="mt-1 text-sm text-destructive-on-tint">{errors.email.message}</p>
         )}
       </div>
 
@@ -100,58 +101,32 @@ export function LoginForm() {
           type="password"
           autoComplete="current-password"
           {...register('password')}
-          className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
-            errors.password && 'border-destructive'
-          )}
+          className={cn(INPUT, errors.password && 'border-destructive')}
         />
         {errors.password && (
-          <p className="mt-1 text-sm text-destructive">
+          <p className="mt-1 text-sm text-destructive-on-tint">
             {errors.password.message}
           </p>
         )}
       </div>
 
-      <div className="flex items-center justify-between">
-        <div className="flex items-center">
-          <input
-            id="remember-me"
-            name="remember-me"
-            type="checkbox"
-            className="h-4 w-4 rounded border-input text-primary focus:ring-primary"
-          />
-          <label
-            htmlFor="remember-me"
-            className="ml-2 block text-sm text-muted-foreground"
-          >
-            Remember me
-          </label>
-        </div>
-
-        <div className="text-sm">
-          <a
-            href={withBase("/forgot-password")}
-            className="font-medium text-primary hover:text-primary/80"
-          >
-            Forgot your password?
-          </a>
-        </div>
+      {/* "Remember me" used to sit here: an unregistered checkbox wired to
+          nothing, present only because login forms have one. Session length is
+          the server's policy; a dead control is a small lie to the user. */}
+      <div className="text-right text-sm">
+        <a
+          href={withBase("/forgot-password")}
+          className="font-medium text-primary-on-tint underline-offset-4 hover:underline"
+        >
+          Forgot your password?
+        </a>
       </div>
 
-      <button
-        type="submit"
-        disabled={isLoading}
-        className={cn(
-          'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-          'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
-          'disabled:cursor-not-allowed disabled:opacity-50'
-        )}
-      >
+      <button type="submit" disabled={isLoading} className={cn(BTN_PRIMARY, 'w-full')}>
         {isLoading ? (
           <>
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Signing in...
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Signing in
           </>
         ) : (
           'Sign in'

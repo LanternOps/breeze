@@ -1,9 +1,16 @@
 import { withBase } from '@/lib/basePath';
-import React from 'react';
-import { ArrowLeft, AlertCircle, Clock, Tag } from 'lucide-react';
-import { type TicketComment, type TicketDetails as TicketDetailsType, type TicketPriority, type TicketStatus } from '@/lib/api';
+import React, { useEffect, useState } from 'react';
+import { ArrowLeft, AlertCircle, Loader2 } from 'lucide-react';
+import {
+  portalApi,
+  type TicketComment,
+  type TicketDetails as TicketDetailsType,
+  type TicketStatus,
+} from '@/lib/api';
 import { formatDate, formatDateTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import { BTN_PRIMARY, INPUT, StatusMark } from './ui';
+import { ticketStatusLabel, ticketStatusMark } from './ticketMarks';
 
 /** Activity copy derived from the ticket's own status. This component only ever
  *  sees the ticket record plus its public replies, so it must never assert that
@@ -27,57 +34,114 @@ interface TicketDetailsProps {
   error?: string | null;
 }
 
+/** The reply box that closes the loop the create-form promises ("say so in the
+ *  ticket and we will update it"). Posts to the ticket's own comment thread;
+ *  the new reply is appended locally so the conversation updates in place. */
+function ReplyComposer({
+  ticketId,
+  onPosted,
+}: {
+  ticketId: string;
+  onPosted: (comment: TicketComment) => void;
+}) {
+  const [content, setContent] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  const send = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = content.trim();
+    if (!trimmed || isSending) return;
+    setIsSending(true);
+    setSendError(null);
+    const result = await portalApi.addTicketComment(ticketId, trimmed);
+    if (result.data) {
+      onPosted(result.data);
+      setContent('');
+    } else {
+      setSendError(result.error || 'Your reply was not sent. Try again.');
+    }
+    setIsSending(false);
+  };
+
+  return (
+    <form onSubmit={send} className="mt-5" data-testid="ticket-reply-form">
+      <label htmlFor="ticket-reply" className="block text-sm font-medium text-foreground">
+        Add a reply
+      </label>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        Anything you add here goes straight to your IT team.
+      </p>
+      <textarea
+        id="ticket-reply"
+        rows={3}
+        maxLength={5000}
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        disabled={isSending}
+        placeholder="Has anything changed? Let us know here."
+        className={cn(INPUT, 'min-h-[5.5rem] resize-y')}
+        data-testid="ticket-reply-input"
+      />
+      {sendError && (
+        <p role="alert" className="mt-2 text-sm font-medium text-destructive-on-tint">
+          {sendError}
+        </p>
+      )}
+      <div className="mt-3 flex justify-end">
+        <button
+          type="submit"
+          disabled={isSending || content.trim().length === 0}
+          className={BTN_PRIMARY}
+          data-testid="ticket-reply-submit"
+        >
+          {isSending ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Sending
+            </>
+          ) : (
+            'Send reply'
+          )}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export function TicketDetails({ ticket, error }: TicketDetailsProps) {
-  const getStatusColor = (status: TicketStatus) => {
-    switch (status) {
-      case 'open':
-        return 'bg-primary/10 text-primary';
-      case 'in_progress':
-        return 'bg-warning/10 text-warning';
-      case 'resolved':
-        return 'bg-success/10 text-success';
-      case 'closed':
-        return 'bg-muted text-muted-foreground';
-    }
-  };
-
-  const getStatusLabel = (status: TicketStatus) => {
-    switch (status) {
-      case 'open':
-        return 'Open';
-      case 'in_progress':
-        return 'In Progress';
-      case 'resolved':
-        return 'Resolved';
-      case 'closed':
-        return 'Closed';
-    }
-  };
-
-  const getPriorityColor = (priority: TicketPriority) => {
-    switch (priority) {
-      case 'urgent':
-        return 'bg-destructive text-destructive-foreground';
-      case 'high':
-        return 'bg-warning text-warning-foreground';
-      case 'normal':
-        return 'bg-primary text-primary-foreground';
-      case 'low':
-        return 'bg-muted text-muted-foreground';
-    }
-  };
+  // The API returns public replies newest-first; this reads as a conversation
+  // under the description, so show them oldest-first. `comments` is defensively
+  // defaulted for any payload that predates the field. Local state so a reply
+  // posted from this page appears in the thread without a reload.
+  const [replies, setReplies] = useState<TicketComment[]>(() =>
+    [...(ticket?.comments ?? [])].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    )
+  );
+  // Announced to screen readers when a reply lands; visually the thread itself
+  // is the confirmation.
+  const [posted, setPosted] = useState(false);
+  // Timestamps are formatted in the viewer's locale and timezone, which the
+  // server cannot know: the SSR pass renders them in the container's zone (UTC)
+  // and the browser in the customer's. Suppressing the hydration diff and
+  // re-rendering once mounted keeps React quiet during hydration and then
+  // patches every timestamp to the local values in the same frame.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  void mounted;
 
   if (error || !ticket) {
     return (
-      <div className="text-center">
-        <AlertCircle className="mx-auto h-12 w-12 text-destructive" />
-        <h3 className="mt-4 text-lg font-medium">Ticket not found</h3>
+      <div className="border-y border-border/70 py-14 text-center">
+        <AlertCircle className="mx-auto h-10 w-10 text-destructive-on-tint" strokeWidth={1.5} />
+        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">Ticket not found</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {error || 'The ticket you are looking for does not exist.'}
+          {error || "We couldn't find that ticket — it may have been merged with another request. Your tickets list has the latest."}
         </p>
         <a
-          href={withBase("/tickets")}
-          className="mt-4 inline-flex items-center gap-2 text-sm text-primary hover:text-primary/80"
+          href={withBase('/tickets')}
+          className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary-on-tint underline-offset-4 hover:underline"
         >
           <ArrowLeft className="h-4 w-4" />
           Back to tickets
@@ -86,98 +150,122 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
     );
   }
 
-  // The API returns public replies newest-first; this reads as a conversation
-  // under the description, so show them oldest-first. `comments` is defensively
-  // defaulted for any payload that predates the field.
-  const replies: TicketComment[] = [...(ticket.comments ?? [])].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  );
+  const status = ticketStatusMark(ticket.status);
 
   return (
     <div className="mx-auto max-w-3xl">
       <div className="mb-6">
         <a
-          href={withBase("/tickets")}
-          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+          href={withBase('/tickets')}
+          className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" />
           Back to tickets
         </a>
       </div>
 
-      <div className="rounded-lg border bg-card">
-        <div className="border-b p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h1 className="text-xl font-semibold">{ticket.subject}</h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Ticket #{ticket.ticketNumber}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  'inline-flex rounded-full px-3 py-1 text-xs font-medium',
-                  getStatusColor(ticket.status)
-                )}
-              >
-                {getStatusLabel(ticket.status)}
-              </span>
-              <span
-                className={cn(
-                  'inline-flex rounded-full px-3 py-1 text-xs font-medium capitalize',
-                  getPriorityColor(ticket.priority)
-                )}
-              >
-                {ticket.priority}
-              </span>
-            </div>
-          </div>
-
-          <div className="mt-4 flex items-center gap-6 text-sm text-muted-foreground">
-            <div className="flex items-center gap-1">
-              <Clock className="h-4 w-4" />
-              Created {formatDateTime(ticket.createdAt)}
-            </div>
-            <div className="flex items-center gap-1">
-              <Tag className="h-4 w-4" />
-              Updated {formatDateTime(ticket.updatedAt)}
-            </div>
-          </div>
+      <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div>
+          <h1 className="font-display text-2xl font-semibold leading-tight tracking-tight text-foreground">
+            {ticket.subject}
+          </h1>
+          <p className="text-figures mt-1 text-sm text-muted-foreground">#{ticket.ticketNumber}</p>
         </div>
-
-        <div className="p-6">
-          <h2 className="text-sm font-medium text-muted-foreground">
-            Description
-          </h2>
-          <div className="mt-2 whitespace-pre-wrap text-sm">
-            {ticket.description}
-          </div>
+        <div className="flex items-center gap-4 pt-1.5">
+          <StatusMark dotClass={status.dot} textClass={status.text}>
+            {ticketStatusLabel(ticket.status)}
+          </StatusMark>
+          {/* Priority is context, not state: one mark per row. Urgent and high
+              keep their tinted text; routine priorities stay muted. */}
+          <span
+            className={cn(
+              'text-xs font-medium',
+              ticket.priority === 'urgent'
+                ? 'text-destructive-on-tint'
+                : ticket.priority === 'high'
+                  ? 'text-warning-on-tint'
+                  : 'text-muted-foreground'
+            )}
+          >
+            {ticket.priority.charAt(0).toUpperCase() + ticket.priority.slice(1)} priority
+          </span>
         </div>
+      </header>
 
-        <div className="border-t p-6">
-          <h2 className="text-sm font-medium text-muted-foreground">
-            Activity
-          </h2>
-          <p className="mt-2 text-sm text-muted-foreground" data-testid="ticket-activity-status">
-            {activityStatusText(ticket.status, ticket.updatedAt)}
+      <p className="mt-3 text-sm text-muted-foreground" suppressHydrationWarning>
+        Created {formatDateTime(ticket.createdAt)}
+        <span className="mx-2 text-border" aria-hidden="true">
+          ·
+        </span>
+        Updated {formatDateTime(ticket.updatedAt)}
+      </p>
+
+      <section className="mt-7 border-t border-border/70 pt-5">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          Description
+        </h2>
+        <div className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+          {ticket.description}
+        </div>
+      </section>
+
+      <section className="mt-7 border-t border-border/70 pt-5">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          Activity
+        </h2>
+        <p
+          className="mt-2 text-sm text-muted-foreground"
+          data-testid="ticket-activity-status"
+          suppressHydrationWarning
+        >
+          {activityStatusText(ticket.status, ticket.updatedAt)}
+        </p>
+
+        {replies.length > 0 && (
+          <ol className="mt-4 divide-y divide-border/70 border-y border-border/70">
+            {replies.map((c) => (
+              <li key={c.id} className="py-4" data-testid="ticket-comment">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="text-sm font-semibold text-foreground">
+                    {c.authorName || 'Support'}
+                  </span>
+                  <span className="text-xs text-muted-foreground" suppressHydrationWarning>{formatDateTime(c.createdAt)}</span>
+                </div>
+                <div className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                  {c.content}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {/* Live confirmation for screen readers; sighted readers see the reply
+            land in the thread above. */}
+        <p role="status" className="sr-only">
+          {posted ? 'Your reply was sent.' : ''}
+        </p>
+
+        {ticket.status !== 'closed' ? (
+          <ReplyComposer
+            ticketId={ticket.id}
+            onPosted={(comment) => {
+              setReplies((prev) => [...prev, comment]);
+              setPosted(true);
+            }}
+          />
+        ) : (
+          <p className="mt-5 text-sm text-muted-foreground" data-testid="ticket-closed-note">
+            This ticket is closed.{' '}
+            <a
+              href={withBase('/tickets/new')}
+              className="font-medium text-primary-on-tint underline-offset-4 hover:underline"
+            >
+              Start a new ticket
+            </a>{' '}
+            if you need anything else.
           </p>
-
-          {replies.length > 0 && (
-            <ol className="mt-4 space-y-4">
-              {replies.map((c) => (
-                <li key={c.id} className="rounded-md border bg-muted/30 p-4" data-testid="ticket-comment">
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <span className="text-sm font-medium">{c.authorName || 'Support'}</span>
-                    <span className="text-xs text-muted-foreground">{formatDateTime(c.createdAt)}</span>
-                  </div>
-                  <div className="mt-2 whitespace-pre-wrap text-sm">{c.content}</div>
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-      </div>
+        )}
+      </section>
     </div>
   );
 }

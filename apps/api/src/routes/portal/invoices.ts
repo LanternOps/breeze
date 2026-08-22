@@ -56,6 +56,18 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
       amountPaid: invoices.amountPaid,
       balance: invoices.balance,
       depositDue: invoices.depositDue,
+      // Invoices carry no title column; derive the human handle the customer
+      // recognizes — the accepted proposal's title (quotes.converted_invoice_id
+      // points here), else the first customer-visible line's name. NULL for a
+      // bare invoice; the portal falls back to the number.
+      // NOTE: the outer column must be written qualified by hand — Drizzle
+      // renders an interpolated column as bare `"id"`, which inside the
+      // subselect resolves to the SUBQUERY's table and correlates it with
+      // itself (always false, title always null).
+      title: sql<string | null>`coalesce(
+        (select q.title from quotes q where q.converted_invoice_id = invoices.id limit 1),
+        (select il.name from invoice_lines il where il.invoice_id = invoices.id and il.customer_visible order by il.sort_order limit 1)
+      )`,
     })
     .from(invoices)
     .where(conditions)
@@ -113,7 +125,7 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   // class — 0 rows, no error), so the name reads under SYSTEM scope exactly as
   // portal/quotes.ts does; portal_branding is org-scoped and reads fine here.
   const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.select({ name: partners.name }).from(partners).where(eq(partners.id, result.invoice.partnerId)).limit(1)));
+    db.select({ name: partners.name }).from(partners).where(eq(partners.id, result.partnerId)).limit(1)));
   const [brand] = await db
     .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
     .from(portalBranding)

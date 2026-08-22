@@ -213,6 +213,18 @@ describe('invoiceService guards', () => {
     expect(invoice).not.toHaveProperty('updatedAt');
   });
 
+  it('getCustomerInvoice returns partnerId OUTSIDE the serialized header for the branding lookup', async () => {
+    // The portal detail route resolves the partner display name from this id.
+    // It used to read `result.invoice.partnerId`, which the serialization
+    // boundary strips — undefined reached the partners query and every portal
+    // invoice-detail request 500ed (postgres.js UNDEFINED_VALUE).
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'internal-partner-id' }]);
+    queueResult([]);
+    const result = await svc.getCustomerInvoice('i1', 'org1');
+    expect(result.partnerId).toBe('internal-partner-id');
+    expect(result.invoice).not.toHaveProperty('partnerId');
+  });
+
   it('getCustomerInvoice returns the exact customer-safe invoice line keyset', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
     queueResult([{

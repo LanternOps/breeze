@@ -5,15 +5,19 @@
    'classic' document downloads nothing. These @imports must stay above
    `@import 'tailwindcss'` — Vite's postcss-import resolves @import at build
    time and drops any @import that isn't first (same rule as apps/web). */
-/* Portal UI typeface. Before this, the portal defined no --font-sans at all, so
-   every screen outside a condensed document rendered in the OS system stack —
-   the "generic system fonts" tell PRODUCT.md explicitly calls out. Plus Jakarta
-   Sans is what apps/web already ships, so the dashboard and the customer portal
-   now read as one product. */
-@import '@fontsource/plus-jakarta-sans/400.css';
-@import '@fontsource/plus-jakarta-sans/500.css';
-@import '@fontsource/plus-jakarta-sans/600.css';
-@import '@fontsource/plus-jakarta-sans/700.css';
+/* Portal UI typefaces — "The Guest Ledger" world. Hanken Grotesk carries every
+   control, label and body string: a warm humanist grotesk, closer to a
+   front-desk register than to a dashboard. Literata (a screen-first serif
+   commissioned for long-form reading) carries page titles and the money
+   figures — the two places a service business speaks with its own voice.
+   These are the portal's faces, distinct from apps/web on purpose: the
+   technician's console and the client's ledger are different rooms. */
+@import '@fontsource/hanken-grotesk/400.css';
+@import '@fontsource/hanken-grotesk/500.css';
+@import '@fontsource/hanken-grotesk/600.css';
+@import '@fontsource/hanken-grotesk/700.css';
+@import '@fontsource/literata/500.css';
+@import '@fontsource/literata/600.css';
 @import '@fontsource/barlow-condensed/600.css';
 @import '@fontsource/dm-sans/400.css';
 @import '@fontsource/dm-sans/500.css';
@@ -70,8 +74,9 @@
   --color-destructive-on-tint: hsl(var(--destructive-on-tint));
   --color-primary-on-tint: hsl(var(--primary-on-tint));
 
-  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system,
+  --font-sans: 'Hanken Grotesk', ui-sans-serif, system-ui, -apple-system,
     'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Literata', Georgia, 'Times New Roman', serif;
 
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
@@ -97,82 +102,85 @@
 }
 
 @layer base {
+  /* "The Guest Ledger" palette. One warm hue family (38-42°, plaster and
+     linen) carries every neutral; the working ink is a deep service green
+     (155°) rather than SaaS blue. Status hues are warm-shifted to sit in the
+     same room: a brick red, a spruce green, an amber. No pure grey anywhere —
+     every neutral is tinted toward the paper. All foreground/background
+     ratios are asserted in tokenContrast.test.ts. */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    /* Was 46.9% — 4.34:1 on --muted, failing AA for the draft/void/closed/low
-       badges that pair the two. */
-    --muted-foreground: 215.4 20% 35%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    /* Solid-badge fills keep their hue; only the foregrounds moved, because
-       `--warning-foreground` on `--warning` measured 1.92:1 and
-       `--destructive-foreground` on `--destructive` measured 3.59:1. */
-    --destructive: 0 74% 42%;
-    --destructive-foreground: 210 40% 98%;
-    /* Darkened from 36.3%: the solid success badge puts white on this fill,
-       which measured 3.29:1. The tint (`bg-success/10`) is unaffected. */
-    --success: 142.1 76.2% 26%;
+    --background: 40 28% 94%;
+    --foreground: 30 12% 12%;
+    --card: 42 45% 99%;
+    --card-foreground: 30 12% 12%;
+    --popover: 42 45% 99%;
+    --popover-foreground: 30 12% 12%;
+    --primary: 155 32% 24%;
+    --primary-foreground: 42 45% 97%;
+    --secondary: 40 24% 90%;
+    --secondary-foreground: 30 12% 14%;
+    --muted: 40 24% 90%;
+    --muted-foreground: 32 8% 36%;
+    --accent: 40 26% 88%;
+    --accent-foreground: 30 12% 12%;
+    --destructive: 8 62% 40%;
+    --destructive-foreground: 42 45% 98%;
+    --success: 152 45% 26%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 38 100% 12%;
+    --warning: 35 90% 44%;
+    --warning-foreground: 28 90% 12%;
 
     /* Foregrounds for text on a 10%-alpha tint. See the @theme block above. */
-    --success-on-tint: 142.1 76.2% 27%;
-    --warning-on-tint: 38 92% 27%;
-    --destructive-on-tint: 0 74% 42%;
-    --primary-on-tint: 221.2 83.2% 42%;
+    --success-on-tint: 152 45% 25%;
+    --warning-on-tint: 33 85% 28%;
+    --destructive-on-tint: 8 62% 38%;
+    --primary-on-tint: 155 32% 24%;
 
-    /* Was 214.3 31.8% 91.4% — a 1.23:1 hairline. SignaturePanel.tsx:89 already
-       documented customers being unable to see the agreement checkbox because
-       of it; that fix was local to one checkbox, this one is systemic. */
-    --border: 214.3 24% 82%;
-    --input: 214.3 24% 82%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    /* Visible hairline against the plaster ground (1.4:1 floor asserted in
+       tokenContrast.test.ts — the old 1.23:1 hairline hid the signature
+       checkbox from actual customers). */
+    --border: 38 16% 78%;
+    --input: 38 16% 74%;
+    --ring: 155 32% 30%;
+    --radius: 0.75rem;
   }
 
+  /* Dark: the same room after hours — warm charcoal, never blue-black. The
+     neutrals keep the 30-40° tint; the working green and the status hues
+     lighten to carry text on dark surfaces. Kept in parity with the media
+     block below by themeParity.test.ts. */
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --success: 142.1 70.6% 45.3%;
-    --success-foreground: 144.9 80.4% 10%;
-    --warning: 48 96% 53%;
-    --warning-foreground: 20.5 90.2% 14.1%;
+    --background: 30 10% 9%;
+    --foreground: 40 26% 92%;
+    --card: 32 10% 12%;
+    --card-foreground: 40 26% 92%;
+    --popover: 32 10% 12%;
+    --popover-foreground: 40 26% 92%;
+    --primary: 152 30% 64%;
+    --primary-foreground: 155 40% 10%;
+    --secondary: 30 8% 18%;
+    --secondary-foreground: 40 26% 92%;
+    --muted: 30 8% 18%;
+    --muted-foreground: 36 12% 68%;
+    --accent: 30 9% 21%;
+    --accent-foreground: 40 26% 92%;
+    --destructive: 8 58% 56%;
+    --destructive-foreground: 42 45% 98%;
+    --success: 152 38% 58%;
+    --success-foreground: 150 60% 8%;
+    --warning: 38 85% 60%;
+    --warning-foreground: 28 90% 10%;
 
     /* On a dark surface the tint wash is dark, so these lighten instead of
        darkening. Same contract, mirrored. */
-    --success-on-tint: 142.1 70.6% 62%;
-    --warning-on-tint: 48 96% 68%;
-    --destructive-on-tint: 0 84% 72%;
-    --primary-on-tint: 217.2 91.2% 72%;
+    --success-on-tint: 152 42% 68%;
+    --warning-on-tint: 40 82% 70%;
+    --destructive-on-tint: 8 75% 74%;
+    --primary-on-tint: 152 38% 70%;
 
-    --border: 217.2 32.6% 24%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --border: 30 8% 24%;
+    --input: 30 8% 26%;
+    --ring: 152 30% 52%;
   }
 
   /* The dark palette above was dead code: nothing in the portal ever added
@@ -182,37 +190,37 @@
      asserted identical by themeParity.test.ts, so this copy cannot drift. */
   @media (prefers-color-scheme: dark) {
     :root:not(.light) {
-      --background: 222.2 84% 4.9%;
-      --foreground: 210 40% 98%;
-      --card: 222.2 84% 4.9%;
-      --card-foreground: 210 40% 98%;
-      --popover: 222.2 84% 4.9%;
-      --popover-foreground: 210 40% 98%;
-      --primary: 217.2 91.2% 59.8%;
-      --primary-foreground: 222.2 47.4% 11.2%;
-      --secondary: 217.2 32.6% 17.5%;
-      --secondary-foreground: 210 40% 98%;
-      --muted: 217.2 32.6% 17.5%;
-      --muted-foreground: 215 20.2% 65.1%;
-      --accent: 217.2 32.6% 17.5%;
-      --accent-foreground: 210 40% 98%;
-      --destructive: 0 62.8% 30.6%;
-      --destructive-foreground: 210 40% 98%;
-      --success: 142.1 70.6% 45.3%;
-      --success-foreground: 144.9 80.4% 10%;
-      --warning: 48 96% 53%;
-      --warning-foreground: 20.5 90.2% 14.1%;
+      --background: 30 10% 9%;
+      --foreground: 40 26% 92%;
+      --card: 32 10% 12%;
+      --card-foreground: 40 26% 92%;
+      --popover: 32 10% 12%;
+      --popover-foreground: 40 26% 92%;
+      --primary: 152 30% 64%;
+      --primary-foreground: 155 40% 10%;
+      --secondary: 30 8% 18%;
+      --secondary-foreground: 40 26% 92%;
+      --muted: 30 8% 18%;
+      --muted-foreground: 36 12% 68%;
+      --accent: 30 9% 21%;
+      --accent-foreground: 40 26% 92%;
+      --destructive: 8 58% 56%;
+      --destructive-foreground: 42 45% 98%;
+      --success: 152 38% 58%;
+      --success-foreground: 150 60% 8%;
+      --warning: 38 85% 60%;
+      --warning-foreground: 28 90% 10%;
 
       /* On a dark surface the tint wash is dark, so these lighten instead of
          darkening. Same contract, mirrored. */
-      --success-on-tint: 142.1 70.6% 62%;
-      --warning-on-tint: 48 96% 68%;
-      --destructive-on-tint: 0 84% 72%;
-      --primary-on-tint: 217.2 91.2% 72%;
+      --success-on-tint: 152 42% 68%;
+      --warning-on-tint: 40 82% 70%;
+      --destructive-on-tint: 8 75% 74%;
+      --primary-on-tint: 152 38% 70%;
 
-      --border: 217.2 32.6% 24%;
-      --input: 217.2 32.6% 17.5%;
-      --ring: 224.3 76.3% 48%;
+      --border: 30 8% 24%;
+      --input: 30 8% 26%;
+      --ring: 152 30% 52%;
     }
   }
 }
@@ -224,6 +232,10 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
+    /* Hanken Grotesk ships with old-style figures in some contexts; the portal
+       is full of dates, totals and balances, so lining figures are the
+       default and columns opt into tabular spacing via .text-figures. */
+    font-variant-numeric: lining-nums;
   }
   /* Lets the UA theme scrollbars, form controls and the canvas to match. */
   :root {
@@ -248,6 +260,52 @@
 }
 
 @layer components {
+  /* ---- The Guest Ledger voice ---------------------------------------- */
+
+  /* Page titles and money figures: the two places the portal speaks in its
+     own serif. Everything else stays in the grotesk. */
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  /* Amounts, dates and any column of figures: equal-width digits so a ledger
+     column actually aligns. Falls back gracefully where the face lacks the
+     feature. */
+  .text-figures {
+    font-variant-numeric: lining-nums tabular-nums;
+  }
+
+  /* The ledger: rows ruled by hairlines, not boxed into chips. Applied to
+     tbody so the rules live between entries like a ruled register page. */
+  .ledger-row {
+    @apply transition-colors duration-150;
+  }
+  .ledger-row:hover {
+    background-color: hsl(var(--accent) / 0.55);
+  }
+
+  /* The one authored motion moment: page content settles onto the desk.
+     240ms, ease-out, 6px of travel — replayed per client-side navigation by
+     the view-transitions router, disabled wholesale for reduced motion. */
+  @keyframes settle {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .settle-in {
+    animation: settle 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .settle-in {
+      animation: none;
+    }
+  }
+
   /*
    * rich_text quote blocks (quoteBlocks.tsx) render sanitized author HTML via
    * dangerouslySetInnerHTML — the API guarantees only richTextSanitize.ts's fixed
@@ -348,13 +406,18 @@
    a proposal or invoice carries partner brand colours chosen against white and
    is what the customer prints or forwards to their accountant, so pin it. */
 [data-doc-theme] {
+  /* The ground stays true white — this is what the customer prints — but the
+     ink, rules and washes are authored warm neutrals from the portal's own
+     30-40° family. The block previously carried the scaffold's stock cool-slate
+     values verbatim, which put the one surface a customer forwards to their
+     accountant outside the No-Grey Rule the rest of the product lives by. */
   --background: 0 0% 100%;
-  --foreground: 222.2 84% 4.9%;
+  --foreground: 30 12% 13%;
   --card: 0 0% 100%;
-  --card-foreground: 222.2 84% 4.9%;
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 20% 35%;
-  --border: 214.3 24% 82%;
+  --card-foreground: 30 12% 13%;
+  --muted: 40 22% 96%;
+  --muted-foreground: 32 8% 36%;
+  --border: 38 14% 82%;
   color-scheme: light;
   background-color: hsl(var(--card));
   color: hsl(var(--foreground));

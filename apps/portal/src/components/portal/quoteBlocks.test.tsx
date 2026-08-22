@@ -195,7 +195,8 @@ describe('QuoteBlocks — callout block rendering', () => {
     renderBlocks(blocks);
 
     const callout = screen.getByTestId('quote-callout-block');
-    expect(callout.className).toContain('border-amber-500/40');
+    // Token, not raw Tailwind palette: the warn variant speaks --warning
+    expect(callout.className).toContain('border-warning/40');
     expect(screen.getByText('Heads up')).not.toBeNull();
     const strongEl = screen.getByText('carefully');
     expect(strongEl.tagName).toBe('STRONG');

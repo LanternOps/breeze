@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { BTN_PRIMARY, BTN_SECONDARY, INPUT } from './ui';
 
 
 function today(): string {
@@ -57,7 +58,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
   };
 
   return (
-    <div className="rounded-xl border bg-card p-5 shadow-xs sm:p-6" data-testid={`${testIdPrefix}-sign`}>
+    <div className="rounded-xl border bg-card p-5 sm:p-6" data-testid={`${testIdPrefix}-sign`}>
       <h3 className="text-sm font-semibold text-foreground">Accept &amp; sign</h3>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
         Type your full legal name to sign and accept this proposal.
@@ -74,7 +75,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
           disabled={busy}
           autoComplete="name"
           placeholder="Your full name"
-          className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden transition focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+          className={cn(INPUT, "mt-0")}
         />
       </div>
 
@@ -92,7 +93,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
             {trimmed || ' '}
           </span>
         </div>
-        <div className="mt-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted-foreground">
+        <div className="mt-2 flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
           <span>Signature</span>
           <span>{date}</span>
         </div>
@@ -119,7 +120,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
         <p
           id={hintId}
           role="alert"
-          className="mt-2 text-xs text-destructive"
+          className="mt-2 text-xs font-medium text-destructive-on-tint"
           data-testid={`${testIdPrefix}-sign-hint`}
         >
           {trimmed.length === 0 ? 'Please type your full name to sign.' : 'Please confirm you agree to the terms.'}
@@ -147,7 +148,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
               onChange={(e) => setDeclineReason(e.target.value)}
               disabled={busy}
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden transition focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+              className={cn(INPUT, "mt-0")}
             />
           </div>
 
@@ -157,9 +158,9 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
               data-testid={`${testIdPrefix}-decline-confirm`}
               onClick={confirmDecline}
               disabled={busy}
-              className="inline-flex items-center justify-center rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground transition hover:bg-destructive/90 disabled:opacity-50"
+              className={cn(BTN_PRIMARY, "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
             >
-              {busy ? 'Working…' : 'Yes, decline'}
+              {busy ? 'Declining' : 'Yes, decline'}
             </button>
             <button
               type="button"
@@ -169,7 +170,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
               // Focus lands on the safe option, so Enter/Space on arrival backs
               // out rather than declining.
               autoFocus
-              className="inline-flex items-center justify-center rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+              className={BTN_SECONDARY}
             >
               Keep reviewing
             </button>
@@ -190,19 +191,16 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
             aria-disabled={!canSign}
             aria-describedby={showHint ? hintId : undefined}
             disabled={busy}
-            className={cn(
-              'inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90',
-              !canSign && 'opacity-50'
-            )}
+            className={cn(BTN_PRIMARY, !canSign && 'opacity-50')}
           >
-            {busy ? 'Working…' : 'Accept & sign'}
+            {busy ? 'Signing' : 'Accept & sign'}
           </button>
           <button
             type="button"
             data-testid={`${testIdPrefix}-decline`}
             onClick={() => setDeclining(true)}
             disabled={busy}
-            className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+            className={BTN_SECONDARY}
           >
             Decline
           </button>

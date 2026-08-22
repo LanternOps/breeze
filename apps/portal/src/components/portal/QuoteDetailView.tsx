@@ -2,9 +2,11 @@ import { withBase } from '@/lib/basePath';
 import { useState } from 'react';
 import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
 import { type QuoteDetail, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { shortDate } from '@/lib/format';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
 import { SignaturePanel } from './SignaturePanel';
 
 interface QuoteDetailViewProps {
@@ -31,17 +33,13 @@ function statusColor(status: string): string {
       return 'bg-destructive/10 text-destructive-on-tint';
     case 'viewed':
     case 'sent':
-      return 'bg-warning/10 text-warning-on-tint';
+      // Informational, matching QuoteList: a proposal merely sent or opened
+      // needs nothing from the customer yet — amber is reserved for states
+      // they should act on.
+      return 'bg-primary/10 text-primary-on-tint';
     default:
       return 'bg-muted text-muted-foreground';
   }
-}
-
-function shortDate(value: string | null | undefined): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
 }
 
 export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
@@ -60,13 +58,13 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
 
   if (error || !detail) {
     return (
-      <div className="text-center">
-        <AlertCircle className="mx-auto h-12 w-12 text-destructive" />
-        <h3 className="mt-4 text-lg font-medium">Proposal not found</h3>
+      <div className="border-y border-border/70 py-14 text-center">
+        <AlertCircle className="mx-auto h-10 w-10 text-destructive-on-tint" strokeWidth={1.5} />
+        <h3 className="mt-4 font-display text-lg font-semibold text-foreground">Proposal not found</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {error || 'The proposal you are looking for does not exist.'}
+          {error || "We couldn't find that proposal — it may have been withdrawn or replaced. Your proposals list is current."}
         </p>
-        <a href={withBase("/quotes")} className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+        <a href={withBase("/quotes")} className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary-on-tint underline-offset-4 hover:underline">
           <ArrowLeft className="h-4 w-4" />
           Back to proposals
         </a>
@@ -79,8 +77,10 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
   const open = status === 'sent' || status === 'viewed';
 
   const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
+  // Omit a missing date rather than printing an em-dash placeholder on a
+  // document the customer forwards (the public token view already does this).
   const headerDates = [
-    { label: 'Issued', value: shortDate(quote.issueDate) },
+    ...(quote.issueDate ? [{ label: 'Issued', value: shortDate(quote.issueDate) }] : []),
     ...(quote.expiryDate ? [{ label: 'Valid until', value: shortDate(quote.expiryDate) }] : []),
   ];
 
@@ -140,8 +140,19 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
     setMsgError(true);
   };
 
+  // Derived from the LINES as well as the header aggregates: a payload that
+  // omits monthlyRecurringTotal/annualRecurringTotal used to silently drop the
+  // "First period subtotal" qualifier and the recurring reassurance rows,
+  // leaving a bare serif Total that visibly doesn't sum from the lines shown.
+  // The lines are always delivered, so cadence presence never depends on
+  // optional header fields.
+  const lineHasRecurring = lines.some(
+    (l) => l.customerVisible !== false && (l.recurrence === 'monthly' || l.recurrence === 'annual')
+  );
   const hasRecurring =
-    Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
+    lineHasRecurring ||
+    Number(quote.monthlyRecurringTotal ?? 0) > 0 ||
+    Number(quote.annualRecurringTotal ?? 0) > 0;
   // Per-line Tax column + a Subtotal/Tax breakdown appear only when this quote
   // carries tax (otherwise the totals stay focused on due-on-acceptance).
   const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
@@ -176,7 +187,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
   return (
     <div className="space-y-5" data-testid="quote-detail">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <a href={withBase("/quotes")} className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+        <a href={withBase("/quotes")} className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
           <ArrowLeft className="h-4 w-4" />
           Back to proposals
         </a>
@@ -186,7 +197,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
           target="_blank"
           rel="noreferrer"
           data-testid="quote-download-pdf"
-          className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+          className={BTN_SECONDARY}
         >
           <Download className="h-4 w-4" />
           Download PDF
@@ -200,6 +211,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
           seller={seller}
           eyebrow="Proposal"
           title={quote.quoteNumber ?? 'Proposal'}
+          subtitle={quote.title}
           statusLabel={STATUS_LABELS[status] ?? status}
           statusClass={statusColor(status)}
           dates={headerDates}
@@ -278,7 +290,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
                 </div>
                 <div className="flex items-baseline justify-between" data-testid="quote-deposit-due">
                   <span className="text-sm font-semibold text-foreground">Deposit due now</span>
-                  <span className="doc-accent-text text-2xl font-semibold tabular-nums">
+                  <span className="doc-accent-text font-display text-2xl font-semibold tabular-nums">
                     {money(depositDue, currency)}
                   </span>
                 </div>
@@ -290,7 +302,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
             ) : (
               <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
                 <span className="text-sm font-semibold text-foreground">{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
-                <span className="doc-accent-text text-2xl font-semibold tabular-nums">
+                <span className="doc-accent-text font-display text-2xl font-semibold tabular-nums">
                   {money(dueOnAcceptance, currency)}
                 </span>
               </div>
@@ -342,9 +354,9 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
                 data-testid="quote-pay"
                 disabled={busy}
                 onClick={() => void pay()}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                className={BTN_PRIMARY}
               >
-                {busy ? 'Working…' : payLabel}
+                {busy ? 'Opening secure checkout' : payLabel}
               </button>
             )}
             <a

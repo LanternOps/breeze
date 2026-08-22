@@ -143,6 +143,20 @@ describe('portal invoices routes', () => {
     expect(body.pagination.total).toBe(2);
   });
 
+  it('derived title subselects correlate on a QUALIFIED outer column', async () => {
+    // Drizzle renders an interpolated column (`${invoices.id}`) as bare `"id"`,
+    // which inside a correlated subselect resolves to the SUBQUERY's own table
+    // and correlates it with itself — always false, title always null, and the
+    // mocked db chain here can't see it. Pin the source: the correlation must
+    // be the hand-qualified `invoices.id`.
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./invoices.ts', import.meta.url), 'utf8');
+    const fragment = src.slice(src.indexOf('title: sql'), src.indexOf('})', src.indexOf('title: sql')));
+    expect(fragment).toContain('q.converted_invoice_id = invoices.id');
+    expect(fragment).toContain('il.invoice_id = invoices.id');
+    expect(fragment).not.toContain('${invoices.id}');
+  });
+
   it('GET /invoices/:id returns the customer view + stamps viewed', async () => {
     getCustomerInvoiceMock.mockResolvedValue({ invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [{ id: 'l1' }] });
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });

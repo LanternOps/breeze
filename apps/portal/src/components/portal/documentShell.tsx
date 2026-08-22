@@ -33,7 +33,7 @@ export function DocumentPaper({
     <div
       data-testid={testId}
       data-doc-theme={docTheme ?? 'classic'}
-      className="overflow-hidden rounded-xl border bg-card shadow-xs"
+      className="overflow-hidden rounded-xl border bg-card"
     >
       <div className="doc-accent-bg h-1.5 w-full" aria-hidden />
       <div className="space-y-10 px-4 py-7 sm:px-10 sm:py-9">{children}</div>
@@ -44,7 +44,7 @@ export function DocumentPaper({
 /** Header band: logo/wordmark + seller "From" on the left; eyebrow + title +
  *  status + dates on the right; optional "Prepared for / Bill to" line below. */
 export function DocumentHeader({
-  logoUrl, partnerName, seller, eyebrow, title, statusLabel, statusClass, dates,
+  logoUrl, partnerName, seller, eyebrow, title, subtitle, statusLabel, statusClass, dates,
   preparedForLabel = 'Prepared for', preparedForName,
 }: {
   logoUrl?: string | null;
@@ -52,6 +52,8 @@ export function DocumentHeader({
   seller: DocSeller | null;
   eyebrow: string;
   title: string;
+  /** The document's human name (a proposal's title) under the number. */
+  subtitle?: string | null;
   statusLabel?: string;
   statusClass?: string;
   dates: { label: string; value: string }[];
@@ -83,7 +85,8 @@ export function DocumentHeader({
           <p className="doc-accent-text text-xs font-semibold uppercase tracking-[0.18em]">{eyebrow}</p>
           {/* The document number is the page's primary heading. It was a <p>,
               which left every proposal and invoice with no <h1> of its own. */}
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+          {subtitle && <p className="text-sm font-medium text-foreground/80">{subtitle}</p>}
           {statusLabel && (
             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${statusClass ?? 'bg-muted text-muted-foreground'}`}>
               {statusLabel}

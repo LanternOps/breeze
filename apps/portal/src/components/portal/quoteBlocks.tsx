@@ -8,15 +8,8 @@
 import { Fragment } from 'react';
 import type { QuoteBlock, QuoteCalloutContent, QuoteContractBlockContent, QuoteLine, QuoteTableContent } from '@/lib/api';
 
-export function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
+import { money } from '@/lib/format';
+export { money };
 
 /** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
  *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
@@ -96,7 +89,7 @@ function PricingTable({
               <Fragment key={g.key}>
                 {grouped.length > 1 && (
                   <tr className="bg-muted/20">
-                    <td colSpan={groupColSpan} className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:px-5">
+                    <td colSpan={groupColSpan} className="px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground sm:px-5">
                       {g.label}
                     </td>
                   </tr>
@@ -338,12 +331,12 @@ export function QuoteBlocks({
       if (!c.html?.trim()) return null;
       const tone =
         c.variant === 'warn'
-          ? 'border-amber-500/40 bg-amber-500/10'
+          ? 'border-warning/40 bg-warning/10'
           : c.variant === 'accent'
             ? 'border-primary/40 bg-primary/10'
             : 'border-border bg-muted/40';
       return (
-        <div key={block.id} className={`rounded-lg border-l-4 p-4 ${tone}`} data-testid="quote-callout-block">
+        <div key={block.id} className={`rounded-lg border p-4 ${tone}`} data-testid="quote-callout-block">
           {c.title && <p className="mb-1 text-sm font-semibold text-foreground">{c.title}</p>}
           <div className="quote-rich-text text-sm leading-relaxed text-foreground" dangerouslySetInnerHTML={{ __html: c.html }} />
         </div>
