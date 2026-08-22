@@ -34,7 +34,6 @@ import {
   type ScriptScopeError,
   type ScriptWriteAuth
 } from '../scriptWrite';
-import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
   SCRIPT_BUNDLE_VERSION,
@@ -198,48 +197,11 @@ function readVariableBoundParameters(parameters: unknown): VariableBoundParamete
 }
 
 /**
- * Caller capability, computed at the route/service boundary and passed in
- * rather than read off an `AuthContext` here — this module never sees auth.
- *
- * `allowPartnerOwnedSecrets` is ALWAYS `canManagePartnerWidePolicies(auth)`
- * (services/partnerWideAccess.ts — the repo's single source of truth for
- * partner-wide writes, which admits system scope and full-partner admins only).
- *
- * ## Why the gate exists
- *
- * `tenantVariableReadCondition` deliberately widens partner-wide variable rows
- * to ORGANIZATION-scope sessions (keys only — values are always dropped), and
- * `resolveForOrg` inherits partner-wide rows into every org under the partner.
- * Without this gate an Org Admin of a CUSTOMER org could bind the MSP's own
- * partner-wide secret into an org-scoped script — `resolveScriptCreateScope`
- * grants any org-scope caller with `scripts:write` an org-scoped script — and
- * run it on their own device. `tenantSecret` delivery is the first and only
- * channel through which a secret's PLAINTEXT leaves the server, and both
- * redactors are exact-substring, so trivial re-encoding (base64) defeats them.
- *
- * The settled "running a script implies use of the secrets it binds" position
- * was written for ORG-owned secrets, where the script author already owns the
- * value. It does not license the partner→org descent, which crosses the
- * MSP→customer trust boundary.
- *
- * ## Why it must be enforced at EVERY write ingress
- *
- * This is a SAVE-time gate and cannot be re-checked at dispatch: automation,
- * schedules and AI dispatch run under a system DB context with no author auth
- * to test, so there is nothing to gate on by then. Every path that writes
- * `scripts.parameters` must therefore carry it — POST /scripts, PUT
- * /scripts/:id, POST /scripts/import/:id (the clone), and `importBundle`. A
- * missed ingress is a straight bypass, not a deferred error.
- */
-export interface ParameterSecretCheckOptions {
-  /** `canManagePartnerWidePolicies(auth)` — never a looser derivation. */
-  allowPartnerOwnedSecrets: boolean;
-}
-
-/**
- * Save-time parameter-binding secret check (#3409 PR4c-2, Task 6) — the
- * parameter-side twin of {@link findSecretVariableReferences}, called at the
- * same three ingresses (POST/PUT `/scripts`, `importBundle`) right after it.
+ * Save-time parameter-binding secret check (#3409 PR4c-2) — the parameter-side
+ * twin of {@link findSecretVariableReferences}, called at all FOUR write
+ * ingresses for `scripts.parameters` right after it: `POST /scripts`,
+ * `PUT /scripts/:id`, `POST /scripts/import/:id` (the clone) and
+ * {@link importBundle}.
  *
  * Secret delivery is DECLARED, never inferred (settled design §1):
  *
@@ -248,23 +210,69 @@ export interface ParameterSecretCheckOptions {
  *   what the web form's warning ("the save will be rejected") promises.
  * - `source: 'tenantSecret'` bound to a NON-secret key → `plainBoundAsSecret`.
  *   Dispatch fails that device closed; a save-time 400 says why up front.
+ * - `source: 'tenantSecret'` bound to a PARTNER-owned secret from an
+ *   ORG-scoped script → `partnerSecretNotPermitted`.
  *
- * - `source: 'tenantSecret'` bound to a secret key owned by the PARTNER, when
- *   the caller lacks partner-wide management capability →
- *   `partnerSecretNotPermitted`. See {@link ParameterSecretCheckOptions}.
+ * ## The ownership-tier rule
  *
- * An UNKNOWN key produces NO mismatch, for the same reason as the content
- * check: the variable may not exist yet, and a partner-wide script is
- * resolved per org at dispatch, where each device fails loudly on its own.
+ * A script may resolve a secret at or below its own ownership tier, never
+ * above:
+ *
+ * - A partner-wide script (`scripts.org_id IS NULL`) may resolve a
+ *   partner-owned OR an org-owned secret. The org-owned case is a PRIMARY use
+ *   case: one partner-wide script, each target org's own value resolved per
+ *   device. (Such a key is simply INVISIBLE to the partner-wide lookup below,
+ *   so it lands in the unknown-key allowance.)
+ * - An org-scoped script may resolve only org-owned secrets. A partner-owned
+ *   one is denied: `tenantVariableReadCondition` shows partner-wide variable
+ *   KEYS to organization-scope sessions and `resolveForOrg` inherits the ROWS
+ *   into every org, so without this an org admin could bind the MSP's own
+ *   secret into a script they can run and base64 it out through script output
+ *   (both redactors are exact-substring). `tenantSecret` delivery is the first
+ *   and only channel through which a secret's PLAINTEXT leaves the server.
+ *
+ * The tier is the SCRIPT's, not the CALLER's capability: a full-partner admin
+ * saving an ORG-scoped script is denied too, because that script is afterwards
+ * editable and runnable by the customer org's own admins.
+ *
+ * ## Dispatch is the authority; this is a fast fail
+ *
+ * The same rule is enforced per device at dispatch, in the `tenantSecret` arm
+ * of services/sourcedParameters.ts — which is where it HAS to live. Variable
+ * key uniqueness is per-scope, so an org admin can create an org-owned secret
+ * shadowing a partner-wide key, save a binding that resolves the ORG row (this
+ * check passes, correctly), then delete their own row and let `resolveForOrg`
+ * inherit the partner-wide value. Binding a not-yet-existing key is the same
+ * hole in time. Save time cannot close either; dispatch can, and does.
+ *
+ * What this check buys is a good error while the tech is still looking at the
+ * form, instead of a per-device failure at run time. It is also why an UNKNOWN
+ * key produces NO mismatch: the variable may not exist yet, and a partner-wide
+ * script resolves per org at dispatch, where every device is checked against
+ * the row it actually resolves.
+ *
  * Only one lookup is issued per call, whatever the number of bindings.
  */
 export async function findParameterSecretMismatches(
   scope: ScriptCreateScope,
-  parameters: unknown,
-  options: ParameterSecretCheckOptions
+  parameters: unknown
 ): Promise<ParameterSecretMismatch[]> {
   const bound = readVariableBoundParameters(parameters);
   if (bound.length === 0) return [];
+
+  // The tier the script itself is being written at. Derived from `scope`
+  // rather than passed as a separate flag: `scope` is already the scope the
+  // row will LIVE at for every ingress (the create/import target, the clone's
+  // target org, the PUT's post-rescope effective scope), and a second
+  // parameter could only ever disagree with it.
+  //
+  // No capability check belongs here: producing `orgId === null` at all
+  // already requires `canManagePartnerWidePolicies` upstream — see
+  // `resolveScriptCreateScope` (services/scriptWrite.ts) for create/import and
+  // `resolveRescopeTarget` (routes/scripts.ts) for the PUT re-scope. (System
+  // scope also reaches `orgId === null`, and `canManagePartnerWidePolicies`
+  // admits system scope, so that path agrees.)
+  const scriptIsPartnerWide = scope.orgId === null;
 
   const keys = [...new Set(bound.map((p) => p.variableKey))];
   const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys);
@@ -275,10 +283,10 @@ export async function findParameterSecretMismatches(
     if (secrecy === undefined) continue; // unknown key — allowed
     const { isSecret, ownerScope } = secrecy;
     if (parameter.source === 'tenantVariable' && isSecret) {
-      // Checked BEFORE the partner-wide gate: a `tenantVariable` binding to a
-      // secret is rejected for everyone, and its message names the actual fix
-      // (switch the source), so it must not be masked by the capability
-      // message for a partner-owned target.
+      // Checked BEFORE the ownership-tier arm: a `tenantVariable` binding to
+      // a secret is rejected at every tier, and its message names the actual
+      // fix (switch the source), so it must not be masked by the tier message
+      // when the target happens to be partner-owned.
       mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'secretBoundAsPlain' });
     } else if (parameter.source === 'tenantSecret' && !isSecret) {
       mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'plainBoundAsSecret' });
@@ -286,7 +294,7 @@ export async function findParameterSecretMismatches(
       parameter.source === 'tenantSecret' &&
       isSecret &&
       ownerScope === 'partner' &&
-      !options.allowPartnerOwnedSecrets
+      !scriptIsPartnerWide
     ) {
       mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'partnerSecretNotPermitted' });
     }
@@ -310,7 +318,7 @@ export function describeParameterSecretMismatch(mismatches: ParameterSecretMisma
         case 'plainBoundAsSecret':
           return `Parameter "${m.name}" is a secret parameter but variable "${m.variableKey}" is not a secret`;
         case 'partnerSecretNotPermitted':
-          return `Parameter "${m.name}" binds partner-wide secret variable "${m.variableKey}"; only a partner administrator can bind a partner-wide secret.`;
+          return `Parameter "${m.name}" binds partner-wide secret variable "${m.variableKey}"; an organization-scoped script cannot use one — make the script partner-wide, or use an organization-owned secret.`;
       }
     })
     .join('; ');
@@ -705,14 +713,11 @@ export async function importBundle(
         continue;
       }
       // Parameter-binding twin of the content check (#3409 PR4c-2, Task 6):
-      // a tenantVariable→secret, a tenantSecret→non-secret, and a
-      // tenantSecret→PARTNER-WIDE-secret binding without partner-wide
-      // capability are all per-entry errors the same way. The capability is
-      // computed here, at the ingress, because dispatch cannot re-check it —
-      // see ParameterSecretCheckOptions.
-      const mismatches = await findParameterSecretMismatches(scope, entry.parameters, {
-        allowPartnerOwnedSecrets: canManagePartnerWidePolicies(auth)
-      });
+      // a tenantVariable→secret, a tenantSecret→non-secret, and — for an
+      // ORG-scoped import target — a tenantSecret→PARTNER-owned-secret binding
+      // are all per-entry errors the same way. The ownership tier comes from
+      // `scope`, the tier this bundle is being imported at.
+      const mismatches = await findParameterSecretMismatches(scope, entry.parameters);
       if (mismatches.length > 0) {
         result.errors.push({ index, name: entry.name, error: describeParameterSecretMismatch(mismatches) });
         continue;

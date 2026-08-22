@@ -26,6 +26,7 @@ vi.mock('./scriptSecretDelivery', () => ({
   // dispatch refusal only has to carry it through verbatim, so a stand-in
   // string is enough here and keeps this file free of the real module.
   AGENT_UPGRADE_REQUIRED_MESSAGE: 'Agent upgrade required: mocked message',
+  SECRET_GATE_UNAVAILABLE_MESSAGE: 'Secret gate unavailable: mocked message',
   secretDeliveryPreflight: vi.fn().mockResolvedValue({ ok: true }),
   failClaimedSecretCommandsForUnsupportedAgent: vi.fn((claimed: unknown[]) => Promise.resolve(claimed)),
 }));
@@ -39,6 +40,7 @@ import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
 import {
   AGENT_UPGRADE_REQUIRED_MESSAGE,
+  SECRET_GATE_UNAVAILABLE_MESSAGE,
   failClaimedSecretCommandsForUnsupportedAgent,
   secretDeliveryPreflight,
 } from './scriptSecretDelivery';
@@ -69,13 +71,27 @@ const device = (o = {}) => ({
 // tenantVariableResolution.ts's private `InternalTenantVariableScope`
 // exactly (orgIds + byOrg); TenantVariableScope itself only declares
 // `orgIds`, so this is cast through `unknown`.
-const resolvedVar = (key: string, value: string, isSecret = false): ResolvedVariable => ({
-  key, value, isSecret, variableId: `var-${key}`, version: 1, ownerScope: 'organization',
+const resolvedVar = (
+  key: string,
+  value: string,
+  isSecret = false,
+  ownerScope: 'organization' | 'partner' = 'organization',
+): ResolvedVariable => ({
+  key, value, isSecret, variableId: `var-${key}`, version: 1, ownerScope,
 });
 
-const buildScope = (orgId: string, vars: ResolvedVariable[] = []): TenantVariableScope => ({
+// `unreadableKeys` mirrors the snapshot's third field — keys whose row EXISTS
+// but failed to decrypt. `unreadableForOrg` is used UNMOCKED here (like
+// `resolveForOrg`), so this map must be present on every scope or that
+// accessor has nothing to read.
+const buildScope = (
+  orgId: string,
+  vars: ResolvedVariable[] = [],
+  unreadableKeys: string[] = [],
+): TenantVariableScope => ({
   orgIds: new Set([orgId]),
   byOrg: new Map([[orgId, new Map(vars.map((v) => [v.key, v]))]]),
+  unreadableKeysByOrg: new Map([[orgId, new Set(unreadableKeys)]]),
 } as unknown as TenantVariableScope);
 
 const insertReturning = (rows: unknown[]) => ({
@@ -705,6 +721,54 @@ describe('dispatchScriptToDevice — sourced parameters', () => {
     expect(JSON.stringify(vi.mocked(queueCommand).mock.calls)).not.toContain(SECRET_VALUE);
   });
 
+  // #3409 PR4c-2 review finding 2 — the "unreadable vs unset" distinction was
+  // implemented in the resolver but the ONLY production caller never passed
+  // the set, so it could not fire anywhere outside the resolver's own unit
+  // tests. This asserts dispatch actually forwards `unreadableForOrg(...)`.
+  it('reports an UNREADABLE bound variable as unreadable, not as "no value"', async () => {
+    const scope = buildScope('org-a', [], ['api_token']);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          { name: 'token', type: 'string', required: true, source: 'tenantVariable', variableKey: 'api_token' },
+        ]),
+      },
+      variableScope: scope,
+    });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('unresolved_parameters');
+      // The remediation is "go look at the encryption keys", NOT "create the
+      // variable" — the two wordings send a tech to opposite places.
+      expect(r.error).toContain('could not be read');
+      expect(r.error).not.toContain('no value for required parameter');
+      expect(r.error).toContain('api_token');
+    }
+  });
+
+  it('reports a genuinely ABSENT variable as "no value", never as unreadable', async () => {
+    const scope = buildScope('org-a', [], ['some_other_key']);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          { name: 'token', type: 'string', required: true, source: 'tenantVariable', variableKey: 'api_token' },
+        ]),
+      },
+      variableScope: scope,
+    });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('no value for required parameter');
+      expect(r.error).not.toContain('could not be read');
+    }
+  });
+
   it('requires a variableScope only for a tenantVariable binding, not for the other sources', async () => {
     const r = await dispatchScriptToDevice({
       device: device({ customFields: { asset_tag: 'A-1' } }),
@@ -958,6 +1022,69 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
     expect(JSON.stringify(execValues)).not.toContain(SECRET_VALUE);
   });
 
+  // #3409 PR4c-2 review BLOCKER — dispatch is where the script's ownership
+  // tier is KNOWN, so it is where the "never resolve a secret above your own
+  // tier" rule is actually enforced. These assert the derivation
+  // (`scripts.org_id IS NULL` -> 'partner') reaches the resolver.
+  describe('secret ownership tier', () => {
+    const partnerSecretScope = () =>
+      buildScope('org-a', [resolvedVar('vendor_token', SECRET_VALUE, true, 'partner')]);
+
+    it('refuses an ORG-owned script bound to a PARTNER-WIDE secret, sealing nothing', async () => {
+      const r = await dispatchScriptToDevice({
+        device: device(),
+        source: { kind: 'saved', script: secretScript(undefined, { orgId: 'org-a' }) },
+        variableScope: partnerSecretScope(),
+      });
+
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.code).toBe('unresolved_parameters');
+        expect(r.error).toContain('partner-wide secret variable');
+      }
+      // Refused BEFORE anything is written or sealed — no orphan rows, and
+      // the credential never reaches the seal.
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(queueCommand).not.toHaveBeenCalled();
+      expect(encryptSensitivePayloadFields).not.toHaveBeenCalled();
+      expect(JSON.stringify(vi.mocked(encryptSensitivePayloadFields).mock.calls)).not.toContain(SECRET_VALUE);
+    });
+
+    it('ALLOWS a partner-wide script (orgId null) bound to a partner-wide secret', async () => {
+      mockSealOnce();
+      const r = await dispatchScriptToDevice({
+        device: device(),
+        source: { kind: 'saved', script: secretScript(undefined, { orgId: null }) },
+        variableScope: partnerSecretScope(),
+      });
+
+      expect(r.ok).toBe(true);
+      const sealInput = vi.mocked(encryptSensitivePayloadFields).mock.calls[0]![1] as Record<string, unknown>;
+      expect(sealInput.secretEnv).toEqual({ api_token: SECRET_VALUE });
+    });
+
+    // The primary use case, not an escalation: one partner-wide script, each
+    // target org's own value resolved per device.
+    it('ALLOWS a partner-wide script bound to an ORG-owned secret (per-org value)', async () => {
+      mockSealOnce();
+      const r = await dispatchScriptToDevice({
+        device: device(),
+        source: { kind: 'saved', script: secretScript(undefined, { orgId: null }) },
+        variableScope: secretScope(),
+      });
+
+      expect(r.ok).toBe(true);
+      const sealInput = vi.mocked(encryptSensitivePayloadFields).mock.calls[0]![1] as Record<string, unknown>;
+      expect(sealInput.secretEnv).toEqual({ api_token: SECRET_VALUE });
+    });
+
+    it('ALLOWS an org-owned script bound to its own org-owned secret', async () => {
+      mockSealOnce();
+      const r = await dispatchSecret();
+      expect(r.ok).toBe(true);
+    });
+  });
+
   it('runs the enqueue preflight with the effective runAs and target session', async () => {
     mockSealOnce();
     await dispatchSecret({ runAs: 'elevated', targetSessionId: undefined });
@@ -1066,7 +1193,14 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
   // "queued on N devices" for a credentialed run that had already been failed.
   // It is a refusal (`ok: false`), and 'agent_unsupported' no longer exists as
   // a deliveryOutcome.
-  it('immediate send: refuses with agent_upgrade_required when the claim gate fails the command', async () => {
+  //
+  // #3409 PR4c-2 review finding 3: the code is DISTINCT from the enqueue
+  // preflight's 'agent_upgrade_required'. Both mean "upgrade the agent" to the
+  // operator (same message), but only THIS one arrives with its
+  // script_executions row and batch slot already written by the gate — and
+  // `DISPATCH_CODES_ALREADY_RECORDED` keys on the code, so sharing one value
+  // silently suppressed the far more common enqueue refusal's failure row.
+  it('immediate send: refuses with agent_upgrade_required_recorded when the claim gate fails the command', async () => {
     mockSealOnce();
     const executedAt = new Date('2026-08-22T00:00:00Z');
     vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt } as any);
@@ -1085,7 +1219,9 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
     expect(db.update).not.toHaveBeenCalled();
     expect(r.ok).toBe(false);
     if (!r.ok) {
-      expect(r.code).toBe('agent_upgrade_required');
+      expect(r.code).toBe('agent_upgrade_required_recorded');
+      // Same operator-facing text as the enqueue refusal — only the code,
+      // which decides row ownership, differs.
       expect(r.error).toBe(AGENT_UPGRADE_REQUIRED_MESSAGE);
     }
   });
@@ -1108,8 +1244,15 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
 
     expect(r.ok).toBe(false);
     if (!r.ok) {
-      expect(r.code).toBe('agent_upgrade_required');
-      expect(r.error).toBe(AGENT_UPGRADE_REQUIRED_MESSAGE);
+      // An INFRASTRUCTURE fault, not a capability claim: telling the operator
+      // to upgrade a perfectly current agent would send them to fix the wrong
+      // thing, and nothing was written on this path, so the refusal must also
+      // stay OUT of DISPATCH_CODES_ALREADY_RECORDED (asserted in
+      // scriptExecution.test.ts) or the device's failure row is dropped.
+      expect(r.code).toBe('secret_gate_unavailable');
+      expect(r.code).not.toBe('agent_upgrade_required_recorded');
+      expect(r.error).toBe(SECRET_GATE_UNAVAILABLE_MESSAGE);
+      expect(r.error).not.toBe(AGENT_UPGRADE_REQUIRED_MESSAGE);
     }
     // Fail CLOSED: an unknown gate verdict must never decrypt or send.
     expect(decryptCommandForDelivery).not.toHaveBeenCalled();

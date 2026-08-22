@@ -37,7 +37,10 @@ import type { ResolvedVariable } from './tenantVariableResolution';
  * `tenantSecret` binding has no default and no caller candidate at all, so its
  * precedence is simply `secret variable -> fail the device`, and its value
  * leaves through {@link ResolveSourcedParametersSuccess.secretEnv} rather than
- * `parameters`.
+ * `parameters`. That arm additionally carries a PRIVILEGE gate — a script may
+ * resolve a secret at or below its own ownership tier, never above (see
+ * {@link ResolveSourcedParametersInput.scriptOwnerScope}) — which is why this
+ * otherwise device-only resolver is told about the SCRIPT's ownership too.
  */
 
 /** Where `scriptDispatch` reads device-scoped sources from. */
@@ -112,6 +115,39 @@ export interface ResolveSourcedParametersInput {
    * wrong — and creating a duplicate mid-rotation is the opposite of the fix.
    */
   unreadableVariableKeys?: ReadonlySet<string>;
+  /**
+   * The OWNERSHIP TIER of the script being dispatched — `'partner'` for a
+   * partner-wide script (`scripts.org_id IS NULL`), `'organization'` for an
+   * org-owned one. Derived at the dispatch seam from the script row itself.
+   *
+   * Enforces one rule, on the `tenantSecret` arm only (#3409 PR4c-2 review):
+   *
+   *   a script may resolve a secret AT OR BELOW its own ownership tier,
+   *   never above.
+   *
+   * | script       | variable `ownerScope` | outcome |
+   * |--------------|-----------------------|---------|
+   * | partner-wide | `'partner'`           | allow   |
+   * | partner-wide | `'organization'`      | allow — the primary use case: one partner-wide script, each target org's own value resolved per device |
+   * | org-owned    | `'organization'`      | allow (necessarily this org's own row — dispatch enforces script/device org equality) |
+   * | org-owned    | `'partner'`           | DENY    |
+   *
+   * REQUIRED, not optional, and deliberately so: an omitted tier would have to
+   * default to something, and either default is wrong — `'partner'` opens the
+   * escalation for every caller that forgets, while `'organization'` breaks the
+   * per-org use case silently. A missing value is a compile error instead.
+   *
+   * This check is the AUTHORITATIVE one. Save-time validation cannot replace
+   * it: variable-key uniqueness is PER SCOPE
+   * (`tenant_variables_org_key_uniq` / `tenant_variables_partner_key_uniq`),
+   * so an org admin can create an org-owned secret that SHADOWS a partner-wide
+   * key, pass a save-time gate against their own row, then delete it — after
+   * which `resolveForOrg` inherits the partner-wide row. Binding a key that
+   * does not exist yet reaches the same place. Only dispatch, which holds the
+   * script row and the freshly-resolved variable, can see the pair that
+   * actually ships.
+   */
+  scriptOwnerScope: 'organization' | 'partner';
 }
 
 export interface ResolveSourcedParametersSuccess {
@@ -363,6 +399,11 @@ function readCustomField(customFields: unknown, fieldKey: string): unknown {
  * - `secretValue`   — the only success path for `tenantSecret`. The value
  *   goes to `secretEnv`, never to `parameters`.
  *
+ * `partnerSecretAboveScriptScope` is the privilege denial: an ORG-owned script
+ * reaching a PARTNER-WIDE secret. See
+ * {@link ResolveSourcedParametersInput.scriptOwnerScope} for the full table
+ * and why dispatch is the only place this can be decided.
+ *
  * `unreadable` is a third denial, and the reason it is not folded into
  * `missing`: the variable's row exists, it simply could not be DECRYPTED
  * (see `tenantVariableResolution.ts`'s `decryptRow`). Reported as "no value
@@ -376,6 +417,7 @@ type SourceLookup =
   | { kind: 'unreadable'; variableKey: string }
   | { kind: 'secretAsPlain'; variableKey: string }
   | { kind: 'notSecret'; variableKey: string }
+  | { kind: 'partnerSecretAboveScriptScope'; variableKey: string }
   | { kind: 'secretValue'; value: string; descriptor: ScriptParameterBindingDescriptor };
 
 /**
@@ -410,8 +452,16 @@ function lookupBoundSource(
       // PLAN §2.4 — a secret target is a POLICY DENIAL, not "missing". It must
       // not fall through to the definition default (which would silently
       // substitute a stale plaintext an operator deliberately reclassified),
-      // must not fall back to a caller value, and must not be omitted. PR4
-      // adds the out-of-band channel; until then the device fails.
+      // must not fall back to a caller value, and must not be omitted.
+      //
+      // The denial is PERMANENT, not a placeholder: `tenantVariable` is the
+      // plaintext channel, and its values are substituted into the script text
+      // and mirrored as `BREEZE_PARAM_*`. There is exactly ONE way to deliver
+      // a secret — an explicit `source: 'tenantSecret'` binding, which rides
+      // the sealed `secretEnv` envelope. Do NOT "fix" this by routing a
+      // secret-valued `tenantVariable` into `secretEnv`: secret delivery is
+      // DECLARED by the script author, never inferred from what the target
+      // variable happens to be classified as today.
       if (variable.isSecret) return { kind: 'secretAsPlain', variableKey: definition.variableKey };
       const value = toNonBlankString(variable.value);
       if (value === undefined) return { kind: 'missing' };
@@ -439,6 +489,21 @@ function lookupBoundSource(
       // one), so a missing target can only fail the device.
       if (!variable) return lookupAbsent(definition.variableKey, input);
       if (!variable.isSecret) return { kind: 'notSecret', variableKey: definition.variableKey };
+      // PRIVILEGE GATE — AFTER the `isSecret` check on purpose: a plaintext
+      // partner-wide target must be reported as "not a secret" (reclassify it)
+      // rather than as a tier violation ("make the script partner-wide"),
+      // which would send the operator to fix the wrong thing.
+      //
+      // An org-scoped actor must not be able to have an MSP's partner-wide
+      // credential sealed and delivered by a script they own. Applied to THIS
+      // arm only, never to `tenantVariable`: a partner-wide NON-secret value is
+      // already readable by an org session through the variables API, so there
+      // is no escalation to prevent there. This gate exists solely because a
+      // secret's plaintext has no other read path — the sealed envelope is the
+      // only way its value ever leaves the server.
+      if (variable.ownerScope === 'partner' && input.scriptOwnerScope === 'organization') {
+        return { kind: 'partnerSecretAboveScriptScope', variableKey: definition.variableKey };
+      }
       // The raw value, NOT `toNonBlankString`: a secret is delivered verbatim
       // or not at all, and silently trimming or blanking a credential would
       // turn an authentication failure into an unexplained one.
@@ -487,6 +552,7 @@ export function resolveSourcedParameters(
   const missing: string[] = [];
   const secretDenied: Array<{ key: string; variableKey: string }> = [];
   const notSecret: Array<{ key: string; variableKey: string }> = [];
+  const aboveScope: Array<{ key: string; variableKey: string }> = [];
   const unreadable: Array<{ key: string; variableKey: string }> = [];
 
   for (const definition of definitions) {
@@ -529,6 +595,14 @@ export function resolveSourcedParameters(
       if (lookup.kind === 'notSecret') {
         notSecret.push({ key: name, variableKey: lookup.variableKey });
         continue; // likewise a denial, not a fallthrough
+      }
+      if (lookup.kind === 'partnerSecretAboveScriptScope') {
+        // A privilege denial, so the same rule as every denial above: no
+        // default, no caller value, no omission. The `tenantSecret` arm has
+        // no default to fall through to anyway; the `continue` is what keeps
+        // the key out of `parameters` and out of the required/missing tail.
+        aboveScope.push({ key: name, variableKey: lookup.variableKey });
+        continue;
       }
       if (lookup.kind === 'secretValue') {
         // The one branch that never touches `parameters` or `resolved`: the
@@ -573,12 +647,13 @@ export function resolveSourcedParameters(
     unreadable.length > 0 ||
     secretDenied.length > 0 ||
     notSecret.length > 0 ||
+    aboveScope.length > 0 ||
     malformedBound.length > 0
   ) {
     return {
       ok: false,
       code: 'unresolved_parameters',
-      error: describeParameterFailure(missing, unreadable, secretDenied, notSecret, malformedBound),
+      error: describeParameterFailure(missing, unreadable, secretDenied, notSecret, aboveScope, malformedBound),
       ignoredParameters,
     };
   }
@@ -605,6 +680,7 @@ function describeParameterFailure(
   unreadable: Array<{ key: string; variableKey: string }>,
   secretDenied: Array<{ key: string; variableKey: string }>,
   notSecret: Array<{ key: string; variableKey: string }>,
+  aboveScope: Array<{ key: string; variableKey: string }>,
   malformedBound: MalformedDefinition[],
 ): string {
   const parts: string[] = [];
@@ -639,6 +715,21 @@ function describeParameterFailure(
     parts.push(
       notSecret
         .map((entry) => `"${entry.key}" is a secret parameter but variable "${entry.variableKey}" is not a secret`)
+        .join('; '),
+    );
+  }
+  if (aboveScope.length > 0) {
+    // Names both keys and BOTH remediations, because the right one depends on
+    // intent: if the credential really is the MSP's, the script belongs at the
+    // partner tier; if this org needs its own, it needs its own secret. Never
+    // a value — and there is a real one behind this key, unlike the notSecret
+    // case, so the rule bites here.
+    parts.push(
+      aboveScope
+        .map(
+          (entry) =>
+            `"${entry.key}" is bound to partner-wide secret variable "${entry.variableKey}", which an organization-scoped script cannot use; make the script partner-wide, or use an organization-owned secret`,
+        )
         .join('; '),
     );
   }

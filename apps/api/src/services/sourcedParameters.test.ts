@@ -44,6 +44,11 @@ function resolve(overrides: Partial<ResolveSourcedParametersInput> = {}) {
     definitions: [],
     callerParameters: {},
     device: DEVICE,
+    // The stricter of the two tiers, so every pre-existing case below keeps
+    // its original meaning: an ORG-owned script may only reach an org-owned
+    // secret, which is what `variable()`'s default `ownerScope` produces. The
+    // ownership-tier cases override this explicitly.
+    scriptOwnerScope: 'organization',
     ...overrides,
   });
 }
@@ -486,6 +491,12 @@ describe('resolveSourcedParameters — MULTIPLE tenantSecret parameters', () => 
             ownerScope: 'partner',
           }),
         ),
+        // A PARTNER-WIDE script, because one of the two secrets below is
+        // partner-owned and an org-owned script may not reach above its own
+        // tier (see the ownership-tier block). Partner-wide is the tier that
+        // legitimately spans both, which is what lets this case keep
+        // asserting that MIXED `ownerScope` descriptors survive.
+        scriptOwnerScope: 'partner',
       }),
     );
 
@@ -536,6 +547,161 @@ describe('resolveSourcedParameters — MULTIPLE tenantSecret parameters', () => 
     ]);
     expect(JSON.stringify(result.parameters)).not.toContain('sup3r-s3cret');
     expect(JSON.stringify(result.parameters)).not.toContain('hunter2-hunter2');
+  });
+});
+
+// #3409 PR4c-2 review BLOCKER — the secret ownership-tier gate.
+//
+// Variable-key uniqueness is PER SCOPE (`tenant_variables_org_key_uniq` /
+// `tenant_variables_partner_key_uniq`), so an org admin can create an
+// org-owned secret that SHADOWS a partner-wide key of the same name, pass the
+// save-time gate against their own row, then delete it — after which
+// `resolveForOrg` inherits the partner-wide row and the MSP's credential would
+// be sealed and delivered to an org-owned script. The rule:
+//
+//   a script may resolve a secret at or BELOW its own ownership tier, never
+//   above.
+//
+// All four rows of the table are asserted below. The one that is easy to get
+// backwards is `partner-wide script + org-owned secret` — that is a PRIMARY
+// use case (one partner-wide script, each target org's own value resolved per
+// device), not an escalation, so it must ALLOW.
+describe('resolveSourcedParameters — secret ownership tier (scriptOwnerScope)', () => {
+  const secretParam = () => ({
+    name: 'api_token',
+    source: 'tenantSecret',
+    variableKey: 'vendor_token',
+  });
+
+  const secretVar = (ownerScope: 'organization' | 'partner') =>
+    varsWith(variable({ key: 'vendor_token', value: 'sup3r-s3cret', isSecret: true, ownerScope }));
+
+  it('ALLOWS a partner-wide script resolving a partner-wide secret (same tier)', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam()],
+        variables: secretVar('partner'),
+        scriptOwnerScope: 'partner',
+      }),
+    );
+
+    expect(result.secretEnv).toEqual({ api_token: 'sup3r-s3cret' });
+    expect(result.bindings[0]).toMatchObject({ key: 'api_token', ownerScope: 'partner' });
+  });
+
+  // THE use case, not an escalation: one partner-wide script, each target
+  // org's own value (a per-org site key) resolved per device.
+  it('ALLOWS a partner-wide script resolving an ORG-owned secret (the per-org use case)', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam()],
+        variables: secretVar('organization'),
+        scriptOwnerScope: 'partner',
+      }),
+    );
+
+    expect(result.secretEnv).toEqual({ api_token: 'sup3r-s3cret' });
+    expect(result.bindings[0]).toMatchObject({ key: 'api_token', ownerScope: 'organization' });
+  });
+
+  it('ALLOWS an org-owned script resolving an org-owned secret (same tier)', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam()],
+        variables: secretVar('organization'),
+        scriptOwnerScope: 'organization',
+      }),
+    );
+
+    expect(result.secretEnv).toEqual({ api_token: 'sup3r-s3cret' });
+  });
+
+  it('DENIES an org-owned script resolving a PARTNER-WIDE secret (the escalation)', () => {
+    const SECRET = 'sup3r-s3cret';
+    const result = expectFailed(
+      resolve({
+        definitions: [secretParam()],
+        variables: secretVar('partner'),
+        scriptOwnerScope: 'organization',
+      }),
+    );
+
+    expect(result.code).toBe('unresolved_parameters');
+    // Names both keys and says what to do about it — never the value.
+    expect(result.error).toContain('api_token');
+    expect(result.error).toContain('vendor_token');
+    expect(result.error).toContain('partner-wide secret variable');
+    expect(result.error).toMatch(/make the script partner-wide/i);
+    expect(result.error).not.toContain(SECRET);
+  });
+
+  // The gate is deliberately NOT applied to `tenantVariable`: a partner-wide
+  // NON-secret value is already readable by an org session through the
+  // variables API, so there is no escalation to prevent — the gate exists
+  // solely because a secret's plaintext has no other read path.
+  it('does NOT gate a tenantVariable binding to a partner-wide NON-secret value', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [{ name: 'repo', type: 'string', source: 'tenantVariable', variableKey: 'repo_url' }],
+        variables: varsWith(
+          variable({ key: 'repo_url', value: 'https://git.example.test/x', ownerScope: 'partner' }),
+        ),
+        scriptOwnerScope: 'organization',
+      }),
+    );
+
+    expect(result.parameters).toEqual({ repo: 'https://git.example.test/x' });
+  });
+
+  // Ordering: the `isSecret` check comes FIRST, so a plaintext partner-wide
+  // target is reported as "not a secret" (reclassify it) rather than as a
+  // tier violation (make the script partner-wide) — the latter would send the
+  // operator to fix the wrong thing.
+  it('reports a partner-wide NON-secret target under a tenantSecret binding as notSecret, not as a tier violation', () => {
+    const result = expectFailed(
+      resolve({
+        definitions: [secretParam()],
+        variables: varsWith(
+          variable({ key: 'vendor_token', value: 'plaintext-value', isSecret: false, ownerScope: 'partner' }),
+        ),
+        scriptOwnerScope: 'organization',
+      }),
+    );
+
+    expect(result.error).toContain('is not a secret');
+    expect(result.error).not.toContain('partner-wide secret variable');
+  });
+
+  // A denial, never a fallthrough: the caller's value must not satisfy the
+  // key, and the parameter must not be omitted from the run.
+  it('is a DENIAL — a caller-supplied value never satisfies the gated key', () => {
+    const result = expectFailed(
+      resolve({
+        definitions: [secretParam()],
+        callerParameters: { api_token: 'caller-supplied' },
+        variables: secretVar('partner'),
+        scriptOwnerScope: 'organization',
+      }),
+    );
+
+    expect(result.error).toContain('partner-wide secret variable');
+    expect(result.ignoredParameters).toEqual(['api_token']);
+  });
+
+  it('reports a tier violation alongside a genuinely missing parameter in one pass', () => {
+    const result = expectFailed(
+      resolve({
+        definitions: [
+          secretParam(),
+          { name: 'level', type: 'string', required: true, source: 'runtime' },
+        ],
+        variables: secretVar('partner'),
+        scriptOwnerScope: 'organization',
+      }),
+    );
+
+    expect(result.error).toContain('no value for required parameter(s) "level"');
+    expect(result.error).toContain('partner-wide secret variable');
   });
 });
 

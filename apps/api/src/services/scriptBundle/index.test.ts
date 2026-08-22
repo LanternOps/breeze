@@ -728,15 +728,17 @@ describe('importBundle', () => {
   });
 
   // ---------------------------------------------------------------------
-  // MSP -> customer descent: binding a PARTNER-WIDE secret (#3409 PR4c-2).
+  // Ownership TIER of the secret vs. the SCRIPT (#3409 PR4c-2 review).
   //
-  // `tenantVariableReadCondition` deliberately shows partner-wide variable
-  // KEYS to organization-scope sessions, and `resolveForOrg` inherits
-  // partner-wide rows into every org. Without a gate an Org Admin of a
-  // CUSTOMER org could bind the MSP's own partner-wide secret and base64 it
-  // out through script output (both redactors are exact-substring). This is
-  // the only channel in the product through which a secret's plaintext leaves
-  // the server at all, so it must not cross the MSP -> customer boundary.
+  // A script may resolve a secret at or below its own ownership tier, never
+  // above: a partner-wide script (org_id NULL) may bind a partner-owned OR an
+  // org-owned secret; an ORG-scoped script may bind only an org-owned one.
+  // The rule is NOT a caller capability — a full-partner admin saving an
+  // org-scoped script is still denied, because that script is afterwards
+  // editable and runnable by the customer org's own admins.
+  //
+  // Dispatch is the authority (services/sourcedParameters.ts, `tenantSecret`
+  // arm); these cases pin the save-time FAST FAIL.
   // ---------------------------------------------------------------------
   // A partner-wide tenant_variables row: org_id IS NULL, hence ownerScope
   // 'partner' once resolveForOrg attributes it to the target org.
@@ -750,23 +752,69 @@ describe('importBundle', () => {
     forOrgId: ORG_ID
   };
 
-  it('rejects an org-scope import binding a PARTNER-WIDE secret (no partner-wide capability)', async () => {
-    const bundle = validBundle([
-      { ...baseEntry, parameters: [{ name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 'psa_api_token' }] }
-    ]);
+  const TIER_DENIED =
+    'Parameter "psa" binds partner-wide secret variable "psa_api_token"; an organization-scoped script cannot use one — make the script partner-wide, or use an organization-owned secret.';
+
+  const psaSecretParam = { name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 'psa_api_token' };
+
+  it('rejects an ORG-scoped import binding a PARTNER-WIDE secret', async () => {
+    const bundle = validBundle([{ ...baseEntry, parameters: [psaSecretParam] }]);
     h.state.selectQueue.push([partnerSecretRow]);
     const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
     expect('error' in result).toBe(false);
     if ('errors' in result) {
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]!.error).toBe(
-        'Parameter "psa" binds partner-wide secret variable "psa_api_token"; only a partner administrator can bind a partner-wide secret.'
-      );
+      expect(result.errors[0]!.error).toBe(TIER_DENIED);
     }
     expect(h.state.inserts).toHaveLength(0);
   });
 
-  it('ALLOWS a full-partner admin to bind a partner-wide secret into an org-scoped script', async () => {
+  // The rule is the SCRIPT's tier, not the caller's capability: a full-partner
+  // admin importing into ONE org is writing an org-scoped script, which that
+  // org's admins can then edit and run.
+  it('rejects an ORG-scoped import binding a PARTNER-WIDE secret even for a full-partner admin', async () => {
+    const auth = makeAuth({
+      scope: 'partner',
+      orgId: null,
+      partnerOrgAccess: 'all',
+      accessibleOrgIds: [ORG_ID]
+    });
+    const bundle = validBundle([{ ...baseEntry, parameters: [psaSecretParam] }]);
+    h.state.selectQueue.push([partnerSecretRow]);
+    const result = await importBundle(auth, bundle, { mode: 'skip', availability: 'org', orgId: ORG_ID });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.error).toBe(TIER_DENIED);
+    }
+    expect(h.state.inserts).toHaveLength(0);
+  });
+
+  it("ALLOWS a PARTNER-WIDE import binding the partner's own secret", async () => {
+    const auth = makeAuth({
+      scope: 'partner',
+      orgId: null,
+      partnerOrgAccess: 'all',
+      accessibleOrgIds: [ORG_ID]
+    });
+    const bundle = validBundle([{ ...baseEntry, parameters: [psaSecretParam] }]);
+    h.state.selectQueue.push(
+      // Partner-wide branch: tenant_variables read directly (org_id IS NULL).
+      [{ key: 'psa_api_token', isSecret: true }],
+      [] // findConflictByName -> none
+    );
+    const result = await importBundle(auth, bundle, { mode: 'skip', availability: 'partner' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) expect(result.errors).toHaveLength(0);
+    if ('imported' in result) expect(result.imported).toBe(1);
+    const values = h.state.inserts.find((i) => i.table === scripts)!.values as Record<string, unknown>;
+    expect(values.orgId).toBeNull();
+  });
+
+  // The PRIMARY use case: one partner-wide script, each target org's OWN value
+  // resolved per device at dispatch. Save time sees no partner-wide row for the
+  // key, so it is "unknown" here — and must not be rejected on that basis.
+  it('ALLOWS a PARTNER-WIDE import binding a key that only exists as an ORG-owned secret', async () => {
     const auth = makeAuth({
       scope: 'partner',
       orgId: null,
@@ -774,13 +822,13 @@ describe('importBundle', () => {
       accessibleOrgIds: [ORG_ID]
     });
     const bundle = validBundle([
-      { ...baseEntry, parameters: [{ name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 'psa_api_token' }] }
+      { ...baseEntry, parameters: [{ name: 'q', type: 'string', source: 'tenantSecret', variableKey: 's1_token' }] }
     ]);
     h.state.selectQueue.push(
-      [partnerSecretRow], // parameter lookup via resolveForOrg(ORG_ID)
+      [], // no partner-wide row named s1_token
       [] // findConflictByName -> none
     );
-    const result = await importBundle(auth, bundle, { mode: 'skip', availability: 'org', orgId: ORG_ID });
+    const result = await importBundle(auth, bundle, { mode: 'skip', availability: 'partner' });
     expect('error' in result).toBe(false);
     if ('errors' in result) expect(result.errors).toHaveLength(0);
     if ('imported' in result) expect(result.imported).toBe(1);

@@ -532,18 +532,16 @@ scriptRoutes.post(
     // The FOURTH write ingress for `scripts.content` / `scripts.parameters`
     // (#3409 PR4c-2). A clone copies the source's content and parameter
     // definitions verbatim, so both save-time secret checks apply here exactly
-    // as they do on POST/PUT — including the partner-wide binding gate, which
-    // dispatch can never re-check (see ParameterSecretCheckOptions). Skipping
-    // them here would make the clone a bypass of the gate, not just a place
-    // the error surfaces later.
+    // as they do on POST/PUT — the clone always lands in ONE org (orgId is
+    // required above), so it is org-scoped and may not bind a partner-owned
+    // secret. Skipping the checks here would only defer the error to dispatch,
+    // which is where the rule is actually enforced.
     const cloneScope: ScriptCreateScope = { orgId, partnerId: auth.partnerId ?? null };
     const secretRefs = await findSecretVariableReferences(cloneScope, source.content);
     if (secretRefs.length > 0) {
       return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
     }
-    const mismatches = await findParameterSecretMismatches(cloneScope, source.parameters, {
-      allowPartnerOwnedSecrets: canManagePartnerWidePolicies(auth)
-    });
+    const mismatches = await findParameterSecretMismatches(cloneScope, source.parameters);
     if (mismatches.length > 0) {
       return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
     }
@@ -638,13 +636,11 @@ scriptRoutes.post(
       return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
     }
     // Parameter-binding twin (#3409 PR4c-2): tenantVariable→secret and
-    // tenantSecret→non-secret are both rejected; unknown keys pass. Binding a
-    // PARTNER-OWNED secret additionally requires partner-wide capability —
-    // see ParameterSecretCheckOptions for why that gate can only live at the
-    // write ingresses.
-    const mismatches = await findParameterSecretMismatches(scope, data.parameters, {
-      allowPartnerOwnedSecrets: canManagePartnerWidePolicies(auth)
-    });
+    // tenantSecret→non-secret are both rejected; unknown keys pass. A
+    // PARTNER-OWNED secret is additionally rejected unless `scope` is itself
+    // partner-wide — the ownership-tier rule, whose authority is dispatch
+    // (see findParameterSecretMismatches).
+    const mismatches = await findParameterSecretMismatches(scope, data.parameters);
     if (mismatches.length > 0) {
       return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
     }
@@ -844,12 +840,11 @@ scriptRoutes.put(
 
     if (data.parameters !== undefined) {
       // Parameter-binding twin of the content check (#3409 PR4c-2), against
-      // the same EFFECTIVE scope. Only the INCOMING definitions are checked —
-      // a PUT that leaves `parameters` untouched does not re-validate what is
-      // already stored.
-      const mismatches = await findParameterSecretMismatches(effectiveScope, data.parameters, {
-        allowPartnerOwnedSecrets: canManagePartnerWidePolicies(auth)
-      });
+      // the same EFFECTIVE (post-rescope) scope — so a save that widens the
+      // script to partner-wide is judged at the tier it ENDS at. Only the
+      // INCOMING definitions are checked: a PUT that leaves `parameters`
+      // untouched does not re-validate what is already stored.
+      const mismatches = await findParameterSecretMismatches(effectiveScope, data.parameters);
       if (mismatches.length > 0) {
         return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
       }

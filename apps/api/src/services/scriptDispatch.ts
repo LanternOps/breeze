@@ -20,11 +20,13 @@ import {
   describeVariableFailure,
   resolveForOrg,
   substituteTenantVariables,
+  unreadableForOrg,
   type ResolvedVariable,
   type TenantVariableScope,
 } from './tenantVariableResolution';
 import {
   AGENT_UPGRADE_REQUIRED_MESSAGE,
+  SECRET_GATE_UNAVAILABLE_MESSAGE,
   failClaimedSecretCommandsForUnsupportedAgent,
   secretDeliveryPreflight,
   type SecretDeliveryPreflightFailureCode,
@@ -98,9 +100,9 @@ export type DispatchScriptResult =
       // Every value here is a QUEUED outcome: the command exists and can
       // still reach the agent. A terminal refusal is never reported on this
       // arm — the claim-time secret gate's outcome is an `ok: false` /
-      // 'agent_upgrade_required' refusal (see below), because every caller
-      // branches on `ok` alone and would otherwise report a run that had
-      // already been failed as successfully queued.
+      // 'agent_upgrade_required_recorded' refusal (see below), because every
+      // caller branches on `ok` alone and would otherwise report a run that
+      // had already been failed as successfully queued.
       deliveryOutcome:
         | 'sent'
         | 'claim_lost'
@@ -135,7 +137,7 @@ export type DispatchScriptResult =
         // failure and a content-token failure are different operational
         // conditions and must stay distinguishable in execution history.
         | 'unresolved_parameters'
-        // #3409 PR4c-2 — the three enqueue-time secret-delivery refusals,
+        // #3409 PR4c-2 — the three ENQUEUE-time secret-delivery refusals,
         // raised ONLY when the script actually resolved a `tenantSecret`
         // parameter (see services/scriptSecretDelivery.ts for the messages):
         //   'secrets_unsupported_run_as'   — runAs 'user' / a targetSessionId:
@@ -145,18 +147,30 @@ export type DispatchScriptResult =
         //       secret-encryption key, so the envelope cannot be sealed.
         //   'agent_upgrade_required'       — the device agent does not declare
         //       secret-env support and would run the script with the
-        //       credential UNSET.
+        //       credential UNSET. The ORDINARY outcome for any pre-PR4b agent.
         // All three are per-device and refuse BEFORE the execution insert, so
-        // a refused device leaves no orphan 'pending' row.
-        //
-        // 'agent_upgrade_required' is ALSO returned from the claim-time gate
-        // on the immediate-send path below, where it is the one refusal whose
-        // rows were written by someone else: the gate already drove the
-        // command AND the linked execution row to 'failed' and already spent
-        // the batch's `devicesFailed` slot. A fan-out caller must therefore
-        // record it WITHOUT writing its own failure row (see
-        // DISPATCH_CODES_ALREADY_RECORDED in scriptExecution.ts).
-        | SecretDeliveryPreflightFailureCode;
+        // a refused device leaves NO rows behind and its caller owes it the
+        // ordinary per-device failure row.
+        | SecretDeliveryPreflightFailureCode
+        // The two CLAIM-time refusals from the immediate-send path below.
+        // Split from the enqueue codes above because row ownership differs,
+        // and `DISPATCH_CODES_ALREADY_RECORDED` (scriptExecution.ts) keys on
+        // the code alone:
+        //   'agent_upgrade_required_recorded' — the gate returned a verdict
+        //       and, in doing so, already drove the command AND the linked
+        //       execution row to 'failed' and already spent the batch's
+        //       `devicesFailed` slot. The ONLY code a fan-out must record
+        //       WITHOUT writing its own failure row. Rare: it needs an agent
+        //       downgrade between enqueue and claim. Carries
+        //       AGENT_UPGRADE_REQUIRED_MESSAGE, same as the enqueue refusal —
+        //       only the bookkeeping differs, not the remediation.
+        //   'secret_gate_unavailable'        — the gate FAULTED (its
+        //       capability select threw) instead of returning a verdict. We
+        //       fail closed, but nothing was written on this path, so it must
+        //       stay OUT of DISPATCH_CODES_ALREADY_RECORDED, and its message
+        //       must not blame an agent version that may be perfectly current.
+        | 'agent_upgrade_required_recorded'
+        | 'secret_gate_unavailable';
       error: string;
     };
 
@@ -259,11 +273,19 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // with no such binding never requires a scope — mirroring the
     // content-token gate directly above.
     let variables: Map<string, ResolvedVariable> | undefined;
+    // Keys whose row EXISTS for this org but failed to decrypt (#3409 PR4c-1).
+    // Loaded from the SAME snapshot and in the same branch as `variables` —
+    // the two are read together or not at all. Without it the resolver cannot
+    // tell an undecryptable secret from an unset one and reports "no value
+    // for required parameter", which sends a tech to create a duplicate
+    // variable mid-rotation instead of looking at the encryption keys.
+    let unreadableVariableKeys: ReadonlySet<string> | undefined;
     if (hasTenantVariableBoundParameters(definitions)) {
       if (!input.variableScope) {
         throw new Error('variableScope is required to dispatch a script with a tenantVariable-bound parameter');
       }
       variables = resolveForOrg(input.variableScope, device.orgId);
+      unreadableVariableKeys = unreadableForOrg(input.variableScope, device.orgId);
     }
 
     const resolution = resolveSourcedParameters({
@@ -272,6 +294,14 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       device,
       names: await loadBuiltinNameContext(definitions, device),
       variables,
+      unreadableVariableKeys,
+      // The script's own ownership tier, read off the row dispatch already
+      // holds. `scripts.org_id IS NULL` is partner-wide (or system) — the
+      // same expression the org-equality invariant above uses. This is the
+      // AUTHORITATIVE input to the "never resolve a secret above your own
+      // tier" gate; see ResolveSourcedParametersInput.scriptOwnerScope for
+      // why save-time validation cannot stand in for it.
+      scriptOwnerScope: source.script.orgId === null ? 'partner' : 'organization',
     });
     if (!resolution.ok) {
       return { ok: false, code: resolution.code, error: resolution.error };
@@ -448,14 +478,18 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       // SELECT (and its multi-device contract-violation throw) propagates
       // out of here. Left bare that would escape AFTER
       // `claimPendingCommandForDelivery` already flipped the row to 'sent',
-      // 500 the caller, and abort a large fan-out mid-run. So a throw is
-      // treated exactly like a gate refusal: fail CLOSED (never decrypt,
-      // never send) and return the per-device refusal so the fan-out
-      // continues. The command row is deliberately LEFT 'sent' with its
-      // envelope intact for the stale-command reaper to strip — this path
-      // cannot know whether the gate's terminal write landed, and writing
-      // over it blind could clobber a row something else already moved.
-      let gated = false;
+      // 500 the caller, and abort a large fan-out mid-run. So a throw fails
+      // CLOSED (never decrypt, never send) and returns a per-device refusal
+      // so the fan-out continues — but under its OWN code
+      // ('secret_gate_unavailable'), not the capability one: nothing was
+      // written on that path, and the agent may be perfectly current. The
+      // command row is deliberately LEFT 'sent' with its envelope intact for
+      // the stale-command reaper to strip — this path cannot know whether the
+      // gate's terminal write landed, and writing over it blind could clobber
+      // a row something else already moved.
+      // `false` = deliver; a code = refuse with it. Distinct values because
+      // the two refusals differ in whether rows were already written.
+      let gated: false | 'agent_upgrade_required_recorded' | 'secret_gate_unavailable' = false;
       if (hasSecrets) {
         try {
           const survivors = await failClaimedSecretCommandsForUnsupportedAgent([
@@ -467,7 +501,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
               executedAt: claimed.executedAt,
             },
           ]);
-          gated = survivors.length === 0;
+          gated = survivors.length === 0 ? 'agent_upgrade_required_recorded' : false;
         } catch (gateErr) {
           // ids only — never the payload, sealed or otherwise.
           console.error('[scriptDispatch] secret claim gate threw; refusing delivery', {
@@ -477,11 +511,17 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
             error: gateErr instanceof Error ? gateErr.message : String(gateErr),
           });
           captureException(gateErr);
-          gated = true;
+          // NOT the capability refusal: this branch wrote nothing, and the
+          // agent may be perfectly current. A distinct code keeps it out of
+          // DISPATCH_CODES_ALREADY_RECORDED (so the device still gets its
+          // failure row) and off the "go upgrade your agent" remediation.
+          gated = 'secret_gate_unavailable';
         }
       }
       if (gated) {
-        return { ok: false, code: 'agent_upgrade_required', error: AGENT_UPGRADE_REQUIRED_MESSAGE };
+        return gated === 'agent_upgrade_required_recorded'
+          ? { ok: false, code: gated, error: AGENT_UPGRADE_REQUIRED_MESSAGE }
+          : { ok: false, code: gated, error: SECRET_GATE_UNAVAILABLE_MESSAGE };
       }
       const deliverable = decryptCommandForDelivery({
         id: command.id,

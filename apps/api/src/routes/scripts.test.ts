@@ -659,18 +659,24 @@ describe('scripts routes', () => {
   });
 
   // -------------------------------------------------------------------
-  // MSP -> customer descent on a PARTNER-WIDE secret (#3409 PR4c-2).
+  // Ownership TIER of the secret vs. the SCRIPT (#3409 PR4c-2 review).
   // -------------------------------------------------------------------
-  // `tenantVariableReadCondition` deliberately widens partner-wide rows to
-  // ORGANIZATION-scope sessions (keys only, never values) and `resolveForOrg`
-  // inherits them into every org, so an Org Admin of a CUSTOMER org can SEE
-  // the MSP's partner-wide secret keys. Binding one into a script they can
-  // also run is the only channel in the product through which a secret's
-  // plaintext leaves the server, and both redactors are exact-substring, so
-  // base64 defeats them. Binding a PARTNER-owned secret therefore requires
-  // partner-wide management capability — the same gate every other
-  // partner-wide write uses.
-  describe('partner-wide secret binding requires partner-wide capability', () => {
+  // A script may resolve a secret at or below its own ownership tier, never
+  // above: a partner-wide script (org_id NULL) may bind a partner-owned OR an
+  // org-owned secret; an ORG-scoped script may bind only an org-owned one.
+  //
+  // It is deliberately NOT a caller-capability check. `tenantVariableRead-
+  // Condition` widens partner-wide variable KEYS to organization-scope
+  // sessions and `resolveForOrg` inherits the ROWS into every org, so an org
+  // admin who could bind the MSP's partner-wide secret into an org-scoped
+  // script could base64 it out through script output (both redactors are
+  // exact-substring). Gating on the caller instead of the script does not
+  // stop that: a full-partner admin's org-scoped script is editable and
+  // runnable by that org's own admins afterwards.
+  //
+  // Dispatch is the authority (services/sourcedParameters.ts, `tenantSecret`
+  // arm); these cases pin the save-time FAST FAIL.
+  describe('secret ownership tier vs. script scope', () => {
     // org_id IS NULL on the tenant_variables row -> ownerScope 'partner'.
     const partnerSecretRow = {
       id: 'tv-3', key: 'psa_api_token', value: 'shh', isSecret: true, version: 1,
@@ -681,7 +687,18 @@ describe('scripts routes', () => {
       ownerOrgId: ORG_ID, forOrgId: ORG_ID
     };
     const DENIED =
-      'Parameter "psa" binds partner-wide secret variable "psa_api_token"; only a partner administrator can bind a partner-wide secret.';
+      'Parameter "psa" binds partner-wide secret variable "psa_api_token"; an organization-scoped script cannot use one — make the script partner-wide, or use an organization-owned secret.';
+
+    // The partner-wide branch of the save-time lookup reads tenant_variables
+    // directly (org_id IS NULL AND partner_id = ...) — no resolver join, so
+    // the chain shape differs from mockTenantVariableScopeRows above.
+    function mockPartnerWideVariableRows(rows: unknown[]): void {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows)
+        })
+      } as any);
+    }
 
     const secretParam = (variableKey: string) => ({
       name: 'psa', type: 'string', source: 'tenantSecret', variableKey
@@ -729,27 +746,52 @@ describe('scripts routes', () => {
       expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
 
-    it('ALLOWS a full-partner admin to bind a partner-wide secret into an org-scoped script', async () => {
+    // The tier is the SCRIPT's, not the caller's: a full-partner admin creating
+    // a script for ONE org is creating an org-scoped script, which that org's
+    // admins can edit and run afterwards.
+    it('400s a full-partner admin binding a partner-wide secret into an ORG-scoped script', async () => {
       await usePartnerAuth('all');
       mockTenantVariableScopeRows([partnerSecretRow]);
-      vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Binds PSA token', orgId: ORG_ID }])
-        })
-      } as any);
       const res = await createWithParams([secretParam('psa_api_token')], { orgId: ORG_ID, availability: 'org' });
-      expect(res.status).toBe(201);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(DENIED);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
 
-    // Partner SCOPE is not partner-wide CAPABILITY (#3262) — the same
-    // distinction the create gate already draws.
-    it('400s a SELECTED-access partner user binding a partner-wide secret', async () => {
+    it('400s a SELECTED-access partner user binding a partner-wide secret into an ORG-scoped script', async () => {
       await usePartnerAuth('selected');
       mockTenantVariableScopeRows([partnerSecretRow]);
       const res = await createWithParams([secretParam('psa_api_token')], { orgId: ORG_ID, availability: 'org' });
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe(DENIED);
       expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it("ALLOWS a PARTNER-WIDE create binding the partner's own secret", async () => {
+      await usePartnerAuth('all');
+      mockPartnerWideVariableRows([{ key: 'psa_api_token', isSecret: true }]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Binds PSA token', orgId: null }])
+        })
+      } as any);
+      const res = await createWithParams([secretParam('psa_api_token')], { availability: 'partner' });
+      expect(res.status).toBe(201);
+    });
+
+    // The PRIMARY use case: one partner-wide script, each target org's OWN
+    // value resolved per device at dispatch. The key is simply not visible to
+    // the partner-wide lookup at save time, and must not be rejected for that.
+    it('ALLOWS a PARTNER-WIDE create binding a key that only exists as an ORG-owned secret', async () => {
+      await usePartnerAuth('all');
+      mockPartnerWideVariableRows([]); // no partner-wide row named s1_token
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Binds PSA token', orgId: null }])
+        })
+      } as any);
+      const res = await createWithParams([secretParam('s1_token')], { availability: 'partner' });
+      expect(res.status).toBe(201);
     });
 
     it('leaves an ORG-owned secret binding unaffected for the same org-scope caller', async () => {
@@ -787,6 +829,36 @@ describe('scripts routes', () => {
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe(DENIED);
       expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it("ALLOWS an UPDATE of an already PARTNER-WIDE script binding the partner's own secret", async () => {
+      await usePartnerAuth('all');
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1, name: 'Existing', content: 'echo hi', version: 1,
+              isSystem: false, orgId: null, partnerId: PARTNER_ID, parameters: []
+            }])
+          })
+        })
+      } as any);
+      mockPartnerWideVariableRows([{ key: 'psa_api_token', isSecret: true }]);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Existing', orgId: null }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ parameters: [secretParam('psa_api_token')] })
+      });
+
+      expect(res.status).toBe(200);
     });
   });
 
@@ -846,7 +918,7 @@ describe('scripts routes', () => {
       const res = await clone();
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe(
-        'Parameter "psa" binds partner-wide secret variable "psa_api_token"; only a partner administrator can bind a partner-wide secret.'
+        'Parameter "psa" binds partner-wide secret variable "psa_api_token"; an organization-scoped script cannot use one — make the script partner-wide, or use an organization-owned secret.'
       );
       expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
