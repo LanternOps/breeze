@@ -112,13 +112,14 @@ export const quotes = pgTable('quotes', {
   publicResponseOutcome: varchar('public_response_outcome', { length: 16 }),
   publicLinkRevokedAt: timestamp('public_link_revoked_at', { withTimezone: true }),
   // Quote revisions: immediate-parent link + 1-based position in the lineage.
-  // Schema and constraints only so far — nothing writes a non-null parent yet.
+  // cloneLineagePair writes the parent link and correlated revision number.
   // Enforced TODAY: linearity via quotes_revision_of_uq (one successor ever),
   // root-vs-revision via quotes_revision_number_chk, and same-tenant lineage
   // via the composite FK to (id, org_id).
-  // PLANNED (docs/superpowers/plans/2026-08-17-quote-revisions.md): a revision
-  // will keep the root's number with an -R<n> suffix, and sending one will flip
-  // its parent to 'superseded'. Neither behavior exists in sendQuote yet.
+  // Revisions keep the root's number with an -R<n> suffix. Sending one will
+  // flip its parent to 'superseded' in a later wave (see
+  // docs/superpowers/plans/2026-08-17-quote-revisions.md); that behavior does
+  // not exist in sendQuote yet.
   revisionOfQuoteId: uuid('revision_of_quote_id'),
   revisionNumber: integer('revision_number').notNull().default(1),
   createdBy: uuid('created_by').references(() => users.id),

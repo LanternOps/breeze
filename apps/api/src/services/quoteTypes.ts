@@ -112,13 +112,22 @@ export type QuoteServiceErrorCode =
   // status. Reject it explicitly instead.
   | 'QUOTE_ORDER_LINE_CANCELLED';
 
+export type QuoteServiceErrorMeta = {
+  successorQuoteId?: string;
+  revisionQuoteId?: string;
+};
+
 export class QuoteServiceError extends Error {
   constructor(
     message: string,
     public status: 400 | 401 | 403 | 404 | 409 | 410 | 422 | 500 = 400,
     public code?: QuoteServiceErrorCode,
-    /** Optional machine-readable context for typed conflict recovery. */
-    public meta?: Record<string, string>,
+    /**
+     * Optional machine-readable context for typed conflict recovery. This is
+     * spliced verbatim into HTTP response bodies by handleServiceError; never
+     * include data the caller is not already authorized to see.
+     */
+    public meta?: QuoteServiceErrorMeta,
   ) {
     super(message);
     this.name = 'QuoteServiceError';

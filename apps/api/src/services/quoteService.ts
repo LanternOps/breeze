@@ -15,6 +15,7 @@ import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   sanitizeRichTextHtml,
   sanitizeRichTextHtmlWithReport,
@@ -205,6 +206,14 @@ function logStrippedMarkup(op: string, quoteId: string, blockId: string, warning
     blockId,
     warnings: warnings.map((w) => ({ field: w.field, removedTags: w.removedTags })),
   });
+}
+
+const errorIds = {
+  QUOTE_LINEAGE_PARENT_MISSING: 'QUOTE_LINEAGE_PARENT_MISSING',
+} as const;
+
+function logError(errorId: typeof errorIds[keyof typeof errorIds], message: string, context: Record<string, unknown>): void {
+  console.error(`[quoteService] ${errorId} ${message}`, context);
 }
 
 function resolvePartner(actor: QuoteActor): string {
@@ -398,20 +407,6 @@ function remapCoverPageImageId(coverPage: unknown, imageIds: Map<string, string>
   return { ...cp, coverImageId: imageIds.get(sourceImageId) ?? null };
 }
 
-/**
- * Deep-copy an accessible quote into a new draft. Images and every aggregate
- * relationship receive fresh IDs because image rendering is constrained to
- * image.quote_id and line items can reference blocks, images, and parent lines.
- * Lifecycle, document, seller/customer snapshots, and expiry are intentionally
- * reset so an old accepted/expired quote is safe to revise and send again.
- *
- * `input` optionally retargets the clone to another organization of the same
- * partner and/or renames it. Retargeting clears the site and billToName (both
- * belong to the OLD customer) and re-resolves the tax rate for the new org —
- * the same precedence createQuote uses — so totals are correct for the new
- * customer; a same-org clone keeps the source rate verbatim (it may have been
- * hand-set via the API).
- */
 /** Internal revision overrides for the clone core — never exposed on a route. */
 interface CloneRevisionOverrides {
   quoteNumber: string;
@@ -435,18 +430,37 @@ function cloneLineagePair(revision?: CloneRevisionOverrides): CloneLineagePair {
   };
 }
 
-export async function cloneQuote(
+function assertRevisionCloneTarget(input: CloneQuoteInput, revision?: CloneRevisionOverrides): void {
+  if (revision && input.orgId) {
+    throw new QuoteServiceError('A revision cannot be retargeted to another organization', 409, 'INVALID_STATE');
+  }
+}
+
+/**
+ * Deep-copy an accessible quote into a new draft. Images and every aggregate
+ * relationship receive fresh IDs because image rendering is constrained to
+ * image.quote_id and line items can reference blocks, images, and parent lines.
+ * Lifecycle, document, seller/customer snapshots, and expiry are intentionally
+ * reset so an old accepted/expired quote is safe to revise and send again.
+ *
+ * `input` optionally retargets the clone to another organization of the same
+ * partner and/or renames it. Retargeting clears the site and billToName (both
+ * belong to the OLD customer) and re-resolves the tax rate for the new org —
+ * the same precedence createQuote uses — so totals are correct for the new
+ * customer; a same-org clone keeps the source rate verbatim (it may have been
+ * hand-set via the API).
+ *
+ * @param revision Module-private lineage fields used only by reviseQuote.
+ */
+async function cloneQuoteCore(
   id: string,
   actor: QuoteActor,
   input: CloneQuoteInput = {},
   revision?: CloneRevisionOverrides,
 ) {
+  assertRevisionCloneTarget(input, revision);
   const { quote: source, blocks, lines } = await getQuote(id, actor);
   const images = await db.select().from(quoteImages).where(eq(quoteImages.quoteId, id));
-
-  if (revision && input.orgId) {
-    throw new QuoteServiceError('A revision cannot be retargeted to another organization', 409, 'INVALID_STATE');
-  }
 
   const targetOrgId = input.orgId ?? source.orgId;
   const orgChanged = targetOrgId !== source.orgId;
@@ -658,7 +672,25 @@ export async function cloneQuote(
   });
 }
 
-/** Walk parent links to the lineage root, with a corruption safety bound. */
+/**
+ * Public clone surface. Revision overrides stay inside this module; the
+ * runtime check also rejects an untyped JavaScript caller attempting the old
+ * four-argument form.
+ */
+export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuoteInput = {}) {
+  const unsupportedRevision = arguments[3] as CloneRevisionOverrides | undefined;
+  assertRevisionCloneTarget(input, unsupportedRevision);
+  if (unsupportedRevision) {
+    throw new QuoteServiceError('Quote revision overrides are internal', 409, 'INVALID_STATE');
+  }
+  return cloneQuoteCore(id, actor, input);
+}
+
+/**
+ * Walk parent links to the lineage root with a 100-hop cycle guard. The ceiling
+ * is data-dependent: a legitimate lineage deeper than 100 revisions is also
+ * rejected rather than risking an unbounded walk through corrupt cyclic data.
+ */
 async function resolveQuoteLineageRoot(
   quote: typeof quotes.$inferSelect,
 ): Promise<typeof quotes.$inferSelect> {
@@ -678,8 +710,9 @@ async function resolveQuoteLineageRoot(
 const REVISABLE_STATUSES = new Set(['sent', 'viewed', 'declined', 'expired']);
 
 /**
- * Create a linked draft revision without touching the live parent. Sending the
- * draft is what eventually supersedes its parent.
+ * Create a linked draft revision without touching the live parent. Superseding
+ * the parent on send belongs to a later wave; see
+ * docs/superpowers/plans/2026-08-17-quote-revisions.md.
  */
 export async function reviseQuote(id: string, actor: QuoteActor) {
   const { quote: parent } = await getQuote(id, actor);
@@ -697,7 +730,9 @@ export async function reviseQuote(id: string, actor: QuoteActor) {
     const [successor] = await db.select({ id: quotes.id }).from(quotes)
       .where(eq(quotes.revisionOfQuoteId, parent.id)).limit(1);
     throw new QuoteServiceError(
-      'This quote was already replaced — revise the newer version',
+      successor
+        ? 'This quote was already replaced — revise the newer version'
+        : 'This quote is marked as superseded, but its replacement could not be found',
       409,
       'ALREADY_SUPERSEDED',
       successor ? { successorQuoteId: successor.id } : undefined,
@@ -709,6 +744,9 @@ export async function reviseQuote(id: string, actor: QuoteActor) {
   if (!parent.quoteNumber) {
     throw new QuoteServiceError('This quote has no quote number and cannot be revised', 409, 'INVALID_STATE');
   }
+  // Linearity is enforced by quotes_revision_of_uq. This pre-check is only a
+  // TOCTOU-racy convenience for a friendlier 409 carrying revisionQuoteId; the
+  // unique constraint remains the invariant under concurrent revision attempts.
   const [existing] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
     .where(eq(quotes.revisionOfQuoteId, parent.id)).limit(1);
   if (existing) {
@@ -721,21 +759,24 @@ export async function reviseQuote(id: string, actor: QuoteActor) {
   }
   const root = await resolveQuoteLineageRoot(parent);
   if (!root.quoteNumber) {
-    throw new QuoteServiceError('This quote has no quote number and cannot be revised', 409, 'INVALID_STATE');
+    throw new QuoteServiceError('The root quote has no quote number and cannot be revised', 409, 'INVALID_STATE');
   }
   const revisionNumber = parent.revisionNumber + 1;
   try {
-    return await cloneQuote(id, actor, {}, {
+    return await cloneQuoteCore(id, actor, {}, {
       quoteNumber: `${root.quoteNumber}-R${revisionNumber}`,
       revisionOfQuoteId: parent.id,
       revisionNumber,
     });
   } catch (err) {
-    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
+    if (isPgUniqueViolation(err, 'quotes_revision_of_uq')) {
+      const [existingRevision] = await db.select({ id: quotes.id }).from(quotes)
+        .where(eq(quotes.revisionOfQuoteId, parent.id)).limit(1);
       throw new QuoteServiceError(
         'A revision of this quote is already in progress',
         409,
         'REVISION_IN_PROGRESS',
+        existingRevision ? { revisionQuoteId: existingRevision.id } : undefined,
       );
     }
     throw err;
@@ -777,16 +818,36 @@ export async function getQuote(id: string, actor: QuoteActor) {
       ))
     : [];
   const revisionOf = q.revisionOfQuoteId ? await (async () => {
-    const [parent] = await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber })
+    const [parent] = await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber, siteId: quotes.siteId })
       .from(quotes).where(eq(quotes.id, q.revisionOfQuoteId!)).limit(1);
-    if (!parent) return null;
-    // Same-org by FK; safe unfiltered in this request context (see getQuoteRecipients).
+    if (!parent) {
+      logError(
+        errorIds.QUOTE_LINEAGE_PARENT_MISSING,
+        'linked quote parent could not be read',
+        { quoteId: q.id, revisionOfQuoteId: q.revisionOfQuoteId },
+      );
+      return null;
+    }
+    // Match assertSite semantics without turning an authorized read of q into a
+    // 403 for an inaccessible linked quote. Check before loading recipient PII.
+    if (actor.allowedSiteIds && (!parent.siteId || !actor.allowedSiteIds.includes(parent.siteId))) return null;
+    // The composite (revision_of_quote_id, org_id) FK guarantees same-org
+    // lineage under every DB context; no separate org-axis filter is needed.
     const recipients = await db.select({ email: quoteRecipients.email }).from(quoteRecipients)
       .where(eq(quoteRecipients.quoteId, parent.id)).orderBy(quoteRecipients.createdAt);
     return { id: parent.id, quoteNumber: parent.quoteNumber, recipients: recipients.map((r) => r.email) };
   })() : null;
-  const [successorRow] = await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber, status: quotes.status })
+  const [successorRow] = await db.select({
+    id: quotes.id,
+    quoteNumber: quotes.quoteNumber,
+    status: quotes.status,
+    siteId: quotes.siteId,
+  })
     .from(quotes).where(eq(quotes.revisionOfQuoteId, q.id)).limit(1);
+  const successor = successorRow
+    && (!actor.allowedSiteIds || (!!successorRow.siteId && actor.allowedSiteIds.includes(successorRow.siteId)))
+    ? { id: successorRow.id, quoteNumber: successorRow.quoteNumber, status: successorRow.status }
+    : null;
   // Procurement order tracking (Task 11): every PO header + its line-level
   // allocations recorded against this quote, so the editor can show fulfillment
   // status alongside the pax8 auto-order summary above.
@@ -867,7 +928,7 @@ export async function getQuote(id: string, actor: QuoteActor) {
       ? { id: pax8OrderSummary.pax8OrderId, status: pax8OrderSummary.status, lines: pax8LineRows }
       : null,
     revisionOf,
-    successor: successorRow ?? null,
+    successor,
   };
 }
 

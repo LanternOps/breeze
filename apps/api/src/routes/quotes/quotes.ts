@@ -93,7 +93,8 @@ quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idPara
   catch (err) { return handleServiceError(c, err); }
 });
 // POST /:id/revise — create a linked draft revision of an issued quote. The
-// parent stays live until the revision is SENT (sendQuote supersedes it).
+// parent stays live; superseding it on send belongs to a later wave documented
+// in docs/superpowers/plans/2026-08-17-quote-revisions.md.
 // quotes:write like clone; the send itself will require quotes:send.
 quoteCrudRoutes.post('/:id/revise', scopes, writePerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;

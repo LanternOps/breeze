@@ -119,6 +119,7 @@ describe('POST /:id/revise', () => {
       code: 'REVISION_IN_PROGRESS',
       meta: { revisionQuoteId: REVISION_ID },
     });
+    expect(audit.writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it('audits the parent lineage and status', async () => {
