@@ -189,5 +189,21 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
       await decryptClaimedCommandsForDelivery([secretCommand]);
       expect(failClaimedSecretCommandsMock).toHaveBeenCalledWith([secretCommand], {});
     });
+
+    it('propagates a gate contract violation instead of delivering the batch', async () => {
+      // The gate throws on a misuse it cannot safely resolve (e.g. one
+      // agent's self-reported capability handed to a multi-device batch).
+      // Delivery must fail loudly: nothing decrypted, nothing released, and
+      // no sealed secret shipped on the strength of another device's report.
+      failClaimedSecretCommandsMock.mockRejectedValueOnce(new Error('reportedVersion contract violation'));
+
+      await expect(
+        decryptClaimedCommandsForDelivery([plainCommand, secretCommand], {
+          reportedScriptSecretEnvVersion: 1,
+        }),
+      ).rejects.toThrow('reportedVersion contract violation');
+
+      expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    });
   });
 });

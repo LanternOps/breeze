@@ -178,6 +178,20 @@ describe('runAsSupportsSecretEnv', () => {
     ['system', 3, false],
     ['elevated', 0, false],
     ['system', null, true],
+    // Mirrors the agent's `runAsSupportsSecrets` (handlers_script.go): the
+    // value is lowercased/trimmed, and ONLY ''/system/elevated are admitted.
+    ['', undefined, true],
+    ['   ', undefined, true],
+    ['SYSTEM', undefined, true],
+    ['  System  ', undefined, true],
+    ['Elevated', undefined, true],
+    ['USER', undefined, false],
+    ['User', undefined, false],
+    // An explicit username is a helper-IPC (targeted session) run at the
+    // agent: no env, so the secret would simply be absent.
+    ['alice', undefined, false],
+    ['DOMAIN\\alice', undefined, false],
+    [null, undefined, true],
   ] as const)('runAs=%s targetSessionId=%s → %s', (runAs, targetSessionId, expected) => {
     expect(runAsSupportsSecretEnv(runAs as any, targetSessionId as any)).toBe(expected);
   });
@@ -226,6 +240,13 @@ describe('secretDeliveryPreflight', () => {
     const r = await secretDeliveryPreflight({ deviceId: DEVICE_A, runAs: 'user' });
     expect(r).toEqual({ ok: false, code: 'secrets_unsupported_run_as', error: SECRETS_RUN_AS_MESSAGE });
     expect(getActiveSecretEncryptionKeyId).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses an explicit-username run before touching the key or the DB', async () => {
+    mockSelect(() => capabilityRows({ [DEVICE_A]: 1 }));
+    const r = await secretDeliveryPreflight({ deviceId: DEVICE_A, runAs: 'alice' as any });
+    expect(r).toEqual({ ok: false, code: 'secrets_unsupported_run_as', error: SECRETS_RUN_AS_MESSAGE });
     expect(db.select).not.toHaveBeenCalled();
   });
 
@@ -411,6 +432,19 @@ describe('failClaimedSecretCommandsForUnsupportedAgent', () => {
     ]);
 
     expect(updateCalls.map((u) => u.table)).toEqual([deviceCommands, deviceCommands]);
+    // Leaves a breadcrumb rather than returning silently: a later reaper pass
+    // would otherwise mislabel this server-side refusal an agent timeout.
+    const skipWarnings = vi
+      .mocked(console.warn)
+      .mock.calls.filter(([msg]) => String(msg).includes('no linked script execution'));
+    expect(skipWarnings).toHaveLength(2);
+    expect(skipWarnings.map(([, ctx]) => (ctx as Record<string, unknown>).commandId)).toEqual([
+      'cmd-no-exec',
+      'cmd-bad-exec',
+    ]);
+    expect(skipWarnings.every(([, ctx]) => (ctx as Record<string, unknown>).deviceId === DEVICE_A)).toBe(true);
+    // Never the payload / envelope.
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain('enc:v3:k:c');
   });
 
   it('does not propagate (or double-count) when the command row was no longer `sent`', async () => {
@@ -422,14 +456,90 @@ describe('failClaimedSecretCommandsForUnsupportedAgent', () => {
     // Still withheld from delivery — a lost race is not a reason to ship it.
     expect(out.map((c) => c.id)).toEqual(['cmd-plain']);
     expect(updateCalls.map((u) => u.table)).toEqual([deviceCommands]);
+    // A 0-row terminal update on a row claimed microseconds earlier is
+    // genuinely unexpected: warn AND report, or the linked execution row
+    // strands non-terminal with no breadcrumb at all.
+    const raceWarnings = vi
+      .mocked(console.warn)
+      .mock.calls.filter(([msg]) => String(msg).includes('no longer `sent`'));
+    expect(raceWarnings).toHaveLength(1);
+    expect(raceWarnings[0]![1]).toEqual(
+      expect.objectContaining({ commandId: 'cmd-secret', deviceId: DEVICE_A }),
+    );
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(String((vi.mocked(captureException).mock.calls[0]![0] as Error).message)).toContain('cmd-secret');
   });
 
-  it('treats a missing device row as unsupported', async () => {
-    mockSelect(() => []);
-    mockUpdate(() => [{ id: 'cmd-secret' }]);
-    const out = await failClaimedSecretCommandsForUnsupportedAgent([envelopeCommand()]);
-    expect(out).toEqual([]);
-    expect(updateCalls[0]?.table).toBe(deviceCommands);
+  // ── A MISSING device row is not a capability claim ─────────────────
+  //
+  // `loadScriptSecretEnvVersions` builds its map from returned rows only, so
+  // an absent row is "we don't know", not "version 0". Driving the command
+  // terminal there would erase the payload IRREVERSIBLY and tell the operator
+  // to upgrade an agent that may well be current — while the real cause is an
+  // RLS/context regression, a device deleted mid-batch, or replica lag.
+  describe('device row not found', () => {
+    it('withholds the command but does NOT drive it terminal or erase its payload', async () => {
+      mockSelect(() => []);
+      mockUpdate(() => [{ id: 'cmd-secret' }]);
+
+      const out = await failClaimedSecretCommandsForUnsupportedAgent([plainCommand(), envelopeCommand()]);
+
+      // Withheld from delivery (never ship a sealed secret on a guess)…
+      expect(out.map((c) => c.id)).toEqual(['cmd-plain']);
+      // …but nothing was written: the row stays `sent` for the stale reaper,
+      // so the refusal stays reversible.
+      expect(db.update).not.toHaveBeenCalled();
+      expect(terminalPayloadErasureSet).not.toHaveBeenCalled();
+    });
+
+    it('reports the unknown device to Sentry (a fleet-wide occurrence must not be invisible)', async () => {
+      mockSelect(() => []);
+      mockUpdate(() => [{ id: 'cmd-secret' }]);
+
+      await failClaimedSecretCommandsForUnsupportedAgent([envelopeCommand()]);
+
+      expect(captureException).toHaveBeenCalledTimes(1);
+      const reported = vi.mocked(captureException).mock.calls[0]![0] as Error;
+      expect(reported).toBeInstanceOf(Error);
+      expect(reported.message).toContain('device row not found');
+      expect(reported.message).toContain('cmd-secret');
+      expect(reported.message).toContain(DEVICE_A);
+      expect(console.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('still fails a device that EXISTS and reports 0 in the same batch', async () => {
+      // DEVICE_A row is gone; DEVICE_B exists and is incapable.
+      mockSelect(() => capabilityRows({ [DEVICE_B]: 0 }));
+      mockUpdate((table) => (table === deviceCommands ? [{ id: 'cmd-b' }] : []));
+
+      const out = await failClaimedSecretCommandsForUnsupportedAgent([
+        envelopeCommand({ id: 'cmd-a', deviceId: DEVICE_A }),
+        envelopeCommand({ id: 'cmd-b', deviceId: DEVICE_B }),
+      ]);
+
+      expect(out).toEqual([]);
+      // Exactly one terminal write, and it is for the device that actually
+      // claimed an unsupported version.
+      const cmdUpdates = updateCalls.filter((u) => u.table === deviceCommands);
+      expect(cmdUpdates).toHaveLength(1);
+      expect(collectBoundParams(cmdUpdates[0]!.where)).toEqual([
+        { column: 'id', value: 'cmd-b' },
+        { column: 'status', value: 'sent' },
+      ]);
+    });
+
+    it('delivers a capable sibling device while withholding the unknown one', async () => {
+      mockSelect(() => capabilityRows({ [DEVICE_B]: 1 }));
+      mockUpdate(() => [{ id: 'x' }]);
+
+      const out = await failClaimedSecretCommandsForUnsupportedAgent([
+        envelopeCommand({ id: 'cmd-a', deviceId: DEVICE_A }),
+        envelopeCommand({ id: 'cmd-b', deviceId: DEVICE_B }),
+      ]);
+
+      expect(out.map((c) => c.id)).toEqual(['cmd-b']);
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   it('issues ONE capability select for a batch spanning several devices', async () => {
@@ -541,6 +651,85 @@ describe('failClaimedSecretCommandsForUnsupportedAgent', () => {
       expect(out).toBe(claimed);
       expect(db.select).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // The gate compares with `>= REQUIRED`, the normalizer with `=== 1`. The
+    // param is typed bare `number` and only DOCUMENTED as pre-normalized, so
+    // normalize defensively: an un-normalized future caller must not be able
+    // to widen the gate by reporting 2.
+    it.each([2, 99, 1.5, Number.MAX_SAFE_INTEGER])(
+      'normalizes an un-normalized reported version (%s) down to unsupported',
+      async (reported) => {
+        mockSelect(() => capabilityRows({ [DEVICE_A]: 1 }));
+        mockUpdate((table) => (table === deviceCommands ? [{ id: 'cmd-secret' }] : [{ id: EXEC_1, scriptId: 'script-1' }]));
+
+        const out = await failClaimedSecretCommandsForUnsupportedAgent([plainCommand(), envelopeCommand()], {
+          reportedVersion: reported,
+        });
+
+        expect(out.map((c) => c.id)).toEqual(['cmd-plain']);
+        // Still authoritative: the stored 1 is never consulted.
+        expect(db.select).not.toHaveBeenCalled();
+        expect(updateCalls.find((u) => u.table === deviceCommands)).toBeDefined();
+      },
+    );
+
+    it('keeps "not supplied" distinguishable from a reported 0', async () => {
+      mockSelect(() => capabilityRows({ [DEVICE_A]: 1 }));
+      mockUpdate(() => [{ id: 'cmd-secret' }]);
+
+      const out = await failClaimedSecretCommandsForUnsupportedAgent([envelopeCommand()], {
+        reportedVersion: undefined,
+      });
+
+      // undefined ⇒ fall back to the stored column (which says capable).
+      expect(out.map((c) => c.id)).toEqual(['cmd-secret']);
+      expect(selectCalls).toHaveLength(1);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // A reported version is ONE agent's self-report about ITSELF. Spreading it
+    // across a multi-device batch would let device A's report authorise a
+    // secret for device B. There is no such caller today (one device per
+    // beat); the contract is enforced so a future batched-claim optimisation
+    // cannot silently introduce one.
+    it('throws when a reported version is handed a batch spanning several devices', async () => {
+      mockSelect(() => capabilityRows({ [DEVICE_A]: 0, [DEVICE_B]: 0 }));
+      mockUpdate(() => [{ id: 'x' }]);
+
+      await expect(
+        failClaimedSecretCommandsForUnsupportedAgent(
+          [
+            envelopeCommand({ id: 'cmd-a', deviceId: DEVICE_A }),
+            envelopeCommand({ id: 'cmd-b', deviceId: DEVICE_B }),
+          ],
+          { reportedVersion: 1 },
+        ),
+      ).rejects.toThrow(/reportedVersion/i);
+
+      // Nothing was delivered, read, or written on the way out.
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows several commands for the SAME device under a reported version', async () => {
+      const claimed = [
+        envelopeCommand({ id: 'cmd-1', deviceId: DEVICE_A }),
+        envelopeCommand({ id: 'cmd-2', deviceId: DEVICE_A }),
+      ];
+      const out = await failClaimedSecretCommandsForUnsupportedAgent(claimed, { reportedVersion: 1 });
+      expect(out.map((c) => c.id)).toEqual(['cmd-1', 'cmd-2']);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('does not throw on a multi-device batch when NO version was reported', async () => {
+      mockSelect(() => capabilityRows({ [DEVICE_A]: 1, [DEVICE_B]: 1 }));
+      const out = await failClaimedSecretCommandsForUnsupportedAgent([
+        envelopeCommand({ id: 'cmd-a', deviceId: DEVICE_A }),
+        envelopeCommand({ id: 'cmd-b', deviceId: DEVICE_B }),
+      ]);
+      expect(out.map((c) => c.id)).toEqual(['cmd-a', 'cmd-b']);
+      expect(selectCalls).toHaveLength(1);
     });
   });
 

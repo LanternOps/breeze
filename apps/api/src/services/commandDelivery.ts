@@ -45,11 +45,19 @@ export type ClaimedCommand = {
  * decrypted: a `script` command carrying a sealed `secretEnvEnvelope` must
  * never be opened for an agent that cannot export the env var, because that
  * agent would run the script with the credential silently unset. The gate
- * drives such a command TERMINAL (`failed`, payload erased) and withholds it
- * from the batch. Unlike the #2414 decrypt-failure path below, a withheld
- * command is deliberately NOT released back to `pending` — an incapable agent
- * would immediately re-claim it. Withheld ids therefore never reach the
- * release loop, which only ever sees the gate's survivors.
+ * withholds such a command from the batch — driving it TERMINAL (`failed`,
+ * payload erased) when the device row actually reports an unsupported
+ * version, or leaving it `sent` for the stale reaper when the device row
+ * could not be read at all (that refusal has to stay reversible; see
+ * scriptSecretDelivery.ts). Either way, and unlike the #2414 decrypt-failure
+ * path below, a withheld command is deliberately NOT released back to
+ * `pending` — an incapable agent would immediately re-claim it. Withheld ids
+ * therefore never reach the release loop, which only ever sees the gate's
+ * survivors.
+ *
+ * The gate throws only on a caller contract violation (a single agent's
+ * reported capability handed to a multi-device batch); that must surface, not
+ * be swallowed into a delivery.
  *
  * The gate needs the DB (a capability read plus terminal writes), so this
  * function must be called inside a DB access context — the heartbeat's
