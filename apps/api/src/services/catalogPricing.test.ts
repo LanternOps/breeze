@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { importedCost } from './catalogPricing';
 import {
   deriveUnitPrice,
   resolvePriceFrom,
@@ -332,5 +333,20 @@ describe('computeBundleEconomicsFrom', () => {
     expect(r.priceBookComplete).toBe(true);
     expect(r.allocationTotal).toBe('40.00');
     expect(r.allocationMatchesHeadline).toBe(false);
+  });
+});
+
+describe('importedCost (#3775 review #2)', () => {
+  it('feed cost + feed currency → stored as that currency pair', () => {
+    expect(importedCost(381.35, ' cad ')).toEqual({ costBasis: 381.35, costCurrency: 'CAD' });
+  });
+  it('feed cost without a feed currency → a gap (null cost, no currency), never the partner currency', () => {
+    expect(importedCost(381.35, null)).toEqual({ costBasis: null, costCurrency: undefined });
+    expect(importedCost(381.35, '')).toEqual({ costBasis: null, costCurrency: undefined });
+  });
+  it('no cost → null cost; currency still recorded when the feed names one', () => {
+    expect(importedCost(null, 'USD')).toEqual({ costBasis: null, costCurrency: 'USD' });
+    expect(importedCost(undefined, null)).toEqual({ costBasis: null, costCurrency: undefined });
+    expect(importedCost(Number.NaN, 'USD')).toEqual({ costBasis: null, costCurrency: 'USD' });
   });
 });

@@ -102,13 +102,15 @@ describe('importPax8CatalogItem', () => {
     expect(arg).not.toHaveProperty('unitPrice');
   });
 
-  it('omits cost currency when the Pax8 feed currency is null', async () => {
+  it('stores the cost as NULL (not partner currency) when the Pax8 feed currency is null (#3775 review #2)', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([integration]));
     mocks.createCatalogItem.mockResolvedValue({ id: 'item-2', name: 'Microsoft 365 Business Premium' });
     mocks.db.insert.mockReturnValueOnce(insertChain());
     const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: null, raw: {} };
-    await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22 } }, actor, dbCtx);
+    // item.costBasis is the web form's echo of partnerBuyRate — same unknown currency.
+    await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22, costBasis: 18.5 } }, actor, dbCtx);
     const arg = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(arg.costBasis).toBeNull();
     expect(arg.costCurrency).toBeUndefined();
   });
 

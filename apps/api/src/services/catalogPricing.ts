@@ -9,6 +9,23 @@ function fromCents(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
+/**
+ * Cost pair for an externally sourced (distributor / Pax8) amount (#3775 review
+ * #2). A feed amount is only storable when the feed also names its currency:
+ * with no currency the cost is a GAP (null) — never relabelled as the partner
+ * currency by createCatalogItem's default. The raw number still lands in the
+ * jsonb snapshot for traceability. Every importer builds its cost through this
+ * seam so none of them can fall back to the default.
+ */
+export function importedCost(
+  feedCost: number | null | undefined,
+  feedCurrency: string | null | undefined
+): { costBasis: number | null; costCurrency: string | undefined } {
+  const costCurrency = feedCurrency?.trim() ? feedCurrency.trim().toUpperCase() : undefined;
+  const cost = feedCost != null && Number.isFinite(feedCost) ? feedCost : null;
+  return { costBasis: costCurrency ? cost : null, costCurrency };
+}
+
 export function deriveUnitPrice(input: {
   explicitPrice: number | undefined;
   costBasis: string | null;

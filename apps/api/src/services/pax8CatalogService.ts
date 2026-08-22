@@ -7,6 +7,7 @@ import { createCatalogItem, CatalogServiceError, type CatalogActor } from './cat
 import type { Pax8ProductRecord, Pax8ProductPriceRecord } from './pax8Client';
 import { getRedis } from './redis';
 import { enrichDistributorListing } from './catalogEnrichmentService';
+import { importedCost } from './catalogPricing';
 import type { CreateCatalogItemInput, EnrichmentProvenance } from '@breeze/shared';
 
 const CACHE_TTL_SECONDS = 600;
@@ -162,11 +163,15 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
     ...(item.sellCurrency
       ? { prices: [{ currencyCode: item.sellCurrency, unitPrice: item.unitPrice }] }
       : { unitPrice: item.unitPrice }),
-    costBasis: item.costBasis ?? (product.partnerBuyRate != null ? Number(product.partnerBuyRate) : undefined),
-    // B4 (#3775): partnerBuyRate is denominated in the feed currency — store it
-    // as the cost currency (real column) so margin math can refuse cross-currency
-    // comparisons. Null → omit (service defaults to the partner currency).
-    costCurrency: product.currency ? product.currency.trim().toUpperCase() : undefined,
+    // B4 (#3775): partnerBuyRate (and the form's echo of it in item.costBasis)
+    // is denominated in the FEED currency — stored as the cost currency (real
+    // column) so margin math can refuse cross-currency comparisons. A feed with
+    // no currency leaves the cost NULL (a gap), never the partner currency
+    // (#3775 review #2).
+    ...importedCost(
+      item.costBasis ?? (product.partnerBuyRate != null ? Number(product.partnerBuyRate) : null),
+      product.currency
+    ),
     unitOfMeasure: 'each',
     taxable: item.taxable ?? true,
     isBundle: false,
