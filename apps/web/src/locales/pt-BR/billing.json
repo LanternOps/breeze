@@ -887,7 +887,7 @@
         "toLabel": "Para",
         "toPlaceholder": "Adicionar destinatário…",
         "tooManyRecipients": "Use no máximo {{max}} endereços.",
-        "zeroTotalWarning": "Este orçamento totaliza $0.00 — verifique se os itens têm preço antes de enviar.",
+        "zeroTotalWarning": "Este orçamento totaliza {{zero}} — verifique se os itens têm preço antes de enviar.",
         "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>."
       },
       "sendEmailWarning": {

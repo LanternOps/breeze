@@ -887,7 +887,7 @@
         "toLabel": "To",
         "toPlaceholder": "Add recipient…",
         "tooManyRecipients": "Use at most {{max}} addresses.",
-        "zeroTotalWarning": "This quote totals $0.00 — check that its items are priced before sending.",
+        "zeroTotalWarning": "This quote totals {{zero}} — check that its items are priced before sending.",
         "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>."
       },
       "sendEmailWarning": {

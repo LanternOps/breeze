@@ -887,7 +887,7 @@
         "toLabel": "An",
         "toPlaceholder": "Empfänger hinzufügen…",
         "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
-        "zeroTotalWarning": "Dieses Angebot beträgt $0.00 — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
+        "zeroTotalWarning": "Dieses Angebot beträgt {{zero}} — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
         "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>."
       },
       "sendEmailWarning": {

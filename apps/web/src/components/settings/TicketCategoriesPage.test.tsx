@@ -85,6 +85,17 @@ describe('TicketCategoriesPage', () => {
     expect(document.body.textContent).toContain('$150.00/h');
   });
 
+  it('labels the bare rate input without a currency suffix', async () => {
+    mockGetCategories([CAT_PARENT]);
+    render(<TicketCategoriesPage />);
+
+    fireEvent.click(await screen.findByTestId(`ticket-category-edit-${CAT_PARENT.id}`));
+
+    expect(screen.getByLabelText('Default hourly rate')).toBe(
+      screen.getByTestId('ticket-category-edit-rate'),
+    );
+  });
+
   // --- Existing tests preserved ---
 
   it('renders heading and create form', async () => {

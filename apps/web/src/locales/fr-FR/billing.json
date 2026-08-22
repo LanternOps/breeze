@@ -887,7 +887,7 @@
         "toLabel": "À",
         "toPlaceholder": "Ajouter un destinataire…",
         "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
-        "zeroTotalWarning": "Ce devis totalise $0.00 — vérifiez que ses lignes sont tarifées avant l'envoi.",
+        "zeroTotalWarning": "Ce devis totalise {{zero}} — vérifiez que ses lignes sont tarifées avant l'envoi.",
         "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez un e-mail ou ajoutez-en un dans les <orgLink>paramètres de l'organisation</orgLink>."
       },
       "sendEmailWarning": {

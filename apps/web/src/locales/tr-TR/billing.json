@@ -887,7 +887,7 @@
         "toLabel": "Kime",
         "toPlaceholder": "Alıcı ekle…",
         "tooManyRecipients": "En fazla {{max}} adresi kullanın.",
-        "zeroTotalWarning": "Bu fiyat teklifinin toplamı 0,00 ABD dolarıdır — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
+        "zeroTotalWarning": "Bu fiyat teklifinin toplamı {{zero}} — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
         "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin."
       },
       "sendEmailWarning": {

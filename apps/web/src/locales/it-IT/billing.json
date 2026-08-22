@@ -887,7 +887,7 @@
         "toLabel": "A",
         "toPlaceholder": "Aggiungi destinatario…",
         "tooManyRecipients": "Usa al massimo {{max}} indirizzi.",
-        "zeroTotalWarning": "Il totale di questo preventivo è $0.00: verifica che gli elementi abbiano un prezzo prima dell'invio.",
+        "zeroTotalWarning": "Il totale di questo preventivo è {{zero}}: verifica che gli elementi abbiano un prezzo prima dell'invio.",
         "noBillingContactHint": "Nessun contatto di fatturazione è salvato per questa organizzazione — inserisci un'email oppure aggiungine uno nelle <orgLink>impostazioni dell'organizzazione</orgLink>."
       },
       "sendEmailWarning": {

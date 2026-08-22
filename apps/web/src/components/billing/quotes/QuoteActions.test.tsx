@@ -105,6 +105,17 @@ describe('QuoteActions — header variant', () => {
     expect(screen.queryByTestId('quote-send-empty-hint')).not.toBeInTheDocument();
   });
 
+  it('formats the zero-total warning in the quote currency', async () => {
+    const detail = sendable();
+    detail.quote.currencyCode = 'EUR';
+    render(<QuoteActions detail={detail} onChanged={vi.fn()} variant="header" />);
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-send'));
+
+    expect(await screen.findByTestId('quote-send-zero-warning')).toHaveTextContent('€0.00');
+  });
+
   it('savePending keeps Send ENABLED; a click queues the composer to open on quiescence', async () => {
     const withLine: QuoteDetailData = {
       ...draft(),

@@ -1121,7 +1121,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         </p>
         {zeroTotal && (
           <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
-            {t('quotes.actions.sendConfirm.zeroTotalWarning')}
+            {t('quotes.actions.sendConfirm.zeroTotalWarning', { zero: formatMoney(0, quote.currencyCode) })}
           </p>
         )}
         {/* Non-blocking: an incomplete profit estimate never disables Send (a
