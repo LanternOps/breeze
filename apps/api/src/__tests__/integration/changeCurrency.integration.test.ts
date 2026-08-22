@@ -41,7 +41,10 @@ async function seedFixture(orgCurrency = 'EUR'): Promise<Fixture> {
   });
 }
 
-function actor(f: Fixture): InvoiceActor {
+// The fixture always has a real user, so narrow userId to string — the same
+// object then satisfies InvoiceActor, QuoteActor, and ContractActor (whose
+// userId is non-nullable).
+function actor(f: Fixture): InvoiceActor & { userId: string } {
   return { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
 }
 function ctx(f: Fixture): DbAccessContext {
