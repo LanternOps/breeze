@@ -578,6 +578,144 @@ export async function removeOrgPriceOverride(itemId: string, orgId: string, acto
 }
 
 /**
+ * Render a caller-supplied id the way Postgres will, so a JS Map key and a
+ * `uuid` column agree.
+ *
+ * Postgres accepts more spellings than the canonical one — upper case, braces,
+ * and hyphens omitted or placed differently — and normalises all of them on
+ * output (verified: both `{550e8400-…}` and the unhyphenated form select back
+ * as `550e8400-e29b-41d4-a716-446655440000`). That never mattered while every
+ * identity comparison lived in UUID-typed SQL. It matters now that the locked
+ * rows are held in a Map: SQL would find and LOCK the row, then `map.get()`
+ * would miss and report ITEM_NOT_FOUND for a row this transaction is holding.
+ *
+ * The HTTP route is not the exposure — `z.string().guid()` pins it to canonical
+ * 8-4-4-4-12. The AI tool is: `manage_catalog` passes `String(input.catalogId)`
+ * with no GUID parse at all (its `setBundleComponentsSchema.parse` covers only
+ * `components`/`allocationCurrency`), so a braced or unhyphenated id reaches
+ * here intact.
+ *
+ * Anything Postgres would not accept is returned UNCHANGED on purpose, so a
+ * malformed id still reaches the column and still raises 22P02 exactly as it
+ * did before. This normalises; it does not validate, and it must not ACCEPT
+ * more than the database does — see the body.
+ */
+function canonicalUuid(value: string): string {
+  // Match Postgres's grammar EXACTLY, then normalise — never the other way
+  // round. Stripping braces and hyphens first and hex-testing the remainder is
+  // strictly MORE permissive than the database, which turns strings Postgres
+  // REFUSES into a valid id pointing at a real row. All of these were verified
+  // against a live Postgres 16: `{uuid` and `uuid}` (one brace), a leading or
+  // trailing space, `5-50e8400-…` (hyphen off a 4-boundary), a doubled hyphen,
+  // and a leading hyphen are all rejected by the server, while `{uuid}`,
+  // `550e-8400-…` (hyphen after any group of four) and the hyphen-less form are
+  // all accepted and rendered canonically.
+  let body = value;
+  if (body.startsWith('{')) {
+    if (!body.endsWith('}')) return value;
+    body = body.slice(1, -1);
+  } else if (body.endsWith('}')) {
+    return value;
+  }
+  // An optional hyphen after each group of four hex digits — Postgres's rule.
+  // No trim(): the server does not accept surrounding whitespace either.
+  if (!/^(?:[0-9A-Fa-f]{4}-?){7}[0-9A-Fa-f]{4}$/.test(body)) return value;
+  const hex = body.replace(/-/g, '').toLowerCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * Lock every named item THIS PARTNER OWNS as one globally ordered set, and read
+ * foreign metadata WITHOUT locking it.
+ *
+ * Two queries, and only the FIRST takes row locks — that is what keeps this
+ * deadlock-free, not the fact that it is a single statement. Parent-first-then-
+ * components deadlocks: `set(A,[B])` takes A then wants B while `set(B,[A])`
+ * takes B then wants A, and the cycle forms BEFORE the under-lock validation can
+ * reject either, so two requests that should both be a clean 400 become a 40P01.
+ * Sorting each component list does not help, because the already-held parent
+ * sits outside that ordering. Deduplicating and sorting the UNION of
+ * {parent, ...components} puts every caller on one global order.
+ *
+ * Only OWNED rows are locked. A row this partner does not own is rejected
+ * before any edge DML whatever it does concurrently, so locking it buys no
+ * correctness and lets an invalid request block another tenant's writer. Which
+ * error it gets is not one thing, and this comment used to claim it was: a
+ * normal partner context cannot SEE the row at all and gets
+ * BUNDLE_COMPONENT_NOT_FOUND; an RLS-visible foreign plain item gets
+ * BUNDLE_CROSS_PARTNER; an RLS-visible foreign BUNDLE trips both problems and
+ * the throw order below returns BUNDLE_NESTED first; a foreign parent gets
+ * ITEM_NOT_FOUND. Foreign rows must still be READ, because telling
+ * CROSS_PARTNER from COMPONENT_NOT_FOUND depends on whether the row exists at
+ * all. The pre-fix code read component metadata unlocked, and this preserves
+ * that for everything the actor does not own.
+ *
+ * `ORDER BY id` is load-bearing and must not be dropped: Postgres sorts the
+ * qualifying tuples before the locking node takes the row locks, which is what
+ * gives every caller the same order. `= ANY(...)` argument order guarantees
+ * nothing by itself.
+ *
+ * FOR NO KEY UPDATE, not FOR UPDATE. It is the weakest mode that still conflicts
+ * with itself and with `updateCatalogItem` (which pre-locks the row FOR UPDATE,
+ * and whose plain UPDATE would take NO KEY UPDATE anyway), so the serialisation
+ * this fix depends on is unchanged. FOR SHARE would be too weak — two SHARE
+ * holders are compatible. The gain is that an FK's KEY SHARE lock stays
+ * compatible, so inserting an edge that merely REFERENCES one of these items is
+ * no longer blocked.
+ *
+ * Locking `catalog_items` — not the `catalog_bundle_components` edge rows — is
+ * what closes the conversion race in `updateCatalogItem`. That check searches
+ * for the ABSENCE of an edge, and an ordinary row lock cannot lock a row that
+ * does not exist yet. (Absence IS lockable via SERIALIZABLE predicate locks, an
+ * advisory lock, or a table lock; none of those is used here, and none is needed
+ * once both writers contend on the component's own item row, which must already
+ * exist because the edge has an FK to it.)
+ */
+async function lockOwnedItemsInGlobalOrder(
+  tx: DbExecutor,
+  ids: readonly string[],
+  partnerId: string
+) {
+  const ordered = [...new Set(ids)].sort();
+  const cols = { id: catalogItems.id, isBundle: catalogItems.isBundle, partnerId: catalogItems.partnerId };
+
+  // ONE locking query, not one per id. The validator permits 200 components, so
+  // a loop here would be up to 201 serial round trips with every earlier row
+  // lock held open across all of them.
+  const owned = await tx.select(cols).from(catalogItems)
+    .where(and(inArray(catalogItems.id, [...ordered]), eq(catalogItems.partnerId, partnerId)))
+    .orderBy(asc(catalogItems.id))
+    .for('no key update');
+
+  // Anything not returned above is either foreign or absent. Read it unlocked so
+  // detectBundleProblems can tell those two apart. Rows invisible under RLS are
+  // simply missing from the map, so it raises COMPONENT_NOT_FOUND rather than
+  // this helper leaking whether a foreign id exists.
+  const ownedIds = new Set(owned.map((r) => r.id));
+  const rest = ordered.filter((id) => !ownedIds.has(id));
+  const unlocked = rest.length
+    ? await tx.select(cols).from(catalogItems).where(inArray(catalogItems.id, rest))
+    : [];
+
+  // Drop anything the SECOND statement reports as ours. Read Committed gives
+  // each statement its own snapshot, so a row that was absent or foreign during
+  // the locking query can be owned by the time this one runs — and it would then
+  // enter the map indistinguishable from a locked row, which is exactly the
+  // unlocked-validation hole this fix exists to close. Excluding it makes the id
+  // simply missing, so validation refuses the request instead of trusting an
+  // is_bundle flag nothing is holding. It costs nothing today — catalog ids are
+  // server-generated `defaultRandom()` and no writer moves partner_id, so no
+  // production path can put an owned row here — and it keeps the helper's
+  // invariant true on its own terms rather than on the rest of the repo's
+  // conventions. (This is only sound because ids are normalised before the
+  // locking query: otherwise the SAME row, locked by query 1 under one spelling,
+  // would come back from query 2 under another and be dropped as if unlocked.)
+  const foreign = unlocked.filter((r) => r.partnerId !== partnerId);
+
+  return new Map([...owned, ...foreign].map((r) => [r.id, { isBundle: r.isBundle, partnerId: r.partnerId }]));
+}
+
+/**
  * Replace a bundle's component set. `allocationCurrency` is the currency the
  * revenueAllocation amounts were authored in (the bundle price being edited,
  * #3775 review #7) and is stamped on every row that carries an allocation; it
@@ -591,55 +729,151 @@ export async function setBundleComponents(
   allocationCurrency?: string
 ) {
   const partnerId = requirePartner(actor);
-  const bundle = await getOwnedItemOr404(bundleId, partnerId);
-  if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
+
+  // Canonicalise every id ONCE, here, before dedup / locking / self-reference /
+  // duplicate detection / map lookup / DML. See `canonicalUuid` for why the
+  // spelling can differ from what Postgres renders.
+  //
+  // Every JS-side comparison in this function and in `detectBundleProblems`
+  // (Map.get, the `seen` Set, `=== bundleId`) is exact-string. Un-normalised, a
+  // non-canonical parent misses the locked map and 404s a row this transaction
+  // has already locked; a non-canonical component becomes a phantom
+  // BUNDLE_COMPONENT_NOT_FOUND; and the same component sent under two spellings
+  // slips past both the duplicate and the self-reference check. None of this
+  // could happen before the fix, because the parent was resolved by a SQL `eq`
+  // that compared 128 bits and never saw the spelling.
+  const bundleKey = canonicalUuid(bundleId);
+
+  // Snapshot the caller's array before the backstop below and before any await.
+  // `components` is caller-owned and mutable, and it is read at four points
+  // separated by awaits (backstop, id list, validation, insert). Without this,
+  // a caller that mutates the array while the lock query is in flight could get
+  // one shape validated and a different one written — adding a revenueAllocation
+  // after the backstop ran, or swapping a componentItemId for one that was
+  // never locked, never nesting-checked and never ownership-checked. No current
+  // caller shares the parsed object with another actor, so this is a contract
+  // guarantee rather than a live bug, but every comment below depends on it.
+  const items = components.map((c) => ({
+    componentItemId: canonicalUuid(c.componentItemId),
+    quantity: c.quantity,
+    showOnInvoice: c.showOnInvoice,
+    revenueAllocation: c.revenueAllocation ?? null
+  }));
+
+  // #3775 review #7's backstop, deliberately BEFORE the transaction. It reads
+  // nothing from the database, so running it under the row locks would mean
+  // locking every named catalog_items row only to reject on shape. The
+  // maintainer's version ran it after ITEM_NOT_FOUND and NOT_A_BUNDLE, so
+  // hoisting it changes the code a DIRECT service caller gets whenever an
+  // uncurrencied allocation coincides with a bad parent: NOT_A_BUNDLE, and
+  // equally ITEM_NOT_FOUND (missing, foreign, or RLS-invisible parent) or a raw
+  // invalid-uuid error, now all answer ALLOCATION_CURRENCY_REQUIRED first.
+  // PARTNER_UNRESOLVABLE still precedes it. Nothing observable changes over HTTP
+  // or through the AI tool: apps/api/src/routes/catalog/bundles.ts and
+  // aiToolsCatalog's set_bundle_components both parse `setBundleComponentsSchema`
+  // first, and its refine already rejects an allocation with no currency — those
+  // are the only two production callers of this function.
   const allocCurrency = allocationCurrency?.trim().toUpperCase() || null;
-  if (!allocCurrency && components.some((c) => c.revenueAllocation != null)) {
+  if (!allocCurrency && items.some((c) => c.revenueAllocation != null)) {
     throw new CatalogServiceError('allocationCurrency is required when a component carries a revenueAllocation', 400, 'ALLOCATION_CURRENCY_REQUIRED');
   }
   // Wave-6 review: an allocation is persisted money carrying its own stamped
   // currency (`allocation_currency`) and is copied verbatim onto a same-currency
   // invoice line (invoiceService.addCatalogLine), so it must be representable in
   // that currency — a fractional-yen allocation is a 400, never a silent round.
-  if (allocCurrency) {
-    for (const c of components) {
-      if (c.revenueAllocation != null) assertRepresentable(c.revenueAllocation.toFixed(2), allocCurrency);
+
+  // One transaction for the whole read-validate-replace.
+  //
+  // NOT because the old code was non-atomic on the request path — it was not.
+  // `db` is already the outer `withDbAccessContext` transaction there, so the
+  // previous bare `db.delete` / `db.insert` were inside it and a failure between
+  // them rolled both back. What this buys is a SCOPE for the row locks taken
+  // below — nothing more. It is not extra atomicity for some context-less
+  // caller: this function accepts no executor, and outside `withDbAccessContext`
+  // the breeze_app role has no RLS GUCs set, so the parent lookup finds nothing
+  // and the function throws before deleting anything. Both production callers
+  // establish an access context, so on both paths this is a SAVEPOINT within
+  // their transaction, not a new transaction.
+  const id = await db.transaction(async (tx) => {
+    const componentIds = items.map((c) => c.componentItemId);
+    const locked = await lockOwnedItemsInGlobalOrder(tx, [bundleKey, ...componentIds], partnerId);
+
+    // Re-read the parent from the LOCKED set: its is_bundle flag is exactly what
+    // a concurrent updateCatalogItem flips, so validating an unlocked copy is
+    // the race. Ownership is enforced here, not by the lock helper.
+    const bundle = locked.get(bundleKey);
+    if (!bundle || bundle.partnerId !== partnerId) {
+      throw new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND');
     }
-  }
+    if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
 
-  const ids = components.map((c) => c.componentItemId);
-  const metaRows = ids.length
-    ? await db.select({ id: catalogItems.id, isBundle: catalogItems.isBundle, partnerId: catalogItems.partnerId })
-        .from(catalogItems).where(inArray(catalogItems.id, ids))
-    : [];
-  const componentMeta = new Map(metaRows.map((r) => [r.id, { isBundle: r.isBundle, partnerId: r.partnerId }]));
+    // #3874's representability guard, kept HERE rather than hoisted with the
+    // ALLOCATION_CURRENCY_REQUIRED backstop above.
+    //
+    // It needs no database state, so it does not need the locks — it needs this
+    // POSITION. Wave 6 shipped it after the parent lookup, so `ITEM_NOT_FOUND`
+    // and `NOT_A_BUNDLE` win over `PRICE_NOT_REPRESENTABLE`. Running it before
+    // the transaction inverted that for ordinary HTTP requests: the shared
+    // schema accepts `100.50` as plain two-decimal money and does not enforce
+    // per-currency minor units, so a request naming a missing parent AND a
+    // fractional-yen allocation would have started answering
+    // PRICE_NOT_REPRESENTABLE where main answers ITEM_NOT_FOUND.
+    //
+    // Reads `items`, not `components`. That is load-bearing precisely because of
+    // this position: the lock query above is an `await`, so a caller holding the
+    // array really can mutate it before this runs, and the insert below writes
+    // the snapshot — checking the live array would validate values that are
+    // never persisted while persisting values that were never checked.
+    if (allocCurrency) {
+      for (const c of items) {
+        if (c.revenueAllocation != null) assertRepresentable(c.revenueAllocation.toFixed(2), allocCurrency);
+      }
+    }
 
-  const problems = detectBundleProblems({
-    bundleId, bundlePartnerId: partnerId,
-    components: components.map((c) => ({ componentItemId: c.componentItemId, quantity: c.quantity })),
-    componentMeta
+    const componentMeta = new Map(
+      componentIds
+        .filter((id) => id !== bundleKey && locked.has(id))
+        .map((id) => [id, locked.get(id)!])
+    );
+
+    const problems = detectBundleProblems({
+      bundleId: bundleKey, bundlePartnerId: partnerId,
+      components: items.map((c) => ({ componentItemId: c.componentItemId, quantity: c.quantity })),
+      componentMeta
+    });
+    if (problems.includes('SELF_REFERENCE')) throw new CatalogServiceError('A bundle cannot contain itself', 400, 'BUNDLE_SELF_REFERENCE');
+    if (problems.includes('NESTED_BUNDLE')) throw new CatalogServiceError('A bundle component cannot itself be a bundle', 400, 'BUNDLE_NESTED');
+    if (problems.includes('CROSS_PARTNER')) throw new CatalogServiceError('Components must belong to the same partner', 400, 'BUNDLE_CROSS_PARTNER');
+    if (problems.includes('COMPONENT_NOT_FOUND')) throw new CatalogServiceError('One or more components were not found', 404, 'BUNDLE_COMPONENT_NOT_FOUND');
+    if (problems.includes('DUPLICATE_COMPONENT')) throw new CatalogServiceError('Duplicate component in bundle', 400, 'BUNDLE_DUPLICATE_COMPONENT');
+
+    // Replace-set, now atomic with the validation above.
+    await tx.delete(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, bundleKey));
+    if (items.length) {
+      await tx.insert(catalogBundleComponents).values(items.map((c) => ({
+        partnerId,
+        bundleItemId: bundleKey,
+        componentItemId: c.componentItemId,
+        quantity: c.quantity.toFixed(2),
+        showOnInvoice: c.showOnInvoice,
+        revenueAllocation: c.revenueAllocation != null ? c.revenueAllocation.toFixed(2) : null,
+        allocationCurrency: c.revenueAllocation != null ? allocCurrency : null
+      })));
+    }
+    return bundleKey;
   });
-  if (problems.includes('SELF_REFERENCE')) throw new CatalogServiceError('A bundle cannot contain itself', 400, 'BUNDLE_SELF_REFERENCE');
-  if (problems.includes('NESTED_BUNDLE')) throw new CatalogServiceError('A bundle component cannot itself be a bundle', 400, 'BUNDLE_NESTED');
-  if (problems.includes('CROSS_PARTNER')) throw new CatalogServiceError('Components must belong to the same partner', 400, 'BUNDLE_CROSS_PARTNER');
-  if (problems.includes('COMPONENT_NOT_FOUND')) throw new CatalogServiceError('One or more components were not found', 404, 'BUNDLE_COMPONENT_NOT_FOUND');
-  if (problems.includes('DUPLICATE_COMPONENT')) throw new CatalogServiceError('Duplicate component in bundle', 400, 'BUNDLE_DUPLICATE_COMPONENT');
 
-  // Replace-set: delete existing, insert new.
-  await db.delete(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, bundleId));
-  if (components.length) {
-    await db.insert(catalogBundleComponents).values(components.map((c) => ({
-      partnerId,
-      bundleItemId: bundleId,
-      componentItemId: c.componentItemId,
-      quantity: c.quantity.toFixed(2),
-      showOnInvoice: c.showOnInvoice,
-      revenueAllocation: c.revenueAllocation != null ? c.revenueAllocation.toFixed(2) : null,
-      allocationCurrency: c.revenueAllocation != null ? allocCurrency : null
-    })));
-  }
-  await emitCatalogEvent({ type: 'catalog.item.updated', catalogItemId: bundleId, partnerId, actorUserId: actor.userId });
-  return getCatalogItem(bundleId, actor);
+  // NOT an after-commit hook, and deliberately not labelled as one. Request
+  // handlers already run inside `withDbAccessContext`, which opens the real
+  // transaction, so the `db.transaction` above is a SAVEPOINT within it — this
+  // line still executes before the outer commit, exactly as the old code did.
+  // Emitting here is unchanged behaviour, not an improvement. What this
+  // codebase lacks is a GENERIC after-commit callback usable from a
+  // request-scoped transaction (it does have hand-rolled post-commit flows
+  // elsewhere); building one is out of scope for a lock fix. Note the row locks
+  // taken above are still held across this enqueue.
+  await emitCatalogEvent({ type: 'catalog.item.updated', catalogItemId: id, partnerId, actorUserId: actor.userId });
+  return getCatalogItem(id, actor);
 }
 
 /**
@@ -775,3 +1009,11 @@ export async function computeBundleEconomics(
     }))
   });
 }
+
+/**
+ * Deliberately narrow test seam. `canonicalUuid` is a private normaliser whose
+ * correctness is defined by the DATABASE's grammar, so it needs a test that
+ * compares it against a live server; exporting it outright would invite callers
+ * to treat it as a validator, which it is not.
+ */
+export const __testables = { canonicalUuid };
