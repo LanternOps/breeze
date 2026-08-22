@@ -18,6 +18,15 @@ export class UnsupportedAgentModeError extends Error {
   }
 }
 
+export class AgentKindConflictError extends Error {
+  readonly code = 'agent_kind_exists';
+
+  constructor(kind: string) {
+    super(`agent_kind_exists: ${kind}`);
+    this.name = 'AgentKindConflictError';
+  }
+}
+
 export interface AgentOwner {
   orgId: string | null;
   partnerId: string | null;
@@ -188,6 +197,27 @@ export async function createAgent(
   input: CreateAiAgentInput,
 ): Promise<AiAgentRow> {
   assertAgentWriteAllowed(auth, owner);
+
+  // Pre-check the partial unique indexes on (partner_id, kind) and (org_id,
+  // kind) WHERE disabled_at IS NULL. Letting the insert trip 23505 is not an
+  // option here: the whole request runs inside one withDbAccessContext
+  // transaction, so an in-statement error poisons it and the COMMIT 500s
+  // (same reason routes/discovery.ts pre-checks its provenance key). This is
+  // advisory, not the boundary — the indexes still settle a concurrent race,
+  // which then surfaces as a 500 rather than a wrong row.
+  const [conflict] = await db
+    .select({ id: aiAgents.id })
+    .from(aiAgents)
+    .where(and(
+      owner.partnerId === null
+        ? eq(aiAgents.orgId, owner.orgId as string)
+        : and(eq(aiAgents.partnerId, owner.partnerId), isNull(aiAgents.orgId)),
+      eq(aiAgents.kind, input.kind),
+      isNull(aiAgents.disabledAt),
+    ))
+    .limit(1);
+  if (conflict) throw new AgentKindConflictError(input.kind);
+
   const [row] = await db
     .insert(aiAgents)
     .values({

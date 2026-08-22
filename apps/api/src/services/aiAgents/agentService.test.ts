@@ -89,6 +89,7 @@ vi.mock('./effectivePolicy', () => ({
 }));
 
 import {
+  AgentKindConflictError,
   UnsupportedAgentModeError,
   createAgent,
   disableAgent,
@@ -228,6 +229,19 @@ describe('agent mutations', () => {
       expect.objectContaining({ agentId: 'a1', change: 'created' }),
       'ai-agents',
     );
+  });
+
+  it('refuses a second active agent of the same kind before the insert runs', async () => {
+    // The partial unique indexes are the real boundary, but the whole request
+    // runs in one transaction — a raised 23505 poisons it and the COMMIT 500s,
+    // so the duplicate has to be caught before the INSERT is issued.
+    state.currentRow = { id: 'existing' };
+    state.returnedRow = storedRow;
+
+    await expect(createAgent(auth(), { orgId: 'o1', partnerId: null }, createInput as never))
+      .rejects.toBeInstanceOf(AgentKindConflictError);
+    expect(state.insertedValues).toBeNull();
+    expect(state.audit).not.toHaveBeenCalled();
   });
 
   it('denies a partner-wide create without full partner authority', async () => {
