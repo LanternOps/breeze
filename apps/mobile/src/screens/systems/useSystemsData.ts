@@ -112,7 +112,16 @@ export function useSystemsData() {
   const lastFetchAt = useRef<number>(0);
   const inFlight = useRef<boolean>(false);
 
+  // Returns whether THIS call fetched and at least one slice arrived. Note what
+  // that does NOT mean: it is false when the call coalesces into an in-flight
+  // request that may yet succeed, and it is true when unrelated slices arrived
+  // but `alerts` itself failed. So it is not a freshness signal for any single
+  // slice, and callers must not treat it as one — which is why this returns
+  // nothing at all. The freshness primitive callers actually need is a
+  // monotonic generation stamped on the ALERTS snapshot (#3782), not a boolean
+  // from whoever happened to call refresh().
   const fetchAll = useCallback(async (mode: 'initial' | 'refresh') => {
+    // Coalesced into an in-flight request — this call fetched nothing itself.
     if (inFlight.current) return;
     inFlight.current = true;
     setData((d) => ({

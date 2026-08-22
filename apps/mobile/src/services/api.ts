@@ -319,9 +319,10 @@ async function request<T>(
  */
 export async function coreRequest<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs?: number
 ): Promise<T> {
-  return requestWithPrefix<T>(endpoint, API_CORE_PREFIX, options);
+  return requestWithPrefix<T>(endpoint, API_CORE_PREFIX, options, timeoutMs);
 }
 
 export type DeviceAction = 'reboot' | 'shutdown' | 'wake' | 'update';
@@ -528,6 +529,71 @@ export async function getAlert(id: string): Promise<Alert> {
  * which invites a retry of an action that already succeeded.
  */
 export const ACKNOWLEDGE_TIMEOUT_MS = 45000;
+
+export interface BulkAckOutcome {
+  acknowledged: string[];
+  failed: string[];
+  /** One entry per failed id, in completion order, for the caller to report. */
+  errors: unknown[];
+}
+
+/**
+ * How many acknowledges run at once.
+ *
+ * Deliberately small. Each request is slow server-side (13-15s measured,
+ * because the API publishes its event inside the request path) and holds a
+ * pooled DB connection for its duration, so firing a whole selection at once
+ * would pile concurrent long-lived connections onto the exact resource that is
+ * already under pressure. Four keeps a 20-alert batch to roughly a minute
+ * while the UI stays responsive, without acting as a load generator.
+ */
+export const ACK_CONCURRENCY = 4;
+
+/**
+ * Acknowledge many alerts.
+ *
+ * Uses the per-alert MOBILE endpoint rather than core `POST /alerts/bulk`:
+ * bulk requires `alerts:write`, while Technician roles are seeded with
+ * `alerts:acknowledge` only, so the bulk route 403s for exactly the people who
+ * triage alerts from a phone. Slower, but it works for every role.
+ *
+ * Never rejects — the caller needs to know which ids landed so the failures
+ * can be restored individually.
+ */
+export async function acknowledgeAlerts(ids: string[]): Promise<BulkAckOutcome> {
+  const acknowledged: string[] = [];
+  const failed: string[] = [];
+  const errors: unknown[] = [];
+  const queue = [...ids];
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      const id = queue.shift();
+      if (!id) return;
+      try {
+        await acknowledgeAlert(id);
+        acknowledged.push(id);
+      } catch (err) {
+        // Carry the cause out rather than dropping it. Swallowed, a 403, a 500
+        // and a client-side abort are indistinguishable in the outcome, and the
+        // caller's reportInternalError never fires for them because they never
+        // propagate — so the one signal that would identify a systematic
+        // failure (every id aborting at the same deadline) is lost.
+        //
+        // Reported by the CALLER, not here: lib/errorReporting imports from
+        // this module, so reporting inline would make the import cycle
+        // api -> errorReporting -> api.
+        failed.push(id);
+        errors.push(err);
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(ACK_CONCURRENCY, ids.length) }, () => worker())
+  );
+  return { acknowledged, failed, errors };
+}
 
 export async function acknowledgeAlert(id: string): Promise<Alert> {
   const response = await request<MobileAlertRecord>(

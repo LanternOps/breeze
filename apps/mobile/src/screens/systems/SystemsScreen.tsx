@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Clipboard, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -10,6 +10,7 @@ import type { Alert, Device } from '../../services/api';
 import type { SystemsStackParamList, MainTabParamList } from '../../navigation/MainNavigator';
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
+import { acknowledgeAlerts } from '../../services/api';
 import { loadHistory, setError as setChatError } from '../../store/aiChatSlice';
 import { getAiSessionMessages } from '../../services/aiChat';
 import { historyToMessages } from '../chat/historyAdapter';
@@ -21,6 +22,24 @@ import { track } from '../../lib/analytics';
 import { reportInternalError } from '../../lib/errorReporting';
 
 import { AlertActionSheet } from './components/AlertActionSheet';
+import {
+  beginAck,
+  bulkActionLabel,
+  emptyPendingAcks,
+  endAck,
+  reconcileSelection,
+  toggleSelection,
+  visibleAlerts,
+} from './pendingAcks';
+import {
+  cancelUndo,
+  emptyUndo,
+  flushAllUndo,
+  flushUndo,
+  scheduleUndo,
+  undoToastLabel,
+} from './undoAck';
+import { UndoToast } from '../../components/UndoToast';
 import { FilterChip } from './components/FilterChip';
 import { Hero } from './components/Hero';
 import { IssueRow } from './components/IssueRow';
@@ -32,6 +51,18 @@ import { deriveHeroState } from './heroCopy';
 import { useSystemsData } from './useSystemsData';
 
 type Nav = NativeStackNavigationProp<SystemsStackParamList, 'Systems'>;
+
+/**
+ * How long an acknowledge stays retractable before the request is sent.
+ *
+ * The acknowledge is no longer instant, which is a real cost against a feature
+ * about not waiting — but "without waiting" was about not tapping through a
+ * detail screen and sitting on a 15-second write, not about the row clearing
+ * inside a second. The gesture is still one swipe and the list stays
+ * responsive; only the request is deferred. What it buys is that a stray swipe
+ * on a phone, one-handed, in a list, stops being unrecoverable.
+ */
+const UNDO_WINDOW_MS = 5000;
 
 // Inline magnifying glass — see SearchSheet for the input-decorating sibling.
 // 16px sizing here matches the right-edge of the Hero copy block.
@@ -98,7 +129,11 @@ export function SystemsScreen() {
   const dispatch = useAppDispatch();
 
   const [sheetAlert, setSheetAlert] = useState<Alert | null>(null);
+  const [pendingAcks, setPendingAcks] = useState(emptyPendingAcks);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [searchOpen, setSearchOpen] = useState(false);
+  const [undo, setUndo] = useState(emptyUndo);
   const [toast, setToast] = useState<
     { kind: 'success' | 'error'; text: string } | null
   >(null);
@@ -158,6 +193,201 @@ export function SystemsScreen() {
   const onCloseSheet = useCallback(() => {
     setSheetAlert(null);
   }, []);
+
+  // Rows mid-acknowledge are hidden immediately; the request runs behind them.
+  const visibleIssues = visibleAlerts(activeIssues, pendingAcks);
+
+  // Narrowed once so the JSX below can use it without re-checking. The token
+  // that matters is the one this RENDER saw: the toast's callbacks close over
+  // it, so a timer or tap belonging to a replaced batch passes the old token
+  // and `flushUndo`/`cancelUndo` correctly release nothing. (Reading
+  // `undoRef.current` in those callbacks instead would read the live batch and
+  // defeat exactly that guard.)
+  const undoBatch = undo.batch;
+
+  /**
+   * Acknowledge one or many, optimistically.
+   *
+   * The rows disappear immediately and the request runs behind them: a single
+   * acknowledge has been measured at 13-15s on a real deployment, and a bulk
+   * call scales with the batch, so blocking the UI on it makes triage unusable.
+   * A failure puts the rows back and says so.
+   */
+  const dispatchAcknowledge = useCallback(
+    async (ids: readonly string[]) => {
+      if (ids.length === 0) return;
+      // NOTE: the rows are ALREADY hidden — `scheduleAcknowledge` called
+      // `beginAck` when the undo window opened. Hiding again here would double
+      // the reference count and leave them hidden after this call releases one.
+      // Restore only what actually failed, so a partial outcome is honest.
+      let toRestore: readonly string[] = ids;
+      try {
+        const { acknowledged, failed, errors } = await acknowledgeAlerts([...ids]);
+        // Per-id failures never throw, so they would otherwise bypass the
+        // catch below and be reported nowhere. Without this, a systematic
+        // failure (every id aborting at the same deadline) is invisible in
+        // telemetry and looks like ordinary partial failure on screen.
+        for (const err of errors) reportInternalError(err, 'acknowledge-alert');
+        toRestore = failed;
+        if (failed.length === 0) {
+          // Deliberately silent on success. The undo toast already said
+          // "acknowledged" when the rows disappeared; a second toast seconds
+          // later, after the operator has moved on, is noise announcing
+          // something they were already told.
+        } else if (acknowledged.length === 0) {
+          setToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
+        } else {
+          // Never claim the full count when some were refused.
+          setToast({
+            kind: 'error',
+            text: `Acknowledged ${acknowledged.length}, ${failed.length} failed.`,
+          });
+        }
+        // Successful ids stay hidden until the refetch supplies the new truth,
+        // so the list cannot flash the old rows back.
+        setPendingAcks((p) => endAck(p, failed));
+        // Un-hide unconditionally, DELIBERATELY, despite `refresh()` being an
+        // unreliable signal of freshness (it swallows its own failures and
+        // resolves either way).
+        //
+        // Gating the un-hide on the refetch is the obvious fix and it is worse:
+        // when this refresh coalesces into one already in flight it reports no
+        // fresh read, nothing else releases these ids, and the rows stay hidden
+        // for the life of the screen. A briefly stale visible row is recoverable;
+        // a permanently concealed active alert is not, and this list is how an
+        // operator learns an alert exists.
+        //
+        // The real fix is to release a pending ack when a NEWER alerts snapshot
+        // lands, whoever fetched it — a fetch generation the pendingAcks map can
+        // compare against — rather than tying release to this one call. That is
+        // a change to the data layer, not to this call site. See the PR thread.
+        await refresh();
+        setPendingAcks((p) => endAck(p, acknowledged));
+        return;
+      } catch (err) {
+        reportInternalError(err, 'bulk-acknowledge');
+        setToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
+        setPendingAcks((p) => endAck(p, toRestore));
+      }
+    },
+    [refresh]
+  );
+
+  // The dispatch path is reached from a timer, an unmount and a replacing
+  // batch, none of which re-render first. A ref keeps those callbacks pointed
+  // at the current closure instead of the one captured when the window opened.
+  //
+  // Published from an effect, not the render body: a concurrent render that
+  // React abandons must not be able to publish its callback through a ref that
+  // a live timer is about to read.
+  const dispatchRef = useRef(dispatchAcknowledge);
+  useEffect(() => {
+    dispatchRef.current = dispatchAcknowledge;
+  }, [dispatchAcknowledge]);
+
+  /**
+   * THE REF IS THE SOURCE OF TRUTH; `undo` state exists only to render.
+   *
+   * Sending an acknowledge is irreversible, so the decision to send must happen
+   * exactly once. React may invoke a `useState` updater more than once and keep
+   * only the returned value — StrictMode does this deliberately — so an updater
+   * is the wrong place for a network call: the state stays correct while the
+   * request goes out twice. Every transition therefore runs here, synchronously,
+   * against a ref that only one caller can win, and the state update afterwards
+   * is pure.
+   */
+  const undoRef = useRef(undo);
+
+  /** Atomically take the ids a transition releases. Returns [] if it lost. */
+  const takeUndo = useCallback(
+    (apply: (s: typeof emptyUndo) => { state: typeof emptyUndo; ids: readonly string[] }) => {
+      const { state, ids } = apply(undoRef.current);
+      undoRef.current = state;
+      setUndo(state);
+      return ids;
+    },
+    []
+  );
+
+  /**
+   * Hide the rows and open an undo window. Does NOT send anything yet.
+   *
+   * There is no unacknowledge route, so the only way to make a stray swipe
+   * recoverable is to not have sent the request. `scheduleUndo` keeps exactly
+   * one window open — a second acknowledge commits the first rather than
+   * stacking a toast per row, which for a 30-alert selection would be its own
+   * bug.
+   */
+  const scheduleAcknowledge = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      setPendingAcks((p) => beginAck(p, ids));
+      const { state, flush } = scheduleUndo(undoRef.current, ids);
+      undoRef.current = state;
+      setUndo(state);
+      // The window this one replaced is now committed.
+      if (flush.length > 0) void dispatchRef.current(flush);
+    },
+    []
+  );
+
+  // Both handlers take the token of the batch that OWNS them, not whatever is
+  // current. A timer or a tap belonging to a replaced batch must release
+  // nothing — otherwise batch A's expiry commits batch B, or A's Undo button
+  // retracts B. The token guards in `undoAck` exist for exactly this, and
+  // reading the live token here would defeat them.
+  const onUndoAcknowledge = useCallback(
+    (token: number) => {
+      const ids = takeUndo((s) => cancelUndo(s, token));
+      // Never sent, so there is nothing to reverse — just show them again.
+      if (ids.length > 0) setPendingAcks((p) => endAck(p, ids));
+    },
+    [takeUndo]
+  );
+
+  const onUndoWindowExpired = useCallback(
+    (token: number) => {
+      const ids = takeUndo((s) => flushUndo(s, token));
+      if (ids.length > 0) void dispatchRef.current(ids);
+    },
+    [takeUndo]
+  );
+
+  // Leaving the screen FLUSHES, it does not cancel. Dropping a held request
+  // would make swipe-then-navigate silently do nothing, which is a new silent
+  // failure in a change that exists to close several.
+  //
+  // Goes through the same atomic take as the timer, so an expiry landing at the
+  // same moment as the unmount cannot both win and send twice. Fires the
+  // request without the state-updating wrapper: there is no UI left to update.
+  useEffect(() => {
+    return () => {
+      const { state, ids } = flushAllUndo(undoRef.current);
+      undoRef.current = state;
+      if (ids.length === 0) return;
+      void acknowledgeAlerts([...ids])
+        .then(({ errors }) => {
+          for (const err of errors) reportInternalError(err, 'acknowledge-alert');
+        })
+        .catch((err) => reportInternalError(err, 'bulk-acknowledge-unmount'));
+    };
+  }, []);
+
+  const exitSelection = useCallback(() => {
+    setSelecting(false);
+    setSelected(new Set());
+  }, []);
+
+  const onAcknowledgeSelected = useCallback(async () => {
+    // Drop ids whose rows are gone — another operator may have acknowledged one
+    // in the meantime. The per-alert mobile route REJECTS a stale id with HTTP
+    // 400 (`mobile.ts:905`), so submitting it would surface a failure toast for
+    // something the user did not do wrong. (The `/alerts/bulk` route does skip
+    // silently, but this PR does not use it.)
+    const ids = [...reconcileSelection(selected, visibleIssues)];
+    exitSelection();
+    scheduleAcknowledge(ids);
+  }, [selected, visibleIssues, exitSelection, scheduleAcknowledge]);
 
   const onAcknowledgeFromSheet = useCallback(async () => {
     if (!sheetAlert) return;
@@ -225,7 +455,7 @@ export function SystemsScreen() {
 
   const showOrgs = !filterOrgId && orgRollups.length > 0;
   const showRecent = recent.length > 0;
-  const showActiveIssues = activeIssues.length > 0;
+  const showActiveIssues = visibleIssues.length > 0;
   const showActiveSkeleton = loading && activeIssues.length === 0;
   // Every section can hide independently, and the org filter suppresses the
   // Organizations list outright — so a filtered org with nothing outstanding
@@ -384,13 +614,26 @@ export function SystemsScreen() {
         {showActiveIssues ? (
           <>
             <SectionHeader label="ACTIVE ISSUES" />
-            {activeIssues.map((alert, idx) => (
+            {visibleIssues.map((alert, idx) => (
               <IssueRow
                 key={alert.id}
                 alert={alert}
-                onPress={() => onPressIssue(alert)}
-                onLongPress={() => onLongPressAlert(alert)}
-                showDivider={idx < activeIssues.length - 1}
+                onPress={() =>
+                  selecting
+                    ? setSelected((prev) => toggleSelection(prev, alert.id))
+                    : onPressIssue(alert)
+                }
+                onLongPress={() => {
+                  if (selecting) return;
+                  // Long-press is the way in, and it ticks the row you pressed
+                  // so the gesture is never a wasted step.
+                  setSelecting(true);
+                  setSelected(new Set([alert.id]));
+                }}
+                onSwipeAcknowledge={() => scheduleAcknowledge([alert.id])}
+                selectable={selecting}
+                selected={selected.has(alert.id)}
+                showDivider={idx < visibleIssues.length - 1}
                 dividerColor={theme.border}
               />
             ))}
@@ -452,6 +695,52 @@ export function SystemsScreen() {
         ) : null}
       </ScrollView>
 
+      {selecting ? (
+        <View
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            paddingHorizontal: spacing[4],
+            paddingTop: spacing[3],
+            paddingBottom: spacing[6],
+            borderTopWidth: 1,
+            borderTopColor: theme.border,
+            backgroundColor: theme.bg1,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: spacing[3],
+          }}
+        >
+          <Pressable
+            onPress={exitSelection}
+            accessibilityRole="button"
+            style={{ paddingVertical: spacing[2], paddingHorizontal: spacing[3] }}
+          >
+            <Text style={{ ...type.meta, color: theme.textMd }}>Cancel</Text>
+          </Pressable>
+          <View style={{ flex: 1 }} />
+          <Pressable
+            onPress={() => void onAcknowledgeSelected()}
+            disabled={selected.size === 0}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: selected.size === 0 }}
+            style={{
+              paddingVertical: spacing[3],
+              paddingHorizontal: spacing[4],
+              borderRadius: 10,
+              backgroundColor: palette.approve.base,
+              opacity: selected.size === 0 ? 0.5 : 1,
+            }}
+          >
+            <Text style={{ ...type.bodyMd, color: palette.approve.onBase }}>
+              {bulkActionLabel(selected.size)}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       <AlertActionSheet
         visible={!!sheetAlert}
         alert={sheetAlert}
@@ -473,6 +762,21 @@ export function SystemsScreen() {
         onHidden={() => setToast(null)}
         bottomOffset={insets.bottom + spacing[16]}
       />
+      {undoBatch ? (
+        <UndoToast
+          visible
+          // Keyed by token so a replacing batch remounts the timer instead of
+          // inheriting the remainder of the window it displaced.
+          key={undoBatch.token}
+          text={undoToastLabel(undoBatch.ids.length)}
+          windowMs={UNDO_WINDOW_MS}
+          // The token is captured HERE, in the render that owns this batch, so
+          // a callback surviving from a replaced toast releases nothing.
+          onUndo={() => onUndoAcknowledge(undoBatch.token)}
+          onExpire={() => onUndoWindowExpired(undoBatch.token)}
+          bottomOffset={insets.bottom + spacing[16]}
+        />
+      ) : null}
     </View>
   );
 }
