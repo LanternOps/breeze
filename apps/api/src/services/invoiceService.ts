@@ -242,8 +242,8 @@ export async function addContractLine(
 
     // B2 guard (spec §5): a contract-sourced line may only land on an invoice in
     // the SAME currency as its contract — no conversion, no silent restamp. This
-    // is the first source-vs-header validation; time entries/parts gain currency
-    // in wave 4 and plug into the same check.
+    // is the source-vs-header validation for contract lines; time entries/parts
+    // are asserted the same way on the locked rows in issueInvoice (wave 4, #3776).
     if (input.sourceId) {
       const [src] = await tx.select({ currencyCode: contracts.currencyCode })
         .from(contractLines)
@@ -882,7 +882,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     }
     const validateBillable = (
       label: string, ids: string[],
-      locked: Array<{ id: string; orgId: string | null; billingStatus: string }>
+      locked: Array<{ id: string; orgId: string | null; billingStatus: string; currencyCode: string | null }>
     ) => {
       const byId = new Map(locked.map((r) => [r.id, r]));
       const missing = ids.filter((id) => byId.get(id)?.orgId !== inv.orgId);
@@ -893,20 +893,26 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       if (billed.length) {
         throw new InvoiceServiceError(`${label} already billed: ${billed.join(', ')}`, 409, 'SOURCE_ALREADY_BILLED');
       }
+      const foreign = ids.filter((id) => byId.get(id)!.currencyCode !== inv.currencyCode);
+      if (foreign.length) {
+        const codes = [...new Set(foreign.map((id) => byId.get(id)!.currencyCode ?? 'no currency'))].join(', ');
+        throw new InvoiceServiceError(
+          `${label} are in ${codes}; this invoice is in ${inv.currencyCode} — lines cannot cross currencies`,
+          400, 'CURRENCY_MISMATCH'
+        );
+      }
     };
     if (timeIds.length) {
       validateBillable('Time entries', timeIds, await db
-        .select({ id: timeEntries.id, orgId: timeEntries.orgId, billingStatus: timeEntries.billingStatus })
+        .select({ id: timeEntries.id, orgId: timeEntries.orgId, billingStatus: timeEntries.billingStatus, currencyCode: timeEntries.currencyCode })
         .from(timeEntries).where(inArray(timeEntries.id, timeIds)).orderBy(timeEntries.id).for('update'));
     }
     if (partIds.length) {
       validateBillable('Parts', partIds, await db
-        .select({ id: ticketParts.id, orgId: ticketParts.orgId, billingStatus: ticketParts.billingStatus })
+        .select({ id: ticketParts.id, orgId: ticketParts.orgId, billingStatus: ticketParts.billingStatus, currencyCode: ticketParts.currencyCode })
         .from(ticketParts).where(inArray(ticketParts.id, partIds)).orderBy(ticketParts.id).for('update'));
     }
-    // Wave-4 hook: time_entries/ticket_parts have no currency column yet, so
-    // source-vs-header currency validation for them is structurally impossible
-    // here. When wave 4 adds the columns, assert them in validateBillable.
+    // Source-vs-header currency is asserted in validateBillable on the LOCKED rows (wave 4, #3776).
 
     // 4. Snapshot inputs, totals from the LOCKED lines, number allocation LAST
     //    before the guarded write.
