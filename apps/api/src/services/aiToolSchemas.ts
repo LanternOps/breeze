@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { INVOICE_STATUSES } from '@breeze/shared';
+import { INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
 import { backupProfileSelectionsSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
@@ -233,6 +233,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     startedAt: z.string().datetime().optional(),
     endedAt: z.string().datetime().optional(),
     isBillable: z.boolean().optional(),
+    // Interpreted in the ticket org's currency (spec §9); the entry snapshots that currency.
     hourlyRate: z.number().nonnegative().optional(),
     fields: z.object({
       subject: z.string().min(1).max(255).optional(),
@@ -291,6 +292,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     reissue: z.boolean().optional(),
     from: z.string().optional(),
     to: z.string().optional(),
+    // Assembly header-currency override (#3776). Shared validator on purpose
+    // (spec §4): a bare length(3) would admit unsupported codes until the FK.
+    currencyCode: currencyCodeSchema.optional(),
     line: z.record(z.string(), z.unknown()).optional(),
     patch: z.record(z.string(), z.unknown()).optional(),
     payment: z.record(z.string(), z.unknown()).optional(),

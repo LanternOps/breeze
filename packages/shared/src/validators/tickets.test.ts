@@ -180,6 +180,11 @@ describe('ticket validators', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
   });
 
+  it('category strips client-supplied rateCurrency', () => {
+    const parsed = ticketCategoryInputSchema.parse({ name: 'a', rateCurrency: 'EUR' });
+    expect(parsed).not.toHaveProperty('rateCurrency');
+  });
+
   describe('bulkTicketActionSchema', () => {
     const ID = '3f2f1d8e-1111-4222-8333-444455556666';
     const ASSIGNEE = '5a6b7c8d-1234-4321-abcd-000011112222';
@@ -244,6 +249,15 @@ describe('ticket validators', () => {
     });
     it('rejects a non-uuid orgId', () => {
       expect(moveTicketOrgSchema.safeParse({ orgId: 'nope' }).success).toBe(false);
+    });
+    it('leaves acceptCurrencyMismatch undefined when omitted', () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      expect(moveTicketOrgSchema.parse({ orgId: id }).acceptCurrencyMismatch).toBeUndefined();
+    });
+    it('accepts a boolean acceptCurrencyMismatch and rejects a non-boolean', () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      expect(moveTicketOrgSchema.parse({ orgId: id, acceptCurrencyMismatch: true })).toEqual({ orgId: id, acceptCurrencyMismatch: true });
+      expect(moveTicketOrgSchema.safeParse({ orgId: id, acceptCurrencyMismatch: 'yes' }).success).toBe(false);
     });
   });
 });

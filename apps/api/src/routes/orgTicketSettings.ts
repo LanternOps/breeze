@@ -14,21 +14,21 @@ import { getOrgTicketSettings, upsertOrgTicketSettings } from '../services/ticke
 // inherits orgRoutes' authMiddleware — mounting at the top-level api app would
 // silently skip auth. Mirrors orgPortalSettings.ts.
 
-async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
+async function resolveAccessibleOrg(c: any): Promise<{ id: string; currencyCode: string } | Response> {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
   }
   const orgRows = await db
-    .select({ id: organizations.id })
+    .select({ id: organizations.id, currencyCode: organizations.currencyCode })
     .from(organizations)
     .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
     .limit(1);
   if (!orgRows[0]) {
     return c.json({ error: 'Organization not found' }, 404);
   }
-  return { id };
+  return { id, currencyCode: orgRows[0].currencyCode };
 }
 
 export function registerOrgTicketSettingsRoutes(orgRoutes: Hono) {
@@ -59,7 +59,7 @@ export function registerOrgTicketSettingsRoutes(orgRoutes: Hono) {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
 
-      const data = await upsertOrgTicketSettings(org.id, body);
+      const data = await upsertOrgTicketSettings(org.id, body, org.currencyCode);
 
       writeRouteAudit(c, {
         orgId: org.id,

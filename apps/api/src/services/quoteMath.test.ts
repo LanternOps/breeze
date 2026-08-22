@@ -69,15 +69,16 @@ describe('computeQuoteTotals', () => {
   });
 
   it('rounds per-line cents identically to invoiceMath (no penny drift on 2dp inputs)', () => {
-    // qty 0.05 * price 0.70 = 0.035 → round-half-up to 0.04? No: 0.05*0.70=0.035,
-    // *100 = 3.4999... in float → floor(3.4999+0.5)=3 → 0.03. The old quoteMath
-    // formula rounded unitPrice first and produced 0.04, diverging from invoices.
+    // qty 0.05 * price 0.70 = 0.035 exactly → round-half-up → 0.04. Both modules
+    // now multiply in scaled-integer space (review #2), so the double's 3.4999…
+    // cents can no longer pull this to 0.03 — and the figure matches Postgres
+    // ROUND(quantity * unit_price, 2) in the ticket billing summary.
     const r = computeQuoteTotals(
       [line({ quantity: '0.05', unitPrice: '0.70', taxable: false, customerVisible: true, recurrence: 'one_time' })],
       null
     );
-    expect(r.oneTimeTotal).toBe('0.03');
-    expect(r.subtotal).toBe('0.03');
+    expect(r.oneTimeTotal).toBe('0.04');
+    expect(r.subtotal).toBe('0.04');
     // Cross-module consistency: quote subtotal equals the canonical line total.
     expect(r.subtotal).toBe(computeLineTotal('0.05', '0.70'));
   });

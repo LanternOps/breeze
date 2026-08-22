@@ -1,4 +1,4 @@
-import { roundToCurrency } from '@breeze/shared';
+import { multiplyToCurrency, roundToCurrency } from '@breeze/shared';
 import type { InvoiceStatus } from './invoiceTypes';
 
 // Cents helpers (same contract as catalogPricing.ts). Exported so the money
@@ -17,9 +17,10 @@ function roundHalfUp(n: number): number {
 }
 
 export function computeLineTotal(quantity: string, unitPrice: string, currencyCode = 'USD'): string {
-  // Full-precision product, then ONE half-up round at the currency's minor-unit
-  // boundary (cents for 2-decimal currencies — unchanged; whole units for JPY).
-  return roundToCurrency(Number(quantity) * Number(unitPrice), currencyCode);
+  // Exact decimal product (scaled integers — never a double, review #2), then
+  // ONE half-up round at the currency's minor-unit boundary (cents for 2-decimal
+  // currencies; whole units for JPY). Matches SQL ROUND(quantity * price, scale).
+  return multiplyToCurrency(quantity, unitPrice, currencyCode);
 }
 
 export interface TotalsLine {

@@ -2218,7 +2218,7 @@
     "responseSLAMinutes": "Respuesta SLA (minutos)",
     "resolutionSLAMinutes": "Resolución SLA (minutos)",
     "billableByDefault": "Facturable por defecto",
-    "defaultHourlyRate": "Tarifa por hora predeterminada",
+    "defaultHourlyRate": "Tarifa por hora predeterminada ({{currency}})",
     "save": "Guardar",
     "cancel": "Cancelar",
     "responseMinutes": "respuesta {{count}}m",
@@ -2719,7 +2719,8 @@
     "billing": {
       "title": "Valores predeterminados de facturación",
       "description": "Configuración de facturación predeterminada para entradas de tiempo en tickets para esta organización.",
-      "hourlyRate": "Tarifa por hora predeterminada",
+      "hourlyRate": "Tarifa por hora predeterminada ({{currency}})",
+      "currencyNudge": "Esta organización factura en {{orgCurrency}}, no en la moneda predeterminada de tu partner, {{partnerCurrency}}. Las tarifas ingresadas aquí se guardan en {{orgCurrency}} y nunca se convierten.",
       "billable": "Facturable predeterminado",
       "inherit": "Heredar",
       "billableOption": "facturable",

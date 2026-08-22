@@ -46,7 +46,8 @@ async function seedFixture(orgCurrency = 'EUR'): Promise<Fixture> {
     await db.insert(timeEntries).values({
       partnerId, orgId, userId, startedAt: now, endedAt: now,
       durationMinutes: 60, description: 'Work', isBillable: true,
-      hourlyRate: '100.00', billingStatus: 'not_billed', isApproved: true
+      hourlyRate: '100.00', billingStatus: 'not_billed', isApproved: true,
+      currencyCode: orgCurrency
     });
     return { partnerId, orgId, userId };
   });

@@ -2271,7 +2271,7 @@
     "responseSLAMinutes": "Response SLA (minutes)",
     "resolutionSLAMinutes": "Resolution SLA (minutes)",
     "billableByDefault": "Billable by default",
-    "defaultHourlyRate": "Default hourly rate",
+    "defaultHourlyRate": "Default hourly rate ({{currency}})",
     "save": "Save",
     "cancel": "Cancel",
     "responseMinutes": "{{count}}m response",
@@ -2772,7 +2772,8 @@
     "billing": {
       "title": "Billing defaults",
       "description": "Default billing settings for time entries on tickets for this organization.",
-      "hourlyRate": "Default hourly rate",
+      "hourlyRate": "Default hourly rate ({{currency}})",
+      "currencyNudge": "This organization bills in {{orgCurrency}}, not your partner default {{partnerCurrency}}. Rates entered here are stored in {{orgCurrency}} and are never converted.",
       "billable": "Default billable",
       "inherit": "Inherit",
       "billableOption": "Billable",

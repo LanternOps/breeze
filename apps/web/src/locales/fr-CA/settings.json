@@ -2266,7 +2266,7 @@
     "responseSLAMinutes": "Réponse SLA (minutes)",
     "resolutionSLAMinutes": "Résolution SLA (minutes)",
     "billableByDefault": "Facturable par défaut",
-    "defaultHourlyRate": "Taux horaire par défaut",
+    "defaultHourlyRate": "Taux horaire par défaut ({{currency}})",
     "save": "Enregistrer",
     "cancel": "Annuler",
     "responseMinutes": "{{count}}m réponse",
@@ -2767,7 +2767,8 @@
     "billing": {
       "title": "Paramètres de facturation par défaut",
       "description": "Paramètres de facturation par défaut pour les saisies de temps sur les billets pour cette organisation.",
-      "hourlyRate": "Taux horaire par défaut",
+      "hourlyRate": "Taux horaire par défaut ({{currency}})",
+      "currencyNudge": "Cette organisation facture en {{orgCurrency}}, et non dans la devise par défaut de votre partenaire, {{partnerCurrency}}. Les taux saisis ici sont enregistrés en {{orgCurrency}} et ne sont jamais convertis.",
       "billable": "Facturable par défaut",
       "inherit": "Héritage",
       "billableOption": "Facturable",
