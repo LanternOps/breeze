@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TicketCategoriesPage, { moveWithinSiblings } from './TicketCategoriesPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { resetPartnerCurrencyCache } from '../../lib/usePartnerCurrency';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -44,9 +45,10 @@ const CAT_ROOT2 = {
   defaultBillable: false, defaultHourlyRate: null, sortOrder: 1, isActive: true
 };
 
-function mockGetCategories(cats: unknown[]) {
+function mockGetCategories(cats: unknown[], partner: { currencyCode?: string } = {}) {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url === '/orgs/partners/me') return makeJsonResponse({ id: 'p1', ...partner });
     if (url === '/ticket-categories' && !init?.method) {
       return makeJsonResponse({ data: cats });
     }
@@ -66,6 +68,21 @@ function mockGetCategories(cats: unknown[]) {
 describe('TicketCategoriesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetPartnerCurrencyCache();
+  });
+
+  it('renders the default hourly rate in the partner currency (INTERIM #3777)', async () => {
+    mockGetCategories([CAT_PARENT, CAT_CHILD], { currencyCode: 'EUR' });
+    render(<TicketCategoriesPage />);
+    await screen.findByText('Printers');
+    await waitFor(() => expect(document.body.textContent).toContain('€150.00/h'));
+  });
+
+  it('renders the default hourly rate in USD until the partner currency loads', async () => {
+    mockGetCategories([CAT_PARENT, CAT_CHILD]);
+    render(<TicketCategoriesPage />);
+    await screen.findByText('Printers');
+    expect(document.body.textContent).toContain('$150.00/h');
   });
 
   // --- Existing tests preserved ---

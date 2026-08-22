@@ -3,7 +3,7 @@ import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { formatMoney } from '../../lib/timeFormat';
+import { formatMoney } from '@/components/billing/shared/format';
 import { broadcastBillingChanged } from '../../lib/timerActions';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
@@ -16,6 +16,8 @@ interface PartRow {
   costBasis: string | null;
   isBillable: boolean;
   catalogItemId: string | null;
+  /** Ticket org currency (INTERIM #3777: wave 4's ticket_parts.currency_code replaces it). */
+  currencyCode?: string;
 }
 
 export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
@@ -200,11 +202,11 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                   <span className="min-w-0 flex-1 truncate font-medium">
                     {part.description}
                   </span>
-                  <span className="shrink-0 font-medium">{formatMoney(lineTotal)}</span>
+                  <span className="shrink-0 font-medium">{formatMoney(lineTotal, part.currencyCode)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-1 text-muted-foreground">
                   <span>
-                    {qty} × {formatMoney(price)}
+                    {qty} × {formatMoney(price, part.currencyCode)}
                     {!part.isBillable && t('ticketPartsCard.nonBillableSuffix')}
                   </span>
                   {margin != null && (
@@ -212,7 +214,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                       className="shrink-0"
                       title={t('ticketPartsCard.marginTitle')}
                     >
-                      {formatMoney(margin)}
+                      {formatMoney(margin, part.currencyCode)}
                     </span>
                   )}
                 </div>

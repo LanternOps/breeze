@@ -6,7 +6,8 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
-import { formatMoney } from '../../lib/timeFormat';
+import { formatMoney } from '@/components/billing/shared/format';
+import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
 import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
 import CatalogDistributorDrawer from './CatalogDistributorDrawer';
 import Pax8CatalogDrawer from './Pax8CatalogDrawer';
@@ -36,6 +37,8 @@ interface ExpandState {
 
 export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number }) {
   const { t } = useTranslation('settings');
+  // INTERIM (#3777): replaced by wave-3 price books (per-item, per-currency).
+  const currencyCode = usePartnerCurrency();
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -426,8 +429,8 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                           </span>
                         </td>
                         <td className="px-3 py-3 font-mono text-xs text-muted-foreground">{it.sku ?? '—'}</td>
-                        <td className="px-3 py-3 text-right tabular-nums">{formatMoney(it.unitPrice)}</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{it.costBasis ? formatMoney(it.costBasis) : '—'}</td>
+                        <td className="px-3 py-3 text-right tabular-nums">{formatMoney(it.unitPrice, currencyCode)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{it.costBasis ? formatMoney(it.costBasis, currencyCode) : '—'}</td>
                         <td className={`px-3 py-3 text-right tabular-nums ${marginTone(margin)}`} data-testid={`catalog-margin-${it.id}`}>
                           {formatMargin(margin)}
                         </td>
@@ -471,8 +474,8 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                                 </ul>
                                 {exp.economics && (
                                   <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 border-t pt-2 text-xs text-muted-foreground">
-                                    <span>{t('catalogItemsTab.componentCost')}<span className="tabular-nums text-foreground">{formatMoney(exp.economics.totalCost)}</span></span>
-                                    <span>{t('catalogItemsTab.bundleMargin')}<span className={`tabular-nums ${marginTone(exp.economics.marginPct)}`}>{formatMoney(exp.economics.margin)} ({formatMargin(exp.economics.marginPct)})</span></span>
+                                    <span>{t('catalogItemsTab.componentCost')}<span className="tabular-nums text-foreground">{formatMoney(exp.economics.totalCost, currencyCode)}</span></span>
+                                    <span>{t('catalogItemsTab.bundleMargin')}<span className={`tabular-nums ${marginTone(exp.economics.marginPct)}`}>{formatMoney(exp.economics.margin, currencyCode)} ({formatMargin(exp.economics.marginPct)})</span></span>
                                   </div>
                                 )}
                               </div>

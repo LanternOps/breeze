@@ -9,6 +9,7 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
+import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import {
   applyAppearancePreferences,
@@ -143,13 +144,18 @@ export const useAuthStore = create<AuthState>()(
       // sets the reason and then calls this, and AuthOverlay's expiry mask must
       // keep rendering until the hard redirect completes. The reason is cleared
       // by login() and by the next page load (it isn't persisted).
-      logout: () => set({
-        user: null,
-        tokens: null,
-        isAuthenticated: false,
-        mfaPending: false,
-        mfaTempToken: null
-      }),
+      logout: () => {
+        // A partner switch in the same tab must never render the previous
+        // partner's currency (lib/usePartnerCurrency caches per page).
+        resetPartnerCurrencyCache();
+        set({
+          user: null,
+          tokens: null,
+          isAuthenticated: false,
+          mfaPending: false,
+          mfaTempToken: null
+        });
+      },
 
       updateUser: (updates) => set((state) => ({
         user: state.user ? { ...state.user, ...updates } : null

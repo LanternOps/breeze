@@ -6,11 +6,13 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 import TicketPartsCard from './TicketPartsCard';
+import { resetPartnerCurrencyCache } from '../../lib/usePartnerCurrency';
 
 const parts = [{ id: 'p-1', ticketId: 'tk-1', description: 'SSD 1TB', partNumber: null, vendor: null, quantity: '2.00', unitPrice: '99.00', costBasis: '60.00', isBillable: true, billingStatus: 'not_billed', notes: null }];
 const jsonRes = (data: unknown, status = 200) => ({ ok: status < 400, status, json: async () => ({ data }) }) as Response;
 
 beforeEach(() => {
+  resetPartnerCurrencyCache();
   fetchWithAuth.mockReset();
   fetchWithAuth.mockImplementation(async (url: string) =>
     url === '/tickets/tk-1/parts' ? jsonRes(parts) : jsonRes({}));
@@ -24,6 +26,16 @@ describe('TicketPartsCard', () => {
     expect(row.textContent).toContain('2 × $99.00');
     expect(row.textContent).toContain('$198.00');
     expect(row.textContent).toContain('$78.00');
+  });
+
+  it('formats line total, unit price and margin in the currency each row carries', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === '/tickets/tk-1/parts' ? jsonRes(parts.map((p) => ({ ...p, currencyCode: 'GBP' }))) : jsonRes({}));
+    render(<TicketPartsCard ticketId="tk-1" />);
+    const row = await screen.findByTestId('ticket-part-p-1');
+    expect(row.textContent).toContain('2 × £99.00');
+    expect(row.textContent).toContain('£198.00');
+    expect(row.textContent).toContain('£78.00');
   });
 
   it('adds a part', async () => {
