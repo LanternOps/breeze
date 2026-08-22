@@ -463,6 +463,8 @@ The value is never substituted into the script body, never mirrored into `BREEZE
 **Binding rules**
 
 - Binding a secret through the plain **From a variable** source is rejected when the script is saved. So is binding a non-secret variable through the secret source.
+- Binding a **partner-wide** secret requires an account with access to **all** of the partner's organizations — the same rule as editing a partner-wide script. An organization-scoped user can see that a partner-wide secret key exists, and can run a script that already binds one, but cannot create the binding. This keeps a customer's own administrator from turning your MSP-level credentials into script output.
+- A script can declare at most **32** secret parameters.
 - At run time, a target organization where the bound key resolves to a non-secret variable — or has no variable with that key — fails on that device with a message naming the parameter and the variable key. Devices whose organizations do resolve the secret still run.
 
 **Requirements**
@@ -477,11 +479,13 @@ While the command waits for the device, the value is held in an encrypted envelo
 **Output redaction.** Exact occurrences of the secret value in stdout, stderr and error text are replaced with `[REDACTED]` — on the agent before the result is sent, and again on the server before the result is stored.
 
 <Aside type="caution" title="Redaction is accidental-leak protection, not DLP">
-  Only the exact value is matched. A script that dumps its environment (`env`, `printenv`, `Get-ChildItem Env:`), traces itself (`bash -x`), or emits the value transformed in any way — base64, URL-encoded, split across lines — will disclose it. Treat permission to run a script as permission to use every secret that script binds.
+  Only the exact value is matched. A script that dumps its environment (`env`, `printenv`, `Get-ChildItem Env:`), traces itself (`bash -x`), or emits the value transformed in any way — base64, URL-encoded, split across lines — will disclose it. Treat permission to run a script as permission to use every secret that script binds — which is why creating a binding to a *partner-wide* secret is restricted to full-partner accounts.
 </Aside>
 
 <Aside type="note">
   [Software deployment](/features/software-inventory/#software-deployments) templates cannot use secret variables. A template that references a secret key fails the deployment with an explicit error rather than silently omitting the value.
+
+  Fleet remediation cannot run a script that declares **any** server-resolved parameter — secret, variable, device field, or device property. That path resolves nothing per device, so such a script is rejected when the remediation run is created rather than executed with the values missing.
 </Aside>
 
 ### Variables and approvals
