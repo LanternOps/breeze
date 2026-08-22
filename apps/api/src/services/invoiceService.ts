@@ -724,9 +724,10 @@ export async function assembleDraftFromOrg(input: { orgId: string; siteId?: stri
     .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
   if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
   const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode: org.currencyCode, createdBy: actor.userId }).returning();
+  // Task 11 consumes `blockedByCurrency`; until then only header-currency rows are materialized.
   const specs = [
-    ...(await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode)),
-    ...(await gatherOrgParts(input.orgId, from, to, inv!.currencyCode))
+    ...(await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode)).included,
+    ...(await gatherOrgParts(input.orgId, from, to, inv!.currencyCode)).included
   ];
   if (specs.length === 0) {
     await db.delete(invoices).where(eq(invoices.id, inv!.id));
@@ -752,7 +753,8 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
     .from(organizations).where(eq(organizations.id, tk.orgId)).limit(1);
   if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
   const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode: org.currencyCode, createdBy: actor.userId }).returning();
-  const specs = await gatherTicketBillables(ticketId, inv!.currencyCode);
+  // Task 11 consumes `blockedByCurrency`; until then only header-currency rows are materialized.
+  const specs = (await gatherTicketBillables(ticketId, inv!.currencyCode)).included;
   if (specs.length === 0) {
     await db.delete(invoices).where(eq(invoices.id, inv!.id));
     throw new InvoiceServiceError('Nothing billable on this ticket', 409, 'NOTHING_TO_INVOICE');
