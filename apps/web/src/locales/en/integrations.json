@@ -812,7 +812,9 @@
     "refreshing": "Refreshing…",
     "refreshed": "Stripe account details refreshed",
     "couldNotRefresh": "Could not refresh Stripe account details.",
-    "notCached": "Currency not cached yet — refresh to fetch it from Stripe."
+    "notCached": "Currency not cached yet — refresh to fetch it from Stripe.",
+    "staleCache": "Stripe could not be reached — showing the last cached account details.",
+    "reconnectRequired": "Your stored Stripe key (•••• {{last4}}) no longer works: {{reason}} Paste a new key to reconnect; online payments fail until you do."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Failed to save site mappings.",

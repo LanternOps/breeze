@@ -812,7 +812,9 @@
     "refreshing": "Actualizando…",
     "refreshed": "Datos de la cuenta de Stripe actualizados",
     "couldNotRefresh": "No se pudieron actualizar los datos de la cuenta de Stripe.",
-    "notCached": "Moneda aún no almacenada en caché: actualiza para obtenerla de Stripe."
+    "notCached": "Moneda aún no almacenada en caché: actualiza para obtenerla de Stripe.",
+    "staleCache": "No se pudo contactar a Stripe: se muestran los últimos datos de cuenta almacenados en caché.",
+    "reconnectRequired": "Tu clave de Stripe guardada (•••• {{last4}}) ya no funciona: {{reason}} Pega una clave nueva para reconectar; los pagos en línea fallarán hasta que lo hagas."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "No se pudieron guardar las asignaciones del sitio.",
