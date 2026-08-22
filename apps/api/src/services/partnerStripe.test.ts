@@ -405,23 +405,42 @@ describe('refreshPartnerStripeAccount', () => {
     expect(dbMocks.updatedValues).toHaveLength(0);
   });
 
-  it.each(['StripeAuthenticationError', 'StripePermissionError', 'StripeInvalidRequestError'])(
-    'maps a permanent %s to INVALID_STRIPE_KEY (400) — never a retry-later',
-    async (type) => {
-      dbMocks.selectResults.push([connectedRow()]);
-      accountsRetrieveMock.mockRejectedValue(Object.assign(new Error('nope'), { type }));
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      try {
-        await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({
-          code: 'INVALID_STRIPE_KEY',
-          status: 400,
-        });
-      } finally {
-        consoleSpy.mockRestore();
-      }
-      expect(dbMocks.updatedValues).toHaveLength(0);
-    },
-  );
+  it('maps a StripeAuthenticationError — the one failure that proves the key is dead — to INVALID_STRIPE_KEY (400)', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
+    accountsRetrieveMock.mockRejectedValue(Object.assign(new Error('Invalid API Key provided'), { type: 'StripeAuthenticationError' }));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({
+        code: 'INVALID_STRIPE_KEY',
+        status: 400,
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    expect(dbMocks.updatedValues).toHaveLength(0);
+  });
+
+  // Review F2: a restricted key without accounts.retrieve, an odd invalid-request,
+  // or an untyped network error say NOTHING about whether checkout still works.
+  // They must not be reported as a dead key.
+  it.each([
+    ['StripePermissionError', Object.assign(new Error('key lacks accounts read'), { type: 'StripePermissionError' })],
+    ['StripeInvalidRequestError', Object.assign(new Error('no such account'), { type: 'StripeInvalidRequestError' })],
+    ['an untyped error', new Error('socket hang up')],
+  ])('%s degrades to STRIPE_ACCOUNT_UNKNOWN, never INVALID_STRIPE_KEY', async (_label, err) => {
+    dbMocks.selectResults.push([connectedRow()]);
+    accountsRetrieveMock.mockRejectedValue(err);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({
+        code: 'STRIPE_ACCOUNT_UNKNOWN',
+        status: 503,
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    expect(dbMocks.updatedValues).toHaveLength(0);
+  });
 });
 
 describe('getPartnerStripeAccountSnapshot', () => {
@@ -548,6 +567,31 @@ describe('getPartnerStripeAccountSnapshot', () => {
       });
     } finally {
       errSpy.mockRestore();
+    }
+  });
+
+  // Review F2: the snapshot for a restricted/unclassifiable failure must be a
+  // quiet `unknown` cache — a partner whose checkout works must never be told
+  // their payments are broken.
+  it('a permission/unknown refresh failure reports cacheState unknown, NOT reconnect_required', async () => {
+    const accountRefreshedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    dbMocks.selectResults.push(
+      [statusRow({ accountRefreshedAt })],
+      [{ apiKey: 'enc(sk_test_x)', status: 'connected', stripeAccountId: 'acct_unit', defaultCurrency: 'USD' }],
+    );
+    accountsRetrieveMock.mockRejectedValue(Object.assign(new Error('key lacks accounts read'), { type: 'StripePermissionError' }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toMatchObject({
+        connected: true,
+        defaultCurrency: 'USD', // the cached value is still shown
+        cacheState: 'unknown',
+        error: { code: 'STRIPE_ACCOUNT_UNKNOWN' },
+      });
+    } finally {
+      errSpy.mockRestore();
+      warnSpy.mockRestore();
     }
   });
 

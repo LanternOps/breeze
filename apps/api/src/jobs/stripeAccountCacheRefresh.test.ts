@@ -145,30 +145,34 @@ describe('stripeAccountCacheRefresh worker', () => {
   });
 
   describe('refreshUncachedStripeAccounts', () => {
-    it('refreshes every candidate partner and isolates failures per partner (transient vs permanent counted separately)', async () => {
+    it('refreshes every candidate partner and isolates failures per partner (transient vs permanent vs unknown counted separately)', async () => {
       listMock.mockResolvedValue([
         { partnerId: 'p-ok' },
         { partnerId: 'p-transient' },
         { partnerId: 'p-revoked' },
+        { partnerId: 'p-restricted' },
         { partnerId: 'p-ok2' },
       ]);
       refreshMock.mockImplementation(async (partnerId: string) => {
         if (partnerId === 'p-transient') throw new PartnerStripeError('down', 'STRIPE_UNAVAILABLE');
         if (partnerId === 'p-revoked') throw new PartnerStripeError('bad key', 'INVALID_STRIPE_KEY');
+        // A restricted key that cannot call accounts.retrieve is NOT a dead
+        // connection — it must not be counted as a partner who must reconnect.
+        if (partnerId === 'p-restricted') throw new PartnerStripeError('no account access', 'STRIPE_ACCOUNT_UNKNOWN');
         return { stripeAccountId: 'acct', last4: '1', livemode: false, defaultCurrency: 'EUR', accountCountry: 'DE', accountRefreshedAt: new Date() };
       });
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const stats = await refreshUncachedStripeAccounts();
-        expect(stats).toEqual({ candidates: 4, refreshed: 2, transientFailures: 1, permanentFailures: 1, unexpectedFailures: 0 });
+        expect(stats).toEqual({ candidates: 5, refreshed: 2, transientFailures: 1, permanentFailures: 1, unknownFailures: 1, unexpectedFailures: 0 });
       } finally {
         errSpy.mockRestore();
         warnSpy.mockRestore();
       }
       // Every candidate was attempted — one dead key never stops the sweep.
-      expect(refreshMock).toHaveBeenCalledTimes(4);
-      expect(refreshMock.mock.calls.map((c) => c[0])).toEqual(['p-ok', 'p-transient', 'p-revoked', 'p-ok2']);
+      expect(refreshMock).toHaveBeenCalledTimes(5);
+      expect(refreshMock.mock.calls.map((c) => c[0])).toEqual(['p-ok', 'p-transient', 'p-revoked', 'p-restricted', 'p-ok2']);
     });
 
     it('a non-PartnerStripeError from one partner is counted as unexpected and does not abort the sweep', async () => {

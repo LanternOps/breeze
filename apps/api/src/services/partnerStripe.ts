@@ -12,6 +12,9 @@ export type PartnerStripeErrorCode =
   | 'NO_STRIPE_KEY'        // partner never configured a key / disconnected
   | 'INVALID_STRIPE_KEY'   // key rejected by Stripe (at save time, or later revoked) — PERMANENT until the key is replaced
   | 'STRIPE_KEY_UNREADABLE' // stored ciphertext can't be decrypted (corrupt / KEK rotated away) — PERMANENT
+  | 'STRIPE_ACCOUNT_UNKNOWN' // Stripe answered, but not with the account: restricted key without
+                             // accounts.retrieve, an untyped/unknown error. The KEY MAY BE FINE
+                             // (checkout can still work) — never tell the partner to reconnect.
   | 'STRIPE_UNAVAILABLE';  // Stripe unreachable / 5xx / rate-limited — TRANSIENT, retry later
 
 // Status is a function of the code, not an independent field — keeps the pair on
@@ -20,6 +23,7 @@ const STATUS_FOR_CODE: Record<PartnerStripeErrorCode, 400 | 409 | 500 | 503> = {
   NO_STRIPE_KEY: 409,
   INVALID_STRIPE_KEY: 400,
   STRIPE_KEY_UNREADABLE: 500,
+  STRIPE_ACCOUNT_UNKNOWN: 503,
   STRIPE_UNAVAILABLE: 503,
 };
 
@@ -32,6 +36,19 @@ const STATUS_FOR_CODE: Record<PartnerStripeErrorCode, 400 | 409 | 500 | 503> = {
 export function isTransientStripeError(err: unknown): boolean {
   const type = (err as { type?: string } | null)?.type;
   return type === 'StripeConnectionError' || type === 'StripeAPIError' || type === 'StripeRateLimitError';
+}
+
+/**
+ * The ONLY Stripe failure that proves the stored key itself is dead: Stripe
+ * refused to authenticate it (never provisioned, rotated, revoked). A
+ * permission error (a restricted key that simply can't call accounts.retrieve)
+ * and an untyped/unknown error say nothing about whether the key can still
+ * create a checkout session, so they must NEVER drive "reconnect required" —
+ * telling a partner with working checkout that payments are broken is worse
+ * than an unknown currency cache.
+ */
+export function isStripeKeyAuthFailure(err: unknown): boolean {
+  return (err as { type?: string } | null)?.type === 'StripeAuthenticationError';
 }
 
 export class PartnerStripeError extends Error {
@@ -290,14 +307,26 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
     );
   } catch (err) {
     const type = (err as { type?: string })?.type;
-    const transient = isTransientStripeError(err);
-    console.error('[partnerStripe] account refresh failed', { partnerId, type: type ?? 'unknown', transient, message: err instanceof Error ? err.message : String(err) });
-    // Transient → 503 (retry later; callers may serve a cached value flagged stale).
-    // Anything else is the stored key's fault (revoked, scoped down, wrong
-    // account) and must propagate as "reconnect" — never be absorbed as stale.
-    throw transient
-      ? new PartnerStripeError('Could not reach Stripe right now — try again in a moment.', 'STRIPE_UNAVAILABLE')
-      : new PartnerStripeError('Stripe rejected the stored key — reconnect Stripe.', 'INVALID_STRIPE_KEY');
+    // Three outcomes, never two (review F2):
+    //  - transient → 503, callers may serve the cached value flagged stale;
+    //  - Stripe refused to AUTHENTICATE the key → it is dead, reconnect;
+    //  - anything else (restricted key without accounts.retrieve, unknown /
+    //    untyped error) → the account facts are simply unknown. Checkout may
+    //    well still work, so this must not be reported as a broken connection.
+    const classification = isTransientStripeError(err) ? 'transient'
+      : isStripeKeyAuthFailure(err) ? 'key-auth-failure'
+      : 'unknown';
+    console.error('[partnerStripe] account refresh failed', { partnerId, type: type ?? 'unknown', classification, message: err instanceof Error ? err.message : String(err) });
+    if (classification === 'transient') {
+      throw new PartnerStripeError('Could not reach Stripe right now — try again in a moment.', 'STRIPE_UNAVAILABLE');
+    }
+    if (classification === 'key-auth-failure') {
+      throw new PartnerStripeError('Stripe rejected the stored key — reconnect Stripe.', 'INVALID_STRIPE_KEY');
+    }
+    throw new PartnerStripeError(
+      'Could not read your Stripe account details — your key may not allow it. Payments are unaffected.',
+      'STRIPE_ACCOUNT_UNKNOWN',
+    );
   }
 
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
@@ -345,11 +374,13 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
 
 /**
  * Cache health as the client must see it. `stale`: Stripe could not be reached
- * right now, the cached value is shown with its age. `reconnect_required`: the
- * stored key no longer works (revoked / scoped down / undecryptable) — the cached
- * value is NOT trustworthy and checkout will fail until the key is replaced.
+ * right now, the cached value is shown with its age. `unknown`: Stripe answered
+ * but would not tell us about the account (restricted key, unknown error) —
+ * informational only, the connection itself is fine. `reconnect_required`: Stripe
+ * refused to authenticate the stored key, or the ciphertext is unreadable — the
+ * cached value is NOT trustworthy and checkout will fail until the key is replaced.
  */
-export type StripeAccountCacheState = 'fresh' | 'stale' | 'reconnect_required';
+export type StripeAccountCacheState = 'fresh' | 'stale' | 'unknown' | 'reconnect_required';
 
 export type PartnerStripeAccountSnapshot =
   | { connected: false; last4: string | null }
@@ -400,6 +431,12 @@ export async function getPartnerStripeAccountSnapshot(partnerId: string): Promis
     if (err.code === 'STRIPE_UNAVAILABLE') {
       console.warn('[partnerStripe] account cache refresh failed transiently — serving cached value flagged stale', { partnerId, message: err.message });
       return { ...status, cacheState: 'stale', error: { code: err.code, message: err.message } };
+    }
+    if (err.code === 'STRIPE_ACCOUNT_UNKNOWN') {
+      // The key may be perfectly usable for checkout; we just can't read the
+      // account. Report the cache as unknown, NOT the connection as broken (F2).
+      console.warn('[partnerStripe] account facts unavailable — cache reported as unknown', { partnerId, message: err.message });
+      return { ...status, cacheState: 'unknown', error: { code: err.code, message: err.message } };
     }
     // INVALID_STRIPE_KEY / STRIPE_KEY_UNREADABLE: already logged at error level
     // by the refresh path. Surface the state; do NOT pretend the cache is good.

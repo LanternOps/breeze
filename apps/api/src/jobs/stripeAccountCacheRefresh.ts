@@ -65,6 +65,9 @@ export interface StripeAccountCacheRefreshStats {
   transientFailures: number;
   /** Revoked or unreadable key — the partner must reconnect; retried daily only to notice when they do. */
   permanentFailures: number;
+  /** Stripe answered but would not describe the account (restricted key, unknown error).
+   *  The connection is NOT presumed broken — the currency cache just stays unknown (review F2). */
+  unknownFailures: number;
   unexpectedFailures: number;
 }
 
@@ -75,6 +78,7 @@ export async function refreshUncachedStripeAccounts(): Promise<StripeAccountCach
     refreshed: 0,
     transientFailures: 0,
     permanentFailures: 0,
+    unknownFailures: 0,
     unexpectedFailures: 0,
   };
 
@@ -89,6 +93,10 @@ export async function refreshUncachedStripeAccounts(): Promise<StripeAccountCach
       if (err instanceof PartnerStripeError) {
         if (err.code === 'STRIPE_UNAVAILABLE') {
           stats.transientFailures += 1;
+        } else if (err.code === 'STRIPE_ACCOUNT_UNKNOWN') {
+          // Restricted key / unknown error: the connection is not presumed
+          // broken, the account facts are just unreadable (review F2).
+          stats.unknownFailures += 1;
         } else {
           // INVALID_STRIPE_KEY / STRIPE_KEY_UNREADABLE / NO_STRIPE_KEY (raced a
           // disconnect). Already logged at error level by the service.
@@ -128,7 +136,7 @@ export function createStripeAccountCacheRefreshWorker(): Worker {
       const durationMs = Date.now() - startedAt;
       console.log(
         `[StripeAccountCacheRefresh] ${stats.refreshed}/${stats.candidates} account(s) refreshed ` +
-          `(transient=${stats.transientFailures} permanent=${stats.permanentFailures} unexpected=${stats.unexpectedFailures}) in ${durationMs}ms`,
+          `(transient=${stats.transientFailures} permanent=${stats.permanentFailures} unknown=${stats.unknownFailures} unexpected=${stats.unexpectedFailures}) in ${durationMs}ms`,
       );
       return { ...stats, durationMs };
     },

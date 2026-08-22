@@ -24,8 +24,11 @@ interface ConnectState {
   accountCountry?: string | null;
   accountRefreshedAt?: string | null;
   /** `stale`: Stripe could not be reached on the last TTL refresh; the cached
-   *  value above is shown with its age. */
-  cacheState?: "fresh" | "stale" | "reconnect_required";
+   *  value above is shown with its age. `unknown`: Stripe answered but would not
+   *  describe the account (e.g. a restricted key without accounts.retrieve) —
+   *  the connection is fine, so this is deliberately NOT surfaced as a warning
+   *  (#3777 review F2). */
+  cacheState?: "fresh" | "stale" | "unknown" | "reconnect_required";
   error?: { code: string; message: string } | null;
 }
 
