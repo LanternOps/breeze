@@ -54,6 +54,31 @@ linked PRs) is never written back into this doc.
 | W05 ([#3801](https://github.com/LanternOps/breeze/issues/3801)) | Web + portal UI | 8, 9 | Revise action, revision/superseded banners, lineage links, portal replaced view, locale parity | Medium — broad surface, locale sweep |
 | W06 ([#3802](https://github.com/LanternOps/breeze/issues/3802)) | Integration proof + verification | 10, 11 | Race matrix against real Postgres, lineage erasure, constraint proofs, full-suite + live acceptance | Medium — proves W03's claims |
 
+**Carried into later waves by the W01 review (PR #3806):**
+
+- **W02 — org retarget must reject revision drafts.** `updateQuote`'s `orgChanged`
+  branch (`quoteService.ts`) moves a draft to another customer. On a revision
+  draft that leaves `revision_of_quote_id` pointing into the old org, so the
+  composite FK `(revision_of_quote_id, org_id)` no longer resolves and Postgres
+  raises a bare 23503 that surfaces as a 500. W02 must refuse the retarget with a
+  typed 409 when `revisionOfQuoteId != null`.
+- **W02 — construct the lineage pair in ONE place.** `revisionOfQuoteId` and
+  `revisionNumber` are correlated but the Drizzle type permits illegal pairs
+  (only `quotes_revision_number_chk` rejects them). Set both through a single
+  helper, never field-by-field, so the CHECK stays a backstop rather than the
+  only defense.
+- **W03/W05 — status matrices missing `superseded`.** `quoteLifecycle.test.ts`'s
+  re-send refusal `it.each` and `QuoteDetail.orderBreakdown.test.tsx`'s
+  `it.each` both enumerate statuses without it; neither array is type-checked
+  against `QuoteStatus`.
+- **W02/W03 — consider `isOpenQuoteStatus()`.** "Is this quote in flight" is now
+  re-derived ad hoc in at least two places (`RESENDABLE_STATUSES`, inline
+  `!== 'sent' && !== 'viewed'` checks). Introduce the predicate when a third call
+  site justifies it — not before.
+- **Ops note (not a wave):** the migration comment "FKs are checked at statement
+  end" holds only while `tenantCascade` deletes an org's quotes in ONE statement.
+  If that delete is ever batched, revisit the self-FK assumption.
+
 **Wave gating:** W03 must not start until W02's route is merged (it depends on
 `revisionOfQuoteId` being populated by a real code path). W06 is the only wave
 that can meaningfully fail W03 retroactively — if its race matrix disproves the

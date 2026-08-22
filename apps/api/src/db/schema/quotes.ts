@@ -10,7 +10,7 @@ import { users, bytea } from './users';
 import { catalogItemTypeEnum } from './catalog';
 
 export const quoteStatusEnum = pgEnum('quote_status', [
-  'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'superseded', 'converted'
+  'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded'
 ]);
 export const quoteLineSourceTypeEnum = pgEnum('quote_line_source_type', ['catalog', 'bundle', 'manual']);
 export const quoteLineRecurrenceEnum = pgEnum('quote_line_recurrence', ['one_time', 'monthly', 'annual']);
@@ -112,9 +112,13 @@ export const quotes = pgTable('quotes', {
   publicResponseOutcome: varchar('public_response_outcome', { length: 16 }),
   publicLinkRevokedAt: timestamp('public_link_revoked_at', { withTimezone: true }),
   // Quote revisions: immediate-parent link + 1-based position in the lineage.
-  // A revision keeps the root's number with an -R<n> suffix and, when sent,
-  // flips its parent to 'superseded' (see sendQuote). Linearity is enforced by
-  // quotes_revision_of_uq (one successor ever) + quotes_revision_number_chk.
+  // Schema and constraints only so far — nothing writes a non-null parent yet.
+  // Enforced TODAY: linearity via quotes_revision_of_uq (one successor ever),
+  // root-vs-revision via quotes_revision_number_chk, and same-tenant lineage
+  // via the composite FK to (id, org_id).
+  // PLANNED (docs/superpowers/plans/2026-08-17-quote-revisions.md): a revision
+  // will keep the root's number with an -R<n> suffix, and sending one will flip
+  // its parent to 'superseded'. Neither behavior exists in sendQuote yet.
   revisionOfQuoteId: uuid('revision_of_quote_id'),
   revisionNumber: integer('revision_number').notNull().default(1),
   createdBy: uuid('created_by').references(() => users.id),
