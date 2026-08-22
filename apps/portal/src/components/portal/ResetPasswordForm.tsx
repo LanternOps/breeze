@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { portalResetPassword } from '@/lib/auth';
 import { cn } from '@/lib/utils';
+import { BTN_PRIMARY, INPUT } from './ui';
 
 const resetPasswordSchema = z
   .object({
@@ -50,7 +51,7 @@ export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
     if (result.success) {
       setSuccess(true);
     } else {
-      setError(result.error || 'Failed to reset password');
+      setError(result.error || 'We couldn\'t reset your password. The link may have expired. Request a new one.');
     }
 
     setIsLoading(false);
@@ -59,25 +60,16 @@ export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
   if (success) {
     return (
       <div className="space-y-6">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/10">
-            <CheckCircle className="h-6 w-6 text-success" />
-          </div>
-          <div>
-            <h3 className="text-lg font-medium">Password reset successful</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Your password has been reset. You can now sign in with your new
-              password.
-            </p>
-          </div>
+        <div role="status" className="border-y border-border/70 py-12 text-center">
+          <h3 className="font-display text-lg font-semibold text-foreground">Password changed</h3>
+          <p className="mx-auto mt-1 max-w-[38ch] text-sm text-muted-foreground">
+            You're all set — sign in with your new password.
+          </p>
         </div>
 
         <a
           href={withBase("/login")}
-          className={cn(
-            'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-            'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2'
-          )}
+          className={cn(BTN_PRIMARY, 'w-full')}
         >
           Sign in
         </a>
@@ -88,25 +80,17 @@ export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
   if (!token) {
     return (
       <div className="space-y-6">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
-            <AlertCircle className="h-6 w-6 text-destructive" />
-          </div>
-          <div>
-            <h3 className="text-lg font-medium">Invalid reset link</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              This password reset link is invalid or has expired. Please request
-              a new one.
-            </p>
-          </div>
+        <div className="border-y border-border/70 py-12 text-center">
+          <h3 className="font-display text-lg font-semibold text-foreground">This link has expired</h3>
+          <p className="mx-auto mt-1 max-w-[38ch] text-sm text-muted-foreground">
+            Reset links only work once. Request a fresh one and you'll be in
+            within a minute.
+          </p>
         </div>
 
         <a
           href={withBase("/forgot-password")}
-          className={cn(
-            'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-            'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2'
-          )}
+          className={cn(BTN_PRIMARY, 'w-full')}
         >
           Request new link
         </a>
@@ -115,7 +99,9 @@ export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+    // Pre-hydration safety net, same rationale as AcceptInviteForm (#2868): a
+    // native submit must never be a GET carrying credentials in the URL.
+    <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-6 rounded-lg border border-border/70 bg-card p-6 sm:p-8">
       <div className="text-center">
         <p className="text-sm text-muted-foreground">
           Enter your new password below.
@@ -123,7 +109,7 @@ export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           <AlertCircle className="h-4 w-4" />
           {error}
         </div>
@@ -140,15 +126,15 @@ export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
           id="password"
           type="password"
           autoComplete="new-password"
+          aria-describedby="password-rules"
           {...register('password')}
-          className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
-            errors.password && 'border-destructive'
-          )}
+          className={cn(INPUT, errors.password && 'border-destructive')}
         />
+        <p id="password-rules" className="mt-1 text-xs text-muted-foreground">
+          8+ characters, with a capital letter, a lowercase letter, and a number.
+        </p>
         {errors.password && (
-          <p className="mt-1 text-sm text-destructive">
+          <p className="mt-1 text-sm text-destructive-on-tint">
             {errors.password.message}
           </p>
         )}
@@ -166,42 +152,24 @@ export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
           type="password"
           autoComplete="new-password"
           {...register('confirmPassword')}
-          className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
-            errors.confirmPassword && 'border-destructive'
-          )}
+          className={cn(INPUT, errors.confirmPassword && 'border-destructive')}
         />
         {errors.confirmPassword && (
-          <p className="mt-1 text-sm text-destructive">
+          <p className="mt-1 text-sm text-destructive-on-tint">
             {errors.confirmPassword.message}
           </p>
         )}
       </div>
 
-      <div className="rounded-md bg-muted p-3">
-        <p className="text-xs text-muted-foreground">Password requirements:</p>
-        <ul className="mt-1 list-inside list-disc text-xs text-muted-foreground">
-          <li>At least 8 characters</li>
-          <li>At least one uppercase letter</li>
-          <li>At least one lowercase letter</li>
-          <li>At least one number</li>
-        </ul>
-      </div>
-
       <button
         type="submit"
         disabled={isLoading}
-        className={cn(
-          'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-          'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
-          'disabled:cursor-not-allowed disabled:opacity-50'
-        )}
+        className={cn(BTN_PRIMARY, 'w-full')}
       >
         {isLoading ? (
           <>
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Resetting...
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Resetting
           </>
         ) : (
           'Reset password'

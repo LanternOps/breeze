@@ -122,6 +122,11 @@ export const provisionDeviceSchema = z.object({
 export const moveOrgSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid(),
+  // Multi-currency (#3776): tickets bound to the device move with it. When
+  // the target org bills in another currency and those tickets carry unbilled
+  // monetary rows, the move is blocked (409 TICKET_MOVE_CURRENCY_BLOCKED)
+  // unless explicitly accepted; `true` additionally requires invoices:write.
+  acceptCurrencyMismatch: z.boolean().optional(),
 });
 
 export const metricsQuerySchema = z.object({

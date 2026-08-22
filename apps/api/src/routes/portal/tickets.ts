@@ -21,7 +21,7 @@ import {
 } from './helpers';
 import { createTicket, TicketServiceError, portalCommentMutable, editTicketComment, deleteTicketComment } from '../../services/ticketService';
 import { listTicketFormsForOrg } from '../../services/ticketFormService';
-import { editCommentSchema } from '@breeze/shared';
+import { editCommentSchema, PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 
 export const ticketRoutes = new Hono();
 
@@ -270,6 +270,7 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
     .select({
       id: ticketComments.id,
       authorName: ticketComments.authorName,
+      authorType: ticketComments.authorType,
       content: ticketComments.content,
       createdAt: ticketComments.createdAt
     })
@@ -390,8 +391,8 @@ ticketRoutes.patch(
     // Portal edit uses the shared editCommentSchema (50k), but portal CREATE caps
     // content at 5,000 chars (commentSchema). Enforce the same 5k limit here so
     // portal customers can't bypass it by editing instead of creating.
-    if (body.content.length > 5000) {
-      return c.json({ error: 'Comment content must be 5000 characters or fewer' }, 400);
+    if (body.content.length > PORTAL_TICKET_COMMENT_MAX_CHARS) {
+      return c.json({ error: `Comment content must be ${PORTAL_TICKET_COMMENT_MAX_CHARS} characters or fewer` }, 400);
     }
 
     const mutable = await portalCommentMutable(commentId, auth.user.id);

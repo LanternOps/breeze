@@ -1249,7 +1249,8 @@
       "accepted": "Accettato",
       "declined": "Rifiutato",
       "expired": "Scaduto",
-      "converted": "Convertito"
+      "converted": "Convertito",
+      "superseded": "Sostituito"
     },
     "workspace": {
       "backLabel": "Preventivi",
@@ -1656,16 +1657,21 @@
       "unpaid": "Acconto non pagato"
     },
     "dialog": {
+      "allBlockedByCurrency": "Tutto il lavoro non fatturato in questo intervallo è valorizzato in un’altra valuta, quindi non è stato possibile comporre nulla. Componi invece una bozza in quella valuta:",
       "allSites": "Tutti i siti",
       "assemble": "Componi",
       "assembleError": "Impossibile comporre una fattura per quell'intervallo.",
       "assembleFromWork": "Componi da lavoro",
+      "assembleIn": "Componi in {{code}} ({{count}} voci, {{amount}})",
       "assembleSuccess": "Bozza di fattura composta",
       "blankInvoice": "Fattura vuota",
+      "blockedByCurrency": "{{count}} voci non fatturate valorizzate in {{code}} sono state escluse: componi una bozza separata in {{code}} per fatturarle.",
       "createDraft": "Crea bozza",
       "createError": "Impossibile creare una bozza di fattura.",
       "createGenericError": "Impossibile creare la fattura.",
       "createSuccess": "Bozza di fattura creata",
+      "currency": "Valuta",
+      "currencyOrgDefault": "Predefinita dell’organizzazione",
       "description": "Componi il lavoro non fatturato in una bozza oppure parti da una fattura vuota.",
       "from": "Da",
       "selectOrganization": "Seleziona un'organizzazione…",

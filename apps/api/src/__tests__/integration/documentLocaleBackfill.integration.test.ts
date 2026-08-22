@@ -253,7 +253,7 @@ describe.runIf(RUN)('document_locale backfill (2026-09-01-b)', () => {
     const blocks = await sys(() => db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quoteId)).orderBy(quoteBlocks.sortOrder));
     const lines = await sys(() => db.select().from(quoteLines).where(eq(quoteLines.quoteId, quoteId)).orderBy(quoteLines.sortOrder));
     const effectiveDate = quote.acceptedAt!.toISOString().slice(0, 10);
-    const underFr = computeQuoteSha256(quote, blocks, lines, buildContractHashParts(blocks, renderData, quote, effectiveDate, 'fr-FR'));
+    const underFr = computeQuoteSha256(quote as any, blocks as any, lines as any, buildContractHashParts(blocks as any, renderData, quote as any, effectiveDate, 'fr-FR'));
     expect(underFr).not.toBe(result.storedSha256);
   });
 

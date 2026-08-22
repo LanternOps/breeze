@@ -39,7 +39,7 @@ quoteRoutes.get('/quotes', async (c) => {
   const auth = c.get('portalAuth');
   const conditions = and(eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'));
   const data = await db.select({
-    id: quotes.id, quoteNumber: quotes.quoteNumber, status: quotes.status, currencyCode: quotes.currencyCode,
+    id: quotes.id, quoteNumber: quotes.quoteNumber, title: quotes.title, status: quotes.status, currencyCode: quotes.currencyCode,
     issueDate: quotes.issueDate, expiryDate: quotes.expiryDate, total: quotes.total,
   }).from(quotes).where(conditions).orderBy(desc(quotes.issueDate), desc(quotes.createdAt)).limit(200);
   return c.json({ data, pagination: { page: 1, limit: 200, total: data.length } });
@@ -63,7 +63,8 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   // portal_branding is org-scoped and reads fine here.
   const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
     db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
-  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+  // Support contact rides along for branding parity with the public token view.
+  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, supportEmail: portalBranding.supportEmail, supportPhone: portalBranding.supportPhone }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
   // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
   // sent quote's frozen presentation always wins over the partner's live
   // theme/pageSize columns.
@@ -82,6 +83,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
     return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
       partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+      supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
       theme, pageSize,
     }, presentation: { theme, pageSize } } });
   } catch (err) {

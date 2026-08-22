@@ -6,13 +6,11 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 import TicketPartsCard from './TicketPartsCard';
-import { resetPartnerCurrencyCache } from '../../lib/usePartnerCurrency';
 
-const parts = [{ id: 'p-1', ticketId: 'tk-1', description: 'SSD 1TB', partNumber: null, vendor: null, quantity: '2.00', unitPrice: '99.00', costBasis: '60.00', isBillable: true, billingStatus: 'not_billed', notes: null }];
+const parts = [{ id: 'p-1', ticketId: 'tk-1', description: 'SSD 1TB', partNumber: null, vendor: null, quantity: '2.00', unitPrice: '99.00', costBasis: '60.00', isBillable: true, billingStatus: 'not_billed', notes: null, currencyCode: 'EUR' }];
 const jsonRes = (data: unknown, status = 200) => ({ ok: status < 400, status, json: async () => ({ data }) }) as Response;
 
 beforeEach(() => {
-  resetPartnerCurrencyCache();
   fetchWithAuth.mockReset();
   fetchWithAuth.mockImplementation(async (url: string) =>
     url === '/tickets/tk-1/parts' ? jsonRes(parts) : jsonRes({}));
@@ -23,9 +21,26 @@ describe('TicketPartsCard', () => {
     render(<TicketPartsCard ticketId="tk-1" />);
     const row = await screen.findByTestId('ticket-part-p-1');
     expect(row.textContent).toContain('SSD 1TB');
-    expect(row.textContent).toContain('2 × $99.00');
-    expect(row.textContent).toContain('$198.00');
-    expect(row.textContent).toContain('$78.00');
+    expect(row.textContent).toContain('2 × €99.00');
+    expect(row.textContent).toContain('€198.00');
+    expect(row.textContent).toContain('€78.00');
+    expect(row.textContent).not.toContain('$');
+  });
+
+  it('formats each part in its own stamped currency', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === '/tickets/tk-1/parts'
+        ? jsonRes([
+            ...parts,
+            { ...parts[0], id: 'p-2', description: 'Cable', quantity: '3.00', unitPrice: '1000.00', costBasis: null, currencyCode: 'JPY' },
+          ])
+        : jsonRes({}));
+    render(<TicketPartsCard ticketId="tk-1" />);
+    const jpy = await screen.findByTestId('ticket-part-p-2');
+    expect(jpy.textContent).toContain('3 × ¥1,000');
+    expect(jpy.textContent).toContain('¥3,000');
+    expect(jpy.textContent).not.toContain('$');
+    expect(screen.getByTestId('ticket-part-p-1').textContent).toContain('€198.00');
   });
 
   it('formats line total, unit price and margin in the currency each row carries', async () => {
@@ -100,6 +115,27 @@ describe('TicketPartsCard', () => {
       expect(Object.keys(body)).not.toContain('partNumber');
       expect(Object.keys(body)).not.toContain('vendor');
       expect(Object.keys(body)).not.toContain('notes');
+    });
+  });
+
+  // Review #5 (#3776): a billed part may still have its description edited, but
+  // the API 409s (PART_BILLED) when any locked field is PRESENT in the body.
+  it('edits a billed part with a description-only PATCH body and disables the locked inputs', async () => {
+    const billed = [{ ...parts[0], id: 'p-b', billingStatus: 'billed' }];
+    fetchWithAuth.mockImplementation(async (url: string) => (url === '/tickets/tk-1/parts' ? jsonRes(billed) : jsonRes({})));
+    render(<TicketPartsCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-part-edit-p-b'));
+    for (const id of ['ticket-parts-form-quantity', 'ticket-parts-form-unit-price', 'ticket-parts-form-cost-basis', 'ticket-parts-form-billable']) {
+      expect((screen.getByTestId(id) as HTMLInputElement).disabled).toBe(true);
+    }
+    fireEvent.change(screen.getByTestId('ticket-parts-form-description'), { target: { value: 'SSD 1TB (Samsung)' } });
+    fireEvent.click(screen.getByTestId('ticket-parts-form-submit'));
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        (args) => args[0] === '/tickets/parts/p-b' && (args[1] as RequestInit)?.method === 'PATCH',
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ description: 'SSD 1TB (Samsung)' });
     });
   });
 

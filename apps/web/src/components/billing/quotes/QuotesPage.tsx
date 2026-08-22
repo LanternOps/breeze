@@ -39,7 +39,10 @@ interface Site {
   name: string;
 }
 
-const STATUS_OPTION_VALUES: ('' | QuoteStatus)[] = ['', 'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted'];
+// Every QuoteStatus plus '' (all). Deep-linked #status=<v> is validated against
+// this list and silently reset to '' when absent, so a status missing here is
+// invisible rather than loud — keep it exhaustive.
+const STATUS_OPTION_VALUES: ('' | QuoteStatus)[] = ['', 'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded'];
 
 type SortKey = 'created' | 'total';
 interface Sort { key: SortKey; dir: 'asc' | 'desc' }

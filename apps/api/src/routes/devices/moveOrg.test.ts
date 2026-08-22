@@ -7,7 +7,11 @@ const {
   requirePermissionMock,
   requireMfaMock,
   siteDenied,
+  guardMock,
+  captureExceptionMock,
 } = vi.hoisted(() => ({
+  guardMock: vi.fn(),
+  captureExceptionMock: vi.fn(),
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
@@ -50,6 +54,20 @@ vi.mock('../../services/deviceLinkGroups', () => ({
   dissolveLinkGroupIfBelowMinimum: vi.fn(async () => false),
 }));
 
+vi.mock('../../services/sentry', () => ({
+  captureException: captureExceptionMock,
+}));
+
+// Task 13 (#3776): the locked currency guard is unit-tested on its own
+// (services/ticketMoveCurrencyGuard.test.ts); here it is a mock so the route's
+// sequencing, 409 mapping, and permission gate can be asserted in isolation.
+vi.mock('../../services/ticketMoveCurrencyGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketMoveCurrencyGuard')>(
+    '../../services/ticketMoveCurrencyGuard',
+  );
+  return { ...actual, assertTicketMoveCurrencyCompatible: guardMock };
+});
+
 vi.mock('../../extensions/tenancyRegistry', () => ({
   withExtensionDeviceCascade: (core: readonly string[]) => [...core],
   withExtensionDeviceOrgDenormalized: (core: readonly string[]) => [...core],
@@ -62,6 +80,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { moveOrgRoutes } from './moveOrg';
+import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import {
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceOrgDenormalizedTables,
@@ -103,8 +122,11 @@ const SAMPLE_DEVICE = {
 function setAuth(overrides: Partial<{
   scope: 'organization' | 'partner' | 'system';
   canAccessOrg: (id: string) => boolean;
+  /** Resolved permission set requirePermission stores on the context (auth.ts). */
+  permissions: { resource: string; action: string }[];
 }> = {}) {
   authMiddlewareMock.mockImplementation((c: any, next: any) => {
+    c.set('permissions', { permissions: overrides.permissions ?? [{ resource: '*', action: '*' }] });
     c.set('auth', {
       user: { id: 'user-1', email: 't@example.com' },
       scope: overrides.scope ?? 'partner',
@@ -124,15 +146,19 @@ function setAuth(overrides: Partial<{
 //   2) to look up the target site (returns array with one site row)
 // Each call to .from(...).where(...) returns a thenable resolving to an array.
 function rigOrgAndSiteSelects(opts: {
-  orgRows: Array<{ id: string; partnerId: string }>;
+  orgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }>;
   siteRow: { id: string } | null;
 }) {
   let call = 0;
   vi.mocked(db.select).mockImplementation(() => {
     const idx = call++;
     if (idx === 0) {
-      // organizations lookup uses `.from(organizations).where(...)` (no limit)
-      const where = vi.fn().mockResolvedValue(opts.orgRows);
+      // organizations lookup uses `.from(organizations).where(...)` (no limit).
+      // Orgs default to USD/USD so the currency guard short-circuits unless a
+      // test sets them apart.
+      const where = vi.fn().mockResolvedValue(
+        opts.orgRows.map((r) => ({ name: `Org ${r.id.slice(0, 4)}`, currencyCode: 'USD', ...r })),
+      );
       return { from: vi.fn().mockReturnValue({ where }) } as never;
     }
     // sites lookup uses `.from(sites).where(...).limit(1)`
@@ -161,6 +187,8 @@ function sqlToText(q: any): string {
     })
     .join('');
 }
+
+const BOUND_TICKET_ID = '77777777-7777-4777-8777-777777777777';
 
 function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE }) {
   // Each tx.execute() call captures the identifier name being UPDATEd (the
@@ -191,6 +219,17 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
         statements.push(sqlToText(sqlVal));
         return [];
       }),
+      // #3776 — the ticket-id lookup feeding the currency guard
+      // (`tx.select({id}).from(tickets).where(deviceId = …)`). Records the
+      // position so lock-order assertions can place it against the UPDATEs.
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(async () => {
+            statements.push(`SELECT tickets.id (after ${updatedTables.length} updates)`);
+            return [{ id: BOUND_TICKET_ID }];
+          }),
+        }),
+      })),
     };
     await cb(tx);
     return updatedRow;
@@ -203,6 +242,8 @@ describe('POST /devices/:id/move-org', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    guardMock.mockReset();
+    guardMock.mockResolvedValue(null);
     setAuth();
     app = new Hono();
     app.route('/devices', moveOrgRoutes);
@@ -452,6 +493,124 @@ describe('POST /devices/:id/move-org', () => {
 
       // No WS disconnect on failure (device never actually moved)
       expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Multi-currency guard (#3776, Task 13) ────────────────────────────────
+  describe('ticket currency guard', () => {
+    const postBody = (extra: Record<string, unknown> = {}) => ({
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, ...extra }),
+    });
+    const crossCurrencyOrgs = [
+      { id: SOURCE_ORG, partnerId: 'partner-1', name: 'Alpha', currencyCode: 'USD' },
+      { id: TARGET_ORG, partnerId: 'partner-1', name: 'Beta', currencyCode: 'EUR' },
+    ];
+
+    it('runs the guard over the device\'s tickets after the tickets UPDATE and before the time_entries rewrite', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      const { statements, updatedTables } = rigTransactionSuccess();
+      guardMock.mockResolvedValue({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(200);
+
+      expect(guardMock).toHaveBeenCalledTimes(1);
+      expect(guardMock.mock.calls[0]![1]).toEqual({
+        ticketIds: [BOUND_TICKET_ID],
+        sourceCurrency: 'USD',
+        targetCurrency: 'EUR',
+        targetOrgName: 'Beta',
+        acceptCurrencyMismatch: false,
+      });
+
+      // Lock order: `tickets` is rewritten by the denormalized loop BEFORE the
+      // guard's ticket lookup, and the time_entries/ticket_parts rewrites come
+      // AFTER it (tickets → time_entries → ticket_parts).
+      const selectIdx = statements.findIndex((s) => s.startsWith('SELECT tickets.id'));
+      const ticketsUpdateIdx = statements.findIndex((s) => s.startsWith('UPDATE tickets '));
+      const timeEntriesIdx = statements.findIndex((s) => s.startsWith('UPDATE time_entries '));
+      const partsIdx = statements.findIndex((s) => s.startsWith('UPDATE ticket_parts '));
+      expect(ticketsUpdateIdx).toBeGreaterThanOrEqual(0);
+      expect(ticketsUpdateIdx).toBeLessThan(selectIdx);
+      expect(selectIdx).toBeLessThan(timeEntriesIdx);
+      expect(timeEntriesIdx).toBeLessThan(partsIdx);
+      expect(updatedTables).toContain('tickets');
+
+      // Not accepted → no audit flag.
+      const sourceAudit = vi.mocked(writeRouteAudit).mock.calls.find((c) => (c[1] as any).action === 'device.move_org.source')![1] as any;
+      expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
+    });
+
+    it('409s with code + details when the guard blocks — no Sentry capture, no failed-move audit, no WS disconnect', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 1, accepted: false, blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 0, parts: 1 }] };
+      guardMock.mockRejectedValue(new TicketMoveCurrencyBlockedError('Cannot move: stranded money', details));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'Cannot move: stranded money',
+        code: 'TICKET_MOVE_CURRENCY_BLOCKED',
+        details,
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('403s acceptCurrencyMismatch:true without invoices:write before touching the DB', async () => {
+      setAuth({ permissions: [{ resource: 'devices', action: 'write' }, { resource: 'organizations', action: 'write' }] });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: true }));
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/invoices:write/);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(guardMock).not.toHaveBeenCalled();
+    });
+
+    it('acceptCurrencyMismatch:false never needs invoices:write', async () => {
+      setAuth({ permissions: [{ resource: 'devices', action: 'write' }, { resource: 'organizations', action: 'write' }] });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: false }));
+      expect(res.status).toBe(200);
+      expect(guardMock.mock.calls[0]![1]).toMatchObject({ acceptCurrencyMismatch: false });
+    });
+
+    it('with invoices:write, acceptCurrencyMismatch:true reaches the guard and the accepted counts land in both audit rows', async () => {
+      setAuth({ permissions: [
+        { resource: 'devices', action: 'write' },
+        { resource: 'organizations', action: 'write' },
+        { resource: 'invoices', action: 'write' },
+      ] });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      const accepted = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 2, unbilledParts: 1, accepted: true };
+      guardMock.mockResolvedValue(accepted);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: true }));
+      expect(res.status).toBe(200);
+      expect(guardMock.mock.calls[0]![1]).toMatchObject({ acceptCurrencyMismatch: true });
+
+      expect(writeRouteAudit).toHaveBeenCalledTimes(2);
+      for (const call of vi.mocked(writeRouteAudit).mock.calls) {
+        expect((call[1] as any).details).toMatchObject({ currencyMismatchAccepted: accepted });
+      }
+    });
+
+    it('400s a non-boolean acceptCurrencyMismatch', async () => {
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: 'yes' }));
+      expect(res.status).toBe(400);
     });
   });
 

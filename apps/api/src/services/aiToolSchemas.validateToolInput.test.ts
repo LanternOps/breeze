@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateToolInput } from './aiToolSchemas';
+import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 
 const TEST_UUID = '00000000-0000-0000-0000-000000000001';
 
@@ -99,5 +99,27 @@ describe('set_device_context parenthesized input (#3094)', () => {
     if (!result.success) {
       expect(result.error).toContain('summary');
     }
+  });
+});
+
+// Multi-currency wave 4 (#3776): the assembly actions take an optional header
+// currency override. Spec §4 mandates the shared `currencyCodeSchema` for every
+// currency field — a bare `length(3)` would admit unsupported codes.
+describe('manage_invoices currencyCode (#3776)', () => {
+  const base = { action: 'assemble_from_org', orgId: TEST_UUID, from: '2026-06-01', to: '2026-06-30' };
+
+  it('accepts and normalizes a supported code', () => {
+    const r = toolInputSchemas.manage_invoices!.safeParse({ ...base, currencyCode: 'eur' });
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as { currencyCode?: string }).currencyCode).toBe('EUR');
+  });
+
+  it('rejects an unknown code and a three-decimal code outside SUPPORTED_CURRENCIES', () => {
+    expect(validateToolInput('manage_invoices', { ...base, currencyCode: 'ZZZ' }).success).toBe(false);
+    expect(validateToolInput('manage_invoices', { ...base, currencyCode: 'BHD' }).success).toBe(false);
+  });
+
+  it('stays optional', () => {
+    expect(validateToolInput('manage_invoices', base)).toEqual({ success: true });
   });
 });

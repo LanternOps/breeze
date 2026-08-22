@@ -131,7 +131,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           orgId: { type: 'string', description: 'Filter to a single organization (UUID)' },
           status: {
             type: 'string',
-            enum: ['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted'],
+            enum: ['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded'],
             description: 'Filter by quote status'
           },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' }

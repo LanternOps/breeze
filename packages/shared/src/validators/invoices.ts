@@ -15,7 +15,19 @@ export const assembleFromOrgSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid().optional(),
   from: isoDate,
-  to: isoDate
+  to: isoDate,
+  // Multi-currency wave 4 (#3776): explicit header-currency override. Default is
+  // the org's current currency; pass the org's OLD currency to assemble a draft
+  // from billables snapshotted before a currency change (spec §7). Never a
+  // conversion — rows in any other currency come back as `blockedByCurrency`.
+  currencyCode: currencyCodeSchema.optional()
+});
+
+/** Query for POST /tickets/:ticketId/invoice — the endpoint is body-less, so the
+ *  same override travels as `?currencyCode=` (an optional JSON validator would
+ *  reject an empty body). */
+export const assembleFromTicketQuerySchema = z.object({
+  currencyCode: currencyCodeSchema.optional()
 });
 
 export const manualLineSchema = z.object({

@@ -3,12 +3,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import type { PortalTicketForm } from '@/lib/api';
 
-// Mock the API client + navigation so the component fetches from stubs and never
-// touches window navigation.
+// Mock the API client + navigation so submits hit stubs and never touch window
+// navigation. Forms arrive as a prop (the page's server-side probe), not a fetch.
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('@/lib/api', () => ({
   portalApi: {
-    getTicketForms: vi.fn(),
     createTicket: vi.fn()
   }
 }));
@@ -16,7 +15,6 @@ vi.mock('@/lib/api', () => ({
 import { portalApi } from '@/lib/api';
 import { NewTicketForm } from './NewTicketForm';
 
-const getTicketForms = portalApi.getTicketForms as ReturnType<typeof vi.fn>;
 const createTicket = portalApi.createTicket as ReturnType<typeof vi.fn>;
 
 const FORM: PortalTicketForm = {
@@ -39,17 +37,15 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('NewTicketForm (portal) — intake form grid', () => {
-  it('renders the card grid from the fetched forms plus a "Something else" card', async () => {
-    getTicketForms.mockResolvedValue({ data: [FORM] });
-    render(<NewTicketForm />);
+  it('renders the card grid from the forms prop plus a "Something else" card', async () => {
+    render(<NewTicketForm forms={[FORM]} />);
 
     expect(await screen.findByTestId('portal-ticket-form-card-form-1')).toBeTruthy();
     expect(screen.getByTestId('portal-ticket-form-card-blank')).toBeTruthy();
   });
 
   it('the blank card falls through to the legacy subject/description form', async () => {
-    getTicketForms.mockResolvedValue({ data: [FORM] });
-    render(<NewTicketForm />);
+    render(<NewTicketForm forms={[FORM]} />);
 
     fireEvent.click(await screen.findByTestId('portal-ticket-form-card-blank'));
 
@@ -59,8 +55,7 @@ describe('NewTicketForm (portal) — intake form grid', () => {
   });
 
   it('selecting a form card renders its intake fields', async () => {
-    getTicketForms.mockResolvedValue({ data: [FORM] });
-    render(<NewTicketForm />);
+    render(<NewTicketForm forms={[FORM]} />);
 
     fireEvent.click(await screen.findByTestId('portal-ticket-form-card-form-1'));
 
@@ -69,8 +64,7 @@ describe('NewTicketForm (portal) — intake form grid', () => {
   });
 
   it('blocks submit with an inline error when a required field is empty — no API call', async () => {
-    getTicketForms.mockResolvedValue({ data: [FORM] });
-    render(<NewTicketForm />);
+    render(<NewTicketForm forms={[FORM]} />);
 
     fireEvent.click(await screen.findByTestId('portal-ticket-form-card-form-1'));
     fireEvent.click(screen.getByTestId('portal-ticket-form-submit'));
@@ -81,8 +75,7 @@ describe('NewTicketForm (portal) — intake form grid', () => {
   });
 
   it('posts formId + coerced responses (no subject) on a valid submit', async () => {
-    getTicketForms.mockResolvedValue({ data: [FORM] });
-    render(<NewTicketForm />);
+    render(<NewTicketForm forms={[FORM]} />);
 
     fireEvent.click(await screen.findByTestId('portal-ticket-form-card-form-1'));
     fireEvent.change(screen.getByTestId('ticket-form-field-model'), { target: { value: 'HP LaserJet' } });
@@ -99,15 +92,10 @@ describe('NewTicketForm (portal) — intake form grid', () => {
     expect(payload).not.toHaveProperty('subject');
   });
 
-  it('degrades to the legacy form (with a console.warn) when the forms fetch fails', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    getTicketForms.mockResolvedValue({ error: 'Network error' });
-    render(<NewTicketForm />);
+  it('shows the legacy form with no grid when the page hands down no forms', async () => {
+    render(<NewTicketForm forms={[]} />);
 
-    // Legacy form is shown; no grid.
     expect(await screen.findByLabelText('Title')).toBeTruthy();
     expect(screen.queryByTestId('portal-ticket-form-card-blank')).toBeNull();
-    await waitFor(() => expect(warn).toHaveBeenCalled());
-    warn.mockRestore();
   });
 });

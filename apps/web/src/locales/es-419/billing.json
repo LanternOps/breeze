@@ -1249,7 +1249,8 @@
       "accepted": "Aceptado",
       "declined": "Rechazado",
       "expired": "Vencido",
-      "converted": "Convertido"
+      "converted": "Convertido",
+      "superseded": "Reemplazado"
     },
     "workspace": {
       "backLabel": "Cotizaciones",
@@ -1656,16 +1657,21 @@
       "unpaid": "Depósito impago"
     },
     "dialog": {
+      "allBlockedByCurrency": "Todo el trabajo sin facturar en este rango está valorado en otra moneda, por lo que no se pudo armar nada. Arma un borrador en esa moneda en su lugar:",
       "allSites": "Todos los sitios",
       "assemble": "Armar",
       "assembleError": "No se pudo generar una factura para ese rango.",
       "assembleFromWork": "Montar desde el trabajo",
+      "assembleIn": "Armar en {{code}} ({{count}} elementos, {{amount}})",
       "assembleSuccess": "Borrador de factura ensamblado",
       "blankInvoice": "factura en blanco",
+      "blockedByCurrency": "Se omitieron {{count}} elementos sin facturar valorados en {{code}}: arma un borrador aparte en {{code}} para facturarlos.",
       "createDraft": "Crear borrador",
       "createError": "No se pudo crear un borrador de factura.",
       "createGenericError": "No se pudo crear la factura.",
       "createSuccess": "Borrador de factura creado",
+      "currency": "Moneda",
+      "currencyOrgDefault": "Predeterminada de la organización",
       "description": "Reúna el trabajo no facturado en un borrador o comience una factura en blanco.",
       "from": "De",
       "selectOrganization": "Seleccione una organización...",

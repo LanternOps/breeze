@@ -80,6 +80,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerTicketingTools } from './aiToolsTicketing';
 import { TicketServiceError } from './ticketService';
+import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 
 function getTool(): AiTool {
   const tools = new Map<string, AiTool>();
@@ -225,6 +226,22 @@ describe('manage_tickets write-gap actions', () => {
 
     expect(JSON.parse(out)).toEqual({ error: 'Access to target organization denied' });
     expect(serviceMocks.moveTicketOrg).not.toHaveBeenCalled();
+  });
+
+  it('move_org never passes acceptCurrencyMismatch and surfaces a currency block as JSON with code + details (#3776)', async () => {
+    mockAccessibleTicket();
+    const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: false, blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 1, parts: 0 }] };
+    serviceMocks.moveTicketOrg.mockRejectedValueOnce(new TicketMoveCurrencyBlockedError('Cannot move: stranded money', details));
+
+    const out = await getTool().handler(
+      { action: 'move_org', ticketId: TICKET_ID, targetOrgId: TARGET_ORG_ID },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Cannot move: stranded money', code: 'TICKET_MOVE_CURRENCY_BLOCKED', details });
+    // Three positional args only — the AI has no way to accept a mismatch.
+    expect(serviceMocks.moveTicketOrg).toHaveBeenCalledTimes(1);
+    expect(serviceMocks.moveTicketOrg.mock.calls[0]).toHaveLength(3);
   });
 
   it('link_alert returns error and does not call service when ticket access is denied', async () => {

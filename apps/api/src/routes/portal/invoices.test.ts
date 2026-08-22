@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { db } from '../../db';
 
 // Service-layer mocks — the route is a thin org-scoped consumer.
 const { getCustomerInvoiceMock, markViewedMock } = vi.hoisted(() => ({
@@ -106,6 +107,17 @@ function app(orgId = ORG_ID, authMethod: 'bearer' | 'cookie' = 'bearer') {
   return a;
 }
 
+// Drizzle SQL objects are circular (column → table → column), so JSON.stringify
+// can't walk them. Collect Param values by descending queryChunks instead.
+function boundParams(node: unknown, out: unknown[] = [], seen = new Set<unknown>()): unknown[] {
+  if (!node || typeof node !== 'object' || seen.has(node)) return out;
+  seen.add(node);
+  const n = node as { queryChunks?: unknown[]; value?: unknown; encoder?: unknown };
+  if ('encoder' in n && 'value' in n) out.push(n.value);
+  for (const c of n.queryChunks ?? []) boundParams(c, out, seen);
+  return out;
+}
+
 describe('portal invoices routes', () => {
   beforeEach(() => { vi.clearAllMocks(); dbResults.length = 0; insertValuesMock.mockReset(); });
 
@@ -143,6 +155,21 @@ describe('portal invoices routes', () => {
     expect(body.pagination.total).toBe(2);
   });
 
+  it('derived title subselects correlate on a QUALIFIED outer column', async () => {
+    // Drizzle renders an interpolated column (`${invoices.id}`) as bare `"id"`,
+    // which inside a correlated subselect resolves to the SUBQUERY's own table
+    // and correlates it with itself — always false, title always null, and the
+    // mocked db chain here can't see it. Pin the source: the correlation must
+    // be the hand-qualified `invoices.id`.
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./invoices.ts', import.meta.url), 'utf8');
+    const start = src.indexOf('invoiceDerivedTitleSql = sql');
+    const fragment = src.slice(start, src.indexOf(')`;', start));
+    expect(fragment).toContain('q.converted_invoice_id = invoices.id');
+    expect(fragment).toContain('il.invoice_id = invoices.id');
+    expect(fragment).not.toContain('${invoices.id}');
+  });
+
   it('GET /invoices/:id returns the customer view + stamps viewed', async () => {
     getCustomerInvoiceMock.mockResolvedValue({ invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [{ id: 'l1' }] });
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
@@ -175,6 +202,35 @@ describe('portal invoices routes', () => {
     // the assertion the stubbed serializer used to make vacuous.
     expect(body.lines[0].name).toBe('Support retainer');
     expect(body.lines[0].description).toBe('Support');
+  });
+
+  it('GET /invoices/:id resolves branding from the OUT-OF-HEADER partnerId', async () => {
+    // The shipped bug read `result.invoice.partnerId` (stripped by the
+    // serialization boundary) and sent undefined into the partners query.
+    getCustomerInvoiceMock.mockResolvedValue({
+      invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [], partnerId: 'partner-7',
+    });
+    dbResults.push([{ name: 'Lantern IT' }]);                                          // partners (system ctx)
+    dbResults.push([{ logoUrl: 'https://cdn/logo.png', primaryColor: '#123456' }]);    // portal_branding
+    const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.branding).toEqual({ partnerName: 'Lantern IT', logoUrl: 'https://cdn/logo.png', primaryColor: '#123456' });
+    // Walk the bound params of the partners where(): undefined must never reach postgres.js.
+    const whereArg = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[0]![0];
+    const params = boundParams(whereArg);
+    expect(params).toContain('partner-7');
+    expect(params).not.toContain(undefined);
+  });
+
+  it('GET /invoices/:id still renders with null branding when the lookups return nothing', async () => {
+    getCustomerInvoiceMock.mockResolvedValue({
+      invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [], partnerId: 'partner-7',
+    });
+    dbResults.push([]); dbResults.push([]);
+    const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).branding).toEqual({ partnerName: null, logoUrl: null, primaryColor: null });
   });
 
   it('GET /invoices/:id maps a cross-tenant 404 from the service', async () => {

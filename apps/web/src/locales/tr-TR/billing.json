@@ -1249,7 +1249,8 @@
       "accepted": "Kabul edildi",
       "declined": "Reddedildi",
       "expired": "Süresi Doldu",
-      "converted": "Dönüştürüldü"
+      "converted": "Dönüştürüldü",
+      "superseded": "Değiştirildi"
     },
     "workspace": {
       "backLabel": "Alıntılar",
@@ -1656,16 +1657,21 @@
       "unpaid": "Ödenmemiş depozito"
     },
     "dialog": {
+      "allBlockedByCurrency": "Bu aralıktaki tüm faturalanmamış iş başka bir para biriminde fiyatlandırılmış, bu nedenle hiçbir şey oluşturulamadı. Bunun yerine o para biriminde bir taslak oluşturun:",
       "allSites": "Tüm siteler",
       "assemble": "Birleştirin",
       "assembleError": "Bu aralık için fatura oluşturulamadı.",
       "assembleFromWork": "İşten toplanma",
+      "assembleIn": "{{code}} olarak oluştur ({{count}} öğe, {{amount}})",
       "assembleSuccess": "Taslak fatura toplandı",
       "blankInvoice": "Boş fatura",
+      "blockedByCurrency": "{{code}} ile fiyatlandırılmış {{count}} faturalanmamış öğe dışarıda bırakıldı; bunları faturalandırmak için {{code}} olarak ayrı bir taslak oluşturun.",
       "createDraft": "Taslak oluştur",
       "createError": "Taslak fatura oluşturulamadı.",
       "createGenericError": "Fatura oluşturulamadı.",
       "createSuccess": "Taslak fatura oluşturuldu",
+      "currency": "Para birimi",
+      "currencyOrgDefault": "Kuruluş varsayılanı",
       "description": "Faturalandırılmamış çalışmaları bir taslakta birleştirin veya boş bir fatura başlatın.",
       "from": "Gönderen",
       "selectOrganization": "Bir kuruluş seçin…",

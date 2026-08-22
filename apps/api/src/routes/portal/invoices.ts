@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { invoices, invoiceStripePayments } from '../../db/schema';
+import { invoices, invoiceStripePayments, partners } from '../../db/schema';
+import { portalBranding } from '../../db/schema/portal';
 import { listSchema, ticketParamSchema } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -28,6 +29,19 @@ const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
 
 // Invoice statuses that may be paid online. Drafts/paid/void are excluded.
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
+
+/**
+ * The customer-facing name of an invoice, which carries no title column: the
+ * newest proposal converted into it, else its first customer-visible line.
+ * Correlated on a hand-written `invoices.id` — in a join-free select Drizzle
+ * renders an interpolated column as bare `"id"`, which inside the subselect
+ * binds to the subquery's own table and makes every title NULL. Exported so
+ * portalInvoiceTitle.integration.test.ts can run it against real Postgres.
+ */
+export const invoiceDerivedTitleSql = sql<string | null>`coalesce(
+  (select q.title from quotes q where q.converted_invoice_id = invoices.id order by q.created_at desc limit 1),
+  (select il.name from invoice_lines il where il.invoice_id = invoices.id and il.customer_visible order by il.sort_order limit 1)
+)`;
 
 export const invoiceRoutes = new Hono();
 invoiceRoutes.use('*', portalFinancialMutationGuard);
@@ -56,6 +70,9 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
       amountPaid: invoices.amountPaid,
       balance: invoices.balance,
       depositDue: invoices.depositDue,
+      // The customer-facing name (see invoiceDerivedTitleSql); NULL for a bare
+      // invoice, where the portal falls back to the number.
+      title: invoiceDerivedTitleSql,
     })
     .from(invoices)
     .where(conditions)
@@ -104,7 +121,39 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     console.error('[portal] markViewed failed', { invoiceId: id, orgId: auth.user.orgId, err });
   }
 
-  return c.json({ invoice: result.invoice, lines: result.lines.map(toCustomerInvoiceLine) });
+  // Branding parity with GET /portal/quotes/:id. Without it the customer got a
+  // brand-accented proposal and a generic unbranded invoice from the same
+  // company in the same session, because InvoiceDetailView had nothing to pass
+  // to DocumentPaper/DocumentHeader.
+  //
+  // `partners` is a partner-axis RLS table invisible to this org scope (#1375
+  // class — 0 rows, no error), so the name reads under SYSTEM scope exactly as
+  // portal/quotes.ts does; portal_branding is org-scoped and reads fine here.
+  // Branding is decoration on top of a document the customer came to read or
+  // pay; a failure here is logged, never allowed to 500 the invoice.
+  let partner: { name: string | null } | undefined;
+  let brand: { logoUrl: string | null; primaryColor: string | null } | undefined;
+  try {
+    [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.select({ name: partners.name }).from(partners).where(eq(partners.id, result.partnerId)).limit(1)));
+    [brand] = await db
+      .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, auth.user.orgId))
+      .limit(1);
+  } catch (err) {
+    console.error('[portal/invoices] branding lookup failed', { invoiceId: id, partnerId: result.partnerId, err });
+  }
+
+  return c.json({
+    invoice: result.invoice,
+    lines: result.lines.map(toCustomerInvoiceLine),
+    branding: {
+      partnerName: partner?.name ?? null,
+      logoUrl: brand?.logoUrl ?? null,
+      primaryColor: brand?.primaryColor ?? null,
+    },
+  });
 });
 
 // GET /portal/invoices/:id/pdf — stream the stored PDF (render on demand if absent).

@@ -61,6 +61,10 @@ export type QuoteServiceErrorCode =
   // marker has been lost.
   | 'RESPONSE_CONSUMED'
   | 'QUOTE_EXPIRED'
+  // A quote replaced by a newer revision. Its prices are withdrawn, so the
+  // public serializer refuses it (publicQuoteDto) and the public route turns
+  // this into a 410 rather than rendering a stale document.
+  | 'QUOTE_SUPERSEDED'
   // Share-link resolution lost a race and could not reproduce the winner's
   // token either (quoteLifecycle.resolveAcceptUrl). Retryable: returning an
   // unrecorded credential instead would leave a live link nobody can revoke.

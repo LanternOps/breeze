@@ -58,7 +58,11 @@ export async function verifyQuoteAcceptanceHash(acceptanceId: string): Promise<A
 
   const renderData = await loadContractBlockRenderData(blocks);
   const parts = buildContractHashParts(blocks, renderData, quote, effectiveDate, renderLocale);
-  const recomputedSha256 = computeQuoteSha256(quote, blocks, lines, parts);
+  // Same widening the accept path uses (quoteAcceptService.ts:148): the raw
+  // Drizzle rows are structurally wider than HashableLine/QuoteRow (nullable
+  // description et al.), and the hash canonicaliser reads only the fields it
+  // declares. Recompute MUST mirror the accept path exactly or hashes diverge.
+  const recomputedSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, parts);
   return {
     acceptanceId: acceptance.id,
     quoteId: quote.id,

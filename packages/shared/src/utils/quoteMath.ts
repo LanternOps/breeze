@@ -8,7 +8,7 @@
 // first. These helpers are intentionally self-contained (no invoice-status / DB
 // coupling) so the module is safe to import into the browser bundle.
 
-import { roundToCurrency } from '../utils/currency';
+import { multiplyToCurrency, roundToCurrency } from '../utils/currency';
 
 /** Money string/number → integer cents (round-half-up — `Math.round` ties toward
  *  +∞ — on the ×100 product). Null/empty/non-finite → 0, so a stray NaN can't
@@ -25,15 +25,17 @@ export function fromCents(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
-/** quantity × unitPrice in full precision, then a single round-half-up at the
- *  cent boundary. (Rounding unitPrice to cents first would lose sub-cent unit
- *  prices like 0.335 — 3 × 0.335 = 1.005 must round half-up to 1.01.) */
+/** quantity × unitPrice in EXACT decimal (scaled integers), then a single
+ *  round-half-up at the currency's minor unit. (Rounding unitPrice to cents first
+ *  would lose sub-cent unit prices like 0.335 — 3 × 0.335 = 1.005 must round
+ *  half-up to 1.01; and going through a double would turn 0.02 × 7.25 = 0.145
+ *  into 0.14 — review #2.) */
 export function computeLineTotal(
   quantity: string | number,
   unitPrice: string | number,
   currencyCode = 'USD',
 ): string {
-  return roundToCurrency(Number(quantity) * Number(unitPrice), currencyCode);
+  return multiplyToCurrency(quantity, unitPrice, currencyCode);
 }
 
 /**
