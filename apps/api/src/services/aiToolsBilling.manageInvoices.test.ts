@@ -296,6 +296,36 @@ describe('manage_invoices', () => {
     expect(JSON.parse(out)).toEqual({ error: 'Payment exceeds balance', code: 'OVERPAYMENT' });
   });
 
+  it('preserves InvoiceServiceError.details (ALL_BLOCKED_BY_CURRENCY recovery groups) like the HTTP handler does (#3776 review #6)', async () => {
+    const blockedByCurrency = [{ currencyCode: 'EUR', count: 2, amount: '125.00' }];
+    vi.mocked(invoiceService.assembleDraftFromOrg).mockRejectedValueOnce(
+      new InvoiceServiceError('All unbilled work is in EUR', 409, 'ALL_BLOCKED_BY_CURRENCY', { blockedByCurrency }),
+    );
+
+    const out = await getTool().handler(
+      { action: 'assemble_from_org', orgId: 'org-1', from: '2026-06-01', to: '2026-06-30' },
+      auth,
+    );
+
+    expect(JSON.parse(out)).toEqual({
+      error: 'All unbilled work is in EUR',
+      code: 'ALL_BLOCKED_BY_CURRENCY',
+      details: { blockedByCurrency },
+    });
+  });
+
+  it('omits the details key entirely when the InvoiceServiceError carries none', async () => {
+    vi.mocked(invoiceService.recordPayment).mockRejectedValueOnce(
+      new InvoiceServiceError('Nope', 400, 'OVERPAYMENT'),
+    );
+    const out = await getTool().handler(
+      { action: 'record_payment', invoiceId: 'inv-1', payment: { amount: 1, method: 'card', receivedAt: '2026-07-01' } },
+      auth,
+    );
+    expect(JSON.parse(out)).toEqual({ error: 'Nope', code: 'OVERPAYMENT' });
+    expect('details' in JSON.parse(out)).toBe(false);
+  });
+
   it('record_payment with an incomplete payload returns a structured VALIDATION_ERROR instead of reaching recordPayment (BUG1 sibling fix)', async () => {
     const out = await getTool().handler(
       { action: 'record_payment', invoiceId: 'inv-1', payment: { amount: 999 } },

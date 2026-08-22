@@ -65,9 +65,12 @@ function actorFromAuth(auth: AuthContext): InvoiceActor {
   };
 }
 
+/** Same shape as the HTTP invoice error handler (routes/invoices/invoices.ts):
+ *  `details` rides along when present so structured recovery data (e.g. the
+ *  ALL_BLOCKED_BY_CURRENCY per-currency groups, #3776) reaches the model. */
 function serviceErrorToJson(err: unknown): string | null {
   if (err instanceof InvoiceServiceError) {
-    return JSON.stringify({ error: err.message, code: err.code });
+    return JSON.stringify({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) });
   }
   return null;
 }
