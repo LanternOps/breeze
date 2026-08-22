@@ -157,6 +157,16 @@ export function contractTransition(id: string, verb: ContractTransition): Promis
   return fetchWithAuth(`/contracts/${id}/${verb}`, { method: 'POST' });
 }
 
+/** One catalog line `POST /contracts/:id/generate` billed at the contract's
+ *  stamped snapshot because the item has no price in the contract's currency
+ *  (multi-currency wave 3, #3775). Always present on the response (`[]` when none). */
+export interface PriceBookGap {
+  contractLineId: string;
+  catalogItemId: string;
+  itemName: string;
+  currencyCode: string;
+}
+
 export function generateContractInvoice(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}/generate`, { method: 'POST' });
 }

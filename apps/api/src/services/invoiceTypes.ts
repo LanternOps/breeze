@@ -38,6 +38,7 @@ export type InvoiceServiceErrorCode =
   // price-book row (and no org override) in the invoice's currency. Mapped 409
   // from CatalogServiceError — never another currency's number, never converted.
   | 'NO_PRICE_FOR_CURRENCY'
+  | 'PRICE_NOT_REPRESENTABLE'
   // Multi-currency wave 3 (#3775): addBundleLine — the bundle has a headline
   // price but one or more components lack a price in the invoice's currency.
   | 'PRICE_BOOK_INCOMPLETE'

@@ -411,7 +411,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
           componentItemId: catalogBundleComponents.componentItemId,
           quantity: catalogBundleComponents.quantity,
           showOnInvoice: catalogBundleComponents.showOnInvoice,
-          revenueAllocation: catalogBundleComponents.revenueAllocation
+          revenueAllocation: catalogBundleComponents.revenueAllocation,
+          allocationCurrency: catalogBundleComponents.allocationCurrency
         })
         .from(catalogBundleComponents)
         .where(
@@ -424,7 +425,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       // revenueAllocation is the partner's internal revenue split.
       const sanitizedComponents =
         auth.scope === 'organization'
-          ? components.map(({ revenueAllocation: _ra, ...rest }) => rest)
+          ? components.map(({ revenueAllocation: _ra, allocationCurrency: _ac, ...rest }) => rest)
           : components;
       return JSON.stringify({ item: sanitized, prices, components: sanitizedComponents });
     }
@@ -463,6 +464,10 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
             type: 'array',
             description: 'Bundle component rows for set_bundle_components',
             items: { type: 'object' as const },
+          },
+          allocationCurrency: {
+            type: 'string',
+            description: 'ISO-4217 currency the component revenueAllocation amounts are authored in (set_bundle_components; required when any component carries a revenueAllocation). Allocations are only used in this currency — never converted.',
           },
         },
         required: ['action'],
@@ -520,12 +525,18 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
               String(input.orgId),
               actor
             ));
-          case 'set_bundle_components':
+          case 'set_bundle_components': {
+            const parsed = setBundleComponentsSchema.parse({
+              components: input.components ?? [],
+              ...(input.allocationCurrency != null ? { allocationCurrency: input.allocationCurrency } : {}),
+            });
             return JSON.stringify(await setBundleComponents(
               String(input.catalogId),
-              setBundleComponentsSchema.parse({ components: input.components ?? [] }).components,
-              actor
+              parsed.components,
+              actor,
+              parsed.allocationCurrency
             ));
+          }
           default:
             return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
         }

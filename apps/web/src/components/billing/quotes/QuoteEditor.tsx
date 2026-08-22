@@ -1457,7 +1457,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       await doAddCatalog(blockId, item);
       void loadCatalog();
     }, t('quotes.editor.errors.addPax8Product')),
-  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped, t]);
+  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped, t, quote.currencyCode]);
 
   const importAndAddDistributor = useCallback((blockId: string, product: EcProduct, sellPrice: number) =>
     runScoped(pendingKey.addLine(blockId), async () => {
@@ -1493,7 +1493,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       await doAddCatalog(blockId, item);
       void loadCatalog(); // surface a newly-imported item in the catalog picker too
     }, t('quotes.editor.errors.addDistributorItem')),
-  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped, t]);
+  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped, t, quote.currencyCode]);
 
   const addManual = useCallback((
     blockId: string,

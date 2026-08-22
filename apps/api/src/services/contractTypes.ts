@@ -27,6 +27,7 @@ export type ContractServiceErrorCode =
   // Mapped 409 from CatalogServiceError — never converted; add a non-catalog
   // line or fill the price book.
   | 'NO_PRICE_FOR_CURRENCY'
+  | 'PRICE_NOT_REPRESENTABLE'
   | 'NO_LINES'
   | 'INVALID_STATE'
   | 'LINE_NOT_FOUND'

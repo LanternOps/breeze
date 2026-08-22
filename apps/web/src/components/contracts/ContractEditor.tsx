@@ -28,7 +28,7 @@ import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import CatalogDistributorDrawer from '../settings/CatalogDistributorDrawer';
 import Pax8CatalogDrawer from '../settings/Pax8CatalogDrawer';
 import ContractPax8Drawer from './ContractPax8Drawer';
-import { listCatalog, priceFor, type CatalogItem } from '../../lib/api/catalog';
+import { listCatalog, resolveCatalogPrice, type CatalogItem, type ResolvedCatalogPrice } from '../../lib/api/catalog';
 import { ecExpressStatus, pax8Status } from '../../lib/api/distributors';
 import { formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
@@ -346,13 +346,60 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     return m;
   }, [liveEstimate]);
 
-  // Price-book row for the linked catalog item in the CONTRACT's currency, or
-  // null when the book has no row (the server would refuse the add with
-  // NO_PRICE_FOR_CURRENCY, so the Add button is disabled on a gap).
+  // The linked catalog item's price as the SERVER resolves it for this
+  // contract's org + currency (org override → price book → typed gap). The
+  // editor never infers this from `item.prices`: the list aggregate only carries
+  // the base book, so it can't see an org override (post-merge review #6). Add
+  // is enabled only on `resolved`; pending/failed/gap all block.
   const contractCurrency = contract?.currencyCode;
-  const catalogPrice = lineCatalogItem ? priceFor(lineCatalogItem, contractCurrency) : null;
-  const catalogPriceGap = lineCatalogItem != null && catalogPrice == null;
-  const effectiveLinePrice = lineCatalogItem ? (catalogPrice ?? '0') : linePrice;
+  const contractOrgId = contract?.orgId ?? null;
+  const [catalogResolution, setCatalogResolution] = useState<
+    | { status: 'idle' }
+    | { status: 'loading' }
+    | { status: 'resolved'; price: ResolvedCatalogPrice }
+    | { status: 'gap' }
+    // #3775 review #2: the price-book row EXISTS but is wrong for this currency
+    // (a legacy fractional amount in a zero-decimal currency). That is a gap the
+    // operator has to fix in the catalog, never a transient failure — it gets its
+    // own message carrying the server's actionable text, and no Retry.
+    | { status: 'notRepresentable'; message: string | null }
+    | { status: 'error' }
+  >({ status: 'idle' });
+  const resolveSeq = useRef(0);
+  const resolveCatalogLine = useCallback(async () => {
+    const seq = ++resolveSeq.current;
+    if (!lineCatalogItem || !contractCurrency) { setCatalogResolution({ status: 'idle' }); return; }
+    setCatalogResolution({ status: 'loading' });
+    try {
+      const res = await resolveCatalogPrice(lineCatalogItem.id, contractCurrency, contractOrgId);
+      if (seq !== resolveSeq.current) return; // a newer pick/clear superseded this lookup
+      if (res.status === 401) return UNAUTHORIZED();
+      if (res.ok) {
+        const body = (await res.json().catch(() => null)) as { data?: ResolvedCatalogPrice } | null;
+        if (seq !== resolveSeq.current) return;
+        setCatalogResolution(body?.data ? { status: 'resolved', price: body.data } : { status: 'error' });
+        return;
+      }
+      const body = (await res.json().catch(() => null)) as { code?: string; error?: string } | null;
+      if (seq !== resolveSeq.current) return;
+      if (res.status === 409 && body?.code === 'NO_PRICE_FOR_CURRENCY') { setCatalogResolution({ status: 'gap' }); return; }
+      if (res.status === 409 && body?.code === 'PRICE_NOT_REPRESENTABLE') {
+        setCatalogResolution({ status: 'notRepresentable', message: body.error?.trim() || null });
+        return;
+      }
+      setCatalogResolution({ status: 'error' });
+    } catch {
+      if (seq === resolveSeq.current) setCatalogResolution({ status: 'error' });
+    }
+  }, [lineCatalogItem, contractCurrency, contractOrgId]);
+  useEffect(() => { void resolveCatalogLine(); }, [resolveCatalogLine]);
+
+  const catalogPrice = catalogResolution.status === 'resolved' ? catalogResolution.price : null;
+  const catalogPriceGap = catalogResolution.status === 'gap';
+  // Anything short of a server-resolved price blocks Add (the server would
+  // refuse or — worse — a stale guess would mislead the preview).
+  const catalogPriceUnresolved = lineCatalogItem != null && catalogPrice == null;
+  const effectiveLinePrice = lineCatalogItem ? (catalogPrice?.unitPrice ?? '0') : linePrice;
 
   const newLineEstimate = useMemo(() => {
     if (AUTO_QTY_TYPES.has(lineType)) return null;
@@ -526,7 +573,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !lineDesc.trim() || catalogPriceGap) return;
+    if (busy || !contract || !lineDesc.trim() || catalogPriceUnresolved) return;
     setBusy(true);
     try {
       await runAction({
@@ -558,7 +605,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogItem, lineTaxable, catalogPriceGap, refresh, t]);
+  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogItem, lineTaxable, catalogPriceUnresolved, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
@@ -971,7 +1018,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                         currency — read-only here; clear the link for a custom price. */}
                     <input
                       type="number" min="0" step="0.01"
-                      value={lineCatalogItem ? (catalogPrice ?? '') : linePrice}
+                      value={lineCatalogItem ? (catalogPrice?.unitPrice ?? '') : linePrice}
                       readOnly={lineCatalogItem != null}
                       aria-readonly={lineCatalogItem != null}
                       onChange={(e) => { if (!lineCatalogItem) setLinePrice(e.target.value); }}
@@ -981,6 +1028,28 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     {catalogPriceGap && (
                       <span className="text-xs text-destructive" data-testid="contract-line-price-missing">
                         {t('contracts.contractEditor.addLine.noPriceInCurrency', { currency: contractCurrency })}
+                      </span>
+                    )}
+                    {catalogResolution.status === 'notRepresentable' && (
+                      <span className="text-xs text-destructive" data-testid="contract-line-price-not-representable">
+                        {catalogResolution.message
+                          ?? t('contracts.contractEditor.addLine.priceNotRepresentable', { currency: contractCurrency })}
+                      </span>
+                    )}
+                    {catalogResolution.status === 'loading' && (
+                      <span className="text-xs text-muted-foreground" data-testid="contract-line-price-resolving">
+                        {t('contracts.contractEditor.addLine.resolvingPrice', { currency: contractCurrency })}
+                      </span>
+                    )}
+                    {catalogResolution.status === 'error' && (
+                      <span className="text-xs text-destructive" data-testid="contract-line-price-unavailable">
+                        {t('contracts.contractEditor.addLine.priceLookupFailed', { currency: contractCurrency })}{' '}
+                        <button type="button" onClick={() => void resolveCatalogLine()} data-testid="contract-line-price-retry" className="underline hover:text-foreground">{t('common:actions.retry')}</button>
+                      </span>
+                    )}
+                    {catalogPrice?.source === 'org_override' && (
+                      <span className="text-xs text-muted-foreground" data-testid="contract-line-price-source">
+                        {t('contracts.contractEditor.addLine.priceSourceOrgOverride', { org: orgName })}
                       </span>
                     )}
                   </label>
@@ -1036,7 +1105,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   <label className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
-                      checked={lineCatalogItem ? lineCatalogItem.taxable : lineTaxable}
+                      checked={lineCatalogItem ? (catalogPrice?.taxable ?? lineCatalogItem.taxable) : lineTaxable}
                       disabled={lineCatalogItem != null}
                       onChange={(e) => { if (!lineCatalogItem) setLineTaxable(e.target.checked); }}
                       data-testid="contract-line-taxable"
@@ -1052,7 +1121,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceGap}
+                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceUnresolved}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >

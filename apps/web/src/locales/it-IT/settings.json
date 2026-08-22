@@ -1736,6 +1736,7 @@
     "close": "Chiudi",
     "imported": "\"{{name}}\" importato nel catalogo",
     "importedWithoutCleanup": "\"{{name}}\" importato — pulizia IA non disponibile, mantenuto il nome originale.",
+    "importedPricePreserved": "\"{{name}}\" importato — il prezzo esistente in {{currencies}} è stato mantenuto; solo il costo è stato aggiornato da Pax8.",
     "couldNotImportThePax8Product": "Impossibile importare il prodotto Pax8."
   },
   "profilePage": {

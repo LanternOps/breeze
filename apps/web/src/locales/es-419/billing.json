@@ -96,6 +96,7 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Factura generada",
+        "priceBookGaps": "{{count}} línea(s) de catálogo facturada(s) con el precio guardado en el contrato — no hay precio en {{currency}} en el catálogo: {{lines}}",
         "draftDeleted": "Borrador eliminado"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Total de líneas: {{total}}",
         "addLine": "Agregar línea",
         "noPriceInCurrency": "Este elemento no tiene precio en {{currency}}: agregue uno en el catálogo, o borre el enlace del catálogo e ingrese una línea manual.",
-        "priceFromCatalog": "Precio unitario (del catálogo, en {{currency}})"
+        "priceFromCatalog": "Precio unitario (del catálogo, en {{currency}})",
+        "resolvingPrice": "Buscando el precio en {{currency}}…",
+        "priceLookupFailed": "No se pudo obtener el precio en {{currency}}.",
+        "priceNotRepresentable": "El precio en {{currency}} guardado para este artículo no es válido en {{currency}}: corríjalo en el catálogo o quite el vínculo con el catálogo e ingrese una línea manual.",
+        "priceSourceOrgOverride": "Precio específico de la organización {{org}}"
       },
       "estimate": {
         "title": "Estimado este periodo",
@@ -1059,7 +1064,8 @@
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",
+      "feedPriceCurrencyUnknown": "Moneda del precio del feed desconocida — ingresa un precio en {{currency}}",
+      "feedPriceIn": "El precio del feed está en {{feedCurrency}} — ingresa un precio en {{currency}}",
       "available": "{{count}} disponible",
       "cost": "costo {{currency}} {{amount}}",
       "endOfLife": "Fin de vida útil",
@@ -1227,7 +1233,8 @@
       "tryAgain": "Intentar otra vez"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",
+      "feedPriceCurrencyUnknown": "Moneda del precio del feed desconocida — ingresa un precio en {{currency}}",
+      "feedPriceIn": "El precio del feed está en {{feedCurrency}} — ingresa un precio en {{currency}}",
       "cost": "costo {{currency}} {{amount}}",
       "importAndAdd": "Importar y agregar",
       "option": "Opción {{number}}",

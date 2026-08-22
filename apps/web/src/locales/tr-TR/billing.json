@@ -96,6 +96,7 @@
           "cancel": "Sözleşme iptal edildi"
         },
         "invoiceGenerated": "Fatura oluşturuldu",
+        "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
         "draftDeleted": "Taslak silindi"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Satır toplamı: {{total}}",
         "addLine": "Satır ekle",
         "noPriceInCurrency": "Bu öğenin {{currency}} fiyatı yok — katalogda bir fiyat ekleyin ya da katalog bağlantısını temizleyip manuel bir hat girin.",
-        "priceFromCatalog": "Birim fiyatı (katalogdan, {{currency}} cinsinden)"
+        "priceFromCatalog": "Birim fiyatı (katalogdan, {{currency}} cinsinden)",
+        "resolvingPrice": "{{currency}} fiyatı aranıyor…",
+        "priceLookupFailed": "{{currency}} fiyatı alınamadı.",
+        "priceNotRepresentable": "Bu ürün için kayıtlı {{currency}} fiyatı {{currency}} para biriminde geçerli değil — katalogda düzeltin ya da katalog bağlantısını kaldırıp elle satır girin.",
+        "priceSourceOrgOverride": "{{org}} için kuruluşa özel fiyat"
       },
       "estimate": {
         "title": "Tahmini bu dönem",
@@ -1059,7 +1064,8 @@
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+      "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
+      "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
       "available": "{{count}} mevcut",
       "cost": "maliyet {{currency}} {{amount}}",
       "endOfLife": "Hayatın sonu",
@@ -1227,7 +1233,8 @@
       "tryAgain": "Tekrar deneyin"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+      "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
+      "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
       "cost": "maliyet {{currency}} {{amount}}",
       "importAndAdd": "İçe aktar ve ekle",
       "option": "Seçenek {{number}}",

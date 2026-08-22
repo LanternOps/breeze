@@ -7,6 +7,7 @@ import {
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError, type CatalogActor } from './catalogService';
+import { snapshotCost } from './catalogPricing';
 // formatInvoiceNumber is shared with the standalone allocator; issueInvoice
 // inlines the counter upsert itself (rather than calling allocateInvoiceCounter)
 // to keep allocation atomic with the number write inside its single transaction.
@@ -150,8 +151,8 @@ async function resolveInvoicePrice(tx: DbExecutor, catalogItemId: string, inv: {
   try {
     return await resolvePrice(catalogItemId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
   } catch (err) {
-    if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
-      throw new InvoiceServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+    if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+      throw new InvoiceServiceError(err.message, 409, err.code);
     }
     throw err;
   }
@@ -213,7 +214,14 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
     // never billed from a partial price book (wave 3, #3775).
     const econ = await computeBundleEconomics(bundleId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
     if (econ.headlinePrice === null) {
-      throw new InvoiceServiceError(`Bundle has no ${inv.currencyCode} price`, 409, 'NO_PRICE_FOR_CURRENCY');
+      // Both headline gaps are typed 409s here (#3775 review #1). A legacy
+      // non-representable row keeps the resolver's actionable text — telling the
+      // operator to "add a price" when a wrong one already exists is a dead end.
+      throw new InvoiceServiceError(
+        econ.headlineGapMessage ?? `Bundle has no ${inv.currencyCode} price`,
+        409,
+        econ.headlineGap === 'PRICE_NOT_REPRESENTABLE' ? 'PRICE_NOT_REPRESENTABLE' : 'NO_PRICE_FOR_CURRENCY'
+      );
     }
     if (!econ.priceBookComplete) {
       throw new InvoiceServiceError(
@@ -234,6 +242,7 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
     const comps = await tx.select({
       componentItemId: catalogBundleComponents.componentItemId, quantity: catalogBundleComponents.quantity,
       showOnInvoice: catalogBundleComponents.showOnInvoice, revenueAllocation: catalogBundleComponents.revenueAllocation,
+      allocationCurrency: catalogBundleComponents.allocationCurrency,
       name: catalogItems.name, description: catalogItems.description,
       costBasis: catalogItems.costBasis, costCurrency: catalogItems.costCurrency
     }).from(catalogBundleComponents)
@@ -243,9 +252,14 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
       await tx.insert(invoiceLines).values({
         invoiceId, orgId: inv.orgId, sourceType: 'bundle', sourceId: null, catalogItemId: comp.componentItemId,
         parentLineId: parent.id, ticketId: null, name: comp.name, description: comp.description ?? null, quantity: comp.quantity, unitPrice: '0.00',
-        // Child cost snapshots only when stamped in the invoice's currency.
-        costBasis: comp.costCurrency === inv.currencyCode ? comp.costBasis : null,
-        revenueAllocation: comp.revenueAllocation, taxable: false,
+        // Child cost snapshots only when stamped in the invoice's currency AND
+        // representable in it (a legacy fractional-yen cost is a gap, #3775 review #4).
+        costBasis: snapshotCost(comp.costBasis, comp.costCurrency, inv.currencyCode),
+        // An allocation travels onto the line only when authored in the
+        // invoice's currency (#3775 review #7); otherwise it is unavailable
+        // (null) — never relabelled as an invoice-currency amount.
+        revenueAllocation: comp.allocationCurrency === inv.currencyCode ? comp.revenueAllocation : null,
+        taxable: false,
         customerVisible: comp.showOnInvoice, lineTotal: '0.00', isUnapprovedTime: false,
         sortOrder: parent.sortOrder // children sort directly under the parent
       });
@@ -329,7 +343,10 @@ export async function addContractLine(
       try {
         resolved = await resolvePrice(input.catalogItemId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
       } catch (err) {
-        if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') resolved = null;
+        // PRICE_NOT_REPRESENTABLE (legacy fractional-yen row, #3775 review #4)
+        // is the same class of gap — the book is unusable in this currency —
+        // so billing falls back to the contract snapshot too, never the bad row.
+        if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) resolved = null;
         else throw err;
       }
       if (resolved) {
