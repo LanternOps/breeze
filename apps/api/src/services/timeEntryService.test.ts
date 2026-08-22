@@ -59,6 +59,9 @@ vi.mock('../db', () => ({
                 then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
                   Promise.resolve(result).then(res, rej)
               })),
+              groupBy: vi.fn(() => ({
+                orderBy: vi.fn(() => Promise.resolve(result))
+              })),
               then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
                 Promise.resolve(result).then(res, rej)
             };
@@ -973,15 +976,104 @@ describe('query helpers', () => {
     expect(result.weekStart).toBe('2026-06-08');
     expect(result.days).toHaveLength(7);
     expect(result.days[0]!.entries.map((e: any) => e.id)).toEqual(['te-1']);
-    expect(result.totals).toEqual({ totalMinutes: 75, billableMinutes: 30 });
+    expect(result.totals).toEqual({ totalMinutes: 75, billableMinutes: 30, billableAmounts: [] });
   });
 
-  it('getTicketBillingSummary returns aggregate rows and zero defaults', async () => {
-    dbMocks.selectResults.push([{ totalMinutes: 90, billableMinutes: 60, billableAmount: '125.00' }]);
-    dbMocks.selectResults.push([]);
+  it('getTimesheet groups billable labor by currency in first-seen order', async () => {
+    dbMocks.selectResults.push([
+      {
+        id: 'te-eur-1',
+        startedAt: new Date('2026-06-08T09:00:00Z'),
+        durationMinutes: 60,
+        isBillable: true,
+        hourlyRate: '100.00',
+        currencyCode: 'EUR'
+      },
+      {
+        id: 'te-eur-2',
+        startedAt: new Date('2026-06-08T10:00:00Z'),
+        durationMinutes: 30,
+        isBillable: true,
+        hourlyRate: '100.00',
+        currencyCode: 'EUR'
+      },
+      {
+        id: 'te-usd',
+        startedAt: new Date('2026-06-09T09:00:00Z'),
+        durationMinutes: 60,
+        isBillable: true,
+        hourlyRate: '50.00',
+        currencyCode: 'USD'
+      },
+      {
+        id: 'te-non-billable',
+        startedAt: new Date('2026-06-09T10:00:00Z'),
+        durationMinutes: 60,
+        isBillable: false,
+        hourlyRate: '1000.00',
+        currencyCode: 'EUR'
+      }
+    ]);
+
+    const result = await getTimesheet('u-1', new Date('2026-06-08T00:00:00Z'));
+
+    expect(result.totals.billableAmounts).toEqual([
+      { currencyCode: 'EUR', amount: '150.00' },
+      { currencyCode: 'USD', amount: '50.00' }
+    ]);
+  });
+
+  it('getTimesheet rounds labor hours to two decimals before currency rounding', async () => {
+    dbMocks.selectResults.push([{
+      id: 'te-jpy',
+      startedAt: new Date('2026-06-08T09:00:00Z'),
+      durationMinutes: 20,
+      isBillable: true,
+      hourlyRate: '1000.00',
+      currencyCode: 'JPY'
+    }]);
+
+    const result = await getTimesheet('u-1', new Date('2026-06-08T00:00:00Z'));
+
+    expect(result.totals.billableAmounts).toEqual([
+      { currencyCode: 'JPY', amount: '330.00' }
+    ]);
+  });
+
+  it('getTicketBillingSummary returns per-currency aggregate rows', async () => {
+    dbMocks.selectResults.push([{ totalMinutes: 90, billableMinutes: 60 }]);
+    dbMocks.selectResults.push([
+      { currencyCode: 'EUR', amount: '100.00' },
+      { currencyCode: 'USD', amount: '25.00' }
+    ]);
+    dbMocks.selectResults.push([{ partsCount: 2 }]);
+    dbMocks.selectResults.push([{ currencyCode: 'EUR', amount: '40.00' }]);
     const result = await getTicketBillingSummary('t-1');
-    expect(result.time).toEqual({ totalMinutes: 90, billableMinutes: 60, billableAmount: '125.00' });
-    expect(result.parts).toEqual({ partsCount: 0, billableTotal: '0.00' });
+    expect(result).toEqual({
+      time: {
+        totalMinutes: 90,
+        billableMinutes: 60,
+        billableAmounts: [
+          { currencyCode: 'EUR', amount: '100.00' },
+          { currencyCode: 'USD', amount: '25.00' }
+        ]
+      },
+      parts: {
+        partsCount: 2,
+        billableTotals: [{ currencyCode: 'EUR', amount: '40.00' }]
+      }
+    });
+  });
+
+  it('getTicketBillingSummary returns zero defaults and empty currency totals', async () => {
+    dbMocks.selectResults.push([], [], [], []);
+
+    const result = await getTicketBillingSummary('t-1');
+
+    expect(result).toEqual({
+      time: { totalMinutes: 0, billableMinutes: 0, billableAmounts: [] },
+      parts: { partsCount: 0, billableTotals: [] }
+    });
   });
 
   it('listBillables combines time and parts in date order', async () => {

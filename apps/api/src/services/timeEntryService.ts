@@ -1,8 +1,9 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
+import { roundToCurrency } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -914,6 +915,11 @@ export interface TimesheetDay {
   entries: Awaited<ReturnType<typeof listTimeEntries>>['entries'];
 }
 
+export interface CurrencyAmount {
+  currencyCode: string;
+  amount: string;
+}
+
 export async function getTimesheet(userId: string, weekStart: Date, accessibleOrgIds: string[] | null = null) {
   const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60_000);
   // Org-axis allowlist: time_entries is partner-axis RLS only, so an
@@ -952,12 +958,24 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
     if (entry.isBillable) day.billableMinutes += minutes;
   }
   const allDays = [...days.values()];
+  const money = new Map<string, number>();
+  for (const entry of entries) {
+    if (!entry.isBillable || entry.hourlyRate == null || entry.currencyCode == null) continue;
+    const hours = Number(((entry.durationMinutes ?? 0) / 60).toFixed(2));
+    const amount = hours * Number(entry.hourlyRate);
+    money.set(entry.currencyCode, (money.get(entry.currencyCode) ?? 0) + amount);
+  }
+  const billableAmounts: CurrencyAmount[] = [...money].map(([currencyCode, amount]) => ({
+    currencyCode,
+    amount: roundToCurrency(amount, currencyCode)
+  }));
   return {
     weekStart: weekStart.toISOString().slice(0, 10),
     days: allDays,
     totals: {
       totalMinutes: allDays.reduce((s, d) => s + d.totalMinutes, 0),
-      billableMinutes: allDays.reduce((s, d) => s + d.billableMinutes, 0)
+      billableMinutes: allDays.reduce((s, d) => s + d.billableMinutes, 0),
+      billableAmounts
     }
   };
 }
@@ -966,23 +984,60 @@ export async function getTicketBillingSummary(ticketId: string) {
   const timeRows = await db
     .select({
       totalMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}), 0)::int`,
-      billableMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}) FILTER (WHERE ${timeEntries.isBillable}), 0)::int`,
-      billableAmount: sql<string>`COALESCE(SUM((${timeEntries.durationMinutes}::numeric / 60) * ${timeEntries.hourlyRate}) FILTER (WHERE ${timeEntries.isBillable} AND ${timeEntries.hourlyRate} IS NOT NULL), 0)::numeric(12,2)`
+      billableMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}) FILTER (WHERE ${timeEntries.isBillable}), 0)::int`
     })
     .from(timeEntries)
     .where(eq(timeEntries.ticketId, ticketId));
 
-  const partsRows = await db
+  // Money is grouped per currency — never summed across currencies.
+  const timeMoney = await db
     .select({
-      partsCount: sql<number>`COUNT(*)::int`,
-      billableTotal: sql<string>`COALESCE(SUM(${ticketParts.quantity} * ${ticketParts.unitPrice}) FILTER (WHERE ${ticketParts.isBillable}), 0)::numeric(12,2)`
+      currencyCode: timeEntries.currencyCode,
+      // Labor rule: round hours to 2 dp first, then multiply by the rate.
+      amount: sql<string>`COALESCE(SUM(ROUND(${timeEntries.durationMinutes}::numeric / 60, 2) * ${timeEntries.hourlyRate}), 0)::numeric(12,2)`
     })
+    .from(timeEntries)
+    .where(and(
+      eq(timeEntries.ticketId, ticketId),
+      eq(timeEntries.isBillable, true),
+      isNotNull(timeEntries.hourlyRate),
+      isNotNull(timeEntries.currencyCode)
+    ))
+    .groupBy(timeEntries.currencyCode)
+    .orderBy(timeEntries.currencyCode);
+
+  const partsRows = await db
+    .select({ partsCount: sql<number>`COUNT(*)::int` })
     .from(ticketParts)
     .where(eq(ticketParts.ticketId, ticketId));
 
+  const partsMoney = await db
+    .select({
+      currencyCode: ticketParts.currencyCode,
+      amount: sql<string>`COALESCE(SUM(${ticketParts.quantity} * ${ticketParts.unitPrice}), 0)::numeric(12,2)`
+    })
+    .from(ticketParts)
+    .where(and(eq(ticketParts.ticketId, ticketId), eq(ticketParts.isBillable, true)))
+    .groupBy(ticketParts.currencyCode)
+    .orderBy(ticketParts.currencyCode);
+
+  const toAmounts = (rows: Array<{ currencyCode: string | null; amount: string }>): CurrencyAmount[] =>
+    rows
+      .filter((row): row is { currencyCode: string; amount: string } => row.currencyCode != null)
+      .map((row) => ({
+        currencyCode: row.currencyCode,
+        amount: roundToCurrency(row.amount, row.currencyCode)
+      }));
+
   return {
-    time: timeRows[0] ?? { totalMinutes: 0, billableMinutes: 0, billableAmount: '0.00' },
-    parts: partsRows[0] ?? { partsCount: 0, billableTotal: '0.00' }
+    time: {
+      ...(timeRows[0] ?? { totalMinutes: 0, billableMinutes: 0 }),
+      billableAmounts: toAmounts(timeMoney)
+    },
+    parts: {
+      ...(partsRows[0] ?? { partsCount: 0 }),
+      billableTotals: toAmounts(partsMoney)
+    }
   };
 }
 

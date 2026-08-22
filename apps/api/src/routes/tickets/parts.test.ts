@@ -268,13 +268,20 @@ describe('parts routes', () => {
   it('GET /:id/billing-summary returns summary for in-scope ticket', async () => {
     getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
     timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
-      time: { totalMinutes: 60, billableMinutes: 60, billableAmount: '125.00' },
-      parts: { partsCount: 1, billableTotal: '99.00' }
+      time: {
+        totalMinutes: 60,
+        billableMinutes: 60,
+        billableAmounts: [{ currencyCode: 'USD', amount: '125.00' }]
+      },
+      parts: {
+        partsCount: 1,
+        billableTotals: [{ currencyCode: 'USD', amount: '99.00' }]
+      }
     });
     const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.time.billableAmount).toBe('125.00');
+    expect(body.data.time.billableAmounts[0].amount).toBe('125.00');
   });
 });
 
