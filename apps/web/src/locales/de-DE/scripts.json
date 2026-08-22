@@ -797,7 +797,6 @@
       "systemDescription": "Wird im Agentendienstkontext ausgeführt.",
       "userDescription": "Wird im Kontext des aktuell angemeldeten Benutzers ausgeführt, wenn ein Benutzerhelfer verbunden ist."
     },
-    "secretsRequireSystem": "Dieses Skript verwendet geheime Variablen, die nur an Ausführungen im Systemkontext übergeben werden. Unter „Angemeldeter Benutzer“ schlagen die Geräte mit „nicht ausgeführt“ fehl.",
     "sections": {
       "selectDevices": "Wählen Sie Geräte aus"
     },
@@ -843,6 +842,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "Dieses Skript verwendet geheime Variablen, die nur an Ausführungen im Systemkontext ohne Sitzungsziel übergeben werden. Unter „Angemeldeter Benutzer“ oder bei einer bestimmten Zielsitzung schlagen die Geräte mit „nicht ausgeführt“ fehl."
   },
   "scriptExecutionsPage": {
     "errors": {

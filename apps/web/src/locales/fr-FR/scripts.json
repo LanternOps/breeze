@@ -797,7 +797,6 @@
       "systemDescription": "S’exécute dans le contexte du service agent.",
       "userDescription": "S’exécute dans le contexte de l’utilisateur actuellement connecté lorsqu’un assistant utilisateur est connecté."
     },
-    "secretsRequireSystem": "Ce script utilise des variables secrètes, qui ne sont transmises qu’aux exécutions dans le contexte système. Avec « Utilisateur connecté », les appareils échoueront avec « non exécuté ».",
     "sections": {
       "selectDevices": "Sélectionner des appareils"
     },
@@ -843,6 +842,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "Ce script utilise des variables secrètes, qui ne sont transmises qu’aux exécutions dans le contexte système sans session ciblée. Avec « Utilisateur connecté », ou lorsqu’une session précise est ciblée, les appareils échoueront avec « non exécuté »."
   },
   "scriptExecutionsPage": {
     "errors": {

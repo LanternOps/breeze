@@ -797,7 +797,6 @@
       "systemDescription": "Runs in the agent service context.",
       "userDescription": "Runs in the currently logged-in user context when a user helper is connected."
     },
-    "secretsRequireSystem": "This script uses secret variables, which are only delivered to system-context runs. Devices will fail with \"not executed\" under Run as user.",
     "sections": {
       "selectDevices": "Select Devices"
     },
@@ -843,6 +842,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "This script uses secret variables, which are only delivered to system-context runs with no session target. Devices will fail with \"not executed\" under Run as user, or when a specific session is targeted."
   },
   "scriptExecutionsPage": {
     "errors": {

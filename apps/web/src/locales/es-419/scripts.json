@@ -797,7 +797,6 @@
       "systemDescription": "Se ejecuta en el contexto del servicio del agente.",
       "userDescription": "Se ejecuta en el contexto del usuario actualmente conectado cuando se conecta un ayudante de usuario."
     },
-    "secretsRequireSystem": "Este script usa variables secretas, que solo se entregan en ejecuciones con contexto de sistema. Con \"Usuario registrado\" los dispositivos fallarán con \"no ejecutado\".",
     "sections": {
       "selectDevices": "Seleccionar dispositivos"
     },
@@ -843,6 +842,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "Este script usa variables secretas, que solo se entregan en ejecuciones con contexto de sistema y sin sesión de destino. Con \"Usuario registrado\", o al elegir una sesión específica, los dispositivos fallarán con \"no ejecutado\"."
   },
   "scriptExecutionsPage": {
     "errors": {

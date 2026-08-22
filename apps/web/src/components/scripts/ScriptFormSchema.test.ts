@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   hasSecretParameters,
+  secretsBlockedForRun,
   stripSecretParameterValueFields,
   mappingToRows,
   parameterBindingKey,
@@ -192,5 +193,28 @@ describe('stripSecretParameterValueFields', () => {
   it('tolerates values with no parameters at all', () => {
     const values = { name: 'S' };
     expect(stripSecretParameterValueFields(values)).toBe(values);
+  });
+});
+
+// #3409 PR4c-2: the web-side mirror of the server's `runAsSupportsSecretEnv`
+// (apps/api/src/services/scriptSecretDelivery.ts). Both halves of the rule
+// matter — a targeted session is refused even under `system`.
+describe('secretsBlockedForRun', () => {
+  it('allows an untargeted system or elevated run', () => {
+    expect(secretsBlockedForRun({ runAs: 'system' })).toBe(false);
+    expect(secretsBlockedForRun({ runAs: 'elevated' })).toBe(false);
+    expect(secretsBlockedForRun({ runAs: 'system', targetSessionId: null })).toBe(false);
+    // Unset run-as defaults to the service context server-side.
+    expect(secretsBlockedForRun({})).toBe(false);
+  });
+
+  it('blocks a user-context run', () => {
+    expect(secretsBlockedForRun({ runAs: 'user' })).toBe(true);
+  });
+
+  it('blocks ANY targeted session, including session 0, even under system', () => {
+    expect(secretsBlockedForRun({ runAs: 'system', targetSessionId: 3 })).toBe(true);
+    expect(secretsBlockedForRun({ runAs: 'system', targetSessionId: 0 })).toBe(true);
+    expect(secretsBlockedForRun({ targetSessionId: 1 })).toBe(true);
   });
 });

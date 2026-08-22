@@ -168,6 +168,36 @@ export function hasSecretParameters(parameters: readonly ScriptParameter[] | und
 }
 
 /**
+ * Would the server refuse to deliver a secret for a run with this context
+ * (#3409 PR4c-2)?
+ *
+ * The ONE web-side mirror of `runAsSupportsSecretEnv`
+ * (`apps/api/src/services/scriptSecretDelivery.ts`), which itself mirrors the
+ * agent's `runAsSupportsSecrets`: the secret rides an environment variable in
+ * the sealed command envelope, and a user-context run OR a run aimed at a
+ * specific session is executed through the helper IPC, which carries no
+ * environment. `elevated` and an unset run-as both run under the service, so
+ * both are fine.
+ *
+ * Both halves matter, and a surface that states only the run-as half tells the
+ * operator a half-truth — hence one shared predicate rather than a per-modal
+ * `runAs === 'user'` check that a surface gaining a session picker would
+ * silently inherit.
+ *
+ * ADVISORY ONLY. The server gate is authoritative; no run surface may block on
+ * this.
+ */
+export function secretsBlockedForRun(run: {
+  runAs?: 'system' | 'user' | 'elevated' | null;
+  targetSessionId?: number | null;
+}): boolean {
+  // `!= null` on purpose: session 0 is a real Windows session id, so a
+  // truthiness check would silently allow the one case the server refuses.
+  if (run.targetSessionId != null) return true;
+  return run.runAs === 'user';
+}
+
+/**
  * Drop the fields a `tenantSecret` row may not carry, and force the two the
  * schema pins (#3409 PR4c-2).
  *
