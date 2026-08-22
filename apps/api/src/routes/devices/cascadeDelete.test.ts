@@ -291,7 +291,18 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
       const tx = {
         execute: vi.fn().mockImplementation(async (q: any) => {
-          statements.push(sqlToText(q));
+          const text = sqlToText(q);
+          statements.push(text);
+          // The cascade reads the caller's lock_timeout so it can restore it
+          // after taking the parent row lock, and REFUSES to change the setting
+          // if it cannot read it back (a wrong-shaped result would otherwise
+          // silently widen a stricter caller). A bare [] here is not a result
+          // this driver can produce, and made the route 500.
+          if (text.includes('current_setting')) {
+            const row: Record<string, unknown>[] = [{ lock_timeout: '0' }];
+            Object.defineProperty(row, 'count', { value: 1, enumerable: false });
+            return row;
+          }
           return [];
         }),
         delete: vi.fn().mockReturnValue({
