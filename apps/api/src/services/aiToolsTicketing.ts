@@ -8,7 +8,7 @@
 
 import { and, desc, eq, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { alerts, organizations, tickets } from '../db/schema';
+import { alerts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
@@ -68,15 +68,13 @@ function timeEntryActorFrom(auth: AuthContext) {
   };
 }
 
-async function entryCurrency(entry: { orgId: string | null }): Promise<string | null> {
-  if (entry.orgId === null) return null;
-  // INTERIM (#3777): wave 4 stamps time_entries.currency_code and replaces this read with the row's own column.
-  const [organization] = await db
-    .select({ currencyCode: organizations.currencyCode })
-    .from(organizations)
-    .where(eq(organizations.id, entry.orgId))
-    .limit(1);
-  return organization?.currencyCode ?? null;
+/**
+ * The currency an entry's money is expressed in — the row's own snapshot
+ * (`time_entries.currency_code`, stamped once at creation / first money;
+ * null only for a standalone entry that carries no rate).
+ */
+function entryCurrency(entry: { currencyCode?: string | null }): string | null {
+  return entry.currencyCode ?? null;
 }
 
 /**
@@ -698,7 +696,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry, currencyCode: await entryCurrency(entry) });
+          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });
@@ -722,7 +720,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry, currencyCode: await entryCurrency(entry) });
+          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });
@@ -741,7 +739,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry, currencyCode: await entryCurrency(entry) });
+          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });
