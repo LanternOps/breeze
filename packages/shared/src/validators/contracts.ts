@@ -13,7 +13,7 @@ export const contractLineInputSchema = z.object({
   // when catalogItemId is set (and any client value is ignored there — the
   // resolver is authoritative, as is taxable). Non-catalog lines require it.
   unitPrice: money.optional(),
-  taxable: z.boolean(),
+  taxable: z.boolean().optional(),
   catalogItemId: z.string().guid().optional(),
   manualQuantity: money.optional(),
   siteId: z.string().guid().optional(),
@@ -21,6 +21,9 @@ export const contractLineInputSchema = z.object({
 }).refine(
   (l) => l.unitPrice !== undefined || l.catalogItemId !== undefined,
   { message: 'unitPrice is required unless catalogItemId is set', path: ['unitPrice'] }
+).refine(
+  (l) => l.taxable !== undefined || l.catalogItemId !== undefined,
+  { message: 'taxable is required unless catalogItemId is set', path: ['taxable'] }
 ).refine(
   (l) => l.lineType !== 'manual' || l.manualQuantity !== undefined,
   { message: 'manualQuantity is required for manual lines', path: ['manualQuantity'] }

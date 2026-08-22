@@ -324,8 +324,8 @@ export async function addContractLineToContract(contractId: string, input: Contr
     } else {
       // The shared validator already requires unitPrice here; this is the
       // service-level backstop for internal callers.
-      if (input.unitPrice === undefined) {
-        throw new ContractServiceError('unitPrice is required unless catalogItemId is set', 400, 'INVALID_STATE');
+      if (input.unitPrice === undefined || input.taxable === undefined) {
+        throw new ContractServiceError('unitPrice and taxable are required unless catalogItemId is set', 400, 'INVALID_STATE');
       }
       unitPrice = input.unitPrice;
       taxable = input.taxable;
