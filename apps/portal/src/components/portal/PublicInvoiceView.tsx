@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { CreditCard, Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
-import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
+import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { money } from '@/lib/money';
 
@@ -104,7 +104,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
             eyebrow="Invoice"
             title={invoice.invoiceNumber ?? 'Invoice'}
             statusLabel="No longer due"
-            statusClass="bg-muted text-muted-foreground"
+            statusTone="neutral"
             dates={[]}
           />
           <div className="space-y-2 text-sm text-muted-foreground">
@@ -242,7 +242,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
           eyebrow="Invoice"
           title={invoice.invoiceNumber ?? 'Invoice'}
           statusLabel={STATUS_LABELS[invoice.status] ?? invoice.status}
-          statusClass={statusColor(invoice.status)}
+          statusTone={statusTone(invoice.status)}
           dates={headerDates}
           preparedForLabel="Bill to"
           preparedForName={invoice.billToName ?? undefined}

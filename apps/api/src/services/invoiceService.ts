@@ -631,7 +631,10 @@ export function toCustomerInvoiceHeader(invoice: InvoiceRow): CustomerInvoiceHea
   };
 }
 
-export async function getCustomerInvoice(invoiceId: string, orgId?: string) {
+export async function getCustomerInvoice(
+  invoiceId: string,
+  orgId?: string
+): Promise<{ invoice: CustomerInvoiceHeader; lines: CustomerInvoiceLine[]; partnerId: string }> {
   const inv = await getOwnedInvoiceOr404(invoiceId); // RLS scopes; portal context supplies org access
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');

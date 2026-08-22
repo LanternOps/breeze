@@ -146,10 +146,8 @@ function PricingTable({
   );
 }
 
-/** Author-chosen column alignment as a utility class.
- *  This was an inline `textAlign` style, which the production CSP refuses
- *  (`style-src-attr 'none'`), so every author-set column quietly left-aligned
- *  for customers while looking right in dev. */
+/** Author-chosen column alignment as a utility class (never an inline
+ *  `textAlign` — see lib/docAccent.ts for the CSP rule). */
 function alignClass(align?: string | null): string {
   switch (align) {
     case 'center': return 'text-center';

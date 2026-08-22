@@ -54,27 +54,50 @@ export function PageHeader({
 }
 
 /**
- * Status as a mark in the register: a small dot of the status hue beside
- * quiet text in the AA-safe `-on-tint` foreground. `dotClass` takes the
- * background-tuned token (`bg-success`), `textClass` its on-tint pair.
+ * The five tones a status can take anywhere in the portal. Producers map a
+ * domain status (ticket, invoice, quote, device) to a tone; only this file
+ * knows which classes a tone wears, so the dot/text/chip pairing that
+ * tokenContrast.test.ts asserts AA-safe cannot drift per call site.
+ *
+ * Amber (`warning`) is reserved for states the customer should act on;
+ * `primary` is informational; `neutral` is anything quiet.
+ */
+export type MarkTone = 'success' | 'warning' | 'destructive' | 'primary' | 'neutral';
+
+const MARK_TONES: Record<MarkTone, { dot: string; text: string; chip: string }> = {
+  success: { dot: 'bg-success', text: 'text-success-on-tint', chip: 'bg-success/10 text-success-on-tint' },
+  warning: { dot: 'bg-warning', text: 'text-warning-on-tint', chip: 'bg-warning/10 text-warning-on-tint' },
+  destructive: { dot: 'bg-destructive', text: 'text-destructive-on-tint', chip: 'bg-destructive/10 text-destructive-on-tint' },
+  primary: { dot: 'bg-primary', text: 'text-primary-on-tint', chip: 'bg-primary/10 text-primary-on-tint' },
+  neutral: { dot: 'bg-muted-foreground/60', text: 'text-muted-foreground', chip: 'bg-muted text-muted-foreground' },
+};
+
+/** Tinted-chip classes for a tone — the stamped presentation paper documents
+ *  (documentShell) keep instead of the ledger's dot. */
+export function markChipClass(tone: MarkTone): string {
+  return MARK_TONES[tone].chip;
+}
+
+/**
+ * Status as a mark in the register: a small dot of the tone's hue beside
+ * quiet text in its AA-safe `-on-tint` foreground.
  */
 export function StatusMark({
-  dotClass,
-  textClass,
+  tone,
   children,
   className,
   ...rest
 }: {
-  dotClass: string;
-  textClass: string;
+  tone: MarkTone;
   children: React.ReactNode;
 } & React.HTMLAttributes<HTMLSpanElement>) {
+  const t = MARK_TONES[tone];
   return (
     <span
       {...rest}
-      className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold uppercase tracking-[0.08em]', textClass, className)}
+      className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold uppercase tracking-[0.08em]', t.text, className)}
     >
-      <span aria-hidden="true" className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dotClass)} />
+      <span aria-hidden="true" className={cn('h-1.5 w-1.5 shrink-0 rounded-full', t.dot)} />
       {children}
     </span>
   );

@@ -90,10 +90,8 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
         <div className="flex min-h-12 items-end border-b border-foreground/30 pb-1.5">
           <span
             data-testid={`${testIdPrefix}-signature-preview`}
-            /* .signature-preview carries the cursive stack. It was an inline
-               fontFamily, which the production CSP (style-src-attr 'none')
-               refuses, so the signature rendered in ordinary body text for
-               every customer while looking correct in dev. */
+            /* .signature-preview carries the cursive stack (a class, not an
+               inline fontFamily — see lib/docAccent.ts). */
             className="signature-preview text-3xl leading-none text-foreground"
           >
             {trimmed || ' '}

@@ -9,8 +9,7 @@ import { buildDocAccentCss } from '../lib/docAccent';
 interface Props {
   title: string;
   /** Partner brand accent for a document rendered on this page (proposal or
-   *  invoice). Emitted below as a nonced <style> element because the prod CSP
-   *  bans style attributes — see lib/docAccent.ts. */
+   *  invoice), emitted below as a nonced <style> element (lib/docAccent.ts). */
   docAccent?: string | null;
 }
 

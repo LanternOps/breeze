@@ -321,6 +321,8 @@ export interface TicketSummary {
 export interface TicketComment {
   id: string;
   authorName: string;
+  /** 'portal' is the customer's own reply; anything else came from the IT team. */
+  authorType: string | null;
   content: string;
   createdAt: string;
 }

@@ -1,5 +1,5 @@
 import { withBase } from '@/lib/basePath';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -21,13 +21,18 @@ type TicketFormData = z.infer<typeof ticketSchema>;
 
 const inputCls = INPUT;
 
-export function NewTicketForm() {
+interface NewTicketFormProps {
+  /** Intake forms from the page's server-side probe of /portal/tickets/forms —
+   *  the same call that gates the page, so the picker never fetches a second
+   *  time on the client. Empty when the MSP has published none (or the probe
+   *  failed, which the page logs): the legacy free-text form shows. */
+  forms: PortalTicketForm[];
+}
+
+export function NewTicketForm({ forms }: NewTicketFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Intake forms (Phase 2). Purely additive: a fetch failure silently degrades to
-  // the legacy free-text form (no grid, no toast — just a console breadcrumb).
-  const [forms, setForms] = useState<PortalTicketForm[]>([]);
   const [selectedForm, setSelectedForm] = useState<PortalTicketForm | null>(null);
   // True once the user picks "Something else" from the grid → legacy free-text form.
   const [showLegacy, setShowLegacy] = useState(false);
@@ -48,24 +53,6 @@ export function NewTicketForm() {
       priority: 'normal'
     }
   });
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const result = await portalApi.getTicketForms();
-      if (cancelled) return;
-      if (result.data) {
-        setForms(result.data);
-      } else {
-        // Forms are additive — degrade to the legacy free-text form, but leave a
-        // breadcrumb so a broken picker isn't invisible in the console.
-        console.warn('[portal/new-ticket] forms fetch failed', result.error);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Legacy free-text path — unchanged behaviour from before intake forms.
   const onSubmit = async (data: TicketFormData) => {

@@ -121,6 +121,13 @@ export const bulkTicketActionSchema = z.object({
   { message: 'Resolving requires a per-ticket resolution note; resolve tickets individually', path: ['status'] }
 );
 
+/**
+ * Portal (customer) comment cap, enforced by the API on create and edit and
+ * mirrored by the portal composer's maxLength. Technician comments keep the
+ * wider 50,000 limit of addTicketCommentSchema.
+ */
+export const PORTAL_TICKET_COMMENT_MAX_CHARS = 5000;
+
 export const addTicketCommentSchema = z.object({
   content: z.string().min(1).max(50_000),
   isPublic: z.boolean().default(true)
