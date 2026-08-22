@@ -1543,7 +1543,20 @@
     "saving": "Saving…",
     "saveChanges": "Save changes",
     "createItem": "Create item",
-    "unknownItem": "Unknown item"
+    "unknownItem": "Unknown item",
+    "priceBook": "Price book",
+    "addCurrencyPrice": "Add a price in another currency…",
+    "removePrice": "Remove {{currency}} price",
+    "priceCurrency": "Price currency",
+    "costCurrency": "Cost currency",
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
+    "overrideCurrency": "Override currency",
+    "noPricesYet": "No prices yet. Add at least one currency.",
+    "loadingPartnerCurrency": "Loading partner currency…",
+    "partnerCurrencyUnavailable": "Could not load your partner currency.",
+    "retry": "Retry",
+    "priceCouldNotBeSavedRetry": "The {{currency}} price could not be saved. Retry.",
+    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry."
   },
   "catalogItemsTab": {
     "itemArchived": "Item archived",
@@ -1590,7 +1603,12 @@
     "margin": "Margin",
     "unknownItem": "Unknown item",
     "collapseBundle": "Collapse bundle",
-    "expandBundle": "Expand bundle"
+    "expandBundle": "Expand bundle",
+    "nMoreCurrencies_one": "+{{count}} currency",
+    "nMoreCurrencies_other": "+{{count}} currencies",
+    "incompletePriceBook": "Incomplete price book",
+    "marginUnavailable": "Margin unavailable",
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable"
   },
   "catalogSettingsPage": {
     "productCatalog": "Product Catalog",
@@ -2043,6 +2061,7 @@
     "saveChanges": "Save changes"
   },
   "tdSynnexCatalogPanel": {
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
     "tDSYNNEXSettingsFailedToLoad": "TD SYNNEX settings failed to load.",
     "tDSYNNEXSettingsSaved": "TD SYNNEX settings saved",
     "tDSYNNEXConnectionTestSucceeded": "TD SYNNEX connection test succeeded",
@@ -2108,6 +2127,7 @@
     "notConfigured": "Not configured"
   },
   "tdSynnexEcExpressPanel": {
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
     "tDSYNNEXPricingSettingsSaved": "TD SYNNEX Pricing settings saved",
     "tDSYNNEXPricingConnectionTestSucceeded": "TD SYNNEX Pricing connection test succeeded",
     "enterAValidSellPrice": "Enter a valid sell price.",
@@ -2252,7 +2272,7 @@
     "responseSLAMinutes": "Response SLA (minutes)",
     "resolutionSLAMinutes": "Resolution SLA (minutes)",
     "billableByDefault": "Billable by default",
-    "defaultHourlyRate": "Default hourly rate ($)",
+    "defaultHourlyRate": "Default hourly rate",
     "save": "Save",
     "cancel": "Cancel",
     "responseMinutes": "{{count}}m response",
@@ -2753,7 +2773,7 @@
     "billing": {
       "title": "Billing defaults",
       "description": "Default billing settings for time entries on tickets for this organization.",
-      "hourlyRate": "Default hourly rate ($)",
+      "hourlyRate": "Default hourly rate",
       "billable": "Default billable",
       "inherit": "Inherit",
       "billableOption": "Billable",

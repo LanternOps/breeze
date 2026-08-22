@@ -36,3 +36,29 @@ export function computeMarginBreakdown(cost: number | null, price: number | null
 export function formatMarginSummary(b: MarginBreakdown, currency = 'USD'): string {
   return `Margin ${formatPercent(b.marginPct / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} · Markup ${formatPercent(b.markupPct / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} · Profit ${currency} ${formatNumber(b.profit, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+
+/**
+ * Normalize a distributor feed's currency to a trimmed, uppercase ISO code.
+ * `null` stays `null` — the import route schemas validate `product.currency`
+ * as `currencyCodeSchema.nullable()` (NOT optional), so the key must be
+ * present and explicitly null when the feed gave none; `undefined` would be
+ * dropped by JSON serialization and the request would 400 (multi-currency
+ * wave 3). Never substitutes `'USD'`.
+ */
+export function feedCurrencyCode(value: string | null | undefined): string | null {
+  const code = (value ?? '').trim().toUpperCase();
+  return code.length > 0 ? code : null;
+}
+
+/**
+ * Whether a cost in `feedCurrency` may be compared against a sell price in
+ * `partnerCurrency`. Margin math is only meaningful when both sides are in
+ * the same currency (no conversion, ever). A feed that reports no currency is
+ * assumed to be in the partner currency — the same default the API applies
+ * when it derives `costCurrency` from `product.currency`.
+ */
+export function marginGuard(feedCurrency: string | null, partnerCurrency: string): boolean {
+  const feed = feedCurrencyCode(feedCurrency);
+  if (feed === null) return true;
+  return feed === partnerCurrency.trim().toUpperCase();
+}

@@ -453,7 +453,9 @@ reports effective.
 
 The technician-side Viewer and Helper (Tauri) apps are mirrored from the
 official release as-is. If you want to sign those under your identity too,
-the relevant official jobs are `build-viewer`, `sign-windows-tauri`,
+the relevant official jobs are `build-viewer`,
+`sign-windows-tauri-azure` / `sign-windows-tauri-sslcom` (`sign-windows-tauri`
+is the gate that asserts exactly one of them ran),
 `build-viewer-macos`, and `build-helper-macos` in
 `.github/workflows/release.yml` — that path is closer to a fork than to this
 template, and Gatekeeper's right-click-open flow is generally tolerable for

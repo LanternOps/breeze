@@ -71,7 +71,7 @@ async function seedPendingIntent(): Promise<string> {
       .returning({ id: partners.id });
     const [org] = await db
       .insert(organizations)
-      .values({ partnerId: partner!.id, name: 'Intent Test Org', slug: `intent-test-org-${sfx}` })
+      .values({ currencyCode: 'USD', partnerId: partner!.id, name: 'Intent Test Org', slug: `intent-test-org-${sfx}` })
       .returning({ id: organizations.id });
     const [user] = await db
       .insert(users)

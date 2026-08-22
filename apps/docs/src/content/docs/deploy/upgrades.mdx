@@ -1,6 +1,6 @@
 ---
 title: Upgrade Guide
-description: How to upgrade a self-hosted Breeze RMM deployment to a new version.
+description: Upgrade a self-hosted Breeze RMM deployment with Docker Compose, including automatic database migrations, expected downtime, and version-specific notes.
 sidebar:
   order: 4
   label: Upgrade Guide
@@ -117,7 +117,7 @@ The agent persists this setting across restarts. This is also the way to recover
 
 ### Controlled agent fleet rollout
 
-By default (`AGENT_AUTO_PROMOTE=true`), publishing or syncing a new agent release immediately makes it the fleet's upgrade target — every auto-updating device moves to it on its next heartbeat. If you'd rather stage rollouts (canary first, then the fleet), set `AGENT_AUTO_PROMOTE=false` to decouple *registering* a release from *promoting* it.
+By default (`AGENT_AUTO_PROMOTE=true`), syncing a new agent release immediately makes it the fleet's upgrade target — every auto-updating device moves to it on its next heartbeat. Boot-time sync only ever registers the release matching your own `BREEZE_VERSION` (or `BINARY_VERSION` if set), so a newly published GitHub release does not move your fleet until you upgrade your server images — the fleet follows the server, not the public release feed. If you'd rather stage rollouts (canary first, then the fleet), set `AGENT_AUTO_PROMOTE=false` to decouple *registering* a release from *promoting* it.
 
 <Steps>
 
@@ -141,7 +141,7 @@ By default (`AGENT_AUTO_PROMOTE=true`), publishing or syncing a new agent releas
 </Steps>
 
 <Aside type="tip">
-  Leave `AGENT_AUTO_PROMOTE` unset (or `true`) to keep the default behavior where a published release rolls out immediately. The promote action is audit-logged either way.
+  Leave `AGENT_AUTO_PROMOTE` unset (or `true`) to keep the default behavior where the release matching your server version rolls out as soon as the API syncs it. The promote action is audit-logged either way.
 </Aside>
 
 ### Pinning Agent and Watchdog Versions

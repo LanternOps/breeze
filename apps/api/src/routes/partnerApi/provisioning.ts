@@ -251,11 +251,15 @@ partnerProvisioningRoutes.post(
       // authority was established by the auth middleware.
       outcome = await withSystemDbAccessContext(async (): Promise<CreateOutcome> => {
         const [partnerRow] = await db
-          .select({ maxOrganizations: partners.maxOrganizations })
+          .select({
+            maxOrganizations: partners.maxOrganizations,
+            currencyCode: partners.currencyCode,
+          })
           .from(partners)
           .where(eq(partners.id, principal.partnerId))
           .limit(1);
-        const cap = partnerRow?.maxOrganizations ?? null;
+        if (!partnerRow) return { kind: 'failed' };
+        const cap = partnerRow.maxOrganizations;
         // Fast path: refuse before inserting. This check alone is racy — two
         // concurrent creates could both pass it — so it is backed by the
         // post-insert recount below.
@@ -267,6 +271,7 @@ partnerProvisioningRoutes.post(
           .insert(organizations)
           .values({
             partnerId: principal.partnerId,
+            currencyCode: partnerRow.currencyCode,
             name: data.name,
             slug: data.slug,
             type: data.type,

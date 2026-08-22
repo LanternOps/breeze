@@ -1,9 +1,10 @@
 import { eq } from 'drizzle-orm';
-import { computeChargeNow } from '@breeze/shared';
+import { computeChargeNow, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
+import { mapStripeCheckoutError } from './stripeCheckoutErrors';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess, requireSiteAccess } from './invoiceService';
 import { portalBase } from './portalUrl';
@@ -32,7 +33,23 @@ const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
  * the mapping INSERT runs inside a context so it isn't a contextless 0-row
  * no-op (#1375).
  */
-export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActor): Promise<{ url: string }> {
+export interface InvoiceCheckoutUrls {
+  /** Overrides for the Checkout return URLs. The public invoice-link path uses
+   *  session-id-only URLs so the durable bearer token never reaches Stripe's
+   *  logs (2026-08-21 spec §5); the default is the authenticated portal detail
+   *  page, unchanged for the portal/MSP callers. */
+  successUrl?: string;
+  cancelUrl?: string;
+  /** Discriminates the Stripe idempotency key when the return URLs differ from
+   *  the default — identical keys with different params make Stripe reject the
+   *  replay outright, so each URL shape needs its own key family. Omitted for
+   *  the historical portal/MSP path to keep its keys byte-identical. */
+  idempotencySuffix?: string;
+}
+
+export async function createInvoicePayLink(
+  invoiceId: string, actor: InvoiceActor, urls: InvoiceCheckoutUrls = {},
+): Promise<{ url: string; warning?: StripeCurrencyWarning }> {
   const [inv] = await withSystemDbAccessContext(() =>
     db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1)
   );
@@ -48,7 +65,7 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   // deposit, deposit partially/fully paid) — never reimplement that logic here.
   const chargeNow = computeChargeNow({
     depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
-  });
+  }, inv.currencyCode);
   // Currency-aware minor units (zero-decimal currencies must not be ×100).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
@@ -58,9 +75,9 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   // the #1610 API-key model), so read it in a short system-scoped context (#1448 —
   // there is no ambient request tx here). One read returns both the client and the
   // account id (for the mapping row).
-  let stripe, stripeAccountId: string;
+  let stripe, stripeAccountId: string, defaultCurrency: string | null;
   try {
-    ({ stripe, stripeAccountId } = await withSystemDbAccessContext(() =>
+    ({ stripe, stripeAccountId, defaultCurrency } = await withSystemDbAccessContext(() =>
       getPartnerStripeClient(inv.partnerId)));
   } catch (err) {
     // Only "no key configured" is a benign 409. A decrypt/unreadable-key fault is an
@@ -83,7 +100,9 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
 
   // Truly outside any DB context/transaction — no pooled connection is held
   // across this ~hundreds-of-ms round trip.
-  const session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
+  let session;
+  try {
+    session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
     mode: 'payment',
     payment_method_types: ['card'],
     line_items: [{
@@ -101,8 +120,8 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
     // {CHECKOUT_SESSION_ID} is substituted by Stripe on redirect — the portal
     // verify-on-return handler reads it to settle server-side (the API-key model
     // has no inbound webhook).
-    success_url: `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${portalBaseUrl}/invoices/${inv.id}`,
+    success_url: urls.successUrl ?? `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: urls.cancelUrl ?? `${portalBaseUrl}/invoices/${inv.id}`,
     metadata: {
       invoice_id: inv.id,
       org_id: inv.orgId,
@@ -118,8 +137,15 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
     // 50%-deposit invoice has the SAME chargeMinor for the deposit and the later
     // balance charge (different product name but equal amount), so the amount
     // alone can't disambiguate — the explicit dep/bal discriminator does.
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}`,
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}`,
   }));
+  } catch (err) {
+    // Friendly mapping (spec §10): a currency the account cannot present becomes a
+    // partner-facing 409 STRIPE_CURRENCY_UNSUPPORTED; everything else propagates.
+    const mapped = mapStripeCheckoutError(err, inv.currencyCode);
+    if (mapped) throw mapped;
+    throw err;
+  }
 
   if (!session.url) throw new InvoiceServiceError('Stripe did not return a checkout URL', 500, 'STRIPE_NO_URL');
 
@@ -139,5 +165,11 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
     })
   );
 
-  return { url: session.url };
+  // Warn-don't-block (spec §10): the session is ALWAYS minted in the document
+  // currency; a differing account default is surfaced so the partner knows they
+  // bear the FX spread. Built from the cached column returned with the client —
+  // no extra query, no Stripe refresh on the pay path. The key is omitted (not
+  // `undefined`) when there is nothing to warn about.
+  const warning = buildStripeCurrencyWarning(inv.currencyCode, defaultCurrency);
+  return warning ? { url: session.url, warning } : { url: session.url };
 }

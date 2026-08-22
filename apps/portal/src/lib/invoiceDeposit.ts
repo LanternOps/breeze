@@ -24,18 +24,30 @@ export function toCents(v: string | null): number {
   return Number.isFinite(n) ? Math.round(n * 100) : 0;
 }
 
+const ZERO_DECIMAL = new Set([
+  'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG',
+  'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+]);
+
+function roundToCurrency(value: string | number, currency: string): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new Error('currency: non-finite amount');
+  if (ZERO_DECIMAL.has(String(currency).trim().toUpperCase())) return Math.floor(n + 0.5).toFixed(2);
+  return (Math.floor(n * 100 + 0.5) / 100).toFixed(2);
+}
+
 /** Deposit-first charge amount: when a deposit is set and still unmet, charge the
  *  deposit remaining (clamped to the balance so a concurrent manual payment can't
  *  push the charge past what is owed); otherwise charge the full balance. Identical
  *  to computeChargeNow(@breeze/shared). */
-export function computeChargeNow(inv: DepositChargeInput): { amount: string; isDeposit: boolean } {
+export function computeChargeNow(inv: DepositChargeInput, currencyCode = 'USD'): { amount: string; isDeposit: boolean } {
   const balanceCents = toCents(inv.balance);
   const depositCents = inv.depositDue !== null ? toCents(inv.depositDue) : 0;
   const paidCents = toCents(inv.amountPaid);
   if (depositCents > 0 && paidCents < depositCents) {
-    return { amount: (Math.min(depositCents - paidCents, balanceCents) / 100).toFixed(2), isDeposit: true };
+    return { amount: roundToCurrency(Math.min(depositCents - paidCents, balanceCents) / 100, currencyCode), isDeposit: true };
   }
-  return { amount: inv.balance, isDeposit: false };
+  return { amount: roundToCurrency(inv.balance, currencyCode), isDeposit: false };
 }
 
 /** List-badge state for an invoice: 'unpaid' while amountPaid < depositDue, 'paid'

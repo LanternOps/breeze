@@ -48,6 +48,7 @@ import {
 } from '../../services/manifestSigning';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
+import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -133,6 +134,45 @@ export function watchdogRestartLogCacheSizeForTests(): number {
 }
 
 export const heartbeatRoutes = new Hono();
+
+/**
+ * Producer for `agent_heartbeat_total`. The counter, its Grafana panel, and the
+ * `NoAgentHeartbeats` alert rule all predate this — nothing ever incremented it,
+ * so the panel read a flat zero against a live fleet.
+ *
+ * Recorded from a route-scoped middleware rather than at each `return`: the
+ * handler below has five response points plus awaited service calls that can
+ * throw, and a per-exit call would inevitably drift out of sync with them. The
+ * middleware also sits outside `bodyLimit` and `zValidator`, so a rejected
+ * oversized or malformed heartbeat is counted as `failed` instead of vanishing —
+ * an agent that has started sending garbage is exactly what this signal is for.
+ *
+ * It sits INSIDE agent-token auth, though: `agentRoutes.use('/:id/*', ...)` in
+ * ./index.ts rejects a bad or missing token before this router is reached. That
+ * is deliberate. The counter answers "are enrolled agents checking in", and
+ * counting unauthenticated requests to a publicly reachable URL would let anyone
+ * inflate it. `failed` means an authenticated agent whose beat was rejected.
+ *
+ * Scoped to POST because `use()` registers for every method, and an authenticated
+ * GET to this path 404s — which would otherwise be counted as a failed heartbeat.
+ *
+ * Registered before the handler because Hono only wraps handlers declared after
+ * the `use()` that is meant to cover them.
+ */
+heartbeatRoutes.on('POST', '/:id/heartbeat', async (c, next) => {
+  try {
+    await next();
+  } finally {
+    // `resolveResponseStatus`, not `c.res.status`: an unfinalized context yields a
+    // synthesised 200, which would book a request the client saw as a 500 as a
+    // SUCCESSFUL heartbeat. See the helper for the two ways that happens.
+    try {
+      recordAgentHeartbeat(resolveResponseStatus(c) < 400 ? 'success' : 'failed');
+    } catch (error) {
+      console.warn('[heartbeat] Failed to record heartbeat metric:', error);
+    }
+  }
+});
 
 heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
   const agentId = c.req.param('id');

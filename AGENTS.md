@@ -172,13 +172,13 @@ cd e2e-tests && pnpm test
 
 ## Codex Delegation
 
-This project uses OpenAI Codex CLI for task delegation. Codex orchestrates complex work while Codex handles isolated tasks.
+This project uses OpenAI Codex CLI for task delegation. Claude orchestrates complex work while Codex handles isolated tasks.
 
 ### Quick Commands
 
 ```bash
 # Standard task
-codex exec "<task>" --full-auto -C "/Users/toddhebebrand/breeze"
+codex exec "<task>" --full-auto -C "$(git rev-parse --show-toplevel)"
 
 # With reasoning level (low/medium/high/xhigh)
 codex exec "<task>" --full-auto -c 'model_reasoning_effort="xhigh"'
@@ -200,7 +200,7 @@ codex exec resume --last "<follow-up>"
 | Code analysis | high | "Review this for security issues" |
 | Architecture | xhigh | "Design the caching strategy" |
 
-#### Keep with Codex
+#### Keep with Claude
 - Multi-tenant data isolation
 - Authentication/authorization logic
 - Cross-module refactoring

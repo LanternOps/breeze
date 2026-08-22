@@ -7,19 +7,19 @@ sidebar:
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Distributor integrations live on the **Distributors** tab of the Integrations page (**Integrations → Distributors**, [`/integrations#distributors`](/integrations#distributors)). They let you bring vendor licenses and live product pricing into Breeze: **Pax8** syncs client companies and license subscriptions you can map to organizations and link to recurring contract lines, and **TD SYNNEX Pricing** (EC Express) looks up real-time cost, MSRP, and stock availability you can import straight into your [Product Catalog](/features/product-catalog/).
+Distributor integrations live on the **Distributors** tab of the Integrations page (**Integrations → Distributors**, `/integrations#distributors`). They let you bring vendor licenses and live product pricing into Breeze: **Pax8** syncs client companies and license subscriptions you can map to organizations and link to recurring contract lines, and **TD SYNNEX Pricing** (EC Express) looks up real-time cost, MSRP, and stock availability you can import straight into your [Product Catalog](/features/product-catalog/).
 
 The tab has two sub-tabs:
 
-- **Pax8** — [`/integrations#pax8`](/integrations#pax8)
-- **TD SYNNEX Pricing** — [`/integrations#tdsynnex-ec`](/integrations#tdsynnex-ec)
+- **Pax8** — `/integrations#pax8`
+- **TD SYNNEX Pricing** — `/integrations#tdsynnex-ec`
 
 <Aside type="note">
   Distributor integrations are **partner-account only**. They are configured once for your MSP and shared across all of your customers. If you sign in with an organization-scoped account, both sub-tabs show a message that the integration is available to partner accounts only — there is nothing to configure at the organization level.
 </Aside>
 
 <Aside>
-  Legacy note: an older TD SYNNEX **Digital Bridge** connector is intentionally hidden. Its catalog endpoint isn't entitled for pricing data, so **TD SYNNEX Pricing** (EC Express) is the working connector documented here. If you're looking for TD SYNNEX product pricing, use the **TD SYNNEX Pricing** sub-tab.
+  Legacy note: an older TD SYNNEX **Digital Bridge** connector is intentionally hidden. Its catalog endpoint isn't entitled for live pricing data, so **TD SYNNEX Pricing** (EC Express) is the working connector documented here. Existing Digital Bridge / price-file import workflows store the feed's currency as the catalog item's **Cost currency**. If you're looking for live TD SYNNEX product pricing, use the **TD SYNNEX Pricing** sub-tab.
 </Aside>
 
 ---
@@ -32,7 +32,7 @@ The tab has two sub-tabs:
 Pax8 connects with your Pax8 **OAuth client credentials**. Once connected, Breeze pulls your Pax8 companies and their license subscriptions so you can map them to Breeze organizations and link them to recurring contract lines.
 
 <Steps>
-1. Open **Integrations → Distributors → Pax8** ([`/integrations#pax8`](/integrations#pax8)).
+1. Open **Integrations → Distributors → Pax8** (`/integrations#pax8`).
 
 2. In the **Connection** card, fill in:
    - **Display name** — a label for this connection (defaults to `Pax8`).
@@ -55,6 +55,7 @@ Pax8 connects with your Pax8 **OAuth client credentials**. Once connected, Breez
 
 - **Companies** — your Pax8 client companies, with status, shown in the **Company mapping** table. Map each Pax8 company to a Breeze organization (or leave it unmapped).
 - **License subscriptions** — pulled per company, including product name, vendor, quantity, unit cost, unit price, currency, billing term, and status.
+- **Catalog import** — products imported from the Pax8 catalog (see [Product Catalog → Pax8](/features/product-catalog/#pax8)) store the feed's currency as the item's **Cost currency**; margin is computed only against a sell price in that same currency.
 - **Contract-line linkage** — once a company is mapped to an organization, each subscription can be linked to a manual contract line. Breeze keeps the billing quantity on that contract line and records the Pax8 quantity separately as an observation.
 
 <Aside type="caution" title="Behavior change: Pax8 no longer overwrites billing quantities">
@@ -123,7 +124,7 @@ On a converted quote, technicians see **“This quote staged a Pax8 order (N ite
 **TD SYNNEX Pricing** connects to TD SYNNEX **EC Express** to look up real-time cost, MSRP, and stock availability, and import products straight into your [Product Catalog](/features/product-catalog/). It authenticates with your EC Express account credentials.
 
 <Steps>
-1. Open **Integrations → Distributors → TD SYNNEX Pricing** ([`/integrations#tdsynnex-ec`](/integrations#tdsynnex-ec)).
+1. Open **Integrations → Distributors → TD SYNNEX Pricing** (`/integrations#tdsynnex-ec`).
 
 2. Fill in your EC Express connection details:
    - **Customer No** — your TD SYNNEX customer number.
@@ -141,8 +142,10 @@ On a converted quote, technicians see **“This quote staged a Pax8 order (N ite
 TD SYNNEX Pricing is a **live lookup + import** flow rather than a background sync:
 
 - **Product lookup** — search by SYNNEX SKU or manufacturer part number. Each result shows the product name, status, description, your **cost**, **MSRP**, **total available** quantity, and a per-warehouse stock breakdown (available, on order, ETA).
-- **Import to catalog** — import a result into your Product Catalog. The **sell price** is pre-filled from your partner default markup over cost (falling back to MSRP, then cost) and is editable. A live margin summary is shown, warning you if the sell price is below cost.
-- On import, Breeze records the product name, SKU (SYNNEX SKU or manufacturer part), description, your entered sell price, the cost basis, and whether the item is taxable (following your partner's hardware-tax policy).
+- **Import to catalog** — import a result into your Product Catalog. Breeze stores the EC Express feed currency as the item's **Cost currency**. The sell price in that currency is pre-filled from your partner default markup over cost (falling back to MSRP, then cost) and is editable.
+- On import, Breeze records the product name, SKU (SYNNEX SKU or manufacturer part), description, your entered sell price, the cost basis and currency, and whether the item is taxable (following your partner's hardware-tax policy). Margin and markup-derived pricing are available only when the cost and sell currencies match; otherwise the UI shows **“Cost in CAD — margin unavailable”** (for example).
+
+The same cost-currency rule applies to TD SYNNEX Digital Bridge / price-file imports: Breeze takes the **Cost currency** from the feed and does not convert it when you add sell prices in other currencies.
 
 This same live lookup is also reachable through the AI/MCP surface via the `lookup_distributor_product` tool, with reseller cost hidden for organization-scoped callers — see the [MCP Server documentation](/features/mcp-server/#billing-tools).
 

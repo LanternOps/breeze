@@ -16,6 +16,8 @@
     "pin:github-actions": "node scripts/security/pin-github-actions.mjs",
     "test:override-floors": "node --test scripts/security/check-override-floors.test.mjs",
     "check:override-floors": "node scripts/security/check-override-floors.mjs",
+    "test:release-trust-allowlist": "node --test scripts/security/check-release-trust-allowlist.test.mjs",
+    "check:release-trust-allowlist": "node scripts/security/check-release-trust-allowlist.mjs",
     "check:agent-mtls-edge-policy": "bash scripts/check-agent-mtls-edge-policy.sh",
     "check:agent-binary-signatures": "bash scripts/security/check-agent-binary-signatures.sh --source",
     "test:agent-binary-signatures": "node --test scripts/security/check-agent-binary-signatures.test.mjs",
@@ -98,7 +100,8 @@
       "shell-quote@<1.9.0": ">=1.9.0",
       "@grpc/grpc-js@<1.14.4": ">=1.14.4",
       "js-yaml@>=4.0.0 <4.3.1": ">=4.3.1 <5.0.0",
-      "nanoid@<3.3.18": ">=3.3.18 <4.0.0"
+      "nanoid@<3.3.18": ">=3.3.18 <4.0.0",
+    "deepmerge-ts@<8.0.0": ">=8.0.1 <9.0.0"
     }
   }
 }

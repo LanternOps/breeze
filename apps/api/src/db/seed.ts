@@ -1091,10 +1091,18 @@ export async function seedDefaultAdmin() {
     orgId = existingOrg.id;
     console.log('  Default organization already exists.');
   } else {
+    const [partnerRow] = await db
+      .select({ currencyCode: partners.currencyCode })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1);
+    if (!partnerRow) throw new Error('Default partner not found');
+
     const [newOrg] = await db
       .insert(organizations)
       .values({
         partnerId,
+        currencyCode: partnerRow.currencyCode,
         name: 'Default Organization',
         slug: 'default-organization',
         type: 'customer',

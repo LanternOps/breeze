@@ -42,7 +42,7 @@ async function seedFixture(): Promise<Fixture> {
       .returning({ id: partners.id });
     const [o] = await db
       .insert(organizations)
-      .values({ partnerId: p!.id, name: 'QOrg', slug: `qo-${sfx}` })
+      .values({ currencyCode: 'USD', partnerId: p!.id, name: 'QOrg', slug: `qo-${sfx}` })
       .returning({ id: organizations.id });
     const orgId = o!.id;
 

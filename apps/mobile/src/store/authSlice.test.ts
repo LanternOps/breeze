@@ -26,6 +26,11 @@ vi.mock('../services/auth', () => ({
   storeUser: (...a: unknown[]) => auth.storeUser(...a),
 }));
 
+const appLock = { markAppLockUnlocked: vi.fn() };
+vi.mock('../services/appLockStore', () => ({
+  markAppLockUnlocked: (...a: unknown[]) => appLock.markAppLockUnlocked(...a),
+}));
+
 const sentry = { captureException: vi.fn() };
 vi.mock('@sentry/react-native', () => ({
   captureException: (...a: unknown[]) => sentry.captureException(...a),
@@ -55,10 +60,112 @@ const fakeUser: User = {
 
 beforeEach(() => {
   api.logout.mockReset().mockResolvedValue(undefined);
+  api.login.mockReset();
+  api.verifyMfa.mockReset();
   auth.clearAuthData.mockReset().mockResolvedValue(undefined);
+  auth.storeToken.mockReset().mockResolvedValue(undefined);
+  auth.storeUser.mockReset().mockResolvedValue(undefined);
+  appLock.markAppLockUnlocked.mockReset().mockResolvedValue(undefined);
   sentry.captureException.mockReset();
 });
 afterEach(() => vi.restoreAllMocks());
+
+describe('interactive sign-in stamps the app lock as unlocked', () => {
+  // navigation/AppLockGate.tsx runs its cold-launch check the first time a
+  // process sees a token, and cannot tell one restored from the keychain from
+  // one just earned with a password. Without this stamp the gate would throw a
+  // Face ID prompt at the user a moment after they finished typing it.
+  it('loginAsync marks unlocked once the token is stored', async () => {
+    api.login.mockResolvedValue({ kind: 'ok', token: 'tok-1', user: fakeUser });
+    const store = makeStore();
+
+    const result = await store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+
+    expect(result.type).toBe('auth/login/fulfilled');
+    expect(appLock.markAppLockUnlocked).toHaveBeenCalledTimes(1);
+    expect(auth.storeToken).toHaveBeenCalledWith('tok-1');
+  });
+
+  it('stamps only after the credentials are fully persisted', async () => {
+    // storeUser throws on failure, so a login the user was told failed must not
+    // leave an "unlocked" stamp behind. Ordering, not just presence.
+    api.login.mockResolvedValue({ kind: 'ok', token: 'tok-1', user: fakeUser });
+    const store = makeStore();
+
+    await store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+
+    const order = [
+      auth.storeToken.mock.invocationCallOrder[0],
+      auth.storeUser.mock.invocationCallOrder[0],
+      appLock.markAppLockUnlocked.mock.invocationCallOrder[0],
+    ];
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it('does NOT stamp when persisting the user fails', async () => {
+    api.login.mockResolvedValue({ kind: 'ok', token: 'tok-1', user: fakeUser });
+    auth.storeUser.mockRejectedValue(new Error('keychain locked'));
+    const store = makeStore();
+
+    const result = await store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+
+    expect(result.type).toBe('auth/login/rejected');
+    expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
+  });
+
+  it('a failed stamp does not fail the login', async () => {
+    // writeAppLockState swallows, so this cannot happen today — pin it, because
+    // a throw here would reject a login whose token is already in the keychain.
+    // The cost of a silently missed stamp is one spurious Face ID prompt.
+    api.login.mockResolvedValue({ kind: 'ok', token: 'tok-1', user: fakeUser });
+    appLock.markAppLockUnlocked.mockRejectedValue(new Error('keychain locked'));
+    const store = makeStore();
+
+    const result = await store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+
+    expect(result.type).toBe('auth/login/fulfilled');
+  });
+
+  it('loginAsync does NOT mark unlocked when MFA is still outstanding', async () => {
+    // The user has not authenticated yet — stamping here would leave the app
+    // unlocked on the strength of a password alone.
+    api.login.mockResolvedValue({ kind: 'mfaRequired', challenge: { tempToken: 'tmp' } });
+    const store = makeStore();
+
+    await store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+
+    expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
+  });
+
+  it('loginAsync does NOT mark unlocked when the API rejects', async () => {
+    api.login.mockRejectedValue({ message: 'bad credentials' });
+    const store = makeStore();
+
+    await store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+
+    expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
+  });
+
+  it('verifyMfaAsync marks unlocked once the token is stored', async () => {
+    api.verifyMfa.mockResolvedValue({ token: 'tok-2', user: fakeUser });
+    const store = makeStore();
+
+    const result = await store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'tmp' }));
+
+    expect(result.type).toBe('auth/verifyMfa/fulfilled');
+    expect(appLock.markAppLockUnlocked).toHaveBeenCalledTimes(1);
+    expect(auth.storeToken).toHaveBeenCalledWith('tok-2');
+  });
+
+  it('verifyMfaAsync does NOT mark unlocked when the code is wrong', async () => {
+    api.verifyMfa.mockRejectedValue({ message: 'invalid code' });
+    const store = makeStore();
+
+    await store.dispatch(verifyMfaAsync({ code: '000000', tempToken: 'tmp' }));
+
+    expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
+  });
+});
 
 describe('logoutAsync', () => {
   it('API ok + wipe ok → fulfilled, wipe runs exactly once', async () => {

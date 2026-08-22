@@ -1,6 +1,6 @@
 ---
 title: Scripts
-description: Create, manage, and execute scripts across your fleet in PowerShell, Bash, Python, and Cmd.
+description: Create, manage, and run PowerShell, Bash, Python, and Cmd scripts across your fleet, with a shared system library, bundles, and partner-wide scoping.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -377,6 +377,51 @@ echo "Threshold is $BREEZE_PARAM_THRESHOLD"
 <Aside type="caution">
   Parameter substitution happens **before** security validation. The agent's security validator scans the fully-resolved script content for dangerous patterns. A parameter value that injects a dangerous command will be caught and rejected.
 </Aside>
+
+---
+
+## Variables
+
+Variables solve the problem of the same script needing a different value for every customer — a vendor portal token, an internal repository URL, a site-specific path. Instead of keeping one copy of the script per customer, you define the value once and reference it by name.
+
+Manage them under **Settings → Variables**.
+
+### Defining a variable
+
+Each variable has:
+
+| Field | Notes |
+|---|---|
+| **Applies to** | **All organizations** (partner-wide — available to every customer you manage) or **This organization** |
+| **Key** | Lowercase letters, digits and underscores. This is the name scripts reference. |
+| **Value** | The value substituted at run time |
+| **Description** | Optional note for your team |
+| **Secret** | See below |
+
+An organization-scoped variable overrides a partner-wide one with the same key, so you can set a sensible default for everyone and special-case individual customers.
+
+### Using variables in a script
+
+Reference a variable as `{{var.key}}`:
+
+```bash
+curl -H "Authorization: Bearer {{var.vendor_api_token}}" \
+  "{{var.internal_repo_url}}/agent/latest"
+```
+
+Breeze resolves each reference **per device at dispatch**, using the variable that applies to that device's organization. One script, correct values everywhere.
+
+### Secret variables
+
+Tick **Secret** and the value becomes write-once: it is never displayed again after saving — the list shows `••••••••` and the API returns no value at all. Secrets are delivered to the script as an environment variable rather than pasted into the script body, and are redacted from captured output.
+
+<Aside type="caution">
+  A secret cannot be recovered through the UI or the API once saved. To change it, overwrite it with a new value.
+</Aside>
+
+### Variables and approvals
+
+When a script run goes through approval, the approval digest pins the exact variable and parameter values it was approved with. If a value changes afterwards, the approval no longer matches and the run must be approved again — an approved run cannot be quietly re-pointed at different values.
 
 ---
 

@@ -141,7 +141,8 @@
         "saveContract": "Der Vertrag konnte nicht gespeichert werden.",
         "addLine": "Die Position konnte nicht hinzugefügt werden.",
         "removeLine": "Die Position konnte nicht entfernt werden.",
-        "activateContract": "Der Vertrag konnte nicht aktiviert werden."
+        "activateContract": "Der Vertrag konnte nicht aktiviert werden.",
+        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf."
       },
       "toast": {
         "contractCreated": "Vertrag erstellt",
@@ -198,7 +199,9 @@
         "taxable": "Steuerpflichtig",
         "quantityResolvedAutomatically": "Die Menge wird zum Zeitpunkt der Abrechnung automatisch aufgelöst.",
         "lineTotal": "Positionssumme: {{total}}",
-        "addLine": "Position hinzufügen"
+        "addLine": "Position hinzufügen",
+        "noPriceInCurrency": "Kein Preis in {{currency}} für dieses Element — legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
+        "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})"
       },
       "estimate": {
         "title": "Geschätzter Zeitraum",
@@ -627,7 +630,8 @@
         "updateDeposit": "Die Anzahlung konnte nicht aktualisiert werden.",
         "updateLine": "Die Position konnte nicht aktualisiert werden.",
         "updateSection": "Der Abschnitt konnte nicht aktualisiert werden.",
-        "uploadImage": "Das Bild konnte nicht hochgeladen werden."
+        "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
+        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position."
       },
       "image": {
         "alt": "Angebotsbild",
@@ -887,7 +891,7 @@
         "toLabel": "An",
         "toPlaceholder": "Empfänger hinzufügen…",
         "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
-        "zeroTotalWarning": "Dieses Angebot beträgt $0.00 — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
+        "zeroTotalWarning": "Dieses Angebot beträgt {{zero}} — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
         "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>."
       },
       "sendEmailWarning": {
@@ -931,7 +935,8 @@
       "resendNewLinkOriginalLive": "Angebot erneut gesendet — jedoch mit einem NEUEN Link. Dieses Angebot stammt aus der Zeit vor der Linkverfolgung, daher konnte der bisherige Link des Kunden nicht wiederverwendet werden; er funktioniert weiterhin parallel zum neuen.",
       "resendNewLinkOriginalDead": "Angebot erneut gesendet — jedoch mit einem NEUEN Link. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss den neuen verwenden.",
       "shareLinkNewLinkOriginalLive": "NEUEN Link kopiert. Dieses Angebot stammt aus der Zeit vor der Linkverfolgung, daher konnte der bisherige Link des Kunden nicht wiederverwendet werden; er funktioniert weiterhin parallel zu diesem.",
-      "shareLinkNewLinkOriginalDead": "NEUEN Link kopiert. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss diesen verwenden."
+      "shareLinkNewLinkOriginalDead": "NEUEN Link kopiert. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss diesen verwenden.",
+      "currencyMismatch": "Dieses Angebot lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie."
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -1044,9 +1049,16 @@
         "title": "Summen"
       },
       "viewInvoice": "Rechnung ansehen",
-      "sentTo": "Gesendet an"
+      "sentTo": "Gesendet an",
+      "declinedBanner": {
+        "title": "Abgelehnt am {{date}}",
+        "reasonLabel": "Anmerkung des Kunden:",
+        "revise": "Duplizieren & überarbeiten",
+        "revising": "Wird dupliziert…"
+      }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
       "available": "{{count}} verfügbar",
       "cost": "kostet {{currency}} {{amount}}",
       "endOfLife": "Auslaufmodell",
@@ -1214,6 +1226,7 @@
       "tryAgain": "Versuchen Sie es erneut"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
       "cost": "kostet {{currency}} {{amount}}",
       "importAndAdd": "Importieren und hinzufügen",
       "option": "Option {{number}}",
@@ -1324,7 +1337,8 @@
       "removeLine": "Position konnte nicht entfernt werden.",
       "saveNotes": "Notizen konnten nicht gespeichert werden.",
       "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
-      "updateLine": "Position konnte nicht aktualisiert werden."
+      "updateLine": "Position konnte nicht aktualisiert werden.",
+      "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position."
     },
     "fields": {
       "descriptionOptional": "Beschreibung (optional)",
@@ -1393,6 +1407,27 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "An",
+      "toPlaceholder": "buchhaltung@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Betreff",
+      "subjectPlaceholder": "Rechnung {{number}} von Ihrem Dienstleister",
+      "subjectPlaceholderNoNumber": "Ihre Rechnung",
+      "messageLabel": "Nachricht (optional)",
+      "messagePlaceholder": "Kurze Notiz für den Kunden hinzufügen…",
+      "includePdfLabel": "Rechnungs-PDF anhängen",
+      "signaturePreviewLabel": "Ihre Signatur wird angehängt:",
+      "invalidEmail": "Keine gültige E-Mail-Adresse: {{addresses}}",
+      "tooManyRecipients": "Maximal {{max}} Adressen.",
+      "recipientRequired": "Mindestens einen Empfänger angeben.",
+      "noBillingContactHint": "Dieses Unternehmen hat noch keinen Rechnungskontakt – <orgLink>einen hinzufügen</orgLink> oder oben eine Adresse eingeben.",
+      "payLinkNote": "Die E-Mail enthält einen sicheren Link, über den Ihr Kunde diese Rechnung ansehen, herunterladen und bezahlen kann — ohne Anmeldung."
+    },
+    "copyInvoiceLink": "Rechnungslink kopieren",
+    "copyInvoiceLinkTitle": "Kopiert den Ansichts- und Zahlungslink für den Kunden — keine Anmeldung nötig",
+    "copyingPaymentLink": "Wird kopiert…",
     "deleteConfirm": {
       "message": "Dadurch wird der Rechnungsentwurf endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
       "title": "Rechnungsentwurf löschen"
@@ -1404,6 +1439,9 @@
     "downloadPdfError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
     "issue": "Ausstellen",
     "issueAndSend": "Ausstellen und senden",
+    "issueBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und stellen Sie dann aus.",
+    "issueCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Ausstellen abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
+    "issueCanceledStillSaving": "Ihre Änderungen werden noch gespeichert – das Ausstellen wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist.",
     "issueError": "Rechnung konnte nicht ausgestellt werden.",
     "issueNoEmailWarning": "Rechnung ausgestellt – aber keine E-Mail gesendet (kein Rechnungskontakt/E-Mail nicht konfiguriert)",
     "issueSendConfirm": {
@@ -1416,12 +1454,21 @@
     "issueSuccess": "Rechnung ausgestellt",
     "issuing": "Wird ausgestellt…",
     "noVisibleLineHint": "Mindestens eine für Kunden sichtbare Position zum Ausstellen hinzufügen.",
+    "paymentLinkCopyFailed": "Automatisches Kopieren nicht möglich. Zahlungslink: {{url}}",
     "preparing": "Vorbereiten…",
+    "resend": "Erneut senden",
+    "resendConfirm": {
+      "title": "Diese Rechnung erneut senden?",
+      "message": "Eine weitere Kopie über {{amount}} wird an {{customer}} gesendet. An der Rechnung ändert sich nichts – gleiche Nummer, gleiche Daten, gleiche Beträge."
+    },
+    "resendSuccess": "Rechnung erneut gesendet",
+    "resending": "Wird gesendet…",
     "savingHint": "Änderungen werden gespeichert… Ausstellen wird freigegeben, sobald alles gespeichert ist.",
     "savingTitle": "Ihre Änderungen werden gespeichert – Ausstellen wird freigegeben, sobald alles gespeichert ist.",
-    "issueCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Ausstellen abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
-    "issueCanceledStillSaving": "Ihre Änderungen werden noch gespeichert – das Ausstellen wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist.",
-    "issueBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und stellen Sie dann aus.",
+    "sendConfirm": {
+      "title": "Diese Rechnung senden?",
+      "message": "Die Rechnung über {{amount}} wird per E-Mail an {{customer}} gesendet."
+    },
     "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist.",
     "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },
@@ -1460,6 +1507,7 @@
       "amount": "Betrag",
       "amountRequired": "Geben Sie einen Zahlungsbetrag ein, um ihn zu erfassen",
       "connectStripe": "Verbinden Sie Stripe, um Online-Zahlungen zu akzeptieren.",
+      "currencyMismatch": "Diese Rechnung lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie.",
       "date": "Zahlungsdatum",
       "draftHint": "Stellen Sie diese Rechnung aus, um Zahlungen zu erfassen.",
       "empty": "Keine Zahlungen erfasst.",
@@ -1522,7 +1570,15 @@
     },
     "empty": "Diese Rechnung hat noch keine Positionen.",
     "addContentInEditor": "Positionen im Editor hinzufügen",
-    "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten"
+    "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten",
+    "resetLink": {
+      "button": "Kundenlink zurücksetzen",
+      "title": "Kundenlink zurücksetzen?",
+      "description": "Alle bisherigen Links verlieren den Zugriff — auch der Link in bereits gesendeten E-Mails. Beim nächsten Senden oder Kopieren wird ein neuer Link erstellt.",
+      "confirm": "Link zurücksetzen",
+      "success": "Link zurückgesetzt — alte Links funktionieren nicht mehr",
+      "error": "Link konnte nicht zurückgesetzt werden"
+    }
   },
   "invoiceDocument": {
     "billTo": "Bill zu",
@@ -1711,6 +1767,8 @@
       "aiStylePlaceholder": "Standard: Der Artikelname ist ein kurzer, allgemeiner, kundenfreundlicher Name („Wireless Access Point“); Die Beschreibung beginnt mit dem vollständigen Produktnamen, gefolgt von stichpunktartigen Spezifikationen, die präzise genug sind, um eine Bestellung anhand dieser zu überprüfen. Beschreiben Sie hier Ihren eigenen Stil, um ihn zu überschreiben.",
       "autoTaxHardware": "Hardware-Artikel automatisch besteuern",
       "autoTaxHardwareHelp": "Neu importierte Hardware ist standardmäßig steuerpflichtig.",
+      "autoEmailInvoice": "Rechnung bei Angebotsannahme automatisch per E-Mail senden",
+      "autoEmailInvoiceHelp": "Wenn ein Kunde ein Angebot annimmt, wird die erstellte Rechnung sofort mit einem sicheren Ansichts- und Zahlungslink per E-Mail versendet — ohne Anmeldung.",
       "currencyCode": "Währungscode",
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",

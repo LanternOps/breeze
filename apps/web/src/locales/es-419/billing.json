@@ -141,7 +141,8 @@
         "saveContract": "No se pudo guardar el contrato.",
         "addLine": "No se pudo agregar la línea.",
         "removeLine": "No se pudo eliminar la línea.",
-        "activateContract": "No se pudo activar el contrato."
+        "activateContract": "No se pudo activar el contrato.",
+        "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o borre el enlace del catálogo."
       },
       "toast": {
         "contractCreated": "Contrato creado",
@@ -198,7 +199,9 @@
         "taxable": "Imponible",
         "quantityResolvedAutomatically": "Cantidad resuelta automáticamente al momento de la facturación.",
         "lineTotal": "Total de líneas: {{total}}",
-        "addLine": "Agregar línea"
+        "addLine": "Agregar línea",
+        "noPriceInCurrency": "Este elemento no tiene precio en {{currency}}: agregue uno en el catálogo, o borre el enlace del catálogo e ingrese una línea manual.",
+        "priceFromCatalog": "Precio unitario (del catálogo, en {{currency}})"
       },
       "estimate": {
         "title": "Estimado este periodo",
@@ -627,7 +630,8 @@
         "updateDeposit": "No se pudo actualizar el depósito.",
         "updateLine": "No se pudo actualizar la línea.",
         "updateSection": "No se pudo actualizar la sección.",
-        "uploadImage": "No se pudo cargar la imagen."
+        "uploadImage": "No se pudo cargar la imagen.",
+        "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual."
       },
       "image": {
         "alt": "Imagen de cotización",
@@ -887,7 +891,7 @@
         "toLabel": "Para",
         "toPlaceholder": "Agregar destinatario…",
         "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
-        "zeroTotalWarning": "Esta cotización totaliza $0.00 — verifica que sus ítems tengan precio antes de enviar.",
+        "zeroTotalWarning": "Esta cotización totaliza {{zero}} — verifica que sus ítems tengan precio antes de enviar.",
         "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>."
       },
       "sendEmailWarning": {
@@ -931,7 +935,8 @@
       "resendNewLinkOriginalLive": "Propuesta reenviada, pero con un enlace NUEVO. Esta propuesta es anterior al seguimiento de enlaces, así que no se pudo reutilizar el que ya tenía el cliente; ese sigue funcionando junto con el nuevo.",
       "resendNewLinkOriginalDead": "Propuesta reenviada, pero con un enlace NUEVO. El enlace anterior ya no se puede abrir, así que quien lo tenga debe usar el nuevo.",
       "shareLinkNewLinkOriginalLive": "Se copió un enlace NUEVO. Esta propuesta es anterior al seguimiento de enlaces, así que no se pudo reutilizar el que ya tenía el cliente; ese sigue funcionando junto con este.",
-      "shareLinkNewLinkOriginalDead": "Se copió un enlace NUEVO. El enlace anterior ya no se puede abrir, así que quien lo tenga debe usar este."
+      "shareLinkNewLinkOriginalDead": "Se copió un enlace NUEVO. El enlace anterior ya no se puede abrir, así que quien lo tenga debe usar este.",
+      "currencyMismatch": "Esta cotización está en {{documentCurrency}}, pero tu cuenta de Stripe liquida en {{accountCurrency}}. Stripe mostrará {{documentCurrency}} al cliente y lo convertirá al liquidar: tú asumes el diferencial cambiario y cualquier comisión por conversión."
     },
     "detail": {
       "addContentInEditor": "Agregar contenido en el Editor",
@@ -1044,9 +1049,16 @@
         "title": "Totales"
       },
       "viewInvoice": "Ver factura",
-      "sentTo": "Enviado a"
+      "sentTo": "Enviado a",
+      "declinedBanner": {
+        "title": "Rechazada el {{date}}",
+        "reasonLabel": "Nota del cliente:",
+        "revise": "Duplicar y revisar",
+        "revising": "Duplicando…"
+      }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",
       "available": "{{count}} disponible",
       "cost": "costo {{currency}} {{amount}}",
       "endOfLife": "Fin de vida útil",
@@ -1214,6 +1226,7 @@
       "tryAgain": "Intentar otra vez"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",
       "cost": "costo {{currency}} {{amount}}",
       "importAndAdd": "Importar y agregar",
       "option": "Opción {{number}}",
@@ -1324,7 +1337,8 @@
       "removeLine": "No se pudo eliminar la línea.",
       "saveNotes": "No se pudieron guardar notas.",
       "saveTerms": "No se pudieron guardar los términos.",
-      "updateLine": "No se pudo actualizar la línea."
+      "updateLine": "No se pudo actualizar la línea.",
+      "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual."
     },
     "fields": {
       "descriptionOptional": "Descripción (opcional)",
@@ -1393,6 +1407,27 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "Para",
+      "toPlaceholder": "facturacion@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Asunto",
+      "subjectPlaceholder": "Factura {{number}} de su proveedor",
+      "subjectPlaceholderNoNumber": "Su factura",
+      "messageLabel": "Mensaje (opcional)",
+      "messagePlaceholder": "Agregue una nota breve para el cliente…",
+      "includePdfLabel": "Adjuntar el PDF de la factura",
+      "signaturePreviewLabel": "Se agregará su firma:",
+      "invalidEmail": "Dirección de correo no válida: {{addresses}}",
+      "tooManyRecipients": "Hasta {{max}} direcciones.",
+      "recipientRequired": "Agregue al menos un destinatario.",
+      "noBillingContactHint": "Esta empresa aún no tiene contacto de facturación: <orgLink>agregue uno</orgLink> o escriba una dirección arriba.",
+      "payLinkNote": "El correo incluye un enlace seguro para que tu cliente vea, descargue y pague esta factura — sin iniciar sesión."
+    },
+    "copyInvoiceLink": "Copiar enlace de la factura",
+    "copyInvoiceLinkTitle": "Copia el enlace del cliente para ver y pagar — sin iniciar sesión",
+    "copyingPaymentLink": "Copiando…",
     "deleteConfirm": {
       "message": "Esto elimina permanentemente el borrador de la factura. Esto no se puede deshacer.",
       "title": "Eliminar borrador de factura"
@@ -1404,6 +1439,9 @@
     "downloadPdfError": "No se pudo descargar la factura PDF.",
     "issue": "Emitir",
     "issueAndSend": "Emitir y enviar",
+    "issueBlockedUnsaved": "«{{field}}» tiene un cambio sin guardar. Corríjalo allí y luego emita.",
+    "issueCanceledSaveFailed": "Un cambio no se pudo guardar, por lo que se canceló la emisión. Corrija el campo resaltado e inténtelo de nuevo.",
+    "issueCanceledStillSaving": "Sus cambios aún se están guardando; la emisión se canceló. Inténtelo de nuevo cuando todo esté guardado.",
     "issueError": "No se pudo emitir la factura.",
     "issueNoEmailWarning": "Factura emitida, pero no se envió ningún correo electrónico (no hay contacto de facturación/correo electrónico no configurado)",
     "issueSendConfirm": {
@@ -1416,12 +1454,21 @@
     "issueSuccess": "Factura emitida",
     "issuing": "Emitiendo…",
     "noVisibleLineHint": "Agregue al menos una línea visible para el cliente para emitir.",
+    "paymentLinkCopyFailed": "No se pudo copiar automáticamente. Enlace de pago: {{url}}",
     "preparing": "Preparando…",
+    "resend": "Reenviar",
+    "resendConfirm": {
+      "title": "¿Reenviar esta factura?",
+      "message": "Se enviará otra copia por {{amount}} a {{customer}}. La factura no cambia: mismo número, mismas fechas, mismos montos."
+    },
+    "resendSuccess": "Factura reenviada",
+    "resending": "Enviando…",
     "savingHint": "Guardando cambios… Emitir se desbloqueará cuando todo esté guardado.",
     "savingTitle": "Guardando sus cambios: Emitir se desbloqueará cuando todo esté guardado.",
-    "issueCanceledSaveFailed": "Un cambio no se pudo guardar, por lo que se canceló la emisión. Corrija el campo resaltado e inténtelo de nuevo.",
-    "issueCanceledStillSaving": "Sus cambios aún se están guardando; la emisión se canceló. Inténtelo de nuevo cuando todo esté guardado.",
-    "issueBlockedUnsaved": "«{{field}}» tiene un cambio sin guardar. Corríjalo allí y luego emita.",
+    "sendConfirm": {
+      "title": "¿Enviar esta factura?",
+      "message": "Se enviará la factura por {{amount}} por correo a {{customer}}."
+    },
     "unsavedHint": "«{{field}}» tiene un cambio sin guardar: emitir se desbloqueará cuando se guarde.",
     "unsavedTitle": "«{{field}}» tiene un cambio sin guardar: emitir se desbloqueará cuando se guarde."
   },
@@ -1460,6 +1507,7 @@
       "amount": "Cantidad",
       "amountRequired": "Ingrese un monto de pago para registrarlo",
       "connectStripe": "Conecte Stripe para aceptar pagos en línea.",
+      "currencyMismatch": "Esta factura está en {{documentCurrency}}, pero tu cuenta de Stripe liquida en {{accountCurrency}}. Stripe mostrará {{documentCurrency}} al cliente y lo convertirá al liquidar: tú asumes el diferencial cambiario y cualquier comisión por conversión.",
       "date": "fecha de pago",
       "draftHint": "Emita esta factura para registrar los pagos.",
       "empty": "No se registraron pagos.",
@@ -1522,7 +1570,15 @@
     },
     "empty": "Esta factura aún no tiene líneas.",
     "addContentInEditor": "Agregar líneas en el Editor",
-    "linesScrollAria": "Líneas de la factura: desplácese hacia los lados para ver más columnas"
+    "linesScrollAria": "Líneas de la factura: desplácese hacia los lados para ver más columnas",
+    "resetLink": {
+      "button": "Restablecer enlace del cliente",
+      "title": "¿Restablecer el enlace del cliente?",
+      "description": "Quien tenga el enlace actual perderá el acceso, incluido el enlace de los correos ya enviados. El próximo envío o copia creará un enlace nuevo.",
+      "confirm": "Restablecer enlace",
+      "success": "Enlace restablecido: los enlaces anteriores ya no funcionan",
+      "error": "No se pudo restablecer el enlace"
+    }
   },
   "invoiceDocument": {
     "billTo": "Cobrar a",
@@ -1711,6 +1767,8 @@
       "aiStylePlaceholder": "Predeterminado: el nombre del elemento es un nombre breve, genérico y fácil de entender para el cliente (\"Punto de acceso inalámbrico\"); la descripción comienza con el nombre completo del producto y luego incluye viñetas con especificaciones lo suficientemente precisas como para verificar un pedido. Describa su propio estilo aquí para anularlo.",
       "autoTaxHardware": "Artículos de hardware con impuestos automáticos",
       "autoTaxHardwareHelp": "El hardware recién importado está sujeto a impuestos de forma predeterminada.",
+      "autoEmailInvoice": "Enviar la factura por correo automáticamente al aceptar una cotización",
+      "autoEmailInvoiceHelp": "Cuando un cliente acepta una propuesta, la factura emitida se envía de inmediato por correo con un enlace seguro para ver y pagar — sin iniciar sesión.",
       "currencyCode": "Código de moneda",
       "defaultMarkup": "Margen predeterminado (%)",
       "defaultTaxRate": "Tasa impositiva predeterminada (%)",

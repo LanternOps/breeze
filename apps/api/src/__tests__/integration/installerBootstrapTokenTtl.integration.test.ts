@@ -46,6 +46,7 @@ describe('installer bootstrap token TTL (#2775, real Postgres)', () => {
         const [org] = await db
           .insert(organizations)
           .values({
+            currencyCode: 'USD',
             partnerId: partner!.id,
             name: `TTL Org ${unique}`,
             slug: `ttl-org-${unique}`,

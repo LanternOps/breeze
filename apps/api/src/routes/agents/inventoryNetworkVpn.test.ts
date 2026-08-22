@@ -43,25 +43,41 @@ function mockDeviceLookup(device: { id: string; orgId: string } | null) {
 
 // Capture what the handler writes to devices.activeVpns inside the txn.
 // `updateCalled` distinguishes "wrote []" from "never touched the column".
+// `ops` records statement order for the lock-ordering regression (BREEZE-1S).
 function mockTransactionCapture() {
-  const captured: { activeVpns?: unknown; inserted?: unknown[]; updateCalled: boolean } = {
+  const captured: {
+    activeVpns?: unknown;
+    inserted?: unknown[];
+    updateCalled: boolean;
+    ops: string[];
+  } = {
     updateCalled: false,
+    ops: [],
   };
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
     const tx = {
-      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
-      insert: vi.fn().mockReturnValue({
-        values: vi.fn().mockImplementation((rows: unknown[]) => {
-          captured.inserted = rows;
-          return Promise.resolve(undefined);
-        }),
+      delete: vi.fn().mockImplementation(() => {
+        captured.ops.push('delete');
+        return { where: vi.fn().mockResolvedValue(undefined) };
       }),
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockImplementation((row: { activeVpns?: unknown }) => {
-          captured.updateCalled = true;
-          captured.activeVpns = row.activeVpns;
-          return { where: vi.fn().mockResolvedValue(undefined) };
-        }),
+      insert: vi.fn().mockImplementation(() => {
+        captured.ops.push('insert');
+        return {
+          values: vi.fn().mockImplementation((rows: unknown[]) => {
+            captured.inserted = rows;
+            return Promise.resolve(undefined);
+          }),
+        };
+      }),
+      update: vi.fn().mockImplementation(() => {
+        captured.ops.push('update');
+        return {
+          set: vi.fn().mockImplementation((row: { activeVpns?: unknown }) => {
+            captured.updateCalled = true;
+            captured.activeVpns = row.activeVpns;
+            return { where: vi.fn().mockResolvedValue(undefined) };
+          }),
+        };
       }),
     };
     return fn(tx);
@@ -128,6 +144,25 @@ describe('agent network inventory — VPN presence ingest (#2139)', () => {
     // reportedAt is stamped by the API, not sent by the agent.
     expect(typeof entry!.reportedAt).toBe('string');
     expect(Number.isNaN(Date.parse(entry!.reportedAt as string))).toBe(false);
+  });
+
+  it('locks the devices row BEFORE touching device_network when VPNs are provided (BREEZE-1S deadlock)', async () => {
+    // Re-enrollment / site-move / moveOrg all lock devices first, then child
+    // tables. Updating devices LAST here inverted that order and deadlocked
+    // (Postgres 40P01) against a concurrent re-enroll of the same device.
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const captured = mockTransactionCapture();
+
+    const res = await putNetwork(makeApp(), {
+      adapters: [{ interfaceName: 'en0', ipAddress: '192.168.1.10', ipType: 'ipv4', isPrimary: true }],
+      vpns: [
+        { provider: 'tailscale', active: true, interfaceName: 'utun3', detectionSource: 'interface' },
+      ],
+    });
+
+    expect(res.status).toBe(200);
+    // Guard against vacuous order checks: all three statements must have run.
+    expect(captured.ops).toEqual(['update', 'delete', 'insert']);
   });
 
   it('leaves activeVpns untouched (preserving last-known) when an older agent omits vpns', async () => {

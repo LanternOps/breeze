@@ -83,6 +83,7 @@ describe('getEnrollmentDefaultsForOrg — partner-cap visibility under org-scope
         const [org] = await db
           .insert(organizations)
           .values({
+            currencyCode: 'USD',
             partnerId: partner!.id,
             name: `Cap Org ${unique}`,
             slug: `cap-org-${unique}`,
@@ -129,6 +130,7 @@ describe('getEnrollmentDefaultsForOrg — partner-cap visibility under org-scope
         const [org] = await db
           .insert(organizations)
           .values({
+            currencyCode: 'USD',
             partnerId: partner!.id,
             name: `Sanity Org ${unique}`,
             slug: `sanity-org-${unique}`,
@@ -198,6 +200,7 @@ describe('getEnrollmentDefaultsForOrg — no second pooled connection for a syst
         const [org] = await db
           .insert(organizations)
           .values({
+            currencyCode: 'USD',
             partnerId: partner!.id,
             name: `Ambient Org ${unique}`,
             slug: `ambient-org-${unique}`,

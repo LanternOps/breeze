@@ -11,7 +11,9 @@ function today(): string {
 interface SignaturePanelProps {
   /** Called with the typed signer name once name + agreement are provided. */
   onAccept: (signerName: string) => void | Promise<void>;
-  onDecline: () => void;
+  /** Called with the customer's optional note once the inline decline panel is
+   *  confirmed (empty note → undefined). */
+  onDecline: (reason?: string) => void | Promise<void>;
   busy: boolean;
   /** Prefixes the data-testids so existing public/authed selectors keep working. */
   testIdPrefix: string;
@@ -29,6 +31,10 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
   const [name, setName] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [touched, setTouched] = useState(false);
+  // Inline decline disclosure (replaces the old window.prompt — unstyled,
+  // single-line, and jarring against the branded proposal page).
+  const [declineOpen, setDeclineOpen] = useState(false);
+  const [declineNote, setDeclineNote] = useState('');
   const date = useMemo(() => today(), []);
 
   const trimmed = name.trim();
@@ -115,13 +121,52 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
         <button
           type="button"
           data-testid={`${testIdPrefix}-decline`}
-          onClick={() => onDecline()}
+          onClick={() => setDeclineOpen((v) => !v)}
           disabled={busy}
           className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
         >
           Decline
         </button>
       </div>
+
+      {/* Inline decline panel: optional multiline note + explicit confirm. */}
+      {declineOpen && (
+        <div className="mt-4 rounded-lg border bg-muted/20 p-4" data-testid={`${testIdPrefix}-decline-panel`}>
+          <label htmlFor={`${testIdPrefix}-decline-note`} className="text-xs font-medium text-foreground">
+            Anything you'd like us to know? (optional)
+          </label>
+          <textarea
+            id={`${testIdPrefix}-decline-note`}
+            data-testid={`${testIdPrefix}-decline-note`}
+            value={declineNote}
+            onChange={(e) => setDeclineNote(e.target.value)}
+            disabled={busy}
+            rows={3}
+            maxLength={2000}
+            className="mt-1.5 w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden transition focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+          />
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              type="button"
+              data-testid={`${testIdPrefix}-decline-confirm`}
+              onClick={() => void onDecline(declineNote.trim() || undefined)}
+              disabled={busy}
+              className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
+            >
+              {busy ? 'Working…' : 'Confirm decline'}
+            </button>
+            <button
+              type="button"
+              data-testid={`${testIdPrefix}-decline-cancel`}
+              onClick={() => setDeclineOpen(false)}
+              disabled={busy}
+              className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

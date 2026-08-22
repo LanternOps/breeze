@@ -54,6 +54,7 @@ import { UnassignedLines } from './QuoteUnassignedLines';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash, useShowInternalMargin } from './quoteEditorShared';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
+import { feedCurrencyCode } from '../../settings/marginMath';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -714,8 +715,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         customerVisible: l.customerVisible, recurrence: l.recurrence,
       };
     });
-    return computeQuoteTotals(merged, effectiveRate);
-  }, [lineDrafts, lines, effectiveRate, hasPendingDeletes]);
+    return computeQuoteTotals(merged, effectiveRate, undefined, quote.currencyCode);
+  }, [lineDrafts, lines, effectiveRate, hasPendingDeletes, quote.currencyCode]);
   const railOneTime = optimisticTotals?.oneTimeTotal ?? quote.oneTimeTotal;
   const railMonthly = optimisticTotals?.monthlyRecurringTotal ?? quote.monthlyRecurringTotal;
   const railAnnual = optimisticTotals?.annualRecurringTotal ?? quote.annualRecurringTotal;
@@ -758,8 +759,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     [depositType, depositPercentDraft, parseDepositPercent],
   );
   const liveDepositTotals = useMemo(
-    () => computeQuoteTotals(mergedLines, effectiveRate, depositConfig),
-    [mergedLines, effectiveRate, depositConfig],
+    () => computeQuoteTotals(mergedLines, effectiveRate, depositConfig, quote.currencyCode),
+    [mergedLines, effectiveRate, depositConfig, quote.currencyCode],
   );
   const railDeposit = liveDepositTotals.depositDueTotal;
   const railBreakdown = liveDepositTotals.categoryBreakdown;
@@ -1393,13 +1394,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     await runAction({
       request: () => addCatalogLine(quote.id, { catalogItemId: item.id, quantity: 1, blockId }),
       errorFallback: t('quotes.editor.errors.addCatalogItem'),
+      // Price-book gap (#3775): the server never converts, so an item with no
+      // row in the quote's currency is refused with NO_PRICE_FOR_CURRENCY.
+      // Name the currency so the tech knows what to add in the catalog.
+      friendly: (code) => (code === 'NO_PRICE_FOR_CURRENCY'
+        ? t('quotes.editor.errors.noPriceForCurrency', { currency: quote.currencyCode })
+        : undefined),
       // No success toast: the new row visibly appears and the totals move —
       // toasting on top of that was noise that covered the rail's deposit
       // control. Failures still toast.
       onUnauthorized: UNAUTHORIZED,
     });
     refresh();
-  }, [quote.id, refresh, t]);
+  }, [quote.id, quote.currencyCode, refresh, t]);
 
   const addCatalog = useCallback((blockId: string, item: CatalogItem) =>
     runScoped(pendingKey.addLine(blockId), () => doAddCatalog(blockId, item), t('quotes.editor.errors.addCatalogItem')),
@@ -1428,11 +1435,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               source: 'pax8', pax8ProductId: product.pax8ProductId, name: product.name,
               vendorName: product.vendorName, vendorSku: product.vendorSku,
               commitmentTerm: term.commitmentTerm, billingTerm: term.billingTerm,
-              partnerBuyRate: term.partnerBuyRate, currency: term.currencyCode, raw: product.raw,
+              // Trimmed uppercase ISO or explicit null — never coerced to USD.
+              partnerBuyRate: term.partnerBuyRate, currency: feedCurrencyCode(term.currencyCode), raw: product.raw,
             },
             item: {
               name: product.name.slice(0, 255), sku: product.vendorSku, description: product.shortDescription,
-              unitPrice: sellPrice, costBasis: term.partnerBuyRate != null ? Number(term.partnerBuyRate) : null,
+              // The sell price was typed in the QUOTE's currency — store it in that
+              // price-book row, never as the partner-currency legacy unitPrice.
+              unitPrice: sellPrice, sellCurrency: quote.currencyCode,
+              costBasis: term.partnerBuyRate != null ? Number(term.partnerBuyRate) : null,
             },
             // Match the EC Express add-line and the settings drawers: web-enrich
             // the raw vendor listing on import (best-effort; falls back to raw).
@@ -1459,12 +1470,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       if (!item) {
         item = await runAction<CatalogItem>({
           request: () => ecExpressImport({
-            product,
+            // Trimmed uppercase ISO or explicit null — never coerced to USD.
+            product: { ...product, currency: feedCurrencyCode(product.currency) },
             item: {
               name: product.name,
               sku: product.synnexSku || product.mfgPartNo || null,
               description: product.description ?? null,
               unitPrice: sellPrice,
+              sellCurrency: quote.currencyCode,
               costBasis: product.cost != null && Number.isFinite(product.cost) ? Number(product.cost.toFixed(2)) : null,
             },
             // Tidy the raw distributor title into a readable name + description
@@ -1547,7 +1560,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               : form.recurrence === 'annual'
                 ? 'annual'
                 : null,
-            unitPrice: priceNum,
+            // Price-book row in the quote's currency (the legacy unitPrice would be
+            // stored as the PARTNER currency — wrong for a foreign-currency quote).
+            prices: [{ currencyCode: quote.currencyCode, unitPrice: priceNum }],
             taxable: form.taxable,
           }),
           errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),
@@ -1816,11 +1831,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     const withCost = selectedLines.filter((l) => l.unitCost !== null && Number(l.unitCost) > 0);
     void applyBulk(
       withCost,
-      (l) => ({ unitPrice: Number(priceFromMarkup(l.unitCost as string, pct)) }),
+      (l) => ({ unitPrice: Number(priceFromMarkup(l.unitCost as string, pct, quote.currencyCode)) }),
       'price',
       selectedLines.length - withCost.length,
     );
-  }, [applyBulk, selectedLines]);
+  }, [applyBulk, selectedLines, quote.currencyCode]);
 
   // Inline edit of a block's content (heading text/level, rich-text html). The
   // block type is restated so the server validates the content shape; it is

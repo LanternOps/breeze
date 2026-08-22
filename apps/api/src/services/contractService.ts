@@ -7,6 +7,7 @@ import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
+import { resolvePrice, CatalogServiceError } from './catalogService';
 import { countContractDevices, countContractSeats } from './contractQuantities';
 import type { InvoiceActor } from './invoiceTypes';
 
@@ -35,6 +36,26 @@ function assertEditable(c: { status: string }): void {
   }
 }
 
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Lock-order anchor (#3774, mirrors invoiceService.lockDraftInvoice): SELECT
+ * the CONTRACT row FOR UPDATE as the FIRST statement of the enclosing
+ * transaction, 404 + org-access check, and return the locked row. Every line
+ * writer takes this lock before touching contract_lines (asserting the
+ * status itself — draft/active for line edits, draft-only for the currency
+ * restamp), so a concurrent changeContractCurrency can never restamp between
+ * a writer's read of the contract and its line write — no JPY-stamped
+ * contract silently keeping a line priced under the old currency, and no
+ * line phantom-inserting past the restamp's "no lines" check.
+ */
+async function lockContract(tx: DbExecutor, contractId: string, actor: ContractActor) {
+  const [c] = await tx.select().from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
+  if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
+  requireOrgAccess(actor, c.orgId);
+  return c;
+}
+
 export async function createContract(input: {
   orgId: string; name: string; billingTiming: 'advance' | 'arrears'; intervalMonths: number;
   startDate: string; endDate?: string | null; autoIssue?: boolean; currencyCode?: string; notes?: string | null; terms?: string | null;
@@ -43,14 +64,14 @@ export async function createContract(input: {
   requireOrgAccess(actor, input.orgId);
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
   // Derive partnerId from the org row — never trust actor.partnerId for the contract's FK.
-  const [org] = await db.select({ partnerId: organizations.partnerId })
+  const [org] = await db.select({ partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
     .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
   if (!org) throw new ContractServiceError('Organization not found', 404, 'CONTRACT_NOT_FOUND');
   const [row] = await db.insert(contracts).values({
     partnerId: org.partnerId, orgId: input.orgId, name: input.name, status: 'draft',
     billingTiming: input.billingTiming, intervalMonths: input.intervalMonths,
     startDate: input.startDate, endDate: input.endDate ?? null,
-    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? 'USD',
+    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? org.currencyCode,
     notes: input.notes ?? null, terms: input.terms ?? null, createdBy: actor.userId,
     autoRenew: input.autoRenew ?? false, renewalTermMonths: input.renewalTermMonths ?? null,
     renewalNoticeDays: input.renewalNoticeDays ?? null,
@@ -199,23 +220,133 @@ export async function deleteDraftContract(contractId: string, actor: ContractAct
   await db.delete(contracts).where(eq(contracts.id, contractId)); // lines cascade
 }
 
+/**
+ * Draft-only atomic change-currency operation (multi-currency wave 2, #3774).
+ * A draft's stamped currency is immutable through every other mutation path —
+ * updateContract explicitly whitelists away currencyCode — so this is the
+ * ONLY way the stamp moves, and only while the contract is a draft. With
+ * lines present the change is refused (CURRENCY_LOCKED 409) unless the caller
+ * opts into `clearLines`, which deletes the contract's lines and restamps in
+ * ONE transaction, or into `reprice` (wave 3, #3775), which re-resolves
+ * catalog-linked lines from the price book in the new currency. Unit prices
+ * are never converted or reinterpreted. Contracts store no header totals, so
+ * there is nothing further to recompute.
+ */
+export async function changeContractCurrency(
+  contractId: string,
+  input: { currencyCode: string; clearLines?: boolean; reprice?: boolean },
+  actor: ContractActor
+) {
+  return db.transaction(async (tx) => {
+    // Contract row lock FIRST (document → lines). The line writers and
+    // activateContract take the same lock via lockContract, so a concurrent
+    // activate or line write serializes against the restamp.
+    const c = await lockContract(tx, contractId, actor);
+    assertDraft(c);
+    if (c.currencyCode === input.currencyCode) return c; // no-op restamp
+
+    const lineRows = await tx.select({ id: contractLines.id, catalogItemId: contractLines.catalogItemId })
+      .from(contractLines).where(eq(contractLines.contractId, contractId)).orderBy(contractLines.id);
+    if (lineRows.length > 0) {
+      if (input.reprice) {
+        // Multi-currency wave 3 (#3775): re-resolve every catalog-linked line's
+        // unit_price from the price book in the NEW currency on the locked tx
+        // (contract → lines → catalog plain SELECTs). Lines without a catalog
+        // item carry a hand-entered price the book cannot re-derive, so their
+        // presence refuses the whole operation. One gap aborts the transaction.
+        const repriceable = lineRows.filter((l) => l.catalogItemId !== null);
+        const rest = lineRows.length - repriceable.length;
+        if (rest > 0) {
+          throw new ContractServiceError(`${rest} non-catalog line(s) cannot be repriced — pass clearLines instead`, 409, 'CURRENCY_LOCKED');
+        }
+        const catalogActor = { userId: actor.userId, partnerId: c.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
+        for (const line of repriceable) {
+          let resolved: Awaited<ReturnType<typeof resolvePrice>>;
+          try {
+            resolved = await resolvePrice(line.catalogItemId!, input.currencyCode, c.orgId, catalogActor, tx);
+          } catch (err) {
+            if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
+              throw new ContractServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+            }
+            throw err;
+          }
+          await tx.update(contractLines).set({ unitPrice: resolved.unitPrice }).where(eq(contractLines.id, line.id));
+        }
+      } else if (!input.clearLines) {
+        throw new ContractServiceError(
+          `Contract has ${lineRows.length} line(s) priced in ${c.currencyCode} — pass clearLines to remove them, or delete the draft`,
+          409, 'CURRENCY_LOCKED'
+        );
+      } else {
+        await tx.delete(contractLines).where(eq(contractLines.contractId, contractId));
+      }
+    }
+
+    const [updated] = await tx.update(contracts)
+      .set({ currencyCode: input.currencyCode, updatedAt: new Date() })
+      .where(eq(contracts.id, contractId)).returning();
+    return updated!;
+  });
+}
+
+/**
+ * Multi-currency wave 3 (#3775, spec §6): a catalog-sourced contract line is
+ * priced by the resolver in the CONTRACT's currency (org override → price book,
+ * never the deprecated unit_price mirror, never converted) and any client-
+ * supplied unitPrice/taxable is IGNORED — the resolver is authoritative, exactly
+ * as generateDueInvoice's catalog path already is. A tech who wants a different
+ * price adds a non-catalog line, which still requires and stamps the client
+ * unitPrice/taxable verbatim. A price-book gap is a typed 409.
+ */
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  assertEditable(c);
-  const [row] = await db.insert(contractLines).values({
-    contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
-    catalogItemId: input.catalogItemId ?? null, unitPrice: input.unitPrice,
-    manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
-    siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
-    taxable: input.taxable, sortOrder: input.sortOrder ?? 0
-  }).returning();
-  return row!;
+  return db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    assertEditable(c);
+    let unitPrice: string;
+    let taxable: boolean;
+    if (input.catalogItemId) {
+      // Resolved on the locked tx: contract row → catalog plain SELECTs (no new lock edge).
+      let resolved: Awaited<ReturnType<typeof resolvePrice>>;
+      try {
+        resolved = await resolvePrice(
+          input.catalogItemId, c.currencyCode, c.orgId,
+          { userId: actor.userId, partnerId: c.partnerId, accessibleOrgIds: actor.accessibleOrgIds },
+          tx
+        );
+      } catch (err) {
+        if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
+          throw new ContractServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+        }
+        throw err;
+      }
+      unitPrice = resolved.unitPrice;
+      taxable = resolved.taxable;
+    } else {
+      // The shared validator already requires unitPrice here; this is the
+      // service-level backstop for internal callers.
+      if (input.unitPrice === undefined) {
+        throw new ContractServiceError('unitPrice is required unless catalogItemId is set', 400, 'INVALID_STATE');
+      }
+      unitPrice = input.unitPrice;
+      taxable = input.taxable;
+    }
+    const [row] = await tx.insert(contractLines).values({
+      contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
+      catalogItemId: input.catalogItemId ?? null, unitPrice,
+      manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+      siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
+      taxable, sortOrder: input.sortOrder ?? 0
+    }).returning();
+    return row!;
+  });
 }
 
 export async function removeContractLine(contractId: string, lineId: string, actor: ContractActor) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  assertEditable(c);
-  await db.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+  await db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    assertEditable(c);
+    await tx.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+  });
 }
 
 function todayISO(asOf: Date = new Date()): string {
@@ -223,23 +354,29 @@ function todayISO(asOf: Date = new Date()): string {
 }
 
 export async function activateContract(contractId: string, actor: ContractActor, asOf: Date = new Date()) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  if (c.status !== 'draft' && c.status !== 'paused') {
-    throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
-  }
-  // Count lines via a lightweight id-only select (simple + explicit).
-  const lineRows = await db.select({ id: contractLines.id }).from(contractLines)
-    .where(eq(contractLines.contractId, contractId));
-  if (lineRows.length === 0) {
-    throw new ContractServiceError('Contract needs at least one line', 409, 'NO_LINES');
-  }
-  const idx = periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf));
-  const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
-  const [row] = await db.update(contracts)
-    .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
-    .where(eq(contracts.id, contractId)).returning();
+  // Contract row lock FIRST (document → lines) so the line-count check and the
+  // status flip can't interleave with changeContractCurrency's clear-and-restamp
+  // or a concurrent line write (same lock order as every other contract writer).
+  const { row, c } = await db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    if (c.status !== 'draft' && c.status !== 'paused') {
+      throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
+    }
+    // Count lines via a lightweight id-only select (simple + explicit).
+    const lineRows = await tx.select({ id: contractLines.id }).from(contractLines)
+      .where(eq(contractLines.contractId, contractId));
+    if (lineRows.length === 0) {
+      throw new ContractServiceError('Contract needs at least one line', 409, 'NO_LINES');
+    }
+    const idx = periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf));
+    const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
+    const [row] = await tx.update(contracts)
+      .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
+      .where(eq(contracts.id, contractId)).returning();
+    return { row: row!, c };
+  });
   await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
-  return row!;
+  return row;
 }
 
 export async function pauseContract(contractId: string, actor: ContractActor) {
@@ -278,7 +415,20 @@ export async function cancelContract(contractId: string, actor: ContractActor) {
   return row!;
 }
 
-interface GenerateResult {
+/**
+ * A catalog-sourced contract line whose item had NO price in the contract's
+ * currency at billing time (wave 3, #3775). The line was still billed — at the
+ * contract line's stamped snapshot — but the caller MUST surface this (the
+ * worker logs one warning per gap; the manual generate route returns it).
+ */
+export interface PriceBookGap {
+  contractLineId: string;
+  catalogItemId: string;
+  itemName: string;
+  currencyCode: string;
+}
+
+export interface GenerateResult {
   generated: boolean;
   invoiceId?: string;
   skipped?: 'already_billed' | 'expired' | 'not_due';
@@ -286,6 +436,8 @@ interface GenerateResult {
   autoIssue: boolean;
   /** The InvoiceActor the caller needs to finish issue+send post-commit. Present only when generated. */
   actor?: InvoiceActor;
+  /** Always present (`[]` when none / nothing generated) — never a silent fallback. */
+  priceBookGaps: PriceBookGap[];
 }
 
 /**
@@ -312,9 +464,18 @@ interface GenerateResult {
  * issueInvoice + sendInvoiceEmail AFTER the transaction commits, best-effort.
  *
  * Catalog pricing is resolved INSIDE addContractLine (tenant-scoped), not here:
- * when a line carries a catalogItemId, addContractLine calls resolvePrice itself
- * and ignores the unitPrice/taxable we pass; on the non-catalog path it uses them.
- * So this function only computes the per-line QUANTITY.
+ * when a line carries a catalogItemId, addContractLine calls resolvePrice in the
+ * invoice's (= contract's) currency and ignores the unitPrice/taxable we pass;
+ * on the non-catalog path it uses them. So this function only computes the
+ * per-line QUANTITY.
+ *
+ * Price-book gap rule (wave 3, #3775): when the catalog has no price in the
+ * contract's currency, addContractLine bills the contract line's stamped
+ * snapshot (unitPrice/taxable we pass) — the run is neither failed nor skipped,
+ * and nothing is converted (the B2 guard proves the snapshot is in the
+ * invoice currency). The gap is reported in `priceBookGaps`; callers surface
+ * it. Owner sign-off on "bill the snapshot" vs "skip the period" is recorded
+ * in the wave-3 plan's Self-Review (a).
  */
 export async function generateDueInvoice(contractId: string, asOf: Date = new Date()): Promise<GenerateResult> {
   const [c] = await db.select().from(contracts).where(eq(contracts.id, contractId)).limit(1);
@@ -323,9 +484,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
   // while the runtime check stays a simple string compare (mirrors listContracts).
   if ((c.status as never) !== ('active' as never) || c.nextBillingAt === null) {
-    return { generated: false, autoIssue: false, skipped: 'not_due' };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
   }
-  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due' };
+  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
 
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
@@ -338,7 +499,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
-    return { generated: false, autoIssue: false, skipped: 'expired' };
+    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [] };
   }
 
   // Build an InvoiceActor for the contract. createdBy is nullable on system-seeded /
@@ -354,20 +515,25 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Never bill an empty (zero-line) contract: don't create/claim/issue a $0 invoice.
   // (removeContractLine stays permissive; this generation-side guard is the backstop.)
   if (lines.length === 0) {
-    return { generated: false, autoIssue: false, skipped: 'not_due' };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
   }
 
   // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
   //    (the engine has no terms param on create).
   const noteParts = [c.notes, c.terms].filter(Boolean) as string[];
+  // B2: the invoice copies the CONTRACT's stamped currency (spec §5 snapshots
+  // rule) — never the org's current setting, which may have changed since the
+  // contract was created.
   const inv = await createManualInvoice(
-    { orgId: c.orgId, notes: noteParts.length ? noteParts.join('\n\n') : undefined },
+    { orgId: c.orgId, notes: noteParts.length ? noteParts.join('\n\n') : undefined, currencyCode: c.currencyCode },
     actor
   );
 
   // 2. Add each contract line. We compute ONLY the quantity. unitPrice/taxable are
-  //    passed as-is — addContractLine ignores them and resolves the catalog price
-  //    when catalogItemId is set, or uses them when it is null.
+  //    passed as-is — addContractLine resolves the catalog price in the contract's
+  //    currency when catalogItemId is set (falling back to this stamped snapshot
+  //    on a price-book gap, reported below), or uses them when it is null.
+  const priceBookGaps: PriceBookGap[] = [];
   for (const l of lines) {
     let quantity: string;
     switch (l.lineType) {
@@ -390,10 +556,15 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         throw new ContractServiceError(`Unknown contract line type: ${String(l.lineType)}`, 500, 'INVALID_STATE');
       }
     }
-    await addContractLine(inv.id, {
+    const { pricedFrom } = await addContractLine(inv.id, {
       description: l.description, quantity, unitPrice: l.unitPrice, taxable: l.taxable,
       catalogItemId: l.catalogItemId, sourceId: l.id
     }, actor);
+    // A non-catalog line is always its own snapshot — only a CATALOG line billed
+    // at the snapshot is a price-book gap.
+    if (l.catalogItemId && pricedFrom === 'contract_snapshot') {
+      priceBookGaps.push({ contractLineId: l.id, catalogItemId: l.catalogItemId, itemName: l.description, currencyCode: c.currencyCode });
+    }
   }
 
   // 3. Claim the period (idempotency guard). On conflict this run lost a race →
@@ -406,7 +577,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
   if (claimed.length === 0) {
     await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
-    return { generated: false, autoIssue: false, skipped: 'already_billed' };
+    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [] };
   }
 
   // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
@@ -423,7 +594,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
-  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor };
+  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps };
 }
 
 // INTERNAL (Phase 4): persist a contract + lines built by buildContractSpecsFromQuote.
@@ -455,7 +626,7 @@ export async function createContractWithLinesDetailed(
       startDate: spec.startDate,
       endDate: spec.endDate ?? null,
       autoIssue: false,
-      currencyCode: spec.currencyCode ?? 'USD',
+      currencyCode: spec.currencyCode,
       notes: spec.notes ?? null,
       terms: spec.terms ?? null,
       createdBy: spec.createdBy ?? null,

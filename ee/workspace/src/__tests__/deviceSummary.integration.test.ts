@@ -121,9 +121,9 @@ beforeAll(async () => {
 
   await admin`INSERT INTO partners (id, name, slug)
               VALUES (${partnerId}, 'workspace summary integration', ${`wsp-summary-${suffix}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${orgA}, ${partnerId}, 'wsp summary org a', ${`wsp-summary-a-${suffix}`}),
-                     (${orgB}, ${partnerId}, 'wsp summary org b', ${`wsp-summary-b-${suffix}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${orgA}, ${partnerId}, 'wsp summary org a', ${`wsp-summary-a-${suffix}`}, 'USD'),
+                     (${orgB}, ${partnerId}, 'wsp summary org b', ${`wsp-summary-b-${suffix}`}, 'USD')`;
   await admin`INSERT INTO sites (id, org_id, name)
               VALUES (${siteA}, ${orgA}, 'wsp summary site a'),
                      (${siteB}, ${orgB}, 'wsp summary site b')`;

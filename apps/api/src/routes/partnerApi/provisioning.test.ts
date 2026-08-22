@@ -139,6 +139,7 @@ function post(path: string, scope: string, body: unknown, apiKey = 'test-key') {
 const orgRow = {
   id: ORG_ID,
   partnerId: PARTNER_ID,
+  currencyCode: 'CAD',
   name: 'Acme',
   slug: 'acme',
   type: 'customer',
@@ -201,9 +202,9 @@ describe('POST /organizations', () => {
     // post-insert recount → export-stamp re-read. Without a cap the counts
     // are skipped entirely.
     selectResults = maxOrganizations === null
-      ? [[{ maxOrganizations }], [{ partnerExportUpdatedAt: UPDATED_AT }]]
+      ? [[{ maxOrganizations, currencyCode: 'CAD' }], [{ partnerExportUpdatedAt: UPDATED_AT }]]
       : [
-        [{ maxOrganizations }],
+        [{ maxOrganizations, currencyCode: 'CAD' }],
         [{ value: orgCount }],
         [{ value: postInsertCount ?? orgCount + 1 }],
         [{ partnerExportUpdatedAt: UPDATED_AT }],
@@ -230,7 +231,7 @@ describe('POST /organizations', () => {
     expect(body.data).toMatchObject({ id: ORG_ID, orgId: ORG_ID, name: 'Acme', slug: 'acme', type: 'customer' });
     expect(body.data.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(mocks.systemContextOpens).toBe(1);
-    expect(insertedValues[0]).toMatchObject({ partnerId: PARTNER_ID, name: 'Acme', slug: 'acme' });
+    expect(insertedValues[0]).toMatchObject({ partnerId: PARTNER_ID, currencyCode: 'CAD', name: 'Acme', slug: 'acme' });
   });
 
   it('ignores a body-supplied partnerId — the principal partner wins', async () => {
@@ -268,7 +269,7 @@ describe('POST /organizations', () => {
   });
 
   it('maps a slug unique violation to 409', async () => {
-    selectResults = [[{ maxOrganizations: null }]];
+    selectResults = [[{ maxOrganizations: null, currencyCode: 'CAD' }]];
     insertResults = [Object.assign(new Error('duplicate key'), { code: '23505' })];
     const res = await post('/organizations', 'organizations:write', { name: 'Acme', slug: 'acme' });
     expect(res.status).toBe(409);

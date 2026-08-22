@@ -9,11 +9,12 @@ import {
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema, type CloneQuoteInput,
   createQuoteOrderSchema, updateQuoteOrderSchema, updateQuoteOrderLineSchema,
+  changeCurrencySchema,
 } from '@breeze/shared';
 import {
   createQuote, cloneQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
-  reorderBlocks, reorderLines, moveLineToBlock,
+  reorderBlocks, reorderLines, moveLineToBlock, changeQuoteCurrency,
 } from '../../services/quoteService';
 import { createQuoteOrder, updateQuoteOrder, updateQuoteOrderLine } from '../../services/quoteOrderService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
@@ -101,7 +102,9 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // and replaces its raw authoring content with the render contract the
     // in-app Preview (web QuoteDocument.tsx) understands — same contract portal
     // and public serve, so the editor preview matches what the customer sees.
-    const blocks = await renderContractBlocksForClient(detail.blocks, detail.quote, (blockId) => `/quotes/${id}/contract-file/${blockId}`);
+    // `branding.locale` so an unstamped draft's contract totals render in the
+    // same locale as the quote totals on the same page (#3777).
+    const blocks = await renderContractBlocksForClient(detail.blocks, detail.quote, (blockId) => `/quotes/${id}/contract-file/${blockId}`, branding.locale);
     // ADMIN-ONLY: attach the raw authoring fields (templateId/templateVersionId/
     // variableValues + the pinned version's declaredVariables + latest-published
     // nudge target) so the editor can render the manual-variable form and offer an
@@ -143,6 +146,13 @@ quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), z
 });
 quoteCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
   try { await deleteDraftQuote(c.req.valid('param').id, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+// Draft-only atomic change-currency op (#3774) — the ONLY mutation path for a
+// document's stamped currency. CURRENCY_LOCKED (409) when monetary lines exist
+// and clearLines wasn't passed; clearLines deletes lines + restamps atomically.
+quoteCrudRoutes.post('/:id/currency', scopes, writePerm, zValidator('param', idParam), zValidator('json', changeCurrencySchema), async (c) => {
+  try { return c.json({ data: await changeQuoteCurrency(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 // Block writes answer `{ data, warnings }`. `warnings` is always present (often
@@ -305,7 +315,7 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
     // on a DRAFT the raw row's billToName is still null, so {{client.name}} (and
     // client.address) blank-fill in the contract text while the page header —
     // rendered from quoteForRender three lines down — shows the org name fine.
-    const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender);
+    const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender, branding.locale);
 
     const { renderQuotePdf } = await import('../../services/quotePdf');
     const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, loadCatalogImage, contractRenderData);

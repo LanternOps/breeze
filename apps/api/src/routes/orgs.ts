@@ -28,7 +28,7 @@ import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -353,6 +353,7 @@ const partnerPublicColumns = () => ({
   invoiceNumberPrefix: partners.invoiceNumberPrefix,
   invoiceTermsDays: partners.invoiceTermsDays,
   invoiceFooter: partners.invoiceFooter,
+  autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
   documentTheme: partners.documentTheme,
   documentPageSize: partners.documentPageSize,
   billingCompanyName: partners.billingCompanyName,
@@ -464,7 +465,7 @@ const dayScheduleSchema = z.object({
   closed: z.boolean().optional()
 });
 
-const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const satisfies readonly SupportedLocale[];
+const supportedLocales = SUPPORTED_LOCALES;
 
 /*
  * The partner-settings URL fields below are restricted to http/https by the
@@ -1259,8 +1260,36 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     }
   }
 
+  // Device count per organization. The list is where an MSP scans "how big is
+  // each customer", and the web card renders `{{count}} devices` — with no
+  // count in the payload that interpolated to a bare " devices" (#3699).
+  //
+  // ONE grouped query over the page's ids rather than a count per row. The
+  // page can hold 100 orgs and `fetchAllOrganizations.ts` walks this endpoint
+  // page by page, so a per-row count would repeat that scan 100x per page. It
+  // is index-backed: `org_id` leads both `devices_org_id_status_idx` and
+  // `devices_org_id_last_seen_at_idx`, and EXPLAIN on a populated deployment
+  // takes the index, not a seq scan.
+  //
+  // `devices` has no soft-delete or archive column, so every row is a live
+  // device and a plain count is the whole story. An org with no devices is
+  // absent from the grouped result, hence the `?? 0` rather than leaving it
+  // undefined — "0 devices" is the truth for a new tenant, and undefined is
+  // what produced the blank label in the first place.
+  const pageOrgIds = ordered.map((org) => org.id);
+  const deviceCounts = pageOrgIds.length
+    ? await db
+        .select({ orgId: devices.orgId, count: sql<number>`count(*)` })
+        .from(devices)
+        .where(inArray(devices.orgId, pageOrgIds))
+        .groupBy(devices.orgId)
+    : [];
+  const deviceCountByOrgId = new Map(
+    deviceCounts.map((row) => [row.orgId, Number(row.count)])
+  );
+
   return c.json({
-    data: ordered,
+    data: ordered.map((org) => ({ ...org, deviceCount: deviceCountByOrgId.get(org.id) ?? 0 })),
     pagination: { page, limit, total: Number(count) }
   });
 });
@@ -1372,8 +1401,18 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     }
   }
 
+  const [partnerRow] = await db
+    .select({ currencyCode: partners.currencyCode })
+    .from(partners)
+    .where(and(eq(partners.id, targetPartnerId), isNull(partners.deletedAt)))
+    .limit(1);
+  if (!partnerRow) {
+    return c.json({ error: 'Partner not found' }, 404);
+  }
+
   const insertValues = {
     partnerId: targetPartnerId,
+    currencyCode: partnerRow.currencyCode,
     name: data.name,
     slug: data.slug,
     type: data.type,

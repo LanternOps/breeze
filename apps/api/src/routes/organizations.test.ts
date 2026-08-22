@@ -52,7 +52,7 @@ vi.mock('../db', () => {
 
 vi.mock('../db/schema', () => ({
   ticketStatuses: {},
-  partners: {},
+  partners: { id: 'partners.id', currencyCode: 'partners.currency_code', deletedAt: 'partners.deleted_at' },
   organizations: {},
   sites: {},
   // GET /orgs/sites enriches each site with a grouped device count (#1790).
@@ -325,6 +325,22 @@ describe('organization routes', () => {
               })
             })
           })
+        } as any)
+        // partner-settings read for the preferred org order
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // grouped per-org device counts (#3699)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ orgId: 'org-1', count: 3 }])
+            })
+          })
         } as any);
 
       const res = await app.request('/orgs/organizations?page=1&limit=50', {
@@ -339,12 +355,20 @@ describe('organization routes', () => {
     });
 
     it('should create an organization', async () => {
-      vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([
-            { id: 'org-1', name: 'Org One', slug: 'org-one' }
-          ])
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ currencyCode: 'CAD' }])
+          })
         })
+      } as any);
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          { id: 'org-1', name: 'Org One', slug: 'org-one' }
+        ])
+      });
+      vi.mocked(db.insert).mockReturnValue({
+        values,
       } as any);
 
       const res = await app.request('/orgs/organizations', {
@@ -359,6 +383,7 @@ describe('organization routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe('org-1');
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'CAD' }));
     });
 
     it('should fetch an organization by id', async () => {

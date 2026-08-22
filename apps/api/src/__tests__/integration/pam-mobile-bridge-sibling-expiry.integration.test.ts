@@ -73,7 +73,7 @@ beforeEach(async () => {
 
   const [org] = await tdb
     .insert(organizations)
-    .values({ partnerId, name: 'PR1254 Org', slug: `pr1254-org-${Date.now()}`, type: 'customer', status: 'active' })
+    .values({ currencyCode: 'USD', partnerId, name: 'PR1254 Org', slug: `pr1254-org-${Date.now()}`, type: 'customer', status: 'active' })
     .returning({ id: organizations.id });
   orgId = org!.id;
 
@@ -240,7 +240,7 @@ describe('#1254 cross-tenant elevation mirror-back is RLS-contained (clean no-op
       .returning({ id: partners.id });
     const [org2] = await tdb
       .insert(organizations)
-      .values({ partnerId: p2!.id, name: 'PR1254 Other Org', slug: `pr1254-other-org-${Date.now()}`, type: 'customer', status: 'active' })
+      .values({ currencyCode: 'USD', partnerId: p2!.id, name: 'PR1254 Other Org', slug: `pr1254-other-org-${Date.now()}`, type: 'customer', status: 'active' })
       .returning({ id: organizations.id });
     const [site2] = await tdb
       .insert(sites)

@@ -1,10 +1,11 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
   pgTable, uuid, text, varchar, char, boolean, numeric, integer, jsonb, timestamp, date, pgEnum,
-  index, uniqueIndex
+  index, uniqueIndex, foreignKey
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users, bytea } from './users';
+import { supportedCurrencies } from './currency';
 
 export const catalogItemTypeEnum = pgEnum('catalog_item_type', ['hardware', 'software', 'service']);
 export const catalogBillingTypeEnum = pgEnum('catalog_billing_type', ['one_time', 'recurring']);
@@ -27,9 +28,14 @@ export const catalogItems = pgTable('catalog_items', {
   billingType: catalogBillingTypeEnum('billing_type').notNull().default('one_time'),
   billingFrequency: catalogBillingFrequencyEnum('billing_frequency'),
   commitmentTermMonths: integer('commitment_term_months'),
+  // DEPRECATED read-mirror of the partner-currency catalog_item_prices row
+  // (multi-currency wave 3). Written for compatibility, read by nothing.
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
   costBasis: numeric('cost_basis', { precision: 12, scale: 2 }),
   markupPercent: numeric('markup_percent', { precision: 6, scale: 2 }),
+  // Multi-currency wave 3: currency of cost_basis. NOT NULL, no default —
+  // every writer stamps it (createCatalogItem defaults to the partner currency).
+  costCurrency: char('cost_currency', { length: 3 }).notNull().references(() => supportedCurrencies.code),
   unitOfMeasure: varchar('unit_of_measure', { length: 50 }).notNull().default('each'),
   taxable: boolean('taxable').notNull().default(true),
   taxCategory: varchar('tax_category', { length: 100 }),
@@ -49,6 +55,26 @@ export const catalogItems = pgTable('catalog_items', {
   uniqueIndex('catalog_items_partner_sku_uq').on(t.partnerId, t.sku).where(sqlSkuNotNull(t))
 ]);
 
+// Partner-axis (RLS shape 3). Per-currency sell price book (multi-currency
+// wave 3). UNIQUE(item_id, currency_code); composite FK proves same partner.
+export const catalogItemPrices = pgTable('catalog_item_prices', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  itemId: uuid('item_id').notNull(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  currencyCode: char('currency_code', { length: 3 }).notNull().references(() => supportedCurrencies.code),
+  unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (t) => [
+  uniqueIndex('catalog_item_prices_item_currency_uq').on(t.itemId, t.currencyCode),
+  index('catalog_item_prices_partner_idx').on(t.partnerId),
+  foreignKey({
+    columns: [t.itemId, t.partnerId],
+    foreignColumns: [catalogItems.id, catalogItems.partnerId],
+    name: 'catalog_item_prices_item_partner_fk'
+  }).onDelete('cascade')
+]);
+
 // Partner-axis (RLS shape 3). One manually-uploaded product image per catalog
 // item, stored as a bytea blob (mirrors quote_images). partner_id denormalized
 // for the partner-axis policy; cascades when the item is deleted.
@@ -66,17 +92,32 @@ export const catalogItemImages = pgTable('catalog_item_images', {
   index('catalog_item_images_partner_idx').on(t.partnerId)
 ]);
 
-// Org-axis (RLS shape 1, direct org_id). Per-customer sell-price override.
+// Org-axis (RLS shape 1, direct org_id). Per-customer sell-price override in an
+// explicit currency. partner_id is denormalized ONLY for the composite FKs that
+// prove item, org, and override share one partner — the RLS axis stays org_id.
 export const catalogItemOrgPricing = pgTable('catalog_item_org_pricing', {
   id: uuid('id').primaryKey().defaultRandom(),
   catalogItemId: uuid('catalog_item_id').notNull().references(() => catalogItems.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
+  partnerId: uuid('partner_id').notNull(),
+  currencyCode: char('currency_code', { length: 3 }).notNull().references(() => supportedCurrencies.code),
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
   uniqueIndex('catalog_item_org_pricing_item_org_uq').on(t.catalogItemId, t.orgId),
-  index('catalog_item_org_pricing_org_idx').on(t.orgId)
+  index('catalog_item_org_pricing_org_idx').on(t.orgId),
+  index('catalog_item_org_pricing_partner_idx').on(t.partnerId),
+  foreignKey({
+    columns: [t.catalogItemId, t.partnerId],
+    foreignColumns: [catalogItems.id, catalogItems.partnerId],
+    name: 'catalog_item_org_pricing_item_partner_fk'
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [t.orgId, t.partnerId],
+    foreignColumns: [organizations.id, organizations.partnerId],
+    name: 'catalog_item_org_pricing_org_partner_fk'
+  })
 ]);
 
 // Partner-axis via denormalized partner_id (RLS shape 3, flat policy — avoids the

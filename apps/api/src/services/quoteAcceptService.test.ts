@@ -99,6 +99,7 @@ const baseParams = {
 function queueAcceptHappyPath(
   quoteOverrides: Record<string, unknown> = {},
   lineOverrides: Record<string, unknown> = {},
+  partnerOverrides: Record<string, unknown> = {},
 ) {
   const quote = {
     id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
@@ -122,7 +123,7 @@ function queueAcceptHappyPath(
   queueResult([{ id: 'acc1' }]);                       // 4 quote_acceptances insert
   queueResult([{ id: 'inv1' }]);                       // 5 invoices insert
   queueResult([]);                                    // 6 invoiceLines insert
-  queueResult([{ prefix: 'INV', termsDays: 30 }]);     // 7 partners select
+  queueResult([{ prefix: 'INV', termsDays: 30, settings: {}, ...partnerOverrides }]); // 7 partners select
   queueResult([{ counter: 1 }]);                       // 8 counter upsert
   queueResult([]);                                    // 9 invoices update
   queueResult([]);                                    // 10 quotes update
@@ -289,6 +290,35 @@ describe('acceptQuote deposit snapshot', () => {
 // renderers treat the title as `name ?? description`. The conversion mapping
 // dropped `name`, so every converted invoice rendered as a legacy line and the
 // customer-facing item title vanished from the invoice detail and the PDF.
+/**
+ * Multi-currency wave 5 (#3777): accept ISSUES the converted invoice inline
+ * (never via issueInvoice), so it is the invoice's issue-time stamp. The
+ * accepted quote's own stamp is the natural value — the same rule
+ * sellerSnapshot follows — falling back to the partner language only for a
+ * quote that somehow carries none.
+ */
+describe('acceptQuote document_locale stamp', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
+
+  it("stamps the issued invoice with the quote's documentLocale, not the partner's current language", async () => {
+    queueAcceptHappyPath({ documentLocale: 'pt-BR' }, {}, { settings: { language: 'de-DE' } });
+    await acceptQuote(baseParams);
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ status: 'sent', documentLocale: 'pt-BR' });
+  });
+
+  it('falls back to the partner language when the quote carries no stamp', async () => {
+    queueAcceptHappyPath({ documentLocale: null }, {}, { settings: { language: 'de-DE' } });
+    await acceptQuote(baseParams);
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ status: 'sent', documentLocale: 'de-DE' });
+  });
+});
+
 describe('acceptQuote quote-line -> invoice-line label mapping (#3319)', () => {
   beforeEach(() => {
     results.length = 0;

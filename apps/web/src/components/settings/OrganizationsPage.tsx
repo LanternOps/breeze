@@ -25,6 +25,21 @@ type OrganizationFormValues = {
   contractEnd?: string;
 };
 
+/**
+ * Whether the org card should render its `{{count}} devices` label.
+ *
+ * The count is absent for organization-scoped callers — that branch of
+ * `GET /orgs/organizations` returns a deliberately minimal projection. Rendering
+ * the label anyway interpolated `undefined` and produced a bare " devices",
+ * which reads as a loading bug or an empty tenant (#3699). `0` is a real value
+ * and must render, so this cannot be a truthiness check.
+ *
+ * Exported for test, like `fetchAllOrganizations` below it.
+ */
+export function shouldShowDeviceCount(count: number | undefined): boolean {
+  return typeof count === 'number' && Number.isFinite(count);
+}
+
 const statusLabelKeys: Record<Organization['status'], string> = {
   active: 'organizationsPage.status.active',
   trial: 'organizationsPage.status.trial',
@@ -618,9 +633,11 @@ export default function OrganizationsPage() {
                           >
                             {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
                           </span>
-                          <span className="text-xs text-muted-foreground">
-                            {t('organizationsPage.deviceCount', { count: org.deviceCount })}
-                          </span>
+                          {shouldShowDeviceCount(org.deviceCount) && (
+                            <span className="text-xs text-muted-foreground">
+                              {t('organizationsPage.deviceCount', { count: org.deviceCount })}
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -680,9 +697,11 @@ export default function OrganizationsPage() {
                       >
                         {t(/* i18n-dynamic */ statusLabelKeys[selectedOrg.status])}
                       </span>
-                      <span>
-                        {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}
-                      </span>
+                      {shouldShowDeviceCount(selectedOrg.deviceCount) && (
+                        <span>
+                          {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex gap-2">

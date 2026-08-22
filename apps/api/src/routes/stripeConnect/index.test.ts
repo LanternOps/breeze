@@ -41,6 +41,11 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn(async (callback: () => unknown) => callback()),
+  withSystemDbAccessContext: vi.fn(async (callback: () => unknown) => callback()),
+}));
+
 // Re-export the real PartnerStripeError so the route's `instanceof` check matches.
 vi.mock('../../services/partnerStripe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/partnerStripe')>();
@@ -48,6 +53,8 @@ vi.mock('../../services/partnerStripe', async (importOriginal) => {
     PartnerStripeError: actual.PartnerStripeError,
     savePartnerStripeKey: vi.fn(),
     getPartnerStripeStatus: vi.fn(),
+    getStripeAccountCurrency: vi.fn(),
+    refreshPartnerStripeAccount: vi.fn(),
     disconnectPartnerStripe: vi.fn(),
   };
 });
@@ -57,6 +64,8 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import {
   savePartnerStripeKey,
   getPartnerStripeStatus,
+  getStripeAccountCurrency,
+  refreshPartnerStripeAccount,
   disconnectPartnerStripe,
   PartnerStripeError,
 } from '../../services/partnerStripe';
@@ -78,15 +87,49 @@ describe('stripe-connect (API-key) routes', () => {
       user: { id: '11111111-1111-1111-1111-111111111111', email: 'u@example.com', name: 'U' },
       partnerId: 'partner-1',
     };
-    (savePartnerStripeKey as any).mockResolvedValue({ stripeAccountId: 'acct_9', last4: '4242', livemode: false });
-    (getPartnerStripeStatus as any).mockResolvedValue({ connected: true, stripeAccountId: 'acct_9', last4: '4242', livemode: false });
+    (savePartnerStripeKey as any).mockResolvedValue({
+      stripeAccountId: 'acct_9',
+      last4: '4242',
+      livemode: false,
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+    });
+    (getPartnerStripeStatus as any).mockResolvedValue({
+      connected: true,
+      stripeAccountId: 'acct_9',
+      last4: '4242',
+      livemode: false,
+      defaultCurrency: 'USD',
+      accountCountry: 'US',
+      accountRefreshedAt: new Date('2026-08-21T00:00:00.000Z'),
+    });
+    (getStripeAccountCurrency as any).mockResolvedValue({
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+      stale: false,
+    });
+    (refreshPartnerStripeAccount as any).mockResolvedValue({
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+    });
     (disconnectPartnerStripe as any).mockResolvedValue(undefined);
   });
 
   it('POST /key saves the key, audits, and returns connected status', async () => {
     const res = await postKey('sk_test_abcdefghijkl');
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'connected', stripeAccountId: 'acct_9', livemode: false, last4: '4242' });
+    expect(await res.json()).toEqual({
+      status: 'connected',
+      stripeAccountId: 'acct_9',
+      livemode: false,
+      last4: '4242',
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+    });
     expect(savePartnerStripeKey).toHaveBeenCalledWith({
       partnerId: 'partner-1',
       apiKey: 'sk_test_abcdefghijkl',
@@ -111,10 +154,19 @@ describe('stripe-connect (API-key) routes', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
-  it('GET / returns connected status with last4', async () => {
+  it('GET / returns connected status with lazily refreshed account metadata', async () => {
     const res = await stripeConnectRoutes.request('/', { method: 'GET' });
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'connected', stripeAccountId: 'acct_9', livemode: false, last4: '4242' });
+    expect(await res.json()).toEqual({
+      status: 'connected',
+      stripeAccountId: 'acct_9',
+      livemode: false,
+      last4: '4242',
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+    });
+    expect(getStripeAccountCurrency).toHaveBeenCalledWith('partner-1');
   });
 
   it('GET / returns disconnected when no key is configured', async () => {
@@ -122,6 +174,46 @@ describe('stripe-connect (API-key) routes', () => {
     const res = await stripeConnectRoutes.request('/', { method: 'GET' });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ status: 'disconnected' });
+  });
+
+  it('POST /refresh refreshes and returns account metadata', async () => {
+    const res = await stripeConnectRoutes.request('/refresh', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'connected',
+      defaultCurrency: 'EUR',
+      accountCountry: 'DE',
+      accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+    });
+    expect(refreshPartnerStripeAccount).toHaveBeenCalledWith('partner-1');
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        orgId: null,
+        action: 'stripe_connect.account_refreshed',
+        resourceType: 'partner',
+        resourceId: 'partner-1',
+        details: { defaultCurrency: 'EUR', accountCountry: 'DE' },
+      },
+    );
+  });
+
+  it('POST /refresh returns the PartnerStripeError status and message', async () => {
+    (refreshPartnerStripeAccount as any).mockRejectedValue(
+      new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY'),
+    );
+    const res = await stripeConnectRoutes.request('/refresh', { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Online payment is not available — connect Stripe first.',
+    });
+  });
+
+  it('POST /refresh returns 403 without BILLING_MANAGE permission', async () => {
+    authGates.permissionDenied = true;
+    const res = await stripeConnectRoutes.request('/refresh', { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(refreshPartnerStripeAccount).not.toHaveBeenCalled();
   });
 
   it('DELETE / disconnects and audits', async () => {

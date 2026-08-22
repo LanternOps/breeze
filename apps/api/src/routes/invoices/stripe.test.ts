@@ -41,6 +41,24 @@ describe('POST /invoices/:id/pay-link', () => {
     expect(payLink).toHaveBeenCalledWith(ID, expect.objectContaining({ partnerId: 'p1' }));
   });
 
+  it('surfaces the currency-mismatch warning verbatim to the partner (warn-don\'t-block)', async () => {
+    const warning = {
+      code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT' as const, documentCurrency: 'EUR', accountCurrency: 'USD',
+      message: 'This document is in EUR but your Stripe account settles in USD.',
+    };
+    payLink.mockResolvedValue({ url: 'https://checkout.stripe.com/c/pay/eur', warning });
+    const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { url: 'https://checkout.stripe.com/c/pay/eur', warning } });
+  });
+
+  it('maps STRIPE_CURRENCY_UNSUPPORTED to a 409 with the partner-facing message verbatim', async () => {
+    payLink.mockRejectedValue(new InvoiceServiceError('Your Stripe account cannot accept payments in CHF.', 409, 'STRIPE_CURRENCY_UNSUPPORTED'));
+    const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'STRIPE_CURRENCY_UNSUPPORTED', error: expect.stringContaining('CHF') });
+  });
+
   it('maps STRIPE_NOT_CONNECTED to a 409 with code', async () => {
     payLink.mockRejectedValue(new InvoiceServiceError('Online payment is not available', 409, 'STRIPE_NOT_CONNECTED'));
     const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });

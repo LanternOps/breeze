@@ -5,13 +5,13 @@ import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
+import { parseAddressList, MAX_RECIPIENTS } from '../shared/addressList';
 import { scheduleQuoteSend, cancelScheduledSend } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { fetchWithAuth } from '../../../stores/auth';
 import { getJwtClaims } from '../../../lib/authScope';
-import { isValidEmail } from '@/lib/email';
 import { cloneQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
@@ -172,27 +172,6 @@ function linkOriginNotice(
   }
 }
 
-/** Mirrors the send route's `.max(10)` on both `to` and `cc`. */
-const MAX_RECIPIENTS = 10;
-
-/** Split a comma/semicolon/newline-separated address list into valid + invalid
- *  entries (case-insensitively deduped, first-seen order kept). The server
- *  re-validates every address; this only powers the pre-submit UX guard. */
-function parseAddressList(raw: string): { emails: string[]; invalid: string[] } {
-  const emails: string[] = [];
-  const invalid: string[] = [];
-  const seen = new Set<string>();
-  for (const part of raw.split(/[,;\n]+/)) {
-    const addr = part.trim();
-    if (!addr) continue;
-    const key = addr.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    (isValidEmail(addr) ? emails : invalid).push(addr);
-  }
-  return { emails, invalid };
-}
-
 interface Props {
   detail: QuoteDetailData;
   onChanged?: () => void;
@@ -259,6 +238,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // status (drives the deposit-can't-be-paid warning). null = unknown/not loaded.
   const [signature, setSignature] = useState<string | null>(null);
   const [stripeStatus, setStripeStatus] = useState<'connected' | 'disconnected' | null>(null);
+  // The connected account's cached settlement currency (API-owned cache, #3777);
+  // null = not connected / not cached → no mismatch warning can be shown.
+  const [stripeDefaultCurrency, setStripeDefaultCurrency] = useState<string | null>(null);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [cloning, setCloning] = useState(false);
@@ -367,6 +349,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setIncludePdf(true);
     setSignature(null);
     setStripeStatus(null);
+    setStripeDefaultCurrency(null);
     setToPrefillMissing(false);
     setSendOpen(true);
     if (opts.prefillTo.length === 0) {
@@ -406,8 +389,10 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         try {
           const res = await fetchWithAuth('/partner/stripe-connect');
           if (!res.ok) return;
-          const body = (await res.json()) as { status?: string };
-          setStripeStatus(body.status === 'connected' ? 'connected' : 'disconnected');
+          const body = (await res.json()) as { status?: string; defaultCurrency?: string | null };
+          const connected = body.status === 'connected';
+          setStripeStatus(connected ? 'connected' : 'disconnected');
+          setStripeDefaultCurrency(connected && typeof body.defaultCurrency === 'string' ? body.defaultCurrency : null);
         } catch { /* unknown status — show neither the warning nor the note */ }
       })();
     }
@@ -1136,7 +1121,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         </p>
         {zeroTotal && (
           <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
-            {t('quotes.actions.sendConfirm.zeroTotalWarning')}
+            {t('quotes.actions.sendConfirm.zeroTotalWarning', { zero: formatMoney(0, quote.currencyCode) })}
           </p>
         )}
         {/* Non-blocking: an incomplete profit estimate never disables Send (a
@@ -1315,6 +1300,24 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           <p className="mt-2 text-xs text-muted-foreground" data-testid="quote-send-payment-enabled">
             {t('quotes.actions.sendConfirm.paymentEnabled')}
           </p>
+        )}
+        {/* Warn-don't-block (#3777): the quote's currency differs from the
+            account's cached settlement currency. Amber info only — Send stays
+            armed; the web never computes this from anything but the API cache. */}
+        {stripeStatus === 'connected' && stripeDefaultCurrency && stripeDefaultCurrency !== quote.currencyCode && (
+          <div
+            className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300"
+            role="status"
+            data-testid="quote-stripe-currency-warning"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              {t('quotes.actions.currencyMismatch', {
+                documentCurrency: quote.currencyCode,
+                accountCurrency: stripeDefaultCurrency,
+              })}
+            </span>
+          </div>
         )}
 
         <div className="mt-6 flex justify-end gap-3">

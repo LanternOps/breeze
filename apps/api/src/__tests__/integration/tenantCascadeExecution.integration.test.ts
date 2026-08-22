@@ -59,13 +59,13 @@ async function seed(): Promise<SeedHandles> {
 
   // Two orgs under the same partner.
   const [erased] = (await testDb.execute(sql`
-    INSERT INTO organizations (partner_id, name, slug, status, created_at, updated_at)
-    VALUES (${partnerId}, 'Org To Erase', ${eraseSlug}, 'active', now(), now())
+    INSERT INTO organizations (partner_id, name, slug, status, currency_code, created_at, updated_at)
+    VALUES (${partnerId}, 'Org To Erase', ${eraseSlug}, 'active', 'USD', now(), now())
     RETURNING id
   `)) as unknown as Array<{ id: string }>;
   const [control] = (await testDb.execute(sql`
-    INSERT INTO organizations (partner_id, name, slug, status, created_at, updated_at)
-    VALUES (${partnerId}, 'Control Org', ${controlSlug}, 'active', now(), now())
+    INSERT INTO organizations (partner_id, name, slug, status, currency_code, created_at, updated_at)
+    VALUES (${partnerId}, 'Control Org', ${controlSlug}, 'active', 'USD', now(), now())
     RETURNING id
   `)) as unknown as Array<{ id: string }>;
   const orgIdToErase = erased!.id;

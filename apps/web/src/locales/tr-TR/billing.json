@@ -141,7 +141,8 @@
         "saveContract": "Sözleşme kaydedilemedi.",
         "addLine": "Satır eklenemedi.",
         "removeLine": "Satır kaldırılamadı.",
-        "activateContract": "Sözleşme etkinleştirilemedi."
+        "activateContract": "Sözleşme etkinleştirilemedi.",
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya katalog bağlantısını temizleyin."
       },
       "toast": {
         "contractCreated": "Sözleşme oluşturuldu",
@@ -198,7 +199,9 @@
         "taxable": "Vergiye tabi",
         "quantityResolvedAutomatically": "Miktar, faturalama sırasında otomatik olarak çözümlenir.",
         "lineTotal": "Satır toplamı: {{total}}",
-        "addLine": "Satır ekle"
+        "addLine": "Satır ekle",
+        "noPriceInCurrency": "Bu öğenin {{currency}} fiyatı yok — katalogda bir fiyat ekleyin ya da katalog bağlantısını temizleyip manuel bir hat girin.",
+        "priceFromCatalog": "Birim fiyatı (katalogdan, {{currency}} cinsinden)"
       },
       "estimate": {
         "title": "Tahmini bu dönem",
@@ -635,7 +638,8 @@
         "updateDeposit": "Ödeme güncellenemedi.",
         "updateLine": "Hat güncellenemedi.",
         "updateSection": "Bölüm güncellenemedi.",
-        "uploadImage": "Resim yüklenemedi."
+        "uploadImage": "Resim yüklenemedi.",
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin."
       },
       "image": {
         "alt": "Alıntı görseli",
@@ -887,7 +891,7 @@
         "toLabel": "Kime",
         "toPlaceholder": "Alıcı ekle…",
         "tooManyRecipients": "En fazla {{max}} adresi kullanın.",
-        "zeroTotalWarning": "Bu fiyat teklifinin toplamı 0,00 ABD dolarıdır — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
+        "zeroTotalWarning": "Bu fiyat teklifinin toplamı {{zero}} — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
         "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin."
       },
       "sendEmailWarning": {
@@ -931,7 +935,8 @@
       "resendNewLinkOriginalLive": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı yenisiyle birlikte çalışmaya devam eder.",
       "resendNewLinkOriginalDead": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes yeni bağlantıyı kullanmalıdır.",
       "shareLinkNewLinkOriginalLive": "YENİ bir bağlantı kopyalandı. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı bununla birlikte çalışmaya devam eder.",
-      "shareLinkNewLinkOriginalDead": "YENİ bir bağlantı kopyalandı. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes bu bağlantıyı kullanmalıdır."
+      "shareLinkNewLinkOriginalDead": "YENİ bir bağlantı kopyalandı. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes bu bağlantıyı kullanmalıdır.",
+      "currencyMismatch": "Bu teklif {{documentCurrency}} cinsinden, ancak Stripe hesabınız {{accountCurrency}} olarak ödeme yapıyor. Stripe müşteriye {{documentCurrency}} gösterecek ve ödeme sırasında dönüştürecek — kur farkı ve varsa dönüştürme ücreti size aittir."
     },
     "detail": {
       "addContentInEditor": "Editör'e içerik ekleyin",
@@ -1044,9 +1049,16 @@
         "tax": "Vergi",
         "title": "Toplamlar"
       },
-      "viewInvoice": "Faturayı görüntüle"
+      "viewInvoice": "Faturayı görüntüle",
+      "declinedBanner": {
+        "title": "{{date}} tarihinde reddedildi",
+        "reasonLabel": "Müşterinin notu:",
+        "revise": "Çoğalt ve gözden geçir",
+        "revising": "Çoğaltılıyor…"
+      }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
       "available": "{{count}} mevcut",
       "cost": "maliyet {{currency}} {{amount}}",
       "endOfLife": "Hayatın sonu",
@@ -1214,6 +1226,7 @@
       "tryAgain": "Tekrar deneyin"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
       "cost": "maliyet {{currency}} {{amount}}",
       "importAndAdd": "İçe aktar ve ekle",
       "option": "Seçenek {{number}}",
@@ -1324,7 +1337,8 @@
       "removeLine": "Satır kaldırılamadı.",
       "saveNotes": "Notlar kaydedilemedi.",
       "saveTerms": "Şartlar kaydedilemedi.",
-      "updateLine": "Satır güncellenemedi."
+      "updateLine": "Satır güncellenemedi.",
+      "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin."
     },
     "fields": {
       "descriptionOptional": "Açıklama (isteğe bağlı)",
@@ -1393,6 +1407,27 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "Kime",
+      "toPlaceholder": "muhasebe@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Konu",
+      "subjectPlaceholder": "Sağlayıcınızdan {{number}} numaralı fatura",
+      "subjectPlaceholderNoNumber": "Faturanız",
+      "messageLabel": "Mesaj (isteğe bağlı)",
+      "messagePlaceholder": "Müşteri için kısa bir not ekleyin…",
+      "includePdfLabel": "Fatura PDF’ini ekle",
+      "signaturePreviewLabel": "İmzanız eklenecek:",
+      "invalidEmail": "Geçerli bir e-posta adresi değil: {{addresses}}",
+      "tooManyRecipients": "En fazla {{max}} adres.",
+      "recipientRequired": "En az bir alıcı ekleyin.",
+      "noBillingContactHint": "Bu şirketin henüz bir fatura iletişim kişisi yok — <orgLink>bir tane ekleyin</orgLink> veya yukarıya bir adres yazın.",
+      "payLinkNote": "E-posta, müşterinizin bu faturayı görüntüleyebileceği, indirebileceği ve ödeyebileceği güvenli bir bağlantı içerir — oturum açma gerekmez."
+    },
+    "copyInvoiceLink": "Fatura bağlantısını kopyala",
+    "copyInvoiceLinkTitle": "Müşterinin görüntüleme ve ödeme bağlantısını kopyalar — oturum açma gerekmez",
+    "copyingPaymentLink": "Kopyalanıyor…",
     "deleteConfirm": {
       "message": "Bu, taslak faturayı kalıcı olarak siler. Bu geri alınamaz.",
       "title": "Taslak faturayı sil"
@@ -1404,6 +1439,9 @@
     "downloadPdfError": "Fatura PDF'si indirilemedi.",
     "issue": "Sayı",
     "issueAndSend": "Düzenle ve Gönder",
+    "issueBlockedUnsaved": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor. Orada düzeltin, ardından Sorun.",
+    "issueCanceledSaveFailed": "Bir değişiklik kaydedilemediğinden Sorun iptal edildi. Vurgulanan alanı düzeltip tekrar deneyin.",
+    "issueCanceledStillSaving": "Değişiklikleriniz hâlâ kaydediliyor — Sorun iptal edildi. Her şey kaydedildikten sonra tekrar deneyin.",
     "issueError": "Fatura düzenlenemedi.",
     "issueNoEmailWarning": "Fatura düzenlendi — ancak e-posta gönderilmedi (faturalandırmayla ilgili kişi yok / e-posta yapılandırılmadı)",
     "issueSendConfirm": {
@@ -1416,12 +1454,21 @@
     "issueSuccess": "Fatura düzenlendi",
     "issuing": "Veriliyor…",
     "noVisibleLineHint": "Düzenlemeye müşterinin görebileceği en az bir satır ekleyin.",
+    "paymentLinkCopyFailed": "Otomatik kopyalanamadı. Ödeme bağlantısı: {{url}}",
     "preparing": "Hazırlanıyor…",
+    "resend": "Yeniden gönder",
+    "resendConfirm": {
+      "title": "Bu fatura yeniden gönderilsin mi?",
+      "message": "{{customer}} adresine {{amount}} tutarında bir kopya daha gönderilir. Faturada hiçbir şey değişmez — aynı numara, aynı tarihler, aynı tutarlar."
+    },
+    "resendSuccess": "Fatura yeniden gönderildi",
+    "resending": "Gönderiliyor…",
     "savingHint": "Değişiklikler kaydediliyor… Her şey kaydedildiğinde sorunun kilidi açılır.",
     "savingTitle": "Değişiklikleriniz kaydediliyor — Her şey kaydedildiğinde sorunun kilidi açılır.",
-    "issueCanceledSaveFailed": "Bir değişiklik kaydedilemediğinden Sorun iptal edildi. Vurgulanan alanı düzeltip tekrar deneyin.",
-    "issueCanceledStillSaving": "Değişiklikleriniz hâlâ kaydediliyor — Sorun iptal edildi. Her şey kaydedildikten sonra tekrar deneyin.",
-    "issueBlockedUnsaved": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor. Orada düzeltin, ardından Sorun.",
+    "sendConfirm": {
+      "title": "Bu fatura gönderilsin mi?",
+      "message": "{{amount}} tutarındaki fatura {{customer}} adresine e-postayla gönderilir."
+    },
     "unsavedHint": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Kaydedildiğinde sorunun kilidi açılıyor.",
     "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
   },
@@ -1460,6 +1507,7 @@
       "amount": "Tutar",
       "amountRequired": "Kaydetmek için bir ödeme tutarı girin",
       "connectStripe": "Çevrimiçi ödemeleri kabul etmek için Stripe bağlanın.",
+      "currencyMismatch": "Bu fatura {{documentCurrency}} cinsinden, ancak Stripe hesabınız {{accountCurrency}} olarak ödeme yapıyor. Stripe müşteriye {{documentCurrency}} gösterecek ve ödeme sırasında dönüştürecek — kur farkı ve varsa dönüştürme ücreti size aittir.",
       "date": "Ödeme tarihi",
       "draftHint": "Ödemeleri kaydetmek için bu faturayı düzenleyin.",
       "empty": "Hiçbir ödeme kaydedilmedi.",
@@ -1522,7 +1570,15 @@
     },
     "empty": "Bu faturada henüz satır yok.",
     "addContentInEditor": "Editör'e satır ekleme",
-    "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın"
+    "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın",
+    "resetLink": {
+      "button": "Müşteri bağlantısını sıfırla",
+      "title": "Müşteri bağlantısı sıfırlansın mı?",
+      "description": "Mevcut bağlantıya sahip olan herkes erişimi kaybeder — daha önce gönderilen e-postalardaki bağlantı dahil. Bir sonraki gönderim veya kopyalama yeni bir bağlantı oluşturur.",
+      "confirm": "Bağlantıyı sıfırla",
+      "success": "Bağlantı sıfırlandı — önceki bağlantılar artık çalışmıyor",
+      "error": "Bağlantı sıfırlanamadı"
+    }
   },
   "invoiceDocument": {
     "billTo": "Fatura Alıcısı",
@@ -1711,6 +1767,8 @@
       "aiStylePlaceholder": "Varsayılan: öğe adı kısa, genel, müşteri dostu bir addır (\"Kablosuz Erişim Noktası\"); Açıklama tam ürün adıyla başlar, ardından siparişi doğrulamaya yetecek kadar kesin olan maddeler halinde spesifikasyonlar belirtilir. Geçersiz kılmak için kendi stilinizi burada tanımlayın.",
       "autoTaxHardware": "Donanım öğelerini otomatik olarak vergilendirin",
       "autoTaxHardwareHelp": "Yeni içe aktarılan donanım varsayılan olarak vergiye tabidir.",
+      "autoEmailInvoice": "Teklif kabul edildiğinde faturayı otomatik olarak e-postayla gönder",
+      "autoEmailInvoiceHelp": "Bir müşteri teklifi kabul ettiğinde, düzenlenen fatura güvenli bir görüntüleme ve ödeme bağlantısıyla hemen e-postayla gönderilir — oturum açma gerekmez.",
       "currencyCode": "Para birimi kodu",
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",

@@ -25,6 +25,7 @@ vi.mock('../../services/invoiceService', () => ({
 // Mock the Phase 5 PDF/email service — /:id/send + /:id/pdf delegate here.
 vi.mock('../../services/invoicePdf', () => ({
   sendInvoiceEmail: vi.fn(),
+  resendInvoiceEmail: vi.fn(),
   renderInvoicePdf: vi.fn(),
   getInvoicePdf: vi.fn()
 }));
@@ -282,7 +283,11 @@ describe('invoice lifecycle routes', () => {
     const body = await res.json();
     expect(body.data.emailed).toBe(true);
     expect(body.data.invoice.id).toBe(INV_ID);
-    expect(pdfSvc.sendInvoiceEmail).toHaveBeenCalledWith(INV_ID, expect.anything());
+    // Third arg is the (empty) composer body: a body-less POST must reproduce
+    // the classic billing-contact send, with every composer field undefined.
+    expect(pdfSvc.sendInvoiceEmail).toHaveBeenCalledWith(INV_ID, expect.anything(), {
+      to: undefined, cc: undefined, subject: undefined, message: undefined, includePdf: undefined,
+    });
   });
 
   it('POST /:id/send surfaces emailed:false + reason when nothing was emailed', async () => {
@@ -300,6 +305,84 @@ describe('invoice lifecycle routes', () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.code).toBe('INVOICE_NOT_FOUND');
+  });
+
+  it('POST /:id/send threads the composer body through to the service', async () => {
+    (pdfSvc.sendInvoiceEmail as any).mockResolvedValue({ invoice: { id: INV_ID, status: 'sent' }, emailed: true, recipients: ['a@x.test'] });
+    const res = await app().request(`/${INV_ID}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ to: ['a@x.test'], cc: ['b@x.test'], subject: 'Your invoice', message: 'Thanks!', includePdf: false }),
+    });
+    expect(res.status).toBe(200);
+    expect(pdfSvc.sendInvoiceEmail).toHaveBeenCalledWith(INV_ID, expect.anything(), {
+      to: ['a@x.test'], cc: ['b@x.test'], subject: 'Your invoice', message: 'Thanks!', includePdf: false,
+    });
+  });
+
+  it('POST /:id/resend calls resendInvoiceEmail with the composer options', async () => {
+    (pdfSvc.resendInvoiceEmail as any).mockResolvedValue({
+      invoice: { id: INV_ID, orgId: 'o1', status: 'sent' }, emailed: true, recipients: ['a@x.test'],
+    });
+    const res = await app().request(`/${INV_ID}/resend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ to: ['a@x.test'], message: 'Second copy as requested.' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.emailed).toBe(true);
+    expect(pdfSvc.resendInvoiceEmail).toHaveBeenCalledWith(INV_ID, expect.anything(), {
+      to: ['a@x.test'], cc: undefined, subject: undefined, message: 'Second copy as requested.', includePdf: undefined,
+    });
+  });
+
+  it('POST /:id/resend audits the attempt, recording the recipient COUNT not the addresses', async () => {
+    (pdfSvc.resendInvoiceEmail as any).mockResolvedValue({
+      invoice: { id: INV_ID, orgId: 'o1', status: 'sent' }, emailed: true, recipients: ['a@x.test', 'b@x.test'],
+    });
+    await app().request(`/${INV_ID}/resend`, { method: 'POST' });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: 'o1', action: 'invoice.resend', resourceType: 'invoice', resourceId: INV_ID, result: 'success',
+      details: { emailed: true, emailReason: undefined, recipientCount: 2 },
+    }));
+    const audited = JSON.stringify((writeRouteAudit as any).mock.calls[0][1]);
+    expect(audited).not.toContain('a@x.test');
+  });
+
+  it('POST /:id/resend audits result:failure when nothing was emailed', async () => {
+    (pdfSvc.resendInvoiceEmail as any).mockResolvedValue({
+      invoice: { id: INV_ID, orgId: 'o1', status: 'sent' }, emailed: false, reason: 'no_billing_contact', recipients: [],
+    });
+    const res = await app().request(`/${INV_ID}/resend`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.reason).toBe('no_billing_contact');
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure' }));
+  });
+
+  it('POST /:id/resend rejects a mis-keyed composer field rather than dropping it', async () => {
+    const res = await app().request(`/${INV_ID}/resend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mesage: 'typo — must not be silently swallowed' }),
+    });
+    expect(res.status).toBe(400);
+    expect(pdfSvc.resendInvoiceEmail).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/resend maps a draft INVALID_STATE to 409', async () => {
+    (pdfSvc.resendInvoiceEmail as any).mockRejectedValue(
+      new InvoiceServiceError('This invoice has not been issued yet — issue it before re-sending', 409, 'INVALID_STATE'),
+    );
+    const res = await app().request(`/${INV_ID}/resend`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('INVALID_STATE');
+  });
+
+  it('POST /:id/resend rejects a non-uuid id before reaching the service', async () => {
+    const res = await app().request('/not-a-uuid/resend', { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(pdfSvc.resendInvoiceEmail).not.toHaveBeenCalled();
   });
 
   it('POST /:id/void validates the reason body (empty reason → 400, no service call)', async () => {

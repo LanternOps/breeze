@@ -123,7 +123,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_quotes',
       description:
-        'List quotes/proposals for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
+        'List quotes/proposals for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.' +
+        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -168,7 +169,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
         'breakdown), content blocks, and line items — the same view the web UI shows. Read-only. ' +
         'Large quotes can exceed the output limit: page the content blocks with blocksOffset/blocksLimit, ' +
         'or pass includeBlockContent:false first for a lightweight block overview (types + order, no content). ' +
-        'A blocksPagination object reports total/returned/hasMore.',
+        'A blocksPagination object reports total/returned/hasMore.' +
+        ' Every document carries a 3-letter currencyCode and all of its amounts (subtotal, tax, total, balance, line totals) are in that currency. NEVER add amounts from documents with different currencyCode values — group by currencyCode first and report one total per currency.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -238,7 +240,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
         'quoteId, blockId; reorder_blocks: quoteId, blockIds; add_manual_line: quoteId, line; add_catalog_line: ' +
         'quoteId, catalogItemId, quantity (blockId optional); update_line: quoteId, lineId, patch; remove_line: ' +
         'quoteId, lineId; move_line: quoteId, lineId, blockId (the TARGET line_items block); ' +
-        'reorder_lines: quoteId, blockId, lineIds.',
+        'reorder_lines: quoteId, blockId, lineIds.' +
+        ' Money inputs (line unitPrice) are in the quote\'s currencyCode; totals in the response are in that currency.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -277,7 +280,13 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
               'Catalog item UUID — REQUIRED for add_catalog_line. The item must be looked up by UUID ' +
               '(use search_catalog); partNumber is NOT a lookup key.',
           },
-          quantity: { type: 'number', description: 'Line quantity (> 0) — required for add_catalog_line' },
+          quantity: {
+            type: 'number',
+            description:
+              'Line quantity (> 0) — required for add_catalog_line. add_catalog_line prices the line from the ' +
+              'catalog price book in the QUOTE\'s currency and fails with NO_PRICE_FOR_CURRENCY (409) when the ' +
+              'item has no price in that currency — never converted. Add a manual line (add_manual_line) instead.',
+          },
           partNumber: {
             type: 'string',
             description:
@@ -289,7 +298,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description:
               'Create-quote payload (create_draft). Required: orgId (UUID). Optional: siteId (UUID), ' +
-              'title, currencyCode (3-letter; defaults to the partner\'s currency), expiryDate (YYYY-MM-DD), introNotes, terms, ' +
+              'title, currencyCode (3-letter; defaults to the organization\'s currency), expiryDate (YYYY-MM-DD), introNotes, terms, ' +
               'termsAndConditions.',
           },
           patch: {
@@ -326,7 +335,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description:
               'Manual quote line fields (add_manual_line). Required: sourceType (\'manual\'|\'catalog\'|\'bundle\' — ' +
-              'use \'manual\' for a hand-entered line), quantity (> 0), unitPrice, taxable (boolean), and at least ' +
+              'use \'manual\' for a hand-entered line), quantity (> 0), unitPrice (in the quote\'s currencyCode), taxable (boolean), and at least ' +
               'one of name/description. Optional: name, description, customerVisible (default true), recurrence ' +
               '(\'one_time\'|\'monthly\'|\'annual\', default \'one_time\'), termMonths, billingFrequency ' +
               '(\'monthly\'|\'annual\'), unitCost, sku, partNumber, depositEligible (default false), blockId (UUID), ' +

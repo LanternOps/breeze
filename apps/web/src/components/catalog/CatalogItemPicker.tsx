@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { formatMoney } from '../../lib/timeFormat';
+import { formatMoney } from '../billing/shared/format';
 import {
   CATALOG_TYPE_CHIP,
+  priceFor,
   type CatalogItem,
 } from '../../lib/api/catalog';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +12,12 @@ interface Props {
   items: CatalogItem[];
   /** Called when the user picks an item (cleared after). */
   onSelect: (item: CatalogItem) => void;
+  /** Document currency (ISO 4217). The price cell shows the item's price-book row
+   *  in THIS currency, or a muted "no price" note when the book has no row —
+   *  never another currency's number and never the deprecated `unitPrice`
+   *  mirror. Items without a price stay selectable: the server answers the add
+   *  with `NO_PRICE_FOR_CURRENCY` and the editor toasts the gap. */
+  currencyCode: string;
   /** Include bundles in results (badged). Default true. */
   includeBundles?: boolean;
   placeholder?: string;
@@ -22,12 +29,13 @@ const MAX_RESULTS = 8;
 
 /**
  * Shared catalog typeahead: search active catalog items by name or SKU, see the
- * type chip + unit price (+ Bundle badge), pick to add. Reused by the invoice and
+ * type chip + the price-book price in the document currency (+ Bundle badge),
+ * pick to add. Reused by the invoice and
  * contract line builders. The dropdown is absolutely positioned within a relative
  * wrapper (callers place it in non-overflow-clipped form areas).
  */
 export default function CatalogItemPicker({
-  items, onSelect, includeBundles = true, placeholder, disabled, testId = 'catalog-picker',
+  items, onSelect, currencyCode, includeBundles = true, placeholder, disabled, testId = 'catalog-picker',
 }: Props) {
   const { t } = useTranslation('common');
   const resolvedPlaceholder = placeholder ?? t('longTail.catalog.CatalogItemPicker.placeholder');
@@ -93,7 +101,9 @@ export default function CatalogItemPicker({
           className="absolute z-30 mt-1 max-h-64 w-full overflow-auto rounded-md border bg-card py-1 shadow-lg"
           data-testid={`${testId}-list`}
         >
-          {results.map((item, idx) => (
+          {results.map((item, idx) => {
+            const price = priceFor(item, currencyCode);
+            return (
             <li key={item.id} role="option" aria-selected={idx === active}>
               <button
                 type="button"
@@ -112,10 +122,19 @@ export default function CatalogItemPicker({
                   {t(/* i18n-dynamic */ `longTail.catalog.CatalogItemPicker.itemTypes.${item.itemType}`)}
                 </span>
                 {item.sku && <span className="font-mono chart-legend-xs text-muted-foreground">{item.sku}</span>}
-                <span className="tabular-nums text-muted-foreground">{formatMoney(item.unitPrice)}</span>
+                {price != null ? (
+                  <span className="tabular-nums text-muted-foreground" data-testid={`${testId}-price-${item.id}`}>
+                    {formatMoney(price, currencyCode)}
+                  </span>
+                ) : currencyCode ? (
+                  <span className="text-[11px] italic text-muted-foreground" data-testid={`${testId}-noprice-${item.id}`}>
+                    {t('longTail.catalog.CatalogItemPicker.noPriceInCurrency', { currency: currencyCode })}
+                  </span>
+                ) : null}
               </button>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
       {open && query.trim() !== '' && results.length === 0 && (

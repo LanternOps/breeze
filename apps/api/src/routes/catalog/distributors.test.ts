@@ -100,7 +100,12 @@ vi.mock('../../services/tdSynnexEcExpress', () => ({
   },
 }));
 
+import { importTdSynnexCatalogItem } from '../../services/tdSynnexDigitalBridge';
+import { importEcExpressCatalogItem } from '../../services/tdSynnexEcExpress';
 import { catalogDistributorRoutes } from './distributors';
+
+const importTdSynnexCatalogItemMock = vi.mocked(importTdSynnexCatalogItem);
+const importEcExpressCatalogItemMock = vi.mocked(importEcExpressCatalogItem);
 
 function app() {
   const a = new Hono();
@@ -111,6 +116,8 @@ function app() {
 
 beforeEach(() => {
   Object.values(pax8Svc).forEach((f) => f.mockReset());
+  importTdSynnexCatalogItemMock.mockReset();
+  importEcExpressCatalogItemMock.mockReset();
   mfaGate.block = false;
 });
 
@@ -205,6 +212,117 @@ const validProduct = {
   currency: 'USD',
   raw: {},
 };
+
+const validTdSynnexProduct = {
+  source: 'td_synnex_digital_bridge',
+  sourceProductId: 'td-product-123',
+  sku: 'TD-SKU-123',
+  manufacturerPartNumber: 'TD-MPN-123',
+  vendor: 'TD Vendor',
+  name: 'TD SYNNEX Product',
+  description: null,
+  cost: '10.00',
+  currency: 'USD',
+  availability: 12,
+  warehouses: [],
+  raw: {},
+  lastRefreshedAt: '2026-08-22T00:00:00.000Z',
+};
+
+const validEcExpressProduct = {
+  source: 'td_synnex_ec_express',
+  synnexSku: 'EC-SKU-123',
+  mfgPartNo: 'EC-MPN-123',
+  manufacturer: 'EC Vendor',
+  status: 'Active',
+  name: 'EC Express Product',
+  description: null,
+  currency: 'USD',
+  cost: 10,
+  msrp: 12,
+  discount: null,
+  totalQty: 8,
+  weight: null,
+  parcelShippable: null,
+  warehouses: [],
+  raw: {},
+};
+
+async function requestImport(path: string, product: Record<string, unknown>) {
+  return app().request(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ product, item: { name: 'Imported product', unitPrice: 12 } }),
+  });
+}
+
+describe.each([
+  {
+    feed: 'TD SYNNEX Digital Bridge',
+    path: '/distributors/td-synnex/import',
+    product: validTdSynnexProduct,
+    importMock: importTdSynnexCatalogItemMock,
+  },
+  {
+    feed: 'TD SYNNEX EC Express',
+    path: '/distributors/td-synnex-ec/import',
+    product: validEcExpressProduct,
+    importMock: importEcExpressCatalogItemMock,
+  },
+  {
+    feed: 'Pax8',
+    path: '/distributors/pax8/import',
+    product: validProduct,
+    importMock: pax8Svc.importPax8CatalogItem,
+  },
+])('$feed import currency validation', ({ path, product, importMock }) => {
+  it('normalizes a lowercase ISO currency code before calling the import service', async () => {
+    const res = await requestImport(path, { ...product, currency: 'cad' });
+
+    expect(res.status).toBe(200);
+    expect(importMock).toHaveBeenCalledOnce();
+    expect(importMock.mock.calls[0]?.[0]).toMatchObject({
+      product: expect.objectContaining({ currency: 'CAD' }),
+    });
+  });
+
+  it('normalizes item.sellCurrency and passes it to the import service', async () => {
+    const res = await app().request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Imported product', unitPrice: 12, sellCurrency: 'eur' } }),
+    });
+    expect(res.status).toBe(200);
+    expect(importMock.mock.calls[0]?.[0]).toMatchObject({ item: expect.objectContaining({ sellCurrency: 'EUR' }) });
+  });
+
+  it('rejects a non-ISO item.sellCurrency', async () => {
+    const res = await app().request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ product, item: { name: 'Imported product', unitPrice: 12, sellCurrency: 'EU' } }),
+    });
+    expect(res.status).toBe(400);
+    expect(importMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-ISO currency code', async () => {
+    const res = await requestImport(path, { ...product, currency: 'CA$' });
+
+    expect(res.status).toBe(400);
+    expect(importMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a null currency', async () => {
+    const res = await requestImport(path, { ...product, currency: null });
+
+    expect(res.status).toBe(200);
+    expect(importMock).toHaveBeenCalledOnce();
+    expect(importMock.mock.calls[0]?.[0]).toMatchObject({
+      product: expect.objectContaining({ currency: null }),
+    });
+  });
+});
 
 describe('POST /distributors/pax8/import', () => {
   it('creates a catalog item from a Pax8 product', async () => {

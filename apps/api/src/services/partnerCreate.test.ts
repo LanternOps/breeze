@@ -38,7 +38,10 @@ vi.mock('../db', () => {
       const chain: any = {};
       chain.values = vi.fn((vals: Record<string, unknown>) => {
         insertCalls.push({ table, values: vals });
-        chain.returning = vi.fn(async (_cols?: unknown) => [{ id: idFor(table) }]);
+        chain.returning = vi.fn(async (_cols?: unknown) => [{
+          id: idFor(table),
+          ...((table as any)?.__t === 'partners' ? { currencyCode: 'CAD' } : {}),
+        }]);
         // Plain awaited insert (no returning) should also resolve.
         chain.then = (resolve: any) => resolve(undefined);
         return chain;
@@ -135,6 +138,9 @@ describe('createPartner', () => {
     });
     expect(partnerCall.values.mcpOriginIp ?? null).toBeNull();
     expect(partnerCall.values.mcpOriginUserAgent ?? null).toBeNull();
+
+    const orgCall = insertCalls.find((c) => (c.table as any).__t === 'organizations')!;
+    expect(orgCall.values.currencyCode).toBe('CAD');
 
     // User insert: email lowercased.
     const userCall = insertCalls.find((c) => (c.table as any).__t === 'users')!;

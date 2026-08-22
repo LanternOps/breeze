@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.breeze.rmm",
-      "buildNumber": "5",
+      "buildNumber": "7",
       "associatedDomains": [
         "webcredentials:us.2breeze.app",
         "webcredentials:eu.2breeze.app"
@@ -17,6 +17,7 @@
       "infoPlist": {
         "NSFaceIDUsageDescription": "Use Face ID to unlock the app",
         "NSCameraUsageDescription": "Camera access for QR code scanning",
+        "NSMotionUsageDescription": "Use device motion to support responsive interface animations.",
         "NSSpeechRecognitionUsageDescription": "Use voice to ask Breeze about your fleet.",
         "NSMicrophoneUsageDescription": "Use voice to ask Breeze about your fleet."
       }

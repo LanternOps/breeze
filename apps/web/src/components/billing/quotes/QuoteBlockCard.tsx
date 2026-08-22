@@ -132,7 +132,7 @@ export function BlockCard({
   const derivePrice = (nextMarkup: string, nextCost: string) => {
     const m = Number(nextMarkup);
     if (nextCost.trim() === '' || nextMarkup.trim() === '' || !Number.isFinite(m) || Number(nextCost) <= 0) return;
-    setPrice(priceFromMarkup(nextCost, m));
+    setPrice(priceFromMarkup(nextCost, m, currency));
   };
   const onPriceChange = (v: string) => {
     setPrice(v);
@@ -681,6 +681,7 @@ export function BlockCard({
                   <>
                     <CatalogItemPicker
                       items={catalog}
+                      currencyCode={currency}
                       includeBundles={false}
                       onSelect={(it) => onAddCatalog(block.id, it)}
                       testId={`quote-catalog-picker-${block.id}`}
@@ -727,7 +728,7 @@ export function BlockCard({
                           setCost(c);
                           filled.push(t('quotes.editor.autoFill.filledEstimatedCost', { amount: formatMoney(Number(c), currency) }));
                           if (defaultMarkupPct != null && (priceRef.current.trim() === '' || Number(priceRef.current) === 0)) {
-                            const p = priceFromMarkup(c, defaultMarkupPct);
+                            const p = priceFromMarkup(c, defaultMarkupPct, currency);
                             setPrice(p);
                             setMarkup(String(Number(defaultMarkupPct)));
                             priceAuthority.current = 'markup';

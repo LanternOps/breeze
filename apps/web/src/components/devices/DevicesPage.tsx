@@ -90,6 +90,17 @@ function summarizeFailedDevices(names: string[]): string {
   return rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(', ');
 }
 
+// #3698: destructive single-device actions, confirm-gated to match the device
+// detail page. `lock` is deliberately NOT here: it is reversible and does not
+// disconnect the machine, which is where DeviceActions.tsx draws the same line.
+// Module scope — these are constant, so there is no reason to rebuild them on
+// every render.
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown']);
+
+// The command name is snake_case; the locale keys are camelCase.
+const confirmKeyFor = (action: string): string =>
+  action === 'reboot_safe_mode' ? 'rebootSafeMode' : action;
+
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
   // Org scope is shown by the always-visible top-bar switcher (scope pill +
@@ -659,15 +670,6 @@ export default function DevicesPage() {
       setActionInProgress(false);
     }
   };
-
-  // Destructive single-device actions. `lock` is deliberately NOT here: it is
-  // reversible and does not disconnect the machine, matching the detail page,
-  // which only confirms these three.
-  const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown']);
-
-  // The command name is snake_case; the locale keys are camelCase.
-  const confirmKeyFor = (action: string): string =>
-    action === 'reboot_safe_mode' ? 'rebootSafeMode' : action;
 
   const handleDeviceAction = async (action: string, device: Device) => {
     if (actionInProgress) return;

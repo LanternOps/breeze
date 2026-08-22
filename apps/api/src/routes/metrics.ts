@@ -5,11 +5,12 @@
  */
 
 import { Hono } from 'hono';
+import { routePath as honoRoutePath } from 'hono/route';
 import { avg, and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { Counter, Gauge, Histogram, Registry } from 'prom-client';
 import { createHash, timingSafeEqual } from 'crypto';
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryReadinessTable, remoteSessions } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -54,6 +55,7 @@ import { registerM365GraphActionsPrometheusCounter } from '../services/m365Contr
 import { registerActionIntentPrometheusCounter } from '../services/actionIntents/metrics';
 import { registerAgentCertificateBindingPrometheusCounter } from '../services/agentCertificateBinding';
 import { setExtensionMetricsRecorder } from '../extensions/metrics';
+import { envFloat } from '../utils/envFloat';
 
 export {
   recordBackupCommandTimeout,
@@ -115,16 +117,48 @@ registerM365GraphActionsPrometheusCounter(register);
 registerActionIntentPrometheusCounter(register);
 registerAgentCertificateBindingPrometheusCounter(register);
 
+/**
+ * Route label for a request that never reached a registered handler — a 404, or
+ * a global middleware (rate limit, body limit, CORS preflight rejection) that
+ * short-circuited before routing. Collapsing these to one label is what keeps a
+ * path-scanning bot from minting a series per probed URL. Declared here, above
+ * `initializeMetricDefaults`, because that runs at module load.
+ */
+const UNMATCHED_ROUTE_LABEL = 'unmatched';
+
+// SOC 2 A1.1 capacity evidence. Both series were declared here from the start
+// and `docs/notes/SOC_A1.1_CAPACITY_NOTES.md` has always cited them, but nothing
+// mounted `metricsMiddleware` — so a live scrape carried `http_requests_in_flight`
+// (seeded to 0 at boot) and no per-request series at all, and every panel and
+// alert rule built on them matched nothing. `index.ts` now installs the
+// middleware as the outermost global handler.
+//
+// Labels are `method` × `route` × `status_class`, all closed sets:
+//   - `method` is normalised against the known HTTP verbs, else `other`.
+//   - `route` is the HONO ROUTE TEMPLATE (`/api/devices/:id`), read from
+//     `c.req.routePath` after the downstream handler has run, so it is drawn from
+//     the registered route table rather than the request path. The previous
+//     regex-scrubbing of the raw path only collapsed numeric and UUID segments —
+//     any other path parameter (slugs, hostnames, agent versions) went into the
+//     label verbatim and would have made this series unbounded the moment it was
+//     wired up.
+//   - `status_class` is the response class, not the exact code: six values
+//     (`1xx`-`5xx` plus `other`) instead of ~40, and every consumer of these
+//     metrics aggregates by class anyway. The cost is that 429s are no longer
+//     distinguishable from 404s, so rate-limit volume is not observable here.
+// The `org_id` label was dropped for the same reason — tenant count is unbounded.
+// It never carried a real value in production anyway: nothing mounted the
+// middleware, so the series did not exist at all.
 const httpRequestsTotal = new Counter({
   name: 'http_requests_total',
-  help: 'Total number of HTTP requests',
-  labelNames: ['method', 'route', 'status', 'org_id'] as const,
+  help: 'Total number of HTTP requests by method, matched route template, and response class',
+  labelNames: ['method', 'route', 'status_class'] as const,
   registers: [register]
 });
 
 const httpRequestDurationSeconds = new Histogram({
   name: 'http_request_duration_seconds',
-  help: 'HTTP request duration in seconds',
+  help: 'HTTP request duration in seconds by method and matched route template',
   labelNames: ['method', 'route'] as const,
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
   registers: [register]
@@ -136,15 +170,45 @@ const httpRequestsInFlight = new Gauge({
   registers: [register]
 });
 
+// Both gauges read a flat 0 in every region until the SOC 2 A1.1 review: they
+// were seeded to 0 by initializeMetricDefaults() and the only thing that could
+// move them, `updateBusinessMetrics()`, had no production caller — the export was
+// reachable from tests and nowhere else. `refreshFleetGauges()` now populates
+// them from the database on scrape. The setter is kept exported so the numbers
+// can also be pushed from a scheduler later without another rewrite.
 const devicesActiveGauge = new Gauge({
   name: 'breeze_active_devices',
-  help: 'Devices with recent heartbeat',
+  help: 'Non-decommissioned, non-ephemeral devices whose last heartbeat is within METRICS_ACTIVE_DEVICE_WINDOW_SECONDS',
   registers: [register]
 });
 
 const organizationsTotalGauge = new Gauge({
   name: 'breeze_active_organizations',
-  help: 'Organizations with active devices',
+  help: 'Distinct organizations owning at least one device counted by breeze_active_devices',
+  registers: [register]
+});
+
+// Freshness and failure for the fleet gauges above, mirroring
+// `breeze_db_pool_health_last_check_timestamp_seconds` /
+// `breeze_db_pool_health_check_failures`. Without these, a refresher that starts
+// throwing every scrape leaves `breeze_active_devices` asserting its last good
+// value forever — a flat, plausible line that cannot be told apart from a stable
+// fleet. Note that dropping the `.set(0)` seeds would NOT make absence visible
+// instead: prom-client emits an unlabelled Gauge as 0 whether or not it has ever
+// been set, so `absent()` never fires on these. An explicit freshness series is
+// the only way to distinguish "never read" from "read, and it is zero".
+//
+// Alert on `time() - ..._last_refresh_timestamp_seconds > 5 * TTL`, or on `== 0`
+// (never succeeded since boot).
+const fleetGaugeLastRefreshGauge = new Gauge({
+  name: 'breeze_fleet_gauges_last_refresh_timestamp_seconds',
+  help: 'Unix time of the last SUCCESSFUL fleet-gauge refresh (0 = never succeeded since process start)',
+  registers: [register]
+});
+
+const fleetGaugeRefreshFailuresTotal = new Counter({
+  name: 'breeze_fleet_gauge_refresh_failures_total',
+  help: 'Fleet-gauge refresh attempts that failed or timed out, since process start',
   registers: [register]
 });
 
@@ -282,9 +346,10 @@ const s1ActionPollTransitionsTotal = new Counter({
 
 // Anomaly-detection signals (launch-readiness CRITICAL #5). The `tenant` label
 // carries a partner identifier so a single noisy/attacked partner doesn't mask
-// the rest of the fleet, but it is redacted in production by default (same policy
-// as `org_id` on http_requests_total) so Prometheus never persists a tenant
-// identifier unless the operator opts in via METRICS_INCLUDE_ORG_ID.
+// the rest of the fleet, but it is redacted in production by default so Prometheus
+// never persists a tenant identifier unless the operator opts in via
+// METRICS_INCLUDE_ORG_ID. (`http_requests_total` declared an `org_id` label under
+// the same policy; it was dropped outright rather than redacted.)
 const failedLoginsTotal = new Counter({
   name: 'breeze_failed_logins_total',
   help: 'Failed login attempts by reason and tenant',
@@ -565,6 +630,13 @@ const dbPoolHealthProbeCloseFailuresGauge = new Gauge({
 
 function initializeMetricDefaults(): void {
   httpRequestsInFlight.set(0);
+  // Seeded so `sum(rate(http_requests_total{...}))` has a denominator from the
+  // first scrape. `unmatched`/`4xx` is a real combination (every 404 lands there),
+  // not a synthetic placeholder, so this publishes nothing that is untrue.
+  httpRequestsTotal.labels('GET', UNMATCHED_ROUTE_LABEL, '4xx').inc(0);
+  // 0 = "never successfully refreshed", which is exactly what it means at boot.
+  fleetGaugeLastRefreshGauge.set(0);
+  fleetGaugeRefreshFailuresTotal.inc(0);
   devicesActiveGauge.set(0);
   organizationsTotalGauge.set(0);
   commandsTotalCounter.labels('script').inc(0);
@@ -657,6 +729,72 @@ function normalizeRoute(route: string): string {
     .replace(/\/\d+/g, '/:id');
 }
 
+const KNOWN_HTTP_METHODS = new Set([
+  'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'TRACE', 'CONNECT'
+]);
+
+/** Closed set, so a garbage verb on a probe request cannot open a new series. */
+function methodLabel(method: string | undefined): string {
+  const normalized = (method ?? '').toUpperCase();
+  return KNOWN_HTTP_METHODS.has(normalized) ? normalized : 'other';
+}
+
+/** `1xx`-`5xx`, or `other` for anything outside 100-599. Six values, closed. */
+function statusClassLabel(status: number): string {
+  if (!Number.isFinite(status)) return 'other';
+  const bucket = Math.floor(status / 100);
+  return bucket >= 1 && bucket <= 5 ? `${bucket}xx` : 'other';
+}
+
+/**
+ * Response status for a request that has finished unwinding.
+ *
+ * `c.finalized`, not `c.res`. `c.res` is a lazy getter — when nothing ever set a
+ * response it MATERIALISES one via `new Response(null, {headers})`, whose status
+ * is **200** (hono/dist/context.js). So reading `c.res.status` unconditionally
+ * books the two cases where Hono still returns a 500 to the client as a success:
+ *
+ *   1. a middleware that returns without responding and without `await next()` —
+ *      the chain unwinds unfinalized and `hono-base` throws "Context is not
+ *      finalized"; and
+ *   2. `next()` rejecting with a NON-`Error` value, which `compose` rethrows
+ *      instead of routing to `onError`.
+ *
+ * Booking those as 2xx is strictly worse than not measuring them: a heartbeat
+ * handler failing this way would drive `agent_heartbeat_total{status="success"}`
+ * at full fleet rate while every agent gets a 500 — a metric actively asserting
+ * the fleet is healthy. `finalized` is the only honest signal, and reading it
+ * first also avoids the getter's side effect of materialising a Response.
+ */
+export function resolveResponseStatus(c: any): number {
+  return c?.finalized ? (c.res?.status ?? 500) : 500;
+}
+
+/**
+ * The route TEMPLATE for the handler that actually ran.
+ *
+ * `routePath(c)` from `hono/route` rather than the `c.req.routePath` getter: the
+ * getter is deprecated in Hono 4.13 AND indexes `matchedRoutes[routeIndex]`
+ * unguarded, so an out-of-range index is a TypeError thrown from inside a
+ * `finally`. The helper is `.at(...)?.path ?? ''`, which degrades to `unmatched`.
+ *
+ * `compose` sets `routeIndex` before each dispatch and never restores it, so once
+ * `next()` has unwound this names the deepest handler that ran — with the prefix
+ * contributed by any `app.route()` mount already merged in at registration time.
+ * A request that matched no route is still sitting on the last global middleware's
+ * own registration; every global in index.ts is registered at `'*'`, which Hono
+ * normalises to `/*`, so that is what `unmatched` keys on. NOTE: this means a
+ * request short-circuited by a global middleware (rate limit, body limit) also
+ * reports `unmatched`, and a path-scoped guard reports ITS pattern
+ * (`/api/v1/agents/:id/*`) rather than the leaf route.
+ */
+function resolveRoutePattern(c: any): string {
+  const resolved = honoRoutePath(c);
+  const pattern = typeof resolved === 'string' ? resolved.trim() : '';
+  if (pattern.length === 0 || pattern === '/*' || pattern === '*') return UNMATCHED_ROUTE_LABEL;
+  return pattern;
+}
+
 function normalizeMetricLabel(value: string, fallback: string): string {
   const normalized = value
     .trim()
@@ -729,23 +867,30 @@ function upsertCounterState(state: Map<string, CounterValue>, labels: Record<str
   });
 }
 
+/**
+ * `route` MUST be a route TEMPLATE, not a request path — see the
+ * `httpRequestsTotal` declaration. `normalizeRoute` is deliberately NOT applied
+ * here: it was a backstop for raw paths, but its `/\/\d+/g` rule rewrites any
+ * digit-leading segment, so a future `/2fa/verify` route would be labelled
+ * `/:idfa`. Now that the only caller passes a template resolved from the route
+ * table, the backstop can only corrupt correct input. (`normalizeRoute` is still
+ * used by the extension-gateway recorder, which does receive raw paths.)
+ */
 export function recordHttpRequest(
   method: string,
   route: string,
   status: number,
-  durationSeconds: number,
-  orgId?: string
+  durationSeconds: number
 ): void {
-  const normalizedRoute = normalizeRoute(route);
   const labels = {
-    method,
-    route: normalizedRoute,
-    status: String(status),
-    org_id: METRICS_INCLUDE_ORG_ID ? (orgId ?? 'unknown') : 'redacted'
+    method: methodLabel(method),
+    route: route.trim() || UNMATCHED_ROUTE_LABEL,
+    status_class: statusClassLabel(status)
   };
+  const safeDuration = Number.isFinite(durationSeconds) ? Math.max(durationSeconds, 0) : 0;
 
-  httpRequestsTotal.labels(labels.method, labels.route, labels.status, labels.org_id).inc();
-  httpRequestDurationSeconds.labels(labels.method, labels.route).observe(durationSeconds);
+  httpRequestsTotal.labels(labels.method, labels.route, labels.status_class).inc();
+  httpRequestDurationSeconds.labels(labels.method, labels.route).observe(safeDuration);
   upsertCounterState(httpRequestState, labels);
 }
 
@@ -1041,6 +1186,7 @@ function bindMetricsRecorders(): void {
     onRequest: recordExtensionRequestMetric,
     onJob: recordExtensionJobMetric,
   });
+
 }
 
 bindMetricsRecorders();
@@ -1068,6 +1214,8 @@ export function resetMetricsForTesting(): void {
 
   backupLowReadinessDevices = 0;
   sensitiveDataScansQueuedTotal = 0;
+  fleetGaugesRefreshedAtMs = 0;
+  fleetGaugeRefreshInFlight = null;
   devicesActive = 0;
   organizationsTotal = 0;
   commandsTotal = 0;
@@ -1080,20 +1228,167 @@ export function resetMetricsForTesting(): void {
   bindMetricsRecorders();
 }
 
-async function refreshBackupOperationalGauges(): Promise<void> {
-  try {
-    const [row] = await db
+/**
+ * `envFloat` rather than raw `Number(...)`: compose threads unmapped variables in
+ * as `VAR=""`, and `Number('')` is 0 — which here would mean a zero-second cache
+ * TTL (a fleet aggregate on every scrape) or a zero-second activity window (every
+ * device counted as inactive). Both are the silent-misconfiguration failures the
+ * `noRawEnvNumberCoercion` contract exists to prevent. Fractional values are
+ * accepted so tests can drive a sub-second TTL.
+ */
+function envSeconds(name: string, fallback: number): number {
+  const parsed = envFloat(name, fallback);
+  return parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Fleet-wide gauges are read as a SYSTEM db context, never off the bare pool.
+ * `devices` and `recovery_readiness` are both RLS-enabled and FORCEd, and the API
+ * connects as unprivileged `breeze_app` — a contextless SELECT does not error, it
+ * returns zero rows. That failure mode is indistinguishable from "the fleet is
+ * empty", which is precisely how a wired-up gauge would keep reporting 0.
+ *
+ * `runOutsideDbContext` first because `/metrics/prometheus`, `/metrics/metrics`
+ * and `/metrics/json` reach here from inside an authenticated request that already
+ * holds a db context. Those routes are all `requireScope('system')`, so the
+ * inherited context would be system-scoped anyway — the reason this matters is the
+ * #1105 held-connection tripwire: `withDbAccessContext` early-returns when a store
+ * already exists, so without the exit the refresh would run on the REQUEST's
+ * transaction and extend its lifetime.
+ */
+function withFleetWideDbContext<T>(fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
+const DEFAULT_FLEET_GAUGE_TTL_SECONDS = 30;
+// The agent heartbeats every 60s (see `heartbeatIntervalSeconds` in
+// routes/agents/enrollment.ts), so five minutes absorbs a few dropped beats
+// without counting an agent that is genuinely gone.
+const DEFAULT_ACTIVE_DEVICE_WINDOW_SECONDS = 300;
+// A scrape must never hang on the database. See `metricsResponse`.
+const DEFAULT_FLEET_GAUGE_TIMEOUT_SECONDS = 5;
+
+let fleetGaugesRefreshedAtMs = 0;
+let fleetGaugeRefreshInFlight: Promise<void> | null = null;
+
+function timeoutAfter(ms: number): { promise: Promise<never>; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout>;
+  const promise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`fleet gauge refresh exceeded ${ms}ms`)), ms);
+  });
+  return { promise, cancel: () => clearTimeout(timer) };
+}
+
+/**
+ * Reads every fleet-wide gauge in ONE system-context transaction:
+ * `breeze_active_devices`, `breeze_active_organizations`, and the backup
+ * low-readiness count.
+ *
+ * One transaction, not three: `withDbAccessContext` costs a BEGIN, six
+ * `set_config` round-trips and a COMMIT, and it holds a pooled connection for the
+ * duration. Against the documented 25-connection ceiling on the US droplet, a
+ * per-gauge transaction on every scrape is real pressure from the endpoint whose
+ * whole job is to observe that pressure.
+ *
+ * Ephemeral Quick Support devices and decommissioned records are excluded, the
+ * same exclusions `GET /metrics/` applies, so the gauge and the dashboard count
+ * the same fleet.
+ */
+async function readFleetGauges(nowMs: number): Promise<void> {
+  const activeSince = new Date(
+    nowMs - envSeconds('METRICS_ACTIVE_DEVICE_WINDOW_SECONDS', DEFAULT_ACTIVE_DEVICE_WINDOW_SECONDS) * 1000
+  );
+
+  await withFleetWideDbContext(async () => {
+    const [fleetRow] = await db
+      .select({
+        devicesActive: sql<number>`count(*)`,
+        organizationsActive: sql<number>`count(distinct ${devices.orgId})`
+      })
+      .from(devices)
+      .where(
+        and(
+          gte(devices.lastSeenAt, activeSince),
+          eq(devices.isEphemeral, false),
+          sql`${devices.status} != 'decommissioned'`
+        )
+      );
+
+    // A bare `count(*)` always returns exactly one row, so a missing row is a
+    // driver anomaly, NOT an empty fleet. Publishing 0 for it would recreate the
+    // reading this whole change exists to eliminate, so it fails loudly instead
+    // and lands in the failure counter below.
+    if (!fleetRow) throw new Error('[metrics] fleet gauge query returned no rows');
+
+    const [readinessRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(recoveryReadinessTable)
       .where(sql`${recoveryReadinessTable.readinessScore} < ${BACKUP_LOW_READINESS_THRESHOLD}`);
-    setLowReadinessDevicesMetric(Number(row?.count ?? 0));
-  } catch (error) {
-    console.warn('[metrics] Failed to refresh backup gauges:', error);
-  }
+    if (!readinessRow) throw new Error('[metrics] readiness gauge query returned no rows');
+
+    updateBusinessMetrics({
+      devicesActive: Number(fleetRow.devicesActive ?? 0),
+      organizationsTotal: Number(fleetRow.organizationsActive ?? 0)
+    });
+    setLowReadinessDevicesMetric(Number(readinessRow.count ?? 0));
+  });
+}
+
+/**
+ * Cache + single-flight in front of `readFleetGauges`.
+ *
+ * A timestamp alone is not enough. It throttles scrapes that arrive INSIDE the
+ * TTL, but the aggregate only gets slow when the database is already unwell —
+ * exactly when a query outlives the 30s TTL and the next scrape happily starts a
+ * second concurrent full scan. The in-flight promise is what actually bounds
+ * concurrency to one; the timestamp is the cheap fast path.
+ *
+ * The timestamp is advanced only on SUCCESS. Advancing it on failure would make a
+ * transient error suppress retries for a full TTL, and — worse — a failure on the
+ * very first refresh after boot would leave both gauges pinned at their seeded 0
+ * for that window, which reads as an empty fleet.
+ */
+async function refreshFleetGauges(): Promise<void> {
+  const now = Date.now();
+  const ttlMs = envSeconds('METRICS_FLEET_GAUGE_TTL_SECONDS', DEFAULT_FLEET_GAUGE_TTL_SECONDS) * 1000;
+  if (fleetGaugesRefreshedAtMs !== 0 && now - fleetGaugesRefreshedAtMs < ttlMs) return;
+  if (fleetGaugeRefreshInFlight) return fleetGaugeRefreshInFlight;
+
+  const timeoutMs = envSeconds('METRICS_FLEET_GAUGE_TIMEOUT_SECONDS', DEFAULT_FLEET_GAUGE_TIMEOUT_SECONDS) * 1000;
+  const timeout = timeoutAfter(timeoutMs);
+
+  fleetGaugeRefreshInFlight = Promise.race([readFleetGauges(now), timeout.promise])
+    .then(() => {
+      fleetGaugesRefreshedAtMs = Date.now();
+      fleetGaugeLastRefreshGauge.set(Math.floor(fleetGaugesRefreshedAtMs / 1000));
+    })
+    .catch((error) => {
+      // Gauges keep their last good values rather than reverting to 0 — but the
+      // staleness is now VISIBLE, via the timestamp gauge above (which is not
+      // advanced here) and the failure counter. Without those two series a dead
+      // refresher is indistinguishable from a stable fleet: a flat, entirely
+      // plausible line for as long as it keeps failing. This file already makes
+      // that argument for `breeze_db_pool_health` — the same rule applies here.
+      fleetGaugeRefreshFailuresTotal.inc();
+      console.warn('[metrics] Failed to refresh fleet gauges:', error);
+    })
+    .finally(() => {
+      timeout.cancel();
+      fleetGaugeRefreshInFlight = null;
+    });
+
+  return fleetGaugeRefreshInFlight;
 }
 
 async function metricsResponse(c: any): Promise<Response> {
-  await refreshBackupOperationalGauges();
+  // Deliberately NOT awaited before rendering when it would block: `register.metrics()`
+  // must always be reachable. Gating the response on a database read means that during
+  // the pool-exhaustion incidents these metrics exist to diagnose, the scrape times out
+  // and Prometheus loses EVERY series from this instance — event-loop lag, in-flight
+  // requests, connect-timeout counters — at the exact moment they matter most, and
+  // `up` flips to 0 so it reads as a dead API rather than a sick database.
+  // `refreshFleetGauges` is internally timeout-bounded and never rejects.
+  await refreshFleetGauges();
   updateProcessMetrics();
   const metrics = await register.metrics();
 
@@ -1344,7 +1639,7 @@ metricsRoutes.get('/scrape', async (c) => {
 });
 
 metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => {
-  await refreshBackupOperationalGauges();
+  await refreshFleetGauges();
   const s1Snapshot = getS1MetricsSnapshot();
   return c.json({
     http_requests_total: Array.from(httpRequestState.values()),
@@ -1398,6 +1693,16 @@ metricsRoutes.get('/metrics', authMiddleware, requireScope('system'), async (c) 
   return metricsResponse(c);
 });
 
+/**
+ * Mounted as the outermost global middleware in `index.ts`, so the duration it
+ * records is the full server-side cost of the request (rate limiting, body
+ * limits, auth, handler) rather than handler time alone.
+ *
+ * Everything runs in `finally`: a handler that throws still decrements the
+ * in-flight gauge and still lands in the counter as a 5xx. Reading the route
+ * template after `next()` has unwound is deliberate and is the reason this cannot
+ * be collapsed into the `try` block — see `resolveRoutePattern`.
+ */
 export async function metricsMiddleware(c: any, next: () => Promise<void>): Promise<void> {
   const start = performance.now();
   httpRequestsInFlight.inc();
@@ -1409,14 +1714,19 @@ export async function metricsMiddleware(c: any, next: () => Promise<void>): Prom
     httpRequestsInFlight.dec();
     inFlightRequests -= 1;
 
-    const duration = (performance.now() - start) / 1000;
-    const status = c.res?.status ?? 500;
-    const method = c.req.method;
-    const path = c.req.path;
-
-    const auth = c.get('auth');
-    const orgId = auth?.orgId;
-
-    recordHttpRequest(method, path, status, duration, orgId);
+    // The whole body is guarded: this is the OUTERMOST middleware, so anything
+    // thrown here escapes into `app.onError` and would turn a successful response
+    // into a 500 — instrumentation must never be able to break the request it is
+    // measuring, nor mask an in-flight exception on its way out.
+    try {
+      recordHttpRequest(
+        c.req.method,
+        resolveRoutePattern(c),
+        resolveResponseStatus(c),
+        (performance.now() - start) / 1000
+      );
+    } catch (error) {
+      console.warn('[metrics] Failed to record request metrics:', error);
+    }
   }
 }

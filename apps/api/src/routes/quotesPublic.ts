@@ -9,20 +9,20 @@ import { portalBranding } from '../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
-import { acceptQuote, emitAcceptInvoiceIssued } from '../services/quoteAcceptService';
+import { acceptQuote, emitAcceptInvoiceIssued, resolveAcceptInvoiceUrl, autoEmailAcceptedInvoice } from '../services/quoteAcceptService';
+import { notifyQuoteOutcome } from '../services/quoteOutcomeNotify';
 import { readQuoteImage, loadCustomerLineImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
 import { toCustomerLines, attachCustomerLineImages, sanitizeQuoteBlocksForRead } from '../services/quoteService';
 import { loadContractBlockRenderData, renderContractBlocksForClient } from '../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../services/contractTemplateService';
-import { InvoiceServiceError } from '../services/invoiceTypes';
 import { isQuoteExpired } from '../services/quoteExpiry';
-import { createQuotePayLink } from '../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { toPublicQuoteHeader, toPublicQuotePresentation } from '../services/publicQuoteDto';
 import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
+import { resolvePartnerDocumentLocale } from '../services/documentLocale';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -60,7 +60,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       if (!quote || quote.status === 'draft') return null;
       const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder));
       const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
-      const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+      const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
       const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
       // Cosmetic view-stamping only — must never fail the render. Mirrors the
       // authenticated counterpart at portal/quotes.ts:48.
@@ -68,10 +68,13 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       // Derive the amount accept actually invoices (one-time only) so the prospect
       // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
       // plus the deposit due + per-category subtotals for the summary panel.
-      const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
+      const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
       // Resolves every `contract` block's pinned template version (system context)
       // and replaces its raw authoring content with the token-gated render contract.
-      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);
+      // Public link serves sent (stamped) quotes: quote.documentLocale is the
+      // render locale; null only for pre-wave-5 sends, which resolve to the
+      // partner's language — the same fallback the quote PDF uses.
+      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`, quote.documentLocale ?? resolvePartnerDocumentLocale(partner));
       const serializedLines = attachCustomerLineImages(lines, (lineId) => `/quotes/public/${encodeURIComponent(token)}/line-image/${lineId}`);
       // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
       // sent quote's frozen presentation always wins over the partner's live
@@ -167,30 +170,22 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     // Post-commit: emit invoice.issued + enqueue the PDF render (matches issueInvoice).
     // Fire-and-forget; a public accepter has no user id.
     await emitAcceptInvoiceIssued(res, null);
-    // Phase 3 accept→pay: mint a Stripe checkout link for the just-issued invoice and
-    // return it (the accept token is now revoked, so the URL must come back in THIS
-    // response). Runs in its own context AFTER the accept committed — it must never
-    // fail (or roll back) the accept. Distinguish EXPECTED no-pay outcomes (a $0 quote
-    // → NOTHING_TO_PAY/NOT_PAYABLE, or the partner hasn't connected Stripe) — surfaced
-    // quietly as payUrl:null — from an UNEXPECTED failure (Stripe outage, DB), which we
-    // flag as payDeferred + capture so a silently-lost payment CTA is observable rather
-    // than looking identical to "nothing to pay".
-    let payUrl: string | null = null;
-    let payDeferred = false;
-    try {
-      const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-        createQuotePayLink(claims.quoteId, { userId: null, partnerId: null, accessibleOrgIds: [claims.orgId] })));
-      payUrl = link.url;
-    } catch (err) {
-      const benign = err instanceof InvoiceServiceError
-        && (err.code === 'NOT_PAYABLE' || err.code === 'NOTHING_TO_PAY' || err.code === 'STRIPE_NOT_CONNECTED');
-      if (!benign) {
-        payDeferred = true;
-        console.error('[quotesPublic] pay-link mint failed after accept', err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
-      }
-    }
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
+    // Retired the one-shot Stripe payUrl (2026-08-21 spec §8): the response now
+    // carries the invoice's DURABLE public url — the confirmation page
+    // location.replace()s onto it, and it offers payment (and keeps working
+    // after the tab closes). payDeferred survives only for the mint-failure
+    // edge on an ISSUED invoice (a $0 recurring-only quote issues nothing and
+    // legitimately gets invoiceUrl:null without the flag).
+    const invoiceUrl = await resolveAcceptInvoiceUrl(res);
+    const payDeferred = res.invoiceIssued && invoiceUrl == null;
+    // Auto-email the issued invoice (public link CTA) so closing the tab is
+    // harmless, and tell the tech who sent the quote (decline-completion spec
+    // §A) — before this, acceptance was only visible as an invoice quietly
+    // appearing. Both UNAWAITED: they end in SMTP round trips and must never
+    // delay the accept response; both swallow their own errors.
+    void autoEmailAcceptedInvoice(res);
+    void notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'accepted', source: 'customer', signerName: body.signerName });
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {
       if (err.code === 'RESPONSE_CONSUMED') {
@@ -259,5 +254,9 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
   // Consume the single-use token post-commit so a declined link can't be replayed.
   // A failed revoke leaves the link replayable (security-relevant) → capture.
   try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
+  // Post-commit: tell the tech who sent it (with the customer's verbatim note)
+  // — before this, a decline wrote the row and nobody was ever told. UNAWAITED:
+  // SMTP latency must not delay the customer's response; errors are swallowed.
+  void notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'declined', source: 'customer' });
   return c.json({ data: { status: 'declined' } });
 });
