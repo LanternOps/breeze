@@ -184,6 +184,7 @@
     "totalTime": "tiempo total",
     "billable": "facturable",
     "timeAmount": "Cantidad de tiempo",
+    "noAmount": "—",
     "partsCount": "Piezas ({{count}})",
     "partsCount_one": "Piezas ({{count}})",
     "partsCount_other": "Piezas ({{count}})",
@@ -397,14 +398,19 @@
       "create": "Crear factura",
       "creating": "Creando…",
       "createFailed": "No se pudo crear una factura a partir de este ticket.",
-      "created": "Borrador de factura creado"
+      "created": "Borrador de factura creado",
+      "allBlockedByCurrency": "Todo el trabajo facturable de este ticket está valorado en una moneda distinta de la que factura la organización. Arma un borrador en esa moneda en su lugar:",
+      "assembleIn": "Armar en {{code}} ({{count}} elementos, {{amount}})"
     },
     "move": {
       "open": "Mover a otra organización...",
       "label": "Mover a la organización",
       "selectOrganization": "Seleccionar organización…",
       "confirm": "Mover",
-      "failed": "El movimiento falló. Reintentar."
+      "failed": "El movimiento falló. Reintentar.",
+      "blockedCurrency": "Este ticket tiene {{timeCount}} entradas de tiempo sin facturar y {{partCount}} partes sin facturar valoradas en {{sourceCurrency}}, pero {{targetOrg}} factura en {{targetCurrency}}. Factúralas primero o mueve de todos modos: los montos permanecen en {{sourceCurrency}} y solo pueden facturarse en un borrador en {{sourceCurrency}}.",
+      "acceptCurrency": "Entiendo que estos montos permanecen en {{sourceCurrency}} y no se convierten.",
+      "moveAnyway": "Mover de todos modos"
     },
     "triage": {
       "title": "Triaje sugerido",

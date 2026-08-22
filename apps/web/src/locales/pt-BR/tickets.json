@@ -184,6 +184,7 @@
     "totalTime": "Tempo total",
     "billable": "Faturável",
     "timeAmount": "Valor do tempo",
+    "noAmount": "—",
     "partsCount": "Peças ({{count}})",
     "partsCount_one": "Peças ({{count}})",
     "partsCount_other": "Peças ({{count}})",
@@ -397,14 +398,19 @@
       "create": "Criar fatura",
       "creating": "Criando…",
       "createFailed": "Não foi possível criar uma fatura a partir deste chamado.",
-      "created": "Rascunho de fatura criado"
+      "created": "Rascunho de fatura criado",
+      "allBlockedByCurrency": "Todo o trabalho faturável deste chamado está precificado em uma moeda diferente daquela em que a organização fatura. Em vez disso, monte um rascunho nessa moeda:",
+      "assembleIn": "Montar em {{code}} ({{count}} itens, {{amount}})"
     },
     "move": {
       "open": "Mover para outra org…",
       "label": "Mover para organização",
       "selectOrganization": "Selecionar organização…",
       "confirm": "Mover",
-      "failed": "Falha ao mover. Tente novamente."
+      "failed": "Falha ao mover. Tente novamente.",
+      "blockedCurrency": "Este chamado tem {{timeCount}} registros de tempo não faturados e {{partCount}} peças não faturadas precificados em {{sourceCurrency}}, mas {{targetOrg}} fatura em {{targetCurrency}}. Fature-os primeiro ou mova mesmo assim: os valores permanecem em {{sourceCurrency}} e só podem ser faturados em um rascunho em {{sourceCurrency}}.",
+      "acceptCurrency": "Entendo que esses valores permanecem em {{sourceCurrency}} e não são convertidos.",
+      "moveAnyway": "Mover mesmo assim"
     },
     "triage": {
       "title": "Triagem sugerida",

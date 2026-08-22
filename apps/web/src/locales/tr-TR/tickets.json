@@ -184,6 +184,7 @@
     "totalTime": "Toplam süre",
     "billable": "Faturalandırılabilir",
     "timeAmount": "Süre miktarı",
+    "noAmount": "—",
     "partsCount": "Parçalar ({{count}})",
     "partsCount_one": "Parçalar ({{count}})",
     "partsCount_other": "Parçalar ({{count}})",
@@ -397,14 +398,19 @@
       "create": "Fatura oluştur",
       "creating": "Oluşturuluyor…",
       "createFailed": "Bu biletten fatura oluşturulamadı.",
-      "created": "Taslak fatura oluşturuldu"
+      "created": "Taslak fatura oluşturuldu",
+      "allBlockedByCurrency": "Bu biletteki tüm faturalanabilir iş, kuruluşun faturalandırdığı para biriminden farklı bir para biriminde fiyatlandırılmış. Bunun yerine o para biriminde bir taslak oluşturun:",
+      "assembleIn": "{{code}} olarak oluştur ({{count}} öğe, {{amount}})"
     },
     "move": {
       "open": "Başka bir kuruluşa taşıyın…",
       "label": "Kuruluşa taşı",
       "selectOrganization": "Kuruluşu seçin…",
       "confirm": "Taşı",
-      "failed": "Taşıma işlemi başarısız oldu. Tekrar dene."
+      "failed": "Taşıma işlemi başarısız oldu. Tekrar dene.",
+      "blockedCurrency": "Bu bilette {{sourceCurrency}} ile fiyatlandırılmış {{timeCount}} faturalanmamış zaman kaydı ve {{partCount}} faturalanmamış parça var, ancak {{targetOrg}} {{targetCurrency}} ile faturalandırıyor. Önce bunları faturalandırın ya da yine de taşıyın: tutarlar {{sourceCurrency}} olarak kalır ve yalnızca {{sourceCurrency}} taslağında faturalandırılabilir.",
+      "acceptCurrency": "Bu tutarların {{sourceCurrency}} olarak kalacağını ve dönüştürülmeyeceğini anlıyorum.",
+      "moveAnyway": "Yine de taşı"
     },
     "triage": {
       "title": "Önerilen önceliklendirme",

@@ -184,6 +184,7 @@
     "totalTime": "Tempo totale",
     "billable": "Fatturabile",
     "timeAmount": "Quantità di tempo",
+    "noAmount": "—",
     "partsCount": "Parti ({{count}})",
     "partsCount_one": "Parti ({{count}})",
     "partsCount_other": "Parti ({{count}})",
@@ -397,14 +398,19 @@
       "create": "Crea fattura",
       "creating": "Creazione...",
       "createFailed": "Impossibile creare una fattura da questo ticket.",
-      "created": "Bozza di fattura creata"
+      "created": "Bozza di fattura creata",
+      "allBlockedByCurrency": "Tutto il lavoro fatturabile di questo ticket è valorizzato in una valuta diversa da quella in cui fattura l’organizzazione. Componi invece una bozza in quella valuta:",
+      "assembleIn": "Componi in {{code}} ({{count}} voci, {{amount}})"
     },
     "move": {
       "open": "Sposta in un'altra org...",
       "label": "Sposta in organizzazione",
       "selectOrganization": "Seleziona organizzazione...",
       "confirm": "Sposta",
-      "failed": "Spostamento non riuscito. Riprova."
+      "failed": "Spostamento non riuscito. Riprova.",
+      "blockedCurrency": "Questo ticket ha {{timeCount}} registrazioni di tempo non fatturate e {{partCount}} parti non fatturate valorizzate in {{sourceCurrency}}, ma {{targetOrg}} fattura in {{targetCurrency}}. Fatturale prima, oppure sposta comunque: gli importi restano in {{sourceCurrency}} e possono essere fatturati solo su una bozza in {{sourceCurrency}}.",
+      "acceptCurrency": "Capisco che questi importi restano in {{sourceCurrency}} e non vengono convertiti.",
+      "moveAnyway": "Sposta comunque"
     },
     "triage": {
       "title": "Triage suggerito",

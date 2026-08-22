@@ -2251,7 +2251,7 @@
     "responseSLAMinutes": "Yanıt SLA (dakika)",
     "resolutionSLAMinutes": "Çözünürlük SLA (dakika)",
     "billableByDefault": "Varsayılan olarak faturalandırılabilir",
-    "defaultHourlyRate": "Varsayılan saatlik ücret ($)",
+    "defaultHourlyRate": "Varsayılan saatlik ücret ({{currency}})",
     "save": "Kaydet",
     "cancel": "İptal",
     "responseMinutes": "{{count}}m yanıt",
@@ -2752,7 +2752,8 @@
     "billing": {
       "title": "Faturalandırma varsayılanları",
       "description": "Bu kuruluş için biletlerdeki zaman girişlerine ilişkin varsayılan faturalandırma ayarları.",
-      "hourlyRate": "Varsayılan saatlik ücret ($)",
+      "hourlyRate": "Varsayılan saatlik ücret ({{currency}})",
+      "currencyNudge": "Bu kuruluş, iş ortağı varsayılanınız olan {{partnerCurrency}} yerine {{orgCurrency}} ile faturalandırıyor. Buraya girilen ücretler {{orgCurrency}} olarak saklanır ve asla dönüştürülmez.",
       "billable": "Varsayılan faturalandırılabilir",
       "inherit": "Devral",
       "billableOption": "Faturalandırılabilir",

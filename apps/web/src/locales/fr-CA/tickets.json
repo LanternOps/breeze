@@ -184,6 +184,7 @@
     "totalTime": "Temps total",
     "billable": "Facturable",
     "timeAmount": "Durée",
+    "noAmount": "—",
     "partsCount": "Pièces ({{count}})",
     "partsCount_one": "Pièce ({{count}})",
     "partsCount_other": "Pièces ({{count}})",
@@ -397,14 +398,19 @@
       "create": "Créer une facture",
       "creating": "Création…",
       "createFailed": "Impossible de créer une facture à partir de ce billet.",
-      "created": "Projet de facture créé"
+      "created": "Projet de facture créé",
+      "allBlockedByCurrency": "Tout le travail facturable de ce billet est évalué dans une devise différente de celle dans laquelle l’organisation facture. Assemblez plutôt un brouillon dans cette devise :",
+      "assembleIn": "Assembler en {{code}} ({{count}} éléments, {{amount}})"
     },
     "move": {
       "open": "Passer à une autre organisation...",
       "label": "Passage à l’organisation",
       "selectOrganization": "Sélectionner une organisation...",
       "confirm": "Déplacer",
-      "failed": "Échec du déplacement. Réessayez."
+      "failed": "Échec du déplacement. Réessayez.",
+      "blockedCurrency": "Ce billet comporte {{timeCount}} entrées de temps non facturées et {{partCount}} pièces non facturées évaluées en {{sourceCurrency}}, mais {{targetOrg}} facture en {{targetCurrency}}. Facturez-les d’abord, ou déplacez quand même : les montants restent en {{sourceCurrency}} et ne peuvent être facturés que sur un brouillon en {{sourceCurrency}}.",
+      "acceptCurrency": "Je comprends que ces montants restent en {{sourceCurrency}} et ne sont pas convertis.",
+      "moveAnyway": "Déplacer quand même"
     },
     "triage": {
       "title": "Triage suggéré",
