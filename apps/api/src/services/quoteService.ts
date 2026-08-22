@@ -412,9 +412,41 @@ function remapCoverPageImageId(coverPage: unknown, imageIds: Map<string, string>
  * customer; a same-org clone keeps the source rate verbatim (it may have been
  * hand-set via the API).
  */
-export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuoteInput = {}) {
+/** Internal revision overrides for the clone core — never exposed on a route. */
+interface CloneRevisionOverrides {
+  quoteNumber: string;
+  revisionOfQuoteId: string;
+  revisionNumber: number;
+}
+
+type CloneLineagePair =
+  | { revisionOfQuoteId: null; revisionNumber: 1 }
+  | { revisionOfQuoteId: string; revisionNumber: number };
+
+/** Build the correlated lineage columns together so the DB CHECK is a backstop. */
+function cloneLineagePair(revision?: CloneRevisionOverrides): CloneLineagePair {
+  if (!revision) return { revisionOfQuoteId: null, revisionNumber: 1 };
+  if (!revision.revisionOfQuoteId || !Number.isInteger(revision.revisionNumber) || revision.revisionNumber < 2) {
+    throw new QuoteServiceError('Invalid quote revision lineage', 409, 'INVALID_STATE');
+  }
+  return {
+    revisionOfQuoteId: revision.revisionOfQuoteId,
+    revisionNumber: revision.revisionNumber,
+  };
+}
+
+export async function cloneQuote(
+  id: string,
+  actor: QuoteActor,
+  input: CloneQuoteInput = {},
+  revision?: CloneRevisionOverrides,
+) {
   const { quote: source, blocks, lines } = await getQuote(id, actor);
   const images = await db.select().from(quoteImages).where(eq(quoteImages.quoteId, id));
+
+  if (revision && input.orgId) {
+    throw new QuoteServiceError('A revision cannot be retargeted to another organization', 409, 'INVALID_STATE');
+  }
 
   const targetOrgId = input.orgId ?? source.orgId;
   const orgChanged = targetOrgId !== source.orgId;
@@ -451,9 +483,14 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
     : source.taxRate;
   const title = input.title !== undefined ? (input.title.trim() || null) : source.title;
 
-  const year = new Date().getUTCFullYear();
-  const counter = await allocateQuoteCounter(source.partnerId, year);
-  const quoteNumber = formatQuoteNumber('Q', year, counter);
+  let quoteNumber: string;
+  if (revision) {
+    quoteNumber = revision.quoteNumber;
+  } else {
+    const year = new Date().getUTCFullYear();
+    const counter = await allocateQuoteCounter(source.partnerId, year);
+    quoteNumber = formatQuoteNumber('Q', year, counter);
+  }
   const quoteId = randomUUID();
 
   const imageIds = new Map(images.map((image) => [image.id, randomUUID()]));
@@ -504,6 +541,7 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
       orgId: targetOrgId,
       siteId: orgChanged ? null : source.siteId,
       quoteNumber,
+      ...cloneLineagePair(revision),
       title,
       status: 'draft',
       currencyCode: source.currencyCode,
@@ -618,6 +656,90 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
 
     return cloned!;
   });
+}
+
+/** Walk parent links to the lineage root, with a corruption safety bound. */
+async function resolveQuoteLineageRoot(
+  quote: typeof quotes.$inferSelect,
+): Promise<typeof quotes.$inferSelect> {
+  let current = quote;
+  for (let hop = 0; hop < 100 && current.revisionOfQuoteId; hop++) {
+    const [parent] = await db.select().from(quotes)
+      .where(eq(quotes.id, current.revisionOfQuoteId)).limit(1);
+    if (!parent) throw new QuoteServiceError('Quote lineage is corrupt', 409, 'INVALID_STATE');
+    current = parent;
+  }
+  if (current.revisionOfQuoteId) {
+    throw new QuoteServiceError('Quote lineage is corrupt', 409, 'INVALID_STATE');
+  }
+  return current;
+}
+
+const REVISABLE_STATUSES = new Set(['sent', 'viewed', 'declined', 'expired']);
+
+/**
+ * Create a linked draft revision without touching the live parent. Sending the
+ * draft is what eventually supersedes its parent.
+ */
+export async function reviseQuote(id: string, actor: QuoteActor) {
+  const { quote: parent } = await getQuote(id, actor);
+  if (parent.status === 'draft') {
+    throw new QuoteServiceError('This quote is still a draft — edit it directly', 409, 'INVALID_STATE');
+  }
+  if (parent.status === 'converted' || parent.status === 'accepted') {
+    throw new QuoteServiceError(
+      'This quote was accepted — changes go through its invoice or contract',
+      409,
+      'PARENT_CONVERTED',
+    );
+  }
+  if (parent.status === 'superseded') {
+    const [successor] = await db.select({ id: quotes.id }).from(quotes)
+      .where(eq(quotes.revisionOfQuoteId, parent.id)).limit(1);
+    throw new QuoteServiceError(
+      'This quote was already replaced — revise the newer version',
+      409,
+      'ALREADY_SUPERSEDED',
+      successor ? { successorQuoteId: successor.id } : undefined,
+    );
+  }
+  if (!REVISABLE_STATUSES.has(parent.status)) {
+    throw new QuoteServiceError(`Cannot revise a quote in status ${parent.status}`, 409, 'INVALID_STATE');
+  }
+  if (!parent.quoteNumber) {
+    throw new QuoteServiceError('This quote has no quote number and cannot be revised', 409, 'INVALID_STATE');
+  }
+  const [existing] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
+    .where(eq(quotes.revisionOfQuoteId, parent.id)).limit(1);
+  if (existing) {
+    throw new QuoteServiceError(
+      'A revision of this quote is already in progress',
+      409,
+      'REVISION_IN_PROGRESS',
+      { revisionQuoteId: existing.id },
+    );
+  }
+  const root = await resolveQuoteLineageRoot(parent);
+  if (!root.quoteNumber) {
+    throw new QuoteServiceError('This quote has no quote number and cannot be revised', 409, 'INVALID_STATE');
+  }
+  const revisionNumber = parent.revisionNumber + 1;
+  try {
+    return await cloneQuote(id, actor, {}, {
+      quoteNumber: `${root.quoteNumber}-R${revisionNumber}`,
+      revisionOfQuoteId: parent.id,
+      revisionNumber,
+    });
+  } catch (err) {
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
+      throw new QuoteServiceError(
+        'A revision of this quote is already in progress',
+        409,
+        'REVISION_IN_PROGRESS',
+      );
+    }
+    throw err;
+  }
 }
 
 export async function getQuote(id: string, actor: QuoteActor) {
@@ -787,6 +909,13 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   // Re-resolved org tax default; undefined = org unchanged (keep current rate).
   let orgTaxRate: string | null | undefined;
   if (orgChanged) {
+    if (q.revisionOfQuoteId != null) {
+      throw new QuoteServiceError(
+        'A revision draft cannot be moved to another organization',
+        409,
+        'INVALID_STATE',
+      );
+    }
     const targetOrgId = input.orgId!;
     assertOrg(actor, targetOrgId);
     // Reassignment clears the site, and a site-restricted caller can never see a
