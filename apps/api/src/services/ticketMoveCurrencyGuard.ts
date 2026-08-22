@@ -25,11 +25,29 @@ import { timeEntries, ticketParts } from '../db/schema';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+/** One group of unbilled monetary rows sharing an actual `currency_code`
+ *  snapshot that differs from the target org's currency. */
+export interface MoveCurrencyBlockedGroup {
+  currencyCode: string;
+  timeEntries: number;
+  parts: number;
+}
+
+/** Defensive bucket for a null snapshot (impossible for ticket-linked rows
+ *  while the DB CHECK holds). Mirrors invoiceAssembly's UNKNOWN_CURRENCY_KEY. */
+export const UNKNOWN_MOVE_CURRENCY_KEY = 'UNKNOWN';
+
 export interface MoveCurrencyGuardDetails {
+  /** The source org's CURRENT currency — context only. Rows are grouped by
+   *  their own snapshot (`blockedByCurrency`), never attributed to this. */
   sourceCurrency: string;
   targetCurrency: string;
+  /** Totals across `blockedByCurrency` (rows whose snapshot ≠ target). Rows
+   *  already snapshotted in the target currency are never counted. */
   unbilledTimeEntries: number;
   unbilledParts: number;
+  /** Real per-snapshot groups, sorted by currency code. Empty when nothing blocks. */
+  blockedByCurrency: MoveCurrencyBlockedGroup[];
   accepted: boolean;
 }
 
@@ -72,7 +90,7 @@ export async function assertTicketMoveCurrencyCompatible(
   if (input.sourceCurrency === input.targetCurrency || input.ticketIds.length === 0) return null;
 
   const lockedTime = await tx
-    .select({ id: timeEntries.id })
+    .select({ id: timeEntries.id, currencyCode: timeEntries.currencyCode })
     .from(timeEntries)
     .where(
       and(
@@ -85,27 +103,47 @@ export async function assertTicketMoveCurrencyCompatible(
     .for('update');
   // unit_price is NOT NULL — every unbilled part is money.
   const lockedParts = await tx
-    .select({ id: ticketParts.id })
+    .select({ id: ticketParts.id, currencyCode: ticketParts.currencyCode })
     .from(ticketParts)
     .where(and(inArray(ticketParts.ticketId, input.ticketIds), eq(ticketParts.billingStatus, 'not_billed')))
     .orderBy(ticketParts.id)
     .for('update');
 
+  // Group by each row's OWN snapshot. After an accepted USD→EUR move the
+  // preserved rows are still USD; moving that ticket on to a USD org must not
+  // block (they already match), and a mixed ticket must report its real groups
+  // rather than attributing every row to the source org's current currency.
+  const groups = new Map<string, MoveCurrencyBlockedGroup>();
+  const bump = (currency: string | null, field: 'timeEntries' | 'parts') => {
+    const code = currency ?? UNKNOWN_MOVE_CURRENCY_KEY;
+    if (code === input.targetCurrency) return;
+    const g = groups.get(code) ?? { currencyCode: code, timeEntries: 0, parts: 0 };
+    g[field] += 1;
+    groups.set(code, g);
+  };
+  for (const r of lockedTime) bump(r.currencyCode, 'timeEntries');
+  for (const r of lockedParts) bump(r.currencyCode, 'parts');
+  const blockedByCurrency = [...groups.values()].sort((a, b) => a.currencyCode.localeCompare(b.currencyCode));
+  const unbilledTimeEntries = blockedByCurrency.reduce((n, g) => n + g.timeEntries, 0);
+  const unbilledParts = blockedByCurrency.reduce((n, g) => n + g.parts, 0);
+
   const details: MoveCurrencyGuardDetails = {
     sourceCurrency: input.sourceCurrency,
     targetCurrency: input.targetCurrency,
-    unbilledTimeEntries: lockedTime.length,
-    unbilledParts: lockedParts.length,
+    unbilledTimeEntries,
+    unbilledParts,
+    blockedByCurrency,
     accepted: input.acceptCurrencyMismatch
   };
-  if (lockedTime.length === 0 && lockedParts.length === 0) return details;
-  // Snapshots keep sourceCurrency; rows stay locked until commit.
+  if (blockedByCurrency.length === 0) return details;
+  // Snapshots keep their currency; rows stay locked until commit.
   if (input.acceptCurrencyMismatch) return details;
+  const codes = blockedByCurrency.map((g) => g.currencyCode).join(', ');
   throw new TicketMoveCurrencyBlockedError(
-    `Cannot move: ${lockedTime.length} unbilled time entries and ${lockedParts.length} unbilled parts are in ` +
-      `${input.sourceCurrency} but ${input.targetOrgName} bills in ${input.targetCurrency}. Invoice them first ` +
-      `(or assemble a ${input.sourceCurrency} draft), or move anyway and accept that they stay in ` +
-      `${input.sourceCurrency} and can only be invoiced on a ${input.sourceCurrency} draft.`,
+    `Cannot move: ${unbilledTimeEntries} unbilled time entries and ${unbilledParts} unbilled parts are in ` +
+      `${codes} but ${input.targetOrgName} bills in ${input.targetCurrency}. Invoice them first ` +
+      `(or assemble a draft in that currency), or move anyway and accept that they stay in ` +
+      `${codes} and can only be invoiced on a draft in that currency.`,
     details
   );
 }

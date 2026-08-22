@@ -28,6 +28,8 @@ interface MoveBlockedDetails {
   targetCurrency: string;
   unbilledTimeEntries: number;
   unbilledParts: number;
+  /** Real per-snapshot groups (rows whose currency ≠ target); optional for older API builds. */
+  blockedByCurrency?: Array<{ currencyCode: string; timeEntries: number; parts: number }>;
 }
 import { fetchTicketConfig, activeStatusesByCore, type TicketConfig } from '../../lib/ticketConfigApi';
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';

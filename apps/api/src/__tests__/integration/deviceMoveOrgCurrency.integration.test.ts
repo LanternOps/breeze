@@ -130,6 +130,7 @@ describe('POST /devices/:id/move-org — ticket currency guard (#3776)', () => {
     expect(body.code).toBe('TICKET_MOVE_CURRENCY_BLOCKED');
     expect(body.details).toEqual({
       sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 1, accepted: false,
+      blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 0, parts: 1 }],
     });
     expect(body.error).toContain('bills in EUR');
 
@@ -178,6 +179,7 @@ describe('POST /devices/:id/move-org — ticket currency guard (#3776)', () => {
       expect(a.details).toMatchObject({
         currencyMismatchAccepted: {
           sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 1, accepted: true,
+          blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 0, parts: 1 }],
         },
       });
     }

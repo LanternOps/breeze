@@ -374,6 +374,7 @@ describe('moveTicketOrg — cross-currency guard (#3776)', () => {
     expect(err.code).toBe('TICKET_MOVE_CURRENCY_BLOCKED');
     expect(err.details).toEqual({
       sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: false,
+      blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 1, parts: 0 }],
     });
 
     // The transaction rolled back: ticket, device link and children untouched.
@@ -417,6 +418,7 @@ describe('moveTicketOrg — cross-currency guard (#3776)', () => {
     expect(sourceAudit?.details).toMatchObject({
       currencyMismatchAccepted: {
         sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: true,
+        blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 1, parts: 0 }],
       },
     });
 
@@ -425,6 +427,36 @@ describe('moveTicketOrg — cross-currency guard (#3776)', () => {
       .from(ticketComments)
       .where(eq(ticketComments.ticketId, ticket.id));
     expect(feed.some((r: { content: string }) => r.content.includes('1 unbilled items stay in USD'))).toBe(true);
+  });
+
+  it('moving back to a USD org after an accepted USD→EUR move is not blocked: the preserved USD rows already match (review #4)', async () => {
+    const adminDb = getTestDb() as any;
+    const { orgA, orgB, actor, ticket, timeEntry, ticketPart } = await seedMoveOrgFixture();
+    await setOrgCurrency(orgB.id, 'EUR');
+    await adminDb.update(timeEntries)
+      .set({ hourlyRate: '100.00', isBillable: true, billingStatus: 'not_billed' })
+      .where(eq(timeEntries.id, timeEntry.id));
+    await adminDb.delete(ticketParts).where(eq(ticketParts.id, ticketPart.id));
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor, { acceptCurrencyMismatch: true }));
+    expect((await readTimeEntry(timeEntry.id))?.currencyCode).toBe('USD');
+
+    // EUR org → USD org, no acceptance: the row's snapshot IS the target currency.
+    const back = await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgA.id, actor));
+    expect(back.orgId).toBe(orgA.id);
+    const entryAfter = await readTimeEntry(timeEntry.id);
+    expect(entryAfter?.orgId).toBe(orgA.id);
+    expect(entryAfter?.currencyCode).toBe('USD');
+    const feed = await adminDb
+      .select({ content: ticketComments.content })
+      .from(ticketComments)
+      .where(eq(ticketComments.ticketId, ticket.id))
+      .orderBy(ticketComments.createdAt);
+    const moves = feed.filter((r: { content: string }) => r.content.startsWith('Moved to '));
+    expect(moves).toHaveLength(2);
+    // First move stranded the USD row under EUR; the move back strands nothing.
+    expect(moves[0]!.content).toContain('1 unbilled items stay in USD');
+    expect(moves[1]!.content).not.toContain('stay in');
   });
 
   it('a billed entry never blocks: the plain cross-currency move succeeds and the snapshot stays USD', async () => {
