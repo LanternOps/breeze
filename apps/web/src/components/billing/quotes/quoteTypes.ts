@@ -14,7 +14,7 @@ import type { QuoteSendEmailReason } from '../../../lib/api/quotes';
 export type { QuoteSendEmailReason } from '../../../lib/api/quotes';
 
 export type QuoteStatus =
-  | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
+  | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted' | 'superseded';
 
 export type QuoteLineRecurrence = 'one_time' | 'monthly' | 'annual';
 export type QuoteItemType = 'hardware' | 'software' | 'service';
@@ -327,6 +327,7 @@ export const STATUS_LABELS: Record<QuoteStatus, string> = {
   declined: 'Declined',
   expired: 'Expired',
   converted: 'Converted',
+  superseded: 'Superseded',
 };
 
 // Source-of-truth status → role map; STATUS_COLORS (class-string form) is
@@ -341,6 +342,9 @@ export const STATUS_ROLES: Record<QuoteStatus, { role: StatusPillRole; className
   declined: { role: 'danger' },
   expired: { role: 'warning' },
   converted: { role: 'success' },
+  // replaced-by-a-newer-version is a quiet historical state, not a warning;
+  // neutral matches draft's grey.
+  superseded: { role: 'neutral' },
 };
 
 export const STATUS_COLORS = Object.fromEntries(

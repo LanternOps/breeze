@@ -440,7 +440,11 @@ export type QuoteStatus =
   | 'accepted'
   | 'declined'
   | 'expired'
-  | 'converted';
+  | 'converted'
+  // The portal list returns every non-draft quote, so it will receive this the
+  // moment quotes can be superseded. Declared here to keep the union honest;
+  // the dedicated "replaced" rendering lands with the rest of the portal work.
+  | 'superseded';
 
 export interface QuoteSummary {
   id: string;

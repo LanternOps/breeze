@@ -1248,7 +1248,8 @@
       "accepted": "Accettato",
       "declined": "Rifiutato",
       "expired": "Scaduto",
-      "converted": "Convertito"
+      "converted": "Convertito",
+      "superseded": "Sostituito"
     },
     "workspace": {
       "backLabel": "Preventivi",

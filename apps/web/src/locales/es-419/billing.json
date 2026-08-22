@@ -1248,7 +1248,8 @@
       "accepted": "Aceptado",
       "declined": "Rechazado",
       "expired": "Vencido",
-      "converted": "Convertido"
+      "converted": "Convertido",
+      "superseded": "Reemplazado"
     },
     "workspace": {
       "backLabel": "Cotizaciones",

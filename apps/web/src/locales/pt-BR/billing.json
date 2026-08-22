@@ -1265,7 +1265,8 @@
       "accepted": "Aceito",
       "declined": "Recusado",
       "expired": "Expirado",
-      "converted": "Convertido"
+      "converted": "Convertido",
+      "superseded": "Substituído"
     }
   },
   "billingUi": {

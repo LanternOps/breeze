@@ -96,6 +96,10 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
     return c.json({ data });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    // A superseded quote refuses serialization in toPublicQuoteHeader (its
+    // prices are withdrawn). Answer the customer with that status rather than
+    // letting it reach the global handler as an opaque 500.
+    if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
   }
 });

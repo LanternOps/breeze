@@ -63,6 +63,8 @@ function fixtureQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
     publicResponseConsumedAt: null,
     publicResponseOutcome: null,
     publicLinkRevokedAt: null,
+    revisionOfQuoteId: null,
+    revisionNumber: 1,
     acceptTokenJti: null,
     acceptTokenIssuedAt: null,
     acceptTokenExpiresAt: null,

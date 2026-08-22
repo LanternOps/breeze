@@ -1248,7 +1248,8 @@
       "accepted": "Accepted",
       "declined": "Declined",
       "expired": "Expired",
-      "converted": "Converted"
+      "converted": "Converted",
+      "superseded": "Superseded"
     },
     "workspace": {
       "backLabel": "Quotes",

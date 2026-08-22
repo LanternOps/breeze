@@ -1248,7 +1248,8 @@
       "accepted": "Akzeptiert",
       "declined": "Abgelehnt",
       "expired": "Abgelaufen",
-      "converted": "Konvertiert"
+      "converted": "Konvertiert",
+      "superseded": "Ersetzt"
     },
     "workspace": {
       "backLabel": "Angebote",
