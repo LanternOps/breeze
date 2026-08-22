@@ -26,6 +26,9 @@ interface TsEntry {
   hourlyRate: string | null;
   /** Snapshot stamped when the rate was set; null only while hourlyRate is null. */
   currencyCode: string | null;
+  /** `billed` locks startedAt/endedAt/isBillable/hourlyRate server-side (409 ENTRY_BILLED
+   *  if any of them is PRESENT in a PATCH) — only the description may change. */
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
   isApproved: boolean;
   ticketId: string;
   ticketNumber: string;
@@ -285,16 +288,22 @@ export default function TimesheetPage() {
     });
   }, []);
 
-  const saveEdit = useCallback(async (id: string) => {
+  const saveEdit = useCallback(async (entry: TsEntry) => {
+    // Billed rows (#3776 review #5): the API rejects the PATCH when a locked
+    // field is present at all, not just when it changed — send only the
+    // description. The locked inputs are disabled in the form for the same reason.
+    const body = entry.billingStatus === 'billed'
+      ? { description: editForm.description || null }
+      : {
+          description: editForm.description || null,
+          isBillable: editForm.isBillable,
+          hourlyRate: editForm.hourlyRate === '' ? null : Number(editForm.hourlyRate),
+        };
     try {
       await runAction({
-        request: () => fetchWithAuth(`/time-entries/${id}`, {
+        request: () => fetchWithAuth(`/time-entries/${entry.id}`, {
           method: 'PATCH',
-          body: JSON.stringify({
-            description: editForm.description || null,
-            isBillable: editForm.isBillable,
-            hourlyRate: editForm.hourlyRate === '' ? null : Number(editForm.hourlyRate),
-          }),
+          body: JSON.stringify(body),
         }),
         errorFallback: t('longTail.time.TimesheetPage.errors.saveEntryFailed'),
         successMessage: t('longTail.time.TimesheetPage.toasts.entryUpdated'),
@@ -466,6 +475,7 @@ export default function TimesheetPage() {
                             <input
                               type="checkbox"
                               checked={editForm.isBillable}
+                              disabled={entry.billingStatus === 'billed'}
                               onChange={(e) => setEditForm((f) => ({ ...f, isBillable: e.target.checked }))}
                               data-testid={`timesheet-edit-billable-${entry.id}`}
                             />
@@ -474,6 +484,7 @@ export default function TimesheetPage() {
                           <input
                             type="number"
                             value={editForm.hourlyRate}
+                            disabled={entry.billingStatus === 'billed'}
                             onChange={(e) => setEditForm((f) => ({ ...f, hourlyRate: e.target.value }))}
                             aria-label={t('longTail.time.TimesheetPage.rate')}
                             placeholder={t('longTail.time.TimesheetPage.rate')}
@@ -482,7 +493,7 @@ export default function TimesheetPage() {
                           />
                           <button
                             type="button"
-                            onClick={() => void saveEdit(entry.id)}
+                            onClick={() => void saveEdit(entry)}
                             data-testid={`timesheet-edit-save-${entry.id}`}
                             className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary/90"
                           >

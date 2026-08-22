@@ -79,6 +79,42 @@ describe('TimesheetPage', () => {
     expect(screen.getByTestId('timesheet-entry-te-3').textContent).not.toContain('$');
   });
 
+  // Review #5 (#3776): a billed entry may still have its description edited, but
+  // the API rejects the PATCH (409 ENTRY_BILLED) if any locked field is PRESENT
+  // in the body — so the body must carry only the description for billed rows.
+  it('edits a billed entry with a description-only PATCH body and disables the locked inputs', async () => {
+    const billed = { ...entry, id: 'te-b', billingStatus: 'billed' };
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) return jsonRes({ ...week, days: [{ ...week.days[0], entries: [billed] }, ...week.days.slice(1)] });
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    fireEvent.click(await screen.findByTestId('timesheet-edit-te-b'));
+    expect((screen.getByTestId('timesheet-edit-billable-te-b') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId('timesheet-edit-rate-te-b') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.change(screen.getByTestId('timesheet-edit-description-te-b'), { target: { value: 'patching (rebooted twice)' } });
+    fireEvent.click(screen.getByTestId('timesheet-edit-save-te-b'));
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find((a) => a[0] === '/time-entries/te-b' && (a[1] as RequestInit)?.method === 'PATCH');
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ description: 'patching (rebooted twice)' });
+    });
+  });
+
+  it('edits an unbilled entry with the full body (description, isBillable, hourlyRate)', async () => {
+    render(<TimesheetPage />);
+    fireEvent.click(await screen.findByTestId('timesheet-edit-te-1'));
+    expect((screen.getByTestId('timesheet-edit-rate-te-1') as HTMLInputElement).disabled).toBe(false);
+    fireEvent.change(screen.getByTestId('timesheet-edit-rate-te-1'), { target: { value: '120' } });
+    fireEvent.click(screen.getByTestId('timesheet-edit-save-te-1'));
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find((a) => a[0] === '/time-entries/te-1' && (a[1] as RequestInit)?.method === 'PATCH');
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ description: 'patching', isBillable: true, hourlyRate: 120 });
+    });
+  });
+
   it('week navigation updates the hash and refetches', async () => {
     render(<TimesheetPage />);
     await screen.findByTestId('timesheet-day-2026-06-08');

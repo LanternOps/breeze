@@ -118,6 +118,27 @@ describe('TicketPartsCard', () => {
     });
   });
 
+  // Review #5 (#3776): a billed part may still have its description edited, but
+  // the API 409s (PART_BILLED) when any locked field is PRESENT in the body.
+  it('edits a billed part with a description-only PATCH body and disables the locked inputs', async () => {
+    const billed = [{ ...parts[0], id: 'p-b', billingStatus: 'billed' }];
+    fetchWithAuth.mockImplementation(async (url: string) => (url === '/tickets/tk-1/parts' ? jsonRes(billed) : jsonRes({})));
+    render(<TicketPartsCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-part-edit-p-b'));
+    for (const id of ['ticket-parts-form-quantity', 'ticket-parts-form-unit-price', 'ticket-parts-form-cost-basis', 'ticket-parts-form-billable']) {
+      expect((screen.getByTestId(id) as HTMLInputElement).disabled).toBe(true);
+    }
+    fireEvent.change(screen.getByTestId('ticket-parts-form-description'), { target: { value: 'SSD 1TB (Samsung)' } });
+    fireEvent.click(screen.getByTestId('ticket-parts-form-submit'));
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        (args) => args[0] === '/tickets/parts/p-b' && (args[1] as RequestInit)?.method === 'PATCH',
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ description: 'SSD 1TB (Samsung)' });
+    });
+  });
+
   it('adds a part from the catalog — prefills fields and links catalogItemId (#1368)', async () => {
     const catItem = {
       id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
