@@ -205,12 +205,18 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
 
   const returnBase = `${portalBase()}/invoice/return`;
   try {
-    const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    // #1448 — NOT wrapped in withSystemDbAccessContext: createInvoicePayLink opens
+    // its own short system contexts around each DB step and runs
+    // checkout.sessions.create outside any transaction. An enclosing context here
+    // pinned a pooled connection idle-in-transaction across the Stripe
+    // round-trip (#3777 review F2). runOutsideDbContext is kept only so a
+    // stray ambient context can never be inherited.
+    const link = await runOutsideDbContext(() =>
       createInvoicePayLink(inv.id, { userId: null, partnerId: null, accessibleOrgIds: [inv.orgId] }, {
         successUrl: `${returnBase}?session_id={CHECKOUT_SESSION_ID}`,
         cancelUrl: `${returnBase}?canceled=1&session_id={CHECKOUT_SESSION_ID}`,
         idempotencySuffix: '_pub',
-      })));
+      }));
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof InvoiceServiceError) {
