@@ -5,7 +5,7 @@ export const AI_AGENT_MODES = ['off', 'shadow', 'act'] as const;
 export type AiAgentMode = (typeof AI_AGENT_MODES)[number];
 
 /** Ladder used by the tighten-only merge: lower rank = stricter. */
-export const AI_AGENT_MODE_RANK: Record<AiAgentMode, number> = { off: 0, shadow: 1, act: 2 };
+export const AI_AGENT_MODE_RANK: Readonly<Record<AiAgentMode, number>> = Object.freeze({ off: 0, shadow: 1, act: 2 });
 
 export function minAgentMode(a: AiAgentMode, b: AiAgentMode): AiAgentMode {
   return AI_AGENT_MODE_RANK[a] <= AI_AGENT_MODE_RANK[b] ? a : b;
@@ -30,7 +30,7 @@ export interface AiAgentLimits {
   maxFleetPercentPerDay: number;
 }
 
-export const AI_AGENT_LIMIT_DEFAULTS: AiAgentLimits = {
+export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxDevicesPerRun: 1,
   maxConcurrentRuns: 1,
   maxRunsPerHour: 20,
@@ -39,7 +39,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: AiAgentLimits = {
   maxBudgetCentsPerDay: 1000,
   wallClockSeconds: 600,
   maxFleetPercentPerDay: 5,
-};
+});
 
 export interface AiAgentTriggers {
   alertSeverities: Array<'critical' | 'high' | 'medium' | 'low' | 'info'>;
@@ -52,7 +52,13 @@ export interface AiAgentTriggers {
 
 export interface AiAgentRecipients {
   userIds: string[];
-  roles: Array<'owner' | 'admin' | 'technician'>;
+  /**
+   * Role IDs, not role names. `roles` is a tenant-scoped table with custom
+   * names and an `isSystem` flag (apps/api/src/db/schema/users.ts) — there is
+   * no fixed owner/admin/technician union in this product, so matching by name
+   * would silently miss renamed or partner-defined roles.
+   */
+  roleIds: string[];
 }
 
 export interface AiAgentProtectedResources {
@@ -78,7 +84,16 @@ export interface AiAgentPolicy {
 
 export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'org' | 'merged'>;
 
+/**
+ * Bumped whenever the shape of `effective` changes. ai_agent_runs.policy_snapshot
+ * is append-only ledger data that outlives this type, so a v1 row must stay
+ * distinguishable from a v2 row — there is no backfill for a run that already
+ * happened.
+ */
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 1 as const;
+
 export interface AiAgentPolicySnapshot {
+  schemaVersion: number;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

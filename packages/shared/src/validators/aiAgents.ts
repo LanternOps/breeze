@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ALERT_SEVERITIES } from '../constants';
 import {
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
@@ -7,37 +8,86 @@ import {
 
 const TOOL_REF = /^[a-z0-9_]+(:[a-z0-9_]+)?$/;
 
-export const aiAgentLimitsSchema = z.object({
-  maxDevicesPerRun: z.number().int().min(1).max(50).default(AI_AGENT_LIMIT_DEFAULTS.maxDevicesPerRun),
-  maxConcurrentRuns: z.number().int().min(1).max(10).default(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentRuns),
-  maxRunsPerHour: z.number().int().min(1).max(500).default(AI_AGENT_LIMIT_DEFAULTS.maxRunsPerHour),
-  maxTurnsPerRun: z.number().int().min(1).max(100).default(AI_AGENT_LIMIT_DEFAULTS.maxTurnsPerRun),
-  maxBudgetCentsPerRun: z.number().int().min(1).max(5000).default(AI_AGENT_LIMIT_DEFAULTS.maxBudgetCentsPerRun),
-  maxBudgetCentsPerDay: z.number().int().min(1).max(100000).default(AI_AGENT_LIMIT_DEFAULTS.maxBudgetCentsPerDay),
-  wallClockSeconds: z.number().int().min(30).max(1800).default(AI_AGENT_LIMIT_DEFAULTS.wallClockSeconds),
-  maxFleetPercentPerDay: z.number().int().min(1).max(100).default(AI_AGENT_LIMIT_DEFAULTS.maxFleetPercentPerDay),
-});
+// Every nested policy object is declared ONCE as a defaults-free "fields"
+// schema, from which two variants are derived:
+//
+//   * the create variant  — `.partial().transform(fill defaults)`, so a create
+//     body still materializes a complete object;
+//   * the patch variant   — `.partial()` and nothing else, so a PATCH carries
+//     exactly the keys the caller sent.
+//
+// Deriving both from one shape is what keeps them from drifting. The split
+// exists because Zod applies a field's `.default()` even when the surrounding
+// object is optional: with per-field defaults, `PATCH {protectedResources:
+// {paths:[...]}}` parsed to a FULL object with `services` and `registryKeys`
+// reset to `[]` — silently erasing an act-mode agent's guardrails. Same class
+// of bug reset `limits` siblings and dropped `triggers` site/group scoping,
+// widening an agent's blast radius.
+//
+// The patch variants only stop the validator inventing values. The update
+// service must still deep-merge them onto the stored jsonb, or writing the
+// column replaces it wholesale.
 
-export const aiAgentTriggersSchema = z.object({
-  alertSeverities: z.array(z.enum(['critical', 'high', 'medium', 'low', 'info'])).default(['critical', 'high']),
-  alertRuleIds: z.array(z.string().guid()).max(200).optional(),
-  siteIds: z.array(z.string().guid()).max(500).optional(),
-  deviceGroupIds: z.array(z.string().guid()).max(500).optional(),
-  deviceTags: z.array(z.string().trim().min(1).max(64)).max(100).optional(),
-  respectMaintenanceWindows: z.boolean().default(true),
+const limitsFields = z.object({
+  maxDevicesPerRun: z.number().int().min(1).max(50),
+  maxConcurrentRuns: z.number().int().min(1).max(10),
+  maxRunsPerHour: z.number().int().min(1).max(500),
+  maxTurnsPerRun: z.number().int().min(1).max(100),
+  maxBudgetCentsPerRun: z.number().int().min(1).max(5000),
+  maxBudgetCentsPerDay: z.number().int().min(1).max(100000),
+  wallClockSeconds: z.number().int().min(30).max(1800),
+  maxFleetPercentPerDay: z.number().int().min(1).max(100),
 });
+export const aiAgentLimitsPatchSchema = limitsFields.partial();
+export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
+  ...AI_AGENT_LIMIT_DEFAULTS,
+  ...v,
+}));
 
-export const aiAgentRecipientsSchema = z.object({
-  userIds: z.array(z.string().guid()).max(100).default([]),
-  roles: z.array(z.enum(['owner', 'admin', 'technician'])).default([]),
+// `undefined` is the ONLY representation of "unrestricted" for the narrowing
+// lists below — hence `.min(1)`. An empty array would read as "matches
+// nothing", the exact opposite, and `siteIds ?? []` inverts the field's meaning.
+const triggersFields = z.object({
+  alertSeverities: z.array(z.enum(ALERT_SEVERITIES)).min(1),
+  alertRuleIds: z.array(z.string().guid()).min(1).max(200),
+  siteIds: z.array(z.string().guid()).min(1).max(500),
+  deviceGroupIds: z.array(z.string().guid()).min(1).max(500),
+  deviceTags: z.array(z.string().trim().min(1).max(64)).min(1).max(100),
+  respectMaintenanceWindows: z.boolean(),
 });
+export const aiAgentTriggersPatchSchema = triggersFields.partial();
+export const aiAgentTriggersSchema = aiAgentTriggersPatchSchema.transform((v) => ({
+  alertSeverities: ['critical', 'high'] as Array<(typeof ALERT_SEVERITIES)[number]>,
+  respectMaintenanceWindows: true,
+  ...v,
+}));
 
-export const aiAgentProtectedResourcesSchema = z.object({
-  services: z.array(z.string().trim().min(1).max(128)).max(200).default([]),
-  paths: z.array(z.string().trim().min(1).max(512)).max(200).default([]),
-  registryKeys: z.array(z.string().trim().min(1).max(512)).max(200).default([]),
-  deviceTags: z.array(z.string().trim().min(1).max(64)).max(100).default([]),
+const recipientsFields = z.object({
+  userIds: z.array(z.string().guid()).max(100),
+  // Role IDs, not names: roles are tenant-scoped rows with custom names.
+  roleIds: z.array(z.string().guid()).max(100),
 });
+export const aiAgentRecipientsPatchSchema = recipientsFields.partial();
+export const aiAgentRecipientsSchema = aiAgentRecipientsPatchSchema.transform((v) => ({
+  userIds: [],
+  roleIds: [],
+  ...v,
+}));
+
+const protectedResourcesFields = z.object({
+  services: z.array(z.string().trim().min(1).max(128)).max(200),
+  paths: z.array(z.string().trim().min(1).max(512)).max(200),
+  registryKeys: z.array(z.string().trim().min(1).max(512)).max(200),
+  deviceTags: z.array(z.string().trim().min(1).max(64)).max(100),
+});
+export const aiAgentProtectedResourcesPatchSchema = protectedResourcesFields.partial();
+export const aiAgentProtectedResourcesSchema = aiAgentProtectedResourcesPatchSchema.transform((v) => ({
+  services: [],
+  paths: [],
+  registryKeys: [],
+  deviceTags: [],
+  ...v,
+}));
 
 export const aiAgentPolicyFieldsSchema = z.object({
   enabled: z.boolean().default(false),
@@ -59,23 +109,21 @@ export const createAiAgentSchema = aiAgentPolicyFieldsSchema.extend({
   name: z.string().trim().min(1).max(120),
 });
 
-export const updateAiAgentSchema = createAiAgentSchema
-  .partial()
-  .omit({ ownerScope: true, kind: true, orgId: true })
-  // Zod 4 materializes child defaults through .partial(); strip every
-  // create-time default so an omitted PATCH field cannot reset stored policy.
-  .extend({
-    enabled: createAiAgentSchema.shape.enabled.removeDefault().optional(),
-    mode: createAiAgentSchema.shape.mode.removeDefault().optional(),
-    model: createAiAgentSchema.shape.model.removeDefault().optional(),
-    toolAllowlist: createAiAgentSchema.shape.toolAllowlist.removeDefault().optional(),
-    protectedResources: createAiAgentSchema.shape.protectedResources.unwrap().optional(),
-    limits: createAiAgentSchema.shape.limits.unwrap().optional(),
-    triggers: createAiAgentSchema.shape.triggers.unwrap().optional(),
-    recipients: createAiAgentSchema.shape.recipients.unwrap().optional(),
-    instructions: createAiAgentSchema.shape.instructions.removeDefault().optional(),
-    cooldownSeconds: createAiAgentSchema.shape.cooldownSeconds.removeDefault().optional(),
-  });
+// Every field optional with NO default at any depth: an absent key means "leave
+// the stored value alone", and must never round-trip as a shipped default.
+export const updateAiAgentSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  enabled: z.boolean().optional(),
+  mode: z.enum(AI_AGENT_MODES).optional(),
+  model: z.string().trim().min(1).max(100).nullable().optional(),
+  toolAllowlist: z.array(z.string().regex(TOOL_REF)).max(300).optional(),
+  protectedResources: aiAgentProtectedResourcesPatchSchema.optional(),
+  limits: aiAgentLimitsPatchSchema.optional(),
+  triggers: aiAgentTriggersPatchSchema.optional(),
+  recipients: aiAgentRecipientsPatchSchema.optional(),
+  instructions: z.string().max(2000).nullable().optional(),
+  cooldownSeconds: z.number().int().min(0).max(86400).optional(),
+});
 
 export type CreateAiAgentInput = z.infer<typeof createAiAgentSchema>;
 export type UpdateAiAgentInput = z.infer<typeof updateAiAgentSchema>;
