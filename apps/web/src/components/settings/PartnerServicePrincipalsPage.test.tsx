@@ -115,4 +115,35 @@ describe('PartnerServicePrincipalsPage', () => {
     expect(screen.queryByText('brz_sp_ROTATED_ONCE')).not.toBeInTheDocument();
     storageWrite.mockRestore();
   });
+  it('renders the write scope as opt-in and requires CIDR plus expiry when selected', async () => {
+    render(<PartnerServicePrincipalsPage />);
+    await screen.findByText('Weavestream');
+    fireEvent.click(screen.getByTestId('create-principal'));
+
+    const defaultScopes = [
+      'organizations:read', 'sites:read', 'devices:read', 'inventory:read',
+      'configuration:read', 'scripts:read', 'backup-configuration:read', 'custom-fields:read',
+    ];
+    for (const scope of defaultScopes) expect(screen.getByTestId(`scope-checkbox-${scope}`)).toBeChecked();
+    const checkedScopes = Array.from(document.querySelectorAll<HTMLInputElement>('[data-testid^="scope-checkbox-"]:checked'))
+      .map((input) => input.dataset.testid!.replace('scope-checkbox-', ''));
+    expect(checkedScopes).toEqual(defaultScopes);
+    const writeScope = screen.getByTestId('scope-checkbox-enrollment-keys:write');
+    expect(writeScope).not.toBeChecked();
+    expect(screen.queryByTestId('write-scope-restrictions-required')).not.toBeInTheDocument();
+
+    fireEvent.click(writeScope);
+    expect(screen.getByTestId('write-scope-restrictions-required')).toBeInTheDocument();
+    expect(screen.getByTestId('save-principal')).toBeDisabled();
+
+    fireEvent.change(screen.getByText('partnerServicePrincipals.sourceCidrs').querySelector('textarea')!, {
+      target: { value: '203.0.113.0/24' },
+    });
+    const future = new Date(Date.now() + 86_400_000).toISOString().slice(0, 16);
+    fireEvent.change(screen.getByText('partnerServicePrincipals.expiresAt').querySelector('input')!, {
+      target: { value: future },
+    });
+    expect(screen.queryByTestId('write-scope-restrictions-required')).not.toBeInTheDocument();
+    expect(screen.getByTestId('save-principal')).not.toBeDisabled();
+  });
 });

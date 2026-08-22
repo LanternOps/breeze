@@ -106,6 +106,10 @@ describe('service principal management routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.transaction).mockReset();
     mocks.gateOrder.length = 0;
     mocks.permissionAllowed.value = true;
     mocks.mfaAllowed.value = true;
@@ -162,7 +166,7 @@ describe('service principal management routes', () => {
   });
 
   it('maps a wrapped name unique violation during rename to 409', async () => {
-    selectRows([]);
+    selectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null }], []);
     const pgError = Object.assign(new Error('duplicate'), {
       code: '23505',
       constraint_name: 'partner_service_principals_partner_name_unique',
@@ -183,6 +187,28 @@ describe('service principal management routes', () => {
     expect(res.status).toBe(409);
   });
 
+  it.each([
+    [{ name: 'Write without controls', scopes: ['enrollment-keys:write'], sourceCidrs: [], expiresAt: null }],
+    [{ name: 'Write without expiry', scopes: ['enrollment-keys:write'], sourceCidrs: ['203.0.113.0/24'], expiresAt: null }],
+    [{ name: 'Write without CIDR', scopes: ['enrollment-keys:write'], sourceCidrs: [], expiresAt: '2027-01-01T00:00:00.000Z' }],
+  ])('rejects enrollment-key write principals without both security controls', async (payload) => {
+    const res = await app.request('/partner-service-principals', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'ENROLLMENT_KEY_SCOPE_RESTRICTIONS_REQUIRED' });
+  });
+
+  it('validates effective PATCH state when adding the write scope', async () => {
+    selectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null }]);
+    const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scopes: ['devices:read', 'enrollment-keys:write'] }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'ENROLLMENT_KEY_SCOPE_RESTRICTIONS_REQUIRED' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
   it.each([
     [{ name: 'Bad scope', scopes: ['devices:write'], sourceCidrs: [] }, 'scope'],
     [{ name: 'Bad CIDR', scopes: ['devices:read'], sourceCidrs: ['10.0.0.0/99'] }, 'CIDR'],

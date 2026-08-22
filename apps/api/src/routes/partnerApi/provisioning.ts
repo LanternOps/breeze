@@ -24,8 +24,21 @@ import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { isValidIanaTimezone } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { enrollmentKeys, organizations, partners, sites } from '../../db/schema';
+import { createHash } from 'node:crypto';
+import {
+  db,
+  runOutsideDbContext,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+  type DbAccessContext,
+} from '../../db';
+import {
+  enrollmentKeys,
+  organizations,
+  partnerEnrollmentKeyIdempotency,
+  partners,
+  sites,
+} from '../../db/schema';
 import {
   requirePartnerApiScope,
   type PartnerApiPrincipalContext,
@@ -37,11 +50,15 @@ import {
   generateEnrollmentKey,
   getDefaultEnrollmentKeyTtlMinutes,
   hashEnrollmentKey,
+  hashEnrollmentSecret,
 } from '../../services/enrollmentKeySecurity';
+import { getRedis } from '../../services/redis';
+import { rateLimiter } from '../../services/rate-limit';
 import { computePartnerExportRevision, safelyExportDefinition } from './exportSafety';
 import { jsonField } from './organizations';
 import {
   enrollmentKeyCreateResponseSchema,
+  enrollmentKeyReplayResponseSchema,
   organizationCreateResponseSchema,
   siteCreateResponseSchema,
   type PartnerExportResource,
@@ -50,6 +67,22 @@ import {
 // Same 365-day ceiling as the human enrollment-key routes (enrollmentKeys.ts
 // MAX_TTL_MINUTES / devices/core.ts ENROLL_TOKEN_MAX_TTL_MINUTES).
 const ENROLLMENT_KEY_MAX_TTL_MINUTES = 525_600;
+
+// Credential minting gets its own fail-closed bucket. The generic per-principal
+// Partner API budget is shared with read/export traffic and is far too generous
+// for an endpoint that mints device-join credentials.
+const ENROLLMENT_KEY_MINT_WINDOW_SECONDS = 60 * 60;
+
+function envInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  // Reject NaN, non-positive values, and trailing garbage (e.g. "7d", "0", "-1").
+  if (!Number.isFinite(parsed) || parsed <= 0 || String(parsed) !== raw.trim()) {
+    throw new Error(`${name} must be a positive integer, got: ${JSON.stringify(raw)}`);
+  }
+  return parsed;
+}
 
 // `partnerId` is intentionally absent from every body schema: the principal's
 // partner always wins, and zod strips unrecognized keys on non-strict objects,
@@ -419,6 +452,31 @@ partnerProvisioningRoutes.post(
     const principal = c.get('partnerApiPrincipal');
     const data = c.req.valid('json');
 
+    const idempotencyHeader = c.req.header('X-Idempotency-Key');
+    // Validate before any Redis or database I/O. The value is persisted in a
+    // bounded varchar and participates in a unique index.
+    if (idempotencyHeader !== undefined && (
+      idempotencyHeader.length === 0
+      || idempotencyHeader.length > 128
+      || !/^[\x20-\x7E]+$/.test(idempotencyHeader)
+    )) {
+      return c.json({
+        error: 'X-Idempotency-Key must be 1-128 printable ASCII characters.',
+        code: 'partner_provisioning_invalid_idempotency_key',
+      }, 400);
+    }
+
+    // SECURITY: the human MFA boundary for this capability is the scope grant
+    // itself. Because the mint is machine-to-machine, every minting principal
+    // must additionally be time-bounded and network-bounded. A SQL cross-column
+    // CHECK enforces the same invariant below the API layer.
+    if (!principal.principalExpiresAt || (principal.sourceCidrs?.length ?? 0) === 0) {
+      return c.json({
+        error: 'enrollment-keys:write requires a principal expiry and a source CIDR allowlist.',
+        code: 'partner_provisioning_principal_restrictions_required',
+      }, 403);
+    }
+
     if (!principal.accessibleOrgIds.includes(data.orgId)) {
       return c.json({
         error: 'Access to this organization denied.',
@@ -440,15 +498,80 @@ partnerProvisioningRoutes.post(
       return c.json({ error: capError, code: 'partner_provisioning_ttl_exceeds_cap' }, 400);
     }
 
+    // Fail closed: the shared limiter rejects when Redis is unavailable rather
+    // than allowing an unmetered mint. Runs outside any bounded DB context so
+    // the Redis round-trip never happens on a pinned RLS connection.
+    const mintRate = await runOutsideDbContext(() => rateLimiter(
+      getRedis(),
+      `rl:partner-enrollment-key-mint:${principal.partnerServicePrincipalId}`,
+      envInt('PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT', 10),
+      ENROLLMENT_KEY_MINT_WINDOW_SECONDS,
+    ));
+    if (!mintRate.allowed) {
+      c.header('Retry-After', String(Math.max(
+        1,
+        Math.ceil((mintRate.resetAt.getTime() - Date.now()) / 1000),
+      )));
+      return c.json({
+        error: 'Enrollment key mint rate limit exceeded.',
+        code: 'partner_provisioning_rate_limited',
+      }, 429);
+    }
+
     const rawKey = generateEnrollmentKey();
     const keyHash = hashEnrollmentKey(rawKey);
+    const rawEnrollmentSecret = generateEnrollmentKey();
+    // Two different hashers on purpose, and they are not interchangeable.
+    // `key` is peppered; `key_secret_hash` is plain SHA-256 because the agent
+    // enrollment path (routes/agents/enrollment.ts) compares it against
+    // hashEnrollmentSecret(), which must also match the on-the-fly hash of a
+    // globally configured AGENT_ENROLLMENT_SECRET. Peppering this column makes
+    // every minted secret fail enrollment with 403.
+    const keySecretHash = hashEnrollmentSecret(rawEnrollmentSecret);
     const expiresAt = data.ttlMinutes !== undefined
       ? new Date(Date.now() + data.ttlMinutes * 60 * 1000)
       : data.expiresAt
         ? new Date(data.expiresAt)
         : new Date(Date.now() + getDefaultEnrollmentKeyTtlMinutes() * 60 * 1000);
 
+    // Fingerprint follows the key insertion order Zod produces, which is the
+    // declaration order of createEnrollmentKeyBodySchema. Stable today, but
+    // reordering that schema's fields would change every fingerprint and make
+    // in-flight retries look like body mismatches for one retention window.
+    const requestFingerprint = createHash('sha256')
+      .update(JSON.stringify(data))
+      .digest('hex');
+
     const outcome = await withDbAccessContext(partnerScopedDbContext(principal), async () => {
+      // Durable replay lookup precedes mutable site validation, so a completed
+      // retry stays stable even if the site is deleted after the first call.
+      if (idempotencyHeader) {
+        const [claim] = await db
+          .select()
+          .from(partnerEnrollmentKeyIdempotency)
+          .where(and(
+            eq(
+              partnerEnrollmentKeyIdempotency.partnerServicePrincipalId,
+              principal.partnerServicePrincipalId,
+            ),
+            eq(partnerEnrollmentKeyIdempotency.idempotencyKey, idempotencyHeader),
+          ))
+          .limit(1);
+        if (claim) {
+          if (claim.requestFingerprint !== requestFingerprint) {
+            return { kind: 'idempotency_mismatch' as const };
+          }
+          if (!claim.enrollmentKeyId) return { kind: 'idempotency_unavailable' as const };
+          const [existing] = await db
+            .select()
+            .from(enrollmentKeys)
+            .where(eq(enrollmentKeys.id, claim.enrollmentKeyId))
+            .limit(1);
+          if (!existing) return { kind: 'idempotency_unavailable' as const };
+          return { kind: 'replay' as const, enrollmentKey: existing };
+        }
+      }
+
       if (data.siteId) {
         const [site] = await db
           .select({ id: sites.id })
@@ -457,22 +580,56 @@ partnerProvisioningRoutes.post(
           .limit(1);
         if (!site) return { kind: 'bad_site' as const };
       }
-      const [enrollmentKey] = await db
-        .insert(enrollmentKeys)
-        .values({
-          orgId: data.orgId,
-          siteId: data.siteId ?? null,
-          name: data.name,
-          key: keyHash,
-          maxUsage: data.maxUsage ?? 1,
-          expiresAt,
-          // No human in this auth path; attribution lives in the audit event.
-          createdBy: null,
-        })
-        .returning();
-      return enrollmentKey
-        ? { kind: 'created' as const, enrollmentKey }
-        : { kind: 'failed' as const };
+      const insertValues = {
+        orgId: data.orgId,
+        siteId: data.siteId ?? null,
+        name: data.name,
+        key: keyHash,
+        keySecretHash,
+        maxUsage: data.maxUsage ?? 1,
+        expiresAt,
+        // No human in this auth path; attribution lives in the audit event.
+        createdBy: null,
+      };
+
+      if (!idempotencyHeader) {
+        const [enrollmentKey] = await db.insert(enrollmentKeys).values(insertValues).returning();
+        return enrollmentKey
+          ? { kind: 'created' as const, enrollmentKey }
+          : { kind: 'failed' as const };
+      }
+
+      // The claim, the key insert, and the claim-to-key link commit together.
+      // Without that, PostgreSQL could commit a live credential whose one-time
+      // plaintext is then lost because the claim never recorded it.
+      return db.transaction(async (tx) => {
+        const [claim] = await tx
+          .insert(partnerEnrollmentKeyIdempotency)
+          .values({
+            partnerId: principal.partnerId,
+            partnerServicePrincipalId: principal.partnerServicePrincipalId,
+            orgId: data.orgId,
+            idempotencyKey: idempotencyHeader,
+            requestFingerprint,
+          })
+          .onConflictDoNothing()
+          .returning();
+        // Lost the race on the unique index: the winner is committing, so this
+        // request must not mint a second key.
+        if (!claim) return { kind: 'idempotency_raced' as const };
+
+        const [enrollmentKey] = await tx.insert(enrollmentKeys).values(insertValues).returning();
+        if (!enrollmentKey) return { kind: 'failed' as const };
+
+        const [linked] = await tx
+          .update(partnerEnrollmentKeyIdempotency)
+          .set({ enrollmentKeyId: enrollmentKey.id })
+          .where(eq(partnerEnrollmentKeyIdempotency.id, claim.id))
+          .returning();
+        if (!linked) throw new Error('idempotency claim link failed');
+
+        return { kind: 'created' as const, enrollmentKey };
+      });
     });
 
     if (outcome.kind === 'bad_site') {
@@ -483,6 +640,43 @@ partnerProvisioningRoutes.post(
     }
     if (outcome.kind === 'failed') {
       return c.json({ error: 'Enrollment key create failed.', code: 'partner_provisioning_failed' }, 500);
+    }
+    if (outcome.kind === 'idempotency_mismatch') {
+      return c.json({
+        error: 'X-Idempotency-Key was already used with a different request body.',
+        code: 'partner_provisioning_idempotency_key_reused',
+      }, 409);
+    }
+    if (outcome.kind === 'idempotency_raced') {
+      return c.json({
+        error: 'A concurrent request with this X-Idempotency-Key is in flight. Retry.',
+        code: 'partner_provisioning_idempotency_in_flight',
+      }, 409);
+    }
+    if (outcome.kind === 'idempotency_unavailable') {
+      return c.json({
+        error: 'Idempotency result unavailable.',
+        code: 'partner_provisioning_idempotency_state_invalid',
+      }, 503);
+    }
+    if (outcome.kind === 'replay') {
+      // Metadata only: the raw key and enrollment secret were returned once, to
+      // the request that committed them, and are unrecoverable by design.
+      const replayed = outcome.enrollmentKey;
+      return c.json(enrollmentKeyReplayResponseSchema.parse({
+        schemaVersion: '1' as const,
+        data: {
+          id: replayed.id,
+          orgId: replayed.orgId,
+          siteId: replayed.siteId,
+          name: replayed.name,
+          usageCount: replayed.usageCount,
+          maxUsage: replayed.maxUsage,
+          expiresAt: replayed.expiresAt ? iso(replayed.expiresAt) : null,
+          createdAt: iso(replayed.createdAt),
+        },
+        idempotencyReplay: true as const,
+      }), 200);
     }
 
     const { enrollmentKey } = outcome;
@@ -515,6 +709,7 @@ partnerProvisioningRoutes.post(
         createdAt: iso(enrollmentKey.createdAt),
       },
       key: rawKey,
+      enrollmentSecret: rawEnrollmentSecret,
     }), 201);
   },
 );

@@ -1,4 +1,5 @@
 import './setup';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
@@ -17,6 +18,7 @@ import {
   customFieldDefinitions,
   deviceGroups,
   devices,
+  enrollmentKeys,
   partnerExportConfigurationOrgState,
   partnerExportDeviceMaterialState,
   partnerExportSiteMaterialState,
@@ -34,6 +36,7 @@ import {
 } from '../../routes/partnerApi/cursor';
 import { partnerDeviceRoutes } from '../../routes/partnerApi/devices';
 import { partnerInventoryRoutes } from '../../routes/partnerApi/inventory';
+import { partnerProvisioningRoutes } from '../../routes/partnerApi/provisioning';
 import { partnerOrganizationRoutes } from '../../routes/partnerApi/organizations';
 import { partnerRelationshipRoutes } from '../../routes/partnerApi/relationships';
 import {
@@ -41,6 +44,7 @@ import {
   type PartnerExportResource,
 } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
+import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
 
@@ -119,6 +123,66 @@ interface SeededPartner {
 }
 
 describe('partner reconstruction export RLS traversal', () => {
+  runDb('enrollment_keys allows an in-partner write and rejects a cross-partner forge as breeze_app', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const contextA = partnerContext(partnerA);
+
+    const [allowed] = await withDbAccessContext(contextA, () => db.insert(enrollmentKeys).values({
+      orgId: partnerA.orgs[0]!.id,
+      siteId: partnerA.sites[0]!.id,
+      name: 'Partner API allowed RLS proof',
+      key: randomBytes(32).toString('hex'),
+      keySecretHash: randomBytes(32).toString('hex'),
+      maxUsage: 1,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdBy: null,
+    }).returning({ id: enrollmentKeys.id }));
+    expect(allowed?.id).toBeTruthy();
+
+    await expect(withDbAccessContext(contextA, () => db.insert(enrollmentKeys).values({
+      orgId: partnerB.orgs[0]!.id,
+      siteId: partnerB.sites[0]!.id,
+      name: 'Cross-partner forge',
+      key: randomBytes(32).toString('hex'),
+      keySecretHash: randomBytes(32).toString('hex'),
+      maxUsage: 1,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdBy: null,
+    }))).rejects.toMatchObject({ cause: expect.objectContaining({ code: '42501' }) });
+  });
+  runDb('creates an enrollment key through actual Partner API auth and forced RLS', async () => {
+    await ensureAppRole();
+    const [partnerA] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const observedRoles: Array<{ who: string; bypass: boolean }> = [];
+    const app = actualPartnerApiApp(observedRoles);
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1', 'x-idempotency-key': 'actual-route-rls-proof' },
+      body: JSON.stringify({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, name: 'Actual route RLS proof' }),
+    });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const body = await response.json() as { data: { id: string }; key: string; enrollmentSecret: string };
+    expect(body.key).toMatch(/^[a-f0-9]{64}$/);
+    expect(body.enrollmentSecret).toMatch(/^[a-f0-9]{64}$/);
+    const [stored] = await getTestDb().select().from(enrollmentKeys).where(eq(enrollmentKeys.id, body.data.id)).limit(1);
+    expect(stored).toMatchObject({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, createdBy: null });
+    expect(stored?.key).not.toBe(body.key);
+    expect(stored?.keySecretHash).not.toBe(body.enrollmentSecret);
+    expect(observedRoles).toContainEqual({ who: 'breeze_app', bypass: false });
+
+    const replay = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1', 'x-idempotency-key': 'actual-route-rls-proof' },
+      body: JSON.stringify({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, name: 'Actual route RLS proof' }),
+    });
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      data: { id: body.data.id },
+      idempotencyReplay: true,
+    });
+  });
   runDb('cursor-walks every resource through actual auth without crossing partners', async () => {
     await ensureAppRole();
     const [partnerA, partnerB] = await seedInterleavedPartners();
@@ -900,12 +964,18 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
   seed.featureLinks.push(featureLink);
 }
 
-async function issueKey(partnerId: string, userId: string): Promise<string> {
+async function issueKey(
+  partnerId: string,
+  userId: string,
+  scopes: readonly PartnerServicePrincipalScope[] = ALL_SCOPES,
+): Promise<string> {
   const admin = getTestDb();
   const [principal] = await admin.insert(partnerServicePrincipals).values({
     partnerId,
     name: `Reconstruction export ${crypto.randomUUID()}`,
-    scopes: [...ALL_SCOPES],
+    scopes: [...scopes],
+    sourceCidrs: scopes.includes('enrollment-keys:write') ? ['127.0.0.1/32', '::1/128'] : [],
+    expiresAt: scopes.includes('enrollment-keys:write') ? new Date(Date.now() + 86_400_000) : null,
     createdBy: userId,
     updatedBy: userId,
   }).returning();
@@ -935,6 +1005,7 @@ function actualPartnerApiApp(observedRoles: Array<{ who: string; bypass: boolean
   app.route('/', partnerInventoryRoutes);
   app.route('/', partnerRelationshipRoutes);
   app.route('/', partnerConfigurationRoutes);
+  app.route('/', partnerProvisioningRoutes);
   return app;
 }
 
