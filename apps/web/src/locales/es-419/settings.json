@@ -2198,7 +2198,7 @@
     "responseSLAMinutes": "Respuesta SLA (minutos)",
     "resolutionSLAMinutes": "Resolución SLA (minutos)",
     "billableByDefault": "Facturable por defecto",
-    "defaultHourlyRate": "Tarifa por hora predeterminada ($)",
+    "defaultHourlyRate": "Tarifa por hora predeterminada",
     "save": "Guardar",
     "cancel": "Cancelar",
     "responseMinutes": "respuesta {{count}}m",
@@ -2699,7 +2699,7 @@
     "billing": {
       "title": "Valores predeterminados de facturación",
       "description": "Configuración de facturación predeterminada para entradas de tiempo en tickets para esta organización.",
-      "hourlyRate": "Tarifa por hora predeterminada ($)",
+      "hourlyRate": "Tarifa por hora predeterminada",
       "billable": "Facturable predeterminado",
       "inherit": "Heredar",
       "billableOption": "facturable",

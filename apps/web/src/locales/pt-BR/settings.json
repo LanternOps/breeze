@@ -2251,7 +2251,7 @@
     "responseSLAMinutes": "SLA de resposta (minutos)",
     "resolutionSLAMinutes": "SLA de resolução (minutos)",
     "billableByDefault": "Faturável por padrão",
-    "defaultHourlyRate": "Taxa horária padrão (US$)",
+    "defaultHourlyRate": "Taxa horária padrão",
     "save": "Salvar",
     "cancel": "Cancelar",
     "responseMinutes": "Resposta {{count}}m",
@@ -2752,7 +2752,7 @@
     "billing": {
       "title": "Padrões de faturamento",
       "description": "Configurações de faturamento padrão para lançamentos de horas em chamados desta organização.",
-      "hourlyRate": "Taxa horária padrão (US$)",
+      "hourlyRate": "Taxa horária padrão",
       "billable": "Faturável padrão",
       "inherit": "Herdar",
       "billableOption": "Faturável",

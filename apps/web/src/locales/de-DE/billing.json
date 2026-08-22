@@ -887,7 +887,7 @@
         "toLabel": "An",
         "toPlaceholder": "Empfänger hinzufügen…",
         "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
-        "zeroTotalWarning": "Dieses Angebot beträgt $0.00 — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
+        "zeroTotalWarning": "Dieses Angebot beträgt {{zero}} — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
         "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>."
       },
       "sendEmailWarning": {
@@ -931,7 +931,8 @@
       "resendNewLinkOriginalLive": "Angebot erneut gesendet — jedoch mit einem NEUEN Link. Dieses Angebot stammt aus der Zeit vor der Linkverfolgung, daher konnte der bisherige Link des Kunden nicht wiederverwendet werden; er funktioniert weiterhin parallel zum neuen.",
       "resendNewLinkOriginalDead": "Angebot erneut gesendet — jedoch mit einem NEUEN Link. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss den neuen verwenden.",
       "shareLinkNewLinkOriginalLive": "NEUEN Link kopiert. Dieses Angebot stammt aus der Zeit vor der Linkverfolgung, daher konnte der bisherige Link des Kunden nicht wiederverwendet werden; er funktioniert weiterhin parallel zu diesem.",
-      "shareLinkNewLinkOriginalDead": "NEUEN Link kopiert. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss diesen verwenden."
+      "shareLinkNewLinkOriginalDead": "NEUEN Link kopiert. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss diesen verwenden.",
+      "currencyMismatch": "Dieses Angebot lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie."
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -1499,6 +1500,7 @@
       "amount": "Betrag",
       "amountRequired": "Geben Sie einen Zahlungsbetrag ein, um ihn zu erfassen",
       "connectStripe": "Verbinden Sie Stripe, um Online-Zahlungen zu akzeptieren.",
+      "currencyMismatch": "Diese Rechnung lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie.",
       "date": "Zahlungsdatum",
       "draftHint": "Stellen Sie diese Rechnung aus, um Zahlungen zu erfassen.",
       "empty": "Keine Zahlungen erfasst.",

@@ -2198,7 +2198,7 @@
     "responseSLAMinutes": "Antwort SLA (Minuten)",
     "resolutionSLAMinutes": "Auflösung SLA (Minuten)",
     "billableByDefault": "Standardmäßig kostenpflichtig",
-    "defaultHourlyRate": "Standardstundensatz ($)",
+    "defaultHourlyRate": "Standardstundensatz",
     "save": "Speichern",
     "cancel": "Abbrechen",
     "responseMinutes": "{{count}}m Antwort",
@@ -2699,7 +2699,7 @@
     "billing": {
       "title": "Abrechnungsvorgaben",
       "description": "Standardabrechnungseinstellungen für Zeiteinträge auf Tickets für diese Organisation.",
-      "hourlyRate": "Standardstundensatz ($)",
+      "hourlyRate": "Standardstundensatz",
       "billable": "Standardmäßig abrechnungsfähig",
       "inherit": "Erben",
       "billableOption": "Abrechnungsfähig",

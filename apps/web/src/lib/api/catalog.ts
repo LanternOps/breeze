@@ -7,8 +7,9 @@
 // `runAction`. Every catalog route responds with a `{ data: ... }` envelope.
 //
 // Money / quantity fields arrive as numeric(12,2) strings (e.g. '150.00').
-// Catalog items have no per-item currency, so prices render in the app default
-// (USD) via lib/timeFormat.formatMoney.
+// Catalog items have no per-item currency yet, so prices render in the partner
+// currency (lib/usePartnerCurrency + components/billing/shared/format.formatMoney)
+// until wave 3 price books give each item its own per-currency price.
 
 import { fetchWithAuth } from '../../stores/auth';
 import type { PolishTextResponse } from '@breeze/shared';

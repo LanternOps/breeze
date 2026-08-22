@@ -53,6 +53,7 @@ vi.mock('./invoiceService', () => ({
 }));
 
 import { createInvoicePayLink } from './invoiceCheckout';
+import { InvoiceServiceError } from './invoiceTypes';
 
 const partnerClient = (stripeAccountId = 'acct_9') => ({
   stripe: { checkout: { sessions: { create: sessionsCreateMock } } },
@@ -192,5 +193,80 @@ describe('createInvoicePayLink', () => {
 
     await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ code: 'NOTHING_TO_PAY' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  // ---- multi-currency (#3777): warn-don't-block + friendly currency error ----
+
+  it('returns a CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT warning when the account settles in another currency (never blocks)', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', depositDue: null, amountPaid: '0.00',
+      currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_eur', url: 'https://checkout.stripe.com/c/cs_eur', payment_intent: 'pi_eur' });
+
+    const result = await createInvoicePayLink(INV_ID, actor);
+    expect(result).toEqual({
+      url: 'https://checkout.stripe.com/c/cs_eur',
+      warning: {
+        code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
+        documentCurrency: 'EUR',
+        accountCurrency: 'USD',
+        message: expect.stringContaining('FX spread'),
+      },
+    });
+    // The session is still created in the DOCUMENT currency — no conversion.
+    expect(sessionsCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [expect.objectContaining({ price_data: expect.objectContaining({ currency: 'eur' }) })],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('omits the warning key entirely when the account currency matches', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', depositDue: null, amountPaid: '0.00',
+      currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'eur' });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_eur2', url: 'https://checkout.stripe.com/c/cs_eur2', payment_intent: 'pi_eur2' });
+
+    const result = await createInvoicePayLink(INV_ID, actor);
+    expect(result).toEqual({ url: 'https://checkout.stripe.com/c/cs_eur2' });
+    expect('warning' in result).toBe(false);
+  });
+
+  it('maps a Stripe currency_not_supported rejection to STRIPE_CURRENCY_UNSUPPORTED (409) naming the currency', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', depositDue: null, amountPaid: '0.00',
+      currencyCode: 'CHF', invoiceNumber: 'INV-CHF',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
+    sessionsCreateMock.mockRejectedValue(Object.assign(new Error('Invalid currency: chf'), {
+      type: 'StripeInvalidRequestError', code: 'currency_not_supported',
+    }));
+
+    const p = createInvoicePayLink(INV_ID, actor);
+    await expect(p).rejects.toBeInstanceOf(InvoiceServiceError);
+    await expect(p).rejects.toMatchObject({ code: 'STRIPE_CURRENCY_UNSUPPORTED', status: 409 });
+    await expect(p).rejects.toThrow(/CHF/);
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates a non-currency Stripe error (StripeCardError) unchanged', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', depositDue: null, amountPaid: '0.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-CARD',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
+    const cardErr = Object.assign(new Error('Your card was declined.'), { type: 'StripeCardError', code: 'card_declined' });
+    sessionsCreateMock.mockRejectedValue(cardErr);
+
+    await expect(createInvoicePayLink(INV_ID, actor)).rejects.toBe(cardErr);
   });
 });

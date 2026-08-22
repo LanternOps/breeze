@@ -56,6 +56,8 @@ export const invoices = pgTable('invoices', {
   notes: text('notes'),
   terms: text('terms'),
   sellerSnapshot: jsonb('seller_snapshot'),
+  // Render-locale snapshot, stamped once at issue/send (#3777). NULL = resolve from partner at render.
+  documentLocale: varchar('document_locale', { length: 16 }),
   termsAndConditions: text('terms_and_conditions'),
   sentAt: timestamp('sent_at'),
   firstViewedAt: timestamp('first_viewed_at'),

@@ -7,16 +7,9 @@
 // PDF, which appends un-blocked lines after the block walk.
 import { Fragment } from 'react';
 import type { QuoteBlock, QuoteCalloutContent, QuoteContractBlockContent, QuoteLine, QuoteTableContent } from '@/lib/api';
-
-export function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
+import { money } from '@/lib/money';
+// Re-exported so PublicQuoteView/QuoteDetailView keep importing from here.
+export { money };
 
 /** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
  *  rounded to cents; non-taxable lines / a non-positive rate return null (shown

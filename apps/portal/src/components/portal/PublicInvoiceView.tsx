@@ -4,6 +4,7 @@ import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
 import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { money } from '@/lib/money';
 
 /**
  * The public (token-gated) invoice page — the customer's durable no-login
@@ -25,15 +26,6 @@ interface PublicInvoiceViewProps {
   error?: string | null;
 }
 
-function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
 
 function shortDate(value: string | null | undefined): string {
   if (!value) return '—';

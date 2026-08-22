@@ -29,7 +29,9 @@ import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 import type { BillToAddress } from './sellerSnapshot';
 import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
-import { computeChargeNow } from '@breeze/shared';
+import { computeChargeNow, formatMoney } from '@breeze/shared';
+import { formatMoneyForPdf } from './pdfMoney';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect;
@@ -40,6 +42,10 @@ export interface InvoiceBranding {
   primaryColor?: string | null;
   footerText?: string | null;
   currencyCode?: string | null;
+  /** Render locale for money glyphs, used only when the document carries no
+   *  `document_locale` snapshot (drafts/legacy). Resolved from the partner's
+   *  language by `resolvePartnerDocumentLocale`; defaults to 'en'. */
+  locale?: string | null;
   /** Public view-and-pay url printed on the document ("Pay online: …"). Null
    *  for drafts (no link exists) and when minting fails — the PDF renders
    *  without the line rather than failing. */
@@ -50,11 +56,12 @@ export interface InvoiceBranding {
 // Formatting helpers (shared by HTML + PDF)
 // ---------------------------------------------------------------------------
 
-function formatMoney(amount: string | number | null | undefined, currency: string): string {
-  const n = Number(amount ?? 0);
-  const symbol = currency === 'USD' ? '$' : '';
-  const formatted = n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return symbol ? `${symbol}${formatted}` : `${formatted} ${currency}`;
+// Money glyphs come from the shared Intl-backed `formatMoney` (@breeze/shared).
+// Locale precedence: the document's stamped `document_locale` (issue/send-time
+// snapshot, never overwritten) → the branding's partner-resolved locale → 'en'.
+// Formatting never changes the number, only the glyphs.
+function resolveRenderLocale(invoice: { documentLocale?: string | null }, branding: InvoiceBranding): string {
+  return invoice.documentLocale ?? branding.locale ?? 'en';
 }
 
 function formatDate(value: string | Date | null | undefined): string {
@@ -113,6 +120,7 @@ function groupVisibleLinesByTicket(lines: InvoiceLineRow[]): RenderGroup[] {
 
 export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], branding: InvoiceBranding): string {
   const currency = invoice.currencyCode ?? branding.currencyCode ?? 'USD';
+  const locale = resolveRenderLocale(invoice, branding);
   const primary = branding.primaryColor && /^#?[0-9a-fA-F]{3,8}$/.test(branding.primaryColor)
     ? (branding.primaryColor.startsWith('#') ? branding.primaryColor : `#${branding.primaryColor}`)
     : '#2563eb';
@@ -136,14 +144,14 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
     const lineRows = g.lines.map((l) => {
       const t = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
       const taxCell = showTax
-        ? `<td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">${t === null ? '&mdash;' : escapeHtml(formatMoney(t, currency))}</td>`
+        ? `<td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">${t === null ? '&mdash;' : escapeHtml(formatMoney(t, currency, locale))}</td>`
         : '';
       return `
       <tr>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(lineTitle(l))}${lineBlurb(l) ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(lineBlurb(l))}</div>` : ''}</td>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(l.quantity)))}</td>
         ${taxCell}
-        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.lineTotal, currency))}</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.lineTotal, currency, locale))}</td>
       </tr>`;
     }).join('');
     return header + lineRows;
@@ -194,11 +202,11 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
       </table>
       <div style="padding:16px 24px;display:flex;justify-content:flex-end;">
         <table style="width:280px;border-collapse:collapse;">
-          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Subtotal</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.subtotal, currency))}</td></tr>
-          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Tax${invoice.taxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.taxTotal, currency))}</td></tr>
-          <tr><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;border-top:2px solid #e5e7eb;">Total</td><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;text-align:right;border-top:2px solid #e5e7eb;">${escapeHtml(formatMoney(invoice.total, currency))}</td></tr>
-          ${Number(invoice.amountPaid) > 0 ? `<tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Paid</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.amountPaid, currency))}</td></tr>
-          <tr><td style="padding:4px 8px;font-size:14px;font-weight:600;color:#111827;">Balance due</td><td style="padding:4px 8px;font-size:14px;font-weight:600;color:#111827;text-align:right;">${escapeHtml(formatMoney(invoice.balance, currency))}</td></tr>` : ''}
+          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Subtotal</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.subtotal, currency, locale))}</td></tr>
+          <tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Tax${invoice.taxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.taxTotal, currency, locale))}</td></tr>
+          <tr><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;border-top:2px solid #e5e7eb;">Total</td><td style="padding:8px;font-size:15px;font-weight:700;color:#111827;text-align:right;border-top:2px solid #e5e7eb;">${escapeHtml(formatMoney(invoice.total, currency, locale))}</td></tr>
+          ${Number(invoice.amountPaid) > 0 ? `<tr><td style="padding:4px 8px;font-size:13px;color:#6b7280;">Paid</td><td style="padding:4px 8px;font-size:13px;color:#1f2937;text-align:right;">${escapeHtml(formatMoney(invoice.amountPaid, currency, locale))}</td></tr>
+          <tr><td style="padding:4px 8px;font-size:14px;font-weight:600;color:#111827;">Balance due</td><td style="padding:4px 8px;font-size:14px;font-weight:600;color:#111827;text-align:right;">${escapeHtml(formatMoney(invoice.balance, currency, locale))}</td></tr>` : ''}
         </table>
       </div>
       ${invoice.notes ? `<div style="padding:0 24px 16px;font-size:13px;color:#4b5563;">${escapeHtml(invoice.notes)}</div>` : ''}
@@ -220,6 +228,70 @@ function hexToColor(value: string | null | undefined, fallback: string): string 
   return /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : fallback;
 }
 
+export interface InvoicePdfColumns {
+  left: number;
+  right: number;
+  contentWidth: number;
+  showTax: boolean;
+  /** Description column width (starts at `left`). */
+  colDescW: number;
+  /** QTY / TAX / AMOUNT share one right-aligned box width. */
+  colNumW: number;
+  colQtyX: number;
+  /** Only drawn when `showTax`; equals colQtyX otherwise so callers need no branch. */
+  colTaxX: number;
+  colAmtX: number;
+  /** Totals block amount box — wider than the line rows because the
+   *  emphasised Total/Balance row draws at Helvetica-Bold 14. */
+  colSummaryNumW: number;
+  colSummaryAmtX: number;
+  /** Totals block label box; independent of colQtyX so "Balance due" at
+   *  bold 14 never wraps into the next row in the untaxed layout. */
+  colSummaryLabelX: number;
+  colSummaryLabelW: number;
+}
+
+// Money columns are sized for prefix-code currencies (Intl renders e.g.
+// "CHF 888'888.88" — ~73pt at Helvetica 10, wider than any "$" figure), so
+// the taxed layout gives qty | tax | amount 0.17 each and the description 0.44.
+// The totals block gets its own wider box (0.24) for the bold-14 emphasis row:
+// "CHF 1'000'000.00" at that size is ~113pt and would wrap inside the row box.
+// Both the AMOUNT column and the summary box end at the table's right edge so
+// the figures stay visually aligned. Exported so the test measures the real
+// numbers rather than literals.
+export function invoiceColumnsFor(doc: PDFKit.PDFDocument, showTax: boolean): InvoicePdfColumns {
+  const left = doc.page.margins.left;
+  const right = doc.page.width - doc.page.margins.right;
+  const contentWidth = right - left;
+  const colSummaryNumW = contentWidth * 0.24;
+  const colSummaryAmtX = right - colSummaryNumW;
+  const colSummaryLabelX = colSummaryAmtX - contentWidth * 0.30;
+  const colSummaryLabelW = colSummaryAmtX - colSummaryLabelX - 4;
+  const summary = { colSummaryNumW, colSummaryAmtX, colSummaryLabelX, colSummaryLabelW };
+  if (showTax) {
+    return {
+      left, right, contentWidth, showTax,
+      colDescW: contentWidth * 0.44,
+      colNumW: contentWidth * 0.17,
+      colQtyX: left + contentWidth * 0.46,
+      colTaxX: left + contentWidth * 0.64,
+      colAmtX: left + contentWidth * 0.83,
+      ...summary,
+    };
+  }
+  return {
+    left, right, contentWidth, showTax,
+    colDescW: contentWidth * 0.60,
+    colNumW: contentWidth * 0.18,
+    colQtyX: left + contentWidth * 0.62,
+    colTaxX: left + contentWidth * 0.62,
+    // 0.82, not the historical 0.80: the AMOUNT box must end at the right
+    // edge so it lines up with the totals box below it.
+    colAmtX: left + contentWidth * 0.82,
+    ...summary,
+  };
+}
+
 /**
  * PURE: draw the invoice PDF from structured data (no DB). Exported so the pure
  * %PDF- buffer assertion can run without a database. renderInvoicePdf() loads
@@ -229,6 +301,7 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
   return new Promise((resolve, reject) => {
     try {
       const currency = invoice.currencyCode ?? branding.currencyCode ?? 'USD';
+      const locale = resolveRenderLocale(invoice, branding);
       const primary = hexToColor(branding.primaryColor, '#2563eb');
       // Per-line Tax column only when this invoice carries tax (mirrors the header).
       const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
@@ -275,15 +348,10 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
       if (invoice.issueDate) { doc.text(`Issued: ${formatDate(invoice.issueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
       if (invoice.dueDate) { doc.text(`Due: ${formatDate(invoice.dueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
 
-      // Line table starts below the taller of the two columns. When a Tax column
-      // is shown, the money columns narrow to 0.15 each to fit qty | tax | amount;
-      // otherwise the original two-column (qty | amount) layout is preserved.
+      // Line table starts below the taller of the two columns. Column fractions
+      // live in invoiceColumnsFor (measured by invoicePdf.test.ts).
       y = Math.max(fromY, billY) + 20;
-      const colNumW = contentWidth * (showTax ? 0.15 : 0.18);
-      const colQtyX = left + contentWidth * (showTax ? 0.52 : 0.62);
-      const colTaxX = left + contentWidth * 0.68;
-      const colAmtX = left + contentWidth * (showTax ? 0.83 : 0.80);
-      const colDescW = contentWidth * (showTax ? 0.50 : 0.60);
+      const { colNumW, colQtyX, colTaxX, colAmtX, colDescW, colSummaryNumW, colSummaryAmtX, colSummaryLabelX, colSummaryLabelW } = invoiceColumnsFor(doc, showTax);
 
       doc.save();
       doc.rect(left - 6, y - 5, contentWidth + 12, 22).fill('#f8fafc');
@@ -316,26 +384,26 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
           doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
           if (showTax) {
             const t = lineTax(l.lineTotal, l.taxable, taxRate);
-            doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), colTaxX, y, { width: colNumW, align: 'right' });
+            doc.fillColor('#6b7280').text(t === null ? '—' : formatMoneyForPdf(t, currency, locale), colTaxX, y, { width: colNumW, align: 'right' });
             doc.fillColor('#1f2937');
           }
-          doc.text(formatMoney(l.lineTotal, currency), colAmtX, y, { width: colNumW, align: 'right' });
+          doc.text(formatMoneyForPdf(l.lineTotal, currency, locale), colAmtX, y, { width: colNumW, align: 'right' });
           y += Math.max(descHeight, 12) + 6;
         }
       }
 
       // Totals.
       y += 6;
-      doc.moveTo(colQtyX, y).lineTo(right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
+      doc.moveTo(colSummaryLabelX, y).lineTo(right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
       y += 8;
-      const labelX = colQtyX;
-      const labelW = colAmtX - colQtyX - 4;
+      const labelX = colSummaryLabelX;
+      const labelW = colSummaryLabelW;
       const drawTotal = (label: string, amount: string | number, opts: { bold?: boolean; emphasis?: boolean } = {}) => {
         const { bold = false, emphasis = false } = opts;
         const strong = bold || emphasis;
         doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(emphasis ? 14 : strong ? 12 : 10).fillColor(strong ? '#111827' : '#6b7280');
         doc.text(label, labelX, y, { width: labelW, align: 'left' });
-        doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(formatMoney(amount, currency), colAmtX, y, { width: colNumW, align: 'right' });
+        doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(formatMoneyForPdf(amount, currency, locale), colSummaryAmtX, y, { width: colSummaryNumW, align: 'right' });
         y += emphasis ? 20 : strong ? 18 : 14;
       };
       drawTotal('Subtotal', invoice.subtotal);
@@ -416,6 +484,9 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
       primaryColor: branding?.primaryColor ?? null,
       footerText: invoice.terms ?? partner?.invoiceFooter ?? branding?.footerText ?? null,
       currencyCode: invoice.currencyCode ?? partner?.currencyCode ?? 'USD',
+      // Stamped snapshot wins; unstamped (draft/legacy) rows follow the
+      // partner's current language.
+      locale: invoice.documentLocale ?? resolvePartnerDocumentLocale(partner),
     },
   };
 }
@@ -537,13 +608,16 @@ export function buildInvoiceEmailAmounts(inv: {
   amountPaid: string;
   balance: string;
   currencyCode: string | null;
-}): { total: string; amountDueNow: string; amountPaid: string | undefined } {
+  documentLocale?: string | null;
+}, locale?: string): { total: string; amountDueNow: string; amountPaid: string | undefined } {
   const currency = inv.currencyCode ?? 'USD';
+  // Stamped document locale → caller-resolved partner locale → 'en'.
+  const renderLocale = inv.documentLocale ?? locale ?? 'en';
   const chargeNow = computeChargeNow({ depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance }, currency);
   return {
-    total: formatMoney(inv.total, currency),
-    amountDueNow: formatMoney(chargeNow.amount, currency),
-    amountPaid: Number(inv.amountPaid) > 0 ? formatMoney(inv.amountPaid, currency) : undefined,
+    total: formatMoney(inv.total, currency, renderLocale),
+    amountDueNow: formatMoney(chargeNow.amount, currency, renderLocale),
+    amountPaid: Number(inv.amountPaid) > 0 ? formatMoney(inv.amountPaid, currency, renderLocale) : undefined,
   };
 }
 
@@ -613,7 +687,7 @@ async function deliverInvoiceEmail(
 
   // Resolve recipient + partner name for the email body.
   const [org] = await db.select({ billingContact: organizations.billingContact, name: organizations.name }).from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
-  const [partner] = await db.select({ name: partners.name, billingEmail: partners.billingEmail, emailSignature: partners.emailSignature }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  const [partner] = await db.select({ name: partners.name, billingEmail: partners.billingEmail, emailSignature: partners.emailSignature, settings: partners.settings }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   const billingRecipient = resolveBillingEmail(org?.billingContact);
   // Composer picks win; the org's billing contact is the fallback so a bare
   // send keeps working exactly as before. Normalized here (not only in the
@@ -656,7 +730,7 @@ async function deliverInvoiceEmail(
   // This IS the "Request balance payment" action for deposit invoices: the money
   // fields reflect the deposit-vs-balance split so the email states what's owed
   // NOW, not just the invoice total (which may already be partially covered).
-  const amounts = buildInvoiceEmailAmounts(invoice);
+  const amounts = buildInvoiceEmailAmounts(invoice, resolvePartnerDocumentLocale(partner));
   const template = buildInvoiceTemplate({
     invoiceNumber: invoice.invoiceNumber ?? '',
     partnerName: partner?.name ?? 'your provider',

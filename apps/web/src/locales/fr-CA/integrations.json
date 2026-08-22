@@ -804,7 +804,15 @@
     "working": "Travailler...",
     "disconnect": "Déconnecter",
     "saving": "Enregistrement...",
-    "saveKey": "Enregistrer la clé"
+    "saveKey": "Enregistrer la clé",
+    "defaultCurrency": "Règlement en {{currency}}",
+    "accountCountry": "Pays {{country}}",
+    "refreshedAt": "Actualisé {{when}}",
+    "refresh": "Actualiser",
+    "refreshing": "Actualisation…",
+    "refreshed": "Détails du compte Stripe actualisés",
+    "couldNotRefresh": "Impossible d'actualiser les détails du compte Stripe.",
+    "notCached": "Devise pas encore en cache — actualisez pour la récupérer depuis Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossible d’enregistrer les associations de sites.",

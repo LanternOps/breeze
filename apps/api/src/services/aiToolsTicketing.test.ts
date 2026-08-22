@@ -479,10 +479,18 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
     ticketConfigMocks.listActiveStatusNames.mockResolvedValue([]);
   });
 
+  it("documents hourlyRate in the ticket organization's currency", () => {
+    const properties = getTool().definition.input_schema.properties as Record<string, { description?: string }>;
+
+    expect(properties.hourlyRate?.description).toContain("organization's currency");
+  });
+
   // log_time_entry
-  it('log_time_entry delegates to createTimeEntry with manageAll:false actor and Date conversion', async () => {
-    mockLimit.mockResolvedValue(TICKET_ROW); // ticket scope check passes
-    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-1', durationMinutes: 30 });
+  it('log_time_entry delegates to createTimeEntry and labels the result with the organization currency', async () => {
+    mockLimit
+      .mockResolvedValueOnce(TICKET_ROW) // ticket scope check passes
+      .mockResolvedValueOnce([{ currencyCode: 'EUR' }]);
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-1', orgId: 'o-1', durationMinutes: 30 });
     const out = await getTool().handler(
       {
         action: 'log_time_entry',
@@ -504,7 +512,10 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
       }),
       expect.objectContaining({ userId: 'u-1', manageAll: false, partnerId: 'p-1' })
     );
-    expect(JSON.parse(out)).toHaveProperty('timeEntry');
+    expect(JSON.parse(out)).toMatchObject({
+      timeEntry: { id: 'te-1' },
+      currencyCode: 'EUR'
+    });
   });
 
   it('log_time_entry returns error when startedAt is missing', async () => {
@@ -554,15 +565,18 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
     expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
   });
 
-  it('log_time_entry without ticketId does not do scope check', async () => {
-    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-2', durationMinutes: 60 });
+  it('log_time_entry with a standalone entry returns an explicit null currencyCode without an org query', async () => {
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-2', orgId: null, durationMinutes: 60 });
     const out = await getTool().handler(
       { action: 'log_time_entry', startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T10:00:00Z' },
       auth
     );
     // No scope check select = mockSelect never called
     expect(mockSelect).not.toHaveBeenCalled();
-    expect(JSON.parse(out)).toHaveProperty('timeEntry');
+    expect(JSON.parse(out)).toMatchObject({
+      timeEntry: { id: 'te-2', orgId: null },
+      currencyCode: null
+    });
   });
 
   // start_timer
@@ -586,14 +600,18 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
   });
 
   // stop_timer
-  it('stop_timer delegates to stopTimer and returns timeEntry', async () => {
-    timeEntryMocks.stopTimer.mockResolvedValue({ id: 'te-3', endedAt: new Date(), durationMinutes: 45 });
+  it('stop_timer delegates to stopTimer and labels the billable result with the organization currency', async () => {
+    mockLimit.mockResolvedValueOnce([{ currencyCode: 'EUR' }]);
+    timeEntryMocks.stopTimer.mockResolvedValue({ id: 'te-3', orgId: 'o-1', endedAt: new Date(), durationMinutes: 45 });
     const out = await getTool().handler({ action: 'stop_timer' }, auth);
     expect(timeEntryMocks.stopTimer).toHaveBeenCalledWith(
       expect.objectContaining({}),
       expect.objectContaining({ userId: 'u-1', manageAll: false })
     );
-    expect(JSON.parse(out)).toHaveProperty('timeEntry');
+    expect(JSON.parse(out)).toMatchObject({
+      timeEntry: { id: 'te-3' },
+      currencyCode: 'EUR'
+    });
   });
 
   it('stop_timer surfaces NO_RUNNING_TIMER as an error result (not a thrown exception)', async () => {

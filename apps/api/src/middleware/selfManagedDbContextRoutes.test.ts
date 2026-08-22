@@ -13,6 +13,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['post', '/api/v1/invoices/abc-123/pay-link'], // method is case-insensitive
     ['POST', '/api/v1/portal/invoices/def-456/pay'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/'],
+    ['POST', '/api/v1/partner/stripe-connect/key'],
+    ['POST', '/api/v1/partner/stripe-connect/key/'],
+    ['GET', '/api/v1/partner/stripe-connect'],
+    ['GET', '/api/v1/partner/stripe-connect/'],
+    ['POST', '/api/v1/partner/stripe-connect/refresh'],
+    ['POST', '/api/v1/partner/stripe-connect/refresh/'],
     // QuickBooks customer import — both page the QBO API inside the handler.
     ['GET', '/api/v1/accounting/quickbooks/customers'],
     ['GET', '/api/v1/accounting/quickbooks/customers/'],
@@ -87,6 +93,7 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
+    ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
     ['GET', '/api/v1/accounting/quickbooks', 'accounting status route does only DB work — keep ambient tx'],
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],

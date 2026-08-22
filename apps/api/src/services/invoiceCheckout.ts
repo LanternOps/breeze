@@ -1,9 +1,10 @@
 import { eq } from 'drizzle-orm';
-import { computeChargeNow } from '@breeze/shared';
+import { computeChargeNow, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
+import { mapStripeCheckoutError } from './stripeCheckoutErrors';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess, requireSiteAccess } from './invoiceService';
 import { portalBase } from './portalUrl';
@@ -48,7 +49,7 @@ export interface InvoiceCheckoutUrls {
 
 export async function createInvoicePayLink(
   invoiceId: string, actor: InvoiceActor, urls: InvoiceCheckoutUrls = {},
-): Promise<{ url: string }> {
+): Promise<{ url: string; warning?: StripeCurrencyWarning }> {
   const [inv] = await withSystemDbAccessContext(() =>
     db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1)
   );
@@ -74,9 +75,9 @@ export async function createInvoicePayLink(
   // the #1610 API-key model), so read it in a short system-scoped context (#1448 —
   // there is no ambient request tx here). One read returns both the client and the
   // account id (for the mapping row).
-  let stripe, stripeAccountId: string;
+  let stripe, stripeAccountId: string, defaultCurrency: string | null;
   try {
-    ({ stripe, stripeAccountId } = await withSystemDbAccessContext(() =>
+    ({ stripe, stripeAccountId, defaultCurrency } = await withSystemDbAccessContext(() =>
       getPartnerStripeClient(inv.partnerId)));
   } catch (err) {
     // Only "no key configured" is a benign 409. A decrypt/unreadable-key fault is an
@@ -99,7 +100,9 @@ export async function createInvoicePayLink(
 
   // Truly outside any DB context/transaction — no pooled connection is held
   // across this ~hundreds-of-ms round trip.
-  const session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
+  let session;
+  try {
+    session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
     mode: 'payment',
     payment_method_types: ['card'],
     line_items: [{
@@ -136,6 +139,13 @@ export async function createInvoicePayLink(
     // alone can't disambiguate — the explicit dep/bal discriminator does.
     idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}`,
   }));
+  } catch (err) {
+    // Friendly mapping (spec §10): a currency the account cannot present becomes a
+    // partner-facing 409 STRIPE_CURRENCY_UNSUPPORTED; everything else propagates.
+    const mapped = mapStripeCheckoutError(err, inv.currencyCode);
+    if (mapped) throw mapped;
+    throw err;
+  }
 
   if (!session.url) throw new InvoiceServiceError('Stripe did not return a checkout URL', 500, 'STRIPE_NO_URL');
 
@@ -155,5 +165,11 @@ export async function createInvoicePayLink(
     })
   );
 
-  return { url: session.url };
+  // Warn-don't-block (spec §10): the session is ALWAYS minted in the document
+  // currency; a differing account default is surfaced so the partner knows they
+  // bear the FX spread. Built from the cached column returned with the client —
+  // no extra query, no Stripe refresh on the pay path. The key is omitted (not
+  // `undefined`) when there is nothing to warn about.
+  const warning = buildStripeCurrencyWarning(inv.currencyCode, defaultCurrency);
+  return warning ? { url: session.url, warning } : { url: session.url };
 }

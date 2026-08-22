@@ -21,6 +21,7 @@ import { getPartnerStripeClient, PartnerStripeError } from '../../services/partn
 import { settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
 import { computeChargeNow } from '@breeze/shared';
+import { mapStripeCheckoutError, CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
 
 // The Checkout session id Stripe substitutes into success_url ({CHECKOUT_SESSION_ID}).
 const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
@@ -209,7 +210,9 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
 
   // Truly outside any DB context/transaction — no pooled connection is held
   // across this ~hundreds-of-ms round trip.
-  const session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
+  let session;
+  try {
+    session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
     mode: 'payment',
     // v1 is card-only. Restricting payment_method_types keeps the recorded
     // invoice_payments.method ('card') accurate and avoids enabling async/
@@ -248,6 +251,18 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // can't disambiguate — the explicit dep/bal discriminator does.
     idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}`,
   }));
+  } catch (err) {
+    // Customer-facing path (spec §10): a currency the partner's account cannot
+    // present is logged for the partner's benefit and answered with the
+    // customer-safe wording — never the account-setup detail. Everything else
+    // propagates unchanged.
+    const mapped = mapStripeCheckoutError(err, inv.currencyCode);
+    if (mapped) {
+      console.error('[portal/invoices] Stripe rejected currency', { invoiceId: inv.id, currency: inv.currencyCode, message: mapped.message });
+      return c.json({ error: CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE, code: 'STRIPE_CURRENCY_UNSUPPORTED' }, 409);
+    }
+    throw err;
+  }
 
   // Fresh short context so the pending-mapping write isn't a contextless 0-row
   // no-op under forced-RLS breeze_app (#1375).

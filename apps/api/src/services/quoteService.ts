@@ -527,6 +527,8 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
       introNotes: source.introNotes,
       terms: source.terms,
       sellerSnapshot: null,
+      // documentLocale deliberately NOT copied (stays NULL, like sellerSnapshot):
+      // it is a send-time snapshot, stamped fresh when the clone is sent (#3777).
       // Cover page is document presentation, not customer-specific — carried
       // over verbatim (title/enabled/preparedForName/showPreparedBy) on both a
       // same-org and a retargeted clone. Its coverImageId is the one exception:

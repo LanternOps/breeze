@@ -311,7 +311,7 @@ describe('sendQuote customer-facing PDF', () => {
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'none', depositPercent: null,
       quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
-      total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+      total: '1200.00', currencyCode: 'EUR', terms: null, termsAndConditions: null,
       sellerSnapshot: null,
     }]);
     queueResult([]); // blocks
@@ -321,14 +321,14 @@ describe('sendQuote customer-facing PDF', () => {
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
 
-    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'de-DE' } }]); // partnerRow (reused for partner name)
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)
     queueResult([]); // portalBranding — none configured
     queueResult([{ // final re-select
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
       taxRate: null, depositType: 'none', depositPercent: null,
-      quoteNumber: 'Q-2026-0001', total: '100.00', currencyCode: 'USD',
+      quoteNumber: 'Q-2026-0001', total: '1200.00', currencyCode: 'EUR',
     }]);
 
     const result = await sendQuote('q1', actor);
@@ -343,6 +343,7 @@ describe('sendQuote customer-facing PDF', () => {
     expect(renderedLines.some((l) => l.name === 'Internal markup buffer')).toBe(false);
     // toCustomerLines also strips the cost-basis field, same as the portal route.
     expect(renderedLines[0]).not.toHaveProperty('unitCost');
+    expect(sendEmailMock.mock.calls[0]![0].text).toContain('1.200,00 €');
   });
 });
 
@@ -791,6 +792,79 @@ describe('sendQuote presentation snapshot', () => {
 });
 
 /**
+ * Multi-currency wave 5 (#3777): sendQuote stamps `document_locale` once, at the
+ * draft→sent claim, from the partner's language unless the draft already
+ * carries one. resendQuote never writes the column (asserted in its own suite).
+ */
+describe('sendQuote document_locale stamp', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  function queueSendPath(quote: Record<string, unknown>, partnerRow: Record<string, unknown>) {
+    queueResult([quote]); // getQuote: quote
+    queueResult([]);       // getQuote: blocks
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
+    queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
+    queueResult([partnerRow]); // partnerRow
+    queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]); // update ... returning (claimed)
+    queueResult([]);       // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+  }
+
+  const baseQuote = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+    presentationSnapshot: null, documentLocale: null,
+  };
+
+  function claimSet() {
+    const found = setCalls.find((s) => s.status === 'sent' && 'presentationSnapshot' in s);
+    expect(found, 'send update should be the draft→sent claim').toBeDefined();
+    return found!;
+  }
+
+  it('stamps documentLocale from the partner language on the claim', async () => {
+    queueSendPath(baseQuote, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'it-IT' } });
+    await sendQuote('q1', actor);
+    expect(claimSet().documentLocale).toBe('it-IT');
+  });
+
+  it("stamps 'en' when the partner has no language setting", async () => {
+    queueSendPath(baseQuote, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null });
+    await sendQuote('q1', actor);
+    expect(claimSet().documentLocale).toBe('en');
+  });
+
+  it('never overwrites a documentLocale the draft already carries, and renders the send-time PDF with it', async () => {
+    queueSendPath({ ...baseQuote, documentLocale: 'pt-BR' }, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'it-IT' } });
+    await sendQuote('q1', actor);
+    expect(claimSet().documentLocale).toBe('pt-BR');
+    // frozenQuote carries the stamp so the same-request PDF renders with it.
+    expect(capturedPdfArgs).not.toBeNull();
+    expect((capturedPdfArgs![0] as Record<string, unknown>).documentLocale).toBe('pt-BR');
+  });
+
+  it('threads the freshly stamped locale into the same-request PDF render (frozenQuote)', async () => {
+    queueSendPath(baseQuote, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'it-IT' } });
+    await sendQuote('q1', actor);
+    expect(capturedPdfArgs).not.toBeNull();
+    expect((capturedPdfArgs![0] as Record<string, unknown>).documentLocale).toBe('it-IT');
+  });
+});
+
+/**
  * Send-time contract-variable gate (Task 12): a `contract` block references an
  * immutable, published template version with declared variables (auto/manual).
  * Sending must be blocked while any declared variable has no resolved value —
@@ -1043,6 +1117,7 @@ describe('resendQuote', () => {
       expect(payload).not.toHaveProperty('quoteNumber');
       expect(payload).not.toHaveProperty('billToName');
       expect(payload).not.toHaveProperty('sellerSnapshot');
+      expect(payload).not.toHaveProperty('documentLocale'); // issue-time snapshot, never restamped (#3777)
     }
   });
 

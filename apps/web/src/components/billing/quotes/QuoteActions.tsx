@@ -238,6 +238,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // status (drives the deposit-can't-be-paid warning). null = unknown/not loaded.
   const [signature, setSignature] = useState<string | null>(null);
   const [stripeStatus, setStripeStatus] = useState<'connected' | 'disconnected' | null>(null);
+  // The connected account's cached settlement currency (API-owned cache, #3777);
+  // null = not connected / not cached → no mismatch warning can be shown.
+  const [stripeDefaultCurrency, setStripeDefaultCurrency] = useState<string | null>(null);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [cloning, setCloning] = useState(false);
@@ -346,6 +349,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setIncludePdf(true);
     setSignature(null);
     setStripeStatus(null);
+    setStripeDefaultCurrency(null);
     setToPrefillMissing(false);
     setSendOpen(true);
     if (opts.prefillTo.length === 0) {
@@ -385,8 +389,10 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         try {
           const res = await fetchWithAuth('/partner/stripe-connect');
           if (!res.ok) return;
-          const body = (await res.json()) as { status?: string };
-          setStripeStatus(body.status === 'connected' ? 'connected' : 'disconnected');
+          const body = (await res.json()) as { status?: string; defaultCurrency?: string | null };
+          const connected = body.status === 'connected';
+          setStripeStatus(connected ? 'connected' : 'disconnected');
+          setStripeDefaultCurrency(connected && typeof body.defaultCurrency === 'string' ? body.defaultCurrency : null);
         } catch { /* unknown status — show neither the warning nor the note */ }
       })();
     }
@@ -1115,7 +1121,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         </p>
         {zeroTotal && (
           <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
-            {t('quotes.actions.sendConfirm.zeroTotalWarning')}
+            {t('quotes.actions.sendConfirm.zeroTotalWarning', { zero: formatMoney(0, quote.currencyCode) })}
           </p>
         )}
         {/* Non-blocking: an incomplete profit estimate never disables Send (a
@@ -1294,6 +1300,24 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           <p className="mt-2 text-xs text-muted-foreground" data-testid="quote-send-payment-enabled">
             {t('quotes.actions.sendConfirm.paymentEnabled')}
           </p>
+        )}
+        {/* Warn-don't-block (#3777): the quote's currency differs from the
+            account's cached settlement currency. Amber info only — Send stays
+            armed; the web never computes this from anything but the API cache. */}
+        {stripeStatus === 'connected' && stripeDefaultCurrency && stripeDefaultCurrency !== quote.currencyCode && (
+          <div
+            className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300"
+            role="status"
+            data-testid="quote-stripe-currency-warning"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              {t('quotes.actions.currencyMismatch', {
+                documentCurrency: quote.currencyCode,
+                accountCurrency: stripeDefaultCurrency,
+              })}
+            </span>
+          </div>
         )}
 
         <div className="mt-6 flex justify-end gap-3">

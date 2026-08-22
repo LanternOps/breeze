@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CatalogItemsTab from './CatalogItemsTab';
 import { fetchWithAuth } from '../../stores/auth';
+import { resetPartnerCurrencyCache } from '../../lib/usePartnerCurrency';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -44,10 +45,11 @@ const WIDGET = { ...baseItem, id: 'w1', itemType: 'service' as const, name: 'Wid
 const LAPTOP = { ...baseItem, id: 'l1', itemType: 'hardware' as const, name: 'Laptop', sku: 'LAP-9', unitPrice: '1200.00', costBasis: null, isBundle: false };
 const BUNDLE = { ...baseItem, id: 'b1', itemType: 'service' as const, name: 'Starter Bundle', sku: null, unitPrice: '1500.00', costBasis: null, isBundle: true };
 
-function seed(active = [WIDGET, LAPTOP, BUNDLE]) {
+function seed(active = [WIDGET, LAPTOP, BUNDLE], partner: { currencyCode?: string } = {}) {
   fetchMock.mockImplementation(async (url, opts) => {
     const u = String(url);
     const method = (opts as RequestInit | undefined)?.method ?? 'GET';
+    if (u === '/orgs/partners/me') return jsonResponse({ id: 'p1', ...partner });
     if (u.startsWith('/catalog?')) return jsonResponse({ data: active });
     if (u === '/catalog' && method === 'POST') return jsonResponse({ data: { ...baseItem, id: 'new-1', itemType: 'service', name: 'New', sku: null, unitPrice: '500.00', costBasis: null, isBundle: true } });
     if (u.endsWith('/economics')) return jsonResponse({ data: { headlinePrice: '1500.00', totalCost: '600.00', margin: '900.00', marginPct: 60, allocationTotal: '0.00', allocationMatchesHeadline: true } });
@@ -60,7 +62,21 @@ function seed(active = [WIDGET, LAPTOP, BUNDLE]) {
 }
 
 describe('CatalogItemsTab', () => {
-  beforeEach(() => { vi.clearAllMocks(); seed(); });
+  beforeEach(() => { vi.clearAllMocks(); resetPartnerCurrencyCache(); seed(); });
+
+  it('renders prices in the partner currency from /orgs/partners/me (INTERIM #3777)', async () => {
+    seed([WIDGET, LAPTOP, BUNDLE], { currencyCode: 'CAD' });
+    render(<CatalogItemsTab />);
+    const row = await screen.findByTestId('catalog-item-row-l1');
+    await waitFor(() => expect(row.textContent).toContain('CA$1,200.00'));
+    expect(fetchMock).toHaveBeenCalledWith('/orgs/partners/me');
+  });
+
+  it('falls back to USD when the partner carries no currencyCode', async () => {
+    render(<CatalogItemsTab />);
+    const row = await screen.findByTestId('catalog-item-row-l1');
+    expect(row.textContent).toContain('$1,200.00');
+  });
 
   it('renders items with type chips and computed margin', async () => {
     render(<CatalogItemsTab />);

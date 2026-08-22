@@ -2198,7 +2198,7 @@
     "responseSLAMinutes": "Réponse SLA (minutes)",
     "resolutionSLAMinutes": "Résolution SLA (minutes)",
     "billableByDefault": "Facturable par défaut",
-    "defaultHourlyRate": "Taux horaire par défaut ($)",
+    "defaultHourlyRate": "Taux horaire par défaut",
     "save": "Enregistrer",
     "cancel": "Annuler",
     "responseMinutes": "{{count}}m réponse",
@@ -2699,7 +2699,7 @@
     "billing": {
       "title": "Paramètres de facturation par défaut",
       "description": "Paramètres de facturation par défaut pour les saisies de temps sur les tickets pour cette organisation.",
-      "hourlyRate": "Taux horaire par défaut ($)",
+      "hourlyRate": "Taux horaire par défaut",
       "billable": "Facturable par défaut",
       "inherit": "Héritage",
       "billableOption": "Facturable",

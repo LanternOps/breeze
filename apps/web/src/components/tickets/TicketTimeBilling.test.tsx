@@ -26,6 +26,18 @@ describe('TicketTimeBilling', () => {
     expect(screen.getByTestId('ticket-billing-parts-total').textContent).toContain('$49.98');
   });
 
+  it('formats the totals in the currency the summary carries (INTERIM #3777 org currency)', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/billing-summary')) {
+        return { ok: true, status: 200, json: async () => ({ data: { ...summary, currencyCode: 'EUR' } }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-amount')).textContent).toContain('€150.00');
+    expect(screen.getByTestId('ticket-billing-parts-total').textContent).toContain('€49.98');
+  });
+
   it('starts a timer scoped to the ticket', async () => {
     render(<TicketTimeBilling ticketId="tk-1" />);
     fireEvent.click(await screen.findByTestId('ticket-billing-start-timer'));

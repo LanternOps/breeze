@@ -42,6 +42,9 @@ vi.mock('./contacts/compat', () => ({
 
 vi.mock('./catalogService', () => ({ resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() }));
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
+// issueInvoice enqueues an async PDF render; stub it so the unit path never
+// opens a BullMQ socket.
+vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
 import { SQL } from 'drizzle-orm';
 import type { Mock } from 'vitest';
@@ -569,6 +572,59 @@ describe('invoiceService guards', () => {
   });
 });
 
+/**
+ * Multi-currency wave 5 (#3777): issueInvoice stamps `document_locale` once, at
+ * issue, from the partner's language — unless the draft already carries one
+ * (never overwritten). The stamp is a pure key addition to the guarded `.set`
+ * using the partner row already read inside the transaction.
+ */
+describe('issueInvoice document_locale stamp', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draft = (overrides: Record<string, unknown> = {}) => ({
+    id: 'inv1', status: 'draft', orgId: 'org1', siteId: null, partnerId: 'p1',
+    currencyCode: 'USD', termsAndConditions: null, documentLocale: null, ...overrides,
+  });
+
+  /** Queue the issue transaction's db calls for a manual-line-only draft. */
+  function queueIssuePath(inv: Record<string, unknown>, partner: Record<string, unknown>) {
+    queueResult([inv]); // 0. pre-tx fast-fail read (RLS-scoped, non-authoritative)
+    queueResult([inv]); // 1. invoice row lock
+    queueResult([{ id: 'l1', invoiceId: 'inv1', sourceType: 'manual', sourceId: null, lineTotal: '100.00', taxable: false, customerVisible: true }]); // 2. lines lock
+    queueResult([{ id: 'org1', name: 'Customer', taxExempt: false, taxRate: null, taxId: null }]); // 3. org
+    queueResult([partner]); // 4. partner (read inside the tx, after all locks)
+    queueResult([{ counter: 1 }]); // 5. counter upsert
+    queueResult([{ id: 'inv1' }]); // 6. guarded update ... returning
+    queueResult([{ ...inv, status: 'sent' }]); // 7. final re-select
+  }
+
+  function issueSet(): Record<string, unknown> {
+    const setMock = (db as unknown as { set: Mock }).set;
+    const found = setMock.mock.calls.map((c) => c[0] as Record<string, unknown>).find((p) => p.status === 'sent');
+    expect(found, 'issue should write the guarded status=sent update').toBeDefined();
+    return found!;
+  }
+
+  it('stamps documentLocale from the partner language when the draft has none', async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: { language: 'fr-CA' } });
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().documentLocale).toBe('fr-CA');
+  });
+
+  it('never overwrites a documentLocale the draft already carries', async () => {
+    queueIssuePath(draft({ documentLocale: 'de-DE' }), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: { language: 'fr-CA' } });
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().documentLocale).toBe('de-DE');
+  });
+
+  it("falls back to 'en' when the partner has no language setting", async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().documentLocale).toBe('en');
+  });
+});
+
 describe('updateIssuedDueDate', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
@@ -797,5 +853,41 @@ describe('changeInvoiceCurrency (draft currency immutability, #3774)', () => {
     await expect(
       svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR', clearLines: false }, denied)
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+});
+
+describe('getInvoice — Stripe account currency exposure (#3777)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('exposes the cached account currency and a warn-dont-block mismatch warning when connected', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // invoice
+    queueResult([]); // lines
+    queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'USD', accountCountry: 'US' }]); // stripe_connect_accounts
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.stripeConnected).toBe(true);
+    expect(out.stripeAccountCurrency).toBe('USD');
+    expect(out.currencyWarning).toMatchObject({
+      code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT', documentCurrency: 'EUR', accountCurrency: 'USD',
+    });
+  });
+
+  it('no warning when the account settles in the document currency', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
+    queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'EUR', accountCountry: 'DE' }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.stripeAccountCurrency).toBe('EUR');
+    expect(out.currencyWarning).toBeNull();
+  });
+
+  it('both null when the partner is not connected', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
+    queueResult([]); // no connection row
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.stripeConnected).toBe(false);
+    expect(out.stripeAccountCurrency).toBeNull();
+    expect(out.currencyWarning).toBeNull();
   });
 });

@@ -28,7 +28,7 @@ import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -465,7 +465,7 @@ const dayScheduleSchema = z.object({
   closed: z.boolean().optional()
 });
 
-const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const satisfies readonly SupportedLocale[];
+const supportedLocales = SUPPORTED_LOCALES;
 
 /*
  * The partner-settings URL fields below are restricted to http/https by the

@@ -804,7 +804,15 @@
     "working": "Procesando…",
     "disconnect": "Desconectar",
     "saving": "Guardando…",
-    "saveKey": "Guardar clave"
+    "saveKey": "Guardar clave",
+    "defaultCurrency": "Liquida en {{currency}}",
+    "accountCountry": "País {{country}}",
+    "refreshedAt": "Actualizado {{when}}",
+    "refresh": "Actualizar",
+    "refreshing": "Actualizando…",
+    "refreshed": "Datos de la cuenta de Stripe actualizados",
+    "couldNotRefresh": "No se pudieron actualizar los datos de la cuenta de Stripe.",
+    "notCached": "Moneda aún no almacenada en caché: actualiza para obtenerla de Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "No se pudieron guardar las asignaciones del sitio.",

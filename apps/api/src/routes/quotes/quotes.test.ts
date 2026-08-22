@@ -285,16 +285,25 @@ describe('quote crud + lines routes', () => {
     });
     const renderedContent = { templateName: 'MSA', versionNumber: 2, sourceType: 'authored', renderedHtml: '<p>Acme Co</p>', fileUrl: null };
     (renderContractBlocksForClient as any).mockResolvedValueOnce([{ ...rawContractBlock, content: renderedContent }]);
+    // Branding selects: partner row (language de-DE → resolved locale for an
+    // unstamped draft), then portal_branding row. The contract totals must be
+    // rendered with the SAME locale the quote's own branding resolved (#3777).
+    dbRows.next = [
+      [{ name: 'Acme MSP', settings: { language: 'de-DE' } }],
+      [{ logoUrl: null, primaryColor: null }],
+    ];
 
     const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.blocks[0].content).toEqual(renderedContent);
+    expect(body.data.branding.locale).toBe('de-DE');
 
     expect(renderContractBlocksForClient).toHaveBeenCalledWith(
       [rawContractBlock],
       expect.objectContaining({ id: QUOTE_ID }),
       expect.any(Function),
+      'de-DE',
     );
     const fileUrlFor = (renderContractBlocksForClient as any).mock.calls[0][2] as (blockId: string) => string;
     expect(fileUrlFor(BLOCK_ID)).toBe(`/quotes/${QUOTE_ID}/contract-file/${BLOCK_ID}`);

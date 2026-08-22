@@ -887,7 +887,7 @@
         "toLabel": "To",
         "toPlaceholder": "Add recipient…",
         "tooManyRecipients": "Use at most {{max}} addresses.",
-        "zeroTotalWarning": "This quote totals $0.00 — check that its items are priced before sending.",
+        "zeroTotalWarning": "This quote totals {{zero}} — check that its items are priced before sending.",
         "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>."
       },
       "sendEmailWarning": {
@@ -931,7 +931,8 @@
       "resendNewLinkOriginalLive": "Proposal re-sent — but with a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside the new one.",
       "resendNewLinkOriginalDead": "Proposal re-sent — but with a NEW link. The previous link can no longer be opened, so anyone holding it must use the new one.",
       "shareLinkNewLinkOriginalLive": "Copied a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside this one.",
-      "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one."
+      "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one.",
+      "currencyMismatch": "This quote is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -1499,6 +1500,7 @@
       "amount": "Amount",
       "amountRequired": "Enter a payment amount to record it",
       "connectStripe": "Connect Stripe to accept online payments.",
+      "currencyMismatch": "This invoice is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee.",
       "date": "Payment date",
       "draftHint": "Issue this invoice to record payments.",
       "empty": "No payments recorded.",

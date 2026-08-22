@@ -643,7 +643,9 @@ export function QuotesPage() {
               </span>
               <span
                 className={`shrink-0 tabular-nums ${Number(q.total) === 0 ? 'font-medium text-warning-foreground dark:text-warning' : 'text-muted-foreground'}`}
-                title={Number(q.total) === 0 ? t('quotes.actions.sendConfirm.zeroTotalWarning') : undefined}
+                title={Number(q.total) === 0
+                  ? t('quotes.actions.sendConfirm.zeroTotalWarning', { zero: formatMoney(0, q.currencyCode) })
+                  : undefined}
               >
                 {formatMoney(q.total, q.currencyCode)}
                 {(Number(q.monthlyRecurringTotal) > 0 || Number(q.annualRecurringTotal) > 0) && (

@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances, quoteRecipients } from '../db/schema/quotes';
 import { invoices, invoiceLines } from '../db/schema/invoices';
 import { partners } from '../db/schema/orgs';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
@@ -167,6 +168,9 @@ export async function acceptQuote(
     .returning({ id: quoteAcceptances.id });
 
   // 2. Convert ONE-TIME lines to a draft invoice (Phase 2: recurring lines deferred to the Phase 4 Contract).
+  //    document_locale is NOT copied onto the draft here: it is an issue-time
+  //    snapshot, stamped below when the invoice auto-issues (one-time lines) or
+  //    by issueInvoice when it issues later (#3777).
   const oneTime = lines.filter((l) => l.recurrence === 'one_time' && l.customerVisible);
   const [invoice] = await db
     .insert(invoices)
@@ -243,7 +247,7 @@ export async function acceptQuote(
   };
   if (oneTime.length > 0) {
     const [partner] = await db
-      .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays })
+      .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays, settings: partners.settings })
       .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
     const year = now.getUTCFullYear();
     const counterRows = await db.execute(sql`
@@ -267,6 +271,11 @@ export async function acceptQuote(
     issueFields.billToAddress = quote.billToAddress ?? null;
     issueFields.billToTaxId = quote.billToTaxId ?? null;
     issueFields.sellerSnapshot = quote.sellerSnapshot ?? null;
+    // This IS the invoice's issue moment (it never goes through issueInvoice),
+    // so stamp its render locale here (#3777). The accepted quote's own stamp
+    // is the natural value — the same rule sellerSnapshot follows above — with
+    // the partner's language only as a fallback for an unstamped quote.
+    issueFields.documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partner);
     issueFields.termsAndConditions = quote.termsAndConditions ?? null;
     issueFields.terms = quote.terms ?? null;
     // Deposit terms travel from the signed quote onto the issued invoice.
@@ -313,7 +322,8 @@ export async function acceptQuote(
   // cadence. Runs inside this same system-scope accept transaction, so a failure
   // rolls back the whole accept. accept's SELECT ... FOR UPDATE convert guard
   // already makes this at-most-once. Quotes carry currency/terms snapshotted at
-  // send, so the contract inherits the accepted terms.
+  // send, so the contract inherits the accepted terms. (No document_locale:
+  // contracts have no locale column — their documents resolve it at render.)
   const startDate = effectiveDate; // accept date, date-only UTC (shared with the snapshot)
   const contractSpecs = buildContractSpecsFromQuote(
     {
