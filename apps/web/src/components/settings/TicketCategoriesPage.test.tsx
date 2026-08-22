@@ -78,11 +78,32 @@ describe('TicketCategoriesPage', () => {
     await waitFor(() => expect(document.body.textContent).toContain('€150.00/h'));
   });
 
-  it('renders the default hourly rate in USD until the partner currency loads', async () => {
-    mockGetCategories([CAT_PARENT, CAT_CHILD]);
+  it('renders the rate with NO currency label until the partner currency is known — never a USD guess (review F8)', async () => {
+    let resolvePartner: (r: Response) => void = () => {};
+    const partnerPending = new Promise<Response>((r) => { resolvePartner = r; });
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/orgs/partners/me') return partnerPending;
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [CAT_PARENT, CAT_CHILD] });
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
     render(<TicketCategoriesPage />);
     await screen.findByText('Printers');
-    expect(document.body.textContent).toContain('$150.00/h');
+    expect(document.body.textContent).toContain('150.00/h');
+    expect(document.body.textContent).not.toContain('$150.00/h');
+    expect(document.body.textContent).not.toContain('USD');
+
+    resolvePartner(makeJsonResponse({ id: 'p1', currencyCode: 'EUR' }));
+    await waitFor(() => expect(document.body.textContent).toContain('€150.00/h'));
+  });
+
+  it('a partner whose currency cannot be resolved keeps the bare rate — no USD relabel (review F8)', async () => {
+    mockGetCategories([CAT_PARENT, CAT_CHILD]); // /orgs/partners/me answers without currencyCode
+    render(<TicketCategoriesPage />);
+    await screen.findByText('Printers');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/orgs/partners/me'));
+    await waitFor(() => expect(document.body.textContent).toContain('150.00/h'));
+    expect(document.body.textContent).not.toContain('$150.00/h');
   });
 
   it('labels the bare rate input without a currency suffix', async () => {

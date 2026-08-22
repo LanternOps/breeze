@@ -8,7 +8,8 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
 import { formatMoney } from '@/components/billing/shared/format';
-import { usePartnerCurrencyOrDefault } from '../../lib/usePartnerCurrency';
+import { formatNumber } from '@/lib/i18n/format';
+import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
 
 interface Category {
   id: string;
@@ -82,12 +83,22 @@ export function moveWithinSiblings(cats: Category[], id: string, dir: -1 | 1): s
   return order;
 }
 
-function defaultsSummary(c: Category, currencyCode: string): string {
+/** Hourly rate for the summary cell. Until the partner currency is KNOWN the
+ *  rate renders as a bare number with no currency label — never a USD guess
+ *  (#3777 review F8): a EUR partner must not see `$150.00/h` because the
+ *  lookup is slow or failed. */
+function hourlyRateLabel(rate: string, currencyCode: string | null): string {
+  if (currencyCode) return formatMoney(rate, currencyCode);
+  const n = Number(rate);
+  return Number.isFinite(n) ? formatNumber(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : rate;
+}
+
+function defaultsSummary(c: Category, currencyCode: string | null): string {
   const parts: string[] = [];
   if (c.defaultPriority) parts.push(priorityConfig[c.defaultPriority as TicketPriority]?.label ?? c.defaultPriority);
   if (c.responseSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.responseMinutes', { count: c.responseSlaMinutes }));
   if (c.resolutionSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.resolveMinutes', { count: c.resolutionSlaMinutes }));
-  if (c.defaultHourlyRate) parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', { rate: formatMoney(c.defaultHourlyRate, currencyCode) }));
+  if (c.defaultHourlyRate) parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', { rate: hourlyRateLabel(c.defaultHourlyRate, currencyCode) }));
   if (c.defaultBillable) parts.push('billable');
   else if (parts.length > 0) parts.push('non-billable');
   return parts.length > 0 ? parts.join(' · ') : '—';
@@ -98,7 +109,8 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 export default function TicketCategoriesPage() {
   const { t } = useTranslation('settings');
   // INTERIM (#3777): replaced by wave-4 rate currencies on ticket categories.
-  const currencyCode = usePartnerCurrencyOrDefault();
+  // null until the authoritative partner currency is known → unlabelled rate.
+  const { currency: currencyCode } = usePartnerCurrency();
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);

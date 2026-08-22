@@ -11,8 +11,6 @@
 // partner B logged in can neither commit A's currency over B's cache nor clear
 // B's newer in-flight request (#3777 review F7).
 
-export const DEFAULT_PARTNER_CURRENCY = 'USD';
-
 export const partnerCurrencyCache: {
   value: string | null;
   inflight: Promise<string | null> | null;
