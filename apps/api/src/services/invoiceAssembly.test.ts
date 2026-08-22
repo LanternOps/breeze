@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  timeEntryToLineSpec, ticketPartToLineSpec, partitionByCurrency, mergeAssembly,
+  timeEntryToLineSpec, ticketPartToLineSpec, partitionByCurrency, partitionTimeEntries, mergeAssembly,
   UNKNOWN_CURRENCY_KEY, type DraftLineSpec
 } from './invoiceAssembly';
 
@@ -16,12 +16,17 @@ describe('timeEntryToLineSpec', () => {
       taxable: false, customerVisible: true, lineTotal: '180.00', isUnapprovedTime: true
     });
   });
-  it('defaults description and rate', () => {
-    const spec = timeEntryToLineSpec({ id: 'te2', ticketId: null, description: null, durationMinutes: 0, hourlyRate: null, isApproved: true }, 'USD');
+  it('defaults the description; an explicit zero rate stays a valid zero line', () => {
+    const spec = timeEntryToLineSpec({ id: 'te2', ticketId: null, description: null, durationMinutes: 0, hourlyRate: '0.00', isApproved: true }, 'USD');
     expect(spec.description).toBe('Labor');
     expect(spec.unitPrice).toBe('0.00');
     expect(spec.lineTotal).toBe('0.00');
     expect(spec.isUnapprovedTime).toBe(false);
+  });
+  it('never substitutes zero for a NULL rate — that is an assembly gap, not a free line (review #1)', () => {
+    expect(() => timeEntryToLineSpec(
+      { id: 'te2', ticketId: null, description: null, durationMinutes: 60, hourlyRate: null, isApproved: true }, 'USD'
+    )).toThrow(/hourly rate/i);
   });
 });
 
@@ -115,9 +120,44 @@ describe('partitionByCurrency', () => {
 
   it('returns empty buckets for no rows and never creates keys for empty buckets', () => {
     const result = partitionByCurrency([], 'USD', toSpec);
-    expect(result).toEqual({ included: [], blockedByCurrency: {} });
+    expect(result).toEqual({ included: [], blockedByCurrency: {}, missingRate: [] });
     const onlyIncluded = partitionByCurrency([{ id: 'a', currencyCode: 'USD' }], 'USD', toSpec);
     expect(onlyIncluded.blockedByCurrency).toEqual({});
+  });
+});
+
+describe('partitionTimeEntries — null rate is a structured gap, never zero (review #1)', () => {
+  const row = (id: string, hourlyRate: string | null, currencyCode: string | null = 'EUR') => ({
+    id, ticketId: 'tk1', description: 'Work', durationMinutes: 90, hourlyRate, isApproved: true, currencyCode
+  });
+
+  it('routes a null-rate entry to missingRate with its hours, and neither includes nor currency-blocks it', () => {
+    const result = partitionTimeEntries([row('a', '100.00'), row('b', null)], 'EUR');
+    expect(result.included.map((s) => s.sourceId)).toEqual(['a']);
+    expect(result.blockedByCurrency).toEqual({});
+    expect(result.missingRate).toEqual([
+      { sourceType: 'time_entry', sourceId: 'b', ticketId: 'tk1', description: 'Work', quantity: '1.50', currencyCode: 'EUR' }
+    ]);
+  });
+
+  it('a null-rate entry in another currency is still a missing-rate gap (there is no amount to block)', () => {
+    const result = partitionTimeEntries([row('b', null, 'USD')], 'EUR');
+    expect(result.included).toEqual([]);
+    expect(result.blockedByCurrency).toEqual({});
+    expect(result.missingRate.map((m) => m.sourceId)).toEqual(['b']);
+  });
+
+  it('an explicit 0.00 rate is a valid zero line, not a gap', () => {
+    const result = partitionTimeEntries([row('z', '0.00')], 'EUR');
+    expect(result.missingRate).toEqual([]);
+    expect(result.included).toHaveLength(1);
+    expect(result.included[0]).toMatchObject({ sourceId: 'z', unitPrice: '0.00', lineTotal: '0.00' });
+  });
+
+  it('rated rows in another currency still go to blockedByCurrency', () => {
+    const result = partitionTimeEntries([row('u', '50.00', 'USD')], 'EUR');
+    expect(result.blockedByCurrency.USD!.map((s) => s.sourceId)).toEqual(['u']);
+    expect(result.missingRate).toEqual([]);
   });
 });
 
@@ -129,20 +169,22 @@ describe('mergeAssembly', () => {
   });
 
   it('concatenates included and merges blocked keys across parts', () => {
+    const gap = (id: string) => ({ sourceType: 'time_entry' as const, sourceId: id, ticketId: null, description: id, quantity: '1.00', currencyCode: 'USD' });
     const merged = mergeAssembly(
-      { included: [spec('a')], blockedByCurrency: { USD: [spec('b')], GBP: [spec('c')] } },
-      { included: [spec('d')], blockedByCurrency: { USD: [spec('e')] } },
-      { included: [], blockedByCurrency: {} }
+      { included: [spec('a')], blockedByCurrency: { USD: [spec('b')], GBP: [spec('c')] }, missingRate: [gap('m1')] },
+      { included: [spec('d')], blockedByCurrency: { USD: [spec('e')] }, missingRate: [] },
+      { included: [], blockedByCurrency: {}, missingRate: [gap('m2')] }
     );
     expect(merged.included.map((s) => s.sourceId)).toEqual(['a', 'd']);
+    expect(merged.missingRate.map((m) => m.sourceId)).toEqual(['m1', 'm2']);
     expect(merged.blockedByCurrency.USD!.map((s) => s.sourceId)).toEqual(['b', 'e']);
     expect(merged.blockedByCurrency.GBP!.map((s) => s.sourceId)).toEqual(['c']);
     expect(Object.keys(merged.blockedByCurrency).sort()).toEqual(['GBP', 'USD']);
   });
 
   it('returns empty result with no parts and does not mutate inputs', () => {
-    expect(mergeAssembly()).toEqual({ included: [], blockedByCurrency: {} });
-    const part = { included: [spec('a')], blockedByCurrency: { USD: [spec('b')] } };
+    expect(mergeAssembly()).toEqual({ included: [], blockedByCurrency: {}, missingRate: [] });
+    const part = { included: [spec('a')], blockedByCurrency: { USD: [spec('b')] }, missingRate: [] };
     const merged = mergeAssembly(part, part);
     expect(merged.included).toHaveLength(2);
     expect(merged.blockedByCurrency.USD).toHaveLength(2);

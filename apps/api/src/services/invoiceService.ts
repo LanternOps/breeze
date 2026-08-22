@@ -13,7 +13,7 @@ import { resolvePrice, computeBundleEconomics, CatalogServiceError, type Catalog
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
-import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type DraftLineSpec } from './invoiceAssembly';
+import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
@@ -838,30 +838,48 @@ export function summarizeBlocked(blocked: Record<string, DraftLineSpec[]>): Bloc
   }));
 }
 
+/** One time entry on an assembly response that is billable but has no hourly
+ *  rate (review #1, #3776). Never materialized — it would bill at zero and be
+ *  marked billed. Set a rate on the entry and assemble again. */
+export interface MissingRateEntry { timeEntryId: string; ticketId: string | null; description: string; hours: string }
+
+export function summarizeMissingRate(missing: MissingRateSpec[]): MissingRateEntry[] {
+  return missing.map((m) => ({ timeEntryId: m.sourceId, ticketId: m.ticketId, description: m.description, hours: m.quantity }));
+}
+
 /** Shared tail of both assembly paths: materialize only the header-currency
  *  specs; on an empty `included` delete the transient draft and explain WHY
- *  (blocked groups → ALL_BLOCKED_BY_CURRENCY with details; nothing at all →
- *  NOTHING_TO_INVOICE). Never converts, never silently drops a blocked row. */
+ *  (blocked groups → ALL_BLOCKED_BY_CURRENCY with details; only rate-less time
+ *  → ALL_MISSING_RATE with the entries; nothing at all → NOTHING_TO_INVOICE).
+ *  Never converts, never silently drops a blocked row, never bills a NULL rate
+ *  as zero. */
 async function finishAssembly(
   inv: { id: string; orgId: string; currencyCode: string },
-  gathered: { included: DraftLineSpec[]; blockedByCurrency: Record<string, DraftLineSpec[]> },
+  gathered: AssemblyResult,
   nothingMessage: string,
   actor: InvoiceActor
 ) {
   const blockedByCurrency = summarizeBlocked(gathered.blockedByCurrency);
+  const missingRate = summarizeMissingRate(gathered.missingRate);
   if (gathered.included.length === 0) {
     await db.delete(invoices).where(eq(invoices.id, inv.id));
     if (blockedByCurrency.length > 0) {
       throw new InvoiceServiceError(
         `All unbilled work is in ${blockedByCurrency.map((b) => b.currencyCode).join(', ')}; this draft is in ${inv.currencyCode} — assemble a draft in that currency instead`,
-        409, 'ALL_BLOCKED_BY_CURRENCY', { blockedByCurrency }
+        409, 'ALL_BLOCKED_BY_CURRENCY', { blockedByCurrency, missingRate }
+      );
+    }
+    if (missingRate.length > 0) {
+      throw new InvoiceServiceError(
+        `${missingRate.length} billable time ${missingRate.length === 1 ? 'entry has' : 'entries have'} no hourly rate in ${inv.currencyCode} — set a rate on ${missingRate.length === 1 ? 'it' : 'them'} and assemble again`,
+        409, 'ALL_MISSING_RATE', { missingRate }
       );
     }
     throw new InvoiceServiceError(nothingMessage, 409, 'NOTHING_TO_INVOICE');
   }
   await materializeLines(inv.id, inv.orgId, gathered.included);
   await recomputeInvoiceTotals(inv.id);
-  return { ...(await getInvoice(inv.id, actor)), blockedByCurrency };
+  return { ...(await getInvoice(inv.id, actor)), blockedByCurrency, missingRate };
 }
 
 export async function assembleDraftFromOrg(

@@ -65,6 +65,27 @@ async function addGbpPart(f: Fixture): Promise<string> {
   });
 }
 
+/** A billable hour in the org's CURRENT currency with NO rate — what
+ *  match-or-skip stores when no rate exists in that currency (review #1). */
+async function addNullRateEntry(f: Fixture, currencyCode = 'GBP'): Promise<string> {
+  return withSystemDbAccessContext(async () => {
+    const now = new Date();
+    const [te] = await db.insert(timeEntries).values({
+      partnerId: f.partnerId, orgId: f.orgId, userId: f.userId, ticketId: f.ticketId, startedAt: now, endedAt: now,
+      durationMinutes: 30, description: 'Unrated', isBillable: true,
+      hourlyRate: null, billingStatus: 'not_billed', isApproved: true, currencyCode
+    }).returning({ id: timeEntries.id });
+    return te!.id;
+  });
+}
+async function entryStatusById(id: string) {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db.select({ billingStatus: timeEntries.billingStatus, hourlyRate: timeEntries.hourlyRate })
+      .from(timeEntries).where(eq(timeEntries.id, id));
+    return row!;
+  });
+}
+
 function actor(f: Fixture): InvoiceActor {
   return { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
 }
@@ -145,5 +166,57 @@ describe.runIf(RUN)('assembly after an org currency change (spec §7/§14, #3776
     expect(out.lines).toHaveLength(1);
     expect(out.lines[0]!.ticketId).toBe(f.ticketId);
     expect(out.blockedByCurrency).toEqual([]);
+  });
+
+  it('(e) a NULL-rate billable entry is never billed at zero: alone → ALL_MISSING_RATE; alongside blocked → reported in details (review #1)', async () => {
+    const f = await seedFixture();
+    const unratedId = await addNullRateEntry(f);
+
+    // EUR entry blocked + GBP entry unrated, nothing included → blocked error carries both groups.
+    const err = await withDbAccessContext(ctx(f), () =>
+      svc.assembleDraftFromOrg(range(f), actor(f))).catch((e) => e);
+    expect(err).toMatchObject({
+      code: 'ALL_BLOCKED_BY_CURRENCY', status: 409,
+      details: {
+        blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }],
+        missingRate: [{ timeEntryId: unratedId, ticketId: f.ticketId, description: 'Unrated', hours: '0.50' }]
+      }
+    });
+    expect(await orgInvoices(f)).toEqual([]);
+
+    // Only the unrated entry left → its own code, no draft, no zero line.
+    await withSystemDbAccessContext(() =>
+      db.update(timeEntries).set({ billingStatus: 'billed' }).where(eq(timeEntries.id, f.entryId)));
+    const err2 = await withDbAccessContext(ctx(f), () =>
+      svc.assembleDraftFromOrg(range(f), actor(f))).catch((e) => e);
+    expect(err2).toMatchObject({
+      code: 'ALL_MISSING_RATE', status: 409,
+      details: { missingRate: [{ timeEntryId: unratedId, ticketId: f.ticketId, description: 'Unrated', hours: '0.50' }] }
+    });
+    expect(await orgInvoices(f)).toEqual([]);
+    expect(await entryStatusById(unratedId)).toEqual({ billingStatus: 'not_billed', hourlyRate: null });
+  });
+
+  it('(f) a NULL-rate entry next to a GBP part: the part is invoiced, the entry is reported under missingRate and stays not_billed', async () => {
+    const f = await seedFixture();
+    const unratedId = await addNullRateEntry(f);
+    const partId = await addGbpPart(f);
+    const out = await withDbAccessContext(ctx(f), () =>
+      svc.assembleDraftFromOrg(range(f), actor(f)));
+    expect(out.invoice.currencyCode).toBe('GBP');
+    expect(out.lines.map((l) => l.sourceId)).toEqual([partId]);
+    expect(out.invoice.total).toBe('80.00');
+    expect(out.missingRate).toEqual([{ timeEntryId: unratedId, ticketId: f.ticketId, description: 'Unrated', hours: '0.50' }]);
+    expect(out.blockedByCurrency).toEqual([{ currencyCode: 'EUR', count: 1, amount: '100.00' }]);
+    expect(await entryStatusById(unratedId)).toEqual({ billingStatus: 'not_billed', hourlyRate: null });
+
+    // An explicit zero rate IS a valid (zero) line.
+    await withSystemDbAccessContext(() =>
+      db.update(timeEntries).set({ hourlyRate: '0.00' }).where(eq(timeEntries.id, unratedId)));
+    const out2 = await withDbAccessContext(ctx(f), () =>
+      svc.assembleDraftFromTicket(f.ticketId, actor(f)));
+    expect(out2.missingRate).toEqual([]);
+    const zeroLine = out2.lines.find((l) => l.sourceId === unratedId);
+    expect(zeroLine).toMatchObject({ quantity: '0.50', unitPrice: '0.00', lineTotal: '0.00' });
   });
 });

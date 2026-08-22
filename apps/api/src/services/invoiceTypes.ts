@@ -48,6 +48,11 @@ export type InvoiceServiceErrorCode =
   // `details.blockedByCurrency` (per-currency count + amount) so the caller can
   // assemble a separate draft in that currency instead.
   | 'ALL_BLOCKED_BY_CURRENCY'
+  // Multi-currency wave 4 (#3776, review #1): assembly found billable time but
+  // every row has a NULL hourly rate (match-or-skip found no rate in the org's
+  // currency). Never billed at zero. Carries `details.missingRate` (the entries
+  // and their hours) so the caller can set a rate and retry.
+  | 'ALL_MISSING_RATE'
   | 'NO_VISIBLE_LINES'
   | 'SOURCE_ALREADY_BILLED'
   // B10 (#3774): a line's source row no longer exists (or belongs to another
