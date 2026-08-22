@@ -15,6 +15,7 @@
 
 import PDFDocument from 'pdfkit';
 import { toCents, fromCents, formatMoney as sharedFormatMoney, type CoverPage } from '@breeze/shared';
+import { formatMoneyForPdf } from './pdfMoney';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
 import { renderRichTextIntoPdf } from './richTextPdf';
@@ -445,14 +446,14 @@ async function renderLineTable(
     // lineBreak: false on every money cell — row height is measured from the
     // description column only, so a wrapped amount would overprint the next
     // row. An amount too wide for its box clips into the column gap instead.
-    doc.font('Helvetica').fontSize(10).text(formatMoney(l.unitPrice, currency, locale), c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
+    doc.font('Helvetica').fontSize(10).text(formatMoneyForPdf(l.unitPrice, currency, locale), c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
     if (showTax) {
       const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
-      doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency, locale), c.colTaxX, y, { width: c.colNumW, align: 'right', lineBreak: false });
+      doc.fillColor('#6b7280').text(t === null ? '—' : formatMoneyForPdf(t, currency, locale), c.colTaxX, y, { width: c.colNumW, align: 'right', lineBreak: false });
       doc.fillColor('#1f2937');
     }
     const suffix = recurrenceSuffix(l.recurrence);
-    doc.font('Helvetica').fontSize(10).text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency, locale)}${suffix}`, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
+    doc.font('Helvetica').fontSize(10).text(`${formatMoneyForPdf(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency, locale)}${suffix}`, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
     y += rowHeight + 6;
   }
 
@@ -468,9 +469,9 @@ async function renderLineTable(
       sums[key] += Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice));
     }
     const parts: string[] = [];
-    if (sums.one_time > 0) parts.push(formatMoney(sums.one_time, currency, locale));
-    if (sums.monthly > 0) parts.push(`${formatMoney(sums.monthly, currency, locale)}/mo`);
-    if (sums.annual > 0) parts.push(`${formatMoney(sums.annual, currency, locale)}/yr`);
+    if (sums.one_time > 0) parts.push(formatMoneyForPdf(sums.one_time, currency, locale));
+    if (sums.monthly > 0) parts.push(`${formatMoneyForPdf(sums.monthly, currency, locale)}/mo`);
+    if (sums.annual > 0) parts.push(`${formatMoneyForPdf(sums.annual, currency, locale)}/yr`);
     if (parts.length) {
       const subtotalText = parts.join('  +  ');
       doc.font('Helvetica-Bold').fontSize(9.5);
@@ -544,9 +545,9 @@ function renderRecurringSummary(
   const breakdownRows = breakdown.length > 1 ? breakdown.map((b) => {
     const label = b.category === 'other' ? 'Other' : b.category[0]!.toUpperCase() + b.category.slice(1);
     const parts: string[] = [];
-    if (Number(b.oneTimeTotal) > 0) parts.push(formatMoney(b.oneTimeTotal, currency, locale));
-    if (Number(b.monthlyTotal) > 0) parts.push(`${formatMoney(b.monthlyTotal, currency, locale)}/mo`);
-    if (Number(b.annualTotal) > 0) parts.push(`${formatMoney(b.annualTotal, currency, locale)}/yr`);
+    if (Number(b.oneTimeTotal) > 0) parts.push(formatMoneyForPdf(b.oneTimeTotal, currency, locale));
+    if (Number(b.monthlyTotal) > 0) parts.push(`${formatMoneyForPdf(b.monthlyTotal, currency, locale)}/mo`);
+    if (Number(b.annualTotal) > 0) parts.push(`${formatMoneyForPdf(b.annualTotal, currency, locale)}/yr`);
     const amount = parts.join(' + ');
     const stacked = doc.widthOfString(amount) > categoryAmountW;
     const amountHeight = stacked ? doc.heightOfString(amount, { width: c.right - sumX, align: 'right' }) : 0;
@@ -606,7 +607,7 @@ function renderRecurringSummary(
     doc.text(label, labelX, y, { width: labelW, align: 'left' });
     // lineBreak: false — the y advances below are fixed constants shared with
     // the page-break reservation; a wrapped amount would silently break both.
-    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(`${formatMoney(amount, currency, locale)}${suffix}`, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right', lineBreak: false });
+    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(`${formatMoneyForPdf(amount, currency, locale)}${suffix}`, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right', lineBreak: false });
     y += emphasis ? EMPHASIS_ROW_ADVANCE : strong ? BOLD_ROW_ADVANCE : REGULAR_ROW_ADVANCE;
   };
 

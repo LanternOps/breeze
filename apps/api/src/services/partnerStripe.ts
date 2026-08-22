@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { stripeConnectAccounts } from '../db/schema/stripePayments';
 import { encryptSecret, decryptSecret } from './secretCrypto';
@@ -255,7 +255,7 @@ export async function refreshPartnerStripeAccount(partnerId: string): Promise<{
   accountCountry: string | null;
   accountRefreshedAt: Date;
 }> {
-  const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
+  const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
 
   let account: Stripe.Account;
   try {
@@ -282,7 +282,11 @@ export async function refreshPartnerStripeAccount(partnerId: string): Promise<{
     db
       .update(stripeConnectAccounts)
       .set({ defaultCurrency, accountCountry, accountRefreshedAt: now, updatedAt: now })
-      .where(eq(stripeConnectAccounts.partnerId, partnerId))
+      // Guarded by the account id read BEFORE the Stripe round-trip: if an admin
+      // replaced the key (new account) while this refresh was in flight, the
+      // stale account's currency/country must not land on the new row (0-row
+      // no-op instead; the key save already cached the new account's values).
+      .where(and(eq(stripeConnectAccounts.partnerId, partnerId), eq(stripeConnectAccounts.stripeAccountId, stripeAccountId)))
   );
 
   return { defaultCurrency, accountCountry, accountRefreshedAt: now };

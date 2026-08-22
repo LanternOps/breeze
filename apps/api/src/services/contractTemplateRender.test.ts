@@ -148,6 +148,14 @@ describe('resolveAutoVariables', () => {
     expect(values['totals.total']).toBe('810,00\u00a0€');
   });
 
+  it('pdf: true routes money through the WinAnsi-safe formatter (fr-FR narrow spaces folded, same digits)', () => {
+    const html = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }));
+    const pdf = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }), { pdf: true });
+    expect(html['totals.total']).toContain('\u202f');
+    expect(pdf['totals.total']).not.toContain('\u202f');
+    expect(pdf['totals.total']).toBe((html['totals.total'] ?? '').replace(/\u202f/g, '\u00a0'));
+  });
+
   it('falls back to the caller-resolved locale when the quote is unstamped (draft preview)', () => {
     const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: null }), { locale: 'fr-FR' });
     expect(values['totals.one_time']).toBe('810,00\u00a0€');

@@ -21,6 +21,7 @@
 
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { formatMoney, type ContractVariable } from '@breeze/shared';
+import { formatMoneyForPdf } from './pdfMoney';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contractTemplates, contractTemplateVersions, quotes } from '../db/schema';
 import { sanitizeRichTextHtml } from './richTextSanitize';
@@ -287,10 +288,14 @@ function formatAddressLine(addr: BillToAddress | null | undefined): string {
  *  when the caller has nothing (unit tests, legacy callers). */
 export function resolveAutoVariables(
   quote: QuoteRow,
-  opts?: { effectiveDate?: string | Date; locale?: string | null }
+  /** `pdf: true` when the values are drawn by pdfkit (WinAnsi Helvetica) —
+   *  money goes through formatMoneyForPdf so fr-FR narrow spaces / non-WinAnsi
+   *  symbols cannot corrupt the contract text. HTML callers leave it unset. */
+  opts?: { effectiveDate?: string | Date; locale?: string | null; pdf?: boolean }
 ): Record<string, string> {
   const currency = quote.currencyCode ?? 'USD';
   const locale = quote.documentLocale ?? opts?.locale ?? 'en';
+  const money = opts?.pdf ? formatMoneyForPdf : formatMoney;
   const address = (quote.billToAddress as BillToAddress | null) ?? null;
   const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
 
@@ -300,10 +305,10 @@ export function resolveAutoVariables(
     'seller.name': seller?.name ?? '',
     'quote.number': quote.quoteNumber ?? '',
     'quote.title': quote.title ?? '',
-    'totals.one_time': formatMoney(quote.oneTimeTotal, currency, locale),
-    'totals.monthly': formatMoney(quote.monthlyRecurringTotal, currency, locale),
-    'totals.annual': formatMoney(quote.annualRecurringTotal, currency, locale),
-    'totals.total': formatMoney(quote.total, currency, locale),
+    'totals.one_time': money(quote.oneTimeTotal, currency, locale),
+    'totals.monthly': money(quote.monthlyRecurringTotal, currency, locale),
+    'totals.annual': money(quote.annualRecurringTotal, currency, locale),
+    'totals.total': money(quote.total, currency, locale),
     'dates.effective': formatDate(opts?.effectiveDate ?? new Date()),
     'dates.expiry': formatDate(quote.expiryDate),
   };
@@ -570,7 +575,7 @@ export async function loadContractPdfInputs(
   if (renderData.length === 0) return { contractRenderData, uploads };
 
   const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
-  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale });
+  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale, pdf: true });
 
   for (const block of blocks) {
     const data = byBlockId.get(block.id);

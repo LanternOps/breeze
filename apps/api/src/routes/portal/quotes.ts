@@ -19,6 +19,7 @@ import { loadContractBlockRenderData, renderContractBlocksForClient, loadContrac
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from '../../services/documentThemes';
@@ -61,7 +62,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   // error), so the name reads under SYSTEM scope like the /pdf route below;
   // portal_branding is org-scoped and reads fine here.
   const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
+    db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
   const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
   // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
   // sent quote's frozen presentation always wins over the partner's live
@@ -72,8 +73,10 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     // ahead of the response we're about to build below) and replaces its raw
     // authoring content with the render contract the portal understands.
     // Portal serves sent (stamped) quotes: quote.documentLocale is the render
-    // locale; null only for pre-wave-5 sends, which rendered 'en' before too.
-    const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`, quote.documentLocale);
+    // locale; null only for pre-wave-5 sends, which resolve to the partner's
+    // language — the SAME fallback the /pdf route below uses, so contract
+    // clauses and the downloadable PDF never disagree on a legacy quote.
+    const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`, quote.documentLocale ?? resolvePartnerDocumentLocale(partner));
     const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
     const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
     const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
@@ -316,6 +319,13 @@ quoteRoutes.post('/quotes/:id/pay', zValidator('param', idParam), async (c) => {
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof QuoteServiceError || err instanceof InvoiceServiceError) {
+      // Customer-facing path (spec §10): the partner-facing message names their
+      // Stripe account setup — answer with the customer-safe wording instead,
+      // exactly like POST /portal/invoices/:id/pay and the public link.
+      if (err.code === 'STRIPE_CURRENCY_UNSUPPORTED') {
+        console.error('[portal/quotes] Stripe rejected currency', { quoteId: id, message: err.message });
+        return c.json({ error: CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE, code: err.code }, 409);
+      }
       return c.json({ error: err.message, code: err.code }, err.status);
     }
     throw err;

@@ -30,6 +30,7 @@ import type { InvoiceActor } from './invoiceTypes';
 import type { BillToAddress } from './sellerSnapshot';
 import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
 import { computeChargeNow, formatMoney } from '@breeze/shared';
+import { formatMoneyForPdf } from './pdfMoney';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -383,10 +384,10 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
           doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
           if (showTax) {
             const t = lineTax(l.lineTotal, l.taxable, taxRate);
-            doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency, locale), colTaxX, y, { width: colNumW, align: 'right' });
+            doc.fillColor('#6b7280').text(t === null ? '—' : formatMoneyForPdf(t, currency, locale), colTaxX, y, { width: colNumW, align: 'right' });
             doc.fillColor('#1f2937');
           }
-          doc.text(formatMoney(l.lineTotal, currency, locale), colAmtX, y, { width: colNumW, align: 'right' });
+          doc.text(formatMoneyForPdf(l.lineTotal, currency, locale), colAmtX, y, { width: colNumW, align: 'right' });
           y += Math.max(descHeight, 12) + 6;
         }
       }
@@ -402,7 +403,7 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
         const strong = bold || emphasis;
         doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(emphasis ? 14 : strong ? 12 : 10).fillColor(strong ? '#111827' : '#6b7280');
         doc.text(label, labelX, y, { width: labelW, align: 'left' });
-        doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(formatMoney(amount, currency, locale), colSummaryAmtX, y, { width: colSummaryNumW, align: 'right' });
+        doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(formatMoneyForPdf(amount, currency, locale), colSummaryAmtX, y, { width: colSummaryNumW, align: 'right' });
         y += emphasis ? 20 : strong ? 18 : 14;
       };
       drawTotal('Subtotal', invoice.subtotal);
