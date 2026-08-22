@@ -63,9 +63,21 @@ function manualValuesOf(content: unknown): Record<string, string> {
  *  variableValues. Deterministic given the quote row + effectiveDate +
  *  renderLocale, so the accept path and any re-verification reconstruct the
  *  same map. `renderLocale` is the value persisted on the acceptance row
- *  (quote_acceptances.render_locale) — never the partner's live language. */
-function resolvedValuesForBlock(content: unknown, quote: QuoteRow, effectiveDate: string, renderLocale: string): Record<string, string> {
-  return { ...resolveAutoVariables(quote, { effectiveDate, renderLocale }), ...manualValuesOf(content) };
+ *  (quote_acceptances.render_locale) — never the partner's live language.
+ *
+ *  `pdf: true` is the map for text handed to pdfkit (the executed PDF): money
+ *  goes through formatMoneyForPdf so WinAnsi Helvetica can encode it (fr-FR
+ *  U+202F groupers → NBSP; ₹/₺/₩/₪ → ISO-code display in the SAME locale).
+ *  The acceptance hash and rendered_html keep the HTML-form map — that is what
+ *  the customer saw on screen, and existing hashes were computed from it. */
+function resolvedValuesForBlock(
+  content: unknown,
+  quote: QuoteRow,
+  effectiveDate: string,
+  renderLocale: string,
+  opts: { pdf?: boolean } = {},
+): Record<string, string> {
+  return { ...resolveAutoVariables(quote, { effectiveDate, renderLocale, pdf: opts.pdf }), ...manualValuesOf(content) };
 }
 
 // ---------------------------------------------------------------------------
@@ -221,9 +233,16 @@ export async function createExecutedDocuments(
       pdf = data.fileData; // the stored file, verbatim
       renderedHtml = null;
     } else {
-      const values = resolvedValuesForBlock(contentByBlockId.get(data.blockId), quote, effectiveDate, renderLocale);
+      const content = contentByBlockId.get(data.blockId);
+      // Two substitutions from one body: the HTML-form map for rendered_html
+      // (byte-identical to the client-facing render + hash inputs) and the
+      // pdf-safe map for the bytes pdfkit draws (#3777 review F3 — parity with
+      // loadContractPdfInputs in contractTemplateRender.ts).
+      const values = resolvedValuesForBlock(content, quote, effectiveDate, renderLocale);
+      const pdfValues = resolvedValuesForBlock(content, quote, effectiveDate, renderLocale, { pdf: true });
       const first = substituteVariables(data.bodyHtml ?? '', values);
       let html = first.html;
+      let pdfHtml = substituteVariables(data.bodyHtml ?? '', pdfValues).html;
       if (first.missing.length > 0) {
         // The send gate (findUnresolvedVariables, Task 12) should make this
         // unreachable, but a raw {{token}} must never reach an executed legal PDF.
@@ -235,7 +254,9 @@ export async function createExecutedDocuments(
         captureException(new Error(
           `[contractDocumentService] unresolved variable(s) at accept-time snapshot: blockId=${data.blockId} quoteId=${quote.id} missing=${first.missing.join(',')}`
         ));
-        html = substituteVariables(html, Object.fromEntries(first.missing.map((n) => [n, '']))).html;
+        const blanks = Object.fromEntries(first.missing.map((n) => [n, '']));
+        html = substituteVariables(html, blanks).html;
+        pdfHtml = substituteVariables(pdfHtml, blanks).html;
       }
       // Re-sanitize the FINAL substituted HTML before it becomes the executed legal
       // record: a variable value substituted into an href (`<a href="{{link}}">`)
@@ -244,8 +265,9 @@ export async function createExecutedDocuments(
       // as a live /URI annotation. Write-time sanitize predates the substitution
       // (same defense as the serving-point render paths).
       html = sanitizeRichTextHtml(html);
+      pdfHtml = sanitizeRichTextHtml(pdfHtml);
       renderedHtml = html;
-      pdf = await renderAuthoredContractPdf(data.templateName, html, quote, effectiveDate);
+      pdf = await renderAuthoredContractPdf(data.templateName, pdfHtml, quote, effectiveDate);
     }
 
     const sha256 = createHash('sha256').update(pdf).digest('hex');
