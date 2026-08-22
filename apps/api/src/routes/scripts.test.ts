@@ -658,6 +658,243 @@ describe('scripts routes', () => {
     });
   });
 
+  // -------------------------------------------------------------------
+  // MSP -> customer descent on a PARTNER-WIDE secret (#3409 PR4c-2).
+  // -------------------------------------------------------------------
+  // `tenantVariableReadCondition` deliberately widens partner-wide rows to
+  // ORGANIZATION-scope sessions (keys only, never values) and `resolveForOrg`
+  // inherits them into every org, so an Org Admin of a CUSTOMER org can SEE
+  // the MSP's partner-wide secret keys. Binding one into a script they can
+  // also run is the only channel in the product through which a secret's
+  // plaintext leaves the server, and both redactors are exact-substring, so
+  // base64 defeats them. Binding a PARTNER-owned secret therefore requires
+  // partner-wide management capability — the same gate every other
+  // partner-wide write uses.
+  describe('partner-wide secret binding requires partner-wide capability', () => {
+    // org_id IS NULL on the tenant_variables row -> ownerScope 'partner'.
+    const partnerSecretRow = {
+      id: 'tv-3', key: 'psa_api_token', value: 'shh', isSecret: true, version: 1,
+      ownerOrgId: null, forOrgId: ORG_ID
+    };
+    const orgSecretRow = {
+      id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1,
+      ownerOrgId: ORG_ID, forOrgId: ORG_ID
+    };
+    const DENIED =
+      'Parameter "psa" binds partner-wide secret variable "psa_api_token"; only a partner administrator can bind a partner-wide secret.';
+
+    const secretParam = (variableKey: string) => ({
+      name: 'psa', type: 'string', source: 'tenantSecret', variableKey
+    });
+
+    async function usePartnerAuth(partnerOrgAccess: 'all' | 'selected') {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner' as const,
+          partnerId: PARTNER_ID,
+          partnerOrgAccess,
+          orgId: null,
+          token: {
+            sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+            orgId: null, partnerId: PARTNER_ID, scope: 'partner', type: 'access', mfa: true,
+          },
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (id: string) => id === ORG_ID,
+        });
+        return next();
+      });
+    }
+
+    const createWithParams = (parameters: unknown[], extra: Record<string, unknown> = {}) =>
+      app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Binds PSA token',
+          osTypes: ['linux'],
+          language: 'bash',
+          content: 'echo hi',
+          parameters,
+          ...extra
+        })
+      });
+
+    it('400s a create by an ORG-scope caller binding a partner-wide secret, and never inserts', async () => {
+      mockTenantVariableScopeRows([partnerSecretRow]);
+      const res = await createWithParams([secretParam('psa_api_token')]);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(DENIED);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('ALLOWS a full-partner admin to bind a partner-wide secret into an org-scoped script', async () => {
+      await usePartnerAuth('all');
+      mockTenantVariableScopeRows([partnerSecretRow]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Binds PSA token', orgId: ORG_ID }])
+        })
+      } as any);
+      const res = await createWithParams([secretParam('psa_api_token')], { orgId: ORG_ID, availability: 'org' });
+      expect(res.status).toBe(201);
+    });
+
+    // Partner SCOPE is not partner-wide CAPABILITY (#3262) — the same
+    // distinction the create gate already draws.
+    it('400s a SELECTED-access partner user binding a partner-wide secret', async () => {
+      await usePartnerAuth('selected');
+      mockTenantVariableScopeRows([partnerSecretRow]);
+      const res = await createWithParams([secretParam('psa_api_token')], { orgId: ORG_ID, availability: 'org' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(DENIED);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('leaves an ORG-owned secret binding unaffected for the same org-scope caller', async () => {
+      mockTenantVariableScopeRows([orgSecretRow]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Binds PSA token', orgId: ORG_ID }])
+        })
+      } as any);
+      const res = await createWithParams([
+        { name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 's1_token' }
+      ]);
+      expect(res.status).toBe(201);
+    });
+
+    it('400s an UPDATE by an ORG-scope caller binding a partner-wide secret, and never writes it', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1, name: 'Existing', content: 'echo hi', version: 1,
+              isSystem: false, orgId: ORG_ID, parameters: []
+            }])
+          })
+        })
+      } as any);
+      mockTenantVariableScopeRows([partnerSecretRow]);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ parameters: [secretParam('psa_api_token')] })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(DENIED);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // POST /scripts/import/:id — the fourth write ingress (#3409 PR4c-2).
+  // -------------------------------------------------------------------
+  // Cloning a system script copies `source.parameters` verbatim. Before this
+  // change the clone ran NEITHER save-time secret check, so it was a straight
+  // bypass of both the content gate and the partner-wide binding gate above.
+  describe('clone a system script — save-time secret checks', () => {
+    const systemSource = (overrides: Record<string, unknown> = {}) => ({
+      id: SCRIPT_ID_2,
+      name: 'System Script',
+      description: null,
+      category: null,
+      osTypes: ['linux'],
+      language: 'bash',
+      content: 'echo hi',
+      parameters: null,
+      timeoutSeconds: 300,
+      runAs: 'system',
+      isSystem: true,
+      ...overrides
+    });
+
+    function mockClonePreamble(source: Record<string, unknown>, existing: unknown[] = []) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([source]) })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(existing) })
+          })
+        } as any);
+    }
+
+    const clone = () =>
+      app.request(`/scripts/import/${SCRIPT_ID_2}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({})
+      });
+
+    it('400s a clone whose copied parameters bind a partner-wide secret, and never inserts', async () => {
+      mockClonePreamble(
+        systemSource({
+          parameters: [{ name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 'psa_api_token' }]
+        })
+      );
+      mockTenantVariableScopeRows([
+        { id: 'tv-3', key: 'psa_api_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: null, forOrgId: ORG_ID }
+      ]);
+
+      const res = await clone();
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(
+        'Parameter "psa" binds partner-wide secret variable "psa_api_token"; only a partner administrator can bind a partner-wide secret.'
+      );
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('400s a clone whose copied parameters bind an ORG secret with the plain tenantVariable source', async () => {
+      mockClonePreamble(
+        systemSource({
+          parameters: [{ name: 'p', type: 'string', source: 'tenantVariable', variableKey: 's1_token' }]
+        })
+      );
+      mockTenantVariableScopeRows([
+        { id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID }
+      ]);
+
+      const res = await clone();
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(
+        'Parameter "p" binds secret variable "s1_token" with source "From a variable"; use a secret parameter instead'
+      );
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('400s a clone whose copied CONTENT references a secret variable', async () => {
+      mockClonePreamble(systemSource({ content: 'echo {{var.s1_token}}' }));
+      mockTenantVariableScopeRows([
+        { id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID }
+      ]);
+
+      const res = await clone();
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('s1_token');
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('clones a clean system script unchanged', async () => {
+      mockClonePreamble(systemSource());
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'System Script', orgId: ORG_ID }])
+        })
+      } as any);
+
+      const res = await clone();
+      expect(res.status).toBe(201);
+      expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    });
+  });
+
   it('should prevent deleting scripts with active executions', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce({

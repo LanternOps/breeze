@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEVICE_CUSTOM_FIELD_KEY_PATTERN,
   MAX_SCRIPT_PARAMETER_OPTIONS_LENGTH,
+  MAX_SECRET_SCRIPT_PARAMETERS,
   SCRIPT_BUILTIN_PARAMETER_KEYS,
   SCRIPT_PARAMETER_SOURCES,
   canonicalizeScriptParameterDefinitions,
@@ -451,6 +452,55 @@ describe('scriptParameterDefinitionsSchema — array', () => {
 
   it('rejects a non-array', () => {
     expect(scriptParameterDefinitionsSchema.safeParse({ name: 'x', type: 'string' }).success).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------
+  // Secret-parameter cap (#3409 PR4c-2, finding 3).
+  //
+  // MAX_SCRIPT_PARAMETERS (64) is twice MAX_SECRET_SCRIPT_PARAMETERS (32), so
+  // without this rule a script declaring 33+ tenantSecret parameters SAVES
+  // cleanly and then blows up at dispatch inside the envelope builder — which
+  // rethrows, taking the whole fan-out down with a 500 instead of failing one
+  // device. The cap has to be a SAVE-time rule for that reason.
+  // ---------------------------------------------------------------------
+  const secretDefinition = (name: string) => ({
+    name,
+    source: 'tenantSecret' as const,
+    variableKey: name,
+  });
+
+  it(`accepts exactly ${MAX_SECRET_SCRIPT_PARAMETERS} tenantSecret definitions`, () => {
+    const definitions = Array.from({ length: MAX_SECRET_SCRIPT_PARAMETERS }, (_, i) => secretDefinition(`s${i}`));
+    expect(scriptParameterDefinitionsSchema.safeParse(definitions).success).toBe(true);
+  });
+
+  it(`rejects ${MAX_SECRET_SCRIPT_PARAMETERS + 1} tenantSecret definitions`, () => {
+    const definitions = Array.from({ length: MAX_SECRET_SCRIPT_PARAMETERS + 1 }, (_, i) => secretDefinition(`s${i}`));
+    const result = scriptParameterDefinitionsSchema.safeParse(definitions);
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain(
+      `A script cannot declare more than ${MAX_SECRET_SCRIPT_PARAMETERS} secret parameters`
+    );
+  });
+
+  // The cap counts ONLY tenantSecret rows — a script may still declare up to
+  // MAX_SCRIPT_PARAMETERS parameters overall, and non-secret sources never
+  // reach the secretEnv envelope.
+  it('counts only tenantSecret rows, not the whole definition list', () => {
+    const definitions = [
+      ...Array.from({ length: MAX_SECRET_SCRIPT_PARAMETERS }, (_, i) => secretDefinition(`s${i}`)),
+      ...Array.from({ length: MAX_SCRIPT_PARAMETERS - MAX_SECRET_SCRIPT_PARAMETERS }, (_, i) => runtimeDefinition(`p${i}`)),
+    ];
+    expect(definitions).toHaveLength(MAX_SCRIPT_PARAMETERS);
+    expect(scriptParameterDefinitionsSchema.safeParse(definitions).success).toBe(true);
+  });
+
+  it('reports the secret cap on the first over-limit element, not the whole array', () => {
+    const definitions = Array.from({ length: MAX_SECRET_SCRIPT_PARAMETERS + 2 }, (_, i) => secretDefinition(`s${i}`));
+    const result = scriptParameterDefinitionsSchema.safeParse(definitions);
+    expect(result.success).toBe(false);
+    const paths = result.error?.issues.map((issue) => issue.path.join('.')) ?? [];
+    expect(paths).toContain(`${MAX_SECRET_SCRIPT_PARAMETERS}.source`);
   });
 
   it('does not mutate when a caller applies a tighter cap', () => {

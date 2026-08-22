@@ -260,15 +260,64 @@ export function refineScriptParameterKeyCollisions(
 }
 
 /**
+ * How many `tenantSecret` parameters one script may declare (#3409 PR4c-2).
+ *
+ * This MUST equal `MAX_SECRET_ENV_ENTRIES` in
+ * `apps/api/src/services/scriptSecretEnvelope.ts`, which is the AUTHORITY —
+ * it is the bound the sealed `secretEnv` envelope actually enforces at
+ * dispatch. It is restated here rather than imported because `packages/shared`
+ * must not depend on `apps/api`; the two are pinned together by an equality
+ * assertion in `apps/api/src/services/scriptBundle/index.test.ts`, so they
+ * cannot drift.
+ *
+ * Deliberately LOWER than {@link MAX_SCRIPT_PARAMETERS} (64). Without a
+ * save-time rule a script declaring 33+ secret parameters saves cleanly and
+ * then throws inside `encryptSensitivePayloadFields` at dispatch — inside
+ * `scriptDispatch`'s guarded region, which RETHROWS, and
+ * `executeScriptOnDevices` does not wrap the per-device call. The result is a
+ * 500 with an internal message that kills the ENTIRE fan-out, not one device.
+ */
+export const MAX_SECRET_SCRIPT_PARAMETERS = 32;
+
+/**
+ * Rejects more `tenantSecret` parameters than the secret-delivery envelope can
+ * carry. Reported on the FIRST over-limit element's `source` (not on the whole
+ * array) so the web form can point at the parameter the tech should remove,
+ * and so it never masks the array-level {@link MAX_SCRIPT_PARAMETERS} cap.
+ *
+ * Exported alongside {@link refineScriptParameterKeyCollisions} for the same
+ * reason: a caller rebuilding the array with a different length cap must be
+ * able to reapply this rule without re-implementing it.
+ */
+export function refineSecretScriptParameterCap(
+  definitions: ReadonlyArray<{ source?: string }>,
+  ctx: z.RefinementCtx
+): void {
+  let secretCount = 0;
+  definitions.forEach((definition, index) => {
+    if (definition.source !== 'tenantSecret') return;
+    secretCount += 1;
+    if (secretCount <= MAX_SECRET_SCRIPT_PARAMETERS) return;
+    ctx.addIssue({
+      code: 'custom',
+      path: [index, 'source'],
+      message: `A script cannot declare more than ${MAX_SECRET_SCRIPT_PARAMETERS} secret parameters`,
+    });
+  });
+}
+
+/**
  * The array as stored in `scripts.parameters`. Capped at
  * {@link MAX_SCRIPT_PARAMETERS}, the same bound the run-time value map uses —
  * a definition list longer than the value map could accept would declare
- * parameters that can never be supplied.
+ * parameters that can never be supplied. `tenantSecret` rows carry the
+ * additional, tighter {@link MAX_SECRET_SCRIPT_PARAMETERS} cap.
  */
 export const scriptParameterDefinitionsSchema = z
   .array(scriptParameterDefinitionSchema)
   .max(MAX_SCRIPT_PARAMETERS, `A script cannot declare more than ${MAX_SCRIPT_PARAMETERS} parameters`)
-  .superRefine(refineScriptParameterKeyCollisions);
+  .superRefine(refineScriptParameterKeyCollisions)
+  .superRefine(refineSecretScriptParameterCap);
 
 /**
  * Parse an unvalidated stored/incoming value into normalized definitions.

@@ -71,6 +71,8 @@ import {
   MAX_BUNDLE_CONTENT_LENGTH
 } from './schema';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
+import { MAX_SECRET_ENV_ENTRIES } from '../scriptSecretEnvelope';
+import { MAX_SECRET_SCRIPT_PARAMETERS } from '@breeze/shared';
 
 function makeAuth(overrides: Partial<BundleAuth> = {}): BundleAuth {
   return {
@@ -723,6 +725,109 @@ describe('importBundle', () => {
       );
     }
     expect(h.state.inserts).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------------
+  // MSP -> customer descent: binding a PARTNER-WIDE secret (#3409 PR4c-2).
+  //
+  // `tenantVariableReadCondition` deliberately shows partner-wide variable
+  // KEYS to organization-scope sessions, and `resolveForOrg` inherits
+  // partner-wide rows into every org. Without a gate an Org Admin of a
+  // CUSTOMER org could bind the MSP's own partner-wide secret and base64 it
+  // out through script output (both redactors are exact-substring). This is
+  // the only channel in the product through which a secret's plaintext leaves
+  // the server at all, so it must not cross the MSP -> customer boundary.
+  // ---------------------------------------------------------------------
+  // A partner-wide tenant_variables row: org_id IS NULL, hence ownerScope
+  // 'partner' once resolveForOrg attributes it to the target org.
+  const partnerSecretRow = {
+    id: 'tv-3',
+    key: 'psa_api_token',
+    value: 'shh',
+    isSecret: true,
+    version: 1,
+    ownerOrgId: null,
+    forOrgId: ORG_ID
+  };
+
+  it('rejects an org-scope import binding a PARTNER-WIDE secret (no partner-wide capability)', async () => {
+    const bundle = validBundle([
+      { ...baseEntry, parameters: [{ name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 'psa_api_token' }] }
+    ]);
+    h.state.selectQueue.push([partnerSecretRow]);
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.error).toBe(
+        'Parameter "psa" binds partner-wide secret variable "psa_api_token"; only a partner administrator can bind a partner-wide secret.'
+      );
+    }
+    expect(h.state.inserts).toHaveLength(0);
+  });
+
+  it('ALLOWS a full-partner admin to bind a partner-wide secret into an org-scoped script', async () => {
+    const auth = makeAuth({
+      scope: 'partner',
+      orgId: null,
+      partnerOrgAccess: 'all',
+      accessibleOrgIds: [ORG_ID]
+    });
+    const bundle = validBundle([
+      { ...baseEntry, parameters: [{ name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 'psa_api_token' }] }
+    ]);
+    h.state.selectQueue.push(
+      [partnerSecretRow], // parameter lookup via resolveForOrg(ORG_ID)
+      [] // findConflictByName -> none
+    );
+    const result = await importBundle(auth, bundle, { mode: 'skip', availability: 'org', orgId: ORG_ID });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) expect(result.errors).toHaveLength(0);
+    if ('imported' in result) expect(result.imported).toBe(1);
+  });
+
+  it('leaves an ORG-owned secret binding unaffected for the same org-scope caller', async () => {
+    const bundle = validBundle([
+      { ...baseEntry, parameters: [{ name: 'q', type: 'string', source: 'tenantSecret', variableKey: 's1_token' }] }
+    ]);
+    h.state.selectQueue.push(
+      [secretRow], // ownerOrgId === ORG_ID -> ownerScope 'organization'
+      [] // findConflictByName -> none
+    );
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) expect(result.errors).toHaveLength(0);
+    if ('imported' in result) expect(result.imported).toBe(1);
+  });
+
+  // A tenantVariable (non-secret source) binding to a partner-wide SECRET is
+  // still the pre-existing secretBoundAsPlain rejection, not the new one —
+  // the new kind must not swallow the older, more specific message.
+  it('still reports secretBoundAsPlain for a tenantVariable bound to a partner-wide secret', async () => {
+    const bundle = validBundle([
+      { ...baseEntry, parameters: [{ name: 'psa', type: 'string', source: 'tenantVariable', variableKey: 'psa_api_token' }] }
+    ]);
+    h.state.selectQueue.push([partnerSecretRow]);
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    if ('errors' in result) {
+      expect(result.errors[0]!.error).toBe(
+        'Parameter "psa" binds secret variable "psa_api_token" with source "From a variable"; use a secret parameter instead'
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Secret-parameter cap parity (#3409 PR4c-2, finding 3).
+//
+// `packages/shared` may not import from `apps/api`, so the save-time cap is a
+// restatement of the envelope's own bound. This assertion is the ONLY thing
+// stopping the two from drifting — if the envelope limit moves, the save-time
+// schema must move with it or scripts save that can never dispatch.
+// ---------------------------------------------------------------------------
+describe('secret-parameter cap parity', () => {
+  it('pins MAX_SECRET_SCRIPT_PARAMETERS to the envelope authority MAX_SECRET_ENV_ENTRIES', () => {
+    expect(MAX_SECRET_SCRIPT_PARAMETERS).toBe(MAX_SECRET_ENV_ENTRIES);
   });
 });
 

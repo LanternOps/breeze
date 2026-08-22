@@ -34,6 +34,7 @@ import {
   type ScriptScopeError,
   type ScriptWriteAuth
 } from '../scriptWrite';
+import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
   SCRIPT_BUNDLE_VERSION,
@@ -87,22 +88,36 @@ export async function findSecretVariableReferences(
 ): Promise<string[]> {
   const keys = findVariableTokens(content);
   if (keys.length === 0) return [];
-  const isSecretByKey = await lookupIsSecretByKey(scope, keys);
-  return keys.filter((key) => isSecretByKey.get(key) === true);
+  const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys);
+  return keys.filter((key) => secrecyByKey.get(key)?.isSecret === true);
 }
 
 /**
- * The single save-time "is this key a secret for this scope?" lookup shared
- * by {@link findSecretVariableReferences} (content tokens) and
+ * What the save-time lookup knows about one tenant-variable key.
+ *
+ * `ownerScope` mirrors `ResolvedVariable.ownerScope`: `'partner'` for a
+ * partner-wide row (`tenant_variables.org_id IS NULL`), `'organization'` for
+ * an org-owned row (including one that SHADOWS a partner-wide key of the same
+ * name — the org row is what this org actually resolves, and it is the org's
+ * own value, so it carries no MSP→customer descent).
+ */
+interface VariableSecrecy {
+  isSecret: boolean;
+  ownerScope: 'organization' | 'partner';
+}
+
+/**
+ * The single save-time "what is this key for this scope?" lookup shared by
+ * {@link findSecretVariableReferences} (content tokens) and
  * {@link findParameterSecretMismatches} (parameter bindings). One DB round
  * trip per call. A key with no matching row is ABSENT from the result — the
  * two callers each treat absence as "unknown, allow" (see their docblocks).
  */
-async function lookupIsSecretByKey(
+async function lookupVariableSecrecyByKey(
   scope: ScriptCreateScope,
   keys: string[]
-): Promise<Map<string, boolean>> {
-  const result = new Map<string, boolean>();
+): Promise<Map<string, VariableSecrecy>> {
+  const result = new Map<string, VariableSecrecy>();
   if (keys.length === 0) return result;
 
   if (scope.orgId) {
@@ -110,7 +125,7 @@ async function lookupIsSecretByKey(
     const resolved = resolveForOrg(variableScope, scope.orgId);
     for (const key of keys) {
       const variable = resolved.get(key);
-      if (variable) result.set(key, variable.isSecret === true);
+      if (variable) result.set(key, { isSecret: variable.isSecret === true, ownerScope: variable.ownerScope });
     }
     return result;
   }
@@ -126,7 +141,9 @@ async function lookupIsSecretByKey(
           inArray(tenantVariables.key, keys)
         )
       );
-    for (const row of rows) result.set(row.key, row.isSecret === true);
+    // `org_id IS NULL` is in the WHERE clause, so every row here is
+    // partner-wide by construction — no need to project org_id back out.
+    for (const row of rows) result.set(row.key, { isSecret: row.isSecret === true, ownerScope: 'partner' });
     return result;
   }
 
@@ -139,7 +156,7 @@ export function describeSecretVariableRejection(offendingKeys: string[]): string
   return `Script content references secret variable(s): ${tokens}. Secret variables cannot be substituted into script content.`;
 }
 
-export type ParameterSecretMismatchKind = 'secretBoundAsPlain' | 'plainBoundAsSecret';
+export type ParameterSecretMismatchKind = 'secretBoundAsPlain' | 'plainBoundAsSecret' | 'partnerSecretNotPermitted';
 
 export interface ParameterSecretMismatch {
   /** Parameter NAME — never a value. */
@@ -181,6 +198,45 @@ function readVariableBoundParameters(parameters: unknown): VariableBoundParamete
 }
 
 /**
+ * Caller capability, computed at the route/service boundary and passed in
+ * rather than read off an `AuthContext` here — this module never sees auth.
+ *
+ * `allowPartnerOwnedSecrets` is ALWAYS `canManagePartnerWidePolicies(auth)`
+ * (services/partnerWideAccess.ts — the repo's single source of truth for
+ * partner-wide writes, which admits system scope and full-partner admins only).
+ *
+ * ## Why the gate exists
+ *
+ * `tenantVariableReadCondition` deliberately widens partner-wide variable rows
+ * to ORGANIZATION-scope sessions (keys only — values are always dropped), and
+ * `resolveForOrg` inherits partner-wide rows into every org under the partner.
+ * Without this gate an Org Admin of a CUSTOMER org could bind the MSP's own
+ * partner-wide secret into an org-scoped script — `resolveScriptCreateScope`
+ * grants any org-scope caller with `scripts:write` an org-scoped script — and
+ * run it on their own device. `tenantSecret` delivery is the first and only
+ * channel through which a secret's PLAINTEXT leaves the server, and both
+ * redactors are exact-substring, so trivial re-encoding (base64) defeats them.
+ *
+ * The settled "running a script implies use of the secrets it binds" position
+ * was written for ORG-owned secrets, where the script author already owns the
+ * value. It does not license the partner→org descent, which crosses the
+ * MSP→customer trust boundary.
+ *
+ * ## Why it must be enforced at EVERY write ingress
+ *
+ * This is a SAVE-time gate and cannot be re-checked at dispatch: automation,
+ * schedules and AI dispatch run under a system DB context with no author auth
+ * to test, so there is nothing to gate on by then. Every path that writes
+ * `scripts.parameters` must therefore carry it — POST /scripts, PUT
+ * /scripts/:id, POST /scripts/import/:id (the clone), and `importBundle`. A
+ * missed ingress is a straight bypass, not a deferred error.
+ */
+export interface ParameterSecretCheckOptions {
+  /** `canManagePartnerWidePolicies(auth)` — never a looser derivation. */
+  allowPartnerOwnedSecrets: boolean;
+}
+
+/**
  * Save-time parameter-binding secret check (#3409 PR4c-2, Task 6) — the
  * parameter-side twin of {@link findSecretVariableReferences}, called at the
  * same three ingresses (POST/PUT `/scripts`, `importBundle`) right after it.
@@ -193,6 +249,10 @@ function readVariableBoundParameters(parameters: unknown): VariableBoundParamete
  * - `source: 'tenantSecret'` bound to a NON-secret key → `plainBoundAsSecret`.
  *   Dispatch fails that device closed; a save-time 400 says why up front.
  *
+ * - `source: 'tenantSecret'` bound to a secret key owned by the PARTNER, when
+ *   the caller lacks partner-wide management capability →
+ *   `partnerSecretNotPermitted`. See {@link ParameterSecretCheckOptions}.
+ *
  * An UNKNOWN key produces NO mismatch, for the same reason as the content
  * check: the variable may not exist yet, and a partner-wide script is
  * resolved per org at dispatch, where each device fails loudly on its own.
@@ -200,22 +260,35 @@ function readVariableBoundParameters(parameters: unknown): VariableBoundParamete
  */
 export async function findParameterSecretMismatches(
   scope: ScriptCreateScope,
-  parameters: unknown
+  parameters: unknown,
+  options: ParameterSecretCheckOptions
 ): Promise<ParameterSecretMismatch[]> {
   const bound = readVariableBoundParameters(parameters);
   if (bound.length === 0) return [];
 
   const keys = [...new Set(bound.map((p) => p.variableKey))];
-  const isSecretByKey = await lookupIsSecretByKey(scope, keys);
+  const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys);
 
   const mismatches: ParameterSecretMismatch[] = [];
   for (const parameter of bound) {
-    const isSecret = isSecretByKey.get(parameter.variableKey);
-    if (isSecret === undefined) continue; // unknown key — allowed
+    const secrecy = secrecyByKey.get(parameter.variableKey);
+    if (secrecy === undefined) continue; // unknown key — allowed
+    const { isSecret, ownerScope } = secrecy;
     if (parameter.source === 'tenantVariable' && isSecret) {
+      // Checked BEFORE the partner-wide gate: a `tenantVariable` binding to a
+      // secret is rejected for everyone, and its message names the actual fix
+      // (switch the source), so it must not be masked by the capability
+      // message for a partner-owned target.
       mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'secretBoundAsPlain' });
     } else if (parameter.source === 'tenantSecret' && !isSecret) {
       mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'plainBoundAsSecret' });
+    } else if (
+      parameter.source === 'tenantSecret' &&
+      isSecret &&
+      ownerScope === 'partner' &&
+      !options.allowPartnerOwnedSecrets
+    ) {
+      mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'partnerSecretNotPermitted' });
     }
   }
   return mismatches;
@@ -230,11 +303,16 @@ export async function findParameterSecretMismatches(
  */
 export function describeParameterSecretMismatch(mismatches: ParameterSecretMismatch[]): string {
   return mismatches
-    .map((m) =>
-      m.kind === 'secretBoundAsPlain'
-        ? `Parameter "${m.name}" binds secret variable "${m.variableKey}" with source "From a variable"; use a secret parameter instead`
-        : `Parameter "${m.name}" is a secret parameter but variable "${m.variableKey}" is not a secret`
-    )
+    .map((m) => {
+      switch (m.kind) {
+        case 'secretBoundAsPlain':
+          return `Parameter "${m.name}" binds secret variable "${m.variableKey}" with source "From a variable"; use a secret parameter instead`;
+        case 'plainBoundAsSecret':
+          return `Parameter "${m.name}" is a secret parameter but variable "${m.variableKey}" is not a secret`;
+        case 'partnerSecretNotPermitted':
+          return `Parameter "${m.name}" binds partner-wide secret variable "${m.variableKey}"; only a partner administrator can bind a partner-wide secret.`;
+      }
+    })
     .join('; ');
 }
 
@@ -627,9 +705,14 @@ export async function importBundle(
         continue;
       }
       // Parameter-binding twin of the content check (#3409 PR4c-2, Task 6):
-      // a tenantVariable→secret or tenantSecret→non-secret binding is a
-      // per-entry error the same way.
-      const mismatches = await findParameterSecretMismatches(scope, entry.parameters);
+      // a tenantVariable→secret, a tenantSecret→non-secret, and a
+      // tenantSecret→PARTNER-WIDE-secret binding without partner-wide
+      // capability are all per-entry errors the same way. The capability is
+      // computed here, at the ingress, because dispatch cannot re-check it —
+      // see ParameterSecretCheckOptions.
+      const mismatches = await findParameterSecretMismatches(scope, entry.parameters, {
+        allowPartnerOwnedSecrets: canManagePartnerWidePolicies(auth)
+      });
       if (mismatches.length > 0) {
         result.errors.push({ index, name: entry.name, error: describeParameterSecretMismatch(mismatches) });
         continue;
