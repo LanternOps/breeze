@@ -163,7 +163,8 @@ describe('portal invoices routes', () => {
     // be the hand-qualified `invoices.id`.
     const { readFileSync } = await import('node:fs');
     const src = readFileSync(new URL('./invoices.ts', import.meta.url), 'utf8');
-    const fragment = src.slice(src.indexOf('title: sql'), src.indexOf('})', src.indexOf('title: sql')));
+    const start = src.indexOf('invoiceDerivedTitleSql = sql');
+    const fragment = src.slice(start, src.indexOf(')`;', start));
     expect(fragment).toContain('q.converted_invoice_id = invoices.id');
     expect(fragment).toContain('il.invoice_id = invoices.id');
     expect(fragment).not.toContain('${invoices.id}');

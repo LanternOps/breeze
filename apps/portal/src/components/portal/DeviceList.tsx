@@ -2,7 +2,7 @@ import React from 'react';
 import { Monitor } from 'lucide-react';
 import { type Device } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
+import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice, type MarkTone } from './ui';
 
 interface DeviceListProps {
   devices: Device[];
@@ -41,16 +41,14 @@ function lastSeenLabel(value: string | null): string {
   return `On ${d.toLocaleDateString()}`;
 }
 
-// StatusMark pairings: the background-tuned status token as the dot, the
-// AA-safe `-on-tint` variant as the text (asserted in tokenContrast.test.ts).
-function statusMark(status: Device['status']): { dot: string; text: string; label: string } {
+function statusMark(status: Device['status']): { tone: MarkTone; label: string } {
   switch (status) {
     case 'online':
-      return { dot: 'bg-success', text: 'text-success-on-tint', label: 'Online' };
+      return { tone: 'success', label: 'Online' };
     case 'offline':
-      return { dot: 'bg-muted-foreground/60', text: 'text-muted-foreground', label: 'Offline' };
+      return { tone: 'neutral', label: 'Offline' };
     case 'warning':
-      return { dot: 'bg-warning', text: 'text-warning-on-tint', label: 'Warning' };
+      return { tone: 'warning', label: 'Warning' };
   }
 }
 
@@ -121,7 +119,7 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                       {osLabel(device.osType)}
                     </td>
                     <td className={cn(CELL, 'order-2 shrink-0')}>
-                      <StatusMark dotClass={mark.dot} textClass={mark.text}>
+                      <StatusMark tone={mark.tone}>
                         {mark.label}
                       </StatusMark>
                     </td>

@@ -33,5 +33,5 @@ if (formsResponse.error && formsResponse.statusCode !== 403) {
 ---
 
 <PortalLayout title="New ticket">
-  <NewTicketForm client:load />
+  <NewTicketForm client:load forms={formsResponse.data ?? []} />
 </PortalLayout>

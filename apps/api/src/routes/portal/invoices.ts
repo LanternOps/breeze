@@ -30,6 +30,19 @@ const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
 // Invoice statuses that may be paid online. Drafts/paid/void are excluded.
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
 
+/**
+ * The customer-facing name of an invoice, which carries no title column: the
+ * newest proposal converted into it, else its first customer-visible line.
+ * Correlated on a hand-written `invoices.id` — in a join-free select Drizzle
+ * renders an interpolated column as bare `"id"`, which inside the subselect
+ * binds to the subquery's own table and makes every title NULL. Exported so
+ * portalInvoiceTitle.integration.test.ts can run it against real Postgres.
+ */
+export const invoiceDerivedTitleSql = sql<string | null>`coalesce(
+  (select q.title from quotes q where q.converted_invoice_id = invoices.id order by q.created_at desc limit 1),
+  (select il.name from invoice_lines il where il.invoice_id = invoices.id and il.customer_visible order by il.sort_order limit 1)
+)`;
+
 export const invoiceRoutes = new Hono();
 invoiceRoutes.use('*', portalFinancialMutationGuard);
 
@@ -57,19 +70,9 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
       amountPaid: invoices.amountPaid,
       balance: invoices.balance,
       depositDue: invoices.depositDue,
-      // Invoices carry no title column; derive the human handle the customer
-      // recognizes — the accepted proposal's title (quotes.converted_invoice_id
-      // points here), else the first customer-visible line's name. NULL for a
-      // bare invoice; the portal falls back to the number.
-      // NOTE: the outer column must be written qualified by hand — in a
-      // join-free select Drizzle renders an interpolated column as bare `"id"`,
-      // which inside the subselect resolves to the SUBQUERY's table and
-      // correlates it with itself (always false, title always null). Adding a
-      // join later would make `${invoices.id}` appear to work; keep it literal.
-      title: sql<string | null>`coalesce(
-        (select q.title from quotes q where q.converted_invoice_id = invoices.id order by q.created_at desc limit 1),
-        (select il.name from invoice_lines il where il.invoice_id = invoices.id and il.customer_visible order by il.sort_order limit 1)
-      )`,
+      // The customer-facing name (see invoiceDerivedTitleSql); NULL for a bare
+      // invoice, where the portal falls back to the number.
+      title: invoiceDerivedTitleSql,
     })
     .from(invoices)
     .where(conditions)

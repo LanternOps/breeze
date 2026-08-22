@@ -1,3 +1,4 @@
+import { quoteStatusTone } from '@/lib/quoteStatus';
 import { withBase } from '@/lib/basePath';
 import { FileText } from 'lucide-react';
 import { type QuoteSummary } from '@/lib/api';
@@ -21,25 +22,6 @@ const STATUS_LABELS: Record<string, string> = {
   converted: 'Accepted',
 };
 
-// Statuses render as a StatusMark: a dot of the background-tuned token beside
-// text in the AA-safe `-on-tint` foreground (asserted in tokenContrast.test.ts).
-// A proposal that has merely been sent or opened needs nothing from the
-// customer yet, so those read informational, never amber.
-function statusMark(status: string): { dot: string; text: string } {
-  switch (status) {
-    case 'accepted':
-    case 'converted':
-      return { dot: 'bg-success', text: 'text-success-on-tint' };
-    case 'declined':
-    case 'expired':
-      return { dot: 'bg-destructive', text: 'text-destructive-on-tint' };
-    case 'viewed':
-    case 'sent':
-      return { dot: 'bg-primary', text: 'text-primary-on-tint' };
-    default:
-      return { dot: 'bg-muted-foreground/60', text: 'text-muted-foreground' };
-  }
-}
 
 export function QuoteList({ quotes, error }: QuoteListProps) {
   if (error) {
@@ -80,7 +62,7 @@ export function QuoteList({ quotes, error }: QuoteListProps) {
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {quotes.map((q) => {
-                const mark = statusMark(q.status);
+                const tone = quoteStatusTone(q.status);
                 return (
                   <tr key={q.id} data-testid={`quote-row-${q.id}`} className={ROW}>
                     {/* order-* reorders the card: number and status share the first
@@ -111,7 +93,7 @@ export function QuoteList({ quotes, error }: QuoteListProps) {
                       </span>
                     </td>
                     <td className={cn(CELL, 'order-2 shrink-0')}>
-                      <StatusMark dotClass={mark.dot} textClass={mark.text}>
+                      <StatusMark tone={tone}>
                         {STATUS_LABELS[q.status] ?? q.status}
                       </StatusMark>
                     </td>

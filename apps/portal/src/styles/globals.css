@@ -376,13 +376,9 @@
   letter-spacing: 0.01em;
 }
 
-/* Partner brand accent for proposal/invoice documents.
-
-   These exist because the portal's production CSP sets `style-src-attr 'none'`
-   (lib/csp.ts), which silently killed the `style={{...}}` attributes that used
-   to carry the accent — invisible in dev, where the CSP header is dropped
-   entirely. `--doc-accent` is now set by ONE nonced <style> element emitted by
-   the layout (lib/docAccent.ts); these classes are the only consumers, and the
+/* Partner brand accent for proposal/invoice documents. `--doc-accent` arrives
+   from the layout's nonced <style> element (see lib/docAccent.ts for why it
+   cannot be a style attribute); these classes are its only consumers, and the
    `var()` fallback keeps documents sensible when a partner has set no colour. */
 .doc-accent-bg {
   background-color: var(--doc-accent, hsl(var(--primary)));
@@ -394,10 +390,9 @@
   border-color: var(--doc-accent, hsl(var(--primary)));
 }
 
-/* The typed-name signature preview. Also a CSP casualty: this was an inline
-   fontFamily, so in production the signature rendered in ordinary body text.
-   No webfont is loaded for it, so on platforms without one of these faces it
-   degrades to the generic cursive keyword. */
+/* The typed-name signature preview (a class, not an inline fontFamily — see
+   lib/docAccent.ts). No webfont is loaded for it, so on platforms without one
+   of these faces it degrades to the generic cursive keyword. */
 .signature-preview {
   font-family: 'Snell Roundhand', 'Brush Script MT', 'Segoe Script', 'Apple Chancery', cursive;
 }

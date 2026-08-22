@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
 import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
 import { money, shortDate } from '@/lib/format';
-import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
+import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
@@ -282,7 +282,7 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
           eyebrow="Invoice"
           title={invoice.invoiceNumber ?? 'Invoice'}
           statusLabel={STATUS_LABELS[invoice.status]}
-          statusClass={statusColor(invoice.status)}
+          statusTone={statusTone(invoice.status)}
           dates={headerDates}
           preparedForLabel="Bill to"
           preparedForName={invoice.billToName ?? undefined}

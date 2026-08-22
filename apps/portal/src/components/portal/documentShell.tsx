@@ -4,6 +4,7 @@
 // accent comes from the partner's brand color (portal branding.primaryColor)
 // with the app primary as the fallback. Mirrors the dashboard's QuoteDocument so
 // staff preview and customer view match.
+import { markChipClass, type MarkTone } from './ui';
 import type { ReactNode } from 'react';
 import { sellerLines } from '@/lib/sellerLines';
 
@@ -17,15 +18,11 @@ export interface DocSeller {
 
 /** The bordered document card with a partner-accent top rule.
  *
- *  `primaryColor` is accepted but no longer applied here. The accent is a
- *  runtime per-partner value, and the portal's production CSP sets
- *  `style-src-attr 'none'` (lib/csp.ts), so carrying it on a `style` attribute
- *  meant the accent rule, the eyebrow and the hero figures all rendered
- *  unstyled in production while looking perfect in dev, where the CSP header is
- *  dropped. `--doc-accent` now arrives from a nonced <style> element emitted by
- *  the layout (lib/docAccent.ts) and is consumed through the `.doc-accent-*`
- *  classes, which are ordinary stylesheet rules. The prop stays so callers keep
- *  compiling and so the value still documents intent at the call site. */
+ *  `primaryColor` is accepted but not applied here: the accent reaches the page
+ *  as `--doc-accent` through the layout's nonced <style> element (lib/docAccent.ts
+ *  explains why a style attribute cannot carry it) and is consumed by the
+ *  `.doc-accent-*` classes. The prop stays so the value documents intent at the
+ *  call site. */
 export function DocumentPaper({
   children, testId, docTheme,
 }: { primaryColor?: string | null; children: ReactNode; testId?: string; docTheme?: string | null }) {
@@ -44,7 +41,7 @@ export function DocumentPaper({
 /** Header band: logo/wordmark + seller "From" on the left; eyebrow + title +
  *  status + dates on the right; optional "Prepared for / Bill to" line below. */
 export function DocumentHeader({
-  logoUrl, partnerName, seller, eyebrow, title, subtitle, statusLabel, statusClass, dates,
+  logoUrl, partnerName, seller, eyebrow, title, subtitle, statusLabel, statusTone, dates,
   preparedForLabel = 'Prepared for', preparedForName,
 }: {
   logoUrl?: string | null;
@@ -55,7 +52,7 @@ export function DocumentHeader({
   /** The document's human name (a proposal's title) under the number. */
   subtitle?: string | null;
   statusLabel?: string;
-  statusClass?: string;
+  statusTone?: MarkTone;
   dates: { label: string; value: string }[];
   preparedForLabel?: string;
   preparedForName?: string | null;
@@ -88,7 +85,7 @@ export function DocumentHeader({
           <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
           {subtitle && <p className="text-sm font-medium text-foreground/80">{subtitle}</p>}
           {statusLabel && (
-            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${statusClass ?? 'bg-muted text-muted-foreground'}`}>
+            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${markChipClass(statusTone ?? 'neutral')}`}>
               {statusLabel}
             </span>
           )}

@@ -5,7 +5,7 @@ import { type TicketSummary } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { ROW, CELL, TH, BTN_PRIMARY, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
-import { isTicketOpen, ticketStatusLabel, ticketStatusMark } from './ticketMarks';
+import { isTicketOpen, ticketStatusLabel, ticketStatusTone } from './ticketMarks';
 
 interface TicketListProps {
   tickets: TicketSummary[];
@@ -57,7 +57,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {tickets.map((ticket) => {
-                const status = ticketStatusMark(ticket.status);
+                const tone = ticketStatusTone(ticket.status);
                 return (
                   <tr key={ticket.id} className={ROW}>
                     {/* order-* reorders the card: subject and status share the
@@ -73,7 +73,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
                       </div>
                     </td>
                     <td className={cn(CELL, 'order-2 shrink-0')}>
-                      <StatusMark dotClass={status.dot} textClass={status.text}>
+                      <StatusMark tone={tone}>
                         {ticketStatusLabel(ticket.status)}
                       </StatusMark>
                     </td>

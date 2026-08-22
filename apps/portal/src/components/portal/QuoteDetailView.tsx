@@ -1,3 +1,4 @@
+import { quoteStatusTone } from '@/lib/quoteStatus';
 import { withBase } from '@/lib/basePath';
 import { useState } from 'react';
 import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
@@ -24,25 +25,6 @@ const STATUS_LABELS: Record<string, string> = {
   expired: 'Expired',
   converted: 'Accepted',
 };
-
-function statusColor(status: string): string {
-  switch (status) {
-    case 'accepted':
-    case 'converted':
-      return 'bg-success/10 text-success-on-tint';
-    case 'declined':
-    case 'expired':
-      return 'bg-destructive/10 text-destructive-on-tint';
-    case 'viewed':
-    case 'sent':
-      // Informational, matching QuoteList: a proposal merely sent or opened
-      // needs nothing from the customer yet — amber is reserved for states
-      // they should act on.
-      return 'bg-primary/10 text-primary-on-tint';
-    default:
-      return 'bg-muted text-muted-foreground';
-  }
-}
 
 export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewProps) {
   const [busy, setBusy] = useState(false);
@@ -220,7 +202,7 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
           title={quote.quoteNumber ?? 'Proposal'}
           subtitle={quote.title}
           statusLabel={STATUS_LABELS[status] ?? status}
-          statusClass={statusColor(status)}
+          statusTone={quoteStatusTone(status)}
           dates={headerDates}
           preparedForName={quote.billToName ?? undefined}
         />

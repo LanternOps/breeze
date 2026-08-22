@@ -1,3 +1,4 @@
+import { PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import { withBase } from '@/lib/basePath';
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Loader2 } from 'lucide-react';
@@ -10,7 +11,7 @@ import {
 import { formatDate, formatDateTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { BTN_PRIMARY, INPUT, StatusMark } from './ui';
-import { ticketStatusLabel, ticketStatusMark } from './ticketMarks';
+import { ticketStatusLabel, ticketStatusTone } from './ticketMarks';
 
 /** Activity copy derived from the ticket's own status. This component only ever
  *  sees the ticket record plus its public replies, so it must never assert that
@@ -57,6 +58,28 @@ function ReplyComposer({
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
+  // A reply typed against an expired session is lost when the API's 401 sends
+  // the customer to /login — the composer unmounts with their words in it.
+  // Keep the draft in sessionStorage (per tab, per ticket) while it is being
+  // written; restore it after sign-in brings them back; drop it once posted.
+  const draftKey = `portal:reply-draft:${ticketId}`;
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(draftKey);
+      if (saved) setContent(saved);
+    } catch {
+      /* storage unavailable (private mode, disabled) — the draft just isn't kept */
+    }
+  }, [draftKey]);
+  const stash = (next: string) => {
+    try {
+      if (next.trim()) sessionStorage.setItem(draftKey, next);
+      else sessionStorage.removeItem(draftKey);
+    } catch {
+      /* see above */
+    }
+  };
+
   const send = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = content.trim();
@@ -67,6 +90,7 @@ function ReplyComposer({
     if (result.data) {
       onPosted(result.data);
       setContent('');
+      stash('');
     } else {
       setSendError(result.error || 'Your reply was not sent. Try again.');
     }
@@ -84,9 +108,12 @@ function ReplyComposer({
       <textarea
         id="ticket-reply"
         rows={3}
-        maxLength={5000}
+        maxLength={PORTAL_TICKET_COMMENT_MAX_CHARS}
         value={content}
-        onChange={(e) => setContent(e.target.value)}
+        onChange={(e) => {
+          setContent(e.target.value);
+          stash(e.target.value);
+        }}
         disabled={isSending}
         placeholder="Has anything changed? Let us know here."
         className={cn(INPUT, 'min-h-[5.5rem] resize-y')}
@@ -162,7 +189,7 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
     );
   }
 
-  const status = ticketStatusMark(ticket.status);
+  const tone = ticketStatusTone(ticket.status);
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -184,7 +211,7 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
           <p className="text-figures mt-1 text-sm text-muted-foreground">#{ticket.ticketNumber}</p>
         </div>
         <div className="flex items-center gap-4 pt-1.5">
-          <StatusMark dotClass={status.dot} textClass={status.text}>
+          <StatusMark tone={tone}>
             {ticketStatusLabel(ticket.status)}
           </StatusMark>
           {/* Priority is context, not state: one mark per row. Urgent and high
@@ -239,6 +266,9 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <span className="text-sm font-semibold text-foreground">
                     {c.authorName || 'Support'}
+                    {c.authorType !== 'portal' && (
+                      <span className="ml-1.5 text-xs font-medium text-muted-foreground">Your IT team</span>
+                    )}
                   </span>
                   <span className="text-xs text-muted-foreground">{when(c.createdAt)}</span>
                 </div>

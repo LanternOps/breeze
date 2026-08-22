@@ -2,7 +2,7 @@ import { withBase } from '@/lib/basePath';
 import { Receipt } from 'lucide-react';
 import { type InvoiceSummary } from '@/lib/api';
 import { money, shortDate } from '@/lib/format';
-import { STATUS_LABELS, statusDot, statusText } from '@/lib/invoiceStatus';
+import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { depositBadgeState } from '@/lib/invoiceDeposit';
 import { cn } from '@/lib/utils';
 import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
@@ -110,7 +110,7 @@ export function InvoiceList({ invoices, error }: InvoiceListProps) {
                   </td>
                   <td className={cn(CELL, 'order-2 shrink-0')}>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                      <StatusMark dotClass={statusDot(inv.status)} textClass={statusText(inv.status)}>
+                      <StatusMark tone={statusTone(inv.status)}>
                         {STATUS_LABELS[inv.status]}
                       </StatusMark>
                       {/* Deposit is context, not a second state: plain text so

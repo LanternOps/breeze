@@ -1,15 +1,10 @@
 import type { TicketStatus } from '@/lib/api';
-
-export type StatusMarkClasses = { dot: string; text: string };
-
-const NEUTRAL: StatusMarkClasses = { dot: 'bg-muted-foreground/60', text: 'text-muted-foreground' };
+import type { MarkTone } from './ui';
 
 /**
- * The one source for how a ticket's STATUS renders as a StatusMark (ui.tsx) —
- * priority is deliberately plain text in both views, one mark per row:
- * a dot of the background-tuned token beside text in the AA-safe `-on-tint`
- * foreground. Shared by TicketList and TicketDetails so the same datum never
- * wears two treatments.
+ * The one source for a ticket STATUS's tone (StatusMark in ui.tsx) — priority
+ * is deliberately plain text in both views, one mark per row. Shared by
+ * TicketList and TicketDetails so the same datum never wears two treatments.
  *
  * Customer-facing semantics, not the technician's queue: 'new' and 'open' both
  * read as Open (triage state is the MSP's business); 'pending' means the ball
@@ -20,21 +15,21 @@ const NEUTRAL: StatusMarkClasses = { dot: 'bg-muted-foreground/60', text: 'text-
  * (An earlier version returned undefined for 'new' — the most common status —
  * and took the whole Support page down.)
  */
-export function ticketStatusMark(status: TicketStatus): StatusMarkClasses {
+export function ticketStatusTone(status: TicketStatus): MarkTone {
   switch (status) {
     case 'new':
     case 'open':
-      return { dot: 'bg-primary', text: 'text-primary-on-tint' };
+      return 'primary';
     case 'pending':
-      return { dot: 'bg-warning', text: 'text-warning-on-tint' };
+      return 'warning';
     case 'resolved':
-      return { dot: 'bg-success', text: 'text-success-on-tint' };
+      return 'success';
     case 'on_hold':
     case 'closed':
-      return NEUTRAL;
+      return 'neutral';
     default:
       console.error('[portal] unknown ticket status', status);
-      return NEUTRAL;
+      return 'neutral';
   }
 }
 

@@ -1,3 +1,4 @@
+import { quoteStatusTone } from '@/lib/quoteStatus';
 import { useState } from 'react';
 import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -52,14 +53,14 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
 
   const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
 
-  const statusBadge =
+  const statusLabel =
     status === 'accepted' || status === 'converted'
-      ? { label: 'Accepted', cls: 'bg-success/10 text-success-on-tint' }
+      ? 'Accepted'
       : status === 'declined'
-        ? { label: 'Declined', cls: 'bg-destructive/10 text-destructive-on-tint' }
+        ? 'Declined'
         : status === 'expired'
-          ? { label: 'Expired', cls: 'bg-destructive/10 text-destructive-on-tint' }
-          : null;
+          ? 'Expired'
+          : undefined;
 
   const headerDates = [
     ...(quote.issueDate ? [{ label: 'Issued', value: shortDate(quote.issueDate) }] : []),
@@ -127,8 +128,8 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
           seller={seller}
           eyebrow="Proposal"
           title={quote.quoteNumber ?? 'Proposal'}
-          statusLabel={statusBadge?.label}
-          statusClass={statusBadge?.cls}
+          statusLabel={statusLabel}
+          statusTone={statusLabel ? quoteStatusTone(status) : undefined}
           dates={headerDates}
           preparedForName={quote.billToName ?? undefined}
         />
