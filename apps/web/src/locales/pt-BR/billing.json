@@ -1395,7 +1395,7 @@
   "invoiceActions": {
     "composer": {
       "toLabel": "Para",
-      "toPlaceholder": "financeiro@cliente.com",
+      "toPlaceholder": "financeiro@example.com",
       "ccToggle": "Cc",
       "ccLabel": "Cc",
       "subjectLabel": "Assunto",
