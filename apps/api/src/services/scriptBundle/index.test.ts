@@ -640,6 +640,90 @@ describe('importBundle', () => {
     }
     expect(h.state.inserts).toHaveLength(0);
   });
+
+  // ---------------------------------------------------------------------
+  // Save-time parameter-binding secret mismatch (#3409 PR4c-2, Task 6)
+  // ---------------------------------------------------------------------
+  const secretRow = { id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID };
+  const plainRow = { id: 'tv-2', key: 'repo_url', value: 'https://dl.example', isSecret: false, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID };
+
+  it('rejects a bundle entry whose tenantVariable parameter binds a SECRET variable, per-entry', async () => {
+    const bundle = validBundle([
+      { ...baseEntry, parameters: [{ name: 'p', type: 'string', source: 'tenantVariable', variableKey: 's1_token' }] },
+      { ...baseEntry, name: 'Second script' }
+    ]);
+    h.state.selectQueue.push(
+      [secretRow], // entry 1: content has no tokens → only the parameter lookup (loadTenantVariableScope)
+      [] // entry 2: findExistingByName → none
+    );
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.index).toBe(0);
+      expect(result.errors[0]!.error).toBe(
+        'Parameter "p" binds secret variable "s1_token" with source "From a variable"; use a secret parameter instead'
+      );
+      expect(result.imported).toBe(1);
+    }
+    expect(h.state.inserts.filter((i) => i.table === scripts)).toHaveLength(1);
+  });
+
+  it('rejects a bundle entry whose tenantSecret parameter binds a NON-secret variable, per-entry', async () => {
+    const bundle = validBundle([
+      { ...baseEntry, parameters: [{ name: 'p', type: 'string', source: 'tenantSecret', variableKey: 'repo_url' }] }
+    ]);
+    h.state.selectQueue.push([plainRow]);
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.error).toBe('Parameter "p" is a secret parameter but variable "repo_url" is not a secret');
+      expect(result.imported).toBe(0);
+    }
+    expect(h.state.inserts).toHaveLength(0);
+  });
+
+  it('imports a bundle entry whose bindings target UNKNOWN keys or match their targets', async () => {
+    const bundle = validBundle([
+      {
+        ...baseEntry,
+        parameters: [
+          { name: 'p', type: 'string', source: 'tenantVariable', variableKey: 'repo_url' },
+          { name: 'q', type: 'string', source: 'tenantSecret', variableKey: 's1_token' },
+          { name: 'r', type: 'string', source: 'tenantSecret', variableKey: 'not_yet_created' }
+        ]
+      }
+    ]);
+    h.state.selectQueue.push(
+      [secretRow, plainRow], // loadTenantVariableScope([ORG_ID])
+      [] // findExistingByName → none
+    );
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) expect(result.errors).toHaveLength(0);
+    if ('imported' in result) expect(result.imported).toBe(1);
+  });
+
+  it('still rejects on CONTENT secrets first, with the content message, when both content and parameters offend', async () => {
+    const bundle = validBundle([
+      {
+        ...baseEntry,
+        content: 'echo {{var.s1_token}}',
+        parameters: [{ name: 'p', type: 'string', source: 'tenantVariable', variableKey: 's1_token' }]
+      }
+    ]);
+    h.state.selectQueue.push([secretRow]); // content lookup short-circuits before the parameter lookup
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.error).toBe(
+        'Script content references secret variable(s): {{var.s1_token}}. Secret variables cannot be substituted into script content.'
+      );
+    }
+    expect(h.state.inserts).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

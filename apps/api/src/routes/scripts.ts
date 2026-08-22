@@ -36,7 +36,9 @@ import {
   type ScriptCreateScope,
 } from '../services/scriptWrite';
 import {
+  describeParameterSecretMismatch,
   describeSecretVariableRejection,
+  findParameterSecretMismatches,
   findSecretVariableReferences,
 } from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
@@ -616,6 +618,12 @@ scriptRoutes.post(
     if (secretRefs.length > 0) {
       return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
     }
+    // Parameter-binding twin (#3409 PR4c-2): tenantVariable→secret and
+    // tenantSecret→non-secret are both rejected; unknown keys pass.
+    const mismatches = await findParameterSecretMismatches(scope, data.parameters);
+    if (mismatches.length > 0) {
+      return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
+    }
 
     const script = await insertScriptRow(auth, scope, data, {
       requestedIsSystem: data.isSystem
@@ -808,6 +816,17 @@ scriptRoutes.put(
       }
       updates.content = data.content;
       versionChanged = true;
+    }
+
+    if (data.parameters !== undefined) {
+      // Parameter-binding twin of the content check (#3409 PR4c-2), against
+      // the same EFFECTIVE scope. Only the INCOMING definitions are checked —
+      // a PUT that leaves `parameters` untouched does not re-validate what is
+      // already stored.
+      const mismatches = await findParameterSecretMismatches(effectiveScope, data.parameters);
+      if (mismatches.length > 0) {
+        return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
+      }
     }
 
     if (versionChanged) {

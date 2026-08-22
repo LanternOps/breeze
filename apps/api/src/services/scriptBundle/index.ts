@@ -87,11 +87,32 @@ export async function findSecretVariableReferences(
 ): Promise<string[]> {
   const keys = findVariableTokens(content);
   if (keys.length === 0) return [];
+  const isSecretByKey = await lookupIsSecretByKey(scope, keys);
+  return keys.filter((key) => isSecretByKey.get(key) === true);
+}
+
+/**
+ * The single save-time "is this key a secret for this scope?" lookup shared
+ * by {@link findSecretVariableReferences} (content tokens) and
+ * {@link findParameterSecretMismatches} (parameter bindings). One DB round
+ * trip per call. A key with no matching row is ABSENT from the result — the
+ * two callers each treat absence as "unknown, allow" (see their docblocks).
+ */
+async function lookupIsSecretByKey(
+  scope: ScriptCreateScope,
+  keys: string[]
+): Promise<Map<string, boolean>> {
+  const result = new Map<string, boolean>();
+  if (keys.length === 0) return result;
 
   if (scope.orgId) {
     const variableScope = await loadTenantVariableScope([scope.orgId]);
     const resolved = resolveForOrg(variableScope, scope.orgId);
-    return keys.filter((key) => resolved.get(key)?.isSecret === true);
+    for (const key of keys) {
+      const variable = resolved.get(key);
+      if (variable) result.set(key, variable.isSecret === true);
+    }
+    return result;
   }
 
   if (scope.partnerId) {
@@ -105,17 +126,116 @@ export async function findSecretVariableReferences(
           inArray(tenantVariables.key, keys)
         )
       );
-    const secretKeys = new Set(rows.filter((r) => r.isSecret).map((r) => r.key));
-    return keys.filter((key) => secretKeys.has(key));
+    for (const row of rows) result.set(row.key, row.isSecret === true);
+    return result;
   }
 
-  return [];
+  return result;
 }
 
 /** User-facing 400 message for {@link findSecretVariableReferences}'s non-empty result. Names only KEYS, never a value. */
 export function describeSecretVariableRejection(offendingKeys: string[]): string {
   const tokens = offendingKeys.map((key) => `{{var.${key}}}`).join(', ');
   return `Script content references secret variable(s): ${tokens}. Secret variables cannot be substituted into script content.`;
+}
+
+export type ParameterSecretMismatchKind = 'secretBoundAsPlain' | 'plainBoundAsSecret';
+
+export interface ParameterSecretMismatch {
+  /** Parameter NAME — never a value. */
+  name: string;
+  /** Tenant-variable KEY — never a value. */
+  variableKey: string;
+  kind: ParameterSecretMismatchKind;
+}
+
+/**
+ * A raw parameter definition element that binds to a tenant variable.
+ * Parsed TOLERANTLY, element by element (same posture as `parseDefinitions`
+ * in services/sourcedParameters.ts): a malformed sibling must not hide a
+ * real mismatch, and this check must not depend on the full union parsing —
+ * it only needs `source` and `variableKey`, which it reads straight off the
+ * element.
+ */
+interface VariableBoundParameter {
+  name: string;
+  source: 'tenantVariable' | 'tenantSecret';
+  variableKey: string;
+}
+
+function readVariableBoundParameters(parameters: unknown): VariableBoundParameter[] {
+  if (!Array.isArray(parameters)) return [];
+  const bound: VariableBoundParameter[] = [];
+  for (const element of parameters) {
+    if (!element || typeof element !== 'object') continue;
+    const { name, source, variableKey } = element as Record<string, unknown>;
+    if (source !== 'tenantVariable' && source !== 'tenantSecret') continue;
+    if (typeof variableKey !== 'string' || variableKey.length === 0) continue;
+    bound.push({
+      name: typeof name === 'string' ? name : '',
+      source,
+      variableKey
+    });
+  }
+  return bound;
+}
+
+/**
+ * Save-time parameter-binding secret check (#3409 PR4c-2, Task 6) — the
+ * parameter-side twin of {@link findSecretVariableReferences}, called at the
+ * same three ingresses (POST/PUT `/scripts`, `importBundle`) right after it.
+ *
+ * Secret delivery is DECLARED, never inferred (settled design §1):
+ *
+ * - `source: 'tenantVariable'` bound to a SECRET key → `secretBoundAsPlain`.
+ *   Dispatch already denies this per device; rejecting it at save time is
+ *   what the web form's warning ("the save will be rejected") promises.
+ * - `source: 'tenantSecret'` bound to a NON-secret key → `plainBoundAsSecret`.
+ *   Dispatch fails that device closed; a save-time 400 says why up front.
+ *
+ * An UNKNOWN key produces NO mismatch, for the same reason as the content
+ * check: the variable may not exist yet, and a partner-wide script is
+ * resolved per org at dispatch, where each device fails loudly on its own.
+ * Only one lookup is issued per call, whatever the number of bindings.
+ */
+export async function findParameterSecretMismatches(
+  scope: ScriptCreateScope,
+  parameters: unknown
+): Promise<ParameterSecretMismatch[]> {
+  const bound = readVariableBoundParameters(parameters);
+  if (bound.length === 0) return [];
+
+  const keys = [...new Set(bound.map((p) => p.variableKey))];
+  const isSecretByKey = await lookupIsSecretByKey(scope, keys);
+
+  const mismatches: ParameterSecretMismatch[] = [];
+  for (const parameter of bound) {
+    const isSecret = isSecretByKey.get(parameter.variableKey);
+    if (isSecret === undefined) continue; // unknown key — allowed
+    if (parameter.source === 'tenantVariable' && isSecret) {
+      mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'secretBoundAsPlain' });
+    } else if (parameter.source === 'tenantSecret' && !isSecret) {
+      mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'plainBoundAsSecret' });
+    }
+  }
+  return mismatches;
+}
+
+/**
+ * User-facing 400 message for {@link findParameterSecretMismatches}'s
+ * non-empty result. Names parameter NAMES and variable KEYS only — never a
+ * value (settled design §5). "From a variable" is the web form's label for
+ * the `tenantVariable` source, so the message reads against what the tech
+ * actually selected.
+ */
+export function describeParameterSecretMismatch(mismatches: ParameterSecretMismatch[]): string {
+  return mismatches
+    .map((m) =>
+      m.kind === 'secretBoundAsPlain'
+        ? `Parameter "${m.name}" binds secret variable "${m.variableKey}" with source "From a variable"; use a secret parameter instead`
+        : `Parameter "${m.name}" is a secret parameter but variable "${m.variableKey}" is not a secret`
+    )
+    .join('; ');
 }
 
 export type BundleAuth = ScriptWriteAuth & Pick<AuthContext, 'user'>;
@@ -504,6 +624,14 @@ export async function importBundle(
       const secretRefs = await findSecretVariableReferences(scope, entry.content);
       if (secretRefs.length > 0) {
         result.errors.push({ index, name: entry.name, error: describeSecretVariableRejection(secretRefs) });
+        continue;
+      }
+      // Parameter-binding twin of the content check (#3409 PR4c-2, Task 6):
+      // a tenantVariable→secret or tenantSecret→non-secret binding is a
+      // per-entry error the same way.
+      const mismatches = await findParameterSecretMismatches(scope, entry.parameters);
+      if (mismatches.length > 0) {
+        result.errors.push({ index, name: entry.name, error: describeParameterSecretMismatch(mismatches) });
         continue;
       }
 
