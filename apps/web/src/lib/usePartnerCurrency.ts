@@ -36,26 +36,43 @@ function normalize(raw: unknown): string | null {
 
 /** Resolve (and cache) the partner currency. Only a RESOLVED code is cached: a
  *  rejected / 401 / non-OK / malformed response returns null and leaves the
- *  cache empty so the next mount (or `retry()`) fetches again. */
+ *  cache empty so the next mount (or `retry()`) fetches again.
+ *
+ *  Every request is bound to the cache generation it started in (review F7).
+ *  If `resetPartnerCurrencyCache()` ran while it was in flight — logout, then
+ *  a different partner logs in — its result is discarded: it commits nothing,
+ *  its cleanup leaves the newer in-flight request alone, and the caller is
+ *  re-resolved under the CURRENT generation so it never sees the old
+ *  partner's currency. */
 export async function loadPartnerCurrency(): Promise<string | null> {
   if (partnerCurrencyCache.value) return partnerCurrencyCache.value;
+  const generation = partnerCurrencyCache.generation;
   if (!partnerCurrencyCache.inflight) {
-    partnerCurrencyCache.inflight = (async () => {
+    const request: Promise<string | null> = (async () => {
+      let code: string | null = null;
       try {
         const res = await fetchWithAuth('/orgs/partners/me');
-        if (!res?.ok) return null;
-        const body = (await res.json().catch(() => null)) as { currencyCode?: unknown } | null;
-        const code = normalize(body?.currencyCode);
-        if (code) partnerCurrencyCache.value = code;
-        return code;
+        if (res?.ok) {
+          const body = (await res.json().catch(() => null)) as { currencyCode?: unknown } | null;
+          code = normalize(body?.currencyCode);
+        }
       } catch {
-        return null;
-      } finally {
-        partnerCurrencyCache.inflight = null;
+        code = null;
       }
-    })();
+      // Commit only while this request's generation is still current.
+      if (code && partnerCurrencyCache.generation === generation) partnerCurrencyCache.value = code;
+      return code;
+    })().finally(() => {
+      // Clear only OUR slot — after a reset the slot may hold a newer request.
+      if (partnerCurrencyCache.inflight === request) partnerCurrencyCache.inflight = null;
+    });
+    partnerCurrencyCache.inflight = request;
   }
-  return partnerCurrencyCache.inflight;
+  const code = await partnerCurrencyCache.inflight;
+  // Reset happened while we waited: this result belongs to the old partner.
+  // Resolve again under the current generation instead of returning it.
+  if (partnerCurrencyCache.generation !== generation) return loadPartnerCurrency();
+  return code;
 }
 
 export function usePartnerCurrency(enabled = true): PartnerCurrencyState {

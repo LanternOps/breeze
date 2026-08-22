@@ -4,7 +4,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 
-import { usePartnerCurrency, usePartnerCurrencyOrDefault, resetPartnerCurrencyCache } from '../usePartnerCurrency';
+import { usePartnerCurrency, usePartnerCurrencyOrDefault, resetPartnerCurrencyCache, loadPartnerCurrency } from '../usePartnerCurrency';
+import { partnerCurrencyCache } from '../partnerCurrencyCache';
 
 const jsonRes = (payload: unknown, status = 200) =>
   ({ ok: status < 400, status, json: async () => payload }) as Response;
@@ -125,5 +126,54 @@ describe('usePartnerCurrency (typed state, no USD fallback)', () => {
     await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('GBP'));
     await waitFor(() => expect(screen.getByTestId('s').textContent).toBe('GBP'));
     expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reset generation (review F7): a request started before reset can never touch the post-reset cache', () => {
+  const deferred = () => {
+    let resolve: (r: Response) => void = () => {};
+    const promise = new Promise<Response>((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('stale request neither commits its currency nor clears the newer in-flight request', async () => {
+    // Partner A's request is in flight when the user logs out (reset) and
+    // partner B logs in and starts a fresh request.
+    const a = deferred();
+    fetchWithAuth.mockReturnValueOnce(a.promise);
+    const pA = loadPartnerCurrency();
+    resetPartnerCurrencyCache();
+    const b = deferred();
+    fetchWithAuth.mockReturnValueOnce(b.promise);
+    const pB = loadPartnerCurrency();
+    const inflightB = partnerCurrencyCache.inflight;
+    expect(inflightB).not.toBeNull();
+
+    // A resolves AFTER the reset: it must not write A's currency over B's
+    // cache, and its cleanup must not drop B's in-flight request.
+    a.resolve(jsonRes({ currencyCode: 'USD' }));
+    await flush();
+    expect(partnerCurrencyCache.value).toBeNull();
+    expect(partnerCurrencyCache.inflight).toBe(inflightB);
+
+    b.resolve(jsonRes({ currencyCode: 'EUR' }));
+    expect(await pB).toBe('EUR');
+    expect(partnerCurrencyCache.value).toBe('EUR');
+    // A stale caller re-resolves under the CURRENT generation — never A's value.
+    expect(await pA).toBe('EUR');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('a hook mounted across the reset ends on the new partner currency, never the old one', async () => {
+    const a = deferred();
+    fetchWithAuth.mockReturnValueOnce(a.promise);
+    render(<StateProbe />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    resetPartnerCurrencyCache();
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ currencyCode: 'EUR' }));
+    a.resolve(jsonRes({ currencyCode: 'USD' }));
+    await waitFor(() => expect(screen.getByTestId('state').textContent).toBe('EUR'));
+    expect(partnerCurrencyCache.value).toBe('EUR');
   });
 });
