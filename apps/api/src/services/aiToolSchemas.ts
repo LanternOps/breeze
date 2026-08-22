@@ -298,7 +298,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   list_quotes: z.object({
     orgId: uuid.optional(),
-    status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']).optional(),
+    status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
