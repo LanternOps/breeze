@@ -681,6 +681,7 @@ export function BlockCard({
                   <>
                     <CatalogItemPicker
                       items={catalog}
+                      currencyCode={currency}
                       includeBundles={false}
                       onSelect={(it) => onAddCatalog(block.id, it)}
                       testId={`quote-catalog-picker-${block.id}`}

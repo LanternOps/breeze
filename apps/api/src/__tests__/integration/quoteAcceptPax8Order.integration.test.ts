@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  catalogItemPrices,
   catalogItems,
   contractLines,
   contracts,
@@ -56,9 +57,18 @@ async function seedPax8Quote(options: {
       billingType: recurrence === 'one_time' ? 'one_time' : 'recurring',
       billingFrequency: recurrence === 'annual' ? 'annual' : (recurrence === 'monthly' ? 'monthly' : null),
       unitPrice: '19.95',
+      costCurrency: 'USD',
       taxable: false,
     }).returning();
     if (!catalogItem) throw new Error('catalog seed failed');
+    // Price-book row (multi-currency wave 3): addCatalogLine resolves the sell
+    // price from catalog_item_prices, never from the deprecated unit_price mirror.
+    await db.insert(catalogItemPrices).values({
+      itemId: catalogItem.id,
+      partnerId: partner.id,
+      currencyCode: 'USD',
+      unitPrice: '19.95',
+    });
 
     const [integration] = await db.insert(pax8Integrations).values({
       partnerId: partner.id,
@@ -218,6 +228,7 @@ describe('quote acceptance stages Pax8 fulfillment (real Postgres)', () => {
         billingType: 'recurring',
         billingFrequency: 'monthly',
         unitPrice: '5.00',
+        costCurrency: 'USD',
       }).returning();
       const [foreignIntegration] = await db.insert(pax8Integrations).values({
         partnerId: foreignPartner.id,

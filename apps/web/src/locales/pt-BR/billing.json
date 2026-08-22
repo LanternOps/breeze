@@ -141,7 +141,8 @@
         "saveContract": "Não foi possível salvar o contrato.",
         "addLine": "Não foi possível adicionar a linha.",
         "removeLine": "Não foi possível remover a linha.",
-        "activateContract": "Não foi possível ativar o contrato."
+        "activateContract": "Não foi possível ativar o contrato.",
+        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou limpe o vínculo do catálogo."
       },
       "toast": {
         "contractCreated": "Contrato criado",
@@ -198,7 +199,9 @@
         "taxable": "Tributável",
         "quantityResolvedAutomatically": "Quantidade resolvida automaticamente no momento da cobrança.",
         "lineTotal": "Total da linha: {{total}}",
-        "addLine": "Adicionar linha"
+        "addLine": "Adicionar linha",
+        "noPriceInCurrency": "Este item não tem preço em {{currency}} — adicione um no catálogo, ou limpe o vínculo do catálogo e insira uma linha manual.",
+        "priceFromCatalog": "Preço unitário (do catálogo, em {{currency}})"
       },
       "estimate": {
         "title": "Estimado neste período",
@@ -627,7 +630,8 @@
         "updateDeposit": "Não foi possível atualizar o depósito.",
         "updateLine": "Não foi possível atualizar a linha.",
         "updateSection": "Não foi possível atualizar a seção.",
-        "uploadImage": "Não foi possível enviar a imagem."
+        "uploadImage": "Não foi possível enviar a imagem.",
+        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -1054,6 +1058,7 @@
       }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
       "available": "{{count}} disponíveis",
       "cost": "custo {{currency}} {{amount}}",
       "endOfLife": "Fim de vida",
@@ -1221,6 +1226,7 @@
       "tryAgain": "Tentar novamente"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
       "cost": "custo {{currency}} {{amount}}",
       "importAndAdd": "Importar e adicionar",
       "option": "Opção {{number}}",
@@ -1331,7 +1337,8 @@
       "removeLine": "Não foi possível remover a linha.",
       "saveNotes": "Não foi possível salvar as observações.",
       "saveTerms": "Não foi possível salvar os termos.",
-      "updateLine": "Não foi possível atualizar a linha."
+      "updateLine": "Não foi possível atualizar a linha.",
+      "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual."
     },
     "fields": {
       "descriptionOptional": "Descrição (opcional)",

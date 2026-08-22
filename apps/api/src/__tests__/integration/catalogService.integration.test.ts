@@ -30,7 +30,7 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { catalogItems, catalogItemOrgPricing, catalogBundleComponents } from '../../db/schema';
+import { catalogItems, catalogItemOrgPricing, catalogItemPrices, catalogBundleComponents } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import {
   createCatalogItem,
@@ -38,6 +38,11 @@ import {
   setOrgPriceOverride,
   removeOrgPriceOverride,
   setBundleComponents,
+  setItemPrice,
+  removeItemPrice,
+  listItemPrices,
+  listCatalogItems,
+  getCatalogItem,
   resolvePrice,
   computeBundleEconomics,
   CatalogServiceError,
@@ -325,7 +330,7 @@ describe('catalogService (breeze_app, real DB)', () => {
 
     await expect(
       withDbAccessContext(ctxWithOrgs(fx.partnerA.id, [fx.otherOrgA.id]), () =>
-        resolvePrice(item.id, fx.orgA.id, restrictedActor)
+        resolvePrice(item.id, 'USD', fx.orgA.id, restrictedActor)
       )
     ).rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
   });
@@ -458,7 +463,7 @@ describe('catalogService (breeze_app, real DB)', () => {
     const crossPartnerComp = await withSystemDbAccessContext(async () => {
       const [row] = await db
         .insert(catalogItems)
-        .values({ partnerId: fx.partnerB.id, itemType: 'service', name: 'B comp', unitPrice: '1.00' })
+        .values({ partnerId: fx.partnerB.id, itemType: 'service', name: 'B comp', unitPrice: '1.00', costCurrency: 'USD' })
         .returning({ id: catalogItems.id });
       return row!.id;
     });
@@ -553,13 +558,15 @@ describe('catalogService (breeze_app, real DB)', () => {
     const ctx = ctxWithOrgs(fx.partnerA.id, [fx.orgA.id]);
     const actor: CatalogActor = { ...fx.actorA, accessibleOrgIds: [fx.orgA.id] };
 
-    const baseResolved = await withDbAccessContext(ctx, () => resolvePrice(item.id, fx.orgA.id, actor));
+    const baseResolved = await withDbAccessContext(ctx, () => resolvePrice(item.id, 'USD', fx.orgA.id, actor));
     expect(baseResolved.unitPrice).toBe('700.00');
-    expect(baseResolved.source).toBe('item');
+    expect(baseResolved.source).toBe('price_book');
+    expect(baseResolved.currencyCode).toBe('USD');
+    expect(baseResolved.marginAvailable).toBe(true);
 
     await withDbAccessContext(ctx, () => setOrgPriceOverride(item.id, fx.orgA.id, { unitPrice: 555 }, actor));
 
-    const overridden = await withDbAccessContext(ctx, () => resolvePrice(item.id, fx.orgA.id, actor));
+    const overridden = await withDbAccessContext(ctx, () => resolvePrice(item.id, 'USD', fx.orgA.id, actor));
     expect(overridden.unitPrice).toBe('555.00');
     expect(overridden.source).toBe('org_override');
     expect(overridden.costBasis).toBe('400.00'); // cost basis always from the item
@@ -580,11 +587,222 @@ describe('catalogService (breeze_app, real DB)', () => {
       )
     );
 
-    const econ = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, null, fx.actorA));
+    const econ = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'USD', null, fx.actorA));
     expect(econ.headlinePrice).toBe('100.00');
+    expect(econ.priceBookComplete).toBe(true);
+    expect(econ.marginAvailable).toBe(true);
     expect(econ.totalCost).toBe('75.00');
     expect(econ.margin).toBe('25.00');
     expect(econ.marginPct).toBe(25);
+  });
+
+  // ---------------------------------------------------------------------------
+  // (g2) Multi-currency wave 3 — price book, resolver gaps, overrides, economics
+  // ---------------------------------------------------------------------------
+  async function seedMultiCurrencyItem(fx: Fixture) {
+    return withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem(
+        {
+          itemType: 'service',
+          name: 'Multi-currency widget',
+          billingType: 'one_time',
+          prices: [{ currencyCode: 'EUR', unitPrice: 10 }, { currencyCode: 'USD', unitPrice: 12 }],
+          unitOfMeasure: 'each',
+          taxable: true,
+          isBundle: false,
+          attributes: {},
+        },
+        fx.actorA
+      )
+    );
+  }
+
+  const priceRowsFor = (itemId: string) =>
+    withSystemDbAccessContext(() =>
+      db.select().from(catalogItemPrices).where(eq(catalogItemPrices.itemId, itemId)).orderBy(catalogItemPrices.currencyCode)
+    );
+
+  runDb('createCatalogItem: prices [EUR 10, USD 12] under a USD partner → two book rows, mirror 12.00, costCurrency USD', async () => {
+    const fx = await seedFixture();
+    const item = await seedMultiCurrencyItem(fx);
+    expect(item.unitPrice).toBe('12.00');
+    expect(item.costCurrency).toBe('USD');
+    const rows = await priceRowsFor(item.id);
+    expect(rows.map((r) => [r.currencyCode, r.unitPrice, r.partnerId])).toEqual([
+      ['EUR', '10.00', fx.partnerA.id],
+      ['USD', '12.00', fx.partnerA.id],
+    ]);
+    const detail = await withDbAccessContext(fx.ctxA, () => getCatalogItem(item.id, fx.actorA));
+    expect(detail.prices.map((p) => p.currencyCode)).toEqual(['EUR', 'USD']);
+  });
+
+  runDb('resolvePrice: EUR resolves from the price book; org override in EUR wins for EUR only; GBP is a typed gap', async () => {
+    const fx = await seedFixture();
+    const item = await seedMultiCurrencyItem(fx);
+    const ctx = ctxWithOrgs(fx.partnerA.id, [fx.orgA.id]);
+    const actor: CatalogActor = { ...fx.actorA, accessibleOrgIds: [fx.orgA.id] };
+
+    const eur = await withDbAccessContext(ctx, () => resolvePrice(item.id, 'EUR', fx.orgA.id, actor));
+    expect(eur).toMatchObject({ unitPrice: '10.00', currencyCode: 'EUR', source: 'price_book', marginAvailable: false });
+
+    const override = await withDbAccessContext(ctx, () =>
+      setOrgPriceOverride(item.id, fx.orgA.id, { unitPrice: 9, currencyCode: 'EUR' }, actor));
+    expect(override.currencyCode).toBe('EUR');
+    expect(override.partnerId).toBe(fx.partnerA.id);
+
+    const eurOverridden = await withDbAccessContext(ctx, () => resolvePrice(item.id, 'EUR', fx.orgA.id, actor));
+    expect(eurOverridden).toMatchObject({ unitPrice: '9.00', source: 'org_override' });
+    const usd = await withDbAccessContext(ctx, () => resolvePrice(item.id, 'USD', fx.orgA.id, actor));
+    expect(usd).toMatchObject({ unitPrice: '12.00', source: 'price_book' }); // EUR override skipped
+
+    await expect(withDbAccessContext(ctx, () => resolvePrice(item.id, 'GBP', fx.orgA.id, actor)))
+      .rejects.toMatchObject({ status: 409, code: 'NO_PRICE_FOR_CURRENCY' });
+  });
+
+  runDb('setItemPrice adds a GBP row (resolvable); removeItemPrice reopens the gap; partner-currency edits mirror unit_price', async () => {
+    const fx = await seedFixture();
+    const item = await seedMultiCurrencyItem(fx);
+
+    const gbp = await withDbAccessContext(fx.ctxA, () => setItemPrice(item.id, 'GBP', { unitPrice: 8 }, fx.actorA));
+    expect(gbp).toMatchObject({ currencyCode: 'GBP', unitPrice: '8.00', partnerId: fx.partnerA.id });
+    const resolved = await withDbAccessContext(fx.ctxA, () => resolvePrice(item.id, 'GBP', null, fx.actorA));
+    expect(resolved.unitPrice).toBe('8.00');
+    expect((await withDbAccessContext(fx.ctxA, () => listItemPrices(item.id, fx.actorA))).map((p) => p.currencyCode)).toEqual(['EUR', 'GBP', 'USD']);
+
+    await withDbAccessContext(fx.ctxA, () => removeItemPrice(item.id, 'GBP', fx.actorA));
+    await expect(withDbAccessContext(fx.ctxA, () => resolvePrice(item.id, 'GBP', null, fx.actorA)))
+      .rejects.toMatchObject({ status: 409, code: 'NO_PRICE_FOR_CURRENCY' });
+
+    // Upsert on (item, currency) + partner-currency mirror.
+    const usd = await withDbAccessContext(fx.ctxA, () => setItemPrice(item.id, 'USD', { unitPrice: 15 }, fx.actorA));
+    expect(usd.unitPrice).toBe('15.00');
+    expect((await priceRowsFor(item.id)).filter((r) => r.currencyCode === 'USD')).toHaveLength(1);
+    let mirror = await withSystemDbAccessContext(() =>
+      db.select({ unitPrice: catalogItems.unitPrice }).from(catalogItems).where(eq(catalogItems.id, item.id)).limit(1));
+    expect(mirror[0]?.unitPrice).toBe('15.00');
+
+    await withDbAccessContext(fx.ctxA, () => removeItemPrice(item.id, 'USD', fx.actorA));
+    mirror = await withSystemDbAccessContext(() =>
+      db.select({ unitPrice: catalogItems.unitPrice }).from(catalogItems).where(eq(catalogItems.id, item.id)).limit(1));
+    expect(mirror[0]?.unitPrice).toBe('0.00');
+  });
+
+  runDb('setItemPrice: JPY 100.5 → PRICE_NOT_REPRESENTABLE; setOrgPriceOverride JPY 10.5 → PRICE_NOT_REPRESENTABLE', async () => {
+    const fx = await seedFixture();
+    const item = await seedMultiCurrencyItem(fx);
+    await expect(withDbAccessContext(fx.ctxA, () => setItemPrice(item.id, 'JPY', { unitPrice: 100.5 }, fx.actorA)))
+      .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+    const ctx = ctxWithOrgs(fx.partnerA.id, [fx.orgA.id]);
+    const actor: CatalogActor = { ...fx.actorA, accessibleOrgIds: [fx.orgA.id] };
+    await expect(withDbAccessContext(ctx, () =>
+      setOrgPriceOverride(item.id, fx.orgA.id, { unitPrice: 10.5, currencyCode: 'JPY' }, actor)))
+      .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+    expect((await priceRowsFor(item.id)).map((r) => r.currencyCode)).toEqual(['EUR', 'USD']);
+  });
+
+  runDb('setOrgPriceOverride: an org of ANOTHER partner is ORG_DENIED 403; a forged row trips the composite FK 23503', async () => {
+    const fx = await seedFixture();
+    const item = await seedMultiCurrencyItem(fx);
+    // Partner-A actor whose RLS axis can see orgB too — the service check, not RLS, must refuse.
+    const dualCtx: DbAccessContext = { scope: 'partner', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: [fx.partnerA.id, fx.partnerB.id], userId: null };
+    await expect(withDbAccessContext(dualCtx, () => setOrgPriceOverride(item.id, fx.orgB.id, { unitPrice: 5 }, fx.actorA)))
+      .rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
+
+    await expect(withSystemDbAccessContext(() =>
+      db.insert(catalogItemOrgPricing).values({ catalogItemId: item.id, orgId: fx.orgB.id, partnerId: fx.partnerA.id, currencyCode: 'USD', unitPrice: '5.00' })
+    )).rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
+  runDb('updateCatalogItem: explicit unitPrice writes the partner-currency row; cost+markup derives into costCurrency only', async () => {
+    const fx = await seedFixture();
+    const item = await seedMultiCurrencyItem(fx);
+
+    const explicit = await withDbAccessContext(fx.ctxA, () => updateCatalogItem(item.id, { unitPrice: 20 }, fx.actorA));
+    expect(explicit.unitPrice).toBe('20.00');
+    expect((await priceRowsFor(item.id)).map((r) => [r.currencyCode, r.unitPrice])).toEqual([['EUR', '10.00'], ['USD', '20.00']]);
+
+    // cost in CAD + markup → CAD row only; the USD mirror stays at 20.00.
+    const derived = await withDbAccessContext(fx.ctxA, () =>
+      updateCatalogItem(item.id, { costBasis: 100, markupPercent: 10, costCurrency: 'CAD' }, fx.actorA));
+    expect(derived.costCurrency).toBe('CAD');
+    expect(derived.unitPrice).toBe('20.00');
+    expect((await priceRowsFor(item.id)).map((r) => [r.currencyCode, r.unitPrice])).toEqual([['CAD', '110.00'], ['EUR', '10.00'], ['USD', '20.00']]);
+
+    // cost currency back to USD with the same drivers → USD row re-derived + mirrored.
+    const usdDerived = await withDbAccessContext(fx.ctxA, () => updateCatalogItem(item.id, { costCurrency: 'USD' }, fx.actorA));
+    expect(usdDerived.unitPrice).toBe('20.00'); // costCurrency alone is not a price driver
+    const reDerived = await withDbAccessContext(fx.ctxA, () => updateCatalogItem(item.id, { markupPercent: 50 }, fx.actorA));
+    expect(reDerived.unitPrice).toBe('150.00');
+    expect((await priceRowsFor(item.id)).find((r) => r.currencyCode === 'USD')?.unitPrice).toBe('150.00');
+  });
+
+  runDb('computeBundleEconomics: a component lacking a USD price → incomplete, null totals; USD org override counts; CAD cost → margin unavailable', async () => {
+    const fx = await seedFixture();
+    const { bundle, comp1 } = await seedBundleAndComponents(fx); // bundle 100 USD, comp1 cost 20
+    const comp3 = await withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem(
+        { itemType: 'hardware', name: 'EUR-only comp', billingType: 'one_time', prices: [{ currencyCode: 'EUR', unitPrice: 5 }], costBasis: 10, unitOfMeasure: 'each', taxable: true, isBundle: false, attributes: {} },
+        fx.actorA
+      )
+    );
+    await withDbAccessContext(fx.ctxA, () =>
+      setBundleComponents(bundle.id, [
+        { componentItemId: comp1.id, quantity: 2, showOnInvoice: false },
+        { componentItemId: comp3.id, quantity: 1, showOnInvoice: false },
+      ], fx.actorA));
+
+    const gap = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'USD', null, fx.actorA));
+    expect(gap.headlinePrice).toBe('100.00');
+    expect(gap.priceBookComplete).toBe(false);
+    expect(gap.missingPriceComponentIds).toEqual([comp3.id]);
+    expect(gap.totalCost).toBeNull();
+    expect(gap.margin).toBeNull();
+
+    // (i) a USD org override for orgA makes it complete for orgA only.
+    const ctx = ctxWithOrgs(fx.partnerA.id, [fx.orgA.id]);
+    const actor: CatalogActor = { ...fx.actorA, accessibleOrgIds: [fx.orgA.id] };
+    await withDbAccessContext(ctx, () => setOrgPriceOverride(comp3.id, fx.orgA.id, { unitPrice: 7, currencyCode: 'USD' }, actor));
+    const forOrg = await withDbAccessContext(ctx, () => computeBundleEconomics(bundle.id, 'USD', fx.orgA.id, actor));
+    expect(forOrg.priceBookComplete).toBe(true);
+    expect(forOrg.totalCost).toBe('50.00'); // 20*2 + 10
+    const noOrg = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'USD', null, fx.actorA));
+    expect(noOrg.priceBookComplete).toBe(false);
+
+    // (g) add the USD book price → complete everywhere.
+    await withDbAccessContext(fx.ctxA, () => setItemPrice(comp3.id, 'USD', { unitPrice: 6 }, fx.actorA));
+    const complete = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'USD', null, fx.actorA));
+    expect(complete.priceBookComplete).toBe(true);
+    expect(complete.marginAvailable).toBe(true);
+    expect(complete.totalCost).toBe('50.00');
+    expect(complete.margin).toBe('50.00');
+
+    // (h) a component whose cost is in CAD → margin unavailable even though prices are complete.
+    await withDbAccessContext(fx.ctxA, () => updateCatalogItem(comp3.id, { costCurrency: 'CAD' }, fx.actorA));
+    const cad = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'USD', null, fx.actorA));
+    expect(cad.priceBookComplete).toBe(true);
+    expect(cad.marginAvailable).toBe(false);
+    expect(cad.totalCost).toBeNull();
+
+    // Bundle itself without a price in the target currency → headline null, incomplete.
+    const eur = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'EUR', null, fx.actorA));
+    expect(eur.headlinePrice).toBeNull();
+    expect(eur.priceBookComplete).toBe(false);
+  });
+
+  runDb('listCatalogItems: currencyCode filter keeps only items with that row; prices aggregate carries string amounts', async () => {
+    const fx = await seedFixture();
+    const multi = await seedMultiCurrencyItem(fx);
+    const usdOnly = await seedPricedItem(fx);
+
+    const eur = await withDbAccessContext(fx.ctxA, () =>
+      listCatalogItems({ currencyCode: 'EUR', limit: 50 }, fx.actorA));
+    expect(eur.map((r) => r.id)).toEqual([multi.id]);
+    expect(eur[0]?.prices).toEqual([{ currencyCode: 'EUR', unitPrice: '10.00' }, { currencyCode: 'USD', unitPrice: '12.00' }]);
+    expect(typeof eur[0]?.prices[0]?.unitPrice).toBe('string');
+
+    const all = await withDbAccessContext(fx.ctxA, () => listCatalogItems({ limit: 50 }, fx.actorA));
+    expect(all.map((r) => r.id).sort()).toEqual([multi.id, usdOnly.id].sort());
+    expect(all.find((r) => r.id === usdOnly.id)?.prices).toEqual([{ currencyCode: 'USD', unitPrice: '700.00' }]);
   });
 
   // ---------------------------------------------------------------------------

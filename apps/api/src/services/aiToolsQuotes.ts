@@ -280,7 +280,13 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
               'Catalog item UUID — REQUIRED for add_catalog_line. The item must be looked up by UUID ' +
               '(use search_catalog); partNumber is NOT a lookup key.',
           },
-          quantity: { type: 'number', description: 'Line quantity (> 0) — required for add_catalog_line' },
+          quantity: {
+            type: 'number',
+            description:
+              'Line quantity (> 0) — required for add_catalog_line. add_catalog_line prices the line from the ' +
+              'catalog price book in the QUOTE\'s currency and fails with NO_PRICE_FOR_CURRENCY (409) when the ' +
+              'item has no price in that currency — never converted. Add a manual line (add_manual_line) instead.',
+          },
           partNumber: {
             type: 'string',
             description:

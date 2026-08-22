@@ -10,6 +10,7 @@ import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { listQuoteOrders } from './quoteOrderService';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
 import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
+import { resolvePrice, CatalogServiceError } from './catalogService';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
@@ -911,13 +912,14 @@ export async function deleteDraftQuote(id: string, actor: QuoteActor) {
  * stamp moves, and only while the quote is a draft. With monetary lines
  * present the change is refused (CURRENCY_LOCKED 409) unless the caller opts
  * into `clearLines`, which deletes the quote's lines (blocks stay — an empty
- * line-items block is valid) and restamps in ONE transaction. Amounts are
- * never converted or reinterpreted; repricing arrives with the wave-3 price
- * books — wave 2 ships clear-and-restamp only.
+ * line-items block is valid) and restamps in ONE transaction, or into
+ * `reprice` (wave 3, #3775), which re-resolves catalog-sourced lines from the
+ * price book in the new currency (see repriceQuoteCatalogLines). Amounts are
+ * never converted or reinterpreted.
  */
 export async function changeQuoteCurrency(
   quoteId: string,
-  input: { currencyCode: string; clearLines?: boolean },
+  input: { currencyCode: string; clearLines?: boolean; reprice?: boolean },
   actor: QuoteActor
 ) {
   return db.transaction(async (tx) => {
@@ -928,24 +930,73 @@ export async function changeQuoteCurrency(
     const q = await lockDraftQuote(tx, quoteId, actor);
     if (q.currencyCode === input.currencyCode) return q; // no-op restamp
 
-    const lineRows = await tx.select({ id: quoteLines.id }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
+    const lineRows = await tx.select({
+      id: quoteLines.id, sourceType: quoteLines.sourceType, catalogItemId: quoteLines.catalogItemId,
+      parentLineId: quoteLines.parentLineId, quantity: quoteLines.quantity,
+    }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId)).orderBy(quoteLines.id);
     if (lineRows.length > 0) {
-      if (!input.clearLines) {
+      if (input.reprice) {
+        await repriceQuoteCatalogLines(tx, q, lineRows, input.currencyCode, actor);
+      } else if (!input.clearLines) {
         throw new QuoteServiceError(
           `Quote has ${lineRows.length} line(s) priced in ${q.currencyCode} — pass clearLines to remove them, or delete the draft`,
           409, 'CURRENCY_LOCKED'
         );
+      } else {
+        await tx.delete(quoteLines).where(eq(quoteLines.quoteId, quoteId));
       }
-      await tx.delete(quoteLines).where(eq(quoteLines.quoteId, quoteId));
     }
 
     await tx.update(quotes).set({ currencyCode: input.currencyCode, updatedAt: new Date() }).where(eq(quotes.id, quoteId));
-    // Lines are guaranteed gone (or never existed): totals recompute to zero
-    // in the NEW currency, inside the same transaction as the restamp.
+    // Lines are either gone, never existed, or already repriced in the NEW
+    // currency: totals recompute inside the same transaction as the restamp.
     await recomputeAndPersist(quoteId, tx);
     const [updated] = await tx.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
     return updated!;
   });
+}
+
+/**
+ * Multi-currency wave 3 (#3775): `reprice` re-resolves every catalog-sourced
+ * line from the price book in the TARGET currency on the already-locked tx
+ * (quote row → lines → catalog plain SELECTs — no new lock edge). Only
+ * `sourceType === 'catalog'` lines with a catalog item are repriceable: bundle
+ * parents/children and manual lines carry amounts the price book cannot
+ * re-derive, so their presence refuses the whole operation (CURRENCY_LOCKED —
+ * the caller must clearLines instead). A single price-book gap aborts the
+ * transaction (NO_PRICE_FOR_CURRENCY, naming the item) — never a partial
+ * reprice, never a converted number.
+ */
+async function repriceQuoteCatalogLines(
+  tx: DbExecutor,
+  q: { orgId: string; partnerId: string },
+  lines: Array<{ id: string; sourceType: string; catalogItemId: string | null; parentLineId: string | null; quantity: string }>,
+  currencyCode: string,
+  actor: QuoteActor
+): Promise<void> {
+  const repriceable = lines.filter((l) => l.sourceType === 'catalog' && l.catalogItemId !== null && l.parentLineId === null);
+  const rest = lines.length - repriceable.length;
+  if (rest > 0) {
+    throw new QuoteServiceError(`${rest} non-catalog line(s) cannot be repriced — pass clearLines instead`, 409, 'CURRENCY_LOCKED');
+  }
+  const catalogActor = { userId: actor.userId, partnerId: q.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
+  for (const line of repriceable) {
+    let resolved;
+    try {
+      resolved = await resolvePrice(line.catalogItemId!, currencyCode, q.orgId, catalogActor, tx);
+    } catch (err) {
+      if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
+        throw new QuoteServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+      }
+      throw err;
+    }
+    await tx.update(quoteLines).set({
+      unitPrice: resolved.unitPrice,
+      lineTotal: computeLineTotal(line.quantity, resolved.unitPrice, currencyCode),
+      // Cost is only meaningful in the line's currency (no conversion).
+      unitCost: resolved.marginAvailable ? resolved.costBasis : null,
+    }).where(eq(quoteLines.id, line.id));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,6 +1235,27 @@ export async function addCatalogLine(
       .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, q.partnerId)))
       .limit(1);
     if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+    // Multi-currency wave 3 (#3775, B3): the sell price comes from the price book
+    // (org override in the quote's currency → catalog_item_prices row for that
+    // currency), never from the deprecated catalog_items.unit_price mirror and
+    // never converted. Resolved on the already-locked tx (quote → lines → catalog
+    // plain SELECTs — no new lock edge). A gap is a typed 409 so the caller can
+    // fall back to a manual line.
+    let resolved;
+    try {
+      resolved = await resolvePrice(
+        catalogItemId,
+        q.currencyCode,
+        q.orgId,
+        { userId: actor.userId, partnerId: q.partnerId, accessibleOrgIds: actor.accessibleOrgIds },
+        tx
+      );
+    } catch (err) {
+      if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
+        throw new QuoteServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+      }
+      throw err;
+    }
     const vendor = vendorIdentityFromAttributes(item.attributes);
     // Phase 1 recurrence is monthly|annual only; quarterly is not offered (dropped
     // from the catalog Zod enum). The DB enum retains 'quarterly' for a future phase.
@@ -1203,16 +1275,18 @@ export async function addCatalogLine(
       name: item.name,
       description: item.description ?? null,
       quantity: qty,
-      unitPrice: item.unitPrice,
-      taxable: item.taxable,
+      unitPrice: resolved.unitPrice,
+      taxable: resolved.taxable,
       customerVisible: true,
-      lineTotal: computeLineTotal(qty, item.unitPrice, q.currencyCode),
+      lineTotal: computeLineTotal(qty, resolved.unitPrice, q.currencyCode),
       recurrence,
       termMonths: item.commitmentTermMonths ?? null,
       billingFrequency: item.billingFrequency ?? null,
       // Snapshot internal economics from the catalog item at add-time so a later
-      // catalog edit never mutates existing quote line cost/sku data.
-      unitCost: item.costBasis ?? null,
+      // catalog edit never mutates existing quote line cost/sku data. Cost is
+      // only meaningful in the line's currency: when the item's cost_currency
+      // differs from the quote currency the margin is unavailable (no conversion).
+      unitCost: resolved.marginAvailable ? resolved.costBasis : null,
       sku: item.sku ?? null,
       partNumber: options?.partNumber ?? vendor.mfgPartNo,
       procurementSource: vendor.procurementSource,

@@ -14,9 +14,17 @@ describe('currencyCodeSchema', () => {
 });
 
 describe('changeCurrencySchema', () => {
-  it('defaults clearLines to false and normalizes the code', () => {
-    expect(changeCurrencySchema.parse({ currencyCode: 'usd' })).toEqual({ currencyCode: 'USD', clearLines: false });
-    expect(changeCurrencySchema.parse({ currencyCode: 'JPY', clearLines: true })).toEqual({ currencyCode: 'JPY', clearLines: true });
+  it('defaults clearLines and reprice to false and normalizes the code', () => {
+    expect(changeCurrencySchema.parse({ currencyCode: 'usd' })).toEqual({
+      currencyCode: 'USD',
+      clearLines: false,
+      reprice: false,
+    });
+    expect(changeCurrencySchema.parse({ currencyCode: 'JPY', clearLines: true })).toEqual({
+      currencyCode: 'JPY',
+      clearLines: true,
+      reprice: false,
+    });
   });
   it('rejects off-list codes', () => {
     expect(changeCurrencySchema.safeParse({ currencyCode: 'ZZZ' }).success).toBe(false);
@@ -26,5 +34,21 @@ describe('changeCurrencySchema', () => {
   });
   it('requires currencyCode', () => {
     expect(changeCurrencySchema.safeParse({}).success).toBe(false);
+  });
+
+  it('rejects clearLines and reprice together', () => {
+    const r = changeCurrencySchema.safeParse({
+      currencyCode: 'EUR',
+      clearLines: true,
+      reprice: true,
+    });
+
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues).toContainEqual(expect.objectContaining({
+        message: 'clearLines and reprice are mutually exclusive',
+        path: ['reprice'],
+      }));
+    }
   });
 });

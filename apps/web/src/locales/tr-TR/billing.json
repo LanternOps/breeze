@@ -141,7 +141,8 @@
         "saveContract": "Sözleşme kaydedilemedi.",
         "addLine": "Satır eklenemedi.",
         "removeLine": "Satır kaldırılamadı.",
-        "activateContract": "Sözleşme etkinleştirilemedi."
+        "activateContract": "Sözleşme etkinleştirilemedi.",
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya katalog bağlantısını temizleyin."
       },
       "toast": {
         "contractCreated": "Sözleşme oluşturuldu",
@@ -198,7 +199,9 @@
         "taxable": "Vergiye tabi",
         "quantityResolvedAutomatically": "Miktar, faturalama sırasında otomatik olarak çözümlenir.",
         "lineTotal": "Satır toplamı: {{total}}",
-        "addLine": "Satır ekle"
+        "addLine": "Satır ekle",
+        "noPriceInCurrency": "Bu öğenin {{currency}} fiyatı yok — katalogda bir fiyat ekleyin ya da katalog bağlantısını temizleyip manuel bir hat girin.",
+        "priceFromCatalog": "Birim fiyatı (katalogdan, {{currency}} cinsinden)"
       },
       "estimate": {
         "title": "Tahmini bu dönem",
@@ -635,7 +638,8 @@
         "updateDeposit": "Ödeme güncellenemedi.",
         "updateLine": "Hat güncellenemedi.",
         "updateSection": "Bölüm güncellenemedi.",
-        "uploadImage": "Resim yüklenemedi."
+        "uploadImage": "Resim yüklenemedi.",
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin."
       },
       "image": {
         "alt": "Alıntı görseli",
@@ -1054,6 +1058,7 @@
       }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
       "available": "{{count}} mevcut",
       "cost": "maliyet {{currency}} {{amount}}",
       "endOfLife": "Hayatın sonu",
@@ -1221,6 +1226,7 @@
       "tryAgain": "Tekrar deneyin"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
       "cost": "maliyet {{currency}} {{amount}}",
       "importAndAdd": "İçe aktar ve ekle",
       "option": "Seçenek {{number}}",
@@ -1331,7 +1337,8 @@
       "removeLine": "Satır kaldırılamadı.",
       "saveNotes": "Notlar kaydedilemedi.",
       "saveTerms": "Şartlar kaydedilemedi.",
-      "updateLine": "Satır güncellenemedi."
+      "updateLine": "Satır güncellenemedi.",
+      "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin."
     },
     "fields": {
       "descriptionOptional": "Açıklama (isteğe bağlı)",

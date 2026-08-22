@@ -6,7 +6,7 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { formatMoney } from '@/components/billing/shared/format';
 import { broadcastBillingChanged } from '../../lib/timerActions';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
-import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
+import { listCatalog, priceFor, type CatalogItem } from '../../lib/api/catalog';
 
 interface PartRow {
   id: string;
@@ -20,7 +20,16 @@ interface PartRow {
   currencyCode?: string;
 }
 
-export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
+interface Props {
+  ticketId: string;
+  /** The ticket org's currency (ISO 4217). Drives the catalog prefill (#3775):
+   *  unit price comes from the item's price-book row in THIS currency (blank
+   *  when the book has no row), cost only when the item's cost is denominated
+   *  in it. Ticket parts themselves are still single-currency — wave-4 boundary. */
+  currencyCode?: string;
+}
+
+export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
   const { t } = useTranslation('tickets');
   const [parts, setParts] = useState<PartRow[]>([]);
   const [formOpen, setFormOpen] = useState(false);
@@ -63,8 +72,11 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
   const pickCatalogItem = (it: CatalogItem) => {
     setCatalogItemId(it.id);
     setDescription(it.name);
-    setUnitPrice(String(Number(it.unitPrice)));
-    setCostBasis(it.costBasis != null ? String(Number(it.costBasis)) : '');
+    // Never the deprecated unitPrice mirror: price-book row in the org currency or blank.
+    const price = priceFor(it, currencyCode);
+    setUnitPrice(price != null ? String(Number(price)) : '');
+    const costUsable = it.costBasis != null && !!currencyCode && it.costCurrency?.toUpperCase() === currencyCode.toUpperCase();
+    setCostBasis(costUsable ? String(Number(it.costBasis)) : '');
   };
 
   // Reset form and list state when ticketId changes (mirror TicketTimeBilling)
@@ -301,6 +313,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
             ) : (
               <CatalogItemPicker
                 items={catalog}
+                currencyCode={currencyCode ?? ''}
                 onSelect={pickCatalogItem}
                 includeBundles={false}
                 placeholder={t('ticketPartsCard.catalogPlaceholder')}

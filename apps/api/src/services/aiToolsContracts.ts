@@ -182,7 +182,14 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           lineId: { type: 'string', description: 'Contract line UUID' },
           input: { type: 'object', description: 'Full create-contract payload including orgId, name, and schedule fields' },
           patch: { type: 'object', description: 'Contract update patch fields' },
-          line: { type: 'object', description: 'Contract line input fields' },
+          line: {
+            type: 'object',
+            description:
+              'Contract line input fields. With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
+              'price book in the CONTRACT\'s currency (any supplied values are ignored) and add_line fails with ' +
+              'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency — never converted; add a ' +
+              'non-catalog line with an explicit unitPrice instead. Without catalogItemId, unitPrice is required.',
+          },
         },
         required: ['action'],
       },

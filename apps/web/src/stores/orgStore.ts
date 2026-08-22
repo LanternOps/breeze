@@ -18,6 +18,10 @@ export interface Organization {
   name: string;
   status: 'active' | 'trial' | 'suspended' | 'inactive';
   trialEndsAt?: string;
+  /** ISO 4217 billing currency (wave 1, `organizations.currency_code`). Present on
+   *  the partner/system-scope list (full row); the org-scoped projection of
+   *  GET /orgs/organizations omits it, hence optional. */
+  currencyCode?: string;
   createdAt: string;
 }
 

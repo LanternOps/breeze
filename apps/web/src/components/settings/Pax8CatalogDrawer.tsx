@@ -9,6 +9,7 @@ import { loginPathWithNext } from '../../lib/authScope';
 import { pax8Import, type Pax8Product, type Pax8PriceOption } from '../../lib/api/distributors';
 import type { CatalogItem } from '../../lib/api/catalog';
 import Pax8ProductLookup from '../billing/quotes/Pax8ProductLookup';
+import { feedCurrencyCode } from './marginMath';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -46,7 +47,8 @@ export default function Pax8CatalogDrawer({ open, onClose, onImported }: Props) 
               commitmentTerm: term.commitmentTerm,
               billingTerm: term.billingTerm,
               partnerBuyRate: term.partnerBuyRate,
-              currency: term.currencyCode,
+              // Trimmed uppercase ISO or explicit null — never coerced to USD.
+              currency: feedCurrencyCode(term.currencyCode),
               raw: product.raw,
             },
             item: {

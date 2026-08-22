@@ -20,7 +20,9 @@ import {
   partnerUsers,
   organizationUsers,
   permissions,
-  rolePermissions
+  rolePermissions,
+  catalogItems,
+  catalogItemPrices
 } from '../../db/schema';
 import { and, eq } from 'drizzle-orm';
 
@@ -97,6 +99,8 @@ export interface CreatePartnerOptions {
   status?: 'pending' | 'active' | 'suspended' | 'churned';
   /** Set to a Date to soft-delete the partner (drives the deletedAt branch in tenantStatus.ts). */
   deletedAt?: Date | null;
+  /** ISO-4217 partner default currency (multi-currency). Defaults to 'USD'. */
+  currencyCode?: string;
 }
 
 export async function createPartner(options: CreatePartnerOptions = {}) {
@@ -115,7 +119,8 @@ export async function createPartner(options: CreatePartnerOptions = {}) {
       type: options.type || 'msp',
       plan: options.plan || 'pro',
       status: options.status || 'active',
-      deletedAt: options.deletedAt ?? null
+      deletedAt: options.deletedAt ?? null,
+      currencyCode: options.currencyCode ?? 'USD'
     })
     .returning();
 
@@ -134,6 +139,8 @@ export interface CreateOrganizationOptions {
   status?: 'active' | 'suspended' | 'trial' | 'churned';
   /** Set to a Date to soft-delete the org (drives the deletedAt branch in tenantStatus.ts). */
   deletedAt?: Date | null;
+  /** ISO-4217 org billing currency (multi-currency wave 1). Defaults to 'USD'. */
+  currencyCode?: string;
 }
 
 export async function createOrganization(options: CreateOrganizationOptions) {
@@ -145,7 +152,7 @@ export async function createOrganization(options: CreateOrganizationOptions) {
     .insert(organizations)
     .values({
       partnerId: options.partnerId,
-      currencyCode: 'USD',
+      currencyCode: options.currencyCode ?? 'USD',
       name: options.name || `Test Organization ${timestamp}-${rand}`,
       slug: options.slug || `test-org-${timestamp}-${rand}`,
       type: options.type || 'customer',
@@ -155,6 +162,55 @@ export async function createOrganization(options: CreateOrganizationOptions) {
     .returning();
 
   return org;
+}
+
+// ============================================
+// Catalog Utilities
+// ============================================
+
+export interface CreateCatalogItemWithPriceOptions {
+  partnerId: string;
+  name: string;
+  /** Currency of the single price-book row. */
+  currencyCode: string;
+  unitPrice: string;
+  costBasis?: string | null;
+  /** Defaults to currencyCode. */
+  costCurrency?: string;
+  itemType?: 'hardware' | 'software' | 'service';
+}
+
+/**
+ * Insert a catalog item plus ONE catalog_item_prices row (multi-currency wave
+ * 3). Document services resolve sell prices from the price book, never from
+ * the deprecated catalog_items.unit_price mirror, so a fixture item with no
+ * price-book row hits NO_PRICE_FOR_CURRENCY when a line is added from it.
+ * Caller supplies the DB context (system scope for seeds).
+ */
+export async function createCatalogItemWithPrice(opts: CreateCatalogItemWithPriceOptions): Promise<{ id: string }> {
+  const database = db();
+  const [item] = await database
+    .insert(catalogItems)
+    .values({
+      partnerId: opts.partnerId,
+      itemType: opts.itemType ?? 'service',
+      name: opts.name,
+      unitPrice: opts.unitPrice,
+      costBasis: opts.costBasis ?? null,
+      costCurrency: opts.costCurrency ?? opts.currencyCode,
+      billingType: 'one_time',
+      taxable: true,
+      isBundle: false
+    })
+    .returning({ id: catalogItems.id });
+  if (!item) throw new Error('createCatalogItemWithPrice: item insert returned no row');
+  await database.insert(catalogItemPrices).values({
+    itemId: item.id,
+    partnerId: opts.partnerId,
+    currencyCode: opts.currencyCode,
+    unitPrice: opts.unitPrice
+  });
+  return { id: item.id };
 }
 
 // ============================================

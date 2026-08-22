@@ -68,7 +68,7 @@ describe('TdSynnexCatalogPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     statusResponse = jsonResponse(statusPayload);
-    meResponse = jsonResponse({ defaultMarkupPercent: null, autoTaxHardware: true });
+    meResponse = jsonResponse({ defaultMarkupPercent: null, autoTaxHardware: true, currencyCode: 'USD' });
     searchResponse = jsonResponse({ data: [] });
     importResponse = jsonResponse({ data: { id: 'catalog-1' } });
     testResponse = jsonResponse(statusPayload);
@@ -186,7 +186,7 @@ describe('TdSynnexCatalogPanel', () => {
 
   it('pre-fills the sell price from the partner default markup and shows the margin calc', async () => {
     searchResponse = jsonResponse({ data: [product] });
-    meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true });
+    meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true, currencyCode: 'USD' });
 
     render(<TdSynnexCatalogPanel />);
     await screen.findByTestId('td-synnex-panel');
@@ -204,7 +204,7 @@ describe('TdSynnexCatalogPanel', () => {
 
   it('applies an AI enrich result to the description without changing the sell price', async () => {
     searchResponse = jsonResponse({ data: [product] });
-    meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true });
+    meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true, currencyCode: 'USD' });
 
     render(<TdSynnexCatalogPanel />);
     await screen.findByTestId('td-synnex-panel');
@@ -248,5 +248,56 @@ describe('TdSynnexCatalogPanel', () => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
     });
     expect(screen.queryByText('ThinkPad Dock')).toBeNull();
+  });
+
+  describe('feed currency (multi-currency wave 3)', () => {
+    const importBody = () => {
+      const call = fetchWithAuth.mock.calls.find((c) => c[0] === '/catalog/distributors/td-synnex/import');
+      expect(call).toBeTruthy();
+      return JSON.parse((call![1] as { body: string }).body) as { product: { currency: string | null } };
+    };
+
+    const searchAndOpen = async (p: Omit<typeof product, 'currency'> & { currency: string | null }) => {
+      searchResponse = jsonResponse({ data: [p] });
+      render(<TdSynnexCatalogPanel />);
+      await screen.findByTestId('td-synnex-panel');
+      fireEvent.change(screen.getByTestId('td-synnex-search-query'), { target: { value: 'dock' } });
+      fireEvent.click(screen.getByTestId('td-synnex-search'));
+      fireEvent.click(await screen.findByTestId('td-synnex-import-open-td-1'));
+    };
+
+    it('hides the margin summary and names the cost currency when the feed currency differs from the partner currency', async () => {
+      meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true, currencyCode: 'USD' });
+      await searchAndOpen({ ...product, currency: 'CAD' });
+      const guard = await screen.findByTestId('td-synnex-import-margin-unavailable');
+      expect(guard.textContent).toContain('Cost in CAD');
+      expect(screen.queryByTestId('td-synnex-import-margin')).toBeNull();
+    });
+
+    it('shows the margin summary in the partner currency when the feed currency matches', async () => {
+      meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true, currencyCode: 'USD' });
+      await searchAndOpen({ ...product, currency: 'usd' });
+      const margin = await screen.findByTestId('td-synnex-import-margin');
+      expect(margin.textContent).toContain('Profit USD 25.00');
+      expect(screen.queryByTestId('td-synnex-import-margin-unavailable')).toBeNull();
+    });
+
+    it('posts the feed currency uppercased, never coerced to USD', async () => {
+      await searchAndOpen({ ...product, currency: 'cad' });
+      fireEvent.change(screen.getByTestId('td-synnex-import-price'), { target: { value: '125.00' } });
+      fireEvent.click(screen.getByTestId('td-synnex-import-save'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/catalog/distributors/td-synnex/import', expect.objectContaining({ method: 'POST' })));
+      expect(importBody().product.currency).toBe('CAD');
+    });
+
+    it('posts an explicit null currency when the feed gave none (key present, not dropped)', async () => {
+      await searchAndOpen({ ...product, currency: null });
+      fireEvent.change(screen.getByTestId('td-synnex-import-price'), { target: { value: '125.00' } });
+      fireEvent.click(screen.getByTestId('td-synnex-import-save'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/catalog/distributors/td-synnex/import', expect.objectContaining({ method: 'POST' })));
+      const body = importBody();
+      expect(Object.prototype.hasOwnProperty.call(body.product, 'currency')).toBe(true);
+      expect(body.product.currency).toBeNull();
+    });
   });
 });

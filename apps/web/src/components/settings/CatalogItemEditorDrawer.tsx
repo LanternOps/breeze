@@ -12,14 +12,16 @@ import { loginPathWithNext, getJwtClaims } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 import { useOrgStore } from '@/stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
+import { currencyLabel, currencyOptions } from '@/lib/currencies';
+import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
 import {
   createCatalogItem, updateCatalogItem, getCatalogItem, setBundleComponents,
-  setOrgPriceOverride, removeOrgPriceOverride,
+  setOrgPriceOverride, removeOrgPriceOverride, setItemPrice, removeItemPrice,
   uploadCatalogItemImage, importCatalogItemImageFromUrl, catalogItemImagePath, deleteCatalogItemImageRequest,
   computeMargin, formatMargin, marginTone,
   CATALOG_TYPE_LABELS, CATALOG_TYPE_ORDER,
   type CatalogItem, type CatalogItemType, type CatalogItemDetail, type OrgPriceOverride,
-  type EnrichResult, type EnrichmentProvenance,
+  type PriceBookEntry, type EnrichResult, type EnrichmentProvenance,
 } from '../../lib/api/catalog';
 import CatalogEnrichButton from '../catalog/CatalogEnrichButton';
 import PolishButton from '../catalog/PolishButton';
@@ -34,6 +36,19 @@ interface ComponentDraft {
   componentItemId: string;
   quantity: string;
   showOnInvoice: boolean;
+}
+
+// A price-book row as edited in the form (amount kept as a string for free typing).
+interface PriceDraft {
+  currencyCode: string;
+  unitPrice: string;
+}
+
+/** The org list payload carries `currencyCode` (organizations.currency_code,
+ *  wave 1) but the org store's `Organization` type predates it. */
+function orgCurrencyOf(org: unknown): string | null {
+  const code = (org as { currencyCode?: unknown } | null)?.currencyCode;
+  return typeof code === 'string' && code.trim() ? code.trim().toUpperCase() : null;
 }
 
 interface Props {
@@ -73,13 +88,22 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   const { organizations } = useOrgStore();
   const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
   const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  // Partner currency drives the default price-book row, the cost currency
+  // default and the margin preview. Null until GET /orgs/partners/me resolves —
+  // never assumed (a USD default would mint USD rows for a non-USD partner).
+  const { currency: partnerCurrency, failed: partnerCurrencyFailed, retry: retryPartnerCurrency } = usePartnerCurrency(open);
 
   const [itemType, setItemType] = useState<CatalogItemType>('service');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [sku, setSku] = useState('');
-  const [unitPrice, setUnitPrice] = useState('');
+  // Price book: one row per currency. `basePrices` is the last-known persisted
+  // set (seeded from the list row, refreshed from the detail load) so an edit
+  // save can diff rows into setItemPrice / removeItemPrice calls.
+  const [priceRows, setPriceRows] = useState<PriceDraft[]>([]);
+  const [basePrices, setBasePrices] = useState<PriceBookEntry[]>([]);
   const [costBasis, setCostBasis] = useState('');
+  const [costCurrency, setCostCurrency] = useState('');
   const [isBundle, setIsBundle] = useState(false);
   const [components, setComponents] = useState<ComponentDraft[]>([]);
   const [componentsLoading, setComponentsLoading] = useState(false);
@@ -94,6 +118,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   const [overrides, setOverrides] = useState<OrgPriceOverride[]>([]);
   const [newOverrideOrgId, setNewOverrideOrgId] = useState('');
   const [newOverridePrice, setNewOverridePrice] = useState('');
+  const [newOverrideCurrency, setNewOverrideCurrency] = useState('');
   const [overrideBusy, setOverrideBusy] = useState(false);
   // Once a *new* item is created we hold its id, so a retry after a partial
   // failure (item saved, components failed) PATCHes instead of creating a dupe.
@@ -124,14 +149,20 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     setOverrides([]);
     setNewOverrideOrgId('');
     setNewOverridePrice('');
+    setNewOverrideCurrency('');
     setDetailLoadFailed(false);
     if (item) {
       setItemType(item.itemType);
       setName(item.name);
       setDescription(item.description ?? '');
       setSku(item.sku ?? '');
-      setUnitPrice(item.unitPrice);
+      // The list row already carries the aggregated price book (never the
+      // deprecated unit_price mirror); the detail load refreshes it below.
+      const listPrices = (item.prices ?? []).map((p) => ({ currencyCode: p.currencyCode, unitPrice: p.unitPrice }));
+      setPriceRows(listPrices);
+      setBasePrices(listPrices);
       setCostBasis(item.costBasis ?? '');
+      setCostCurrency(item.costCurrency ?? '');
       setIsBundle(item.isBundle);
       setComponents([]);
       // Existing items carry sub-resources (bundle components + per-org price
@@ -162,6 +193,9 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
             showOnInvoice: r.showOnInvoice,
           })));
           setOverrides(body.data.overrides ?? []);
+          const detailPrices = (body.data.prices ?? []).map((p) => ({ currencyCode: p.currencyCode, unitPrice: p.unitPrice }));
+          setPriceRows(detailPrices);
+          setBasePrices(detailPrices);
         })
         .catch(() => failDetailLoad())
         .finally(() => setComponentsLoading(false));
@@ -170,12 +204,25 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       setName('');
       setDescription('');
       setSku('');
-      setUnitPrice('');
+      // Seeded with a single partner-currency row once that currency is known
+      // (effect below) — never a hard-coded 'USD'.
+      setPriceRows([]);
+      setBasePrices([]);
       setCostBasis('');
+      setCostCurrency('');
       setIsBundle(false);
       setComponents([]);
     }
   }, [open, item]);
+
+  // Partner currency arrives asynchronously: seed the create form's single
+  // price row and default the cost currency once it is known. Existing rows /
+  // an explicit cost currency are left alone.
+  useEffect(() => {
+    if (!open || !partnerCurrency) return;
+    if (!item) setPriceRows((rows) => (rows.length === 0 ? [{ currencyCode: partnerCurrency, unitPrice: '' }] : rows));
+    setCostCurrency((cur) => cur || partnerCurrency);
+  }, [open, item, partnerCurrency]);
 
   // ---- a11y: focus, scroll-lock, escape, focus-trap -----------------------
   useEffect(() => {
@@ -224,6 +271,24 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   );
 
   const addComponent = () => setComponents((cs) => [...cs, { componentItemId: '', quantity: '1', showOnInvoice: false }]);
+
+  // ---- price book editing --------------------------------------------------
+  const usedCurrencies = useMemo(() => new Set(priceRows.map((r) => r.currencyCode)), [priceRows]);
+  // Currency choices: the curated list, plus the partner's own code should it
+  // ever be off-list (currencyOptions never drops a stored code).
+  const allCurrencyOptions = useMemo(() => currencyOptions(partnerCurrency ?? ''), [partnerCurrency]);
+  const addableCurrencies = useMemo(
+    () => allCurrencyOptions.filter((code) => !usedCurrencies.has(code)),
+    [allCurrencyOptions, usedCurrencies],
+  );
+  const addPriceRow = (currencyCode: string) => {
+    if (!currencyCode || usedCurrencies.has(currencyCode)) return;
+    setPriceRows((rows) => [...rows, { currencyCode, unitPrice: '' }]);
+  };
+  const removePriceRow = (currencyCode: string) =>
+    setPriceRows((rows) => rows.filter((r) => r.currencyCode !== currencyCode));
+  const patchPriceRow = (idx: number, patch: Partial<PriceDraft>) =>
+    setPriceRows((rows) => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
   const removeComponent = (idx: number) => setComponents((cs) => cs.filter((_, i) => i !== idx));
   const patchComponent = (idx: number, patch: Partial<ComponentDraft>) =>
     setComponents((cs) => cs.map((c, i) => (i === idx ? { ...c, ...patch } : c)));
@@ -242,6 +307,14 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   // derives from its components), for a partner-scope user who can write.
   const showOrgPricing = !!effectiveId && !isBundle && isPartnerScope && canWrite;
 
+  // Picking an org defaults the override currency to that org's currency
+  // (organizations.currency_code), falling back to the partner's.
+  const pickOverrideOrg = (orgId: string) => {
+    setNewOverrideOrgId(orgId);
+    const org = organizations.find((o) => o.id === orgId);
+    setNewOverrideCurrency(orgCurrencyOf(org) ?? partnerCurrency ?? '');
+  };
+
   const addOverride = useCallback(async () => {
     if (overrideBusy || !effectiveId) return;
     if (!newOverrideOrgId) { showToast({ message: t('catalogItemEditorDrawer.pickAnOrganization'), type: 'error' }); return; }
@@ -253,7 +326,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     setOverrideBusy(true);
     try {
       const saved = await runAction<{ data: OrgPriceOverride }>({
-        request: () => setOrgPriceOverride(effectiveId, newOverrideOrgId, price),
+        request: () => setOrgPriceOverride(effectiveId, newOverrideOrgId, price, newOverrideCurrency || undefined),
         errorFallback: t('catalogItemEditorDrawer.couldNotSetTheOverrideRetry'),
         successMessage: t('catalogItemEditorDrawer.overrideSaved'),
         onUnauthorized: UNAUTHORIZED,
@@ -261,12 +334,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       setOverrides((cur) => [...cur.filter((o) => o.orgId !== newOverrideOrgId), saved.data]);
       setNewOverrideOrgId('');
       setNewOverridePrice('');
+      setNewOverrideCurrency('');
     } catch (err) {
       handleActionError(err, 'Could not set the override. Retry.');
     } finally {
       setOverrideBusy(false);
     }
-  }, [overrideBusy, effectiveId, newOverrideOrgId, newOverridePrice]);
+  }, [overrideBusy, effectiveId, newOverrideOrgId, newOverridePrice, newOverrideCurrency]);
 
   const deleteOverride = useCallback(async (orgId: string) => {
     if (overrideBusy || !effectiveId) return;
@@ -346,17 +420,28 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   }, [effectiveId, imageBusy]);
 
   // ---- save ----------------------------------------------------------------
-  const priceNum = Number(unitPrice);
-  const priceValid = unitPrice.trim() !== '' && Number.isFinite(priceNum);
-  const marginPreview = computeMargin(unitPrice, costBasis);
+  const priceRowValid = (r: PriceDraft) => {
+    const n = Number(r.unitPrice);
+    return !!r.currencyCode && r.unitPrice.trim() !== '' && Number.isFinite(n) && n >= 0;
+  };
+  // At least one priced currency (PRICE_REQUIRED server-side), every row valid.
+  const pricesValid = priceRows.length > 0 && priceRows.every(priceRowValid);
+  const partnerPrice = partnerCurrency
+    ? priceRows.find((r) => r.currencyCode === partnerCurrency)?.unitPrice ?? null
+    : null;
+  const marginPreview = computeMargin(partnerPrice, costBasis, partnerCurrency, costCurrency);
+  const costCurrencyMismatch = costBasis.trim() !== '' && !!costCurrency && !!partnerCurrency && costCurrency !== partnerCurrency;
   // Block saving a bundle whose components never loaded — an empty save would
-  // wipe the real components (#1944).
-  const canSave = !saving && name.trim() !== '' && priceValid && !(isBundle && detailLoadFailed);
+  // wipe the real components (#1944). Also block until the partner currency is
+  // known: the price-book default row and the cost currency depend on it.
+  const canSave = !saving && name.trim() !== '' && pricesValid && !!partnerCurrency && !(isBundle && detailLoadFailed);
 
   const save = useCallback(async () => {
     if (saving) return;
     if (!name.trim()) { showToast({ message: t('catalogItemEditorDrawer.enterAnItemName'), type: 'error' }); return; }
-    if (!priceValid) { showToast({ message: t('catalogItemEditorDrawer.enterAValidUnitPrice'), type: 'error' }); return; }
+    if (!partnerCurrency) { showToast({ message: t('catalogItemEditorDrawer.partnerCurrencyUnavailable'), type: 'error' }); return; }
+    if (priceRows.length === 0) { showToast({ message: t('catalogItemEditorDrawer.noPricesYet'), type: 'error' }); return; }
+    if (!pricesValid) { showToast({ message: t('catalogItemEditorDrawer.enterAValidUnitPrice'), type: 'error' }); return; }
     // If the detail load failed, our `components` state is unknown — not empty.
     // Saving a bundle would overwrite its real components with this stale/empty
     // set, wiping the bundle (#1944). Block until the user reopens and reloads.
@@ -378,13 +463,14 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       }
     }
 
+    const prices = priceRows.map((r) => ({ currencyCode: r.currencyCode, unitPrice: Number(r.unitPrice) }));
     const body = {
       itemType,
       name: name.trim(),
       description: description.trim() || null,
       sku: sku.trim() || null,
-      unitPrice: priceNum,
       costBasis: costBasis.trim() ? Number(costBasis) : null,
+      costCurrency: costCurrency || partnerCurrency,
       isBundle,
       // Persist AI provenance only for auto-filled new items (enrichment resets
       // to null when the drawer opens for an existing item). A bundle-retry PATCH
@@ -395,8 +481,10 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     setSaving(true);
     try {
       const targetId = effectiveId;
+      // Create carries the whole price book in the POST (no deprecated
+      // unitPrice); edit PATCHes the non-price fields and diffs the rows below.
       const saved = await runAction<{ data: CatalogItem }>({
-        request: () => (targetId ? updateCatalogItem(targetId, body) : createCatalogItem(body)),
+        request: () => (targetId ? updateCatalogItem(targetId, body) : createCatalogItem({ ...body, prices })),
         errorFallback: targetId
           ? t('catalogItemEditorDrawer.updateFailedRetry')
           : t('catalogItemEditorDrawer.itemCreationFailedRetry'),
@@ -405,6 +493,38 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       const savedId = saved.data.id;
       // Remember the id so a component-step retry edits rather than re-creates.
       if (!editId) setCommittedId(savedId);
+
+      if (targetId) {
+        // Upserts first, removals last, so the item never transiently loses its
+        // only row. Each success is folded into basePrices so a retry after a
+        // partial failure only replays what is still pending.
+        const baseByCode = new Map(basePrices.map((p) => [p.currencyCode, p.unitPrice]));
+        for (const row of prices) {
+          const prev = baseByCode.get(row.currencyCode);
+          if (prev !== undefined && Number(prev) === row.unitPrice) continue;
+          await runAction({
+            request: () => setItemPrice(savedId, row.currencyCode, row.unitPrice),
+            errorFallback: t('catalogItemEditorDrawer.priceCouldNotBeSavedRetry', { currency: row.currencyCode }),
+            onUnauthorized: UNAUTHORIZED,
+          });
+          setBasePrices((cur) => [
+            ...cur.filter((p) => p.currencyCode !== row.currencyCode),
+            { currencyCode: row.currencyCode, unitPrice: row.unitPrice.toFixed(2) },
+          ]);
+        }
+        const keep = new Set(prices.map((p) => p.currencyCode));
+        for (const base of basePrices) {
+          if (keep.has(base.currencyCode)) continue;
+          await runAction({
+            request: () => removeItemPrice(savedId, base.currencyCode),
+            errorFallback: t('catalogItemEditorDrawer.priceCouldNotBeRemovedRetry', { currency: base.currencyCode }),
+            onUnauthorized: UNAUTHORIZED,
+          });
+          setBasePrices((cur) => cur.filter((p) => p.currencyCode !== base.currencyCode));
+        }
+      } else {
+        setBasePrices(prices.map((p) => ({ currencyCode: p.currencyCode, unitPrice: p.unitPrice.toFixed(2) })));
+      }
 
       if (isBundle) {
         await runAction({
@@ -432,7 +552,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     } finally {
       setSaving(false);
     }
-  }, [saving, name, description, priceValid, isBundle, detailLoadFailed, components, itemType, sku, priceNum, costBasis, enrichment, effectiveId, editId, onSaved, onClose]);
+  }, [saving, name, description, pricesValid, priceRows, basePrices, partnerCurrency, isBundle, detailLoadFailed, components, itemType, sku, costBasis, costCurrency, enrichment, effectiveId, editId, onSaved, onClose]);
 
   // Auto-fill a NEW item from the web: fill the fields this form actually edits
   // (name + type) and stash provenance. Price is never auto-set — the button shows
@@ -569,19 +689,87 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
             />
           </div>
 
+          {/* Price book — one sell price per currency; a missing currency is a
+              gap the server reports (NO_PRICE_FOR_CURRENCY), never a conversion. */}
+          <div className="space-y-2 rounded-md border p-3" data-testid="catalog-form-price-book">
+            <span className="text-xs font-medium text-muted-foreground">{t('catalogItemEditorDrawer.priceBook')}</span>
+            {partnerCurrency == null ? (
+              partnerCurrencyFailed ? (
+                <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" data-testid="catalog-form-price-book-error">
+                  {t('catalogItemEditorDrawer.partnerCurrencyUnavailable')}{' '}
+                  <button type="button" onClick={retryPartnerCurrency} className="underline hover:text-foreground">{t('catalogItemEditorDrawer.retry')}</button>
+                </p>
+              ) : (
+                <p className="py-2 text-center text-xs text-muted-foreground" data-testid="catalog-form-price-book-loading">
+                  {t('catalogItemEditorDrawer.loadingPartnerCurrency')}</p>
+              )
+            ) : (
+              <>
+                {priceRows.length === 0 ? (
+                  <p className="py-2 text-center text-xs text-muted-foreground" data-testid="catalog-form-price-book-empty">
+                    {t('catalogItemEditorDrawer.noPricesYet')}</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {priceRows.map((r, idx) => (
+                      <li key={r.currencyCode} className="flex items-center gap-2" data-testid={`catalog-form-price-row-${r.currencyCode}`}>
+                        <select
+                          value={r.currencyCode}
+                          onChange={(e) => patchPriceRow(idx, { currencyCode: e.target.value })}
+                          aria-label={t('catalogItemEditorDrawer.priceCurrency')}
+                          className="h-9 w-40 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                          data-testid={`catalog-form-price-currency-${idx}`}
+                        >
+                          {allCurrencyOptions
+                            .filter((code) => code === r.currencyCode || !usedCurrencies.has(code))
+                            .map((code) => (
+                              <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
+                            ))}
+                        </select>
+                        <input
+                          value={r.unitPrice}
+                          onChange={(e) => patchPriceRow(idx, { unitPrice: e.target.value })}
+                          inputMode="decimal"
+                          aria-label={t('catalogItemEditorDrawer.unitPrice')}
+                          className={`${fieldCls} flex-1 text-right tabular-nums`}
+                          placeholder="0.00"
+                          data-testid={`catalog-form-price-${idx}`}
+                        />
+                        {canWrite && (
+                          <button
+                            type="button"
+                            onClick={() => removePriceRow(r.currencyCode)}
+                            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive"
+                            aria-label={t('catalogItemEditorDrawer.removePrice', { currency: r.currencyCode })}
+                            data-testid={`catalog-form-price-remove-${r.currencyCode}`}
+                          >
+                            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M3 6h18M8 6V4h8v2m-9 0v14a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {canWrite && addableCurrencies.length > 0 && (
+                  <select
+                    value=""
+                    onChange={(e) => addPriceRow(e.target.value)}
+                    aria-label={t('catalogItemEditorDrawer.addCurrencyPrice')}
+                    className="h-9 w-full rounded-md border bg-background px-2 text-sm text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    data-testid="catalog-form-price-add"
+                  >
+                    <option value="">{t('catalogItemEditorDrawer.addCurrencyPrice')}</option>
+                    {addableCurrencies.map((code) => (
+                      <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
+                    ))}
+                  </select>
+                )}
+              </>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-price-input">{t('catalogItemEditorDrawer.unitPrice')}</label>
-              <input
-                id="catalog-form-price-input"
-                value={unitPrice}
-                onChange={(e) => setUnitPrice(e.target.value)}
-                inputMode="decimal"
-                className={`${fieldCls} text-right tabular-nums`}
-                placeholder="0.00"
-                data-testid="catalog-form-price"
-              />
-            </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-cost-input">{t('catalogItemEditorDrawer.costBasis')}<span className="font-normal opacity-70">{t('catalogItemEditorDrawer.optional')}</span></label>
               <input
@@ -594,13 +782,36 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                 data-testid="catalog-form-cost"
               />
             </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-cost-currency-input">{t('catalogItemEditorDrawer.costCurrency')}</label>
+              <select
+                id="catalog-form-cost-currency-input"
+                value={costCurrency}
+                onChange={(e) => setCostCurrency(e.target.value)}
+                disabled={partnerCurrency == null && !costCurrency}
+                className={`${fieldCls} disabled:opacity-50`}
+                data-testid="catalog-form-cost-currency"
+              >
+                {!costCurrency && <option value="">{t('catalogItemEditorDrawer.loadingPartnerCurrency')}</option>}
+                {currencyOptions(costCurrency || partnerCurrency || '').map((code) => (
+                  <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          {/* Live margin preview */}
-          <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm" data-testid="catalog-form-margin">
+          {/* Live margin preview — partner-currency price vs cost, only when the
+              cost is in that same currency (never computed across currencies). */}
+          <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2 text-sm" data-testid="catalog-form-margin">
             <span className="text-muted-foreground">{t('catalogItemEditorDrawer.margin')}</span>
-            <span className={`font-medium tabular-nums ${marginTone(marginPreview)}`}>
-              {marginPreview == null ? t('catalogItemEditorDrawer.addACostBasisToSeeMargin') : formatMargin(marginPreview)}
+            <span className={`text-right font-medium tabular-nums ${marginTone(marginPreview)}`}>
+              {marginPreview != null
+                ? formatMargin(marginPreview)
+                : costCurrencyMismatch
+                  ? t('catalogItemEditorDrawer.marginUnavailableCostIn', { currency: costCurrency })
+                  : costBasis.trim() === ''
+                    ? t('catalogItemEditorDrawer.addACostBasisToSeeMargin')
+                    : '—'}
             </span>
           </div>
 
@@ -779,7 +990,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                       data-testid={`catalog-override-row-${o.orgId}`}
                     >
                       <span className="flex-1 truncate">{orgNameFor(o.orgId)}</span>
-                      <span className="tabular-nums" data-testid={`catalog-override-price-${o.orgId}`}>{o.unitPrice}</span>
+                      <span className="tabular-nums" data-testid={`catalog-override-price-${o.orgId}`}>{o.currencyCode} {o.unitPrice}</span>
                       <button
                         type="button"
                         onClick={() => void deleteOverride(o.orgId)}
@@ -800,13 +1011,25 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               <div className="flex items-center gap-2">
                 <select
                   value={newOverrideOrgId}
-                  onChange={(e) => setNewOverrideOrgId(e.target.value)}
+                  onChange={(e) => pickOverrideOrg(e.target.value)}
                   className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   data-testid="catalog-override-org"
                 >
                   <option value="">{t('catalogItemEditorDrawer.selectOrganization')}</option>
                   {orgsWithoutOverride.map((o) => (
                     <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+                <select
+                  value={newOverrideCurrency}
+                  onChange={(e) => setNewOverrideCurrency(e.target.value)}
+                  aria-label={t('catalogItemEditorDrawer.overrideCurrency')}
+                  className="h-9 w-20 rounded-md border bg-background px-1 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  data-testid="catalog-override-currency"
+                >
+                  {!newOverrideCurrency && <option value="">—</option>}
+                  {currencyOptions(newOverrideCurrency || partnerCurrency || '').map((code) => (
+                    <option key={code} value={code}>{code}</option>
                   ))}
                 </select>
                 <input

@@ -141,7 +141,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
-  const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
+  // GET /orgs/organizations returns the full org row for partner/system scope,
+  // which carries currency_code (wave 1); the parts card needs it for catalog
+  // prefill (#3775). Org-scoped callers get a name-only projection → undefined.
+  const [orgs, setOrgs] = useState<Array<{ id: string; name: string; currencyCode?: string }>>([]);
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
@@ -314,10 +317,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       .then(async (r) => (r.ok ? r.json() : null))
       .then((body) => {
         if (cancelled || !body) return;
-        const rows = (body as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> }).data
-          ?? (body as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> }).organizations
+        type OrgRow = { id: string; name: string; currencyCode?: string };
+        const rows = (body as { data?: OrgRow[]; organizations?: OrgRow[] }).data
+          ?? (body as { data?: OrgRow[]; organizations?: OrgRow[] }).organizations
           ?? [];
-        if (Array.isArray(rows)) setOrgs((rows as Array<{ id: string; name: string }>).filter((o) => o.id && o.name));
+        if (Array.isArray(rows)) setOrgs((rows as OrgRow[]).filter((o) => o.id && o.name));
       })
       .catch(() => { /* degrade gracefully */ });
     return () => { cancelled = true; };
@@ -1048,7 +1052,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
               <TicketTimeBilling ticketId={ticket.id} />
-              <TicketPartsCard ticketId={ticket.id} />
+              <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} />
               <dl className="space-y-3">
                 <div>
                   <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.requester.label')}</dt>
