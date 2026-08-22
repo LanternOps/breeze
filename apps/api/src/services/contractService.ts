@@ -265,8 +265,8 @@ export async function changeContractCurrency(
           try {
             resolved = await resolvePrice(line.catalogItemId!, input.currencyCode, c.orgId, catalogActor, tx);
           } catch (err) {
-            if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
-              throw new ContractServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+            if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+                throw new ContractServiceError(err.message, 409, err.code);
             }
             throw err;
           }
@@ -314,8 +314,8 @@ export async function addContractLineToContract(contractId: string, input: Contr
           tx
         );
       } catch (err) {
-        if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
-          throw new ContractServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+        if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+            throw new ContractServiceError(err.message, 409, err.code);
         }
         throw err;
       }

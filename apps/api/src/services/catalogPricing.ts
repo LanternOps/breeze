@@ -1,5 +1,6 @@
 // Pure money/bundle helpers. Money is carried as fixed-2-decimal strings to match
 // numeric(12,2) columns. No DB, no I/O — fully unit-testable.
+import { isRepresentableInCurrency, roundToCurrency } from '@breeze/shared';
 
 function toCents(v: string | number | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
@@ -7,6 +8,23 @@ function toCents(v: string | number | null | undefined): number {
 }
 function fromCents(cents: number): string {
   return (cents / 100).toFixed(2);
+}
+
+/**
+ * Cost snapshot guard (#3775 review #4/#8): a stored cost may only travel into
+ * a document / margin figure when it is stamped in the target currency AND is
+ * exact at that currency's minor unit. Legacy backfills can carry JPY 100.50
+ * (snapshots rule — never rewritten in place); such a cost is a GAP here, never
+ * rounded (that would reinterpret stored money) and never copied onward.
+ */
+export function snapshotCost(
+  costBasis: string | null | undefined,
+  costCurrency: string,
+  targetCurrency: string
+): string | null {
+  if (costBasis === null || costBasis === undefined) return null;
+  if (costCurrency !== targetCurrency) return null;
+  return isRepresentableInCurrency(costBasis, targetCurrency) ? costBasis : null;
 }
 
 /**
@@ -43,40 +61,68 @@ export function deriveUnitPrice(input: {
 export interface ResolvedPrice {
   unitPrice: string;                 // fixed-2-decimal, in currencyCode
   currencyCode: string;              // the TARGET currency the caller asked for
-  costBasis: string | null;          // the item's cost — may be in another currency
+  /**
+   * The item's cost when it is usable in currencyCode (same currency AND
+   * representable at its minor unit), else null — see snapshotCost. A cost in
+   * another currency is a gap (marginAvailable false), never returned here.
+   */
+  costBasis: string | null;
   costCurrency: string;
-  /** true only when costCurrency === currencyCode; callers must not compute margin otherwise */
+  /** true only when costBasis !== null; callers must not compute margin otherwise */
   marginAvailable: boolean;
   taxable: boolean;
   taxCategory: string | null;
   source: 'org_override' | 'price_book';
 }
 
+/** Typed resolver gaps — the caller maps each to its CatalogServiceError code. */
+export type PriceGap =
+  | { gap: 'NO_PRICE_FOR_CURRENCY' }
+  /**
+   * The winning row exists but its amount is not exact at the target
+   * currency's minor unit (legacy backfill, e.g. JPY 100.50 — #3775 review
+   * #4). Never rounded (snapshots rule), never skipped in favour of the next
+   * candidate: the row IS the price the partner maintains; it needs fixing.
+   */
+  | { gap: 'PRICE_NOT_REPRESENTABLE'; source: ResolvedPrice['source']; unitPrice: string };
+
+export function isPriceGap(r: ResolvedPrice | PriceGap): r is PriceGap {
+  return 'gap' in r;
+}
+
 /**
  * Pure resolution (spec §6): an org override IN THE TARGET CURRENCY wins; else
- * the price-book row for the target currency; else null — the typed gap the
- * caller turns into NO_PRICE_FOR_CURRENCY. Never converts, never falls
- * through to another currency's number.
+ * the price-book row for the target currency; else a NO_PRICE_FOR_CURRENCY
+ * gap. A winning row that is not representable in the target currency is a
+ * PRICE_NOT_REPRESENTABLE gap. Never converts, never falls through to another
+ * currency's number.
  */
 export function resolvePriceFrom(
   item: { costBasis: string | null; costCurrency: string; taxable: boolean; taxCategory: string | null },
   override: { unitPrice: string; currencyCode: string } | null,
   bookRow: { unitPrice: string } | null,
   targetCurrency: string
-): ResolvedPrice | null {
+): ResolvedPrice | PriceGap {
+  const costBasis = snapshotCost(item.costBasis, item.costCurrency, targetCurrency);
   const common = {
     currencyCode: targetCurrency,
-    costBasis: item.costBasis,
+    costBasis,
     costCurrency: item.costCurrency,
-    marginAvailable: item.costCurrency === targetCurrency,
+    marginAvailable: costBasis !== null,
     taxable: item.taxable,
     taxCategory: item.taxCategory,
   };
+  let candidate: { unitPrice: string; source: ResolvedPrice['source'] } | null = null;
   if (override && override.currencyCode === targetCurrency) {
-    return { ...common, unitPrice: override.unitPrice, source: 'org_override' };
+    candidate = { unitPrice: override.unitPrice, source: 'org_override' };
+  } else if (bookRow) {
+    candidate = { unitPrice: bookRow.unitPrice, source: 'price_book' };
   }
-  if (bookRow) return { ...common, unitPrice: bookRow.unitPrice, source: 'price_book' };
-  return null;
+  if (!candidate) return { gap: 'NO_PRICE_FOR_CURRENCY' };
+  if (!isRepresentableInCurrency(candidate.unitPrice, targetCurrency)) {
+    return { gap: 'PRICE_NOT_REPRESENTABLE', source: candidate.source, unitPrice: candidate.unitPrice };
+  }
+  return { ...common, ...candidate };
 }
 
 export type BundleProblem =

@@ -55,6 +55,7 @@ export type QuoteServiceErrorCode =
   // from CatalogServiceError — never another currency's number, never converted;
   // the caller adds a manual line or fills the price book.
   | 'NO_PRICE_FOR_CURRENCY'
+  | 'PRICE_NOT_REPRESENTABLE'
   // Durable single-use replay backstop (#2875, quoteAcceptService): the public
   // response token's jti was already consumed on the quote row (2026-08-06-c
   // columns) — a replayed link, rejected 401 even when the Redis revocation

@@ -701,6 +701,44 @@ describe('catalogService (breeze_app, real DB)', () => {
     expect((await priceRowsFor(item.id)).map((r) => r.currencyCode)).toEqual(['EUR', 'USD']);
   });
 
+  runDb('resolvePrice (#3775 review #4): a forged legacy JPY 100.50 book row / 10.50 override is a typed PRICE_NOT_REPRESENTABLE gap; a fractional-yen cost voids margin', async () => {
+    const fx = await seedFixture();
+    const item = await seedMultiCurrencyItem(fx);
+    // Forge what the 2026-08-29 backfills preserve: a sub-unit amount in a
+    // zero-decimal currency, inserted under system scope past the service guard.
+    await withSystemDbAccessContext(() =>
+      db.insert(catalogItemPrices).values({ itemId: item.id, partnerId: fx.partnerA.id, currencyCode: 'JPY', unitPrice: '100.50' }));
+    const ctx = ctxWithOrgs(fx.partnerA.id, [fx.orgA.id]);
+    const actor: CatalogActor = { ...fx.actorA, accessibleOrgIds: [fx.orgA.id] };
+
+    await expect(withDbAccessContext(ctx, () => resolvePrice(item.id, 'JPY', fx.orgA.id, actor)))
+      .rejects.toMatchObject({ status: 409, code: 'PRICE_NOT_REPRESENTABLE' });
+    await expect(withDbAccessContext(fx.ctxA, () => resolvePrice(item.id, 'JPY', null, fx.actorA)))
+      .rejects.toMatchObject({ status: 409, code: 'PRICE_NOT_REPRESENTABLE' });
+
+    // Repairing the row through the service makes it resolvable again.
+    await withDbAccessContext(fx.ctxA, () => setItemPrice(item.id, 'JPY', { unitPrice: 101 }, fx.actorA));
+    expect(await withDbAccessContext(ctx, () => resolvePrice(item.id, 'JPY', fx.orgA.id, actor)))
+      .toMatchObject({ unitPrice: '101.00', source: 'price_book' });
+
+    // A forged fractional-yen org override wins the resolution order and is
+    // refused — it does NOT fall through to the (valid) book row.
+    await withSystemDbAccessContext(() =>
+      db.insert(catalogItemOrgPricing).values({ catalogItemId: item.id, orgId: fx.orgA.id, partnerId: fx.partnerA.id, currencyCode: 'JPY', unitPrice: '10.50' }));
+    await expect(withDbAccessContext(ctx, () => resolvePrice(item.id, 'JPY', fx.orgA.id, actor)))
+      .rejects.toMatchObject({ status: 409, code: 'PRICE_NOT_REPRESENTABLE' });
+    // ...while an org without the override still resolves from the repaired book row.
+    expect(await withDbAccessContext(fx.ctxA, () => resolvePrice(item.id, 'JPY', null, fx.actorA)))
+      .toMatchObject({ unitPrice: '101.00' });
+
+    // A forged fractional-yen legacy COST is not an error but a margin gap:
+    // costBasis null / marginAvailable false, so no document snapshots 100.50.
+    await withSystemDbAccessContext(() =>
+      db.update(catalogItems).set({ costBasis: '100.50', costCurrency: 'JPY' }).where(eq(catalogItems.id, item.id)));
+    expect(await withDbAccessContext(fx.ctxA, () => resolvePrice(item.id, 'JPY', null, fx.actorA)))
+      .toMatchObject({ unitPrice: '101.00', costBasis: null, costCurrency: 'JPY', marginAvailable: false });
+  });
+
   runDb('setOrgPriceOverride: an org of ANOTHER partner is ORG_DENIED 403; a forged row trips the composite FK 23503', async () => {
     const fx = await seedFixture();
     const item = await seedMultiCurrencyItem(fx);

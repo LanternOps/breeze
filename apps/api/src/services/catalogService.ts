@@ -6,7 +6,7 @@ import {
 import { emitCatalogEvent } from './catalogEvents';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
-  deriveUnitPrice, resolvePriceFrom, detectBundleProblems, computeBundleEconomicsFrom,
+  deriveUnitPrice, resolvePriceFrom, isPriceGap, detectBundleProblems, computeBundleEconomicsFrom,
   type ResolvedPrice, type BundleEconomics
 } from './catalogPricing';
 import { isRepresentableInCurrency, roundToCurrency } from '@breeze/shared';
@@ -576,7 +576,12 @@ export async function setBundleComponents(bundleId: string, components: BundleCo
 
 /**
  * Spec §6 resolution: org override in the target currency → price-book row for
- * the target currency → typed NO_PRICE_FOR_CURRENCY gap. Never converts and
+ * the target currency → typed NO_PRICE_FOR_CURRENCY gap. A winning row whose
+ * amount is not representable in the target currency (legacy backfill, e.g.
+ * JPY 100.50 — the migrations keep such rows as-is, snapshots rule) is the
+ * typed PRICE_NOT_REPRESENTABLE gap (409, #3775 review #4): it never enters a
+ * new document, is never rounded, and is never skipped in favour of the next
+ * candidate. Fix it with PUT /catalog/:id/prices/:code. Never converts and
  * NEVER reads the deprecated catalog_items.unit_price mirror. Runs on `dbc` so
  * document services resolve inside their already-locked transaction (document
  * row → lines → sources); every catalog read here is a plain SELECT — no
@@ -607,7 +612,14 @@ export async function resolvePrice(
     bookRows[0] ?? null,
     targetCurrency
   );
-  if (!resolved) {
+  if (isPriceGap(resolved)) {
+    if (resolved.gap === 'PRICE_NOT_REPRESENTABLE') {
+      throw new CatalogServiceError(
+        `${resolved.source === 'org_override' ? 'Org override' : 'Price-book'} price ${resolved.unitPrice} for "${item.name}" is not representable in ${targetCurrency} — correct the ${targetCurrency} price before using this item`,
+        409,
+        'PRICE_NOT_REPRESENTABLE'
+      );
+    }
     throw new CatalogServiceError(
       `No price for "${item.name}" in ${targetCurrency} — add a price-book entry or enter a manual line`,
       409,

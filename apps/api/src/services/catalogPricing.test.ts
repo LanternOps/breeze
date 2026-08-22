@@ -60,13 +60,11 @@ describe('resolvePriceFrom', () => {
       'EUR'
     );
 
-    expect(r?.unitPrice).toBe('85.00');
-    expect(r?.currencyCode).toBe('EUR');
-    expect(r?.source).toBe('price_book');
+    expect(r).toMatchObject({ unitPrice: '85.00', currencyCode: 'EUR', source: 'price_book' });
   });
 
-  it('returns null when neither a matching override nor a price-book row exists', () => {
-    expect(resolvePriceFrom(item, null, null, 'EUR')).toBeNull();
+  it('returns the NO_PRICE_FOR_CURRENCY gap when neither a matching override nor a price-book row exists', () => {
+    expect(resolvePriceFrom(item, null, null, 'EUR')).toEqual({ gap: 'NO_PRICE_FOR_CURRENCY' });
   });
 
   it('marks margin unavailable when cost and target currencies differ', () => {
@@ -77,7 +75,7 @@ describe('resolvePriceFrom', () => {
       'USD'
     );
 
-    expect(r?.marginAvailable).toBe(false);
+    expect(r).toMatchObject({ marginAvailable: false });
   });
 
   it('marks margin available when cost and target currencies match', () => {
@@ -88,7 +86,7 @@ describe('resolvePriceFrom', () => {
       'USD'
     );
 
-    expect(r?.marginAvailable).toBe(true);
+    expect(r).toMatchObject({ marginAvailable: true });
   });
 });
 
@@ -348,5 +346,35 @@ describe('importedCost (#3775 review #2)', () => {
     expect(importedCost(null, 'USD')).toEqual({ costBasis: null, costCurrency: 'USD' });
     expect(importedCost(undefined, null)).toEqual({ costBasis: null, costCurrency: undefined });
     expect(importedCost(Number.NaN, 'USD')).toEqual({ costBasis: null, costCurrency: 'USD' });
+  });
+});
+
+describe('resolvePriceFrom — non-representable legacy amounts (#3775 review #4)', () => {
+  const jpyItem = { costBasis: '100.00', costCurrency: 'JPY', taxable: true, taxCategory: null };
+
+  it('a fractional-yen price-book row is a PRICE_NOT_REPRESENTABLE gap, not a price', () => {
+    expect(resolvePriceFrom(jpyItem, null, { unitPrice: '100.50' }, 'JPY')).toEqual({
+      gap: 'PRICE_NOT_REPRESENTABLE', source: 'price_book', unitPrice: '100.50'
+    });
+  });
+
+  it('a fractional-yen org override is a PRICE_NOT_REPRESENTABLE gap and does NOT fall through to the book row', () => {
+    expect(resolvePriceFrom(jpyItem, { unitPrice: '10.50', currencyCode: 'JPY' }, { unitPrice: '100.00' }, 'JPY')).toEqual({
+      gap: 'PRICE_NOT_REPRESENTABLE', source: 'org_override', unitPrice: '10.50'
+    });
+  });
+
+  it('a missing price is still the NO_PRICE_FOR_CURRENCY gap', () => {
+    expect(resolvePriceFrom(jpyItem, null, null, 'JPY')).toEqual({ gap: 'NO_PRICE_FOR_CURRENCY' });
+  });
+
+  it('a fractional-yen legacy cost makes margin unavailable (cost null) instead of being snapshotted', () => {
+    const r = resolvePriceFrom({ ...jpyItem, costBasis: '100.50' }, null, { unitPrice: '200.00' }, 'JPY');
+    expect(r).toMatchObject({ unitPrice: '200.00', costBasis: null, marginAvailable: false, source: 'price_book' });
+  });
+
+  it('a representable yen price and cost resolve normally', () => {
+    const r = resolvePriceFrom(jpyItem, null, { unitPrice: '200.00' }, 'JPY');
+    expect(r).toMatchObject({ unitPrice: '200.00', costBasis: '100.00', marginAvailable: true });
   });
 });

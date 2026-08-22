@@ -985,8 +985,8 @@ async function repriceQuoteCatalogLines(
     try {
       resolved = await resolvePrice(line.catalogItemId!, currencyCode, q.orgId, catalogActor, tx);
     } catch (err) {
-      if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
-        throw new QuoteServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+      if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+          throw new QuoteServiceError(err.message, 409, err.code);
       }
       throw err;
     }
@@ -1251,8 +1251,8 @@ export async function addCatalogLine(
         tx
       );
     } catch (err) {
-      if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
-        throw new QuoteServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+      if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+          throw new QuoteServiceError(err.message, 409, err.code);
       }
       throw err;
     }

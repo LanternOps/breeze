@@ -740,6 +740,14 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     expect(values()).not.toHaveBeenCalled();
   });
 
+  it('addCatalogLine maps a PRICE_NOT_REPRESENTABLE legacy row to a typed 409 (#3775 review #4) and inserts nothing', async () => {
+    resolvePriceMock.mockRejectedValue(new CatalogServiceError('JPY 100.50 not representable', 409, 'PRICE_NOT_REPRESENTABLE'));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
+    await expect(svc.addCatalogLine('i1', 'cat-1', 1, actor))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 409 });
+    expect(values()).not.toHaveBeenCalled();
+  });
+
   const econUsd = (over: Partial<Awaited<ReturnType<typeof computeBundleEconomics>>> = {}) => ({
     currencyCode: 'USD', headlinePrice: '100.00', priceBookComplete: true, marginAvailable: true,
     totalCost: '40.00', margin: '60.00', marginPct: 60, allocationTotal: '100.00',
@@ -851,6 +859,24 @@ describe('addContractLine', () => {
     expect(pricedFrom).toBe('price_book');
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '99.00', costBasis: '45.00', taxable: true }));
+  });
+
+  it('catalog path: a PRICE_NOT_REPRESENTABLE legacy row (#3775 review #4) also falls back to the contract snapshot — the bad row never lands', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    resolvePriceMock.mockRejectedValue(new CatalogServiceError('JPY 100.50 not representable', 409, 'PRICE_NOT_REPRESENTABLE'));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
+    queueResult([{ currencyCode: 'JPY' }]);
+    queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
+      description: 'Managed endpoint', quantity: '2', unitPrice: '100.00', lineTotal: '200.00', taxable: true, customerVisible: true });
+
+    const { pricedFrom } = await svc.addContractLine('i1', {
+      description: 'Managed endpoint', quantity: '2', unitPrice: '100', taxable: true,
+      catalogItemId: 'cat-1', sourceId: 'cl-1',
+    }, actor);
+
+    expect(pricedFrom).toBe('contract_snapshot');
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '100.00', costBasis: null, catalogItemId: 'cat-1' }));
   });
 
   it('catalog path: a price-book gap falls back to the contract line snapshot (pricedFrom contract_snapshot, costBasis null)', async () => {
