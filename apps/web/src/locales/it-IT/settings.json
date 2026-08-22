@@ -452,7 +452,7 @@
     "loadFailed": "Impossibile caricare il branding attuale — ricarica la pagina prima di salvare, altrimenti potresti sovrascrivere impostazioni esistenti.",
     "logoUrl": "URL logo",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "Un URL <code>https://</code> al tuo logo. Lascia vuoto per non usare un logo.",
+    "logoHelp": "SVG o PNG. I loghi larghi funzionano meglio: il portale lo mostra ad altezza fissa, quindi punta a circa 4:1 e almeno 320px di larghezza.",
     "accentColor": "Colore principale",
     "colorPicker": "Selettore colore principale",
     "colorHelp": "Un colore esadecimale <code>#rrggbb</code>.",

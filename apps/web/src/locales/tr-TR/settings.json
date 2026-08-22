@@ -452,7 +452,7 @@
     "loadFailed": "Mevcut markanız yüklenemedi; kaydetmeden önce sayfayı yeniden yükleyin, aksi takdirde mevcut ayarların üzerine yazabilirsiniz.",
     "logoUrl": "Logo URL'si",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "Logonuzun <code>https://</code> URL'si. Logo olmaması durumunda boş bırakın.",
+    "logoHelp": "SVG veya PNG. Geniş logolar en iyi sonucu verir: portal logoyu sabit yükseklikte gösterir, bu yüzden yaklaşık 4:1 oran ve en az 320px genişlik hedefleyin.",
     "accentColor": "Vurgu rengi",
     "colorPicker": "Vurgu rengi seçici",
     "colorHelp": "A <code>#rrggbb</code> onaltılık renk.",

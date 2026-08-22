@@ -452,7 +452,7 @@
     "loadFailed": "No se pudo cargar su marca actual: vuelva a cargar la página antes de guardarla o puede sobrescribir la configuración existente.",
     "logoUrl": "Logotipo URL",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "Una URL <code>https://</code> para su logotipo. Déjelo en blanco si no hay logotipo.",
+    "logoHelp": "SVG o PNG. Los logos anchos funcionan mejor: el portal lo muestra a altura fija, así que apunta a unos 4:1 y al menos 320px de ancho.",
     "accentColor": "Color de acento",
     "colorPicker": "Selector de color de acento",
     "colorHelp": "Un color hexadecimal <code>#rrggbb</code>.",

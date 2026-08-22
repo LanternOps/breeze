@@ -452,7 +452,7 @@
     "loadFailed": "Vous n’avez pas pu charger votre image de marque actuelle — rechargez la page avant d’enregistrer, sinon vous risquez de réécrire les paramètres existants.",
     "logoUrl": "URL du logo",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "Un <code>https://</code> URL à votre logo. Laissez le bouton vide pour ne pas laisser de logo.",
+    "logoHelp": "SVG ou PNG. Les logos larges fonctionnent le mieux : le portail l’affiche à hauteur fixe, visez environ 4:1 et au moins 320px de large.",
     "accentColor": "Couleur d’accent",
     "colorPicker": "Sélecteur de couleurs d’accent",
     "colorHelp": "Une couleur hexagonale <code>#rrggbb</code>.",

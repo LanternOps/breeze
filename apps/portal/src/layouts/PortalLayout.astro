@@ -153,12 +153,32 @@ const isActive = (href: string) => {
                 ))}
               </nav>
             </details>
-            <span class="truncate font-display text-xl font-semibold tracking-tight text-foreground lg:hidden">
-              {branding.name || 'Customer Portal'}
-            </span>
+            {/* Phones get the partner's logo too, not just the rail. */}
+            {branding.logoUrl ? (
+              <img src={branding.logoUrl} alt={branding.name || 'Customer Portal'} class="h-7 w-auto max-w-[150px] lg:hidden" />
+            ) : (
+              <span class="truncate font-display text-xl font-semibold tracking-tight text-foreground lg:hidden">
+                {branding.name || 'Customer Portal'}
+              </span>
+            )}
           </div>
 
           <div class="flex items-center gap-1">
+            {/* The one quick action a customer reaches for from anywhere:
+                start a ticket. Gated like the nav entry (#2345): hidden only
+                when branding explicitly disables ticketing. */}
+            {branding.enableTickets !== false && (
+              <a
+                href={withBase('/tickets/new')}
+                data-testid="quick-new-ticket"
+                aria-label="New ticket"
+                class="mr-1 inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-primary px-2.5 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:mr-2 sm:px-3.5"
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                {/* Icon-only on phones so the brand keeps its room. */}
+                <span class="hidden sm:inline">New ticket</span>
+              </a>
+            )}
             <a href={withBase('/profile')} class="hidden whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground lg:inline-flex">
               Profile
             </a>
