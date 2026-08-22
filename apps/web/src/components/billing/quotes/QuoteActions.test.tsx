@@ -11,14 +11,22 @@ import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 vi.mock('../../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('../../../stores/orgStore', () => ({ useOrgStore: (sel: (s: { organizations: unknown[] }) => unknown) => sel({ organizations: [] }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+// Controllable tokens: opening the composer reads scope claims (Stripe-status
+// gate) via useAuthStore.getState().tokens — null keeps it quiet; the
+// currency-mismatch tests flip it to partner scope to unlock the fetch.
+const authState = vi.hoisted(() => ({ tokens: null as { accessToken: string } | null }));
 vi.mock('../../../stores/auth', () => ({
   fetchWithAuth: vi.fn().mockResolvedValue(
     { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
   ),
-  // Opening the composer reads scope claims (Stripe-status gate) via
-  // useAuthStore.getState().tokens — a null-token store keeps it quiet.
-  useAuthStore: Object.assign(() => null, { getState: () => ({ tokens: null }) }),
+  useAuthStore: Object.assign(() => null, { getState: () => ({ tokens: authState.tokens }) }),
 }));
+import { fetchWithAuth } from '../../../stores/auth';
+/** Access token whose (unverified) payload claims partner scope — enough for
+ *  the composer's client-side getJwtClaims() gate on the support fetches. */
+const PARTNER_TOKENS = {
+  accessToken: `x.${btoa(JSON.stringify({ scope: 'partner', partnerId: 'p-1' }))}.y`,
+};
 vi.mock('../../../lib/api/quotes', () => ({ sendQuote: vi.fn(), deleteQuote: vi.fn(), quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf') }));
 vi.mock('../../shared/ConfirmDialog', () => ({ ConfirmDialog: () => null }));
 const showToastMock = vi.fn();
@@ -55,7 +63,7 @@ function sendable(): QuoteDetailData {
   };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); authState.tokens = null; });
 
 describe('QuoteActions — header variant', () => {
   it('an empty draft disables Send and ties it to a visible, per-variant hint', async () => {
@@ -224,5 +232,53 @@ describe('QuoteActions — header variant', () => {
 
     fireEvent.click(send); // now something WILL complete
     expect(send.querySelector('.animate-spin')).not.toBeNull();
+  });
+});
+
+describe('QuoteActions — Stripe currency-mismatch warning (#3777)', () => {
+  const resp = (payload: unknown): Response =>
+    ({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
+
+  function mockStripe(defaultCurrency: string | null) {
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url === '/partner/stripe-connect') return resp({ status: 'connected', defaultCurrency, accountCountry: 'US' });
+      if (url === '/orgs/partners/me') return resp({ emailSignature: null });
+      return resp({ data: {} });
+    });
+  }
+
+  async function openComposer(detail: QuoteDetailData) {
+    render(<QuoteActions detail={detail} onChanged={vi.fn()} variant="header" />);
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-send'));
+    await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
+  }
+
+  it('warns when the quote currency differs from the Stripe account default', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    mockStripe('USD');
+    await openComposer({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } });
+    const warning = await screen.findByTestId('quote-stripe-currency-warning');
+    expect(warning.textContent).toContain('EUR');
+    expect(warning.textContent).toContain('USD');
+    // Warn, never block: the connected note still renders and Send stays armed.
+    expect(screen.getByTestId('quote-send-payment-enabled')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-send-confirm')).not.toBeDisabled();
+  });
+
+  it('stays silent when the currencies match', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    mockStripe('USD');
+    await openComposer(sendable());
+    await screen.findByTestId('quote-send-payment-enabled');
+    expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
+  });
+
+  it('stays silent when the account currency is not cached (null)', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    mockStripe(null);
+    await openComposer({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } });
+    await screen.findByTestId('quote-send-payment-enabled');
+    expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
   });
 });

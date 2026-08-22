@@ -931,7 +931,8 @@
       "resendNewLinkOriginalLive": "Proposition renvoyée, mais avec un NOUVEAU lien. Cette proposition est antérieure au suivi des liens : celui que le client possédait n'a pas pu être réutilisé; il fonctionne toujours en parallèle du nouveau.",
       "resendNewLinkOriginalDead": "Proposition renvoyée, mais avec un NOUVEAU lien. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser le nouveau.",
       "shareLinkNewLinkOriginalLive": "Un NOUVEAU lien a été copié. Cette proposition est antérieure au suivi des liens : celui que le client possédait n'a pas pu être réutilisé; il fonctionne toujours en parallèle de celui-ci.",
-      "shareLinkNewLinkOriginalDead": "Un NOUVEAU lien a été copié. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser celui-ci."
+      "shareLinkNewLinkOriginalDead": "Un NOUVEAU lien a été copié. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser celui-ci.",
+      "currencyMismatch": "Cette soumission est en {{documentCurrency}}, mais votre compte Stripe règle en {{accountCurrency}}. Stripe présentera {{documentCurrency}} au client et convertira au règlement — l'écart de change et les frais de conversion sont à votre charge."
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -1499,6 +1500,7 @@
       "amount": "Montant",
       "amountRequired": "Saisissez un montant de paiement à enregistrer",
       "connectStripe": "Connectez Stripe pour accepter les paiements en ligne.",
+      "currencyMismatch": "Cette facture est en {{documentCurrency}}, mais votre compte Stripe règle en {{accountCurrency}}. Stripe présentera {{documentCurrency}} au client et convertira au règlement — l'écart de change et les frais de conversion sont à votre charge.",
       "date": "Date de paiement",
       "draftHint": "Émettez cette facture pour enregistrer des paiements.",
       "empty": "Aucun paiement enregistré.",

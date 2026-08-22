@@ -931,7 +931,8 @@
       "resendNewLinkOriginalLive": "Proposta reenviada, mas com um link NOVO. Esta proposta é anterior ao rastreamento de links, então o link que o cliente já tinha não pôde ser reutilizado; ele continua funcionando junto com o novo.",
       "resendNewLinkOriginalDead": "Proposta reenviada, mas com um link NOVO. O link anterior não pode mais ser aberto, então quem o tiver precisa usar o novo.",
       "shareLinkNewLinkOriginalLive": "Um link NOVO foi copiado. Esta proposta é anterior ao rastreamento de links, então o link que o cliente já tinha não pôde ser reutilizado; ele continua funcionando junto com este.",
-      "shareLinkNewLinkOriginalDead": "Um link NOVO foi copiado. O link anterior não pode mais ser aberto, então quem o tiver precisa usar este."
+      "shareLinkNewLinkOriginalDead": "Um link NOVO foi copiado. O link anterior não pode mais ser aberto, então quem o tiver precisa usar este.",
+      "currencyMismatch": "Este orçamento está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta."
     },
     "detail": {
       "addContentInEditor": "Adicionar conteúdo no Editor",
@@ -1499,6 +1500,7 @@
       "amount": "Valor",
       "amountRequired": "Informe um valor de pagamento para registrá-lo",
       "connectStripe": "Conecte o Stripe para aceitar pagamentos online.",
+      "currencyMismatch": "Esta fatura está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta.",
       "date": "Data do pagamento",
       "draftHint": "Emita esta fatura para registrar pagamentos.",
       "empty": "Nenhum pagamento registrado.",
