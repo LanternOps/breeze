@@ -58,11 +58,28 @@ gh release view $PREV --repo lanternops/breeze --json assets -q '.assets | lengt
 gh release view $NEW  --repo lanternops/breeze --json assets -q '.assets[].name' | sort
 ```
 
-Before proceeding, verify the new release has the **same asset families** as the prior one — in particular the signed `breeze-agent.msi`, the macOS `.pkg`/`.dmg`/`.app.tar.gz`, the viewer/helper installers, and `release-artifact-manifest.json` + `.ed25519` + `.minisig` + `checksums.txt`. A short asset list = signing or notarization failed midway.
+Before proceeding, verify the new release has the **same asset families** as the prior one — the macOS `.pkg`/`.dmg`/`.app.tar.gz`, the viewer/helper installers, the `-unsigned` BYO-signing inputs, and `release-artifact-manifest.json` + `.ed25519` + `.minisig` + `checksums.txt`. A short asset list = signing or notarization failed midway.
 
 - **If the run failed**, re-run just the failed jobs (`gh run rerun "$RUN" --failed`) and re-watch. Don't hand-publish a release off a red build, and don't roll out.
 - **`gh run watch` can exit non-zero while the run is still in progress** (seen 2026-07-02) — before treating a watch failure as a build failure, check `gh run view $RUN --json status`: `in_progress` means keep waiting (a `status`-polling loop is more reliable than `gh run watch`).
 - You *can* draft the release body and the Discord message (Steps 1–5) while the build runs — just don't **publish** the body or **deploy** until this gate is green.
+
+## Step 0.6 — Abuse-asset gate + hosted signing lane (fork-era releases, ≥ v0.105.0)
+
+Since the installer-trust fork, the public release must contain **nothing abuse-usable**, and the signed hosted agent build comes from a separate private lane. Both are release-blocking; the tag lands as a **draft** (`RELEASE_DRAFT_FIRST=true`) and stays one until the hosted cutover completes.
+
+**1. Verify the public draft's assets — bytes and manifest, not job color:**
+
+- Every agent-family Windows exe and the MSI must be **unsigned** (`edition=self-host` in `release-artifact-manifest.json`; zero `edition=hosted` entries). Check the actual bytes: PE security-directory size 0 on the exe, no `DigitalSignature` stream in the MSI, and the `-unsigned` asset byte-identical (`cmp`) to its non-suffixed twin.
+- Only Viewer/Helper installers are Authenticode-signed (currently an OV cert — SmartScreen reputation warnings after a cert change are expected, not a failure).
+- Spot-check `checksums.txt` against downloaded assets.
+
+**2. Dispatch the private hosted signing lane.** Repo name, dispatch command, edition choice (gap vs strict), and token gotchas live in `internal/ops/release-infra.md` ("Hosted signing lane") — read it, don't reconstruct. Key facts:
+
+- The lane verifies the signed official manifest + tag↔sourceCommit binding before building, rebuilds the agent family as the **hosted** edition (control-plane allowlist baked in), signs with the production provider, and publishes only a **private** GHCR image — never public assets.
+- It runs against the **draft** release, so its verify job needs the cross-repo PAT described in the infra doc (draft releases are invisible to read-only credentials — the PAT needs contents **read and write** on the public repo).
+- Signing consumes production signing quota: get Todd's explicit go for the dispatch, per run.
+- Order (fork runbook): public build green → asset gate above → hosted lane green → **droplet flip** → only then publish the draft → fleet promote. Each arrow is a separate explicit go from Todd — approval for one step never carries to the next.
 
 ## Step 1 — Source the content (PRs + git only)
 
@@ -363,6 +380,8 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
+- [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked
+- [ ] **Hosted signing lane dispatched and green** (private repo — see `internal/ops/release-infra.md`), with Todd's explicit go; draft stays unpublished until the droplet flip completes
 - [ ] **Build finished green + ALL artifacts present** (signed MSI, notarized macOS, manifest+sigs, checksums) — asset count matches prior release; do not publish/roll out before this
 - [ ] GitHub Release body written — Summary/Added/Improved/Fixed/Security + **Self-Hosting/Upgrade Notes** (env vars, migrations, behavior changes, breaking changes), appended above auto "What's Changed"
 - [ ] `/update-breeze-release-notes` (marketing site) — published via the site's deploy script, not just committed
