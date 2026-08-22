@@ -2060,6 +2060,7 @@
     "saveChanges": "Guardar cambios"
   },
   "tdSynnexCatalogPanel": {
+    "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",
     "tDSYNNEXSettingsFailedToLoad": "La configuración de TD SYNNEX no se pudo cargar.",
     "tDSYNNEXSettingsSaved": "TD SYNNEX configuración guardada",
     "tDSYNNEXConnectionTestSucceeded": "TD SYNNEX prueba de conexión exitosa",
@@ -2125,6 +2126,7 @@
     "notConfigured": "No configurado"
   },
   "tdSynnexEcExpressPanel": {
+    "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",
     "tDSYNNEXPricingSettingsSaved": "TD SYNNEX Configuración de precios guardada",
     "tDSYNNEXPricingConnectionTestSucceeded": "TD SYNNEX La prueba de conexión de precios fue exitosa",
     "enterAValidSellPrice": "Introduzca un precio de venta válido.",

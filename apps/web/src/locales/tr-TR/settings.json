@@ -2060,6 +2060,7 @@
     "saveChanges": "Değişiklikleri kaydet"
   },
   "tdSynnexCatalogPanel": {
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
     "tDSYNNEXSettingsFailedToLoad": "TD SYNNEX ayarları yüklenemedi.",
     "tDSYNNEXSettingsSaved": "TD SYNNEX ayarları kaydedildi",
     "tDSYNNEXConnectionTestSucceeded": "TD SYNNEX bağlantı testi başarılı oldu",
@@ -2125,6 +2126,7 @@
     "notConfigured": "Yapılandırılmadı"
   },
   "tdSynnexEcExpressPanel": {
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
     "tDSYNNEXPricingSettingsSaved": "TD SYNNEX Fiyatlandırma ayarları kaydedildi",
     "tDSYNNEXPricingConnectionTestSucceeded": "TD SYNNEX Fiyatlandırma bağlantı testi başarılı oldu",
     "enterAValidSellPrice": "Geçerli bir satış fiyatı girin.",

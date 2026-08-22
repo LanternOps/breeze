@@ -61,7 +61,7 @@ describe('TdSynnexEcExpressPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     statusResponse = jsonResponse(statusPayload);
-    meResponse = jsonResponse({ defaultMarkupPercent: null, autoTaxHardware: true });
+    meResponse = jsonResponse({ defaultMarkupPercent: null, autoTaxHardware: true, currencyCode: 'USD' });
     lookupResponse = jsonResponse({ data: [] });
     importResponse = jsonResponse({ data: { id: 'catalog-1' } });
     testResponse = jsonResponse(statusPayload);
@@ -199,7 +199,7 @@ describe('TdSynnexEcExpressPanel', () => {
 
   it('pre-fills the sell price from the partner default markup and shows the margin calc', async () => {
     lookupResponse = jsonResponse({ data: [product] });
-    meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true });
+    meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true, currencyCode: 'USD' });
 
     render(<TdSynnexEcExpressPanel />);
     await screen.findByTestId('td-synnex-ec-panel');
@@ -233,5 +233,55 @@ describe('TdSynnexEcExpressPanel', () => {
       );
     });
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  describe('feed currency (multi-currency wave 3)', () => {
+    const importBody = () => {
+      const call = fetchWithAuth.mock.calls.find((c) => c[0] === '/catalog/distributors/td-synnex-ec/import');
+      expect(call).toBeTruthy();
+      return JSON.parse((call![1] as { body: string }).body) as { product: { currency: string | null } };
+    };
+
+    const lookupAndImport = async (p: Omit<typeof product, 'currency'> & { currency: string | null }) => {
+      lookupResponse = jsonResponse({ data: [p] });
+      render(<TdSynnexEcExpressPanel />);
+      await screen.findByTestId('td-synnex-ec-panel');
+      fireEvent.change(screen.getByTestId('td-synnex-ec-lookup-query'), { target: { value: 'SNX-1' } });
+      fireEvent.click(screen.getByTestId('td-synnex-ec-lookup'));
+      const card = await screen.findByTestId('td-synnex-ec-result-SNX-1');
+      return card;
+    };
+
+    it('hides the margin summary and names the cost currency when the feed currency differs from the partner currency', async () => {
+      meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true, currencyCode: 'USD' });
+      const card = await lookupAndImport({ ...product, currency: 'CAD' });
+      await within(card).findByTestId('td-synnex-ec-margin-unavailable-SNX-1');
+      expect(within(card).getByTestId('td-synnex-ec-margin-unavailable-SNX-1').textContent).toContain('Cost in CAD');
+      expect(within(card).queryByTestId('td-synnex-ec-margin-SNX-1')).toBeNull();
+    });
+
+    it('shows the margin summary in the partner currency when the feed currency matches', async () => {
+      meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true, currencyCode: 'USD' });
+      const card = await lookupAndImport({ ...product, currency: 'usd' });
+      const margin = await within(card).findByTestId('td-synnex-ec-margin-SNX-1');
+      expect(margin.textContent).toContain('Profit USD 25.00');
+      expect(within(card).queryByTestId('td-synnex-ec-margin-unavailable-SNX-1')).toBeNull();
+    });
+
+    it('posts the feed currency uppercased, never coerced to USD', async () => {
+      const card = await lookupAndImport({ ...product, currency: 'cad' });
+      fireEvent.click(within(card).getByTestId('td-synnex-ec-import'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/catalog/distributors/td-synnex-ec/import', expect.objectContaining({ method: 'POST' })));
+      expect(importBody().product.currency).toBe('CAD');
+    });
+
+    it('posts an explicit null currency when the feed gave none (key present, not dropped)', async () => {
+      const card = await lookupAndImport({ ...product, currency: null });
+      fireEvent.click(within(card).getByTestId('td-synnex-ec-import'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/catalog/distributors/td-synnex-ec/import', expect.objectContaining({ method: 'POST' })));
+      const body = importBody();
+      expect(Object.prototype.hasOwnProperty.call(body.product, 'currency')).toBe(true);
+      expect(body.product.currency).toBeNull();
+    });
   });
 });

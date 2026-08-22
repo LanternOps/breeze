@@ -1058,6 +1058,7 @@
       }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
       "available": "{{count}} disponíveis",
       "cost": "custo {{currency}} {{amount}}",
       "endOfLife": "Fim de vida",
@@ -1225,6 +1226,7 @@
       "tryAgain": "Tentar novamente"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
       "cost": "custo {{currency}} {{amount}}",
       "importAndAdd": "Importar e adicionar",
       "option": "Opção {{number}}",

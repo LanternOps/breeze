@@ -54,6 +54,7 @@ import { UnassignedLines } from './QuoteUnassignedLines';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash, useShowInternalMargin } from './quoteEditorShared';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
+import { feedCurrencyCode } from '../../settings/marginMath';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -1434,7 +1435,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               source: 'pax8', pax8ProductId: product.pax8ProductId, name: product.name,
               vendorName: product.vendorName, vendorSku: product.vendorSku,
               commitmentTerm: term.commitmentTerm, billingTerm: term.billingTerm,
-              partnerBuyRate: term.partnerBuyRate, currency: term.currencyCode, raw: product.raw,
+              // Trimmed uppercase ISO or explicit null — never coerced to USD.
+              partnerBuyRate: term.partnerBuyRate, currency: feedCurrencyCode(term.currencyCode), raw: product.raw,
             },
             item: {
               name: product.name.slice(0, 255), sku: product.vendorSku, description: product.shortDescription,
@@ -1465,7 +1467,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       if (!item) {
         item = await runAction<CatalogItem>({
           request: () => ecExpressImport({
-            product,
+            // Trimmed uppercase ISO or explicit null — never coerced to USD.
+            product: { ...product, currency: feedCurrencyCode(product.currency) },
             item: {
               name: product.name,
               sku: product.synnexSku || product.mfgPartNo || null,

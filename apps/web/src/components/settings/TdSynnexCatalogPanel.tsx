@@ -8,7 +8,7 @@ import { isApiFailure, extractApiError } from '../../lib/apiError';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
-import { computeMarginBreakdown, priceFromCostMarkup, formatMarginSummary } from './marginMath';
+import { computeMarginBreakdown, priceFromCostMarkup, formatMarginSummary, feedCurrencyCode, marginGuard } from './marginMath';
 import CatalogEnrichButton from '../catalog/CatalogEnrichButton';
 
 const MASKED = '********';
@@ -150,6 +150,10 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
   const [importing, setImporting] = useState(false);
   // Partner-level default markup % used to pre-fill the sell price.
   const [defaultMarkupPct, setDefaultMarkupPct] = useState<number | null>(null);
+  // Partner billing currency (`partners.currency_code`) — gates the margin
+  // preview: cost in another currency is never compared against the sell
+  // price (no conversion). No 'USD' fallback; null = unknown → no preview.
+  const [partnerCurrency, setPartnerCurrency] = useState<string | null>(null);
   // Partner policy: do newly imported (hardware) items default to taxable?
   const [autoTaxHardware, setAutoTaxHardware] = useState(true);
   const endpointReady = config.searchPath.trim().length > 0;
@@ -183,13 +187,14 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
       try {
         const res = await fetchWithAuth('/orgs/partners/me');
         if (!res.ok) return;
-        const p = (await res.json()) as { defaultMarkupPercent?: string | number | null; autoTaxHardware?: boolean };
+        const p = (await res.json()) as { defaultMarkupPercent?: string | number | null; autoTaxHardware?: boolean; currencyCode?: unknown };
         if (cancelled) return;
         if (p.defaultMarkupPercent != null) {
           const pct = Number(p.defaultMarkupPercent);
           if (Number.isFinite(pct)) setDefaultMarkupPct(pct);
         }
         if (typeof p.autoTaxHardware === 'boolean') setAutoTaxHardware(p.autoTaxHardware);
+        setPartnerCurrency(feedCurrencyCode(typeof p.currencyCode === 'string' ? p.currencyCode : null));
       } catch {
         // Non-fatal: import just falls back to cost == price.
       }
@@ -302,7 +307,9 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
         request: () => fetchWithAuth('/catalog/distributors/td-synnex/import', {
           method: 'POST',
           body: JSON.stringify({
-            product: draftProduct,
+            // Feed currency is sent as trimmed uppercase ISO, or an explicit
+            // null — never coerced to USD. The API derives cost_currency from it.
+            product: { ...draftProduct, currency: feedCurrencyCode(draftProduct.currency) },
             item: {
               name: importForm.name.trim(),
               sku: importForm.sku.trim() || null,
@@ -583,14 +590,21 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
             </div>
             {(() => {
               const breakdown = computeMarginBreakdown(toMoney(importForm.costBasis), toMoney(importForm.unitPrice));
-              if (!breakdown) return null;
+              if (!breakdown || partnerCurrency === null) return null;
+              if (!marginGuard(draftProduct.currency, partnerCurrency)) {
+                return (
+                  <p className="text-xs font-medium text-muted-foreground" data-testid="td-synnex-import-margin-unavailable">
+                    {t('tdSynnexCatalogPanel.marginUnavailableCostIn', { currency: feedCurrencyCode(draftProduct.currency) })}
+                  </p>
+                );
+              }
               const negative = breakdown.profit < 0;
               return (
                 <p
                   className={`text-xs font-medium ${negative ? 'text-red-600' : 'text-muted-foreground'}`}
                   data-testid="td-synnex-import-margin"
                 >
-                  {formatMarginSummary(breakdown, draftProduct.currency ?? t('tdSynnexCatalogPanel.uSD'))}
+                  {formatMarginSummary(breakdown, partnerCurrency)}
                   {negative ? ' — selling below cost' : ''}
                 </p>
               );

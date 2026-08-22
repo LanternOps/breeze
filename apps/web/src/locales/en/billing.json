@@ -1058,6 +1058,7 @@
       }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
       "available": "{{count}} avail",
       "cost": "cost {{currency}} {{amount}}",
       "endOfLife": "End of life",
@@ -1225,6 +1226,7 @@
       "tryAgain": "Try again"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
       "cost": "cost {{currency}} {{amount}}",
       "importAndAdd": "Import & add",
       "option": "Option {{number}}",

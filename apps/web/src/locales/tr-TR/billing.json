@@ -1058,6 +1058,7 @@
       }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
       "available": "{{count}} mevcut",
       "cost": "maliyet {{currency}} {{amount}}",
       "endOfLife": "Hayatın sonu",
@@ -1225,6 +1226,7 @@
       "tryAgain": "Tekrar deneyin"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
       "cost": "maliyet {{currency}} {{amount}}",
       "importAndAdd": "İçe aktar ve ekle",
       "option": "Seçenek {{number}}",

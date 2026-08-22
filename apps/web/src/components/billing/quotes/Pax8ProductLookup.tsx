@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { pax8Search, pax8Pricing, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
-import { computeMarginBreakdown, formatMarginSummary } from '../../settings/marginMath';
+import { computeMarginBreakdown, formatMarginSummary, feedCurrencyCode, marginGuard } from '../../settings/marginMath';
+import { usePartnerCurrency } from '../../../lib/usePartnerCurrency';
 
 function toMoney(value: string): number | null {
   if (!value.trim()) return null;
@@ -18,6 +19,10 @@ interface Props {
 
 export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props) {
   const { t } = useTranslation('billing');
+  // Partner billing currency gates the margin preview — a Pax8 buy rate in
+  // another currency is never compared against the sell price (no conversion).
+  // No 'USD' fallback; while unknown the preview is simply not rendered.
+  const { currency: partnerCurrency } = usePartnerCurrency();
   const [query, setQuery] = useState('');
   const [products, setProducts] = useState<Pax8Product[]>([]);
   const [pricing, setPricing] = useState<Record<string, Pax8PriceOption[]>>({});
@@ -147,11 +152,15 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
                 {t('quotes.pax8ProductLookup.importAndAdd')}
               </button>
             </div>
-            {margin && (
+            {margin && partnerCurrency !== null && (marginGuard(term?.currencyCode ?? null, partnerCurrency) ? (
               <p className={`mt-1.5 text-xs tabular-nums ${margin.profit < 0 ? 'text-destructive' : 'text-muted-foreground'}`} data-testid={`pax8-product-margin-${p.pax8ProductId}`}>
-                {formatMarginSummary(margin, term?.currencyCode ?? 'USD')}
+                {formatMarginSummary(margin, partnerCurrency)}
               </p>
-            )}
+            ) : (
+              <p className="mt-1.5 text-xs text-muted-foreground" data-testid={`pax8-product-margin-unavailable-${p.pax8ProductId}`}>
+                {t('quotes.pax8ProductLookup.marginUnavailableCostIn', { currency: feedCurrencyCode(term?.currencyCode) })}
+              </p>
+            ))}
           </div>
         );
       })}
