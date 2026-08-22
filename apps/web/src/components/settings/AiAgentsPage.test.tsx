@@ -51,10 +51,23 @@ const PARTNER_AGENT = {
   recipients: { userIds: [], roleIds: [] },
 };
 
+const ORG_AGENT = {
+  ...PARTNER_AGENT,
+  id: 'a2',
+  kind: 'patch' as const,
+  name: 'Org patcher',
+  orgId: 'org-1',
+  partnerId: null,
+  ownerScope: 'organization' as const,
+  allOrgs: false,
+};
+
 function mockEndpoints(agents: unknown[] = [PARTNER_AGENT]) {
   fetchMock.mockImplementation((url: string) => {
     if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: agents }));
-    if (url === '/roles') return Promise.resolve(json({ roles: [{ id: 'r-1', name: 'Org Admin' }] }));
+    // The real route answers { data }, not { roles } — mocking the dead branch
+    // is how the production branch stayed untested.
+    if (url === '/roles') return Promise.resolve(json({ data: [{ id: 'r-1', name: 'Org Admin' }] }));
     return Promise.resolve(json({ data: [] }));
   });
 }
@@ -72,12 +85,32 @@ beforeEach(() => {
 });
 
 describe('AiAgentsPage', () => {
-  it('lists agents and badges the partner-wide ones', async () => {
-    mockEndpoints();
+  it('badges the partner-wide agent and NOT the org-owned one', async () => {
+    // Two rows on purpose: with a partner-wide-only fixture this passed even
+    // with the `allOrgs &&` guard deleted, i.e. with every org-owned agent
+    // mislabelled "All orgs".
+    mockEndpoints([PARTNER_AGENT, ORG_AGENT]);
     render(<AiAgentsPage />);
 
     await waitFor(() => expect(screen.getByTestId('ai-agent-row-a1')).toBeInTheDocument());
     expect(screen.getByTestId('ai-agent-allorgs-a1')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-row-a2')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-allorgs-a2')).toBeNull();
+  });
+
+  it('treats a malformed 200 body as an error, never as "no agents"', async () => {
+    // A gateway error page or a shape change must not render as an empty
+    // tenant — that also told the create form every kind was free.
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith('/ai/agents')
+        ? Promise.resolve(json({ unexpected: true }))
+        : Promise.resolve(json({ data: [] })),
+    );
+    render(<AiAgentsPage />);
+
+    await waitFor(() => expect(screen.getByText('Could not load agents.')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agents-empty')).toBeNull();
+    expect(screen.queryByTestId('ai-agents-loading')).toBeNull();
   });
 
   it('surfaces a load failure instead of rendering an empty list', async () => {
@@ -88,14 +121,27 @@ describe('AiAgentsPage', () => {
     expect(screen.queryByTestId('ai-agents-empty')).toBeNull();
   });
 
-  it("leaves the 'act' mode option disabled until the API supports it", async () => {
+  it("disables the 'act' mode option when the API does not list it", async () => {
     mockEndpoints();
     render(<AiAgentsPage />);
 
-    await waitFor(() => screen.getByTestId('ai-agent-create-button'));
-    fireEvent.click(screen.getByTestId('ai-agent-create-button'));
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
 
     expect(await screen.findByTestId('ai-agent-mode-act')).toBeDisabled();
+  });
+
+  it("ENABLES 'act' as soon as the API reports it in supportedModes", async () => {
+    // The create-form version of this assertion was vacuous: with agent=null it
+    // evaluated a hardcoded fallback, so it would have kept passing on the day
+    // wave 4 shipped while the form stayed unable to select 'act'.
+    mockEndpoints([{ ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] }]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    expect(await screen.findByTestId('ai-agent-mode-act')).not.toBeDisabled();
   });
 
   it('offers the owner-scope selector on create and never on edit', async () => {
@@ -123,17 +169,32 @@ describe('AiAgentsPage', () => {
     expect(screen.queryByTestId('ai-agent-ownerscope')).toBeNull();
   });
 
-  it('only offers kinds that do not already have an active agent', async () => {
-    mockEndpoints();
+  it('only offers kinds free for the OWNER being created into', async () => {
+    // Uniqueness is (partner_id, kind) and (org_id, kind) independently. A flat
+    // taken-list hid `triage` from the partner-wide form as soon as any single
+    // org owned a triage agent — and with no partner baseline,
+    // resolveEffectiveAgent returns null, so triage died for every org.
+    // A concrete org must be selected, or "this organization" has no owner to
+    // check against (save() blocks that case separately).
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    mockEndpoints([PARTNER_AGENT, ORG_AGENT]);
     render(<AiAgentsPage />);
 
     await waitFor(() => screen.getByTestId('ai-agent-create-button'));
     fireEvent.click(screen.getByTestId('ai-agent-create-button'));
 
+    // Org axis (the default with an org selected): org-1 owns `patch`; the
+    // partner-wide `triage` must NOT block an org-level triage override.
     const kind = await screen.findByTestId('ai-agent-kind');
-    const options = [...kind.querySelectorAll('option')].map((option) => option.value);
-    // `triage` is taken by PARTNER_AGENT — the unique index would reject it.
-    expect(options).toEqual(['patch', 'helpdesk']);
+    expect([...kind.querySelectorAll('option')].map((o) => o.value)).toEqual(['triage', 'helpdesk']);
+
+    fireEvent.click(screen.getByTestId('ai-agent-owner-partner'));
+    // Partner axis: only the partner-wide `triage` is taken. `patch` belongs to
+    // org-1 and must still be offered for the partner-wide baseline — hiding it
+    // is what killed the baseline row the whole feature depends on.
+    expect(
+      [...screen.getByTestId('ai-agent-kind').querySelectorAll('option')].map((o) => o.value),
+    ).toEqual(['patch', 'helpdesk']);
   });
 
   it('refuses to save with no alert severity selected, and does not call the API', async () => {
@@ -182,6 +243,76 @@ describe('AiAgentsPage', () => {
     expect(body.orgId).toBeUndefined();
     // Role IDs, never role names — roles are tenant-scoped rows with custom names.
     expect(body.recipients).toEqual({ roleIds: ['r-1'] });
+  });
+
+  it('does not carry a stale draft from one edit target to the next', async () => {
+    // The draft is seeded once at mount. Without a key on the form, switching
+    // edit targets kept the previous draft and PATCHed the newly-selected
+    // agent with the old agent's policy — a silent config overwrite.
+    mockEndpoints([PARTNER_AGENT, ORG_AGENT]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-name'), { target: { value: 'EDITED A1' } });
+
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a2'));
+    await waitFor(() => expect(screen.getByTestId('ai-agent-name')).toHaveValue('Org patcher'));
+
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
+      ).toBe(true),
+    );
+    const patch = fetchMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patch?.[0]).toBe('/ai/agents/a2');
+    expect(JSON.parse((patch?.[1] as RequestInit).body as string).name).toBe('Org patcher');
+  });
+
+  it('says roles could not be loaded rather than claiming none exist', async () => {
+    // This page needs organizations:read but GET /roles needs users:read, so a
+    // 403 here is reachable. Rendering it as "no roles available" would turn an
+    // authorization error into a config decision the operator never made.
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [] }));
+      if (url === '/roles') return Promise.resolve(json({ error: 'forbidden' }, false, 403));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-create-button'));
+    fireEvent.click(screen.getByTestId('ai-agent-create-button'));
+
+    expect(await screen.findByTestId('ai-agent-roles-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-roles-empty')).toBeNull();
+  });
+
+  it('keeps a cleared numeric limit as a number the server will accept', async () => {
+    // Clearing a number input yields '' -> NaN, which JSON.stringify emits as
+    // null and the server rejects with a bare 400.
+    mockEndpoints([]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-create-button'));
+    fireEvent.click(screen.getByTestId('ai-agent-create-button'));
+
+    fireEvent.change(await screen.findByTestId('ai-agent-name'), { target: { value: 'Triage' } });
+    fireEvent.change(screen.getByTestId('ai-agent-limit-devices'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST'),
+      ).toBe(true),
+    );
+    const post = fetchMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'POST',
+    );
+    const body = JSON.parse((post?.[1] as RequestInit).body as string);
+    expect(Number.isFinite(body.limits.maxDevicesPerRun)).toBe(true);
   });
 
   it('requires a confirming second click before disabling an agent', async () => {

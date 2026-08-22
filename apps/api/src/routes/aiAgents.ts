@@ -1,16 +1,21 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
-import { AI_AGENT_KINDS, createAiAgentSchema, updateAiAgentSchema } from '@breeze/shared';
+import {
+  AI_AGENT_KINDS,
+  type AiAgentDto,
+  createAiAgentSchema,
+  updateAiAgentSchema,
+} from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
-import { aiAgentRuns } from '../db/schema';
+import { aiAgentRuns, type AiAgentRow } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
 import {
   createAgent, disableAgent, getAgent, listAgents, updateAgent,
-  AgentKindConflictError, UnsupportedAgentModeError,
+  AgentInvariantError, AgentKindConflictError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
@@ -31,8 +36,6 @@ const scopes = requireScope('organization', 'partner', 'system');
 // agent mutation. The service is the single audit point precisely because wave 3
 // mutates agents from schedulers that have no Hono context.
 
-type AiAgentRow = NonNullable<Awaited<ReturnType<typeof getAgent>>>;
-
 const UUID = z.string().guid();
 
 /**
@@ -46,29 +49,71 @@ function uuidParam(c: Context, name: string): string | null {
   return parsed.success ? parsed.data : null;
 }
 
-function mapRow(row: AiAgentRow) {
+/**
+ * The wire shape, field by field. Deliberately not `{ ...row }`: spreading
+ * would publish createdBy / lastUpdatedBy / disabledBy, and would make every
+ * column added to ai_agents in a later wave part of the public API of the table
+ * that governs agent authority. Naming AiAgentDto (from @breeze/shared, which
+ * the web client also imports) is what keeps the two ends from drifting.
+ */
+function mapRow(row: AiAgentRow): AiAgentDto {
   return {
-    ...row,
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    enabled: row.enabled,
+    mode: row.mode,
+    model: row.model,
+    orgId: row.orgId,
+    partnerId: row.partnerId,
     ownerScope: row.partnerId ? 'partner' : 'organization',
     allOrgs: row.partnerId !== null,
     supportedModes: SUPPORTED_AGENT_MODES,
+    toolAllowlist: row.toolAllowlist,
+    protectedResources: row.protectedResources,
+    limits: row.limits,
+    triggers: row.triggers,
+    recipients: row.recipients,
+    instructions: row.instructions,
+    cooldownSeconds: row.cooldownSeconds,
+    // Explicit, rather than relying on JSON.stringify to coerce a Date: the
+    // DTO promises a string, and a caller that ever serializes this by another
+    // route would otherwise get an object.
+    disabledAt: row.disabledAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+/** Postgres unique-violation, for the create race the pre-check cannot win. */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
 }
 
 function mapError(c: Context, err: unknown) {
   if (err instanceof UnsupportedAgentModeError) {
-    return c.json({
-      error: err.message,
-      code: 'mode_not_supported',
-      supportedModes: SUPPORTED_AGENT_MODES,
-    }, 422);
+    // err.code, not a repeated literal — the class types it as a literal, so
+    // this cannot drift from the value the client branches on.
+    return c.json({ error: err.message, code: err.code, supportedModes: SUPPORTED_AGENT_MODES }, 422);
   }
   if (err instanceof AgentKindConflictError) {
-    return c.json({ error: err.message, code: 'agent_kind_exists' }, 409);
+    return c.json({ error: err.message, code: err.code }, 409);
+  }
+  // The pre-check in createAgent cannot win a concurrent create; the partial
+  // unique index settles that race. Answer it the same way rather than letting
+  // it become an unactionable 500.
+  if (isUniqueViolation(err)) {
+    return c.json({ error: 'An agent of this kind already exists', code: 'agent_kind_exists' }, 409);
   }
   if (err instanceof PartnerWideWriteDeniedError) {
     return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
   }
+  // AgentInvariantError is deliberately NOT caught: returning a response here
+  // would let the request transaction COMMIT, so a create whose RETURNING read
+  // came back empty would insert the row, answer "not created", and keep it.
+  // Letting it propagate rolls the transaction back and puts it in front of the
+  // global onError handler, which logs it and reports it to Sentry.
+  if (err instanceof AgentInvariantError) throw err;
   if (err instanceof AgentAccessDeniedError) {
     return c.json({ error: err.message }, 404);
   }
@@ -113,8 +158,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   if (!runId) return c.json({ error: 'Run not found' }, 404);
 
   const auth = c.get('auth');
-  // orgCondition is defence-in-depth beside RLS, matching listAgents: without
-  // a DB access context, a reader would run as scope='system' and see all runs.
+  // Defence-in-depth beside RLS, matching listAgents. RLS is the boundary and
+  // it already denies a contextless read — breeze_current_scope() defaults to
+  // 'none', not 'system' (migrations/0012-tenant-rls-deny-default.sql), so the
+  // policy's every branch is false and the read returns nothing. The predicate
+  // stays because the unit-test path mocks the db and has no RLS at all.
   const [run] = await db
     .select()
     .from(aiAgentRuns)
@@ -146,10 +194,14 @@ aiAgentsRoutes.get(
     if (!row) return c.json({ error: 'Agent not found' }, 404);
 
     const { limit } = c.req.valid('query');
+    // Same org predicate as GET /runs/:runId. A partner-wide agent's runs are
+    // owned by the DEVICE's org, not the agent's, so filtering by the agent
+    // alone would show a partner admin every org's runs for that baseline
+    // regardless of which orgs they can actually reach.
     const runs = await db
       .select()
       .from(aiAgentRuns)
-      .where(eq(aiAgentRuns.agentId, row.id))
+      .where(and(eq(aiAgentRuns.agentId, row.id), auth.orgCondition(aiAgentRuns.orgId)))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(limit);
     return c.json({ data: runs });

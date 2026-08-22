@@ -1282,7 +1282,9 @@
     "stateEnabled": "Etkin",
     "stateDisabled": "Devre dışı",
     "errors": {
-      "load": "Aracılar yüklenemedi."
+      "load": "Aracılar yüklenemedi.",
+      "kindExists": "Bu sahip için bu türde bir aracı zaten var. Var olanı düzenleyin veya önce devre dışı bırakın.",
+      "modeNotSupported": "Bu mod henüz kullanılamıyor. Aracılar şimdilik inceleyip önerebilir, ancak uygulayamaz."
     },
     "actions": {
       "add": "Yeni aracı",
@@ -1301,7 +1303,8 @@
     "issues": {
       "name": "Aracıya bir ad verin.",
       "severities": "En az bir uyarı önem derecesi seçin.",
-      "org": "Kuruluşa ait bir aracı oluşturmadan önce bir kuruluş seçin."
+      "org": "Kuruluşa ait bir aracı oluşturmadan önce bir kuruluş seçin.",
+      "allKindsTaken": "Bu sahip için her aracı türünün zaten bir aracısı var. Bunun yerine var olan bir aracıyı düzenleyin."
     },
     "editor": {
       "newTitle": "Yeni aracı",
@@ -1357,8 +1360,10 @@
       "recipientRolesHint": "Bu aracı bir öneride bulunduğunda bilgilendirilecek roller.",
       "recipientRolesEmpty": "Kullanılabilir rol yok.",
       "instructionsHint": "Yalnızca yönlendirme — üslup, önce neyin denetleneceği, kurum içi teamüller. Asla izin vermez.",
-      "charactersLeft": "{{count}} karakter kaldı"
-    }
+      "charactersLeft": "{{count}} karakter kaldı",
+      "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor."
+    },
+    "loading": "Aracılar yükleniyor…"
   },
   "apiKeyForm": {
     "devicesRead": "Cihazlar: Okuma",

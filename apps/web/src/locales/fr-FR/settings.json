@@ -1282,7 +1282,9 @@
     "stateEnabled": "Activé",
     "stateDisabled": "Désactivé",
     "errors": {
-      "load": "Impossible de charger les agents."
+      "load": "Impossible de charger les agents.",
+      "kindExists": "Un agent de ce type existe déjà pour ce propriétaire. Modifiez l’agent existant ou désactivez-le d’abord.",
+      "modeNotSupported": "Ce mode n’est pas encore disponible. Les agents peuvent pour l’instant enquêter et proposer, mais pas agir."
     },
     "actions": {
       "add": "Nouvel agent",
@@ -1301,7 +1303,8 @@
     "issues": {
       "name": "Donnez un nom à l’agent.",
       "severities": "Sélectionnez au moins une gravité d’alerte.",
-      "org": "Sélectionnez une organisation avant de créer un agent appartenant à l’organisation."
+      "org": "Sélectionnez une organisation avant de créer un agent appartenant à l’organisation.",
+      "allKindsTaken": "Chaque type d’agent possède déjà un agent pour ce propriétaire. Modifiez plutôt un agent existant."
     },
     "editor": {
       "newTitle": "Nouvel agent",
@@ -1357,8 +1360,10 @@
       "recipientRolesHint": "Rôles notifiés lorsque cet agent formule une proposition.",
       "recipientRolesEmpty": "Aucun rôle disponible.",
       "instructionsHint": "Simples consignes — ton, ce qu’il faut vérifier en premier, conventions internes. N’accorde jamais d’autorisations.",
-      "charactersLeft": "{{count}} caractères restants"
-    }
+      "charactersLeft": "{{count}} caractères restants",
+      "recipientRolesFailed": "Impossible de charger les rôles ; les destinataires des notifications ne peuvent pas être modifiés pour le moment."
+    },
+    "loading": "Chargement des agents…"
   },
   "apiKeyForm": {
     "devicesRead": "Appareils : Lecture",

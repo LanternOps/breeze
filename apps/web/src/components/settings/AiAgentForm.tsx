@@ -1,40 +1,28 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AI_AGENT_KINDS, AI_AGENT_LIMIT_DEFAULTS, type AiAgentKind } from '@breeze/shared';
+import {
+  AI_AGENT_KINDS,
+  AI_AGENT_LIMIT_DEFAULTS,
+  ALERT_SEVERITIES,
+  SUPPORTED_AGENT_MODES,
+  type AiAgentDto,
+  type AiAgentKind,
+  type AiAgentMode,
+} from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
-import { ActionError, runAction } from '@/lib/runAction';
+import { handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
 
-export type AiAgentMode = 'off' | 'shadow' | 'act';
+// Severities come from @breeze/shared, the same constant the server validator
+// uses. A local copy meant draftFrom() would silently DROP a stored severity
+// the two lists disagreed on, and the next save would write the truncated list.
+const SEVERITIES = ALERT_SEVERITIES;
+type Severity = (typeof ALERT_SEVERITIES)[number];
 
-const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
-type Severity = (typeof SEVERITIES)[number];
-
-/** The `mapRow` shape returned by GET/POST/PATCH /ai/agents. */
-export interface AiAgentDto {
-  id: string;
-  kind: AiAgentKind;
-  name: string;
-  enabled: boolean;
-  mode: AiAgentMode;
-  orgId: string | null;
-  partnerId: string | null;
-  ownerScope: OwnerScope;
-  allOrgs: boolean;
-  /** Modes this API build accepts on write; `act` is absent until wave 4. */
-  supportedModes: AiAgentMode[];
-  disabledAt: string | null;
-  toolAllowlist?: string[] | null;
-  protectedResources?: { services?: string[]; paths?: string[]; registryKeys?: string[] } | null;
-  limits?: Partial<typeof AI_AGENT_LIMIT_DEFAULTS> | null;
-  triggers?: { alertSeverities?: string[]; respectMaintenanceWindows?: boolean } | null;
-  recipients?: { userIds?: string[]; roleIds?: string[] } | null;
-  instructions?: string | null;
-  cooldownSeconds?: number | null;
-}
+export type { AiAgentDto };
 
 interface RoleOption {
   id: string;
@@ -44,8 +32,12 @@ interface RoleOption {
 interface Props {
   /** null = create a new agent. */
   agent: AiAgentDto | null;
-  /** Kinds that already have an active agent in this scope — cannot be created twice. */
-  takenKinds: AiAgentKind[];
+  /**
+   * Every agent visible to this session. The taken-kind set must be derived
+   * against the OWNER the draft is targeting, not flattened across both axes —
+   * uniqueness is (partner_id, kind) and (org_id, kind) independently.
+   */
+  agents: AiAgentDto[];
   /** Show the partner-wide vs org-owned selector (create-only, partner-scope users). */
   showOwnerScope: boolean;
   defaultOwnerScope: OwnerScope;
@@ -54,12 +46,53 @@ interface Props {
 }
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
+
+/**
+ * Machine token -> operator-facing sentence. The API answers these with a
+ * `code`, and runAction's `friendly` hook is keyed on it; without this the
+ * toast shows the token verbatim.
+ */
+const AGENT_ERROR_COPY: Record<string, ((t: (key: string) => string) => string) | undefined> = {
+  agent_kind_exists: (t) => t('aiAgentsPage.errors.kindExists'),
+  mode_not_supported: (t) => t('aiAgentsPage.errors.modeNotSupported'),
+};
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 const INSTRUCTIONS_MAX = 2000;
 
 /** Newline-separated textarea → trimmed, de-duplicated list. */
 function lines(value: string): string[] {
   return [...new Set(value.split('\n').map((entry) => entry.trim()).filter(Boolean))];
+}
+
+/**
+ * Kinds still creatable for one ownership axis. The DB enforces
+ * `(partner_id, kind) WHERE org_id IS NULL` and `(org_id, kind)` as two
+ * independent partial uniques, both `WHERE disabled_at IS NULL`, so a kind is
+ * only taken for the owner that actually holds it.
+ */
+function freeKinds(
+  agents: AiAgentDto[],
+  ownerScope: OwnerScope,
+  orgId: string | null,
+): AiAgentKind[] {
+  const taken = new Set(
+    agents
+      .filter((row) =>
+        ownerScope === 'partner'
+          ? row.ownerScope === 'partner'
+          : row.ownerScope === 'organization' && row.orgId === orgId,
+      )
+      .map((row) => row.kind),
+  );
+  return AI_AGENT_KINDS.filter((kind) => !taken.has(kind));
+}
+
+function firstFreeKind(
+  agents: AiAgentDto[],
+  ownerScope: OwnerScope,
+  orgId: string | null,
+): AiAgentKind | undefined {
+  return freeKinds(agents, ownerScope, orgId)[0];
 }
 
 function toggle<T>(list: T[], value: T): T[] {
@@ -120,7 +153,7 @@ function draftFrom(
  */
 export default function AiAgentForm({
   agent,
-  takenKinds,
+  agents,
   showOwnerScope,
   defaultOwnerScope,
   onClose,
@@ -130,14 +163,23 @@ export default function AiAgentForm({
   const orgScope = useOrgScope();
   const isCreate = agent === null;
 
-  const availableKinds = AI_AGENT_KINDS.filter((kind) => !takenKinds.includes(kind));
   const [draft, setDraft] = useState<Draft>(() =>
     draftFrom(agent, {
       ownerScope: defaultOwnerScope,
-      kind: availableKinds[0] ?? AI_AGENT_KINDS[0],
+      kind: firstFreeKind(agents, defaultOwnerScope, orgScope.orgId) ?? AI_AGENT_KINDS[0],
     }),
   );
+
+  // Recomputed on every owner-scope flip. Flattening this across both axes is
+  // what previously hid `triage` from the PARTNER-WIDE create form as soon as
+  // any single org owned a triage agent — and with no partner baseline,
+  // resolveEffectiveAgent returns null, so triage was dead for every org.
+  const availableKinds = useMemo(
+    () => freeKinds(agents, draft.ownerScope, orgScope.orgId),
+    [agents, draft.ownerScope, orgScope.orgId],
+  );
   const [roles, setRoles] = useState<RoleOption[]>([]);
+  const [rolesFailed, setRolesFailed] = useState(false);
   const [issues, setIssues] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
@@ -146,13 +188,24 @@ export default function AiAgentForm({
 
   // Recipients are role IDs, never role names: `roles` is a tenant-scoped table
   // with partner-defined names, so the picker has to show the real rows.
+  //
+  // A failure here must NOT render as "no roles exist". This page is gated on
+  // organizations:read but GET /roles is gated on users:read, so a technician
+  // holding the former and not the latter gets a 403 — and telling them their
+  // tenant has no roles would turn an authorization error into a configuration
+  // decision they never made, saving an agent that notifies nobody.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const response = await fetchWithAuth('/roles').catch(() => null);
-      if (!response || !response.ok || cancelled) return;
-      const body = (await response.json()) as { roles?: RoleOption[]; data?: RoleOption[] };
-      if (!cancelled) setRoles(body.roles ?? body.data ?? []);
+      try {
+        const response = await fetchWithAuth('/roles');
+        if (!response.ok) throw new Error(`GET /roles ${response.status}`);
+        const body = (await response.json()) as { data?: RoleOption[] };
+        if (!cancelled) setRoles(Array.isArray(body.data) ? body.data : []);
+      } catch (err) {
+        console.error('[AiAgentForm] could not load roles', err);
+        if (!cancelled) setRolesFailed(true);
+      }
     })();
     return () => {
       cancelled = true;
@@ -176,9 +229,14 @@ export default function AiAgentForm({
     setIssues([]);
     setSaving(true);
 
-    // Nested objects are deep-merged onto the stored jsonb server-side, so the
-    // narrowing fields this form does not expose (siteIds, deviceGroupIds,
-    // deviceTags) survive a save instead of being erased.
+    // On PATCH the server merges each nested object one level onto the stored
+    // jsonb (updatePolicyColumns), so the narrowing fields this form does not
+    // expose — triggers.siteIds / deviceGroupIds / deviceTags,
+    // protectedResources.deviceTags, recipients.userIds — survive a save rather
+    // than being erased, which would silently WIDEN the agent's blast radius.
+    // One level is enough only because every sub-value is a scalar or an array
+    // today; a nested object inside one of these would need a real deep merge.
+    // On create there is nothing to merge — these are written wholesale.
     const policy = {
       name: draft.name.trim(),
       enabled: draft.enabled,
@@ -199,6 +257,7 @@ export default function AiAgentForm({
       instructions: draft.instructions.trim() ? draft.instructions.trim() : null,
     };
 
+    let saved = false;
     try {
       await runAction({
         // Inline thunks: the no-silent-mutations guard is a lexical AST check,
@@ -220,36 +279,52 @@ export default function AiAgentForm({
               }),
         successMessage: t('aiAgentsPage.toasts.saved'),
         errorFallback: t('aiAgentsPage.toasts.saveFailed'),
+        // Without this the operator sees the raw machine token the API puts in
+        // `error` — literally "agent_kind_exists: triage".
+        friendly: (code) => AGENT_ERROR_COPY[code]?.(t),
         onUnauthorized: UNAUTHORIZED
       });
-      onSaved();
+      saved = true;
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
-      // runAction already toasted; keep the editor open so the draft survives.
+      // Project rule: 401 is handled by the redirect, other ActionErrors were
+      // already toasted by runAction, and anything else must still be loud.
+      handleActionError(err, t('aiAgentsPage.toasts.saveFailed'));
     } finally {
       setSaving(false);
     }
+    // Outside the try: a render error thrown by the parent's reload must not
+    // be reported to the operator as "could not save the agent".
+    if (saved) onSaved();
   }, [agent, draft, isCreate, orgScope.orgId, saving, onSaved, t]);
 
   const disable = useCallback(async () => {
-    if (!agent) return;
+    // `saving` guards this too: without it a double-click fires two DELETEs and
+    // the second answers 404, so the operator sees a success toast AND
+    // "Agent not found" for the kill switch they just used successfully.
+    if (!agent || saving) return;
     if (!confirmDisable) {
       setConfirmDisable(true);
       return;
     }
     setConfirmDisable(false);
+    setSaving(true);
+    let disabled = false;
     try {
       await runAction({
         request: () => fetchWithAuth(`/ai/agents/${agent.id}`, { method: 'DELETE' }),
         successMessage: t('aiAgentsPage.toasts.disabled'),
         errorFallback: t('aiAgentsPage.toasts.disableFailed'),
+        friendly: (code) => AGENT_ERROR_COPY[code]?.(t),
         onUnauthorized: UNAUTHORIZED
       });
-      onSaved();
+      disabled = true;
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
+      handleActionError(err, t('aiAgentsPage.toasts.disableFailed'));
+    } finally {
+      setSaving(false);
     }
-  }, [agent, confirmDisable, onSaved, t]);
+    if (disabled) onSaved();
+  }, [agent, confirmDisable, onSaved, saving, t]);
 
   const numberField = (
     testId: string,
@@ -267,7 +342,12 @@ export default function AiAgentForm({
         min={min}
         max={max}
         value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={(e) => {
+          // Clearing a number input yields '' -> NaN, which JSON.stringify
+          // emits as null and the server rejects with a bare 400.
+          const next = Number(e.target.value);
+          onChange(Number.isFinite(next) ? next : min);
+        }}
         data-testid={testId}
       />
     </label>
@@ -321,7 +401,7 @@ export default function AiAgentForm({
                 name="ai-agent-owner"
                 value="partner"
                 checked={draft.ownerScope === 'partner'}
-                onChange={() => patch({ ownerScope: 'partner' })}
+                onChange={() => patch({ ownerScope: 'partner', kind: firstFreeKind(agents, 'partner', orgScope.orgId) ?? draft.kind })}
                 data-testid="ai-agent-owner-partner"
               />
               {t('aiAgentsPage.editor.allOrgs')}{' '}
@@ -333,12 +413,18 @@ export default function AiAgentForm({
                 name="ai-agent-owner"
                 value="organization"
                 checked={draft.ownerScope === 'organization'}
-                onChange={() => patch({ ownerScope: 'organization' })}
+                onChange={() => patch({ ownerScope: 'organization', kind: firstFreeKind(agents, 'organization', orgScope.orgId) ?? draft.kind })}
                 data-testid="ai-agent-owner-org"
               />
               {t('aiAgentsPage.editor.thisOrg')}
             </label>
           </fieldset>
+        )}
+
+        {isCreate && availableKinds.length === 0 && (
+          <p className="text-sm text-muted-foreground md:col-span-2" data-testid="ai-agent-kinds-exhausted">
+            {t('aiAgentsPage.issues.allKindsTaken')}
+          </p>
         )}
 
         <label className="space-y-1 text-sm">
@@ -389,7 +475,7 @@ export default function AiAgentForm({
                 API refuses it with 422 mode_not_supported until wave 4. */}
             <option
               value="act"
-              disabled={!(agent?.supportedModes ?? ['off', 'shadow']).includes('act')}
+              disabled={!(agent?.supportedModes ?? SUPPORTED_AGENT_MODES).includes('act')}
               data-testid="ai-agent-mode-act"
             >
               {t('aiAgentsPage.modes.act')}
@@ -466,7 +552,11 @@ export default function AiAgentForm({
             {t('aiAgentsPage.sections.notifications')}
           </legend>
           <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.recipientRolesHint')}</p>
-          {roles.length === 0 ? (
+          {rolesFailed ? (
+            <p className="text-sm text-destructive" data-testid="ai-agent-roles-failed">
+              {t('aiAgentsPage.fields.recipientRolesFailed')}
+            </p>
+          ) : roles.length === 0 ? (
             <p className="text-sm text-muted-foreground" data-testid="ai-agent-roles-empty">
               {t('aiAgentsPage.fields.recipientRolesEmpty')}
             </p>
@@ -510,7 +600,7 @@ export default function AiAgentForm({
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving}
+          disabled={saving || (isCreate && availableKinds.length === 0)}
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
           data-testid="ai-agent-save"
         >

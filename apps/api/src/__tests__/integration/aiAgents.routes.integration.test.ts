@@ -75,6 +75,26 @@ async function mfaClient(app: Hono, opts: {
   };
 }
 
+async function noMfaClient(app: Hono, opts: {
+  userId: string; email: string; roleId: string;
+  orgId: string | null; partnerId: string | null;
+  scope: 'organization' | 'partner' | 'system';
+}) {
+  const token = await createAccessToken({
+    sub: opts.userId, email: opts.email, roleId: opts.roleId,
+    orgId: opts.orgId, partnerId: opts.partnerId, scope: opts.scope,
+    mfa: false, aep: 1, mep: 1, sid: randomUUID(),
+  } as Omit<TokenPayload, 'type'>);
+  return {
+    post: (path: string, body?: unknown): Promise<Response> =>
+      Promise.resolve(app.request(path, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })),
+  };
+}
+
 async function createSamePartnerClients(app: Hono) {
   const seeded = await createIntegrationTestClient(app, { scope: 'partner' });
   const { partner, organization, user, role } = seeded.env;
@@ -290,6 +310,139 @@ describe('/api/v1/ai/agents', () => {
     expect(second.status).toBe(409);
     const body = await second.json() as { code: string };
     expect(body.code).toBe('agent_kind_exists');
+  });
+
+  it('PATCH preserves stored jsonb siblings the form never sends', async () => {
+    // The settings form renders only alertSeverities/respectMaintenanceWindows
+    // and services/paths/registryKeys. If a PATCH replaced those columns
+    // wholesale, an agent's site/group/tag narrowing would vanish on the first
+    // save — silently WIDENING its blast radius. Proven against real jsonb,
+    // not a Drizzle mock.
+    const app = buildApp();
+    const { partnerAdmin } = await createSamePartnerClients(app);
+
+    const created = await partnerAdmin.post('/api/v1/ai/agents', {
+      ownerScope: 'partner',
+      kind: 'triage',
+      name: 'Narrowed triage',
+      mode: 'shadow',
+      triggers: {
+        alertSeverities: ['critical'],
+        siteIds: ['11111111-1111-4111-8111-111111111111'],
+        deviceGroupIds: ['22222222-2222-4222-8222-222222222222'],
+        deviceTags: ['prod'],
+        respectMaintenanceWindows: true,
+      },
+      protectedResources: { services: ['sshd'], paths: ['/etc'], registryKeys: [], deviceTags: ['db'] },
+      recipients: { userIds: ['33333333-3333-4333-8333-333333333333'], roleIds: [] },
+    });
+    expect(created.status).toBe(201);
+    const agentId = (await created.json() as { data: { id: string } }).data.id;
+
+    const patched = await partnerAdmin.patch(`/api/v1/ai/agents/${agentId}`, {
+      triggers: { alertSeverities: ['low'], respectMaintenanceWindows: false },
+      protectedResources: { services: ['nginx'], paths: ['/var'], registryKeys: [] },
+    });
+    expect(patched.status).toBe(200);
+
+    const reread = await partnerAdmin.get(`/api/v1/ai/agents/${agentId}`);
+    expect(reread.status).toBe(200);
+    const row = (await reread.json() as {
+      data: {
+        triggers: Record<string, unknown>;
+        protectedResources: Record<string, unknown>;
+        recipients: Record<string, unknown>;
+      };
+    }).data;
+
+    // Sent keys changed…
+    expect(row.triggers.alertSeverities).toEqual(['low']);
+    expect(row.triggers.respectMaintenanceWindows).toBe(false);
+    expect(row.protectedResources.services).toEqual(['nginx']);
+    // …and every unsent sibling survived.
+    expect(row.triggers.siteIds).toEqual(['11111111-1111-4111-8111-111111111111']);
+    expect(row.triggers.deviceGroupIds).toEqual(['22222222-2222-4222-8222-222222222222']);
+    expect(row.triggers.deviceTags).toEqual(['prod']);
+    expect(row.protectedResources.deviceTags).toEqual(['db']);
+    expect(row.recipients.userIds).toEqual(['33333333-3333-4333-8333-333333333333']);
+  });
+
+  it('answers 404 (never 500) for a non-uuid path id', async () => {
+    // A raw id reaches Postgres as a uuid cast: 22P02 aborts the request-wide
+    // transaction and the COMMIT then 500s on what is really a 404.
+    const app = buildApp();
+    const { partnerAdmin } = await createSamePartnerClients(app);
+
+    for (const res of [
+      await partnerAdmin.get('/api/v1/ai/agents/not-a-uuid'),
+      await partnerAdmin.get('/api/v1/ai/agents/runs/not-a-uuid'),
+      await partnerAdmin.delete('/api/v1/ai/agents/not-a-uuid'),
+    ]) {
+      expect(res.status).toBe(404);
+    }
+  });
+
+  it('frees the kind slot on disable so the same kind can be recreated', async () => {
+    // kind is immutable, so disable+recreate is the only way to change one. If
+    // the create pre-check ever loses isNull(disabledAt) this 409s forever.
+    const app = buildApp();
+    const { partnerAdmin } = await createSamePartnerClients(app);
+
+    const first = await partnerAdmin.post('/api/v1/ai/agents', {
+      ownerScope: 'partner', kind: 'helpdesk', name: 'Helpdesk', mode: 'shadow',
+    });
+    expect(first.status).toBe(201);
+    const id = (await first.json() as { data: { id: string } }).data.id;
+
+    expect((await partnerAdmin.delete(`/api/v1/ai/agents/${id}`)).status).toBe(200);
+
+    const recreated = await partnerAdmin.post('/api/v1/ai/agents', {
+      ownerScope: 'partner', kind: 'helpdesk', name: 'Helpdesk again', mode: 'shadow',
+    });
+    expect(recreated.status).toBe(201);
+  });
+
+  it('refuses a write from a session that has not satisfied MFA', async () => {
+    // Every other case here mints mfa:true, so requireMfa() could be deleted
+    // from all three write routes with the suite still green.
+    const app = buildApp();
+    const seeded = await createIntegrationTestClient(app, { scope: 'partner' });
+    const weak = await noMfaClient(app, {
+      userId: seeded.env.user.id,
+      email: seeded.env.user.email,
+      roleId: seeded.env.role.id,
+      orgId: null,
+      partnerId: seeded.env.partner.id,
+      scope: 'partner',
+    });
+
+    const res = await weak.post('/api/v1/ai/agents', {
+      ownerScope: 'partner', kind: 'triage', name: 'No MFA', mode: 'shadow',
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json() as { code?: string }).code).toBe('MFA_REQUIRED');
+  });
+
+  it('refuses a write from a role holding only organizations:read', async () => {
+    const app = buildApp();
+    const seeded = await createIntegrationTestClient(app, {
+      scope: 'partner',
+      rolePermissions: [{ resource: 'organizations', action: 'read' }],
+    });
+    const readOnly = await mfaClient(app, {
+      userId: seeded.env.user.id,
+      email: seeded.env.user.email,
+      roleId: seeded.env.role.id,
+      orgId: null,
+      partnerId: seeded.env.partner.id,
+      scope: 'partner',
+    });
+
+    expect((await readOnly.get('/api/v1/ai/agents')).status).toBe(200);
+    const res = await readOnly.post('/api/v1/ai/agents', {
+      ownerScope: 'partner', kind: 'triage', name: 'Read only', mode: 'shadow',
+    });
+    expect(res.status).toBe(403);
   });
 
   it('refuses an unauthenticated request', async () => {

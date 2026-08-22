@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Bot, Plus } from 'lucide-react';
-import type { AiAgentKind } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
@@ -30,26 +29,33 @@ export default function AiAgentsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(false);
-    // fetchWithAuth appends the selected orgId; the route ignores it and scopes
-    // the read through RLS plus the caller's accessible orgs.
-    const response = await fetchWithAuth('/ai/agents').catch(() => null);
-    if (!response || !response.ok) {
+    try {
+      // fetchWithAuth appends the selected orgId; the route ignores it and
+      // scopes the read through RLS plus the caller's accessible orgs.
+      const response = await fetchWithAuth('/ai/agents');
+      if (!response.ok) throw new Error(`GET /ai/agents ${response.status}`);
+      // response.json() throws on a non-JSON 200 — a gateway error page, a
+      // truncated body. Unguarded, that rejection escaped `void load()` with
+      // no unhandledrejection handler anywhere, leaving the page in a
+      // permanent loading state that renders as an ordinary empty screen.
+      const body = (await response.json()) as { data?: unknown };
+      // A body we cannot read is an ERROR, not zero agents. `?? []` reported
+      // "no agents yet" for a shape change and, worse, told the create form
+      // every kind was free — so the next save 409'd on an agent the page had
+      // just said did not exist.
+      if (!Array.isArray(body.data)) throw new Error('GET /ai/agents: malformed body');
+      setAgents(body.data as AiAgentDto[]);
+    } catch (err) {
+      console.error('[AiAgentsPage] could not load agents', err);
       setError(true);
+    } finally {
       setLoading(false);
-      return;
     }
-    const body = (await response.json()) as { data?: AiAgentDto[] };
-    setAgents(body.data ?? []);
-    setLoading(false);
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
-
-  // `(owner, kind)` is unique among active agents, so a kind that already has
-  // one cannot be created again — offering it would only produce a conflict.
-  const takenKinds = agents.map((agent) => agent.kind as AiAgentKind);
 
   return (
     <div className="space-y-6" data-testid="ai-agents-page">
@@ -80,8 +86,13 @@ export default function AiAgentsPage() {
 
       {editing && (
         <AiAgentForm
+          // The draft lives in the form's own state, seeded once at mount. With
+          // the list still on screen, switching edit targets kept the previous
+          // draft and PATCHed the newly-selected agent with the old agent's
+          // policy. Keying on the target remounts it instead.
+          key={editing.agent?.id ?? 'new'}
           agent={editing.agent}
-          takenKinds={takenKinds}
+          agents={agents}
           showOwnerScope={isPartnerScope}
           defaultOwnerScope={defaultOwnerScope}
           onClose={() => setEditing(null)}
@@ -90,6 +101,12 @@ export default function AiAgentsPage() {
             void load();
           }}
         />
+      )}
+
+      {loading && (
+        <p className="text-sm text-muted-foreground" data-testid="ai-agents-loading">
+          {t('aiAgentsPage.loading')}
+        </p>
       )}
 
       {!loading && !error && agents.length === 0 && (

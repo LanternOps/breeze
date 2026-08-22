@@ -1282,7 +1282,9 @@
     "stateEnabled": "Aktiviert",
     "stateDisabled": "Deaktiviert",
     "errors": {
-      "load": "Agenten konnten nicht geladen werden."
+      "load": "Agenten konnten nicht geladen werden.",
+      "kindExists": "Für diesen Eigentümer existiert bereits ein Agent dieser Art. Bearbeiten Sie den vorhandenen oder deaktivieren Sie ihn zuerst.",
+      "modeNotSupported": "Dieser Modus ist noch nicht verfügbar. Agenten können derzeit untersuchen und vorschlagen, aber nicht handeln."
     },
     "actions": {
       "add": "Neuer Agent",
@@ -1301,7 +1303,8 @@
     "issues": {
       "name": "Geben Sie dem Agenten einen Namen.",
       "severities": "Wählen Sie mindestens einen Schweregrad aus.",
-      "org": "Wählen Sie eine Organisation aus, bevor Sie einen organisationseigenen Agenten anlegen."
+      "org": "Wählen Sie eine Organisation aus, bevor Sie einen organisationseigenen Agenten anlegen.",
+      "allKindsTaken": "Für diesen Eigentümer gibt es bereits zu jeder Art einen Agenten. Bearbeiten Sie stattdessen einen vorhandenen Agenten."
     },
     "editor": {
       "newTitle": "Neuer Agent",
@@ -1357,8 +1360,10 @@
       "recipientRolesHint": "Rollen, die benachrichtigt werden, wenn dieser Agent etwas vorschlägt.",
       "recipientRolesEmpty": "Keine Rollen verfügbar.",
       "instructionsHint": "Nur zur Orientierung — Tonfall, was zuerst zu prüfen ist, interne Gepflogenheiten. Es werden dadurch keine Berechtigungen erteilt.",
-      "charactersLeft": "Noch {{count}} Zeichen"
-    }
+      "charactersLeft": "Noch {{count}} Zeichen",
+      "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern."
+    },
+    "loading": "Agenten werden geladen …"
   },
   "apiKeyForm": {
     "devicesRead": "Geräte: Lesen",

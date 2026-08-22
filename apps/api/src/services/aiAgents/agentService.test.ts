@@ -242,6 +242,26 @@ describe('agent mutations', () => {
       .rejects.toBeInstanceOf(AgentKindConflictError);
     expect(state.insertedValues).toBeNull();
     expect(state.audit).not.toHaveBeenCalled();
+
+    // Walk the bound predicate. Asserting only the control flow left this
+    // vacuous with respect to the QUERY: it passed with isNull(disabledAt)
+    // dropped, eq(kind) dropped, or the owner branch swapped — the exact
+    // vacuous-where-clause shape that has bitten this repo before.
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('alert_triage');
+    expect(bound).toContain('aiAgents.disabledAt');
+    expect(bound).toContain('o1');
+  });
+
+  it('checks the PARTNER slot, not an org slot, for a partner-wide create', async () => {
+    state.currentRow = null;
+    state.returnedRow = storedRow;
+
+    await createAgent(auth(), { orgId: null, partnerId: 'p1' }, createInput as never);
+
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('p1');
+    expect(bound).toContain('aiAgents.orgId');
   });
 
   it('denies a partner-wide create without full partner authority', async () => {

@@ -4,6 +4,7 @@ import { db } from '../../db';
 import { aiAgents, type AiAgentRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { createAuditLog } from '../auditService';
+import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
@@ -15,6 +16,22 @@ export class UnsupportedAgentModeError extends Error {
   constructor(mode: string) {
     super(`mode_not_supported: ${mode}`);
     this.name = 'UnsupportedAgentModeError';
+  }
+}
+
+/**
+ * An invariant the code believes cannot be violated was violated anyway — a
+ * RETURNING clause that came back empty, an owner-less row. Deliberately NOT
+ * AgentAccessDeniedError: the route maps that to 404 by RETURNING a response,
+ * which lets the request transaction COMMIT. A failed RETURNING read would then
+ * insert the row, answer "Agent not created", and commit it — with no log and
+ * no Sentry event. These must propagate so the transaction rolls back and the
+ * global onError reports them.
+ */
+export class AgentInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AgentInvariantError';
   }
 }
 
@@ -124,7 +141,7 @@ async function publishPolicyChanged(
   // orgId. Partner-wide changes are routed under partnerId rather than skipped;
   // the payload makes the ownership axis explicit for consumers.
   const routingId = row.orgId ?? row.partnerId;
-  if (!routingId) throw new AgentAccessDeniedError('Agent has no owner');
+  if (!routingId) throw new AgentInvariantError('Agent has no owner');
 
   try {
     await getEventBus().publish(
@@ -140,13 +157,38 @@ async function publishPolicyChanged(
       'ai-agents',
     );
   } catch (err) {
-    // 'disabled' is the kill switch. If the event does not reach the bus,
-    // in-flight runners never learn to stop, so reporting success here would be
-    // a lie about the thing the operator most needs to be true. Create/update
-    // stay best-effort — a dropped notification there is cosmetic.
-    if (change === 'disabled') throw err;
+    // This used to RETHROW for 'disabled', reasoning that a kill switch must
+    // not report success if the stop signal never reached in-flight runners.
+    // That inverted the safety property it was defending. The whole request
+    // runs in one withDbAccessContext transaction, so throwing here rolled back
+    // the `disabled_at` write itself: during a Redis outage the operator could
+    // not disable the agent AT ALL, the row stayed enabled, and every runner
+    // started after the outage read an enabled policy and kept going. It also
+    // left a lie in the audit log — persistAuditLog escapes the request
+    // transaction (runOutsideDbContext + withSystemDbAccessContext), so the
+    // 'ai.agent.disabled' row committed while the agent stayed live.
+    //
+    // Committing the disable is strictly safer in every direction: the DB is
+    // the source of truth for every subsequent policy read (resolveEffectiveAgent
+    // filters on disabled_at IS NULL), so the agent is off for anything that
+    // starts from now on, and only genuinely in-flight runs miss the interrupt
+    // — bounded by wallClockSeconds, at most 1800s. The caller is told, rather
+    // than lied to in either direction, by the log below.
+    //
+    // TODO(wave 3): once runners actually consume this event, a dropped
+    // 'disabled' broadcast needs to reach the OPERATOR, not just the logs —
+    // surface it on the response so the UI can say the agent is off but an
+    // in-flight run may continue to its wall-clock limit.
+    captureException(err, undefined, {
+      service: 'aiAgents',
+      operation: 'publishPolicyChanged',
+      agentId: row.id,
+      kind: row.kind,
+      change,
+    });
     console.error(
-      '[aiAgents] eventBus publish failed:',
+      `[aiAgents] policy_changed publish failed (agent=${row.id} kind=${row.kind} change=${change}); ` +
+        'the DB write stands, in-flight runs may not have been interrupted:',
       err instanceof Error ? err.message : err,
     );
   }
@@ -163,18 +205,35 @@ async function recordMutation(
   ]);
 }
 
+/**
+ * The set of agents this caller may see, on either ownership axis. Partner-wide
+ * rows are added only for partner-scoped callers: an org token carries a
+ * partnerId but never passes breeze_has_partner_access, so RLS would hide those
+ * rows from it regardless — the app layer must not be looser than RLS.
+ */
+function accessibleAgentCondition(auth: AuthContext) {
+  return auth.scope === 'partner' && auth.partnerId
+    ? or(auth.orgCondition(aiAgents.orgId), and(isNull(aiAgents.orgId), eq(aiAgents.partnerId, auth.partnerId)))
+    : auth.orgCondition(aiAgents.orgId);
+}
+
 export async function listAgents(
   auth: AuthContext,
   opts: { includeDisabled?: boolean } = {},
 ): Promise<AiAgentRow[]> {
-  // Defended twice. RLS is the real boundary, but a caller that reaches this
-  // without a DB context runs as scope='system' and would read EVERY partner's
-  // agents — and the old signature (_auth, ignored) made that look authorized.
+  // Defended twice. RLS is the real boundary and it already denies a
+  // contextless read: breeze_current_scope() defaults to 'none', NOT 'system'
+  // (migrations/0012-tenant-rls-deny-default.sql superseded 0008), so both
+  // branches of the policy are false and the read comes back empty. An earlier
+  // version of this comment claimed the opposite — that contextless meant a
+  // full bypass — which inverted the failure mode on a multi-tenant surface.
+  //
+  // The app-layer predicate stays anyway, for two reasons that are real: the
+  // unit-test path mocks the db and has no RLS at all, and the old signature
+  // (_auth, ignored) made an unfiltered read look authorized to the next caller.
   // Partner-wide rows are only added for partner-scoped callers: an org token
   // carries a partnerId but never passes breeze_has_partner_access.
-  const ownerScope = auth.scope === 'partner' && auth.partnerId
-    ? or(auth.orgCondition(aiAgents.orgId), and(isNull(aiAgents.orgId), eq(aiAgents.partnerId, auth.partnerId)))
-    : auth.orgCondition(aiAgents.orgId);
+  const ownerScope = accessibleAgentCondition(auth);
 
   return db
     .select()
@@ -184,10 +243,21 @@ export async function listAgents(
 }
 
 export async function getAgent(
-  _auth: AuthContext,
+  auth: AuthContext,
   id: string,
 ): Promise<AiAgentRow | null> {
-  const [row] = await db.select().from(aiAgents).where(eq(aiAgents.id, id)).limit(1);
+  // Bound by the same predicate as listAgents. This used to be `(_auth, id)`
+  // with RLS as the sole defence — which is correct for every HTTP caller
+  // (authMiddleware opens a DB context for all of them) but makes an
+  // unfiltered read look authorized to the next caller. Wave 3 mutates agents
+  // from schedulers that run in a SYSTEM context, where RLS passes
+  // unconditionally, and a discarded `auth` parameter is exactly how such a
+  // call reads as safe while returning every partner's row.
+  const [row] = await db
+    .select()
+    .from(aiAgents)
+    .where(and(eq(aiAgents.id, id), accessibleAgentCondition(auth)))
+    .limit(1);
   return row ?? null;
 }
 
@@ -231,7 +301,7 @@ export async function createAgent(
       updatedAt: new Date(),
     })
     .returning();
-  if (!row) throw new AgentAccessDeniedError('Agent not created');
+  if (!row) throw new AgentInvariantError('Agent not created');
 
   await recordMutation(row, auth, 'created');
   return row;

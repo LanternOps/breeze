@@ -37,6 +37,10 @@ const TARGET_GLOBS = [
   'src/components/settings/ConnectSsoCard.tsx',
   'src/components/patches/PatchesPage.tsx',
   'src/components/settings/RolesPage.tsx',
+  // AI agent policy rows: a bare fetchWithAuth POST here would silently ship
+  // an unreported failure on the surface that governs autonomous agents.
+  'src/components/settings/AiAgentsPage.tsx',
+  'src/components/settings/AiAgentForm.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
   'src/components/dnsSecurity/DnsSecurityIntegrationsTab.tsx',
@@ -343,7 +347,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(91);
+    expect(absoluteFiles.length).toBe(93);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

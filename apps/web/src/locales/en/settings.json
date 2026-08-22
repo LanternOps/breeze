@@ -1282,7 +1282,9 @@
     "stateEnabled": "Enabled",
     "stateDisabled": "Disabled",
     "errors": {
-      "load": "Could not load agents."
+      "load": "Could not load agents.",
+      "kindExists": "An agent of this kind already exists for this owner. Edit the existing one, or disable it first.",
+      "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act."
     },
     "actions": {
       "add": "New agent",
@@ -1301,7 +1303,8 @@
     "issues": {
       "name": "Give the agent a name.",
       "severities": "Select at least one alert severity.",
-      "org": "Select an organization before creating an org-owned agent."
+      "org": "Select an organization before creating an org-owned agent.",
+      "allKindsTaken": "Every agent kind already has an agent for this owner. Edit an existing agent instead."
     },
     "editor": {
       "newTitle": "New agent",
@@ -1357,8 +1360,10 @@
       "recipientRolesHint": "Roles notified when this agent proposes something.",
       "recipientRolesEmpty": "No roles available.",
       "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
-      "charactersLeft": "{{count}} characters left"
-    }
+      "charactersLeft": "{{count}} characters left",
+      "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now."
+    },
+    "loading": "Loading agents…"
   },
   "apiKeyForm": {
     "devicesRead": "Devices: Read",

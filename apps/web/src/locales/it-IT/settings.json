@@ -1282,7 +1282,9 @@
     "stateEnabled": "Attivo",
     "stateDisabled": "Disattivato",
     "errors": {
-      "load": "Impossibile caricare gli agenti."
+      "load": "Impossibile caricare gli agenti.",
+      "kindExists": "Esiste già un agente di questo tipo per questo proprietario. Modifica quello esistente o disattivalo prima.",
+      "modeNotSupported": "Questa modalità non è ancora disponibile. Per ora gli agenti possono indagare e proporre, ma non agire."
     },
     "actions": {
       "add": "Nuovo agente",
@@ -1301,7 +1303,8 @@
     "issues": {
       "name": "Assegna un nome all’agente.",
       "severities": "Seleziona almeno una gravità di avviso.",
-      "org": "Seleziona un’organizzazione prima di creare un agente di proprietà dell’organizzazione."
+      "org": "Seleziona un’organizzazione prima di creare un agente di proprietà dell’organizzazione.",
+      "allKindsTaken": "Ogni tipo di agente ha già un agente per questo proprietario. Modifica invece un agente esistente."
     },
     "editor": {
       "newTitle": "Nuovo agente",
@@ -1357,8 +1360,10 @@
       "recipientRolesHint": "Ruoli avvisati quando questo agente propone qualcosa.",
       "recipientRolesEmpty": "Nessun ruolo disponibile.",
       "instructionsHint": "Solo indicazioni — tono, cosa controllare per primo, convenzioni interne. Non concede mai autorizzazioni.",
-      "charactersLeft": "{{count}} caratteri rimasti"
-    }
+      "charactersLeft": "{{count}} caratteri rimasti",
+      "recipientRolesFailed": "Impossibile caricare i ruoli: al momento i destinatari delle notifiche non possono essere modificati."
+    },
+    "loading": "Caricamento degli agenti…"
   },
   "apiKeyForm": {
     "devicesRead": "Dispositivi: lettura",

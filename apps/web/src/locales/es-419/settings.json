@@ -1282,7 +1282,9 @@
     "stateEnabled": "Habilitado",
     "stateDisabled": "Deshabilitado",
     "errors": {
-      "load": "No se pudieron cargar los agentes."
+      "load": "No se pudieron cargar los agentes.",
+      "kindExists": "Ya existe un agente de este tipo para este propietario. Edite el existente o deshabilítelo primero.",
+      "modeNotSupported": "Ese modo aún no está disponible. Por ahora los agentes pueden investigar y proponer, pero no actuar."
     },
     "actions": {
       "add": "Nuevo agente",
@@ -1301,7 +1303,8 @@
     "issues": {
       "name": "Asigne un nombre al agente.",
       "severities": "Seleccione al menos una severidad de alerta.",
-      "org": "Seleccione una organización antes de crear un agente propio de la organización."
+      "org": "Seleccione una organización antes de crear un agente propio de la organización.",
+      "allKindsTaken": "Todos los tipos de agente ya tienen un agente para este propietario. Edite uno existente."
     },
     "editor": {
       "newTitle": "Nuevo agente",
@@ -1357,8 +1360,10 @@
       "recipientRolesHint": "Roles que se notifican cuando este agente propone algo.",
       "recipientRolesEmpty": "No hay roles disponibles.",
       "instructionsHint": "Solo orientación: tono, qué revisar primero, convenciones internas. Nunca otorga permisos.",
-      "charactersLeft": "Quedan {{count}} caracteres"
-    }
+      "charactersLeft": "Quedan {{count}} caracteres",
+      "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones."
+    },
+    "loading": "Cargando agentes…"
   },
   "apiKeyForm": {
     "devicesRead": "Dispositivos: Leer",

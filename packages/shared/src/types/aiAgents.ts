@@ -100,3 +100,62 @@ export interface AiAgentPolicySnapshot {
   provenance: AiAgentPolicyProvenance;
   resolvedAt: string;
 }
+
+/**
+ * Modes the API accepts on WRITE today. `act` is admitted by the DB CHECK and
+ * is a member of AI_AGENT_MODES, but the API refuses it with 422
+ * `mode_not_supported` until wave 4 ships bounded execution.
+ *
+ * This lives in shared rather than in the API because it is a wire contract:
+ * the settings form has to know which modes a create will be allowed to pick,
+ * and there is no row to read `supportedModes` off before the agent exists.
+ * Two copies of this list means the create form silently keeps refusing `act`
+ * on the day the API starts accepting it.
+ */
+export const SUPPORTED_AGENT_MODES: readonly AiAgentMode[] = ['off', 'shadow'] as const;
+
+export type AiAgentOwnerScope = 'organization' | 'partner';
+
+/**
+ * The wire shape of one agent as returned by /api/v1/ai/agents.
+ *
+ * Declared here, and named as the API handler's return type, so the endpoint
+ * cannot drift from the client that consumes it. It is deliberately NOT "every
+ * column of ai_agents": spreading the row would publish `createdBy`,
+ * `lastUpdatedBy` and `disabledBy`, and would silently make every column added
+ * in a later wave part of the public API of a table whose entire purpose is
+ * agent authority.
+ *
+ * The nested policy objects are `Partial` because that is what the columns
+ * actually store — jsonb defaulting to `{}`, with defaults applied at read time
+ * by normalizeAgentPolicy. The top-level fields are NOT optional: those columns
+ * are NOT NULL, so a client writing `toolAllowlist ?? []` would be papering over
+ * a contract change rather than handling a real absence.
+ */
+export interface AiAgentDto {
+  id: string;
+  kind: AiAgentKind;
+  name: string;
+  enabled: boolean;
+  mode: AiAgentMode;
+  model: string | null;
+  orgId: string | null;
+  partnerId: string | null;
+  /** Derived from the owner columns; always consistent with them. */
+  ownerScope: AiAgentOwnerScope;
+  /** True for a partner-wide baseline row (`partner_id` set, `org_id` null). */
+  allOrgs: boolean;
+  /** What this API build will accept for `mode` on a write. */
+  supportedModes: readonly AiAgentMode[];
+  toolAllowlist: string[];
+  protectedResources: Partial<AiAgentProtectedResources>;
+  limits: Partial<AiAgentLimits>;
+  triggers: Partial<AiAgentTriggers>;
+  recipients: Partial<AiAgentRecipients>;
+  instructions: string | null;
+  cooldownSeconds: number;
+  /** ISO-8601. Non-null means the agent is soft-deleted. */
+  disabledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
