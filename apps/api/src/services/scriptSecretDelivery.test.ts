@@ -26,6 +26,7 @@ import {
   SECRETS_RUN_AS_MESSAGE,
   failClaimedSecretCommandsForUnsupportedAgent,
   loadScriptSecretEnvVersion,
+  normalizeReportedScriptSecretEnvVersion,
   runAsSupportsSecretEnv,
   secretDeliveryPreflight,
 } from './scriptSecretDelivery';
@@ -179,6 +180,24 @@ describe('runAsSupportsSecretEnv', () => {
     ['system', null, true],
   ] as const)('runAs=%s targetSessionId=%s → %s', (runAs, targetSessionId, expected) => {
     expect(runAsSupportsSecretEnv(runAs as any, targetSessionId as any)).toBe(expected);
+  });
+});
+
+describe('normalizeReportedScriptSecretEnvVersion', () => {
+  // Must stay identical to the expression the heartbeat writes into
+  // devices.script_secret_env_version — they share this function precisely so
+  // the gate's trusted value and the stored value can never diverge.
+  it.each([
+    [1, 1],
+    [0, 0],
+    [2, 0],
+    [99, 0],
+    ['1', 0],
+    [undefined, 0],
+    [null, 0],
+    [true, 0],
+  ] as const)('%s → %s', (reported, expected) => {
+    expect(normalizeReportedScriptSecretEnvVersion(reported)).toBe(expected);
   });
 });
 
@@ -459,6 +478,70 @@ describe('failClaimedSecretCommandsForUnsupportedAgent', () => {
     expect(captureException).toHaveBeenCalledTimes(1);
     // No execution propagation after a failed command write.
     expect(updateCalls.map((u) => u.table)).toEqual([deviceCommands]);
+  });
+
+  // ── Amendment A: the heartbeat's REPORTED capability wins ──────────
+  //
+  // The heartbeat writes `devices.script_secret_env_version` non-sticky, but
+  // that write is guarded on the device not being decommissioned/quarantined
+  // and is a separate statement from the claim. A skipped or lost write would
+  // leave a STALE stored 1 while the agent just reported 0 — so when the
+  // caller knows what THIS beat reported, that value is authoritative and no
+  // devices select is issued at all.
+  describe('opts.reportedVersion', () => {
+    it('fails the command on a reported 0 even though the stored column still says 1', async () => {
+      mockSelect(() => capabilityRows({ [DEVICE_A]: 1 }));
+      mockUpdate((table) => (table === deviceCommands ? [{ id: 'cmd-secret' }] : [{ id: EXEC_1, scriptId: 'script-1' }]));
+
+      const out = await failClaimedSecretCommandsForUnsupportedAgent(
+        [plainCommand(), envelopeCommand()],
+        { reportedVersion: 0 },
+      );
+
+      expect(out.map((c) => c.id)).toEqual(['cmd-plain']);
+      // The authoritative value came from the caller: no capability read.
+      expect(db.select).not.toHaveBeenCalled();
+      const cmdUpdate = updateCalls.find((u) => u.table === deviceCommands);
+      expect(cmdUpdate!.set).toEqual(
+        expect.objectContaining({
+          status: 'failed',
+          result: { status: 'failed', error: AGENT_UPGRADE_REQUIRED_MESSAGE, exitCode: 1 },
+        }),
+      );
+    });
+
+    it('delivers on a reported 1 without issuing a capability select', async () => {
+      mockSelect(() => capabilityRows({ [DEVICE_A]: 0 }));
+      mockUpdate(() => [{ id: 'cmd-secret' }]);
+
+      const claimed = [plainCommand(), envelopeCommand()];
+      const out = await failClaimedSecretCommandsForUnsupportedAgent(claimed, {
+        reportedVersion: SCRIPT_SECRET_ENV_REQUIRED_VERSION,
+      });
+
+      expect(out.map((c) => c.id)).toEqual(['cmd-plain', 'cmd-secret']);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the stored column when no reported version is supplied', async () => {
+      mockSelect(() => capabilityRows({ [DEVICE_A]: 1 }));
+      mockUpdate(() => [{ id: 'cmd-secret' }]);
+
+      const out = await failClaimedSecretCommandsForUnsupportedAgent([envelopeCommand()], {});
+
+      expect(out.map((c) => c.id)).toEqual(['cmd-secret']);
+      expect(selectCalls).toHaveLength(1);
+      expect(selectCalls[0]!.table).toBe(devices);
+    });
+
+    it('still issues no query when the batch carries no envelope, whatever was reported', async () => {
+      const claimed = [plainCommand()];
+      const out = await failClaimedSecretCommandsForUnsupportedAgent(claimed, { reportedVersion: 0 });
+      expect(out).toBe(claimed);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   it('never echoes the envelope or a secret value into logs or Sentry', async () => {

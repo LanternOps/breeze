@@ -90,6 +90,19 @@ function agentSupportsSecretEnv(version: number | null | undefined): boolean {
 }
 
 /**
+ * The single expression that turns an agent's SELF-REPORTED capability into
+ * the value stored in `devices.script_secret_env_version`: only the exact
+ * recognized integer 1 counts, everything else (absent object, unknown future
+ * value, a downgraded build) reports back down to 0.
+ *
+ * Shared with the heartbeat's device write so the value the gate trusts and
+ * the value the column stores can never drift apart.
+ */
+export function normalizeReportedScriptSecretEnvVersion(reported: unknown): number {
+  return reported === 1 ? 1 : 0;
+}
+
+/**
  * Enqueue-time gate. Checks are ordered cheapest / most deterministic first so
  * a refused dispatch costs no query: run-as → server key → agent capability.
  */
@@ -187,7 +200,8 @@ function reportGateFailure(stage: string, cmd: ClaimedCommand, err: unknown): vo
  *
  * Cost model: zero queries unless some claimed `script` command actually
  * carries an envelope, then exactly ONE capability select for the batch
- * however many devices it spans. Offending commands are driven terminal —
+ * however many devices it spans — and ZERO selects when the caller already
+ * knows the answer (see `opts.reportedVersion`). Offending commands are driven terminal —
  * `failed`, `result.exitCode: 1`, payload erased via
  * `terminalPayloadErasureSet` — guarded on `status = 'sent'` so a row
  * something else already moved is never overwritten, then propagated to the
@@ -200,11 +214,32 @@ function reportGateFailure(stage: string, cmd: ClaimedCommand, err: unknown): vo
  */
 export async function failClaimedSecretCommandsForUnsupportedAgent(
   claimed: ClaimedCommand[],
+  opts?: {
+    /**
+     * The capability the agent reported in THIS request, already normalized
+     * with `normalizeReportedScriptSecretEnvVersion`. When present it is
+     * AUTHORITATIVE and no `devices` select is issued at all.
+     *
+     * Why: the heartbeat writes this column non-sticky (routes/agents/
+     * heartbeat.ts) but that write is guarded on the device not being
+     * decommissioned/quarantined, and it is a separate statement from the
+     * claim. If the write is skipped — or simply loses the race — a STORED
+     * value of 1 would let a batch through for an agent that just reported 0
+     * in the very same beat. The reported value cannot be stale by
+     * construction, so prefer it. A batch spanning devices (there is none on
+     * the heartbeat path — one device per beat) must not pass this.
+     */
+    reportedVersion?: number;
+  },
 ): Promise<ClaimedCommand[]> {
   const gated = claimed.filter(carriesSecretEnvelope);
   if (gated.length === 0) return claimed;
 
-  const versions = await loadScriptSecretEnvVersions([...new Set(gated.map((cmd) => cmd.deviceId))]);
+  const reportedVersion = opts?.reportedVersion;
+  const versions =
+    typeof reportedVersion === 'number'
+      ? new Map(gated.map((cmd) => [cmd.deviceId, reportedVersion]))
+      : await loadScriptSecretEnvVersions([...new Set(gated.map((cmd) => cmd.deviceId))]);
   const unsupported = gated.filter((cmd) => !agentSupportsSecretEnv(versions.get(cmd.deviceId)));
   if (unsupported.length === 0) return claimed;
 
