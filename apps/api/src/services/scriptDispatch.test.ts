@@ -17,6 +17,14 @@ vi.mock('./sensitiveCommandPayload', () => ({
   })),
 }));
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false) }));
+// #3409 PR4c-2: the secret-delivery gates are unit-tested against their own
+// drizzle mocks in scriptSecretDelivery.test.ts. Here they are mocked so this
+// file tests the WIRING — that dispatch calls them at the right two points,
+// only for a secret-bearing script, and honours their verdicts.
+vi.mock('./scriptSecretDelivery', () => ({
+  secretDeliveryPreflight: vi.fn().mockResolvedValue({ ok: true }),
+  failClaimedSecretCommandsForUnsupportedAgent: vi.fn((claimed: unknown[]) => Promise.resolve(claimed)),
+}));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { db } from '../db';
@@ -25,6 +33,10 @@ import { claimPendingCommandForDelivery } from './commandDispatch';
 import { decryptCommandForDelivery, encryptSensitivePayloadFields } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import {
+  failClaimedSecretCommandsForUnsupportedAgent,
+  secretDeliveryPreflight,
+} from './scriptSecretDelivery';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import type { ResolvedVariable, TenantVariableScope } from './tenantVariableResolution';
 
@@ -137,6 +149,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(db.insert).mockReturnValue(insertReturning([{ id: 'exec-1' }]) as any);
   vi.mocked(queueCommand).mockResolvedValue({ id: 'cmd-1', payload: {} } as any);
+  // Permissive defaults re-established per test so a `…Once` override or a
+  // per-test verdict never leaks into the next test.
+  vi.mocked(secretDeliveryPreflight).mockResolvedValue({ ok: true });
+  vi.mocked(failClaimedSecretCommandsForUnsupportedAgent).mockImplementation(
+    (claimed: any) => Promise.resolve(claimed),
+  );
 });
 
 describe('dispatchScriptToDevice — invariants', () => {
@@ -845,5 +863,222 @@ describe('dispatchScriptToDevice — sourced parameters', () => {
       expect(db.select).not.toHaveBeenCalled();
       expect(payloadParameters()).toEqual({ org_id: 'org-a', site_id: 'site-1', host: 'host-1' });
     });
+  });
+});
+
+// #3409 PR4c-2: `tenantSecret` parameters — the sealed out-of-band channel
+// plus the two activation gates (enqueue preflight, claim-time re-check).
+// The gates themselves are covered against their own DB mocks in
+// scriptSecretDelivery.test.ts; these tests pin the WIRING.
+describe('dispatchScriptToDevice — tenantSecret parameters', () => {
+  const SECRET_VALUE = 'sup3r-s3cret-value-xyz';
+
+  const secretScript = (extra: unknown[] = [], overrides = {}) =>
+    savedScript({
+      parameters: [
+        { name: 'api_token', source: 'tenantSecret', variableKey: 'vendor_token' },
+        ...extra,
+      ],
+      ...overrides,
+    });
+
+  const secretScope = () => buildScope('org-a', [resolvedVar('vendor_token', SECRET_VALUE, true)]);
+
+  // Stands in for the real seal (the module is mocked file-wide): consumes
+  // `secretEnv` and leaves the ciphertext string the agent frame carries.
+  const mockSealOnce = () => {
+    vi.mocked(encryptSensitivePayloadFields).mockImplementationOnce((_t: string, payload: any) => {
+      const out = { ...payload };
+      if (out.secretEnv !== undefined) {
+        delete out.secretEnv;
+        out.secretEnvEnvelope = 'enc:v3:sealed-envelope';
+      }
+      return out;
+    });
+  };
+
+  const dispatchSecret = (input: Record<string, unknown> = {}) =>
+    dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: secretScript() },
+      variableScope: secretScope(),
+      ...input,
+    } as any);
+
+  it('hands the resolved secret to the seal in secretEnv, never in parameters', async () => {
+    mockSealOnce();
+    const r = await dispatchSecret({
+      source: {
+        kind: 'saved',
+        script: secretScript([{ name: 'level', type: 'string', source: 'runtime' }]),
+      },
+      parameters: { level: 'debug' },
+    });
+
+    expect(r.ok).toBe(true);
+    const sealInput = vi.mocked(encryptSensitivePayloadFields).mock.calls[0]![1] as Record<string, unknown>;
+    expect(sealInput.secretEnv).toEqual({ api_token: SECRET_VALUE });
+    expect(sealInput.parameters).toEqual({ level: 'debug' });
+    expect(JSON.stringify(sealInput.parameters)).not.toContain(SECRET_VALUE);
+  });
+
+  it('queues the SEALED payload: secretEnvEnvelope string, no secretEnv', async () => {
+    mockSealOnce();
+    await dispatchSecret();
+
+    const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
+    const queued = payload as Record<string, unknown>;
+    expect(typeof queued.secretEnvEnvelope).toBe('string');
+    expect(queued).not.toHaveProperty('secretEnv');
+    expect(JSON.stringify(queued)).not.toContain(SECRET_VALUE);
+  });
+
+  it('stores an identity-only $bindings row and no value in script_executions', async () => {
+    mockSealOnce();
+    await dispatchSecret();
+
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues.parameters).toEqual({
+      $bindings: [
+        {
+          key: 'api_token',
+          source: 'tenantSecret',
+          variableId: 'var-vendor_token',
+          ownerScope: 'organization',
+          version: 1,
+        },
+      ],
+    });
+    // The whole serialized insert — not just the parameters column.
+    expect(JSON.stringify(execValues)).not.toContain(SECRET_VALUE);
+  });
+
+  it('runs the enqueue preflight with the effective runAs and target session', async () => {
+    mockSealOnce();
+    await dispatchSecret({ runAs: 'elevated', targetSessionId: undefined });
+
+    expect(secretDeliveryPreflight).toHaveBeenCalledWith({
+      deviceId: 'device-1',
+      runAs: 'elevated',
+      targetSessionId: undefined,
+    });
+    // BEFORE the execution insert — a refused device must leave no orphan row.
+    expect(vi.mocked(secretDeliveryPreflight).mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(db.insert).mock.invocationCallOrder[0]!);
+  });
+
+  // The three preflight refusals, propagated verbatim with no orphan rows.
+  for (const code of [
+    'secrets_unsupported_run_as',
+    'secret_delivery_unavailable',
+    'agent_upgrade_required',
+  ] as const) {
+    it(`fails the device with ${code} and leaves no execution or command behind`, async () => {
+      vi.mocked(secretDeliveryPreflight).mockResolvedValue({ ok: false, code, error: `refused: ${code}` });
+      const r = await dispatchSecret({ runAs: 'user' });
+
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.code).toBe(code);
+        expect(r.error).toBe(`refused: ${code}`);
+      }
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(queueCommand).not.toHaveBeenCalled();
+      expect(encryptSensitivePayloadFields).not.toHaveBeenCalled();
+      expect(JSON.stringify(vi.mocked(queueCommand).mock.calls)).not.toContain(SECRET_VALUE);
+    });
+  }
+
+  // Hot-path regression guard (the preload trap from PR2): the gate must cost
+  // nothing for the overwhelming majority of scripts, which have no secret.
+  it('never calls the preflight for a script with no tenantSecret parameter', async () => {
+    await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: savedScript({ parameters: [{ name: 'level', type: 'string', source: 'runtime' }] }),
+      },
+      parameters: { level: 'debug' },
+    });
+
+    expect(secretDeliveryPreflight).not.toHaveBeenCalled();
+    expect(failClaimedSecretCommandsForUnsupportedAgent).not.toHaveBeenCalled();
+  });
+
+  it('never calls the claim gate on the immediate-send path for a secret-free script', async () => {
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt: new Date() } as any);
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+
+    const r = await dispatchScriptToDevice({
+      device: device({ agentId: 'agent-1' }),
+      source: { kind: 'saved', script: savedScript() },
+    });
+
+    expect(failClaimedSecretCommandsForUnsupportedAgent).not.toHaveBeenCalled();
+    if (r.ok) expect(r.deliveryOutcome).toBe('sent');
+  });
+
+  it('immediate send: re-checks the claimed command through the claim gate, then sends', async () => {
+    mockSealOnce();
+    const executedAt = new Date('2026-08-22T00:00:00Z');
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt } as any);
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+
+    const r = await dispatchSecret({ device: device({ agentId: 'agent-1' }) });
+
+    expect(failClaimedSecretCommandsForUnsupportedAgent).toHaveBeenCalledWith([
+      {
+        id: 'cmd-1',
+        type: 'script',
+        deviceId: 'device-1',
+        payload: expect.objectContaining({ secretEnvEnvelope: 'enc:v3:sealed-envelope' }),
+        executedAt,
+      },
+    ]);
+    // Gate first, send second — never the other way round.
+    expect(vi.mocked(failClaimedSecretCommandsForUnsupportedAgent).mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(sendCommandToAgent).mock.invocationCallOrder[0]!);
+    expect(sendCommandToAgent).toHaveBeenCalled();
+    if (r.ok) {
+      expect(r.delivered).toBe(true);
+      expect(r.deliveryOutcome).toBe('sent');
+    }
+  });
+
+  // The blocker the review caught: the immediate-send path claims the command
+  // itself and never reaches decryptClaimedCommandsForDelivery, so without
+  // this gate a downgraded agent would receive the script with the credential
+  // unset.
+  it('immediate send: withholds and reports agent_unsupported when the claim gate fails the command', async () => {
+    mockSealOnce();
+    const executedAt = new Date('2026-08-22T00:00:00Z');
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt } as any);
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+    vi.mocked(failClaimedSecretCommandsForUnsupportedAgent).mockResolvedValue([]);
+    const { releaseClaimedCommandDelivery } = await import('./commandDispatch');
+
+    const r = await dispatchSecret({ device: device({ agentId: 'agent-1' }) });
+
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(decryptCommandForDelivery).not.toHaveBeenCalled();
+    // Terminal, not retryable: the gate already failed both rows, so the
+    // command must NOT go back to pending for the same agent to re-claim.
+    expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
+    // ...and the execution row is NOT flipped to 'running' here.
+    expect(db.update).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.delivered).toBe(false);
+      expect(r.deliveryOutcome).toBe('agent_unsupported');
+      expect(r.commandId).toBe('cmd-1');
+      expect(r.executionId).toBe('exec-1');
+      expect(r.executedAt).toBeNull();
+    }
   });
 });

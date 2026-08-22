@@ -24,6 +24,11 @@ import {
   type TenantVariableScope,
 } from './tenantVariableResolution';
 import {
+  failClaimedSecretCommandsForUnsupportedAgent,
+  secretDeliveryPreflight,
+  type SecretDeliveryPreflightFailureCode,
+} from './scriptSecretDelivery';
+import {
   builtinNameContextNeeds,
   EXECUTION_PARAMETER_BINDINGS_KEY,
   hasTenantVariableBoundParameters,
@@ -88,7 +93,23 @@ export type DispatchScriptResult =
       // "queued for later" case; 'claim_lost', 'decrypt_failed', and
       // 'send_failed' all mean we had a connected agent and still failed to
       // reach it — operationally different, and worth a log line (see below).
-      deliveryOutcome: 'sent' | 'claim_lost' | 'decrypt_failed' | 'send_failed' | 'no_agent';
+      //
+      // 'agent_unsupported' (#3409 PR4c-2) is the only outcome that is
+      // TERMINAL rather than retryable: the claim-time secret gate found the
+      // agent's `scriptSecretEnvVersion` had dropped below the floor between
+      // enqueue and delivery, and already drove BOTH the command row and the
+      // linked execution row to 'failed' (with the payload erased). The
+      // dispatch still returns `ok: true` because the rows exist and carry
+      // the outcome — the caller reads execution history for the reason
+      // rather than getting a `code` here; the command is NOT released back
+      // to pending, since the same agent would only re-claim it.
+      deliveryOutcome:
+        | 'sent'
+        | 'claim_lost'
+        | 'decrypt_failed'
+        | 'send_failed'
+        | 'agent_unsupported'
+        | 'no_agent';
       executedAt: Date | null;
       // Bound parameter keys the caller supplied a value for (#3409 PR3
       // §2.2). The binding wins authoritatively and the supplied value is
@@ -116,7 +137,21 @@ export type DispatchScriptResult =
         // distinct from 'unresolved_variables' above — a parameter-binding
         // failure and a content-token failure are different operational
         // conditions and must stay distinguishable in execution history.
-        | 'unresolved_parameters';
+        | 'unresolved_parameters'
+        // #3409 PR4c-2 — the three enqueue-time secret-delivery refusals,
+        // raised ONLY when the script actually resolved a `tenantSecret`
+        // parameter (see services/scriptSecretDelivery.ts for the messages):
+        //   'secrets_unsupported_run_as'   — runAs 'user' / a targetSessionId:
+        //       the helper IPC carries no environment, so the credential
+        //       simply could not arrive.
+        //   'secret_delivery_unavailable'  — this server has no active
+        //       secret-encryption key, so the envelope cannot be sealed.
+        //   'agent_upgrade_required'       — the device agent does not declare
+        //       secret-env support and would run the script with the
+        //       credential UNSET.
+        // All three are per-device and refuse BEFORE the execution insert, so
+        // a refused device leaves no orphan 'pending' row.
+        | SecretDeliveryPreflightFailureCode;
       error: string;
     };
 
@@ -211,6 +246,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   >;
   let parameterBindings: ScriptParameterBindingDescriptor[] = [];
   let ignoredParameters: string[] = [];
+  let secretEnv: Record<string, string> = {};
   if (source.kind === 'saved' && Array.isArray(source.script.parameters) && source.script.parameters.length > 0) {
     const definitions = source.script.parameters;
     // Only a tenantVariable binding needs the snapshot; the other three
@@ -238,6 +274,27 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     resolvedParameters = resolution.parameters;
     parameterBindings = resolution.bindings;
     ignoredParameters = resolution.ignoredParameters;
+    secretEnv = resolution.secretEnv;
+  }
+
+  // #3409 PR4c-2: the enqueue-time secret-delivery gate. Only a script that
+  // actually resolved a `tenantSecret` parameter pays for it — `hasSecrets`
+  // is known locally here, so the hot path never inspects a payload and never
+  // reads the device's capability column.
+  //
+  // Sits BEFORE the script_executions insert for the same reason PR2's
+  // substitution and PR3's resolution do: a refused device must leave no
+  // orphan 'pending' row for the reaper to later mislabel 'timeout'.
+  const hasSecrets = Object.keys(secretEnv).length > 0;
+  if (hasSecrets) {
+    const preflight = await secretDeliveryPreflight({
+      deviceId: device.id,
+      runAs,
+      targetSessionId: input.targetSessionId,
+    });
+    if (!preflight.ok) {
+      return { ok: false, code: preflight.code, error: preflight.error };
+    }
   }
 
   let executionId: string | null = null;
@@ -315,7 +372,8 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // The secret envelope's AAD binds the command id, so the id must exist
     // BEFORE encryption. Reserving it here (rather than reading it back from
     // the insert) is what keeps encryption inside this guarded region.
-    // Inert until PR4c: nothing sets `secretEnv` yet, so this is a passthrough.
+    // Live since PR4c-2: `secretEnv` is set for `tenantSecret` parameters and
+    // sealed here into `secretEnvEnvelope`; without one this is a passthrough.
     const reservedCommandId = randomUUID();
     payload = encryptSensitivePayloadFields('script', {
       scriptId: payloadScriptId,
@@ -335,6 +393,13 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       // exist. For a script with no parameter definitions this is the
       // caller's map unchanged, i.e. exactly PR2's behaviour.
       parameters: canonicalizeScriptParameters(resolvedParameters),
+      // #3409 PR4c-2: resolved `tenantSecret` values, deliberately OUTSIDE
+      // `parameters` (which the agent substitutes into the script text and
+      // mirrors as BREEZE_PARAM_*). `encryptSensitivePayloadFields` consumes
+      // this key and replaces it with the sealed `secretEnvEnvelope` string,
+      // so no plaintext secret is ever stored on the command row. The key is
+      // omitted entirely when there are none — the seal path is opt-in.
+      ...(hasSecrets ? { secretEnv } : {}),
       timeoutSeconds,
       runAs,
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
@@ -354,10 +419,51 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
 
   let delivered = false;
   let executedAt: Date | null = null;
-  let deliveryOutcome: 'sent' | 'claim_lost' | 'decrypt_failed' | 'send_failed' | 'no_agent' = 'no_agent';
+  let deliveryOutcome:
+    | 'sent'
+    | 'claim_lost'
+    | 'decrypt_failed'
+    | 'send_failed'
+    | 'agent_unsupported'
+    | 'no_agent' = 'no_agent';
   if (device.agentId) {
     const claimed = await claimPendingCommandForDelivery(command.id);
     if (claimed) {
+      // #3409 PR4c-2: the immediate-send path claims the command itself and
+      // hands it straight to the WS, bypassing
+      // `decryptClaimedCommandsForDelivery` — so the claim-time gate has to
+      // run HERE too, or a device whose agent lost the capability between the
+      // preflight above and this claim would receive the script with the
+      // credential unset. Only the secret-bearing path pays for it.
+      //
+      // A `[]` return means the gate already drove the command AND its
+      // execution row terminal: do not send, and do NOT release the claim
+      // back to pending (an incapable agent would just re-claim it).
+      const gated =
+        hasSecrets &&
+        (
+          await failClaimedSecretCommandsForUnsupportedAgent([
+            {
+              id: command.id,
+              type: 'script',
+              deviceId: device.id,
+              payload,
+              executedAt: claimed.executedAt,
+            },
+          ])
+        ).length === 0;
+      if (gated) {
+        deliveryOutcome = 'agent_unsupported';
+        return {
+          ok: true,
+          commandId: command.id,
+          executionId,
+          delivered,
+          deliveryOutcome,
+          executedAt,
+          ignoredParameters,
+        };
+      }
       const deliverable = decryptCommandForDelivery({
         id: command.id,
         type: 'script',
