@@ -553,6 +553,11 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
     // product.cost is numeric (numOrNull) — but guard a non-finite value out of
     // the catalog payload so it can never reach createCatalogItem as NaN.
     costBasis: item.costBasis ?? (Number.isFinite(product.cost as number) ? (product.cost as number) : undefined),
+    // B4 (#3775): the feed's currency is the COST currency — stored as a real
+    // column so margin math can refuse to compare CAD cost against USD sell.
+    // The jsonb copy below stays for traceability. Null feed currency → omit
+    // (createCatalogItem defaults to the partner currency).
+    costCurrency: product.currency ? product.currency.trim().toUpperCase() : undefined,
     markupPercent: item.markupPercent ?? undefined,
     unitOfMeasure: 'each',
     taxable: item.taxable ?? true,
