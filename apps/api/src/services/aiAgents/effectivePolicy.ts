@@ -1,0 +1,246 @@
+import { and, eq, isNull } from 'drizzle-orm';
+import { HTTPException } from 'hono/http-exception';
+import {
+  AI_AGENT_LIMIT_DEFAULTS,
+  AI_AGENT_POLICY_SNAPSHOT_VERSION,
+  aiAgentLimitsSchema,
+  aiAgentProtectedResourcesSchema,
+  aiAgentRecipientsSchema,
+  aiAgentTriggersSchema,
+  minAgentMode,
+  type AiAgentKind,
+  type AiAgentLimits,
+  type AiAgentPolicy,
+  type AiAgentPolicyProvenance,
+  type AiAgentPolicySnapshot,
+} from '@breeze/shared';
+import { AI_AGENTS_ENABLED } from '../../config/env';
+import { db } from '../../db';
+import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
+import { aiAgents, aiBudgets, organizations, type AiAgentRow } from '../../db/schema';
+import type { AuthContext } from '../../middleware/auth';
+
+type PolicyRowFields = Pick<
+  AiAgentRow,
+  | 'enabled'
+  | 'mode'
+  | 'model'
+  | 'toolAllowlist'
+  | 'protectedResources'
+  | 'limits'
+  | 'triggers'
+  | 'recipients'
+  | 'instructions'
+  | 'cooldownSeconds'
+>;
+
+export function normalizeAgentPolicy(row: PolicyRowFields): AiAgentPolicy {
+  return {
+    enabled: row.enabled,
+    mode: row.mode,
+    model: row.model ?? null,
+    toolAllowlist: Array.isArray(row.toolAllowlist) ? [...row.toolAllowlist] : [],
+    protectedResources: aiAgentProtectedResourcesSchema.parse(row.protectedResources ?? {}),
+    limits: aiAgentLimitsSchema.parse(row.limits ?? {}),
+    triggers: aiAgentTriggersSchema.parse(row.triggers ?? {}),
+    recipients: aiAgentRecipientsSchema.parse(row.recipients ?? {}),
+    instructions: row.instructions ?? null,
+    cooldownSeconds: row.cooldownSeconds,
+  };
+}
+
+const union = (a: string[], b: string[]): string[] => Array.from(new Set([...a, ...b]));
+const intersect = (a: string[], b: string[]): string[] => a.filter((value) => b.includes(value));
+const intersectOptional = (a?: string[], b?: string[]): string[] | undefined =>
+  a && b ? intersect(a, b) : a ?? b;
+
+function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): AiAgentLimits {
+  const partner = partnerLimits as unknown as Record<keyof AiAgentLimits, number | boolean>;
+  const org = orgLimits as unknown as Record<keyof AiAgentLimits, number | boolean>;
+  const merged: Partial<Record<keyof AiAgentLimits, number | boolean>> = {};
+
+  for (const key of Object.keys(AI_AGENT_LIMIT_DEFAULTS) as Array<keyof AiAgentLimits>) {
+    const partnerValue = partner[key];
+    const orgValue = org[key];
+    merged[key] = typeof partnerValue === 'boolean' && typeof orgValue === 'boolean'
+      ? partnerValue && orgValue
+      : Math.min(Number(partnerValue), Number(orgValue));
+  }
+
+  return merged as AiAgentLimits;
+}
+
+function instructionBlocks(partner: string | null, org: string | null): string | null {
+  const parts: string[] = [];
+  if (partner) parts.push(`[partner guidance]\n${partner}\n[/partner guidance]`);
+  if (org) parts.push(`[organization guidance]\n${org}\n[/organization guidance]`);
+  return parts.length > 0 ? parts.join('\n\n') : null;
+}
+
+function partnerProvenance(): AiAgentPolicyProvenance {
+  return {
+    enabled: 'partner',
+    mode: 'partner',
+    model: 'partner',
+    toolAllowlist: 'partner',
+    protectedResources: 'partner',
+    limits: 'partner',
+    triggers: 'partner',
+    recipients: 'partner',
+    instructions: 'partner',
+    cooldownSeconds: 'partner',
+  };
+}
+
+/**
+ * Tighten-only policy merge. The organization row is only an override and can
+ * never enable or widen beyond the partner baseline. Pure: no I/O or clock.
+ */
+export function mergeAgentPolicies(
+  partner: AiAgentPolicy,
+  org: AiAgentPolicy | null,
+  opts: { allowedModels: string[] | null },
+): { effective: AiAgentPolicy; provenance: AiAgentPolicyProvenance } {
+  const provenance = partnerProvenance();
+  if (!org) return { effective: partner, provenance };
+
+  const pick = <K extends keyof AiAgentPolicy>(
+    key: K,
+    value: AiAgentPolicy[K],
+    source: AiAgentPolicyProvenance[K],
+  ): AiAgentPolicy[K] => {
+    provenance[key] = source;
+    return value;
+  };
+
+  const mode = minAgentMode(partner.mode, org.mode);
+  const orgModelAllowed = org.model !== null
+    && (opts.allowedModels === null || opts.allowedModels.includes(org.model));
+  const instructionSource = partner.instructions && org.instructions
+    ? 'merged'
+    : org.instructions
+      ? 'org'
+      : 'partner';
+
+  const effective: AiAgentPolicy = {
+    enabled: pick(
+      'enabled',
+      partner.enabled && org.enabled,
+      !partner.enabled ? 'partner' : !org.enabled ? 'org' : 'partner',
+    ),
+    mode: pick('mode', mode, mode === partner.mode ? 'partner' : 'org'),
+    model: pick('model', orgModelAllowed ? org.model : partner.model, orgModelAllowed ? 'org' : 'partner'),
+    toolAllowlist: pick('toolAllowlist', intersect(partner.toolAllowlist, org.toolAllowlist), 'merged'),
+    protectedResources: pick('protectedResources', {
+      services: union(partner.protectedResources.services, org.protectedResources.services),
+      paths: union(partner.protectedResources.paths, org.protectedResources.paths),
+      registryKeys: union(partner.protectedResources.registryKeys, org.protectedResources.registryKeys),
+      deviceTags: union(partner.protectedResources.deviceTags, org.protectedResources.deviceTags),
+    }, 'merged'),
+    limits: pick('limits', mergeLimits(partner.limits, org.limits), 'merged'),
+    triggers: pick('triggers', {
+      alertSeverities: intersect(
+        partner.triggers.alertSeverities,
+        org.triggers.alertSeverities,
+      ) as AiAgentPolicy['triggers']['alertSeverities'],
+      alertRuleIds: intersectOptional(partner.triggers.alertRuleIds, org.triggers.alertRuleIds),
+      siteIds: intersectOptional(partner.triggers.siteIds, org.triggers.siteIds),
+      deviceGroupIds: intersectOptional(partner.triggers.deviceGroupIds, org.triggers.deviceGroupIds),
+      deviceTags: intersectOptional(partner.triggers.deviceTags, org.triggers.deviceTags),
+      respectMaintenanceWindows:
+        partner.triggers.respectMaintenanceWindows || org.triggers.respectMaintenanceWindows,
+    }, 'merged'),
+    recipients: pick('recipients', {
+      userIds: union(partner.recipients.userIds, org.recipients.userIds),
+      roleIds: union(partner.recipients.roleIds, org.recipients.roleIds),
+    }, 'merged'),
+    instructions: pick(
+      'instructions',
+      instructionBlocks(partner.instructions, org.instructions),
+      instructionSource,
+    ),
+    cooldownSeconds: pick(
+      'cooldownSeconds',
+      Math.max(partner.cooldownSeconds, org.cooldownSeconds),
+      org.cooldownSeconds > partner.cooldownSeconds ? 'org' : 'partner',
+    ),
+  };
+
+  return { effective, provenance };
+}
+
+export type ResolvedAgent = AiAgentPolicySnapshot;
+
+/**
+ * Authorized loader. The request context reads the organization and its org
+ * policy first. Only the baseline read is elevated, and it is pinned to the
+ * partner ID obtained through the caller-authorized organization row.
+ */
+export async function resolveEffectiveAgent(
+  auth: AuthContext,
+  orgId: string,
+  kind: AiAgentKind,
+): Promise<ResolvedAgent | null> {
+  if (!auth.canAccessOrg(orgId)) {
+    throw new HTTPException(403, { message: 'Organization not accessible' });
+  }
+
+  const [org] = await db
+    .select({ id: organizations.id, partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org) throw new HTTPException(404, { message: 'Organization not found' });
+
+  const [orgRow] = await db
+    .select()
+    .from(aiAgents)
+    .where(and(
+      eq(aiAgents.orgId, orgId),
+      eq(aiAgents.kind, kind),
+      isNull(aiAgents.disabledAt),
+    ))
+    .limit(1);
+
+  const [partnerRow] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select()
+      .from(aiAgents)
+      .where(and(
+        eq(aiAgents.partnerId, org.partnerId),
+        isNull(aiAgents.orgId),
+        eq(aiAgents.kind, kind),
+        isNull(aiAgents.disabledAt),
+      ))
+      .limit(1));
+
+  // No partner baseline means the org override cannot self-enable the agent.
+  if (!partnerRow) return null;
+
+  const [budget] = await db
+    .select({ allowedModels: aiBudgets.allowedModels })
+    .from(aiBudgets)
+    .where(eq(aiBudgets.orgId, orgId))
+    .limit(1);
+  const allowedModels = Array.isArray(budget?.allowedModels)
+    ? budget.allowedModels as string[]
+    : null;
+
+  const merged = mergeAgentPolicies(
+    normalizeAgentPolicy(partnerRow),
+    orgRow ? normalizeAgentPolicy(orgRow) : null,
+    { allowedModels },
+  );
+  const effective = AI_AGENTS_ENABLED
+    ? merged.effective
+    : { ...merged.effective, enabled: false };
+
+  return {
+    schemaVersion: AI_AGENT_POLICY_SNAPSHOT_VERSION,
+    agentId: partnerRow.id,
+    kind,
+    effective,
+    provenance: merged.provenance,
+    resolvedAt: new Date().toISOString(),
+  };
+}
