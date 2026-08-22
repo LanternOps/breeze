@@ -47,6 +47,9 @@ export type PrincipalKind =
   | { kind: 'oauth_grant'; grantId?: string }
   | { kind: 'agent'; deviceId?: string }
   | { kind: 'helper'; deviceId?: string }
+  // An AI operator agent acting as itself (spec 2026-08-22 §3). Built only by
+  // services/aiAgents/agentAuthContext.ts. NEVER satisfies any user-RBAC gate.
+  | { kind: 'ai_agent'; agentId: string; runId: string }
   | { kind: 'system'; reason: string }
   | { kind: 'unknown' };
 
@@ -60,6 +63,10 @@ export type PrincipalKind =
  */
 export function isInteractiveUserSession(auth: Pick<AuthContext, 'principal'>): boolean {
   return auth.principal.kind === 'user_session';
+}
+
+export function isAiAgentPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {
+  return auth.principal?.kind === 'ai_agent';
 }
 
 export interface AuthContext {
@@ -82,7 +89,7 @@ export interface AuthContext {
     name: string;
     isPlatformAdmin: boolean;
   };
-  token: TokenPayload;
+  token: TokenPayload | null;
   partnerId: string | null;
   orgId: string | null;
   scope: 'system' | 'partner' | 'organization';
@@ -433,7 +440,9 @@ export function dbAccessContextFromAuth(auth: AuthContext): DbAccessContext {
     // #2822 routed the AI-tool handlers through this builder, an unguarded
     // dereference here would turn a missing `user` into a TypeError inside
     // every tool call rather than a benign null user id.
-    userId: auth.user?.id ?? null,
+    // AI agents carry a synthetic user record for audit attribution only. It
+    // must never reach breeze.user_id or satisfy Shape-6 user-scoped RLS.
+    userId: auth.principal?.kind === 'ai_agent' ? null : auth.user?.id ?? null,
   });
 }
 
@@ -738,6 +747,10 @@ export function requireScope(...scopes: Array<'system' | 'partner' | 'organizati
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
+    if (auth.principal?.kind === 'ai_agent') {
+      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    }
+
     if (!scopes.includes(auth.scope)) {
       throw new HTTPException(403, { message: 'Insufficient permissions' });
     }
@@ -775,6 +788,10 @@ export function requirePermission(resource: string, action: string) {
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
+    if (auth.principal?.kind === 'ai_agent') {
+      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    }
+
     const userPerms = await getUserPermissions(auth.user.id, {
       partnerId: auth.partnerId || undefined,
       orgId: auth.orgId || undefined
@@ -808,6 +825,10 @@ export function requireMfa() {
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
+    if (auth.principal?.kind === 'ai_agent') {
+      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    }
+
     if (!hasSatisfiedMfa(auth)) {
       // Coded directly via c.json rather than HTTPException: the global
       // onError handler (index.ts) only ever forwards `err.message` for a
@@ -828,7 +849,7 @@ export function requireMfa() {
  */
 export function hasSatisfiedMfa(auth: Pick<AuthContext, 'token'>): boolean {
   if (!ENABLE_2FA) return true;
-  return auth.token.mfa === true;
+  return auth.token?.mfa === true;
 }
 
 // Check if user can access a specific organization

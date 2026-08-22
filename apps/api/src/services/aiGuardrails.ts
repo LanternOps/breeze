@@ -1316,6 +1316,11 @@ export async function checkPermissionRequirements(
   auth: AuthContext,
   requirements: Array<{ resource: string; action: string }>
 ): Promise<string | null> {
+  // Spec 2026-08-22 §3.2: an agent has no role; this helper's "no token ⇒
+  // allowed" fallback would fail OPEN for it. Deny before anything else.
+  if (auth.principal?.kind === 'ai_agent') {
+    return 'AI agent principals are never granted user permissions';
+  }
   if (requirements.length === 0) return null;
   if (!auth.token) {
     const described = requirements.map((r) => `${r.resource}.${r.action}`).join(', ');

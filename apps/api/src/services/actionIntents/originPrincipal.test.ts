@@ -18,7 +18,12 @@ describe('action_intents origin principal', () => {
     // intentService's `originPrincipalKind: auth.principal.kind` would write a
     // value the CHECK constraint rejects — a runtime INSERT failure. This
     // assignment makes that a compile error instead.
-    const everyRuntimeKind: ReadonlyArray<PrincipalKind['kind']> = [
+    // 'ai_agent' is deliberately EXCLUDED: agent-originated intents are a
+    // wave-3 design, so createActionIntent rejects that principal outright
+    // (see the guard at the top of createActionIntent). Adding it here without
+    // widening action_intents_origin_principal_kind_chk would trade a clean
+    // rejection for a runtime 23514 mid-transaction.
+    const everyRuntimeKind: ReadonlyArray<Exclude<PrincipalKind['kind'], 'ai_agent'>> = [
       'user_session',
       'client_user',
       'api_key',
@@ -35,6 +40,8 @@ describe('action_intents origin principal', () => {
     }
 
     expect(actionIntentOriginPrincipalKindEnum).toContain('unknown');
+    // ...and the deliberate exclusion is asserted, not merely implied.
+    expect(actionIntentOriginPrincipalKindEnum).not.toContain('ai_agent');
   });
 
   it('enumerates exactly the runtime kinds plus unknown — no extras', () => {

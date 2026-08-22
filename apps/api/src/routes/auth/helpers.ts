@@ -298,7 +298,7 @@ export async function enforceExistingFactorStepUp(
   if (!(await userIsMfaProtected(auth.user.id))) return null;
 
   const epochs = await getUserEpochs(auth.user.id);
-  if (!epochs || !auth.token.sid) {
+  if (!epochs || !auth.token?.sid) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
@@ -370,7 +370,7 @@ export async function enforceApproverRegisterStepUp(
   opts: { consume: boolean },
 ): Promise<Response | null> {
   const epochs = await getUserEpochs(auth.user.id);
-  if (!epochs || !auth.token.sid) {
+  if (!epochs || !auth.token?.sid) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 

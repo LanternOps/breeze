@@ -797,7 +797,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   }
 
   const epochs = await getUserEpochs(auth.user.id);
-  if (!epochs || !auth.token.sid) {
+  if (!epochs || !auth.token?.sid) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
   const grantId = await mintStepUpGrant({

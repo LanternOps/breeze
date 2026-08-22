@@ -7,6 +7,7 @@ import {
   intentOutbox,
   type ActionIntent,
   type ActionIntentApprovalScope,
+  type ActionIntentOriginPrincipalKind,
   type ActionIntentSource,
   type ActionIntentStatus,
 } from '../../db/schema/actionIntents';
@@ -273,6 +274,25 @@ export async function createActionIntent(
   auth: AuthContext,
   input: CreateActionIntentInput,
 ): Promise<ActionIntentSnapshot> {
+  // Agent-originated intents are a wave-3 design (requester-less model: this
+  // function writes requestedByUserId unconditionally, approval_requests.user_id
+  // is NOT NULL, and isRequester gates read/decide). Until that lands, an agent
+  // reaching this path fails CLOSED rather than being recorded as whatever
+  // synthetic user its attribution record carries. 'ai_agent' is deliberately
+  // absent from action_intents_origin_principal_kind_chk, so the alternative
+  // is a runtime 23514 mid-transaction.
+  if (auth.principal.kind === 'ai_agent') {
+    throw new ActionIntentError(
+      'AI agents cannot create action intents yet (agent-originated intents ship in wave 3)',
+      'agent_origin_unsupported',
+    );
+  }
+  // Captured here, at the top level, on purpose: TypeScript discards property
+  // narrowing inside the transaction closure below, so reading
+  // `auth.principal.kind` at the insert site would widen back to include the
+  // 'ai_agent' the guard above just excluded.
+  const originPrincipalKind: ActionIntentOriginPrincipalKind = auth.principal.kind;
+
   const guardrail = checkGuardrails(input.toolName, input.input);
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
@@ -416,7 +436,7 @@ export async function createActionIntent(
           // Record the ORIGIN principal as a fact, at the one moment it is
           // known for certain. Do NOT derive this later from `source` or from
           // which actor column is populated — see the column's doc comment.
-          originPrincipalKind: auth.principal.kind,
+          originPrincipalKind,
           originPrincipalId:
             auth.principal.kind === 'api_key'
               ? auth.principal.apiKeyId ?? null

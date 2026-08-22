@@ -152,7 +152,7 @@ authenticatorRoutes.post(
     if (passwordError) return passwordError;
 
     const epochs = await getUserEpochs(auth.user.id);
-    if (!epochs || !auth.token.sid) {
+    if (!epochs || !auth.token?.sid) {
       writeAuthAudit(c, {
         orgId: auth.orgId ?? undefined,
         action: 'auth.authenticator.register_grant.mint_failed',
