@@ -163,8 +163,11 @@ function byCodePoint(a: string, b: string): number {
 
 /**
  * Every tenant-variable key this run will consult: the union of the content's
- * `{{var.*}}` tokens and every `tenantVariable`-bound parameter's
- * `variableKey`.
+ * `{{var.*}}` tokens and every `tenantVariable`- or `tenantSecret`-bound
+ * parameter's `variableKey`. A `tenantSecret` reference (#3409 PR4c-2) is
+ * pinned by identity exactly like any other — variableId / version /
+ * isSecret — so a secret rotated between approval and release is a
+ * `content_changed`, while its VALUE never enters the material.
  *
  * Definitions are parsed ELEMENT BY ELEMENT with the shared schema, matching
  * `sourcedParameters.ts`'s `parseDefinitions` — a live database holds lists
@@ -179,7 +182,12 @@ function referencedVariableKeys(content: string, parameters: unknown): string[] 
   if (Array.isArray(parameters)) {
     for (const element of parameters) {
       const parsed = scriptParameterDefinitionSchema.safeParse(element);
-      if (parsed.success && parsed.data.source === 'tenantVariable') keys.add(parsed.data.variableKey);
+      if (
+        parsed.success &&
+        (parsed.data.source === 'tenantVariable' || parsed.data.source === 'tenantSecret')
+      ) {
+        keys.add(parsed.data.variableKey);
+      }
     }
   }
   return [...keys].sort(byCodePoint);

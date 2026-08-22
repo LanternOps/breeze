@@ -1689,7 +1689,8 @@ async function processCommandResult(
     // the per-type handler dispatch further down) script_executions. The
     // name-based heuristic pass at the top of this function stays: it catches
     // secrets this command never carried, which the exact pass cannot see.
-    // Inert until PR4c — no command carries an envelope yet.
+    // Live since PR4c-2: scriptDispatch sets `secretEnv` for `tenantSecret`
+    // parameters, so script commands can carry a sealed envelope.
     const { result: normalizedResult, stdout } = redactResultAgainstCommandSecrets(
       { id: command.id, type: command.type, deviceId: resolvedDeviceId, payload: command.payload },
       rawNormalizedResult,

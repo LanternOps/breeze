@@ -305,8 +305,9 @@ commandsRoutes.post(
     // secrets THIS command carried, before the device_commands write below and
     // before the per-type handlers persist anything. Unlike the heuristic above
     // this DOES touch stdout, because a script that echoes a credential is
-    // exactly the case it exists for. Inert until PR4c — no command carries an
-    // envelope yet, so both bindings are the originals unchanged.
+    // exactly the case it exists for. Live since PR4c-2: scriptDispatch sets
+    // `secretEnv` for `tenantSecret` parameters, so a script command can carry
+    // a sealed envelope whose values this pass strips from both bindings.
     const { result: normalizedData, stdout } = redactResultAgainstCommandSecrets(
       { id: commandId, type: command.type, deviceId, payload: command.payload },
       heuristicallyRedacted,
