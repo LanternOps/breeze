@@ -182,28 +182,40 @@ export function computeBundleEconomicsFrom(args: {
     hasPriceInCurrency: boolean;
   }>;
 }): BundleEconomics {
+  const currency = args.currencyCode;
   const missingPriceComponentIds = args.components
     .filter((component) => !component.hasPriceInCurrency)
     .map((component) => component.componentItemId);
   const priceBookComplete = args.headlinePrice !== null && missingPriceComponentIds.length === 0;
+  // Margin needs EVERY component cost usable in the bundle currency: same
+  // currency and representable at its minor unit (#3775 review #4/#8). A null
+  // cost still counts as 0, as before.
   const marginAvailable = args.components.every(
-    (component) => component.costCurrency === args.currencyCode
+    (component) => component.costBasis === null || snapshotCost(component.costBasis, component.costCurrency, currency) !== null
   );
+  // All arithmetic is in hundredths (exact for numeric(_,2) inputs) and every
+  // derived amount is rounded at the TARGET currency's minor unit — a JPY
+  // component costing 101 × qty 0.5 is 51, never 50.50 (#3775 review #8).
   let costCents = 0;
   let allocCents = 0;
   let anyAllocation = false;
   for (const c of args.components) {
-    costCents += Math.round((toCents(c.costBasis) * Number(c.quantity || '0')));
+    const cost = snapshotCost(c.costBasis, c.costCurrency, currency);
+    if (cost !== null) {
+      costCents += toCents(roundToCurrency(Number(cost) * Number(c.quantity || '0'), currency));
+    }
     if (c.revenueAllocation !== null && c.revenueAllocation !== undefined) {
       anyAllocation = true;
+      // Summed exactly, never rounded: a legacy fractional-yen allocation must
+      // report as NOT matching a whole-yen headline rather than be relabelled.
       allocCents += toCents(c.revenueAllocation);
     }
   }
-  const headlineCents = toCents(args.headlinePrice);
+  const headlineCents = args.headlinePrice === null ? 0 : toCents(roundToCurrency(args.headlinePrice, currency));
   const marginCents = headlineCents - costCents;
   const economicsAvailable = priceBookComplete && marginAvailable;
   return {
-    currencyCode: args.currencyCode,
+    currencyCode: currency,
     headlinePrice: args.headlinePrice === null ? null : fromCents(headlineCents),
     priceBookComplete,
     marginAvailable,

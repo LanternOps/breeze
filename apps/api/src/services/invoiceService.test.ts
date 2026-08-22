@@ -779,6 +779,28 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-cad', costBasis: null }));
   });
 
+  it('addBundleLine (JPY, #3775 review #4/#8): persists the whole-yen parent cost and snapshots a fractional-yen legacy child cost as null', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'JPY', headlinePrice: '1000.00', totalCost: '51.00', margin: '949.00', marginPct: 94.9, allocationTotal: '0.00' }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
+    queueResult([{ name: 'Bundle', description: null }]);
+    queueInsertAndRecompute({ id: 'parent', sortOrder: 1, unitPrice: '1000.00', lineTotal: '1000.00' });
+    queueResult([
+      { componentItemId: 'c-ok', quantity: '1.00', showOnInvoice: true, revenueAllocation: null, name: 'A', description: null, costBasis: '250.00', costCurrency: 'JPY' },
+      { componentItemId: 'c-legacy', quantity: '0.50', showOnInvoice: true, revenueAllocation: null, name: 'B', description: null, costBasis: '100.50', costCurrency: 'JPY' },
+    ]);
+    queueResult([]); queueResult([]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'JPY' }]);
+    queueResult([{ lineTotal: '1000.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]);
+
+    await svc.addBundleLine('i1', 'b-1', 1, actor);
+    expect(computeBundleEconomics).toHaveBeenCalledWith('b-1', 'JPY', 'org1', expect.anything(), expect.anything());
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'b-1', unitPrice: '1000.00', costBasis: '51.00' }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-ok', costBasis: '250.00' }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-legacy', costBasis: null }));
+  });
+
   it('addBundleLine throws NO_PRICE_FOR_CURRENCY (409) when the bundle has no headline price', async () => {
     bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'EUR', headlinePrice: null, priceBookComplete: false, totalCost: null }));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);

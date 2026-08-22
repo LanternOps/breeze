@@ -378,3 +378,73 @@ describe('resolvePriceFrom — non-representable legacy amounts (#3775 review #4
     expect(r).toMatchObject({ unitPrice: '200.00', costBasis: '100.00', marginAvailable: true });
   });
 });
+
+describe('computeBundleEconomicsFrom — minor-unit math (#3775 review #8)', () => {
+  const componentA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const componentB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+  it('JPY: cost 101 × qty 0.5 rounds to a whole yen (51), never 50.50', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'JPY',
+      headlinePrice: '1000.00',
+      components: [
+        { componentItemId: componentA, quantity: '0.50', costBasis: '101.00', costCurrency: 'JPY', revenueAllocation: '600.00', hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1.00', costBasis: '250.00', costCurrency: 'JPY', revenueAllocation: '400.00', hasPriceInCurrency: true }
+      ]
+    });
+    expect(r.totalCost).toBe('301.00');
+    expect(r.margin).toBe('699.00');
+    expect(r.marginPct).toBe(69.9);
+    expect(r.headlinePrice).toBe('1000.00');
+    expect(r.allocationTotal).toBe('1000.00');
+    expect(r.allocationMatchesHeadline).toBe(true);
+  });
+
+  it('USD: cost 10.01 × qty 0.5 still rounds at the cent (5.01)', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'USD',
+      headlinePrice: '100.00',
+      components: [
+        { componentItemId: componentA, quantity: '0.50', costBasis: '10.01', costCurrency: 'USD', revenueAllocation: null, hasPriceInCurrency: true }
+      ]
+    });
+    expect(r.totalCost).toBe('5.01');
+    expect(r.margin).toBe('94.99');
+  });
+
+  it('JPY: a fractional-yen legacy component cost makes margin unavailable instead of entering the sum', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'JPY',
+      headlinePrice: '1000.00',
+      components: [
+        { componentItemId: componentA, quantity: '1.00', costBasis: '100.50', costCurrency: 'JPY', revenueAllocation: null, hasPriceInCurrency: true }
+      ]
+    });
+    expect(r.priceBookComplete).toBe(true);
+    expect(r.marginAvailable).toBe(false);
+    expect(r.totalCost).toBeNull();
+    expect(r.margin).toBeNull();
+  });
+
+  it('JPY: fractional-yen legacy allocations are summed exactly and do NOT match a whole-yen headline', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'JPY',
+      headlinePrice: '1000.00',
+      components: [
+        { componentItemId: componentA, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '600.50', hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '399.50', hasPriceInCurrency: true }
+      ]
+    });
+    expect(r.allocationTotal).toBe('1000.00');
+    expect(r.allocationMatchesHeadline).toBe(true);
+    const off = computeBundleEconomicsFrom({
+      currencyCode: 'JPY',
+      headlinePrice: '1000.00',
+      components: [
+        { componentItemId: componentA, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '999.50', hasPriceInCurrency: true }
+      ]
+    });
+    expect(off.allocationTotal).toBe('999.50');
+    expect(off.allocationMatchesHeadline).toBe(false);
+  });
+});

@@ -739,6 +739,35 @@ describe('catalogService (breeze_app, real DB)', () => {
       .toMatchObject({ unitPrice: '101.00', costBasis: null, costCurrency: 'JPY', marginAvailable: false });
   });
 
+  runDb('computeBundleEconomics (#3775 review #8): JPY economics round at the yen — cost 101 × 0.5 is 51, never 50.50; a fractional-yen cost voids margin', async () => {
+    const fx = await seedFixture();
+    const mk = (name: string, price: number, cost: number | undefined) => withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem(
+        { itemType: 'hardware', name, billingType: 'one_time', prices: [{ currencyCode: 'JPY', unitPrice: price }], costBasis: cost, costCurrency: 'JPY', unitOfMeasure: 'each', taxable: true, isBundle: name === 'JPY bundle', attributes: {} },
+        fx.actorA
+      ));
+    const bundle = await mk('JPY bundle', 1000, undefined);
+    const compA = await mk('Comp A', 300, 101);
+    const compB = await mk('Comp B', 700, 250);
+    await withDbAccessContext(fx.ctxA, () =>
+      setBundleComponents(bundle.id, [
+        { componentItemId: compA.id, quantity: 0.5, showOnInvoice: true, revenueAllocation: 600 },
+        { componentItemId: compB.id, quantity: 1, showOnInvoice: true, revenueAllocation: 400 },
+      ], fx.actorA));
+
+    const econ = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'JPY', null, fx.actorA));
+    expect(econ).toMatchObject({
+      currencyCode: 'JPY', headlinePrice: '1000.00', priceBookComplete: true, marginAvailable: true,
+      totalCost: '301.00', margin: '699.00', marginPct: 69.9, allocationTotal: '1000.00', allocationMatchesHeadline: true,
+    });
+
+    // Forged legacy fractional-yen component cost → margin unavailable, totals withheld.
+    await withSystemDbAccessContext(() =>
+      db.update(catalogItems).set({ costBasis: '250.50' }).where(eq(catalogItems.id, compB.id)));
+    const legacy = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'JPY', null, fx.actorA));
+    expect(legacy).toMatchObject({ priceBookComplete: true, marginAvailable: false, totalCost: null, margin: null, marginPct: null });
+  });
+
   runDb('setOrgPriceOverride: an org of ANOTHER partner is ORG_DENIED 403; a forged row trips the composite FK 23503', async () => {
     const fx = await seedFixture();
     const item = await seedMultiCurrencyItem(fx);
