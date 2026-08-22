@@ -237,9 +237,9 @@ export async function changeContractCurrency(
   actor: ContractActor
 ) {
   return db.transaction(async (tx) => {
-    // Contract row lock FIRST (document → lines). The line writers take the
-    // same lock via lockContract, so a concurrent activate or line write
-    // serializes against the restamp.
+    // Contract row lock FIRST (document → lines). The line writers and
+    // activateContract take the same lock via lockContract, so a concurrent
+    // activate or line write serializes against the restamp.
     const c = await lockContract(tx, contractId, actor);
     assertDraft(c);
     if (c.currencyCode === input.currencyCode) return c; // no-op restamp
@@ -290,23 +290,29 @@ function todayISO(asOf: Date = new Date()): string {
 }
 
 export async function activateContract(contractId: string, actor: ContractActor, asOf: Date = new Date()) {
-  const c = await getOwnedContractOr404(contractId, actor);
-  if (c.status !== 'draft' && c.status !== 'paused') {
-    throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
-  }
-  // Count lines via a lightweight id-only select (simple + explicit).
-  const lineRows = await db.select({ id: contractLines.id }).from(contractLines)
-    .where(eq(contractLines.contractId, contractId));
-  if (lineRows.length === 0) {
-    throw new ContractServiceError('Contract needs at least one line', 409, 'NO_LINES');
-  }
-  const idx = periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf));
-  const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
-  const [row] = await db.update(contracts)
-    .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
-    .where(eq(contracts.id, contractId)).returning();
+  // Contract row lock FIRST (document → lines) so the line-count check and the
+  // status flip can't interleave with changeContractCurrency's clear-and-restamp
+  // or a concurrent line write (same lock order as every other contract writer).
+  const { row, c } = await db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    if (c.status !== 'draft' && c.status !== 'paused') {
+      throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
+    }
+    // Count lines via a lightweight id-only select (simple + explicit).
+    const lineRows = await tx.select({ id: contractLines.id }).from(contractLines)
+      .where(eq(contractLines.contractId, contractId));
+    if (lineRows.length === 0) {
+      throw new ContractServiceError('Contract needs at least one line', 409, 'NO_LINES');
+    }
+    const idx = periodIndexFor(c.startDate, c.intervalMonths, todayISO(asOf));
+    const nextAt = nextBillingDate({ startDate: c.startDate, intervalMonths: c.intervalMonths, billingTiming: c.billingTiming as 'advance' | 'arrears', periodIndex: idx });
+    const [row] = await tx.update(contracts)
+      .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
+      .where(eq(contracts.id, contractId)).returning();
+    return { row: row!, c };
+  });
   await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
-  return row!;
+  return row;
 }
 
 export async function pauseContract(contractId: string, actor: ContractActor) {
