@@ -971,9 +971,13 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
 // Payments + status recompute (Task 3.7)
 // ---------------------------------------------------------------------------
 
-export async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  const paidRows = await db.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
+/** Derive amount_paid/balance/status from the payment rows and persist them.
+ *  Every payment writer holds the invoice row lock and passes its `tx`, so the
+ *  sum read here is consistent with the write (B10) — a global-db call from a
+ *  locked writer would escape the transaction and race the lock it holds. */
+export async function recomputeInvoiceStatus(invoiceId: string, dbc: DbExecutor = db): Promise<void> {
+  const inv = await getOwnedInvoiceOr404(invoiceId, dbc);
+  const paidRows = await dbc.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
   const amountPaid = fromCents(paidRows.reduce((s, r) => s + toCents(r.amount), 0));
   const balance = fromCents(toCents(inv.total) - toCents(amountPaid));
   const issued = inv.invoiceNumber !== null;
@@ -981,37 +985,71 @@ export async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
   const patch: Record<string, unknown> = { amountPaid, balance, status, updatedAt: new Date() };
   if (status === 'paid' && inv.paidAt === null) patch.paidAt = new Date();
   if (status === 'overdue' && inv.markedOverdueAt === null) patch.markedOverdueAt = new Date();
-  await db.update(invoices).set(patch).where(eq(invoices.id, invoiceId));
+  await dbc.update(invoices).set(patch).where(eq(invoices.id, invoiceId));
 }
 
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireInvoiceAccess(actor, inv);
-  if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
-  if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
-  // Exact integer-cents comparison — robust against float representation error.
-  const amountCents = toCents(input.amount);
-  const balanceCents = toCents(inv.balance);
-  // Legacy escape hatch: invoices created before currency-aware rounding can
-  // carry a zero-decimal-currency balance with cent fractions (e.g. JPY
-  // '1000.50'). Such a balance is non-representable, so requiring
-  // representability on every payment would strand the invoice forever
-  // (exact payoff → INVALID_AMOUNT; whole-unit underpayment leaves '0.50'
-  // that no representable amount can clear without OVERPAYMENT). Paying the
-  // EXACT outstanding balance is therefore always allowed.
-  if (amountCents !== balanceCents && !isRepresentableInCurrency(input.amount, inv.currencyCode)) {
-    throw new InvoiceServiceError('Payment amount has more precision than the invoice currency allows', 400, 'INVALID_AMOUNT');
-  }
-  if (amountCents > balanceCents) {
-    throw new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT');
-  }
-  const [payment] = await db.insert(invoicePayments).values({
-    invoiceId, orgId: inv.orgId, amount: Number(input.amount).toFixed(2), method: input.method,
-    reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null
-  }).returning();
-  await recomputeInvoiceStatus(invoiceId);
-  await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment!.id, actorUserId: actor.userId });
-  const updated = await getOwnedInvoiceOr404(invoiceId);
+  // ONE transaction, invoice row lock FIRST (B10 lock order — every payment
+  // writer: manual record, manual void, Stripe reconcile). All validation runs
+  // against the LOCKED row and the in-tx payment sum; a check-then-insert
+  // against a pre-lock snapshot let two concurrent full-balance payments both
+  // land. Every helper gets the `tx` handle — inside a request context this
+  // transaction is a savepoint on the request tx, and a stray global-`db` call
+  // would escape it.
+  const { inv, payment, updated } = await db.transaction(async (tx) => {
+    const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
+    if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    // Re-authorize against the locked row (it may have moved site/org since any
+    // earlier unlocked read the caller made).
+    requireInvoiceAccess(actor, inv);
+    if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
+    if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
+
+    // Authoritative balance: recompute from invoice_payments UNDER the lock.
+    // Consistent because every payment writer locks the invoice row first —
+    // the header's balance column is only a cache of this sum.
+    const paidRows = await tx.select({ amount: invoicePayments.amount })
+      .from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
+    const balanceCents = toCents(inv.total) - paidRows.reduce((s, r) => s + toCents(r.amount), 0);
+    // Exact integer-cents comparison — robust against float representation error.
+    const amountCents = toCents(input.amount);
+
+    if (!isRepresentableInCurrency(fromCents(balanceCents), inv.currencyCode)) {
+      // Legacy escape hatch: invoices created before currency-aware rounding
+      // can carry a zero-decimal-currency balance with cent fractions (e.g.
+      // JPY '1000.50'). ONLY the exact payoff may land on such a balance —
+      // requiring representability would strand the invoice forever, and a
+      // smaller representable payment would strand a non-representable residue
+      // (e.g. '0.50') that no later payment could clear. Evaluated against the
+      // LOCKED balance: a stale pre-lock balance could let both an exact payoff
+      // and an underpayment through.
+      if (amountCents !== balanceCents) {
+        throw new InvoiceServiceError(
+          'Invoice balance is not representable in its currency; only the exact payoff amount can be recorded',
+          400, 'INVALID_AMOUNT'
+        );
+      }
+    } else {
+      if (!isRepresentableInCurrency(input.amount, inv.currencyCode)) {
+        throw new InvoiceServiceError('Payment amount has more precision than the invoice currency allows', 400, 'INVALID_AMOUNT');
+      }
+      if (amountCents > balanceCents) {
+        throw new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT');
+      }
+    }
+
+    const [payment] = await tx.insert(invoicePayments).values({
+      invoiceId, orgId: inv.orgId, amount: Number(input.amount).toFixed(2), method: input.method,
+      reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null
+    }).returning();
+    await recomputeInvoiceStatus(invoiceId, tx);
+    const updated = await getOwnedInvoiceOr404(invoiceId, tx);
+    return { inv, payment: payment!, updated };
+  });
+
+  // Event emission stays OUTSIDE the transaction — no Redis work while the
+  // invoice row lock is held.
+  await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment.id, actorUserId: actor.userId });
   if (updated.status === 'paid') await emitInvoiceEvent({ type: 'invoice.paid', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
   // Surface the persisted payment alongside the refreshed invoice so the route
   // can write a durable audit_logs entry for this money-path mutation. The
@@ -1021,39 +1059,51 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     invoice: updated,
     audit: {
       orgId: inv.orgId,
-      paymentId: payment!.id,
+      paymentId: payment.id,
       invoiceId,
-      amount: payment!.amount,
-      method: payment!.method,
-      reference: payment!.reference,
-      recordedBy: payment!.recordedBy,
+      amount: payment.amount,
+      method: payment.method,
+      reference: payment.reference,
+      recordedBy: payment.recordedBy,
     },
   };
 }
 
 export async function voidPayment(paymentId: string, actor: InvoiceActor) {
-  const [pay] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
-  if (!pay) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
-  // The payment row carries orgId but not siteId; load the parent invoice so the
-  // site-axis guard runs against the invoice's site (a site-restricted caller must
-  // not void a payment on an out-of-site invoice).
-  const parentInv = await getOwnedInvoiceOr404(pay.invoiceId);
-  requireInvoiceAccess(actor, parentInv);
-  // Capture the destroyed row's financial details BEFORE the delete so the voided
-  // payment survives in the durable audit chain even after the row is gone.
-  const audit = {
-    orgId: pay.orgId,
-    paymentId,
-    invoiceId: pay.invoiceId,
-    amount: pay.amount,
-    method: pay.method,
-    reference: pay.reference,
-    recordedBy: pay.recordedBy,
-  };
-  await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
-  await recomputeInvoiceStatus(pay.invoiceId);
-  const inv = await getOwnedInvoiceOr404(pay.invoiceId);
-  await emitInvoiceEvent({ type: 'payment.voided', invoiceId: pay.invoiceId, orgId: pay.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
+  // Unlocked discovery read: the caller supplies a payment id, but the lock
+  // order is invoice row FIRST (B10) — so resolve the parent invoice id, then
+  // lock invoice → payment inside one transaction and re-validate both.
+  const [pre] = await db.select({ invoiceId: invoicePayments.invoiceId }).from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
+  if (!pre) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
+  const { inv, audit } = await db.transaction(async (tx) => {
+    // The payment row carries orgId but not siteId; the parent invoice drives the
+    // site-axis guard (a site-restricted caller must not void a payment on an
+    // out-of-site invoice) — run it against the LOCKED row.
+    const [parentInv] = await tx.select().from(invoices).where(eq(invoices.id, pre.invoiceId)).limit(1).for('update');
+    if (!parentInv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    requireInvoiceAccess(actor, parentInv);
+    // Re-read the payment under the invoice lock: a concurrent void or Stripe
+    // full-refund may have deleted it while we waited.
+    const [pay] = await tx.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1).for('update');
+    if (!pay || pay.invoiceId !== pre.invoiceId) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
+    // Capture the destroyed row's financial details BEFORE the delete so the voided
+    // payment survives in the durable audit chain even after the row is gone.
+    const audit = {
+      orgId: pay.orgId,
+      paymentId,
+      invoiceId: pay.invoiceId,
+      amount: pay.amount,
+      method: pay.method,
+      reference: pay.reference,
+      recordedBy: pay.recordedBy,
+    };
+    await tx.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
+    await recomputeInvoiceStatus(pay.invoiceId, tx);
+    const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
+    return { inv, audit };
+  });
+  // Event emission outside the transaction — no Redis work under the held lock.
+  await emitInvoiceEvent({ type: 'payment.voided', invoiceId: audit.invoiceId, orgId: audit.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
   return { invoice: inv, audit };
 }
 

@@ -138,16 +138,26 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
   });
 
+  // recordPayment runs in ONE transaction (B10). In-tx query order:
+  //   1. invoices lock select (FOR UPDATE) → invoice row
+  //   2. invoice_payments sum select → prior payments (balance = total − sum)
+  //   3. payment insert returning → payment row
+  //   4-6. recomputeInvoiceStatus(tx): invoice re-read, payments re-read, update
+  //   7. final invoice re-read (returned to the caller)
+  // Guard rejections consume only entries 1-2. The mock rows must carry `total`
+  // + `currencyCode` — the header's balance column is no longer read.
+
   it('recordPayment rejects payment on a draft (INVALID_STATE 409)', async () => {
-    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', balance: '0.00' }]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '0.00' }]); // lock select
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     await expect(
       svc.recordPayment('i1', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, actor)
     ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
   });
 
-  it('recordPayment rejects an overpayment (OVERPAYMENT 400)', async () => {
-    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', balance: '50.00' }]);
+  it('recordPayment rejects an overpayment against the in-tx balance (OVERPAYMENT 400)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '80.00' }]); // lock select
+    queueResult([{ amount: '30.00' }]); // prior payments → balance 50.00, NOT the header column
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     await expect(
       svc.recordPayment('i1', { amount: 60, method: 'check', receivedAt: '2026-06-14' }, actor)
@@ -155,7 +165,8 @@ describe('invoiceService guards', () => {
   });
 
   it('recordPayment rejects exact-cents overpayment at +0.01 (OVERPAYMENT 400)', async () => {
-    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', balance: '50.00' }]);
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '50.00' }]); // lock select
+    queueResult([]); // no prior payments → balance 50.00
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     await expect(
       svc.recordPayment('i1', { amount: 50.01, method: 'check', receivedAt: '2026-06-14' }, actor)
@@ -179,12 +190,8 @@ describe('invoiceService guards', () => {
       paidAt: null,
       markedOverdueAt: null,
     };
-    queueResult([invoice]);
-    queueResult([{ id: 'pay1', amount: '100.50', method: 'cash', reference: null, recordedBy: actor.userId }]);
-    queueResult([invoice]);
-    queueResult([{ amount: '100.50' }]);
-    queueResult([]);
-    queueResult([{ ...invoice, status: 'partially_paid', amountPaid: '100.50', balance: '1899.50' }]);
+    queueResult([invoice]); // lock select
+    queueResult([]); // no prior payments → balance 2000 (representable JPY)
 
     await expect(recordPayment(invoiceId, { amount: '100.50', method: 'cash', receivedAt: new Date() } as any, actor))
       .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
@@ -210,10 +217,11 @@ describe('invoiceService guards', () => {
       paidAt: null,
       markedOverdueAt: null,
     };
-    queueResult([invoice]); // getOwnedInvoiceOr404 (guards)
+    queueResult([invoice]); // lock select (guards + balance base)
+    queueResult([]); // no prior payments → in-tx balance 1000.50 (non-representable)
     queueResult([{ id: 'pay1', amount: '1000.50', method: 'cash', reference: null, recordedBy: actor.userId }]); // payment insert
-    queueResult([invoice]); // recomputeInvoiceStatus → invoice
-    queueResult([{ amount: '1000.50' }]); // payments sum
+    queueResult([invoice]); // recomputeInvoiceStatus → invoice re-read
+    queueResult([{ amount: '1000.50' }]); // recompute payments sum
     queueResult([]); // invoice status update
     queueResult([{ ...invoice, status: 'paid', amountPaid: '1000.50', balance: '0.00' }]); // final read
 
@@ -226,8 +234,36 @@ describe('invoiceService guards', () => {
     queueResult([{
       id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
       currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
-    }]);
+    }]); // lock select
+    queueResult([]); // no prior payments → in-tx balance 1000.50
     await expect(recordPayment(invoiceId, { amount: '500.50', method: 'cash', receivedAt: new Date() } as any, actor))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
+  });
+
+  it('rejects a REPRESENTABLE underpayment when the locked balance is non-representable (would strand a residue)', async () => {
+    // JPY balance 1000.50: paying 500 (perfectly representable) would leave
+    // '500.50' — a residue no later payment could clear. Only the exact payoff
+    // may land on a non-representable balance.
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // lock select
+    queueResult([]); // no prior payments → in-tx balance 1000.50
+    await expect(recordPayment(invoiceId, { amount: '500', method: 'cash', receivedAt: new Date() } as any, actor))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
+  });
+
+  it('evaluates the representability escape against the IN-TX balance, not the stale header column', async () => {
+    // Header still says balance '1000.50', but a concurrent (already-committed)
+    // payment of the exact payoff exists in invoice_payments. The re-derived
+    // balance is 0.00 — representable — so this second exact-payoff attempt
+    // must fall through to the overpay check, NOT ride the legacy escape hatch.
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // lock select (stale header balance)
+    queueResult([{ amount: '1000.50' }]); // prior payment already landed → in-tx balance 0.00
+    await expect(recordPayment(invoiceId, { amount: '1000.50', method: 'cash', receivedAt: new Date() } as any, actor))
       .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
   });
 
