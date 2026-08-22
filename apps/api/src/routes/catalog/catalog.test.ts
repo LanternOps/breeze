@@ -598,7 +598,30 @@ describe('catalog bundle routes', () => {
     expect(svc.setBundleComponents).toHaveBeenCalledWith(
       ITEM_ID,
       [{ componentItemId: ORG_ID, quantity: 2, showOnInvoice: false }],
-      expect.anything()
+      expect.anything(),
+      undefined
+    );
+  });
+
+  it('PUT /:id/components forwards allocationCurrency and 400s when an allocation has no currency (#3775 review #7)', async () => {
+    (svc.setBundleComponents as any).mockResolvedValue({ item: { id: ITEM_ID }, components: [], overrides: [] });
+    const components = [{ componentItemId: ORG_ID, quantity: 2, revenueAllocation: 10 }];
+    const missing = await app().request(`/${ITEM_ID}/components`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ components })
+    });
+    expect(missing.status).toBe(400);
+    expect(svc.setBundleComponents).not.toHaveBeenCalled();
+
+    const res = await app().request(`/${ITEM_ID}/components`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ components, allocationCurrency: 'eur' })
+    });
+    expect(res.status).toBe(200);
+    expect(svc.setBundleComponents).toHaveBeenCalledWith(
+      ITEM_ID,
+      [{ componentItemId: ORG_ID, quantity: 2, showOnInvoice: false, revenueAllocation: 10 }],
+      expect.anything(),
+      'EUR'
     );
   });
 

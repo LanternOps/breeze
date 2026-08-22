@@ -751,7 +751,7 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
   const econUsd = (over: Partial<Awaited<ReturnType<typeof computeBundleEconomics>>> = {}) => ({
     currencyCode: 'USD', headlinePrice: '100.00', priceBookComplete: true, marginAvailable: true,
     totalCost: '40.00', margin: '60.00', marginPct: 60, allocationTotal: '100.00',
-    allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[], ...over,
+    allocationAvailable: true, allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[], ...over,
   });
 
   it('addBundleLine computes economics in the INVOICE currency and snapshots child cost only in the same currency', async () => {
@@ -799,6 +799,29 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'b-1', unitPrice: '1000.00', costBasis: '51.00' }));
     expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-ok', costBasis: '250.00' }));
     expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-legacy', costBasis: null }));
+  });
+
+  it('addBundleLine (#3775 review #7): copies a component revenueAllocation only when its allocationCurrency is the INVOICE currency', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'EUR', allocationAvailable: false, allocationTotal: null, allocationMatchesHeadline: false }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([{ name: 'Bundle', description: null }]);
+    queueInsertAndRecompute({ id: 'parent', sortOrder: 1, unitPrice: '100.00', lineTotal: '100.00' });
+    queueResult([
+      { componentItemId: 'c-eur', quantity: '1.00', showOnInvoice: true, revenueAllocation: '60.00', allocationCurrency: 'EUR', name: 'A', description: null, costBasis: '10.00', costCurrency: 'EUR' },
+      { componentItemId: 'c-usd', quantity: '1.00', showOnInvoice: true, revenueAllocation: '40.00', allocationCurrency: 'USD', name: 'B', description: null, costBasis: '10.00', costCurrency: 'EUR' },
+      { componentItemId: 'c-none', quantity: '1.00', showOnInvoice: true, revenueAllocation: null, allocationCurrency: null, name: 'C', description: null, costBasis: null, costCurrency: 'EUR' },
+    ]);
+    queueResult([]); queueResult([]); queueResult([]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'EUR' }]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]);
+
+    await svc.addBundleLine('i1', 'b-1', 1, actor);
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-eur', revenueAllocation: '60.00' }));
+    // USD allocation on an EUR invoice: unavailable (null), never relabelled as EUR 40.00
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-usd', revenueAllocation: null }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-none', revenueAllocation: null }));
   });
 
   it('addBundleLine throws NO_PRICE_FOR_CURRENCY (409) when the bundle has no headline price', async () => {

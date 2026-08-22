@@ -97,6 +97,8 @@ export interface BundleComponentRow {
   quantity: string;
   showOnInvoice: boolean;
   revenueAllocation: string | null;
+  /** Currency the allocation was authored in; null iff revenueAllocation is null. */
+  allocationCurrency: string | null;
 }
 
 export interface OrgPriceOverride {
@@ -142,7 +144,10 @@ export interface BundleEconomics {
   totalCost: string | null;
   margin: string | null;
   marginPct: number | null;
-  allocationTotal: string;
+  /** false when a component allocation was authored in another currency — the
+   *  split is then unavailable in `currencyCode` (allocationTotal null). */
+  allocationAvailable: boolean;
+  allocationTotal: string | null;
   allocationMatchesHeadline: boolean;
   missingPriceComponentIds: string[];
 }
@@ -269,11 +274,13 @@ export function deleteCatalogItemImageRequest(id: string): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}/image`, { method: 'DELETE' });
 }
 
-export function setBundleComponents(id: string, components: BundleComponentInput[]): Promise<Response> {
+/** `allocationCurrency` names the currency any `revenueAllocation` amounts are
+ *  authored in (required by the server when one is present). */
+export function setBundleComponents(id: string, components: BundleComponentInput[], allocationCurrency?: string): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}/components`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ components }),
+    body: JSON.stringify({ components, ...(allocationCurrency ? { allocationCurrency } : {}) }),
   });
 }
 

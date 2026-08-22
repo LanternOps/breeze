@@ -235,6 +235,7 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
     const comps = await tx.select({
       componentItemId: catalogBundleComponents.componentItemId, quantity: catalogBundleComponents.quantity,
       showOnInvoice: catalogBundleComponents.showOnInvoice, revenueAllocation: catalogBundleComponents.revenueAllocation,
+      allocationCurrency: catalogBundleComponents.allocationCurrency,
       name: catalogItems.name, description: catalogItems.description,
       costBasis: catalogItems.costBasis, costCurrency: catalogItems.costCurrency
     }).from(catalogBundleComponents)
@@ -247,7 +248,11 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
         // Child cost snapshots only when stamped in the invoice's currency AND
         // representable in it (a legacy fractional-yen cost is a gap, #3775 review #4).
         costBasis: snapshotCost(comp.costBasis, comp.costCurrency, inv.currencyCode),
-        revenueAllocation: comp.revenueAllocation, taxable: false,
+        // An allocation travels onto the line only when authored in the
+        // invoice's currency (#3775 review #7); otherwise it is unavailable
+        // (null) — never relabelled as an invoice-currency amount.
+        revenueAllocation: comp.allocationCurrency === inv.currencyCode ? comp.revenueAllocation : null,
+        taxable: false,
         customerVisible: comp.showOnInvoice, lineTotal: '0.00', isUnapprovedTime: false,
         sortOrder: parent.sortOrder // children sort directly under the parent
       });

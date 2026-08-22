@@ -44,7 +44,8 @@ async function defaultCurrencyFor(orgId: string | null, partnerId: string | null
 
 catalogBundleRoutes.put('/:id/components', scopes, writePerm, zValidator('param', idParam), zValidator('json', setBundleComponentsSchema), async (c) => {
   try {
-    const data = await setBundleComponents(c.req.valid('param').id, c.req.valid('json').components, catalogActorFrom(c));
+    const body = c.req.valid('json');
+    const data = await setBundleComponents(c.req.valid('param').id, body.components, catalogActorFrom(c), body.allocationCurrency);
     return c.json({ data });
   } catch (err) { return handleServiceError(c, err); }
 });

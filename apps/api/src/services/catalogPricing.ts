@@ -164,7 +164,15 @@ export interface BundleEconomics {
   totalCost: string | null;
   margin: string | null;
   marginPct: number | null;
-  allocationTotal: string;
+  /**
+   * false when any component allocation is stamped in a currency other than
+   * currencyCode (#3775 review #7) — the split is then unavailable in this
+   * currency: allocationTotal null, allocationMatchesHeadline false. Never a
+   * partial sum, never a relabelled amount.
+   */
+  allocationAvailable: boolean;
+  /** null unless allocationAvailable */
+  allocationTotal: string | null;
   allocationMatchesHeadline: boolean;
   /** component item ids lacking a price in currencyCode (empty when complete) */
   missingPriceComponentIds: string[];
@@ -179,6 +187,8 @@ export function computeBundleEconomicsFrom(args: {
     costBasis: string | null;
     costCurrency: string;
     revenueAllocation: string | null;
+    /** currency the allocation was authored in; null iff revenueAllocation is null */
+    allocationCurrency: string | null;
     hasPriceInCurrency: boolean;
   }>;
 }): BundleEconomics {
@@ -199,6 +209,9 @@ export function computeBundleEconomicsFrom(args: {
   let costCents = 0;
   let allocCents = 0;
   let anyAllocation = false;
+  // An allocation authored in another currency makes the WHOLE split
+  // unavailable here (#3775 review #7): it is neither summed nor relabelled.
+  let allocationAvailable = true;
   for (const c of args.components) {
     const cost = snapshotCost(c.costBasis, c.costCurrency, currency);
     if (cost !== null) {
@@ -206,6 +219,7 @@ export function computeBundleEconomicsFrom(args: {
     }
     if (c.revenueAllocation !== null && c.revenueAllocation !== undefined) {
       anyAllocation = true;
+      if (c.allocationCurrency !== currency) { allocationAvailable = false; continue; }
       // Summed exactly, never rounded: a legacy fractional-yen allocation must
       // report as NOT matching a whole-yen headline rather than be relabelled.
       allocCents += toCents(c.revenueAllocation);
@@ -226,12 +240,15 @@ export function computeBundleEconomicsFrom(args: {
         ? 0
         : Math.round((marginCents / headlineCents) * 10000) / 100
       : null,
-    allocationTotal: fromCents(allocCents),
-    allocationMatchesHeadline: args.headlinePrice === null
-      ? !anyAllocation
-      : anyAllocation
-        ? allocCents === headlineCents
-        : true,
+    allocationAvailable,
+    allocationTotal: allocationAvailable ? fromCents(allocCents) : null,
+    allocationMatchesHeadline: !allocationAvailable
+      ? false
+      : args.headlinePrice === null
+        ? !anyAllocation
+        : anyAllocation
+          ? allocCents === headlineCents
+          : true,
     missingPriceComponentIds
   };
 }

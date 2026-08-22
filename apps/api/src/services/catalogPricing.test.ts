@@ -155,6 +155,7 @@ describe('computeBundleEconomicsFrom', () => {
           costBasis: '10.00',
           costCurrency: 'USD',
           revenueAllocation: '40.00',
+          allocationCurrency: 'USD',
           hasPriceInCurrency: true
         },
         {
@@ -163,6 +164,7 @@ describe('computeBundleEconomicsFrom', () => {
           costBasis: '30.00',
           costCurrency: 'USD',
           revenueAllocation: '60.00',
+          allocationCurrency: 'USD',
           hasPriceInCurrency: true
         }
       ]
@@ -190,6 +192,7 @@ describe('computeBundleEconomicsFrom', () => {
           costBasis: '10.00',
           costCurrency: 'USD',
           revenueAllocation: '40.00',
+          allocationCurrency: 'USD',
           hasPriceInCurrency: true
         },
         {
@@ -198,6 +201,7 @@ describe('computeBundleEconomicsFrom', () => {
           costBasis: '30.00',
           costCurrency: 'USD',
           revenueAllocation: '60.00',
+          allocationCurrency: 'USD',
           hasPriceInCurrency: false
         }
       ]
@@ -221,6 +225,7 @@ describe('computeBundleEconomicsFrom', () => {
           costBasis: '10.00',
           costCurrency: 'USD',
           revenueAllocation: '40.00',
+          allocationCurrency: 'USD',
           hasPriceInCurrency: true
         },
         {
@@ -229,6 +234,7 @@ describe('computeBundleEconomicsFrom', () => {
           costBasis: '30.00',
           costCurrency: 'CAD',
           revenueAllocation: '60.00',
+          allocationCurrency: 'USD',
           hasPriceInCurrency: true
         }
       ]
@@ -253,6 +259,7 @@ describe('computeBundleEconomicsFrom', () => {
           costBasis: '10.00',
           costCurrency: 'USD',
           revenueAllocation: null,
+          allocationCurrency: null,
           hasPriceInCurrency: true
         }
       ]
@@ -272,8 +279,8 @@ describe('computeBundleEconomicsFrom', () => {
       currencyCode: 'USD',
       headlinePrice: '0.00',
       components: [
-        { componentItemId: componentA, quantity: '2', costBasis: '10.00', costCurrency: 'USD', revenueAllocation: null, hasPriceInCurrency: true },
-        { componentItemId: componentB, quantity: '1', costBasis: '30.00', costCurrency: 'USD', revenueAllocation: null, hasPriceInCurrency: true }
+        { componentItemId: componentA, quantity: '2', costBasis: '10.00', costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1', costBasis: '30.00', costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true }
       ]
     });
 
@@ -289,8 +296,8 @@ describe('computeBundleEconomicsFrom', () => {
       currencyCode: 'USD',
       headlinePrice: '100.00',
       components: [
-        { componentItemId: componentA, quantity: '2', costBasis: '10.00', costCurrency: 'USD', revenueAllocation: null, hasPriceInCurrency: true },
-        { componentItemId: componentB, quantity: '1', costBasis: '30.00', costCurrency: 'USD', revenueAllocation: null, hasPriceInCurrency: true }
+        { componentItemId: componentA, quantity: '2', costBasis: '10.00', costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1', costBasis: '30.00', costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true }
       ]
     });
 
@@ -304,7 +311,7 @@ describe('computeBundleEconomicsFrom', () => {
       currencyCode: 'USD',
       headlinePrice: null,
       components: [
-        { componentItemId: componentA, quantity: '1', costBasis: '10.00', costCurrency: 'USD', revenueAllocation: '40.00', hasPriceInCurrency: true }
+        { componentItemId: componentA, quantity: '1', costBasis: '10.00', costCurrency: 'USD', revenueAllocation: '40.00', allocationCurrency: 'USD', hasPriceInCurrency: true }
       ]
     });
 
@@ -323,6 +330,7 @@ describe('computeBundleEconomicsFrom', () => {
           costBasis: '10.00',
           costCurrency: 'USD',
           revenueAllocation: '40.00',
+          allocationCurrency: 'USD',
           hasPriceInCurrency: true
         }
       ]
@@ -388,8 +396,8 @@ describe('computeBundleEconomicsFrom — minor-unit math (#3775 review #8)', () 
       currencyCode: 'JPY',
       headlinePrice: '1000.00',
       components: [
-        { componentItemId: componentA, quantity: '0.50', costBasis: '101.00', costCurrency: 'JPY', revenueAllocation: '600.00', hasPriceInCurrency: true },
-        { componentItemId: componentB, quantity: '1.00', costBasis: '250.00', costCurrency: 'JPY', revenueAllocation: '400.00', hasPriceInCurrency: true }
+        { componentItemId: componentA, quantity: '0.50', costBasis: '101.00', costCurrency: 'JPY', revenueAllocation: '600.00', allocationCurrency: 'JPY', hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1.00', costBasis: '250.00', costCurrency: 'JPY', revenueAllocation: '400.00', allocationCurrency: 'JPY', hasPriceInCurrency: true }
       ]
     });
     expect(r.totalCost).toBe('301.00');
@@ -405,7 +413,7 @@ describe('computeBundleEconomicsFrom — minor-unit math (#3775 review #8)', () 
       currencyCode: 'USD',
       headlinePrice: '100.00',
       components: [
-        { componentItemId: componentA, quantity: '0.50', costBasis: '10.01', costCurrency: 'USD', revenueAllocation: null, hasPriceInCurrency: true }
+        { componentItemId: componentA, quantity: '0.50', costBasis: '10.01', costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true }
       ]
     });
     expect(r.totalCost).toBe('5.01');
@@ -417,7 +425,7 @@ describe('computeBundleEconomicsFrom — minor-unit math (#3775 review #8)', () 
       currencyCode: 'JPY',
       headlinePrice: '1000.00',
       components: [
-        { componentItemId: componentA, quantity: '1.00', costBasis: '100.50', costCurrency: 'JPY', revenueAllocation: null, hasPriceInCurrency: true }
+        { componentItemId: componentA, quantity: '1.00', costBasis: '100.50', costCurrency: 'JPY', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true }
       ]
     });
     expect(r.priceBookComplete).toBe(true);
@@ -431,8 +439,8 @@ describe('computeBundleEconomicsFrom — minor-unit math (#3775 review #8)', () 
       currencyCode: 'JPY',
       headlinePrice: '1000.00',
       components: [
-        { componentItemId: componentA, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '600.50', hasPriceInCurrency: true },
-        { componentItemId: componentB, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '399.50', hasPriceInCurrency: true }
+        { componentItemId: componentA, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '600.50', allocationCurrency: 'JPY', hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '399.50', allocationCurrency: 'JPY', hasPriceInCurrency: true }
       ]
     });
     expect(r.allocationTotal).toBe('1000.00');
@@ -441,10 +449,61 @@ describe('computeBundleEconomicsFrom — minor-unit math (#3775 review #8)', () 
       currencyCode: 'JPY',
       headlinePrice: '1000.00',
       components: [
-        { componentItemId: componentA, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '999.50', hasPriceInCurrency: true }
+        { componentItemId: componentA, quantity: '1.00', costBasis: null, costCurrency: 'JPY', revenueAllocation: '999.50', allocationCurrency: 'JPY', hasPriceInCurrency: true }
       ]
     });
     expect(off.allocationTotal).toBe('999.50');
     expect(off.allocationMatchesHeadline).toBe(false);
+  });
+});
+
+describe('computeBundleEconomicsFrom — allocation currency (#3775 review #7)', () => {
+  const componentA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const componentB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const comp = (id: string, alloc: string | null, allocCur: string | null) => ({
+    componentItemId: id, quantity: '1', costBasis: '10.00', costCurrency: 'EUR',
+    revenueAllocation: alloc, allocationCurrency: allocCur, hasPriceInCurrency: true
+  });
+
+  it('uses allocations stamped in the target currency', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'EUR', headlinePrice: '100.00',
+      components: [comp(componentA, '60.00', 'EUR'), comp(componentB, '40.00', 'EUR')]
+    });
+    expect(r.allocationAvailable).toBe(true);
+    expect(r.allocationTotal).toBe('100.00');
+    expect(r.allocationMatchesHeadline).toBe(true);
+  });
+
+  it('never relabels a USD allocation against an EUR headline: allocation is UNAVAILABLE, not a mismatch', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'EUR', headlinePrice: '100.00',
+      components: [comp(componentA, '60.00', 'USD'), comp(componentB, '40.00', 'USD')]
+    });
+    expect(r.allocationAvailable).toBe(false);
+    expect(r.allocationTotal).toBeNull();
+    expect(r.allocationMatchesHeadline).toBe(false);
+    // cost economics are untouched by the allocation gap
+    expect(r.totalCost).toBe('20.00');
+  });
+
+  it('a single other-currency allocation voids the whole allocation set (never a partial sum)', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'EUR', headlinePrice: '100.00',
+      components: [comp(componentA, '60.00', 'EUR'), comp(componentB, '40.00', 'USD')]
+    });
+    expect(r.allocationAvailable).toBe(false);
+    expect(r.allocationTotal).toBeNull();
+    expect(r.allocationMatchesHeadline).toBe(false);
+  });
+
+  it('null allocations carry no currency and stay available', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'EUR', headlinePrice: '100.00',
+      components: [comp(componentA, null, null), comp(componentB, null, null)]
+    });
+    expect(r.allocationAvailable).toBe(true);
+    expect(r.allocationTotal).toBe('0.00');
+    expect(r.allocationMatchesHeadline).toBe(true);
   });
 });

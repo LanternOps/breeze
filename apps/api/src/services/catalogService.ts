@@ -19,6 +19,7 @@ export type CatalogServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'ITEM_NOT_FOUND'
   | 'NOT_A_BUNDLE'
+  | 'ALLOCATION_CURRENCY_REQUIRED'
   | 'DUPLICATE_SKU'
   | 'ORG_DENIED'
   | 'PRICE_OUT_OF_RANGE'
@@ -535,10 +536,26 @@ export async function removeOrgPriceOverride(itemId: string, orgId: string, acto
   return { ok: true };
 }
 
-export async function setBundleComponents(bundleId: string, components: BundleComponentInput[], actor: CatalogActor) {
+/**
+ * Replace a bundle's component set. `allocationCurrency` is the currency the
+ * revenueAllocation amounts were authored in (the bundle price being edited,
+ * #3775 review #7) and is stamped on every row that carries an allocation; it
+ * is required whenever any does (the shared schema enforces it at the edge,
+ * this is the backstop). Allocations are later used ONLY in that currency.
+ */
+export async function setBundleComponents(
+  bundleId: string,
+  components: BundleComponentInput[],
+  actor: CatalogActor,
+  allocationCurrency?: string
+) {
   const partnerId = requirePartner(actor);
   const bundle = await getOwnedItemOr404(bundleId, partnerId);
   if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
+  const allocCurrency = allocationCurrency?.trim().toUpperCase() || null;
+  if (!allocCurrency && components.some((c) => c.revenueAllocation != null)) {
+    throw new CatalogServiceError('allocationCurrency is required when a component carries a revenueAllocation', 400, 'ALLOCATION_CURRENCY_REQUIRED');
+  }
 
   const ids = components.map((c) => c.componentItemId);
   const metaRows = ids.length
@@ -567,7 +584,8 @@ export async function setBundleComponents(bundleId: string, components: BundleCo
       componentItemId: c.componentItemId,
       quantity: c.quantity.toFixed(2),
       showOnInvoice: c.showOnInvoice,
-      revenueAllocation: c.revenueAllocation != null ? c.revenueAllocation.toFixed(2) : null
+      revenueAllocation: c.revenueAllocation != null ? c.revenueAllocation.toFixed(2) : null,
+      allocationCurrency: c.revenueAllocation != null ? allocCurrency : null
     })));
   }
   await emitCatalogEvent({ type: 'catalog.item.updated', catalogItemId: bundleId, partnerId, actorUserId: actor.userId });
@@ -657,6 +675,7 @@ export async function computeBundleEconomics(
     componentItemId: catalogBundleComponents.componentItemId,
     quantity: catalogBundleComponents.quantity,
     revenueAllocation: catalogBundleComponents.revenueAllocation,
+    allocationCurrency: catalogBundleComponents.allocationCurrency,
     costBasis: catalogItems.costBasis,
     costCurrency: catalogItems.costCurrency,
     priceId: catalogItemPrices.id,
@@ -686,6 +705,7 @@ export async function computeBundleEconomics(
       costBasis: c.costBasis,
       costCurrency: c.costCurrency,
       revenueAllocation: c.revenueAllocation,
+      allocationCurrency: c.allocationCurrency,
       hasPriceInCurrency: c.priceId !== null || c.overrideId !== null
     }))
   });
