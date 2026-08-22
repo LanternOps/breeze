@@ -141,7 +141,8 @@
         "saveContract": "Impossibile salvare il contratto.",
         "addLine": "Impossibile aggiungere la riga.",
         "removeLine": "Impossibile rimuovere la riga.",
-        "activateContract": "Impossibile attivare il contratto."
+        "activateContract": "Impossibile attivare il contratto.",
+        "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o cancella il collegamento al catalogo."
       },
       "toast": {
         "contractCreated": "Contratto creato",
@@ -198,7 +199,9 @@
         "taxable": "Imponibile",
         "quantityResolvedAutomatically": "Quantità risolta automaticamente al momento della fatturazione.",
         "lineTotal": "Totale riga: {{total}}",
-        "addLine": "Aggiungi riga"
+        "addLine": "Aggiungi riga",
+        "noPriceInCurrency": "Nessun prezzo in {{currency}} per questo elemento: aggiungine uno nel catalogo oppure cancella il collegamento al catalogo e inserisci una riga manuale.",
+        "priceFromCatalog": "Prezzo unitario (dal catalogo, in {{currency}})"
       },
       "estimate": {
         "title": "Stimato per questo periodo",
@@ -607,7 +610,8 @@
         "updateDeposit": "Impossibile aggiornare l'acconto.",
         "updateLine": "Impossibile aggiornare la riga.",
         "updateSection": "Impossibile aggiornare la sezione.",
-        "uploadImage": "Impossibile caricare l'immagine."
+        "uploadImage": "Impossibile caricare l'immagine.",
+        "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale."
       },
       "image": {
         "alt": "Immagine del preventivo",
@@ -1331,7 +1335,8 @@
       "removeLine": "Impossibile rimuovere la riga.",
       "saveNotes": "Impossibile salvare le note.",
       "saveTerms": "Impossibile salvare i termini.",
-      "updateLine": "Impossibile aggiornare la riga."
+      "updateLine": "Impossibile aggiornare la riga.",
+      "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale."
     },
     "fields": {
       "descriptionOptional": "Descrizione (facoltativa)",

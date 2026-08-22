@@ -317,6 +317,19 @@ export const CATALOG_TYPE_CHIP: Record<CatalogItemType, string> = {
   service: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
 };
 
+/** The item's price-book row for `currencyCode` (case-insensitive), or null when
+ *  the book has no row in that currency. Never falls back to another currency
+ *  or to the deprecated `unitPrice` mirror — a gap is a gap (no conversion, ever). */
+export function priceFor(
+  item: Pick<CatalogItem, 'prices'> | { prices?: PriceBookEntry[] | null },
+  currencyCode: string | null | undefined,
+): string | null {
+  if (!currencyCode) return null;
+  const code = currencyCode.trim().toUpperCase();
+  const row = (item.prices ?? []).find((p) => p.currencyCode.toUpperCase() === code);
+  return row ? row.unitPrice : null;
+}
+
 /** Gross margin percent from price vs cost. Null when cost is absent, price ≤ 0,
  *  OR the price and cost currencies differ — margin is never computed across
  *  currencies (no conversion, ever). */

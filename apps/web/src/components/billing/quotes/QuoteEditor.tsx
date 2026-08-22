@@ -1393,13 +1393,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     await runAction({
       request: () => addCatalogLine(quote.id, { catalogItemId: item.id, quantity: 1, blockId }),
       errorFallback: t('quotes.editor.errors.addCatalogItem'),
+      // Price-book gap (#3775): the server never converts, so an item with no
+      // row in the quote's currency is refused with NO_PRICE_FOR_CURRENCY.
+      // Name the currency so the tech knows what to add in the catalog.
+      friendly: (code) => (code === 'NO_PRICE_FOR_CURRENCY'
+        ? t('quotes.editor.errors.noPriceForCurrency', { currency: quote.currencyCode })
+        : undefined),
       // No success toast: the new row visibly appears and the totals move —
       // toasting on top of that was noise that covered the rail's deposit
       // control. Failures still toast.
       onUnauthorized: UNAUTHORIZED,
     });
     refresh();
-  }, [quote.id, refresh, t]);
+  }, [quote.id, quote.currencyCode, refresh, t]);
 
   const addCatalog = useCallback((blockId: string, item: CatalogItem) =>
     runScoped(pendingKey.addLine(blockId), () => doAddCatalog(blockId, item), t('quotes.editor.errors.addCatalogItem')),

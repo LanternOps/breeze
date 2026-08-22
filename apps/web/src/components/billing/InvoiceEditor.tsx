@@ -360,6 +360,12 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
       await runAction({
         request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
         errorFallback: t('invoiceEditor.errors.addLine'),
+        // Price-book gap (#3775): no row in the invoice's currency → the server
+        // refuses with NO_PRICE_FOR_CURRENCY (bundles: PRICE_BOOK_INCOMPLETE)
+        // rather than converting. Name the currency the tech needs to add.
+        friendly: (code) => (code === 'NO_PRICE_FOR_CURRENCY' || code === 'PRICE_BOOK_INCOMPLETE'
+          ? t('invoiceEditor.errors.noPriceForCurrency', { currency: invoice.currencyCode })
+          : undefined),
         successMessage: t('invoiceEditor.success.lineAdded'),
         onUnauthorized: UNAUTHORIZED,
       });
@@ -367,7 +373,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
       refresh();
     }, t('invoiceEditor.errors.addLine'));
   },
-  [runScoped, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh, t]);
+  [runScoped, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, invoice.currencyCode, refresh, t]);
 
   // Inline edit of an existing line. `scopeKey` is per-field so one in-flight
   // save (e.g. qty) never disables the sibling controls. Returns whether it
@@ -748,6 +754,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
             ) : (
               <CatalogItemPicker
                 items={catalog}
+                currencyCode={currency}
                 onSelect={(it) => { setPicked(it); setPickQty('1'); }}
                 testId="invoice-catalog-picker"
                 placeholder={t('invoiceEditor.addLine.searchCatalog')}

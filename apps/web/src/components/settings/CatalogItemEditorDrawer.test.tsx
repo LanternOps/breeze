@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetPartnerCurrencyCache } from '../../lib/usePartnerCurrency';
 
 import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
 import type { CatalogItem } from '../../lib/api/catalog';
@@ -80,6 +81,7 @@ const detail = (overrides: Array<{ orgId: string; unitPrice: string; currencyCod
 
 describe('CatalogItemEditorDrawer — per-org pricing (#1368)', () => {
   beforeEach(() => {
+    resetPartnerCurrencyCache(); // module-level cache must not leak the previous test's partner currency
     vi.clearAllMocks();
     seedPartner('EUR');
     // Default: a partner-scope user (the audience for per-org pricing).
@@ -155,6 +157,7 @@ describe('CatalogItemEditorDrawer — detail load failure (#1944)', () => {
   const bundleMock = vi.mocked(catalogApi.setBundleComponents);
 
   beforeEach(() => {
+    resetPartnerCurrencyCache(); // module-level cache must not leak the previous test's partner currency
     vi.clearAllMocks();
     seedPartner('EUR');
     claimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
@@ -245,6 +248,7 @@ describe('CatalogItemEditorDrawer — product image from URL', () => {
   const toastMock = vi.mocked(showToast);
 
   beforeEach(() => {
+    resetPartnerCurrencyCache(); // module-level cache must not leak the previous test's partner currency
     vi.clearAllMocks();
     seedPartner('EUR');
     claimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
@@ -302,6 +306,7 @@ describe('CatalogItemEditorDrawer — price book + cost currency', () => {
   const removePriceMock = vi.mocked(catalogApi.removeItemPrice);
 
   beforeEach(() => {
+    resetPartnerCurrencyCache(); // module-level cache must not leak the previous test's partner currency
     vi.clearAllMocks();
     seedPartner('EUR');
     claimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });

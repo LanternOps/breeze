@@ -141,7 +141,8 @@
         "saveContract": "Could not save the contract.",
         "addLine": "Could not add the line.",
         "removeLine": "Could not remove the line.",
-        "activateContract": "Could not activate the contract."
+        "activateContract": "Could not activate the contract.",
+        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or clear the catalog link."
       },
       "toast": {
         "contractCreated": "Contract created",
@@ -198,7 +199,9 @@
         "taxable": "Taxable",
         "quantityResolvedAutomatically": "Quantity resolved automatically at billing time.",
         "lineTotal": "Line total: {{total}}",
-        "addLine": "Add line"
+        "addLine": "Add line",
+        "noPriceInCurrency": "No {{currency}} price for this item — add one in the catalog, or clear the catalog link and enter a manual line.",
+        "priceFromCatalog": "Unit price (from the catalog, in {{currency}})"
       },
       "estimate": {
         "title": "Estimated this period",
@@ -627,7 +630,8 @@
         "updateDeposit": "Could not update the deposit.",
         "updateLine": "Could not update the line.",
         "updateSection": "Could not update the section.",
-        "uploadImage": "Could not upload the image."
+        "uploadImage": "Could not upload the image.",
+        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line."
       },
       "image": {
         "alt": "Quote image",
@@ -1331,7 +1335,8 @@
       "removeLine": "Could not remove line.",
       "saveNotes": "Could not save notes.",
       "saveTerms": "Could not save terms.",
-      "updateLine": "Could not update line."
+      "updateLine": "Could not update line.",
+      "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line."
     },
     "fields": {
       "descriptionOptional": "Description (optional)",

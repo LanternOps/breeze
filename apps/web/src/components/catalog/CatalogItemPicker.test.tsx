@@ -1,55 +1,42 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-
-const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 
 import CatalogItemPicker from './CatalogItemPicker';
-import { resetPartnerCurrencyCache } from '../../lib/usePartnerCurrency';
 import type { CatalogItem } from '../../lib/api/catalog';
 
-const jsonRes = (payload: unknown, status = 200) =>
-  ({ ok: status < 400, status, json: async () => payload }) as Response;
+function item(over: Partial<CatalogItem> = {}): CatalogItem {
+  return {
+    id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
+    billingType: 'one_time', unitPrice: '999.00', costBasis: null, costCurrency: 'USD', markupPercent: null,
+    unitOfMeasure: 'each', taxable: false, taxCategory: null, isBundle: false, isActive: true,
+    createdAt: '', updatedAt: '', prices: [{ currencyCode: 'EUR', unitPrice: '120.00' }],
+    ...over,
+  };
+}
 
-const ITEM: CatalogItem = {
-  id: 'w1', partnerId: 'p1', itemType: 'service', name: 'Widget Service', sku: 'WID-1',
-  description: null, billingType: 'one_time', unitPrice: '12.00', costBasis: null,
-  markupPercent: null, unitOfMeasure: 'each', taxable: true, taxCategory: null,
-  isActive: true, isBundle: false, createdAt: '2026-01-01', updatedAt: '2026-01-01',
-} as CatalogItem;
-
-beforeEach(() => {
-  resetPartnerCurrencyCache();
-  fetchWithAuth.mockReset();
-  fetchWithAuth.mockImplementation(async (url: string) =>
-    url === '/orgs/partners/me' ? jsonRes({ id: 'p1', currencyCode: 'GBP' }) : jsonRes({}));
-});
-
-describe('CatalogItemPicker', () => {
-  it('labels unit prices with an explicit currencyCode prop', async () => {
-    render(<CatalogItemPicker items={[ITEM]} onSelect={() => {}} currencyCode="EUR" />);
-    fireEvent.focus(screen.getByTestId('catalog-picker-input'));
-    const option = await screen.findByTestId('catalog-picker-option-w1');
-    expect(option.textContent).toContain('€12.00');
+describe('CatalogItemPicker (multi-currency #3775)', () => {
+  it('shows the price-book row in the document currency — never the unitPrice mirror', async () => {
+    render(<CatalogItemPicker items={[item()]} onSelect={vi.fn()} currencyCode="EUR" />);
+    fireEvent.change(screen.getByTestId('catalog-picker-input'), { target: { value: 'NV' } });
+    const price = await screen.findByTestId('catalog-picker-price-cat-1');
+    expect(price).toHaveTextContent('120.00');
+    expect(price).not.toHaveTextContent('999');
+    expect(screen.queryByTestId('catalog-picker-noprice-cat-1')).toBeNull();
   });
 
-  it('defaults to the partner currency when no currencyCode is passed', async () => {
-    render(<CatalogItemPicker items={[ITEM]} onSelect={() => {}} />);
-    fireEvent.focus(screen.getByTestId('catalog-picker-input'));
-    const option = await screen.findByTestId('catalog-picker-option-w1');
-    await waitFor(() => expect(option.textContent).toContain('£12.00'));
-    expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me');
-  });
-
-  it('filters by name or SKU and reports the pick', async () => {
+  it('shows the no-price note when the book has no row in that currency, and keeps the item selectable', async () => {
     const onSelect = vi.fn();
-    render(<CatalogItemPicker items={[ITEM, { ...ITEM, id: 'x2', name: 'Other', sku: 'OTH-2' }]} onSelect={onSelect} currencyCode="USD" />);
-    const input = screen.getByTestId('catalog-picker-input');
-    fireEvent.change(input, { target: { value: 'wid' } });
-    expect(await screen.findByTestId('catalog-picker-option-w1')).toBeInTheDocument();
-    expect(screen.queryByTestId('catalog-picker-option-x2')).toBeNull();
-    fireEvent.click(screen.getByTestId('catalog-picker-option-w1'));
-    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'w1' }));
-    expect((input as HTMLInputElement).value).toBe('');
+    render(<CatalogItemPicker items={[item()]} onSelect={onSelect} currencyCode="CAD" />);
+    fireEvent.change(screen.getByTestId('catalog-picker-input'), { target: { value: 'NV' } });
+    expect(await screen.findByTestId('catalog-picker-noprice-cat-1')).toHaveTextContent('No CAD price');
+    expect(screen.queryByTestId('catalog-picker-price-cat-1')).toBeNull();
+    fireEvent.click(screen.getByTestId('catalog-picker-option-cat-1'));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'cat-1' }));
+  });
+
+  it('tolerates a list payload without a price book (treated as a gap)', async () => {
+    render(<CatalogItemPicker items={[item({ prices: undefined as unknown as CatalogItem['prices'] })]} onSelect={vi.fn()} currencyCode="USD" />);
+    fireEvent.change(screen.getByTestId('catalog-picker-input'), { target: { value: 'NV' } });
+    expect(await screen.findByTestId('catalog-picker-noprice-cat-1')).toHaveTextContent('No USD price');
   });
 });

@@ -106,8 +106,10 @@ describe('TicketPartsCard', () => {
   it('adds a part from the catalog — prefills fields and links catalogItemId (#1368)', async () => {
     const catItem = {
       id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
-      billingType: 'one_time', unitPrice: '150.00', costBasis: '90.00', markupPercent: null, unitOfMeasure: 'each',
+      // unitPrice is the deprecated mirror (#3775) — the prefill must come from the price book.
+      billingType: 'one_time', unitPrice: '999.00', costBasis: '90.00', costCurrency: 'USD', markupPercent: null, unitOfMeasure: 'each',
       taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
+      prices: [{ currencyCode: 'USD', unitPrice: '150.00' }],
     };
     fetchWithAuth.mockImplementation(async (url: string) => {
       if (url === '/tickets/tk-1/parts') return jsonRes(parts);
@@ -115,7 +117,7 @@ describe('TicketPartsCard', () => {
       return jsonRes({});
     });
 
-    render(<TicketPartsCard ticketId="tk-1" />);
+    render(<TicketPartsCard ticketId="tk-1" currencyCode="USD" />);
     fireEvent.click(await screen.findByTestId('ticket-parts-add-toggle'));
 
     fireEvent.change(await screen.findByTestId('ticket-parts-catalog-picker-input'), { target: { value: 'NVMe' } });
@@ -123,6 +125,7 @@ describe('TicketPartsCard', () => {
 
     expect(screen.getByTestId('ticket-parts-form-description')).toHaveValue('NVMe 1TB');
     expect(screen.getByTestId('ticket-parts-form-unit-price')).toHaveValue(150);
+    expect(screen.getByTestId('ticket-parts-form-cost-basis')).toHaveValue(90);
     expect(screen.getByTestId('ticket-parts-form-linked')).toHaveTextContent('NVMe 1TB');
 
     fireEvent.change(screen.getByTestId('ticket-parts-form-quantity'), { target: { value: '1' } });
@@ -166,6 +169,46 @@ describe('TicketPartsCard', () => {
         (args) => args[0] === '/tickets/tk-1/parts' && (args[1] as RequestInit)?.method === 'POST',
       );
       expect(JSON.parse((call![1] as RequestInit).body as string).catalogItemId).toBeNull();
+    });
+  });
+
+  describe('currency-aware catalog prefill (#3775)', () => {
+    const catItem = (over: Record<string, unknown> = {}) => ({
+      id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
+      billingType: 'one_time', unitPrice: '999.00', costBasis: '90.00', costCurrency: 'USD', markupPercent: null, unitOfMeasure: 'each',
+      taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
+      prices: [{ currencyCode: 'EUR', unitPrice: '120.00' }, { currencyCode: 'USD', unitPrice: '150.00' }],
+      ...over,
+    });
+    const pick = async (currencyCode?: string) => {
+      render(<TicketPartsCard ticketId="tk-1" currencyCode={currencyCode} />);
+      fireEvent.click(await screen.findByTestId('ticket-parts-add-toggle'));
+      fireEvent.change(await screen.findByTestId('ticket-parts-catalog-picker-input'), { target: { value: 'NVMe' } });
+      fireEvent.click(await screen.findByTestId('ticket-parts-catalog-picker-option-cat-1'));
+    };
+
+    it('prefills the EUR price and leaves cost blank when the cost is in USD', async () => {
+      fetchWithAuth.mockImplementation(async (url: string) =>
+        url.startsWith('/catalog') ? jsonRes([catItem()]) : url === '/tickets/tk-1/parts' ? jsonRes(parts) : jsonRes({}));
+      await pick('EUR');
+      expect(screen.getByTestId('ticket-parts-form-unit-price')).toHaveValue(120);
+      expect(screen.getByTestId('ticket-parts-form-cost-basis')).toHaveValue(null);
+    });
+
+    it('leaves the price blank when the book has no row in the org currency (never the unitPrice mirror)', async () => {
+      fetchWithAuth.mockImplementation(async (url: string) =>
+        url.startsWith('/catalog') ? jsonRes([catItem({ prices: [{ currencyCode: 'USD', unitPrice: '150.00' }] })]) : url === '/tickets/tk-1/parts' ? jsonRes(parts) : jsonRes({}));
+      await pick('EUR');
+      expect(screen.getByTestId('ticket-parts-form-unit-price')).toHaveValue(null);
+      expect(screen.getByTestId('ticket-parts-form-description')).toHaveValue('NVMe 1TB');
+    });
+
+    it('leaves price and cost blank when no currency is known', async () => {
+      fetchWithAuth.mockImplementation(async (url: string) =>
+        url.startsWith('/catalog') ? jsonRes([catItem()]) : url === '/tickets/tk-1/parts' ? jsonRes(parts) : jsonRes({}));
+      await pick(undefined);
+      expect(screen.getByTestId('ticket-parts-form-unit-price')).toHaveValue(null);
+      expect(screen.getByTestId('ticket-parts-form-cost-basis')).toHaveValue(null);
     });
   });
 });

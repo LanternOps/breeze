@@ -141,7 +141,8 @@
         "saveContract": "No se pudo guardar el contrato.",
         "addLine": "No se pudo agregar la línea.",
         "removeLine": "No se pudo eliminar la línea.",
-        "activateContract": "No se pudo activar el contrato."
+        "activateContract": "No se pudo activar el contrato.",
+        "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o borre el enlace del catálogo."
       },
       "toast": {
         "contractCreated": "Contrato creado",
@@ -198,7 +199,9 @@
         "taxable": "Imponible",
         "quantityResolvedAutomatically": "Cantidad resuelta automáticamente al momento de la facturación.",
         "lineTotal": "Total de líneas: {{total}}",
-        "addLine": "Agregar línea"
+        "addLine": "Agregar línea",
+        "noPriceInCurrency": "Este elemento no tiene precio en {{currency}}: agregue uno en el catálogo, o borre el enlace del catálogo e ingrese una línea manual.",
+        "priceFromCatalog": "Precio unitario (del catálogo, en {{currency}})"
       },
       "estimate": {
         "title": "Estimado este periodo",
@@ -627,7 +630,8 @@
         "updateDeposit": "No se pudo actualizar el depósito.",
         "updateLine": "No se pudo actualizar la línea.",
         "updateSection": "No se pudo actualizar la sección.",
-        "uploadImage": "No se pudo cargar la imagen."
+        "uploadImage": "No se pudo cargar la imagen.",
+        "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual."
       },
       "image": {
         "alt": "Imagen de cotización",
@@ -1331,7 +1335,8 @@
       "removeLine": "No se pudo eliminar la línea.",
       "saveNotes": "No se pudieron guardar notas.",
       "saveTerms": "No se pudieron guardar los términos.",
-      "updateLine": "No se pudo actualizar la línea."
+      "updateLine": "No se pudo actualizar la línea.",
+      "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual."
     },
     "fields": {
       "descriptionOptional": "Descripción (opcional)",
