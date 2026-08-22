@@ -18,6 +18,8 @@ vi.mock('./catalogService', () => {
     createCatalogItem: vi.fn().mockResolvedValue({ id: 'cat-1', name: 'Managed service' }),
     updateCatalogItem: vi.fn().mockResolvedValue({ id: 'cat-1', name: 'Updated service' }),
     archiveCatalogItem: vi.fn().mockResolvedValue({ id: 'cat-1', isActive: false }),
+    setItemPrice: vi.fn().mockResolvedValue({ itemId: 'cat-1', currencyCode: 'EUR', unitPrice: '10.00' }),
+    removeItemPrice: vi.fn().mockResolvedValue({ ok: true }),
     setOrgPriceOverride: vi.fn().mockResolvedValue({ catalogItemId: 'cat-1', orgId: 'org-1', unitPrice: '99.00' }),
     removeOrgPriceOverride: vi.fn().mockResolvedValue({ ok: true }),
     setBundleComponents: vi.fn().mockResolvedValue({ item: { id: 'bundle-1' }, components: [] }),
@@ -99,6 +101,43 @@ describe('manage_catalog', () => {
 
     expect(catalogService.archiveCatalogItem).toHaveBeenCalledWith('cat-1', actor);
     expect(JSON.parse(out)).toEqual({ id: 'cat-1', isActive: false });
+  });
+
+  it('set_price normalizes currency and calls setItemPrice with the validated price payload', async () => {
+    const out = await getTool().handler(
+      { action: 'set_price', catalogId: 'cat-1', currencyCode: 'eur', price: { unitPrice: 10 } },
+      auth,
+    );
+
+    expect(catalogService.setItemPrice).toHaveBeenCalledWith(
+      'cat-1',
+      'EUR',
+      { unitPrice: 10 },
+      actor,
+    );
+    expect(JSON.parse(out)).toEqual({ itemId: 'cat-1', currencyCode: 'EUR', unitPrice: '10.00' });
+  });
+
+  it('set_price without currencyCode returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool().handler(
+      { action: 'set_price', catalogId: 'cat-1', price: { unitPrice: 10 } },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('currencyCode');
+    expect(catalogService.setItemPrice).not.toHaveBeenCalled();
+  });
+
+  it('remove_price calls removeItemPrice with the normalized currency and actor', async () => {
+    const out = await getTool().handler(
+      { action: 'remove_price', catalogId: 'cat-1', currencyCode: 'eur' },
+      auth,
+    );
+
+    expect(catalogService.removeItemPrice).toHaveBeenCalledWith('cat-1', 'EUR', actor);
+    expect(JSON.parse(out)).toEqual({ ok: true });
   });
 
   it('set_org_price calls setOrgPriceOverride with item id, org id, override payload, and actor', async () => {
