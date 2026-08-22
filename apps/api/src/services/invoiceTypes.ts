@@ -38,6 +38,12 @@ export type InvoiceServiceErrorCode =
   | 'NOTHING_TO_INVOICE'
   | 'NO_VISIBLE_LINES'
   | 'SOURCE_ALREADY_BILLED'
+  // B10 (#3774): a line's source row no longer exists (or belongs to another
+  // org) when re-validated under lock at issue time.
+  | 'SOURCE_NOT_FOUND'
+  // B10 (#3774): a guarded write inside the issuance transaction affected an
+  // unexpected row count — impossible while the locks are held, so a 500.
+  | 'CONCURRENT_MODIFICATION'
   | 'OVERPAYMENT'
   | 'INVALID_STATE'
   | 'INVALID_AMOUNT'
