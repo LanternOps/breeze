@@ -11,13 +11,14 @@
  */
 
 import type { AiApprovalScope } from '@breeze/shared/types/ai';
-import type { AiAgentProtectedResources } from '@breeze/shared';
+import type { AiAgentMode, AiAgentProtectedResources } from '@breeze/shared';
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
 import { getRedis } from './redis';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
+import { envFlag } from '../config/env';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -1289,6 +1290,13 @@ export function checkGuardrails(
 }
 
 export interface AgentGuardrailPolicy {
+  /**
+   * Both carried, both enforced here. The resolver computes them, but returning
+   * a snapshot makes enforcement advisory — the gate must be able to deny a
+   * disabled or propose-only agent on its own.
+   */
+  enabled: boolean;
+  mode: AiAgentMode;
   toolAllowlist: string[];
   protectedResources: AiAgentProtectedResources;
   /** Resolved from the run device, not from caller-controlled tool input. */
@@ -1296,12 +1304,64 @@ export interface AgentGuardrailPolicy {
 }
 
 const SERVICE_INPUT_KEYS = ['serviceName', 'service', 'name'];
-const PATH_INPUT_KEYS = ['path', 'filePath', 'source', 'destination', 'directory'];
+const PATH_INPUT_KEYS = [
+  'path', 'filePath', 'source', 'destination', 'directory',
+  // Swept from the real tool schemas — each of these carries a filesystem path
+  // and every one of them was unprotected.
+  'newPath', 'targetPath', 'selectedPaths', 'paths', 'filePaths',
+  'itemPath', 'quarantineDir', 'scriptPath', 'dest',
+];
 const REGISTRY_INPUT_KEYS = ['key', 'registryKey', 'keyPath'];
 const DEVICE_TAG_INPUT_KEYS = ['deviceTag', 'tag', 'tagName'];
 const DEVICE_TAG_ARRAY_INPUT_KEYS = ['deviceTags', 'tags'];
 const SITE_INPUT_KEYS = ['siteId', 'site_id', 'targetSiteId'];
 const SITE_ARRAY_INPUT_KEYS = ['siteIds', 'site_ids'];
+
+/** Tools whose real tier depends on an `action` argument. */
+function isActionMultiplexedTool(toolName: string): boolean {
+  return Boolean(
+    TIER3_ACTIONS[toolName] ?? TIER2_ACTIONS[toolName] ?? TIER1_ACTIONS[toolName],
+  );
+}
+
+function describeType(value: unknown): string {
+  if (value === undefined) return 'nothing';
+  if (value === null) return 'null';
+  return Array.isArray(value) ? 'an array' : `a ${typeof value}`;
+}
+
+/**
+ * Every string leaf of the input, at any depth, paired with the key it sat
+ * under. A top-level key lookup missed nested parameter objects entirely —
+ * `execute_command { commandType:'file_list', payload:{ path:'C:\\Windows\\...' } }`
+ * dispatches the same agent command as `file_operations` but hid its path from
+ * the protected-resource matcher, with no allowlist entry required.
+ */
+function collectStringLeaves(
+  value: unknown,
+  depth = 0,
+  out: Array<{ key: string; value: string }> = [],
+  key = '',
+): Array<{ key: string; value: string }> {
+  if (depth > 6 || out.length > 500) return out;
+  if (typeof value === 'string') {
+    out.push({ key, value });
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectStringLeaves(item, depth + 1, out, key);
+  } else if (value && typeof value === 'object') {
+    for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
+      collectStringLeaves(child, depth + 1, out, childKey);
+    }
+  }
+  return out;
+}
+
+function leafValuesFor(input: Record<string, unknown>, keys: string[]): string[] {
+  const wanted = new Set(keys.map((key) => key.toLowerCase()));
+  return collectStringLeaves(input)
+    .filter((leaf) => wanted.has(leaf.key.toLowerCase()))
+    .map((leaf) => leaf.value);
+}
 
 function inputStrings(input: Record<string, unknown>, keys: string[]): string[] {
   return keys.map((key) => input[key]).filter((value): value is string => typeof value === 'string');
@@ -1372,7 +1432,7 @@ function touchesProtected(
   input: Record<string, unknown>,
   protectedResources: AiAgentProtectedResources,
 ): string | null {
-  for (const serviceName of inputStrings(input, SERVICE_INPUT_KEYS)) {
+  for (const serviceName of leafValuesFor(input, SERVICE_INPUT_KEYS)) {
     if (protectedResources.services.some(
       (protectedService) => protectedService.toLowerCase() === serviceName.toLowerCase(),
     )) {
@@ -1380,13 +1440,13 @@ function touchesProtected(
     }
   }
 
-  for (const path of inputStrings(input, PATH_INPUT_KEYS)) {
+  for (const path of leafValuesFor(input, PATH_INPUT_KEYS)) {
     if (protectedResources.paths.some((protectedPath) => pathIsProtected(path, protectedPath))) {
       return `path "${path}" is protected`;
     }
   }
 
-  for (const registryKey of inputStrings(input, REGISTRY_INPUT_KEYS)) {
+  for (const registryKey of leafValuesFor(input, REGISTRY_INPUT_KEYS)) {
     if (protectedResources.registryKeys.some(
       (protectedKey) => registryKeyIsProtected(registryKey, protectedKey),
     )) {
@@ -1395,11 +1455,15 @@ function touchesProtected(
   }
 
   const deviceTags = [
-    ...inputStrings(input, DEVICE_TAG_INPUT_KEYS),
-    ...inputStringArrays(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
+    ...leafValuesFor(input, DEVICE_TAG_INPUT_KEYS),
+    ...leafValuesFor(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
   ];
   for (const deviceTag of deviceTags) {
-    if (protectedResources.deviceTags.includes(deviceTag)) {
+    // Case-insensitive, matching services/paths/registry. 'Production' vs
+    // 'production' passed before.
+    if (protectedResources.deviceTags.some(
+      (protectedTag) => protectedTag.toLowerCase() === deviceTag.toLowerCase(),
+    )) {
       return `device tag "${deviceTag}" is protected`;
     }
   }
@@ -1411,6 +1475,8 @@ function isAgentGuardrailPolicy(
   policy: AgentGuardrailPolicy | null | undefined,
 ): policy is AgentGuardrailPolicy {
   if (!policy || !Array.isArray(policy.toolAllowlist)) return false;
+  if (typeof policy.enabled !== 'boolean') return false;
+  if (policy.mode !== 'off' && policy.mode !== 'shadow' && policy.mode !== 'act') return false;
   if (!policy.toolAllowlist.every((toolName) => typeof toolName === 'string')) return false;
 
   const resources = policy.protectedResources;
@@ -1457,14 +1523,13 @@ export function checkAgentGuardrails(
   policy: AgentGuardrailPolicy | null | undefined,
 ): GuardrailCheck {
   const base = checkGuardrails(toolName, input);
-  const deny = (reason: string): GuardrailCheck => {
-    if (base.tier === 3) {
-      return { ...base, allowed: false, requiresApproval: false, reason };
-    }
-    return { ...base, allowed: false, requiresApproval: false, reason };
-  };
+  const deny = (reason: string): GuardrailCheck =>
+    ({ ...base, allowed: false, requiresApproval: false, reason });
 
-  if (process.env.BREEZE_AI_AGENTS_ENABLED !== 'true') {
+  // envFlag reads process.env at CALL time and shares its normalization with
+  // config/env, so the two readers of this flag cannot disagree (a module-level
+  // const also made the kill switch unstubbable, and therefore untestable).
+  if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) {
     return deny('Autonomous AI agents are disabled');
   }
   if (!isAgentGuardrailPolicy(policy)) {
@@ -1480,11 +1545,34 @@ export function checkAgentGuardrails(
   const siteDenial = siteScopeDenial(input, policy.deviceSiteId);
   if (siteDenial) return deny(`Denied: ${siteDenial}`);
 
+  // An operator switching the agent off, or holding it at propose-only, must be
+  // enforced HERE. The resolver computes enabled/mode but returning a snapshot
+  // makes that advisory — every caller would have to remember to re-check it.
+  if (policy.enabled === false) return deny('Agent is disabled');
+  if (policy.mode === 'off') return deny('Agent mode is off');
+
   const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
   const actionValue = input[actionKey];
   const action = typeof actionValue === 'string' ? actionValue : undefined;
+
+  // A non-string action (`action: ['write']`) makes checkGuardrails skip its
+  // TIER3_ACTIONS escalation and fall back to the tool's REGISTERED BASE TIER —
+  // which is 1 for most action-multiplexed tools. Falling back is a DOWNGRADE,
+  // not a floor: it collapsed 15 mutating tools to Tier 1 and skipped the
+  // allowlist entirely. An unresolvable action on a multiplexed tool denies.
+  if (action === undefined && isActionMultiplexedTool(toolName)) {
+    return deny(
+      `Tool "${toolName}" requires a string "${actionKey}"; got ${describeType(actionValue)}`,
+    );
+  }
+
   const readOnly = base.tier === 1
     || (base.tier === 2 && (base.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+
+  // shadow mode proposes; it never mutates. Read-only tools stay available.
+  if (policy.mode === 'shadow' && !readOnly) {
+    return deny(`Tool "${toolName}" mutates; the agent is in shadow mode`);
+  }
   const allowlisted = policy.toolAllowlist.includes(toolName)
     || (action !== undefined && policy.toolAllowlist.includes(`${toolName}:${action}`));
   if (!readOnly && !allowlisted) {
@@ -1569,6 +1657,14 @@ export async function checkToolPermission(
   input: Record<string, unknown>,
   auth: AuthContext
 ): Promise<string | null> {
+  // An agent has no user role, so the token-less fallback below would grant it
+  // EVERY tool. This must stay the first statement: checkToolPermission
+  // short-circuits before it delegates to checkPermissionRequirements, so the
+  // deny there does not cover this path. (aiAgentSdk's tool loop, intent
+  // release revalidation, approvals and the MCP server all enter here.)
+  if (auth.principal?.kind === 'ai_agent') {
+    return 'AI agent principals are never granted user permissions';
+  }
   // Helper sessions use a synthetic auth with no roleId — tool access is
   // governed by the helper whitelist (helperToolFilter), not user RBAC.
   if (!auth.token) {

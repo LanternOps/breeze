@@ -1,7 +1,7 @@
 import type { AiAgentKind } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
 import type { DbAccessContext } from '../../db';
-import type { AuthContext } from '../../middleware/auth';
+import { siteAccessCheck, type AuthContext } from '../../middleware/auth';
 
 export interface AgentIdentity {
   id: string;
@@ -15,6 +15,13 @@ export interface AgentRunRef {
   id: string;
   orgId: string;
   deviceId: string | null;
+  /**
+   * Site of the run's device, resolved server-side. Required whenever the run
+   * has a device: spec §3.2 bounds an agent to its device's site, and an
+   * undefined allowedSiteIds means UNRESTRICTED, so omitting it silently widens
+   * the agent to the whole org.
+   */
+  deviceSiteId?: string | null;
 }
 
 export interface OrgRef {
@@ -85,5 +92,15 @@ export function buildAgentAuthContext(
     partnerOrgAccess: null,
     orgCondition: (column) => eq(column, run.orgId),
     canAccessOrg: (id) => id === run.orgId,
+    // Without these the tool layer's `if (auth.canAccessSite && ...)` gate is
+    // skipped entirely and a device-bound agent could target any device in the
+    // org. A run with a device pins to that device's site; a run with no device
+    // pins to the empty set rather than to "unrestricted".
+    ...(run.deviceId
+      ? {
+          allowedSiteIds: run.deviceSiteId ? [run.deviceSiteId] : [],
+          canAccessSite: siteAccessCheck(run.deviceSiteId ? [run.deviceSiteId] : []),
+        }
+      : {}),
   };
 }

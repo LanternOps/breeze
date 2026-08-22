@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
 import { PartnerWideWriteDeniedError } from '../partnerWideAccess';
@@ -9,6 +10,7 @@ const state = vi.hoisted(() => ({
   returnedRow: null as Record<string, unknown> | null,
   insertedValues: null as Record<string, unknown> | null,
   updatedValues: null as Record<string, unknown> | null,
+  selectWhere: undefined as unknown,
   audit: vi.fn(),
   publish: vi.fn(),
 }));
@@ -16,6 +18,8 @@ const state = vi.hoisted(() => ({
 const schema = vi.hoisted(() => ({
   aiAgents: {
     id: 'aiAgents.id',
+    orgId: 'aiAgents.orgId',
+    partnerId: 'aiAgents.partnerId',
     disabledAt: 'aiAgents.disabledAt',
     createdAt: 'aiAgents.createdAt',
   },
@@ -26,6 +30,7 @@ vi.mock('drizzle-orm', () => ({
   desc: (column: unknown) => ({ desc: column }),
   eq: (column: unknown, value: unknown) => ({ eq: [column, value] }),
   isNull: (column: unknown) => ({ isNull: column }),
+  or: (...conditions: unknown[]) => ({ or: conditions }),
 }));
 
 vi.mock('../../db/schema', () => ({ aiAgents: schema.aiAgents }));
@@ -34,10 +39,13 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
+        where: vi.fn((condition: unknown) => {
+          state.selectWhere = condition;
+          return ({
           limit: vi.fn(async () => state.currentRow ? [state.currentRow] : []),
           orderBy: vi.fn(async () => state.listRows),
-        })),
+        });
+        }),
       })),
     })),
     insert: vi.fn(() => ({
@@ -61,9 +69,10 @@ vi.mock('../../db', () => ({
 
 vi.mock('../auditService', () => ({ createAuditLog: state.audit }));
 vi.mock('../eventBus', () => ({ getEventBus: () => ({ publish: state.publish }) }));
-vi.mock('./constants', () => ({
-  isSupportedAgentMode: (mode: string) => mode === 'off' || mode === 'shadow',
-}));
+// NOT mocked on purpose. Stubbing isSupportedAgentMode made the "rejects the
+// DB-legal act mode" test assert the STUB's opinion — adding 'act' (the wave-4
+// autonomous-execution mode) to the real SUPPORTED_AGENT_MODES would have been
+// a fully green change.
 vi.mock('./effectivePolicy', () => ({
   normalizeAgentPolicy: (row: Record<string, unknown>) => ({
     enabled: row.enabled,
@@ -100,7 +109,7 @@ function auth(over: Partial<AuthContext> = {}): AuthContext {
     scope: 'partner',
     accessibleOrgIds: ['o1'],
     partnerOrgAccess: 'all',
-    orgCondition: () => undefined,
+    orgCondition: (column: never) => eq(column, 'o1'),
     canAccessOrg: (id) => id === 'o1',
     ...over,
   } as AuthContext;
@@ -340,8 +349,24 @@ describe('agent mutations', () => {
 });
 
 describe('listAgents', () => {
-  it('returns rows from the RLS-scoped query', async () => {
+  it('binds a tenant predicate — RLS is not the only defence', async () => {
+    // Previously this asserted back the rows the mock supplied, which is true
+    // of any implementation including one with no WHERE at all. A contextless
+    // caller runs as scope='system', so an unscoped read here returns every
+    // partner's agents.
     state.listRows = [storedRow];
+    state.selectWhere = undefined;
     await expect(listAgents(auth())).resolves.toEqual([storedRow]);
+    expect(state.selectWhere, 'listAgents issued an unscoped read').toBeDefined();
+
+    // A partner-scoped caller also reaches partner-wide rows (org_id IS NULL).
+    const partnerSql = JSON.stringify(state.selectWhere ?? {});
+    expect(partnerSql).toContain('p1');
+
+    // An org-scoped caller must NOT: an org token carries a partnerId but never
+    // passes breeze_has_partner_access.
+    state.selectWhere = undefined;
+    await listAgents(auth({ scope: 'organization', orgId: 'o1', partnerOrgAccess: null }));
+    expect(JSON.stringify(state.selectWhere ?? {})).not.toContain('p1');
   });
 });

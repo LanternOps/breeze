@@ -95,6 +95,34 @@ describe('resolveEffectiveAgent under real RLS', () => {
     expect(resolved!.schemaVersion).toBe(1);
   });
 
+  it('the platform kill switch forces every resolved agent off', async () => {
+    // The resolver's half of the kill switch had no coverage at all: it read a
+    // module-level const, so no test could flip it. Both halves now read
+    // envFlag at call time.
+    const { partner, org } = await seed({ partnerWide: true, org: true });
+    const previous = process.env.BREEZE_AI_AGENTS_ENABLED;
+    process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
+    const on = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      resolveEffectiveAgent(AUTH, org.id, 'triage'));
+    expect(on!.effective.enabled).toBe(true);
+
+    process.env.BREEZE_AI_AGENTS_ENABLED = 'false';
+    const off = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      resolveEffectiveAgent(AUTH, org.id, 'triage'));
+    expect(off!.effective.enabled).toBe(false);
+    if (previous === undefined) delete process.env.BREEZE_AI_AGENTS_ENABLED;
+    else process.env.BREEZE_AI_AGENTS_ENABLED = previous;
+  });
+
+  it('denies a caller that cannot access the org, before reading anything', async () => {
+    const { partner, org } = await seed({ partnerWide: true, org: true });
+    const denied = { canAccessOrg: () => false } as unknown as AuthContext;
+    await expect(
+      withDbAccessContext(orgContext(org.id, partner.id), () =>
+        resolveEffectiveAgent(denied, org.id, 'triage')),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
   it('an org row alone can never self-enable the agent', async () => {
     const { partner, org } = await seed({ partnerWide: false, org: true });
     const resolved = await withDbAccessContext(orgContext(org.id, partner.id), () =>

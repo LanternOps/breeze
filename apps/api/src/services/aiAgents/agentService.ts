@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, or } from 'drizzle-orm';
 import type { CreateAiAgentInput, UpdateAiAgentInput } from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgents, type AiAgentRow } from '../../db/schema';
@@ -131,6 +131,11 @@ async function publishPolicyChanged(
       'ai-agents',
     );
   } catch (err) {
+    // 'disabled' is the kill switch. If the event does not reach the bus,
+    // in-flight runners never learn to stop, so reporting success here would be
+    // a lie about the thing the operator most needs to be true. Create/update
+    // stay best-effort — a dropped notification there is cosmetic.
+    if (change === 'disabled') throw err;
     console.error(
       '[aiAgents] eventBus publish failed:',
       err instanceof Error ? err.message : err,
@@ -150,14 +155,22 @@ async function recordMutation(
 }
 
 export async function listAgents(
-  _auth: AuthContext,
+  auth: AuthContext,
   opts: { includeDisabled?: boolean } = {},
 ): Promise<AiAgentRow[]> {
-  // RLS scopes the read; partner-wide rows are visible to partner tokens only.
+  // Defended twice. RLS is the real boundary, but a caller that reaches this
+  // without a DB context runs as scope='system' and would read EVERY partner's
+  // agents — and the old signature (_auth, ignored) made that look authorized.
+  // Partner-wide rows are only added for partner-scoped callers: an org token
+  // carries a partnerId but never passes breeze_has_partner_access.
+  const ownerScope = auth.scope === 'partner' && auth.partnerId
+    ? or(auth.orgCondition(aiAgents.orgId), and(isNull(aiAgents.orgId), eq(aiAgents.partnerId, auth.partnerId)))
+    : auth.orgCondition(aiAgents.orgId);
+
   return db
     .select()
     .from(aiAgents)
-    .where(opts.includeDisabled ? undefined : isNull(aiAgents.disabledAt))
+    .where(opts.includeDisabled ? ownerScope : and(ownerScope, isNull(aiAgents.disabledAt)))
     .orderBy(desc(aiAgents.createdAt));
 }
 

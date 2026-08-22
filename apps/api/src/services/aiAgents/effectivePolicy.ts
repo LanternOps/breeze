@@ -14,7 +14,7 @@ import {
   type AiAgentPolicyProvenance,
   type AiAgentPolicySnapshot,
 } from '@breeze/shared';
-import { AI_AGENTS_ENABLED } from '../../config/env';
+import { envFlag } from '../../config/env';
 import { db } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { aiAgents, aiBudgets, organizations, type AiAgentRow } from '../../db/schema';
@@ -62,9 +62,25 @@ function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): Ai
   for (const key of Object.keys(AI_AGENT_LIMIT_DEFAULTS) as Array<keyof AiAgentLimits>) {
     const partnerValue = partner[key];
     const orgValue = org[key];
-    merged[key] = typeof partnerValue === 'boolean' && typeof orgValue === 'boolean'
-      ? partnerValue && orgValue
-      : Math.min(Number(partnerValue), Number(orgValue));
+    if (typeof partnerValue === 'boolean' && typeof orgValue === 'boolean') {
+      merged[key] = partnerValue && orgValue;
+      continue;
+    }
+    // mergeAgentPolicies is exported and pure, so a later caller can hand it a
+    // sparse object. Math.min(NaN, x) is NaN, and every downstream
+    // `spend > limit` comparison against NaN is false — the limit would stop
+    // applying. Fall back to whichever side is a real number, then the default.
+    const partnerNumber = Number(partnerValue);
+    const orgNumber = Number(orgValue);
+    const partnerFinite = Number.isFinite(partnerNumber);
+    const orgFinite = Number.isFinite(orgNumber);
+    merged[key] = partnerFinite && orgFinite
+      ? Math.min(partnerNumber, orgNumber)
+      : partnerFinite
+        ? partnerNumber
+        : orgFinite
+          ? orgNumber
+          : (AI_AGENT_LIMIT_DEFAULTS as unknown as Record<string, number>)[key]!;
   }
 
   return merged as AiAgentLimits;
@@ -114,8 +130,15 @@ export function mergeAgentPolicies(
   };
 
   const mode = minAgentMode(partner.mode, org.mode);
+  // Fail CLOSED when the partner-governed list is absent. spec §5.1 admits the
+  // org's model only when it is IN ai_budgets.allowedModels; a missing budget
+  // row means there is no such list, so it cannot contain anything. Treating
+  // null as "anything goes" inverted the tighten-only rule in exactly the
+  // DEFAULT state — no ai_budgets row — letting an org override a model the
+  // partner had deliberately pinned.
   const orgModelAllowed = org.model !== null
-    && (opts.allowedModels === null || opts.allowedModels.includes(org.model));
+    && opts.allowedModels !== null
+    && opts.allowedModels.includes(org.model);
   const instructionSource = partner.instructions && org.instructions
     ? 'merged'
     : org.instructions
@@ -231,7 +254,9 @@ export async function resolveEffectiveAgent(
     orgRow ? normalizeAgentPolicy(orgRow) : null,
     { allowedModels },
   );
-  const effective = AI_AGENTS_ENABLED
+  // Call-time read: same reason as the guardrail gate — one normalization,
+  // and a kill switch a test can actually flip.
+  const effective = envFlag('BREEZE_AI_AGENTS_ENABLED', false)
     ? merged.effective
     : { ...merged.effective, enabled: false };
 

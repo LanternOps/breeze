@@ -762,6 +762,10 @@ export function requireScope(...scopes: Array<'system' | 'partner' | 'organizati
 export function requirePartner(c: Context, next: Next) {
   const auth = c.get('auth');
 
+  if (auth?.principal?.kind === 'ai_agent') {
+    throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+  }
+
   if (!auth?.partnerId) {
     throw new HTTPException(403, { message: 'Partner context required' });
   }
@@ -771,6 +775,12 @@ export function requirePartner(c: Context, next: Next) {
 
 export function requireOrg(c: Context, next: Next) {
   const auth = c.get('auth');
+
+  // An agent context always carries orgId (the run's org), so the bare presence
+  // check below ADMITTED it. This gate is the one that failed open by accident.
+  if (auth?.principal?.kind === 'ai_agent') {
+    throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+  }
 
   if (!auth?.orgId) {
     throw new HTTPException(403, { message: 'Organization context required' });
@@ -862,6 +872,13 @@ export function requireOrgAccess(orgIdParam: string = 'orgId') {
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
+    // Denies today only because getUserPermissions misses on the synthetic
+    // agent id — a fail-closed by coincidence, plus a needless DB round-trip.
+    // Make it a written denial.
+    if (auth.principal?.kind === 'ai_agent') {
+      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    }
+
     if (!orgId) {
       throw new HTTPException(400, { message: 'Organization ID required' });
     }
@@ -892,6 +909,13 @@ export function requireSiteAccess(siteIdParam: string = 'siteId') {
 
     if (!auth) {
       throw new HTTPException(401, { message: 'Not authenticated' });
+    }
+
+    // Denies today only because getUserPermissions misses on the synthetic
+    // agent id — a fail-closed by coincidence, plus a needless DB round-trip.
+    // Make it a written denial.
+    if (auth.principal?.kind === 'ai_agent') {
+      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
     }
 
     if (!siteId) {
