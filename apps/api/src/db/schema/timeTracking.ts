@@ -1,6 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
-  pgTable, uuid, text, varchar, integer, boolean, timestamp, numeric,
+  pgTable, uuid, text, varchar, integer, boolean, timestamp, numeric, char,
   pgEnum, uniqueIndex, index
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
@@ -31,6 +31,12 @@ export const timeEntries = pgTable('time_entries', {
   description: text('description'),
   isBillable: boolean('is_billable').notNull().default(false),
   hourlyRate: numeric('hourly_rate', { precision: 10, scale: 2 }),
+  // Wave 4 (#3776): snapshot of the org currency at creation / first attach, or
+  // of the partner currency when a standalone entry first carries a rate.
+  // Nullable only while org_id IS NULL AND hourly_rate IS NULL — CHECKs
+  // time_entries_currency_required_when_{org,rate}_chk live in SQL
+  // (2026-08-30-ticketing-currency.sql). Never restamped.
+  currencyCode: char('currency_code', { length: 3 }),
   billingStatus: billingStatusEnum('billing_status').notNull().default('not_billed'),
   isApproved: boolean('is_approved').notNull().default(false),
   approvedBy: uuid('approved_by').references(() => users.id),
@@ -54,6 +60,8 @@ export const ticketParts = pgTable('ticket_parts', {
   vendor: varchar('vendor', { length: 100 }),
   quantity: numeric('quantity', { precision: 10, scale: 2 }).notNull(),
   unitPrice: numeric('unit_price', { precision: 10, scale: 2 }).notNull().default('0'),
+  // Snapshot of the org currency when the part is created; never restamped.
+  currencyCode: char('currency_code', { length: 3 }).notNull(),
   costBasis: numeric('cost_basis', { precision: 10, scale: 2 }),
   isBillable: boolean('is_billable').notNull().default(true),
   billingStatus: billingStatusEnum('billing_status').notNull().default('not_billed'),
