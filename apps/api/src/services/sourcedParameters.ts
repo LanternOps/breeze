@@ -32,6 +32,12 @@ import type { ResolvedVariable } from './tenantVariableResolution';
  * source, and an invoker could override the org's configured value simply by
  * naming the key. The supplied value is ignored (not rejected — see
  * {@link ResolveSourcedParametersSuccess.ignoredParameters}) and reported.
+ *
+ * #3409 PR4c-2 adds one exception to the table, not a new rule inside it: a
+ * `tenantSecret` binding has no default and no caller candidate at all, so its
+ * precedence is simply `secret variable -> fail the device`, and its value
+ * leaves through {@link ResolveSourcedParametersSuccess.secretEnv} rather than
+ * `parameters`.
  */
 
 /** Where `scriptDispatch` reads device-scoped sources from. */
@@ -97,6 +103,26 @@ export interface ResolveSourcedParametersSuccess {
   parameters: Record<string, string | number | boolean>;
   /** Identity-only record of the bound parameters, for `script_executions`. */
   bindings: ScriptParameterBindingDescriptor[];
+  /**
+   * Resolved SECRET values, keyed by parameter name (#3409 PR4c-2). Always
+   * present; `{}` for the overwhelming majority of scripts.
+   *
+   * Deliberately a SEPARATE map from {@link parameters}: the agent substitutes
+   * every entry of `parameters` into the script text and mirrors it as
+   * `BREEZE_PARAM_*`, so a secret placed there would be written into the
+   * script body, echoed by `-x` tracing and persisted in the command payload.
+   * These entries instead ride the sealed `secretEnv` envelope and reach the
+   * child process only as `BREEZE_VAR_<UPPER(name)>`.
+   *
+   * Values are NOT re-validated here. The envelope's `validateSecretEnv`
+   * (`services/scriptSecretEnvelope.ts`) is the single authority for the wire
+   * rules (key grammar, 4..4096 length); the key grammar is already
+   * guaranteed by the `tenantSecret` arm's `name` regex, and the minimum
+   * length by `MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH` at variable save
+   * (`services/tenantVariables.ts`). Duplicating either check here would give
+   * two places to disagree.
+   */
+  secretEnv: Record<string, string>;
   /** Bound keys the caller supplied a value for. Ignored, never rejected (plan §2.2). */
   ignoredParameters: string[];
 }
@@ -218,18 +244,27 @@ function parseDefinitions(value: unknown): ParsedDefinitions {
 }
 
 /**
- * Does this script's stored definition list contain a `tenantVariable`
- * binding?
+ * Does this script's stored definition list contain a binding to EITHER
+ * variable-backed source — `tenantVariable` or `tenantSecret` (#3409 PR4c-2)?
+ *
+ * Both resolve out of the same `resolveForOrg` map, so both must open the
+ * scope. The name is kept (it is exported and read at three preload sites)
+ * because the question it answers is unchanged: "does dispatching this script
+ * require the tenant-variable scope?"
  *
  * Deliberately tolerant — it scans raw elements rather than requiring the
  * whole list to parse. This predicate gates a CHEAP action (loading the
  * variable scope), so the failure it must avoid is a false negative: a list
  * with one unparseable element must not cause every binding in it to resolve
- * against an empty scope.
+ * against an empty scope. For `tenantSecret` a false negative is worse still:
+ * the resolver throws on an absent map rather than failing the device.
  */
 export function hasTenantVariableBoundParameters(parameters: unknown): boolean {
   if (!Array.isArray(parameters)) return false;
-  return parameters.some((element) => readSource(element) === 'tenantVariable');
+  return parameters.some((element) => {
+    const source = readSource(element);
+    return source === 'tenantVariable' || source === 'tenantSecret';
+  });
 }
 
 /**
@@ -296,11 +331,27 @@ function readCustomField(customFields: unknown, fieldKey: string): unknown {
   return (customFields as Record<string, unknown>)[fieldKey];
 }
 
-/** One bound parameter's source lookup, before default fallback. */
+/**
+ * One bound parameter's source lookup, before default fallback.
+ *
+ * The two secret outcomes are opposites, one per variable-backed source, and
+ * are kept distinct so neither can be reached from the wrong arm:
+ *
+ * - `secretAsPlain` — a `tenantVariable` binding whose target IS a secret.
+ *   A policy denial (plan §2.4): secret delivery is declared, never inferred.
+ * - `notSecret`     — a `tenantSecret` binding whose target is NOT a secret.
+ *   Equally a denial: the author declared a credential channel, and quietly
+ *   satisfying it from a plaintext row would deliver an unprotected value
+ *   through a path that promises protection.
+ * - `secretValue`   — the only success path for `tenantSecret`. The value
+ *   goes to `secretEnv`, never to `parameters`.
+ */
 type SourceLookup =
   | { kind: 'value'; value: string; descriptor: ScriptParameterBindingDescriptor }
   | { kind: 'missing' }
-  | { kind: 'secret'; variableKey: string };
+  | { kind: 'secretAsPlain'; variableKey: string }
+  | { kind: 'notSecret'; variableKey: string }
+  | { kind: 'secretValue'; value: string; descriptor: ScriptParameterBindingDescriptor };
 
 function lookupBoundSource(
   definition: Exclude<ScriptParameterDefinition, { source: 'runtime' }>,
@@ -320,7 +371,7 @@ function lookupBoundSource(
       // substitute a stale plaintext an operator deliberately reclassified),
       // must not fall back to a caller value, and must not be omitted. PR4
       // adds the out-of-band channel; until then the device fails.
-      if (variable.isSecret) return { kind: 'secret', variableKey: definition.variableKey };
+      if (variable.isSecret) return { kind: 'secretAsPlain', variableKey: definition.variableKey };
       const value = toNonBlankString(variable.value);
       if (value === undefined) return { kind: 'missing' };
       return {
@@ -329,6 +380,33 @@ function lookupBoundSource(
         descriptor: {
           key: definition.name,
           source: 'tenantVariable',
+          variableId: variable.variableId,
+          ownerScope: variable.ownerScope,
+          version: variable.version,
+        },
+      };
+    }
+    case 'tenantSecret': {
+      if (!input.variables) {
+        throw new Error(
+          'variables map is required to dispatch a script with a tenantSecret-bound parameter',
+        );
+      }
+      const variable = input.variables.get(definition.variableKey);
+      // No default, no caller value, no omission — the arm is always
+      // `required: true` and carries no `defaultValue` (the schema rejects
+      // one), so a missing target can only fail the device.
+      if (!variable) return { kind: 'missing' };
+      if (!variable.isSecret) return { kind: 'notSecret', variableKey: definition.variableKey };
+      // The raw value, NOT `toNonBlankString`: a secret is delivered verbatim
+      // or not at all, and silently trimming or blanking a credential would
+      // turn an authentication failure into an unexplained one.
+      return {
+        kind: 'secretValue',
+        value: variable.value,
+        descriptor: {
+          key: definition.name,
+          source: 'tenantSecret',
           variableId: variable.variableId,
           ownerScope: variable.ownerScope,
           version: variable.version,
@@ -364,8 +442,10 @@ export function resolveSourcedParameters(
   const parameters: Record<string, unknown> = { ...input.callerParameters };
   const bindings: ScriptParameterBindingDescriptor[] = [];
   const ignoredParameters: string[] = [];
+  const secretEnv: Record<string, string> = {};
   const missing: string[] = [];
   const secretDenied: Array<{ key: string; variableKey: string }> = [];
+  const notSecret: Array<{ key: string; variableKey: string }> = [];
 
   for (const definition of definitions) {
     const name = definition.name;
@@ -391,9 +471,22 @@ export function resolveSourcedParameters(
     } else {
       if (callerValue !== undefined) ignoredParameters.push(name);
       const lookup = lookupBoundSource(definition, input);
-      if (lookup.kind === 'secret') {
+      if (lookup.kind === 'secretAsPlain') {
         secretDenied.push({ key: name, variableKey: lookup.variableKey });
         continue; // no default, no caller value, no omission — the device fails
+      }
+      if (lookup.kind === 'notSecret') {
+        notSecret.push({ key: name, variableKey: lookup.variableKey });
+        continue; // likewise a denial, not a fallthrough
+      }
+      if (lookup.kind === 'secretValue') {
+        // The one branch that never touches `parameters` or `resolved`: the
+        // value leaves through `secretEnv` only, and `continue` skips the
+        // default/required tail below (the arm has no default and is always
+        // required, so reaching that tail could only misreport it as missing).
+        secretEnv[name] = lookup.value;
+        bindings.push(lookup.descriptor);
+        continue;
       }
       if (lookup.kind === 'value') {
         resolved = lookup.value;
@@ -424,11 +517,11 @@ export function resolveSourcedParameters(
   // undo the binding's authority. Fail the device instead.
   const malformedBound = malformed.filter((entry) => entry.boundSource !== null);
 
-  if (missing.length > 0 || secretDenied.length > 0 || malformedBound.length > 0) {
+  if (missing.length > 0 || secretDenied.length > 0 || notSecret.length > 0 || malformedBound.length > 0) {
     return {
       ok: false,
       code: 'unresolved_parameters',
-      error: describeParameterFailure(missing, secretDenied, malformedBound),
+      error: describeParameterFailure(missing, secretDenied, notSecret, malformedBound),
       ignoredParameters,
     };
   }
@@ -437,6 +530,7 @@ export function resolveSourcedParameters(
     ok: true,
     parameters: parameters as Record<string, string | number | boolean>,
     bindings,
+    secretEnv,
     ignoredParameters,
   };
 }
@@ -452,6 +546,7 @@ const quoteList = (values: string[]): string => values.map((value) => `"${value}
 function describeParameterFailure(
   missing: string[],
   secretDenied: Array<{ key: string; variableKey: string }>,
+  notSecret: Array<{ key: string; variableKey: string }>,
   malformedBound: MalformedDefinition[],
 ): string {
   const parts: string[] = [];
@@ -463,6 +558,16 @@ function describeParameterFailure(
       `${quoteList(secretDenied.map((entry) => entry.key))} ${
         secretDenied.length === 1 ? 'is bound to secret tenant variable' : 'are bound to secret tenant variables'
       } ${quoteList(secretDenied.map((entry) => entry.variableKey))}, which cannot be used in script parameters`,
+    );
+  }
+  if (notSecret.length > 0) {
+    // The mirror of the denial above, and worth its own sentence: the author
+    // asked for the secure channel and the variable is not eligible for it.
+    // Naming both keys tells the operator exactly which one to reclassify.
+    parts.push(
+      notSecret
+        .map((entry) => `"${entry.key}" is a secret parameter but variable "${entry.variableKey}" is not a secret`)
+        .join('; '),
     );
   }
   if (malformedBound.length > 0) {

@@ -343,6 +343,125 @@ describe('resolveSourcedParameters — secret denial', () => {
   });
 });
 
+// #3409 PR4c-2 — the `tenantSecret` arm. The mirror image of the denial above:
+// secret delivery is DECLARED, never inferred, so this source demands a secret
+// target and refuses a plaintext one, and the resolved value never touches the
+// `parameters` map (which the agent substitutes into the script text).
+describe('resolveSourcedParameters — tenantSecret source (secretEnv)', () => {
+  const secretParam = (extra: Record<string, unknown> = {}) => ({
+    name: 'api_token',
+    source: 'tenantSecret',
+    variableKey: 'vendor_token',
+    ...extra,
+  });
+
+  it('routes the value into secretEnv, never into parameters, and records a descriptor', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam()],
+        variables: varsWith(
+          variable({ key: 'vendor_token', value: 'sup3r-s3cret', isSecret: true, variableId: 'var-9', version: 3 }),
+        ),
+      }),
+    );
+
+    expect(result.parameters).toEqual({});
+    expect(result.secretEnv).toEqual({ api_token: 'sup3r-s3cret' });
+    expect(result.bindings).toEqual([
+      {
+        key: 'api_token',
+        source: 'tenantSecret',
+        variableId: 'var-9',
+        ownerScope: 'organization',
+        version: 3,
+      },
+    ]);
+  });
+
+  it('exposes an empty secretEnv when the script declares no secret parameter', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [{ name: 'level', type: 'string', source: 'runtime' }],
+        callerParameters: { level: 'debug' },
+      }),
+    );
+
+    expect(result.secretEnv).toEqual({});
+  });
+
+  it('fails the device when the target variable is NOT a secret', () => {
+    const result = expectFailed(
+      resolve({
+        definitions: [secretParam()],
+        variables: varsWith(variable({ key: 'vendor_token', value: 'plaintext-value', isSecret: false })),
+      }),
+    );
+
+    expect(result.code).toBe('unresolved_parameters');
+    expect(result.error).toContain('is not a secret');
+    expect(result.error).toContain('api_token');
+    expect(result.error).toContain('vendor_token');
+    // Denial strings carry KEYS only — the target is plaintext here, so a
+    // leak would be silent rather than obviously wrong.
+    expect(result.error).not.toContain('plaintext-value');
+  });
+
+  it('fails the device when the target variable is missing (never a default, there is none)', () => {
+    const result = expectFailed(
+      resolve({
+        definitions: [secretParam()],
+        variables: varsWith(),
+      }),
+    );
+
+    expect(result.code).toBe('unresolved_parameters');
+    expect(result.error).toContain('api_token');
+    expect(result.error).not.toContain('is not a secret');
+  });
+
+  it('throws when no variables map was supplied (call-site programming error)', () => {
+    expect(() =>
+      resolve({
+        definitions: [secretParam()],
+      }),
+    ).toThrow(/variables map is required/i);
+  });
+
+  it('drops a caller-supplied value for the secret key and reports it as ignored', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam()],
+        callerParameters: { api_token: 'caller-supplied', free: 'kept' },
+        variables: varsWith(variable({ key: 'vendor_token', value: 'sup3r-s3cret', isSecret: true })),
+      }),
+    );
+
+    expect(result.parameters).toEqual({ free: 'kept' });
+    expect(result.ignoredParameters).toEqual(['api_token']);
+    expect(result.secretEnv).toEqual({ api_token: 'sup3r-s3cret' });
+  });
+
+  it('reports a notSecret denial alongside a tenantVariable secret denial in one pass', () => {
+    const result = expectFailed(
+      resolve({
+        definitions: [
+          secretParam(),
+          { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' },
+        ],
+        variables: varsWith(
+          variable({ key: 'vendor_token', value: 'plaintext-value', isSecret: false }),
+          variable({ key: 'api_token', value: 'sup3r-s3cret', isSecret: true }),
+        ),
+      }),
+    );
+
+    expect(result.error).toContain('is not a secret');
+    expect(result.error).toContain('cannot be used in script parameters');
+    expect(result.error).not.toContain('sup3r-s3cret');
+    expect(result.error).not.toContain('plaintext-value');
+  });
+});
+
 // Plan §2.2 — ignored, not rejected. A stored automation action is validated
 // without consulting the referenced script's definitions, so a hard reject
 // would turn a previously-valid automation into a delayed runtime failure the
@@ -630,6 +749,14 @@ describe('hasTenantVariableBoundParameters', () => {
     expect(hasTenantVariableBoundParameters([{ name: 'x', type: 'string', source: 'tenantVariable', variableKey: 'k' }])).toBe(true);
   });
 
+  // Both variable-backed sources gate the SAME scope preload; missing the
+  // secret arm here would resolve every secret binding against an empty map.
+  it('detects a tenantSecret binding', () => {
+    expect(
+      hasTenantVariableBoundParameters([{ name: 'x', source: 'tenantSecret', variableKey: 'k' }]),
+    ).toBe(true);
+  });
+
   it('is false for the other sources and for legacy definitions', () => {
     expect(hasTenantVariableBoundParameters([{ name: 'x', type: 'string' }])).toBe(false);
     expect(hasTenantVariableBoundParameters([{ name: 'x', type: 'string', source: 'builtin', builtinKey: 'org.id' }])).toBe(false);
@@ -662,6 +789,15 @@ describe('scriptNeedsVariableScope (plan §3 P1)', () => {
       scriptNeedsVariableScope({
         content: 'echo hi',
         parameters: [{ name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' }],
+      }),
+    ).toBe(true);
+  });
+
+  it('is true for a script with a tenantSecret-bound PARAMETER and no content token', () => {
+    expect(
+      scriptNeedsVariableScope({
+        content: 'echo hi',
+        parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'vendor_token' }],
       }),
     ).toBe(true);
   });
