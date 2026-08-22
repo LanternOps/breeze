@@ -396,7 +396,7 @@ Each variable has:
 | **Key** | Lowercase letters, digits and underscores. This is the name scripts reference. |
 | **Value** | The value substituted at run time |
 | **Description** | Optional note for your team |
-| **Secret** | See below |
+| **Secret** | Store the value write-once and masked. See [Secret variables](#secret-variables) — secrets cannot yet be referenced from script content. |
 
 An organization-scoped variable overrides a partner-wide one with the same key, so you can set a sensible default for everyone and special-case individual customers.
 
@@ -413,7 +413,11 @@ Breeze resolves each reference **per device at dispatch**, using the variable th
 
 ### Secret variables
 
-Tick **Secret** and the value becomes write-once: it is never displayed again after saving — the list shows `••••••••` and the API returns no value at all. Secrets are delivered to the script as an environment variable rather than pasted into the script body, and are redacted from captured output.
+Tick **Secret** and the value becomes write-once: it is never displayed again after saving — the list shows `••••••••` and the API returns no value at all. Secret values must be at least four characters long.
+
+<Aside type="caution">
+  **Secret variables can be stored, but not yet consumed by a script.** Saving a script whose content references a secret with `{{var.key}}` is rejected, and a run whose parameter is bound to a secret fails on that device rather than substituting a blank. Secure delivery of secret values to the agent is still in development — for now, mark a variable **Secret** to hold the value safely, not to use it from a script. Use a non-secret variable for anything a script has to read today.
+</Aside>
 
 <Aside type="caution">
   A secret cannot be recovered through the UI or the API once saved. To change it, overwrite it with a new value.

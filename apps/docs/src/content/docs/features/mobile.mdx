@@ -16,7 +16,11 @@ The Breeze mobile app gives technicians and administrators on-the-go access to d
 | iOS | iOS 13+ (with Expo SDK 50) | `com.breeze.rmm` |
 | Android | Android 5.0+ (API 21, with Expo SDK 50) | `com.breeze.rmm` |
 
-The app uses the Expo managed workflow (`expo@~50.0.0`, `react-native@0.73.0`) and supports automatic light/dark theming based on the system color scheme. The interface orientation is locked to portrait mode.
+The app uses the Expo managed workflow and supports automatic light/dark theming based on the system color scheme. The interface orientation is locked to portrait mode.
+
+<Aside type="note">
+  **Self-hosters building their own iOS app:** the published build is tied to the hosted regions' domains, so password managers only offer saved credentials (and their one-time codes) on those. Apple bakes associated domains into the signed entitlement at build time, so this cannot be a runtime setting -- set `BREEZE_ASSOCIATED_DOMAINS=breeze.example.com` before running the iOS prebuild. A bare hostname or a full URL both work; an invalid entry fails the build rather than quietly producing an app without your domain.
+</Aside>
 
 ---
 
@@ -33,7 +37,7 @@ An optional `orgId` query parameter allows partner-scoped users to filter the su
 
 ### Device Monitoring
 
-The Devices tab provides a searchable, paginated list of managed devices. Each device card displays:
+Devices live under the **Systems** tab. Tap **View all devices** to open a browsable list of managed devices; each device card displays:
 
 - Device name (display name or hostname)
 - Operating system with platform-specific icon (Windows, macOS, Linux)
@@ -42,7 +46,9 @@ The Devices tab provides a searchable, paginated list of managed devices. Each d
 - Live resource metrics (CPU, memory, disk usage) for online devices with progress bar indicators
 - Organization and site context
 
-The device list supports pull-to-refresh and client-side search filtering by name, hostname, or IP address. Decommissioned devices are excluded by default unless explicitly filtered.
+The device list supports pull-to-refresh, a free-text filter over name, hostname, site, and operating system, and **All / Online / Offline** chips (a device in a warning state counts as offline). Offline machines are sorted first so problems surface at the top. Decommissioned devices are excluded by default unless explicitly filtered.
+
+The list holds one page of devices at a time rather than the entire fleet, so a filter that finds nothing means nothing matched *on the loaded page* -- the screen says so explicitly instead of implying the fleet is empty.
 
 Tapping a device opens a detail screen showing full device information (hostname, IP address, OS, agent version, last seen, organization, site) along with live metrics retrieved from `GET /devices/:id/metrics`.
 
@@ -63,6 +69,17 @@ From the alert detail screen, technicians can:
 - **Resolve** an alert with an optional resolution note (`POST /alerts/:id/resolve`).
 
 Both actions publish events (`alert.acknowledged`, `alert.resolved`) through the event bus and write audit log entries. Resolving an alert also sets the appropriate cooldown period based on the alert rule or configuration policy settings.
+
+### Tickets
+
+The **Tickets** tab puts the service desk queue in a technician's pocket. The list filters by **Open / Closed** and **Mine / All**, so you can jump straight to what is assigned to you.
+
+Tapping a ticket opens the detail view, which shows the full activity stream -- comments alongside status changes, assignment changes, and logged time. From there a technician can:
+
+- Post a **public** comment that the requester sees.
+- Change status to **Open**, **Pending**, or **Resolved**. Only transitions the service desk allows from the ticket's current status are offered, and resolving prompts for a resolution note first.
+
+Logging time, adding attachments, and working offline are not yet available in the app -- use the web dashboard for those.
 
 ### Remote Actions
 
@@ -249,6 +266,8 @@ The app supports biometric unlock via `expo-local-authentication`:
 | Iris | Android |
 
 Biometric authentication is opt-in. When enabled in Settings, the user must authenticate with their biometric before the preference is stored. On subsequent app launches, `authenticateIfEnabled()` prompts the biometric check before granting access. The biometric prompt includes a "Use Passcode" fallback option.
+
+The lock survives process death. A cold launch, or a return to the foreground after more than 60 seconds in the background, requires device authentication before the session is restored -- previously this depended on whether the operating system happened to keep the process alive. While the app is in the app switcher a privacy cover hides its contents, and any lock state the app cannot read is treated as locked rather than unlocked.
 
 The app declares the following permissions for biometric support:
 
@@ -457,13 +476,13 @@ The app uses React Navigation with the following structure:
 - **RootNavigator** -- checks stored credentials on startup and renders either the auth flow or the main app.
 - **AuthNavigator** -- single-screen stack containing the `LoginScreen`.
 - **MainNavigator** -- bottom tab navigator with three tabs:
-  - **Alerts** -- stack with `AlertListScreen` and `AlertDetailScreen`.
-  - **Devices** -- stack with `DeviceListScreen` and `DeviceDetailScreen`.
-  - **Settings** -- stack with `SettingsScreen`.
+  - **Home** -- the assistant and fleet summary.
+  - **Systems** -- fleet health, with the device list, device detail, and alert detail screens in its stack.
+  - **Tickets** -- the ticket queue and ticket detail.
 
 ### UI Framework
 
-The app uses React Native Paper (Material Design 3) with custom light and dark themes. The primary color is `#2563eb` (light) / `#60a5fa` (dark). Key shared components include:
+The app uses a shared dark palette and type scale with custom light and dark theming. Key shared components include:
 
 - **AlertCard** -- displays alert severity, title, message, associated device, and relative timestamp.
 - **DeviceCard** -- shows device name, OS icon, status badge, last-seen time, metrics progress bars, and organization context.
@@ -515,6 +534,10 @@ The mobile app detects when the server returns `mfaRequired: true` in the login 
 - Pull down to refresh the list to trigger a new API request.
 - Verify network connectivity and confirm the API server URL is correct (set via `EXPO_PUBLIC_API_URL` environment variable, defaults to `http://localhost:3001`).
 - Check that the user's JWT token has not expired. The app will attempt a token refresh via `POST /api/v1/auth/refresh` automatically, but if the refresh token is also expired, the user must log in again.
+
+### Systems shows "Some data could not be refreshed."
+
+One of the fleet queries behind the Systems tab failed while the others succeeded. The app now says so rather than rendering a partially loaded fleet as if it were complete. Pull to refresh; if the message persists, check connectivity to the API.
 
 ### Device actions fail
 
