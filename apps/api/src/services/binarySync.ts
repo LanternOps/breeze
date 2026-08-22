@@ -597,13 +597,33 @@ export function pinnedGithubReleaseTag(): string | undefined {
   return `v${version.replace(/^v/, "")}`;
 }
 
+function unpublishedPinnedReleaseHint(pinnedTag: string, err: unknown): string {
+  const reason = err instanceof Error ? err.message : String(err);
+  return (
+    `[binarySync] GitHub sync of pinned release ${pinnedTag} FAILED (${reason}). ` +
+    `No agent binaries were registered for this version. If ${pinnedTag} is not ` +
+    `published yet (server images rolled ahead of the GitHub release), set ` +
+    `BINARY_VERSION to the last PUBLISHED release so boot sync and the download ` +
+    `redirect agree — do not expect a fallback to /releases/latest (#3742).`
+  );
+}
+
 export async function syncBinaries(): Promise<void> {
   if (getBinarySource() === "github") {
     const pinnedTag = pinnedGithubReleaseTag();
     console.log(
       `[binarySync] BINARY_SOURCE=github, syncing from GitHub release ${pinnedTag ?? "latest"}`,
     );
-    await syncFromGitHub(pinnedTag);
+    try {
+      await syncFromGitHub(pinnedTag);
+    } catch (err) {
+      // Deliberately NOT falling back to /releases/latest: that would register
+      // an older release as isLatest while the download redirect stays pinned
+      // to this version, which is the inverse of the #3742 checksum loop.
+      // Tell the operator what to do instead.
+      if (pinnedTag) console.error(unpublishedPinnedReleaseHint(pinnedTag, err));
+      throw err;
+    }
     // Safety net: with no pinned version syncFromGitHub() hits /releases/latest
     // which EXCLUDES pre-releases, so RC deploys (APP_VERSION=x.y.z-rc.N) would
     // otherwise never land in agent_versions. ensureCurrentVersionRegistered()
@@ -840,8 +860,20 @@ export async function syncBinaries(): Promise<void> {
     console.log(
       "[binarySync] No local agent binaries found, falling back to GitHub sync",
     );
-    // Pinned to the redirect's version, not /releases/latest (#3742).
-    await syncFromGitHub(pinnedGithubReleaseTag());
+    // Pinned to the redirect's version, not /releases/latest (#3742). Logged
+    // rather than thrown, matching the stale-volume fallback above: in local
+    // mode a sync failure is fatal at boot (index.ts), and an unpublished
+    // pin must not take the whole API down with it.
+    const pinnedTag = pinnedGithubReleaseTag();
+    try {
+      await syncFromGitHub(pinnedTag);
+    } catch (err) {
+      console.error(
+        pinnedTag
+          ? unpublishedPinnedReleaseHint(pinnedTag, err)
+          : `[binarySync] No local binaries + GitHub sync FAILED — no agent binaries are registered: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   // Verify the current version is registered — catches stale volumes and missed syncs.

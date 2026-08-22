@@ -2364,3 +2364,69 @@ describe("boot sync is pinned to the server's own release (#3742)", () => {
     );
   });
 });
+
+describe("unpublished pinned release is loud, not a /releases/latest fallback (#3742)", () => {
+  const originalEnv = process.env;
+  const apiBase = "https://api.github.com/repos/lanternops/breeze";
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.BINARY_GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPO;
+    delete process.env.BINARY_VERSION;
+    delete process.env.APP_VERSION;
+    delete process.env.BINARY_EDITION;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  it("github mode: logs the BINARY_VERSION remedy and rethrows (non-fatal in index.ts), never fetching /releases/latest", async () => {
+    process.env.BINARY_SOURCE = "github";
+    process.env.BREEZE_VERSION = "0.106.0"; // images ahead of the last published release
+    const fetchSpy = vi.fn(async () => new Response("not found", { status: 404 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(syncBinaries()).rejects.toThrow(/GitHub API error: 404/);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to the last PUBLISHED release/s),
+    );
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      `${apiBase}/releases/latest`,
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("local mode with an empty volume: fetches the pinned tag, logs, and does NOT crash boot", async () => {
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    process.env.BREEZE_VERSION = "0.106.0";
+    fsMocks.readdir.mockResolvedValue([] as any);
+    mockReadFileVersionOnly("0.106.0"); // volume version matches — not the stale path
+    const fetchSpy = vi.fn(async () => new Response("not found", { status: 404 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(syncBinaries()).resolves.toBeUndefined();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${apiBase}/releases/tags/v0.106.0`,
+      expect.anything(),
+    );
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      `${apiBase}/releases/latest`,
+      expect.anything(),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/pinned release v0\.106\.0 FAILED/),
+    );
+    errorSpy.mockRestore();
+  });
+});
