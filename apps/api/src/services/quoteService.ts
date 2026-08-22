@@ -269,7 +269,11 @@ async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select
 
 /** Load a quote and assert it is owned/accessible AND still a draft (409 if not). */
 async function loadDraft(quoteId: string, actor: QuoteActor) {
-  const [q] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  // FOR UPDATE: every block/line/content mutator funnels through here, so one
+  // lock serializes ALL draft edits against a concurrent send. Without it, an
+  // edit landing between sendQuote's content read and its draft→sent claim
+  // would ship a quote whose stored content differs from the PDF just emailed.
+  const [q] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
   if (q.status !== 'draft') throw new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT');

@@ -213,6 +213,7 @@ describe('sendQuote deposit validation', () => {
 
   it('throws 409 DEPOSIT_INVALID when a deposit is configured but there are zero one-time lines', async () => {
     // getQuote (called internally): select quote, select blocks, select lines.
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'percent', depositPercent: '30.00',
@@ -228,6 +229,7 @@ describe('sendQuote deposit validation', () => {
   });
 
   it('throws 409 DEPOSIT_INVALID when the deposit config is otherwise unsatisfiable (e.g. percent >= 100)', async () => {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'percent', depositPercent: '100.00',
@@ -247,6 +249,7 @@ describe('sendQuote deposit validation', () => {
     // lines are removed/unflagged after the deposit was set — the send gate must
     // hard-stop it (DEPOSIT_NO_ELIGIBLE_LINES, surfaced as DEPOSIT_INVALID) rather
     // than send a quote whose deposit computes to nothing.
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'selected_lines', depositPercent: null,
@@ -263,6 +266,7 @@ describe('sendQuote deposit validation', () => {
   });
 
   it('does NOT gate a quote with no deposit configured (depositType none)', async () => {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', // non-draft -> INVALID_STATE, not DEPOSIT_INVALID
       taxRate: null, depositType: 'none', depositPercent: null,
@@ -311,6 +315,7 @@ describe('sendQuote customer-facing PDF', () => {
     };
 
     // getQuote: select quote, select blocks, select lines (unfiltered — matches prod).
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'none', depositPercent: null,
@@ -378,6 +383,7 @@ describe('sendQuote email delivery status', () => {
 
   /** getQuote (quote/blocks/lines/pax8/billTo-org) + partnerRow + org + claim. */
   function queueThroughClaim(org: Record<string, unknown>, partner: Record<string, unknown> = {}) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quoteRow]);
     queueResult([]); // blocks
     queueResult([lineRow]); // lines
@@ -586,6 +592,7 @@ describe('sendQuote bill-to snapshot', () => {
 
   /** Queue getQuote (quote/blocks/lines) + partnerRow + org + claim + email-path reads. */
   function queueSendPath(quote: Record<string, unknown>, org: Record<string, unknown>) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
@@ -729,6 +736,7 @@ describe('sendQuote presentation snapshot', () => {
 
   /** Queue getQuote (quote/blocks/lines) + partnerRow + org + claim + email-path reads. */
   function queueSendPath(quote: Record<string, unknown>, partnerRow: Record<string, unknown>) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
@@ -814,6 +822,7 @@ describe('sendQuote document_locale stamp', () => {
   });
 
   function queueSendPath(quote: Record<string, unknown>, partnerRow: Record<string, unknown>) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
@@ -943,6 +952,7 @@ describe('sendQuote contract-variable gate', () => {
   };
 
   it('blocks send with the unresolved (manual) variable name when a contract block variable is unfilled', async () => {
+    queueResult([{ id: 'q1' }]);             // sendQuote: child row lock
     queueResult([baseQuote]);              // getQuote: quote
     queueResult([contractBlock({})]);       // getQuote: blocks — governing_state left blank
     queueResult([]);                        // getQuote: lines
@@ -964,6 +974,7 @@ describe('sendQuote contract-variable gate', () => {
   it('does not gate on an auto variable — it is always resolved from the quote itself', async () => {
     // declaredVariables includes 'client.name' (kind: auto); only the manual
     // 'governing_state' should ever appear in the unresolved list.
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([baseQuote]);
     queueResult([contractBlock({})]);
     queueResult([]);
@@ -982,6 +993,7 @@ describe('sendQuote contract-variable gate', () => {
   });
 
   it('sends successfully once every manual variable is filled in', async () => {
+    queueResult([{ id: 'q1' }]);                              // sendQuote: child row lock
     queueResult([baseQuote]);                                   // getQuote: quote
     queueResult([contractBlock({ governing_state: 'Texas' })]); // getQuote: blocks — filled in
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
@@ -1023,6 +1035,7 @@ describe('sendQuote contract-variable gate', () => {
     };
     const draftNullBillTo = { ...baseQuote, billToName: null, billToAddress: null, sellerSnapshot: null };
 
+    queueResult([{ id: 'q1' }]);             // sendQuote: child row lock
     queueResult([draftNullBillTo]);          // getQuote: quote (NULL billTo)
     queueResult([contractBlock({})]);        // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
@@ -1085,6 +1098,7 @@ describe('resendQuote', () => {
     queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — headers
     queueResult([]); // listQuoteOrders — lines
+    queueResult([{ status: quote.status }]); // resendQuote: fresh status row lock
   }
 
   beforeEach(() => {
@@ -1248,6 +1262,7 @@ describe('getQuoteShareLink', () => {
     queueResult([]); // no successor revision
     queueResult([]);
     queueResult([]);
+    queueResult([{ status: quote.status }]); // getQuoteShareLink: fresh status row lock
   }
 
   beforeEach(() => {

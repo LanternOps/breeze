@@ -123,6 +123,7 @@ describe('reviseQuote', () => {
 
   it('rejects a draft parent with INVALID_STATE', async () => {
     queueGetQuote(quote({ status: 'draft' }));
+    queueResult([{ status: 'draft' }]); // reviseQuote: parent status row lock
 
     await expect(svc.reviseQuote('q1', actor))
       .rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
@@ -130,6 +131,7 @@ describe('reviseQuote', () => {
 
   it('rejects a converted parent with PARENT_CONVERTED', async () => {
     queueGetQuote(quote({ status: 'converted' }));
+    queueResult([{ status: 'converted' }]); // reviseQuote: parent status row lock
 
     await expect(svc.reviseQuote('q1', actor))
       .rejects.toMatchObject({ code: 'PARENT_CONVERTED', status: 409 });
@@ -137,6 +139,7 @@ describe('reviseQuote', () => {
 
   it('rejects an accepted parent with PARENT_CONVERTED', async () => {
     queueGetQuote(quote({ status: 'accepted' }));
+    queueResult([{ status: 'accepted' }]); // reviseQuote: parent status row lock
 
     await expect(svc.reviseQuote('q1', actor))
       .rejects.toMatchObject({ code: 'PARENT_CONVERTED', status: 409 });
@@ -144,6 +147,7 @@ describe('reviseQuote', () => {
 
   it('rejects a superseded parent and reports its successor id', async () => {
     queueGetQuote(quote({ status: 'superseded' }));
+    queueResult([{ status: 'superseded' }]); // reviseQuote: parent status row lock
     queueResult([{ id: 'q2' }]);
 
     await expect(svc.reviseQuote('q1', actor)).rejects.toMatchObject({
@@ -162,6 +166,7 @@ describe('reviseQuote', () => {
 
   it('uses a distinct error when a superseded parent has no successor row', async () => {
     queueGetQuote(quote({ status: 'superseded' }));
+    queueResult([{ status: 'superseded' }]); // reviseQuote: parent status row lock
     queueResult([]);
 
     await expect(svc.reviseQuote('q1', actor)).rejects.toMatchObject({
@@ -173,6 +178,7 @@ describe('reviseQuote', () => {
 
   it('rejects a parent with an existing draft successor', async () => {
     queueGetQuote(quote());
+    queueResult([{ status: 'sent' }]); // reviseQuote: parent status row lock
     queueResult([{ id: 'q2', status: 'draft' }]);
 
     await expect(svc.reviseQuote('q1', actor)).rejects.toMatchObject({
@@ -193,6 +199,7 @@ describe('reviseQuote', () => {
   it('creates R2 from a sent root without allocating a new quote counter', async () => {
     const parent = quote();
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     queueSuccessfulClone(parent, quote({ id: 'q2', status: 'draft', quoteNumber: 'Q-2026-0042-R2', revisionOfQuoteId: 'q1', revisionNumber: 2 }));
 
@@ -215,6 +222,7 @@ describe('reviseQuote', () => {
       revisionNumber: 2,
     });
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     queueResult([quote({ id: 'q1' })]); // lineage root read
     queueSuccessfulClone(parent, quote({ id: 'q3', status: 'draft', quoteNumber: 'Q-2026-0042-R3', revisionOfQuoteId: 'q2', revisionNumber: 3 }));
@@ -250,6 +258,7 @@ describe('reviseQuote', () => {
   it.each(['viewed', 'declined', 'expired'])('creates a revision from a %s parent', async (status) => {
     const parent = quote({ status });
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     queueSuccessfulClone(parent, quote({
       id: 'q2',
@@ -269,6 +278,7 @@ describe('reviseQuote', () => {
 
   it('rejects a legacy parent without a quote number', async () => {
     queueGetQuote(quote({ quoteNumber: null }));
+    queueResult([{ status: 'sent' }]); // reviseQuote: parent status row lock
 
     await expect(svc.reviseQuote('q1', actor))
       .rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
@@ -277,6 +287,7 @@ describe('reviseQuote', () => {
   it('maps a wrapped unique-successor insert race to REVISION_IN_PROGRESS with the winner id', async () => {
     const parent = quote();
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     queueGetQuote(parent); // clone source read
     queueResult([]); // images
@@ -306,6 +317,7 @@ describe('reviseQuote', () => {
       },
     });
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     queueGetQuote(parent); // clone source read
     queueResult([]); // images
@@ -318,6 +330,7 @@ describe('reviseQuote', () => {
     const parent = quote();
     const error = new Error('boom');
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     queueGetQuote(parent); // clone source read
     queueResult([]); // images
@@ -329,6 +342,7 @@ describe('reviseQuote', () => {
   it('rejects a corrupt lineage whose parent row is missing', async () => {
     const parent = quote({ id: 'q2', revisionOfQuoteId: 'q1', revisionNumber: 2 });
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     queueResult([]); // lineage parent missing
 
@@ -339,6 +353,7 @@ describe('reviseQuote', () => {
   it('rejects a lineage that exhausts the 100-hop cycle guard', async () => {
     const parent = quote({ id: 'q101', revisionOfQuoteId: 'q100', revisionNumber: 101 });
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     for (let id = 100; id >= 1; id -= 1) {
       queueResult([quote({ id: `q${id}`, revisionOfQuoteId: `q${id - 1}`, revisionNumber: id })]);
@@ -354,6 +369,7 @@ describe('reviseQuote', () => {
     ['an empty parent id', quote({ id: '' })],
   ])('rejects clone lineage with %s', async (_label, parent) => {
     queueGetQuote(parent);
+    queueResult([{ status: parent.status }]); // reviseQuote: parent status row lock
     queueResult([]); // no successor
     queueGetQuote(parent); // clone source read
     queueResult([]); // images

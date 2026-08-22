@@ -1,5 +1,5 @@
 import { formatMoney } from '@breeze/shared';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from '../db/schema/quotes';
 import { organizations, partners } from '../db/schema/orgs';
@@ -55,7 +55,6 @@ export interface SendQuoteEmailOptions {
   includePdf?: boolean;
 }
 
-/** Issue (if draft) + send: assign number, status→sent, sentAt, mint token, best-effort email. */
 /**
  * Parent statuses a revision send is allowed to retire. `accepted`/`converted`
  * are deliberately absent — those are settled outcomes with an invoice or
@@ -63,6 +62,11 @@ export interface SendQuoteEmailOptions {
  */
 const SUPERSEDABLE = ['sent', 'viewed', 'declined', 'expired'] as const;
 
+/**
+ * Issue (if draft) + send: assign number, status→sent, sentAt, mint token,
+ * best-effort email. When the quote is a revision, its parent is retired to
+ * 'superseded' atomically with the draft→sent claim.
+ */
 export async function sendQuote(
   id: string,
   actor: QuoteActor,
@@ -74,6 +78,12 @@ export async function sendQuote(
   acceptUrl: string;
   superseded?: { parentQuoteId: string; previousStatus: string };
 }> {
+  // Lock the CHILD first, before reading its content: a concurrent draft edit
+  // (now blocked on loadDraft's FOR UPDATE) must not land between the content
+  // read below and the draft→sent claim, or we email a PDF that no longer
+  // matches the stored quote. Locking before the access check is harmless — an
+  // inaccessible id 404s at getQuote and the lock dies with the transaction.
+  await db.select({ id: quotes.id }).from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
   const { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
@@ -690,7 +700,15 @@ export async function getQuoteShareLink(
   id: string, actor: QuoteActor,
 ): Promise<{ acceptUrl: string; origin: AcceptUrlOrigin; reissued: boolean; recipients: string[]; orgId: string }> {
   const { quote } = await getQuote(id, actor); // enforces org-access (404)
-  assertLinkableQuote(quote, 'share');
+  // Re-read the status under a row lock and gate on the FRESH value: getQuote's
+  // snapshot can be stale by the time we mint or reproduce a link, and handing
+  // out a live link to a just-superseded quote is exactly what supersede exists
+  // to prevent. This also serializes against the parent-flip lock in sendQuote.
+  // 'superseded' is already outside RESENDABLE_STATUSES, so assertLinkableQuote
+  // refuses it with no change needed there.
+  const [freshShare] = await db.select({ status: quotes.status })
+    .from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
+  assertLinkableQuote({ ...quote, status: freshShare?.status ?? quote.status }, 'share');
   const { acceptUrl, origin } = await resolveAcceptUrl(quote);
   return {
     acceptUrl, origin, reissued: origin !== 'reproduced',
@@ -719,7 +737,13 @@ export async function resendQuote(
   id: string, actor: QuoteActor, opts: SendQuoteEmailOptions = {},
 ): Promise<{ quote: QuoteRow; emailed: boolean; emailReason?: SendQuoteEmailReason; acceptUrl: string; origin: AcceptUrlOrigin; reissued: boolean }> {
   const { quote, blocks, lines } = await getQuote(id, actor); // enforces org-access (404)
-  assertLinkableQuote(quote, 're-send');
+  // Same fresh-status gate as getQuoteShareLink: re-mailing a link for a quote
+  // that was superseded between the read and here would put a dead document
+  // back in the customer's inbox. The lock serializes against sendQuote's
+  // parent flip.
+  const [freshResend] = await db.select({ status: quotes.status })
+    .from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
+  assertLinkableQuote({ ...quote, status: freshResend?.status ?? quote.status }, 're-send');
   if (!quote.quoteNumber) {
     // A sent quote always has a number (sendQuote allocates one on the way
     // through). Missing here means the row was tampered with or half-migrated.
@@ -814,7 +838,15 @@ export async function markQuoteViewed(quoteId: string, orgId: string): Promise<v
     const set: Record<string, unknown> = { viewedAt: now, updatedAt: now };
     if (!q.firstViewedAt) set.firstViewedAt = now;
     if (q.status === 'sent') set.status = 'viewed';
-    await db.update(quotes).set(set).where(eq(quotes.id, quoteId));
+    // CAS on the status we actually read. `q` is an unlocked snapshot, so a
+    // supersede can commit between that read and this write — an unguarded
+    // `WHERE id = ?` would then resurrect a retired quote to 'viewed' or stamp
+    // a superseded row. Matching zero rows is the correct outcome here, not an
+    // error: someone settled the quote first, and this is a cosmetic stamp.
+    await db.update(quotes).set(set).where(and(
+      eq(quotes.id, quoteId),
+      q.status === 'sent' ? eq(quotes.status, 'sent') : ne(quotes.status, 'superseded'),
+    ));
     // First view only (invoice.viewed parity): the sales-timing signal a future
     // notification worker cares about. Fire-and-forget — never fails the view.
     if (!q.firstViewedAt) await emitQuoteEvent({ type: 'quote.viewed', quoteId, orgId: q.orgId, partnerId: q.partnerId });
@@ -840,7 +872,17 @@ export async function declineQuoteByActor(
     throw new QuoteServiceError('This quote has expired', 410, 'QUOTE_EXPIRED');
   }
   const now = new Date();
-  await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, id));
+  // CAS on the status guard above: `quote` is an unlocked read, so a supersede
+  // (or a concurrent accept/decline) can land in between. Unlike markQuoteViewed
+  // this is NOT cosmetic — declining is a real customer-visible outcome, so zero
+  // rows matched must surface rather than silently pretend to succeed.
+  const declined = await db.update(quotes)
+    .set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now })
+    .where(and(eq(quotes.id, id), inArray(quotes.status, ['sent', 'viewed'])))
+    .returning({ id: quotes.id });
+  if (declined.length === 0) {
+    throw new QuoteServiceError('This quote can no longer be declined', 409, 'INVALID_STATE');
+  }
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   // Tell the tech who sent it (decline-completion spec §A). Deliberately
   // UNAWAITED: it emails over SMTP and must never add latency to (or fail)
