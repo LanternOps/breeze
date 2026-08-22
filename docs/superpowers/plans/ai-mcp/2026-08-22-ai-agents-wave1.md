@@ -428,8 +428,8 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_agent_runs_status_chk' AND conrelid = 'ai_agent_runs'::regclass) THEN
     ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_status_chk CHECK (status IN ('queued', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled', 'expired', 'skipped'));
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_agent_runs_dedupe_key_uq' AND conrelid = 'ai_agent_runs'::regclass) THEN
-    ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_dedupe_key_uq UNIQUE (dedupe_key);
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_agent_runs_org_dedupe_key_uq' AND conrelid = 'ai_agent_runs'::regclass) THEN
+    ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_org_dedupe_key_uq UNIQUE (org_id, dedupe_key);
   END IF;
 END $$;
 
@@ -580,7 +580,7 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (table) => ({
-  dedupeUq: uniqueIndex('ai_agent_runs_dedupe_key_uq').on(table.dedupeKey),
+  dedupeUq: unique('ai_agent_runs_org_dedupe_key_uq').on(table.orgId, table.dedupeKey),
   agentQueuedIdx: index('ai_agent_runs_agent_queued_idx').on(table.agentId, table.queuedAt),
   orgQueuedIdx: index('ai_agent_runs_org_queued_idx').on(table.orgId, table.queuedAt),
   deviceIdx: index('ai_agent_runs_device_id_idx').on(table.deviceId),

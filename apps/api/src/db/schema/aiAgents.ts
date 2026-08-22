@@ -92,7 +92,9 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (table) => ({
-  dedupeUq: unique('ai_agent_runs_dedupe_key_uq').on(table.dedupeKey),
+  // Tenant-scoped (see 2026-09-01-ai-agents.sql): a global unique on
+  // dedupe_key is enforced below RLS and leaks cross-tenant existence.
+  dedupeUq: unique('ai_agent_runs_org_dedupe_key_uq').on(table.orgId, table.dedupeKey),
   agentQueuedIdx: index('ai_agent_runs_agent_queued_idx').on(table.agentId, table.queuedAt.desc()),
   orgQueuedIdx: index('ai_agent_runs_org_queued_idx').on(table.orgId, table.queuedAt.desc()),
   deviceIdx: index('ai_agent_runs_device_id_idx').on(table.deviceId),

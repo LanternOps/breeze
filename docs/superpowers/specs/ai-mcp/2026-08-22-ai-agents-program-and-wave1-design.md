@@ -230,7 +230,8 @@ error_code          varchar(64) null
 correlation_id      varchar(64) null
 queued_at           timestamptz NOT NULL default now()
 started_at / finished_at  timestamptz null
-UNIQUE (dedupe_key)
+UNIQUE (org_id, dedupe_key)   -- tenant-scoped: a unique index is enforced below RLS,
+                              -- so a global one leaks cross-tenant row existence via 23505
 INDEX (agent_id, queued_at desc), INDEX (org_id, queued_at desc), INDEX (device_id)
 ```
 

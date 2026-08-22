@@ -111,8 +111,13 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_agent_runs_status_chk' AND conrelid = 'ai_agent_runs'::regclass) THEN
     ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_status_chk CHECK (status IN ('queued', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled', 'expired', 'skipped'));
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_agent_runs_dedupe_key_uq' AND conrelid = 'ai_agent_runs'::regclass) THEN
-    ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_dedupe_key_uq UNIQUE (dedupe_key);
+  -- Tenant-scoped, NOT global: a unique index is enforced BELOW row-level
+  -- security, so a global UNIQUE (dedupe_key) would let one org's insert fail
+  -- with 23505 against a row it cannot see — a cross-tenant existence oracle
+  -- and a denial vector. Dedupe is only ever meaningful inside one org.
+  -- Same shape as pax8_orders_dedupe_key_uq (partner_id, dedupe_key).
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_agent_runs_org_dedupe_key_uq' AND conrelid = 'ai_agent_runs'::regclass) THEN
+    ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_org_dedupe_key_uq UNIQUE (org_id, dedupe_key);
   END IF;
 END $$;
 
