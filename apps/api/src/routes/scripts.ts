@@ -36,7 +36,9 @@ import {
   type ScriptCreateScope,
 } from '../services/scriptWrite';
 import {
+  describeParameterSecretMismatch,
   describeSecretVariableRejection,
+  findParameterSecretMismatches,
   findSecretVariableReferences,
 } from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
@@ -527,6 +529,23 @@ scriptRoutes.post(
       return c.json({ error: 'A script with this name already exists in your organization' }, 409);
     }
 
+    // The FOURTH write ingress for `scripts.content` / `scripts.parameters`
+    // (#3409 PR4c-2). A clone copies the source's content and parameter
+    // definitions verbatim, so both save-time secret checks apply here exactly
+    // as they do on POST/PUT — the clone always lands in ONE org (orgId is
+    // required above), so it is org-scoped and may not bind a partner-owned
+    // secret. Skipping the checks here would only defer the error to dispatch,
+    // which is where the rule is actually enforced.
+    const cloneScope: ScriptCreateScope = { orgId, partnerId: auth.partnerId ?? null };
+    const secretRefs = await findSecretVariableReferences(cloneScope, source.content);
+    if (secretRefs.length > 0) {
+      return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
+    }
+    const mismatches = await findParameterSecretMismatches(cloneScope, source.parameters);
+    if (mismatches.length > 0) {
+      return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
+    }
+
     // Clone into the org
     const [cloned] = await db
       .insert(scripts)
@@ -615,6 +634,15 @@ scriptRoutes.post(
     const secretRefs = await findSecretVariableReferences(scope, data.content);
     if (secretRefs.length > 0) {
       return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
+    }
+    // Parameter-binding twin (#3409 PR4c-2): tenantVariable→secret and
+    // tenantSecret→non-secret are both rejected; unknown keys pass. A
+    // PARTNER-OWNED secret is additionally rejected unless `scope` is itself
+    // partner-wide — the ownership-tier rule, whose authority is dispatch
+    // (see findParameterSecretMismatches).
+    const mismatches = await findParameterSecretMismatches(scope, data.parameters);
+    if (mismatches.length > 0) {
+      return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
     }
 
     const script = await insertScriptRow(auth, scope, data, {
@@ -808,6 +836,18 @@ scriptRoutes.put(
       }
       updates.content = data.content;
       versionChanged = true;
+    }
+
+    if (data.parameters !== undefined) {
+      // Parameter-binding twin of the content check (#3409 PR4c-2), against
+      // the same EFFECTIVE (post-rescope) scope — so a save that widens the
+      // script to partner-wide is judged at the tier it ENDS at. Only the
+      // INCOMING definitions are checked: a PUT that leaves `parameters`
+      // untouched does not re-validate what is already stored.
+      const mismatches = await findParameterSecretMismatches(effectiveScope, data.parameters);
+      if (mismatches.length > 0) {
+        return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
+      }
     }
 
     if (versionChanged) {

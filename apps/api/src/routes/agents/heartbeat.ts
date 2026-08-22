@@ -47,6 +47,7 @@ import {
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
 
@@ -489,8 +490,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // #2414 — decrypt just-in-time; a command whose payload fails decryption is
     // released back to `pending` (not stranded as `sent`) while its siblings
     // still deliver.
+    //
+    // #3409 PR4c-2 — hand the gate the capability THIS beat reported rather
+    // than letting it re-read the column: the watchdog branch returns before
+    // the device update at all, so the stored value here is always from an
+    // earlier beat.
     return c.json({
-      commands: await decryptClaimedCommandsForDelivery(watchdogCommands),
+      commands: await decryptClaimedCommandsForDelivery(watchdogCommands, {
+        reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
+          data.securityCapabilities?.scriptSecretEnvVersion,
+        ),
+      }),
       watchdogUpgradeTo,
       upgradeTo: agentUpgradeTo,
     });
@@ -518,7 +528,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
     // not only at enqueue, because an offline-queued command can be claimed
     // after the agent downgraded.
-    scriptSecretEnvVersion: data.securityCapabilities?.scriptSecretEnvVersion === 1 ? 1 : 0,
+    scriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(data.securityCapabilities?.scriptSecretEnvVersion),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these
@@ -1159,7 +1169,17 @@ if (latestHelper) {
   // #2414 — decrypt just-in-time; a command whose payload fails decryption is
   // released back to `pending` (not stranded as `sent`) while its siblings
   // still deliver.
-  const deliverableCommands = await decryptClaimedCommandsForDelivery(commands);
+  //
+  // #3409 PR4c-2 — the secret-delivery claim gate uses the capability THIS
+  // heartbeat reported, not the stored column. The device write above carries
+  // the same value but is guarded on the device not being decommissioned/
+  // quarantined, so it can be skipped entirely; trusting the stored value
+  // could then deliver a sealed secret to an agent that just reported 0.
+  const deliverableCommands = await decryptClaimedCommandsForDelivery(commands, {
+    reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
+      data.securityCapabilities?.scriptSecretEnvVersion,
+    ),
+  });
 
   // Main-branch response payload — built inside the org context, but the
   // manifest-trust-keyset and policy probe config are fetched AFTER this

@@ -843,6 +843,9 @@
       "linux": "Linux"
     }
   },
+  "secretParameters": {
+    "requiresSystemContext": "Questo script usa variabili segrete, consegnate solo alle esecuzioni nel contesto di sistema senza sessione di destinazione. Con \"Utente connesso\", o quando si sceglie una sessione specifica, i dispositivi falliranno con \"non eseguito\"."
+  },
   "scriptExecutionsPage": {
     "errors": {
       "fetchScript": "Impossibile recuperare lo script",
@@ -998,14 +1001,15 @@
       "button": "Variabili",
       "insertTitle": "Inserisci una variabile",
       "empty": "Ancora nessuna variabile.",
-      "secretUnavailable": "Segreto: una versione futura lo passerà come variabile d'ambiente.",
+      "secretUnavailable": "Segreto: collegalo tramite un parametro con origine \"Da una variabile segreta\".",
       "unknown": "Non esiste alcuna variabile per {{keys}}: i dispositivi selezionati falliranno finché non la crei."
     },
     "parameterSources": {
       "runtime": "Richiesto all’esecuzione",
       "tenantVariable": "Da una variabile",
       "deviceCustomField": "Da un campo personalizzato del dispositivo",
-      "builtin": "Da una proprietà del dispositivo"
+      "builtin": "Da una proprietà del dispositivo",
+      "tenantSecret": "Da una variabile segreta (variabile d’ambiente)"
     },
     "parameterBinding": {
       "variableLabel": "Chiave della variabile",
@@ -1015,6 +1019,9 @@
       "builtinLabel": "Proprietà",
       "chooseTitle": "Scegli una variabile",
       "secretRejected": "\"{{key}}\" è segreta: il salvataggio verrà rifiutato. Scegli una variabile non segreta.",
+      "notSecret": "\"{{key}}\" non è segreta. Scegli una variabile segreta oppure cambia l’origine in \"Da una variabile\".",
+      "notSecretRow": "Non è segreta: usa \"Da una variabile\"",
+      "secretHint": "Consegnata solo come variabile d’ambiente {{env}}: non viene mai scritta nello script. Richiede l’esecuzione nel contesto di sistema e un agent che supporti la consegna sicura dei segreti.",
       "hint": "Viene risolto per ogni dispositivo di destinazione all’esecuzione dello script: nessuno deve indicarlo."
     }
   },
@@ -1077,7 +1084,8 @@
     "suppliedBy": {
       "tenantVariable": "Fornito automaticamente dalla variabile {{key}}",
       "deviceCustomField": "Fornito automaticamente dal campo personalizzato del dispositivo {{key}}",
-      "builtin": "Fornito automaticamente da {{key}}"
+      "builtin": "Fornito automaticamente da {{key}}",
+      "tenantSecret": "Fornito in modo sicuro dalla variabile segreta {{key}} come variabile d’ambiente"
     }
   },
   "scriptTagManager": {

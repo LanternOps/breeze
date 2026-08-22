@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import type { TenantVariableEntry } from '@/lib/tenantVariableTokens';
 
 export interface TenantVariableMenuProps {
-  /** Offerable variables; secrets render disabled (PR 4 delivers them out-of-band). */
+  /** Offerable variables. Selectability is decided by {@link selectable}. */
   variables: TenantVariableEntry[];
   /**
    * Receives the KEY, never a token. Callers that want `{{var.<key>}}` build it
@@ -19,6 +19,20 @@ export interface TenantVariableMenuProps {
    * is what the content editor inserts; the key picker passes identity.
    */
   formatDetail?: (key: string) => string;
+  /**
+   * Which rows can be picked. Defaults to "everything except a secret" — the
+   * content editor and the plain `tenantVariable` binding both reject secrets.
+   * The `tenantSecret` binding (#3409 PR4c-2) inverts it (`v => v.isSecret`),
+   * which is why this is a predicate rather than a boolean flag: exactly one
+   * rule decides both the `disabled` attribute and the reason line, so the two
+   * can never disagree.
+   */
+  selectable?: (variable: TenantVariableEntry) => boolean;
+  /**
+   * Secondary reason line for a row, rendered in amber. Defaults to the
+   * secret-unavailable copy for secret rows and nothing for the rest.
+   */
+  disabledReason?: (variable: TenantVariableEntry) => string | undefined;
   /** Trigger contents. Defaults to the Braces icon + the "Variables" label. */
   trigger?: ReactNode;
   triggerTitle?: string;
@@ -40,12 +54,18 @@ export default function TenantVariableMenu({
   variables,
   onSelect,
   formatDetail = variableToken,
+  selectable = variable => !variable.isSecret,
+  disabledReason,
   trigger,
   triggerTitle,
   triggerClassName,
 }: TenantVariableMenuProps) {
   const { t } = useTranslation('scripts');
   const [open, setOpen] = useState(false);
+  const reasonFor =
+    disabledReason ??
+    ((variable: TenantVariableEntry) =>
+      variable.isSecret ? t('scriptForm.variables.secretUnavailable') : undefined);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -107,32 +127,36 @@ export default function TenantVariableMenu({
               {t('scriptForm.variables.empty')}
             </p>
           ) : (
-            variables.map(v => (
-              <button
-                key={v.key}
-                type="button"
-                role="menuitem"
-                disabled={v.isSecret}
-                aria-disabled={v.isSecret || undefined}
-                onClick={() => {
-                  setOpen(false);
-                  onSelect(v.key);
-                }}
-                className="w-full rounded px-2 py-1.5 text-left hover:bg-muted focus:bg-muted focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-transparent"
-              >
-                <span className="block truncate text-sm text-foreground">
-                  {v.description || v.key}
-                </span>
-                <span className="block truncate font-mono text-[11px] text-muted-foreground">
-                  {formatDetail(v.key)}
-                </span>
-                {v.isSecret && (
-                  <span className="mt-0.5 block text-[11px] text-amber-600 dark:text-amber-500">
-                    {t('scriptForm.variables.secretUnavailable')}
+            variables.map(v => {
+              const canSelect = selectable(v);
+              const reason = reasonFor(v);
+              return (
+                <button
+                  key={v.key}
+                  type="button"
+                  role="menuitem"
+                  disabled={!canSelect}
+                  aria-disabled={!canSelect || undefined}
+                  onClick={() => {
+                    setOpen(false);
+                    onSelect(v.key);
+                  }}
+                  className="w-full rounded px-2 py-1.5 text-left hover:bg-muted focus:bg-muted focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-transparent"
+                >
+                  <span className="block truncate text-sm text-foreground">
+                    {v.description || v.key}
                   </span>
-                )}
-              </button>
-            ))
+                  <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                    {formatDetail(v.key)}
+                  </span>
+                  {reason && (
+                    <span className="mt-0.5 block text-[11px] text-amber-600 dark:text-amber-500">
+                      {reason}
+                    </span>
+                  )}
+                </button>
+              );
+            })
           )}
         </div>
       )}

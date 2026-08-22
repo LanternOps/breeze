@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MAX_SCRIPT_PARAMETERS, MAX_SCRIPT_PARAMETER_VALUE_LENGTH, SCRIPT_PARAMETER_KEY_PATTERN } from './scriptParameters';
-import { tenantVariableKeySchema } from './tenantVariables';
+import { TENANT_VARIABLE_KEY_PATTERN, tenantVariableKeySchema } from './tenantVariables';
 
 /**
  * Script parameter DEFINITIONS (#3409 PR3) — the authoring-time declaration of
@@ -28,8 +28,15 @@ import { tenantVariableKeySchema } from './tenantVariables';
  *   org (org > partner).
  * - `deviceCustomField` — the target device's `custom_fields` JSONB.
  * - `builtin` — an org / site / device property.
+ * - `tenantSecret` — a SECRET `tenant_variables` row (#3409 PR4c). The value
+ *   never enters the `parameters` map or the script text; it rides the sealed
+ *   `secretEnv` envelope and the agent exports it as `BREEZE_VAR_<UPPER(name)>`
+ *   (see {@link scriptSecretEnvName}). `tenantVariable` keeps REJECTING a
+ *   secret target — secret delivery is declared, never inferred.
+ *
+ * Order is the web `<select>` order; append, never reorder.
  */
-export const SCRIPT_PARAMETER_SOURCES = ['runtime', 'tenantVariable', 'deviceCustomField', 'builtin'] as const;
+export const SCRIPT_PARAMETER_SOURCES = ['runtime', 'tenantVariable', 'deviceCustomField', 'builtin', 'tenantSecret'] as const;
 export type ScriptParameterSource = (typeof SCRIPT_PARAMETER_SOURCES)[number];
 
 export const SCRIPT_PARAMETER_TYPES = ['string', 'number', 'boolean', 'select'] as const;
@@ -121,6 +128,39 @@ const builtinParameterDefinitionSchema = z.object({
 });
 
 /**
+ * The `tenantSecret` arm deliberately does NOT spread the base:
+ *
+ * - `name` must match the TENANT-VARIABLE key grammar, not the looser
+ *   parameter grammar. The name is the `secretEnv` wire key, the agent's
+ *   `ParseSecretEnv` validates it against that grammar and fails the whole
+ *   command closed on a miss, and the env var is derived as
+ *   `BREEZE_VAR_` + ToUpper(name) with no `-` folding. Rejecting at save beats
+ *   failing per device.
+ * - `type` is always `string` and `required` is always `true`: a missing or
+ *   unreadable secret fails the device closed, so there is no optional secret
+ *   and nothing to coerce.
+ * - `defaultValue` and `options` are rejected when present. A default would be
+ *   a plaintext credential stored in the script definition; the value is never
+ *   a choice list. Zod 4 treats a bare `z.undefined()` object field as a
+ *   required key (`expected nonoptional`), hence the `.optional()` — the
+ *   custom message still fires when the key is present with a value.
+ */
+const tenantSecretParameterDefinitionSchema = z.object({
+  name: z
+    .string()
+    .regex(
+      TENANT_VARIABLE_KEY_PATTERN,
+      'Secret parameter names must be lowercase letters, digits and underscores, and start with a letter'
+    ),
+  source: z.literal('tenantSecret'),
+  variableKey: tenantVariableKeySchema,
+  type: z.literal('string').default('string'),
+  required: z.literal(true).default(true),
+  defaultValue: z.undefined({ message: 'A secret parameter cannot carry a default value' }).optional(),
+  options: z.undefined({ message: 'A secret parameter cannot declare options' }).optional(),
+});
+
+/**
  * One definition, discriminated on `source`, each arm requiring only its own
  * binding field.
  *
@@ -132,7 +172,7 @@ const builtinParameterDefinitionSchema = z.object({
  * to ordinary union matching, where the `runtime` arm applies its default and
  * succeeds. Inputs that DO carry a valid `source` still take the fast path and
  * still get arm-specific errors (e.g. a missing `variableKey` reports at
- * `["variableKey"]`, not as a four-branch union failure).
+ * `["variableKey"]`, not as a five-branch union failure).
  */
 export const scriptParameterDefinitionSchema = z.discriminatedUnion(
   'source',
@@ -141,6 +181,7 @@ export const scriptParameterDefinitionSchema = z.discriminatedUnion(
     tenantVariableParameterDefinitionSchema,
     deviceCustomFieldParameterDefinitionSchema,
     builtinParameterDefinitionSchema,
+    tenantSecretParameterDefinitionSchema,
   ],
   { unionFallback: true }
 );
@@ -165,6 +206,17 @@ export function scriptParameterEnvName(name: string): string {
 }
 
 /**
+ * The env var the agent exports for a `tenantSecret` parameter:
+ * `"BREEZE_VAR_" + strings.ToUpper(key)` (`SecretEnv.EnvKey`,
+ * `agent/internal/executor/secretenv.go`). No `-` folding, unlike
+ * {@link scriptParameterEnvName} — the tenant-key grammar admits no hyphen, so
+ * there is nothing to fold. E.g. `api_token` -> `BREEZE_VAR_API_TOKEN`.
+ */
+export function scriptSecretEnvName(name: string): string {
+  return `BREEZE_VAR_${name.toUpperCase()}`;
+}
+
+/**
  * Rejects two parameter names that collapse to the SAME `BREEZE_PARAM_*` env
  * var on the agent.
  *
@@ -175,6 +227,11 @@ export function scriptParameterEnvName(name: string): string {
  * randomizes map iteration order, so which value wins varies between runs of
  * the same script on the same device. Uppercasing widens the equivalence
  * class further: `logLevel`, `LOGLEVEL` and `loglevel` all collide too.
+ *
+ * The rule keys on `name` for EVERY arm, `tenantSecret` included. A secret and
+ * a runtime parameter sharing a name land in different env vars
+ * (`BREEZE_VAR_` vs `BREEZE_PARAM_`) but are still one parameter name in the
+ * run modal and the definition list, so they are rejected as duplicates.
  *
  * Exported separately from the array schema so a caller that needs a different
  * length cap can rebuild the array without re-implementing the rule.
@@ -203,15 +260,64 @@ export function refineScriptParameterKeyCollisions(
 }
 
 /**
+ * How many `tenantSecret` parameters one script may declare (#3409 PR4c-2).
+ *
+ * This MUST equal `MAX_SECRET_ENV_ENTRIES` in
+ * `apps/api/src/services/scriptSecretEnvelope.ts`, which is the AUTHORITY —
+ * it is the bound the sealed `secretEnv` envelope actually enforces at
+ * dispatch. It is restated here rather than imported because `packages/shared`
+ * must not depend on `apps/api`; the two are pinned together by an equality
+ * assertion in `apps/api/src/services/scriptBundle/index.test.ts`, so they
+ * cannot drift.
+ *
+ * Deliberately LOWER than {@link MAX_SCRIPT_PARAMETERS} (64). Without a
+ * save-time rule a script declaring 33+ secret parameters saves cleanly and
+ * then throws inside `encryptSensitivePayloadFields` at dispatch — inside
+ * `scriptDispatch`'s guarded region, which RETHROWS, and
+ * `executeScriptOnDevices` does not wrap the per-device call. The result is a
+ * 500 with an internal message that kills the ENTIRE fan-out, not one device.
+ */
+export const MAX_SECRET_SCRIPT_PARAMETERS = 32;
+
+/**
+ * Rejects more `tenantSecret` parameters than the secret-delivery envelope can
+ * carry. Reported on the FIRST over-limit element's `source` (not on the whole
+ * array) so the web form can point at the parameter the tech should remove,
+ * and so it never masks the array-level {@link MAX_SCRIPT_PARAMETERS} cap.
+ *
+ * Exported alongside {@link refineScriptParameterKeyCollisions} for the same
+ * reason: a caller rebuilding the array with a different length cap must be
+ * able to reapply this rule without re-implementing it.
+ */
+export function refineSecretScriptParameterCap(
+  definitions: ReadonlyArray<{ source?: string }>,
+  ctx: z.RefinementCtx
+): void {
+  let secretCount = 0;
+  definitions.forEach((definition, index) => {
+    if (definition.source !== 'tenantSecret') return;
+    secretCount += 1;
+    if (secretCount <= MAX_SECRET_SCRIPT_PARAMETERS) return;
+    ctx.addIssue({
+      code: 'custom',
+      path: [index, 'source'],
+      message: `A script cannot declare more than ${MAX_SECRET_SCRIPT_PARAMETERS} secret parameters`,
+    });
+  });
+}
+
+/**
  * The array as stored in `scripts.parameters`. Capped at
  * {@link MAX_SCRIPT_PARAMETERS}, the same bound the run-time value map uses —
  * a definition list longer than the value map could accept would declare
- * parameters that can never be supplied.
+ * parameters that can never be supplied. `tenantSecret` rows carry the
+ * additional, tighter {@link MAX_SECRET_SCRIPT_PARAMETERS} cap.
  */
 export const scriptParameterDefinitionsSchema = z
   .array(scriptParameterDefinitionSchema)
   .max(MAX_SCRIPT_PARAMETERS, `A script cannot declare more than ${MAX_SCRIPT_PARAMETERS} parameters`)
-  .superRefine(refineScriptParameterKeyCollisions);
+  .superRefine(refineScriptParameterKeyCollisions)
+  .superRefine(refineSecretScriptParameterCap);
 
 /**
  * Parse an unvalidated stored/incoming value into normalized definitions.

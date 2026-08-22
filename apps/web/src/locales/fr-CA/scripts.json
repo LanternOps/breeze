@@ -843,6 +843,9 @@
       "linux": "Linux"
     }
   },
+  "secretParameters": {
+    "requiresSystemContext": "Ce script utilise des variables secrètes, qui ne sont transmises qu’aux exécutions dans le contexte système sans session ciblée. Avec « Utilisateur connecté », ou lorsqu’une session précise est ciblée, les appareils échoueront avec « non exécuté »."
+  },
   "scriptExecutionsPage": {
     "errors": {
       "fetchScript": "Impossible de récupérer le script",
@@ -998,14 +1001,15 @@
       "button": "Variables",
       "insertTitle": "Insérer une variable",
       "empty": "Aucune variable pour l'instant.",
-      "secretUnavailable": "Secret — une version ultérieure la transmettra comme variable d'environnement.",
+      "secretUnavailable": "Secret — liez-le par un paramètre dont la source est « À partir d’une variable secrète ».",
       "unknown": "Aucune variable ne correspond à {{keys}} — les appareils ciblés échoueront tant qu'elle n'existe pas."
     },
     "parameterSources": {
       "runtime": "Demandé à l’exécution",
       "tenantVariable": "À partir d’une variable",
       "deviceCustomField": "À partir d’un champ personnalisé de l’appareil",
-      "builtin": "À partir d’une propriété de l’appareil"
+      "builtin": "À partir d’une propriété de l’appareil",
+      "tenantSecret": "À partir d’une variable secrète (variable d’environnement)"
     },
     "parameterBinding": {
       "variableLabel": "Clé de la variable",
@@ -1015,6 +1019,9 @@
       "builtinLabel": "Propriété",
       "chooseTitle": "Choisir une variable",
       "secretRejected": "« {{key}} » est un secret — l’enregistrement sera refusé. Choisissez une variable non secrète.",
+      "notSecret": "« {{key}} » n’est pas un secret. Choisissez une variable secrète ou changez la source pour « À partir d’une variable ».",
+      "notSecretRow": "Pas un secret — utilisez « À partir d’une variable »",
+      "secretHint": "Transmise uniquement comme variable d’environnement {{env}} — jamais écrite dans le script. Nécessite une exécution dans le contexte système et un agent prenant en charge la transmission sécurisée des secrets.",
       "hint": "Résolu pour chaque appareil ciblé au moment de l’exécution — personne n’a à le saisir."
     }
   },
@@ -1077,7 +1084,8 @@
     "suppliedBy": {
       "tenantVariable": "Fourni automatiquement par la variable {{key}}",
       "deviceCustomField": "Fourni automatiquement par le champ personnalisé de l’appareil {{key}}",
-      "builtin": "Fourni automatiquement par {{key}}"
+      "builtin": "Fourni automatiquement par {{key}}",
+      "tenantSecret": "Fourni de façon sécurisée par la variable secrète {{key}}, comme variable d’environnement"
     }
   },
   "scriptTagManager": {
