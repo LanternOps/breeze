@@ -32,6 +32,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pay\/?$/ },
+  // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
+  { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
+  // Stripe cache lazy refresh — getStripeAccountCurrency may call accounts.retrieve.
+  { method: 'GET', pattern: /^\/api\/v1\/partner\/stripe-connect\/?$/ },
+  // Stripe cache forced refresh — refreshPartnerStripeAccount calls accounts.retrieve.
+  { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/refresh\/?$/ },
   // QuickBooks customer import — both routes page the QBO query API (a
   // multi-second, up-to-1000-per-page outbound call) inside the handler; the
   // import service manages its own short withSystemDbAccessContext blocks

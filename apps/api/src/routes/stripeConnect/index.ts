@@ -2,12 +2,15 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { HTTPException } from 'hono/http-exception';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   savePartnerStripeKey,
   getPartnerStripeStatus,
+  getStripeAccountCurrency,
+  refreshPartnerStripeAccount,
   disconnectPartnerStripe,
   PartnerStripeError,
 } from '../../services/partnerStripe';
@@ -53,6 +56,9 @@ stripeConnectRoutes.post(
         stripeAccountId: result.stripeAccountId,
         livemode: result.livemode,
         last4: result.last4,
+        defaultCurrency: result.defaultCurrency,
+        accountCountry: result.accountCountry,
+        accountRefreshedAt: result.accountRefreshedAt.toISOString(),
       });
     } catch (err) {
       // A rejected/unreadable key is a user-actionable 400/409/500 with a clear
@@ -71,14 +77,53 @@ stripeConnectRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    const status = await getPartnerStripeStatus(auth.partnerId);
+    const status = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => getPartnerStripeStatus(auth.partnerId))
+    );
     if (!status.connected) return c.json({ status: 'disconnected', last4: status.last4 });
+    const account = await getStripeAccountCurrency(auth.partnerId);
     return c.json({
       status: 'connected',
       stripeAccountId: status.stripeAccountId,
       livemode: status.livemode,
       last4: status.last4,
+      defaultCurrency: account.defaultCurrency,
+      accountCountry: account.accountCountry,
+      accountRefreshedAt: account.accountRefreshedAt?.toISOString() ?? null,
     });
+  }
+);
+
+stripeConnectRoutes.post(
+  '/refresh',
+  requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    try {
+      const result = await refreshPartnerStripeAccount(auth.partnerId);
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'stripe_connect.account_refreshed',
+        resourceType: 'partner',
+        resourceId: auth.partnerId,
+        details: {
+          defaultCurrency: result.defaultCurrency,
+          accountCountry: result.accountCountry,
+        },
+      });
+      return c.json({
+        status: 'connected',
+        defaultCurrency: result.defaultCurrency,
+        accountCountry: result.accountCountry,
+        accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+      });
+    } catch (err) {
+      if (err instanceof PartnerStripeError) {
+        return c.json({ error: err.message }, err.status);
+      }
+      throw err;
+    }
   }
 );
 
