@@ -745,7 +745,8 @@
           "service": "Service"
         },
         "noResults": "Aucun article de catalogue assorti.",
-        "placeholder": "Rechercher dans le catalogue par nom ou SKU"
+        "placeholder": "Rechercher dans le catalogue par nom ou SKU",
+        "noPriceInCurrency": "Aucun prix en {{currency}}"
       },
       "PolishButton": {
         "actions": {

@@ -120,6 +120,32 @@ describe('QuotesPage', () => {
     expect(screen.getByTestId('quotes-status-q-1')).toHaveTextContent('Draft');
   });
 
+  it('formats the bulk-send zero-total warning in the quote currency', async () => {
+    const zeroEuroQuote = {
+      ...QUOTES[0],
+      currencyCode: 'EUR',
+      total: '0.00',
+      oneTimeTotal: '0.00',
+      monthlyRecurringTotal: '0.00',
+    };
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [zeroEuroQuote] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await screen.findByTestId('quotes-table');
+
+    fireEvent.click(screen.getByTestId('quotes-select-q-1'));
+    fireEvent.click(await screen.findByTestId('quotes-bulk-action-send'));
+
+    const review = await screen.findByTestId('quotes-bulk-send-review');
+    expect(within(review).getByText('€0.00')).toHaveAttribute(
+      'title',
+      expect.stringContaining('€0.00'),
+    );
+  });
+
   it('exposes a focusable link to the quote detail so keyboard users can open it', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });

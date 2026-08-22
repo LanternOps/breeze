@@ -1,4 +1,5 @@
-import { toCents, fromCents } from './quoteMath';
+import { roundToCurrency } from './currency';
+import { toCents } from './quoteMath';
 
 /**
  * The single pay-amount rule (spec §"Pay-amount rule"):
@@ -16,12 +17,12 @@ export interface DepositChargeInput {
   balance: string;
 }
 
-export function computeChargeNow(inv: DepositChargeInput): { amount: string; isDeposit: boolean } {
+export function computeChargeNow(inv: DepositChargeInput, currencyCode = 'USD'): { amount: string; isDeposit: boolean } {
   const balanceCents = toCents(inv.balance);
   const depositCents = inv.depositDue !== null ? toCents(inv.depositDue) : 0;
   const paidCents = toCents(inv.amountPaid);
   if (depositCents > 0 && paidCents < depositCents) {
-    return { amount: fromCents(Math.min(depositCents - paidCents, balanceCents)), isDeposit: true };
+    return { amount: roundToCurrency(Math.min(depositCents - paidCents, balanceCents) / 100, currencyCode), isDeposit: true };
   }
-  return { amount: inv.balance, isDeposit: false };
+  return { amount: roundToCurrency(inv.balance, currencyCode), isDeposit: false };
 }

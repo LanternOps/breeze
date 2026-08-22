@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchWithAuth } from "../../stores/auth";
 import { navigateTo } from "@/lib/navigation";
 import { runAction, handleActionError } from "../../lib/runAction";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 
@@ -14,6 +15,11 @@ interface ConnectState {
   stripeAccountId?: string;
   livemode?: boolean;
   last4?: string | null;
+  /** Cached Stripe account settlement currency / country (#3777). Owned by the
+   *  API cache — the web never calls Stripe; null = not cached yet. */
+  defaultCurrency?: string | null;
+  accountCountry?: string | null;
+  accountRefreshedAt?: string | null;
 }
 
 /** Mask an `acct_…` id so only the last 4 chars are shown (e.g. `acct_••••1A2b`). */
@@ -79,6 +85,25 @@ export default function StripePaymentsIntegration() {
     }
   }, [busy, apiKey, load]);
 
+  const refreshAccount = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth("/partner/stripe-connect/refresh", { method: "POST" }),
+        errorFallback: t("stripePaymentsIntegration.couldNotRefresh"),
+        successMessage: t("stripePaymentsIntegration.refreshed"),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      await load();
+    } catch (err) {
+      handleActionError(err, t("stripePaymentsIntegration.couldNotRefresh"));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, load]);
+
   const disconnect = useCallback(async () => {
     if (busy) return;
     setBusy(true);
@@ -143,7 +168,7 @@ export default function StripePaymentsIntegration() {
           </p>
         ) : state.status === "connected" ? (
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
               <span
                 className="font-medium"
                 data-testid="stripe-connect-account"
@@ -174,18 +199,60 @@ export default function StripePaymentsIntegration() {
                   ? t("stripePaymentsIntegration.live")
                   : t("stripePaymentsIntegration.testMode")}
               </span>
+              {/* Cached settlement currency (#3777) — what Stripe settles in.
+                  Documents in another currency still work; they just warn. */}
+              <span
+                className="text-muted-foreground"
+                data-testid="stripe-connect-currency"
+              >
+                {state.defaultCurrency
+                  ? [
+                      t("stripePaymentsIntegration.defaultCurrency", {
+                        currency: state.defaultCurrency,
+                      }),
+                      state.accountCountry
+                        ? t("stripePaymentsIntegration.accountCountry", {
+                            country: state.accountCountry,
+                          })
+                        : null,
+                      state.accountRefreshedAt
+                        ? t("stripePaymentsIntegration.refreshedAt", {
+                            when: formatDateTime(state.accountRefreshedAt, {
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                            }),
+                          })
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : t("stripePaymentsIntegration.notCached")}
+              </span>
             </div>
-            <button
-              type="button"
-              onClick={() => void disconnect()}
-              disabled={busy}
-              data-testid="stripe-disconnect-button"
-              className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-            >
-              {busy
-                ? t("stripePaymentsIntegration.working")
-                : t("stripePaymentsIntegration.disconnect")}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void refreshAccount()}
+                disabled={busy}
+                data-testid="stripe-connect-refresh-button"
+                className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {busy
+                  ? t("stripePaymentsIntegration.refreshing")
+                  : t("stripePaymentsIntegration.refresh")}
+              </button>
+              <button
+                type="button"
+                onClick={() => void disconnect()}
+                disabled={busy}
+                data-testid="stripe-disconnect-button"
+                className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              >
+                {busy
+                  ? t("stripePaymentsIntegration.working")
+                  : t("stripePaymentsIntegration.disconnect")}
+              </button>
+            </div>
           </div>
         ) : (
           <form

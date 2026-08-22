@@ -4,21 +4,13 @@ import { type InvoiceSummary } from '@/lib/api';
 import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
 import { depositBadgeState } from '@/lib/invoiceDeposit';
 import { cn } from '@/lib/utils';
+import { money } from '@/lib/money';
 
 interface InvoiceListProps {
   invoices: InvoiceSummary[];
   error?: string | null;
 }
 
-function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
 
 function shortDate(value: string | null): string {
   if (!value) return '—';

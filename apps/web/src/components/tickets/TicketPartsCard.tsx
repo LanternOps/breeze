@@ -3,10 +3,10 @@ import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { formatMoney } from '../../lib/timeFormat';
+import { formatMoney } from '@/components/billing/shared/format';
 import { broadcastBillingChanged } from '../../lib/timerActions';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
-import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
+import { listCatalog, priceFor, type CatalogItem } from '../../lib/api/catalog';
 
 interface PartRow {
   id: string;
@@ -16,9 +16,20 @@ interface PartRow {
   costBasis: string | null;
   isBillable: boolean;
   catalogItemId: string | null;
+  /** Ticket org currency (INTERIM #3777: wave 4's ticket_parts.currency_code replaces it). */
+  currencyCode?: string;
 }
 
-export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
+interface Props {
+  ticketId: string;
+  /** The ticket org's currency (ISO 4217). Drives the catalog prefill (#3775):
+   *  unit price comes from the item's price-book row in THIS currency (blank
+   *  when the book has no row), cost only when the item's cost is denominated
+   *  in it. Ticket parts themselves are still single-currency — wave-4 boundary. */
+  currencyCode?: string;
+}
+
+export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
   const { t } = useTranslation('tickets');
   const [parts, setParts] = useState<PartRow[]>([]);
   const [formOpen, setFormOpen] = useState(false);
@@ -61,8 +72,11 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
   const pickCatalogItem = (it: CatalogItem) => {
     setCatalogItemId(it.id);
     setDescription(it.name);
-    setUnitPrice(String(Number(it.unitPrice)));
-    setCostBasis(it.costBasis != null ? String(Number(it.costBasis)) : '');
+    // Never the deprecated unitPrice mirror: price-book row in the org currency or blank.
+    const price = priceFor(it, currencyCode);
+    setUnitPrice(price != null ? String(Number(price)) : '');
+    const costUsable = it.costBasis != null && !!currencyCode && it.costCurrency?.toUpperCase() === currencyCode.toUpperCase();
+    setCostBasis(costUsable ? String(Number(it.costBasis)) : '');
   };
 
   // Reset form and list state when ticketId changes (mirror TicketTimeBilling)
@@ -200,11 +214,11 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                   <span className="min-w-0 flex-1 truncate font-medium">
                     {part.description}
                   </span>
-                  <span className="shrink-0 font-medium">{formatMoney(lineTotal)}</span>
+                  <span className="shrink-0 font-medium">{formatMoney(lineTotal, part.currencyCode)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-1 text-muted-foreground">
                   <span>
-                    {qty} × {formatMoney(price)}
+                    {qty} × {formatMoney(price, part.currencyCode)}
                     {!part.isBillable && t('ticketPartsCard.nonBillableSuffix')}
                   </span>
                   {margin != null && (
@@ -212,7 +226,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                       className="shrink-0"
                       title={t('ticketPartsCard.marginTitle')}
                     >
-                      {formatMoney(margin)}
+                      {formatMoney(margin, part.currencyCode)}
                     </span>
                   )}
                 </div>
@@ -299,6 +313,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
             ) : (
               <CatalogItemPicker
                 items={catalog}
+                currencyCode={currencyCode ?? ''}
                 onSelect={pickCatalogItem}
                 includeBundles={false}
                 placeholder={t('ticketPartsCard.catalogPlaceholder')}

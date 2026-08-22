@@ -214,6 +214,25 @@ The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.
 
 ---
 
+## Feature Lifecycle Tracking (multi-wave features)
+
+Features implemented in multiple waves/PRs are tracked on GitHub via the
+**`feature-lifecycle` MCP server** (parent issue labeled `feature`, one `wave`
+sub-issue per wave). Use the **`feature-lifecycle`** skill; state on GitHub is
+the source of truth — never trust the plan doc for current status.
+
+- **When `writing-plans` finishes a multi-wave plan:** call `register_feature`
+  and add `tracking_issue: LanternOps/breeze#<parent>` to the plan doc's
+  frontmatter. This is part of finishing the plan, not optional.
+- **When starting a wave:** `get_feature_status` first, branch
+  `feature/<parent#>-<slug>/wave-<subissue#>`, then `start_wave`.
+- **PR bodies:** include `Closes #<sub-issue>` so the wave auto-closes on merge.
+- **Resuming in any session:** `get_feature_status` before reading the plan.
+
+Single-PR fixes and small features don't need this — it's for work with waves.
+
+---
+
 ## Testing Standards
 
 ### Frameworks & Configuration

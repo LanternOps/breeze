@@ -86,6 +86,7 @@ function fixtureQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
     coverPage: null,
     termsAndConditions: null,
     presentationSnapshot: null,
+    documentLocale: null,
     declineReason: null,
     convertedInvoiceId: null,
     pdfDocumentRef: null,
@@ -133,12 +134,44 @@ describe('substituteVariables', () => {
 });
 
 describe('resolveAutoVariables', () => {
-  it('formats money via the quotePdf money-formatting helper', () => {
+  it('formats money via the shared formatMoney helper (USD, unstamped, no caller locale → en)', () => {
     const values = resolveAutoVariables(fixtureQuote());
     expect(values['totals.one_time']).toBe('$810.00');
     expect(values['totals.monthly']).toBe('$0.00');
     expect(values['totals.annual']).toBe('$0.00');
     expect(values['totals.total']).toBe('$810.00');
+  });
+
+  it('renders money in the stamped documentLocale (de-DE EUR)', () => {
+    const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'de-DE' }));
+    expect(values['totals.one_time']).toBe('810,00\u00a0€');
+    expect(values['totals.total']).toBe('810,00\u00a0€');
+  });
+
+  it('pdf: true routes money through the WinAnsi-safe formatter (fr-FR narrow spaces folded, same digits)', () => {
+    const html = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }));
+    const pdf = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }), { pdf: true });
+    expect(html['totals.total']).toContain('\u202f');
+    expect(pdf['totals.total']).not.toContain('\u202f');
+    expect(pdf['totals.total']).toBe((html['totals.total'] ?? '').replace(/\u202f/g, '\u00a0'));
+  });
+
+  it('falls back to the caller-resolved locale when the quote is unstamped (draft preview)', () => {
+    const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: null }), { locale: 'fr-FR' });
+    expect(values['totals.one_time']).toBe('810,00\u00a0€');
+  });
+
+  it('falls back to en when the quote is unstamped and the caller passes no locale', () => {
+    const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: null }), { locale: null });
+    expect(values['totals.one_time']).toBe('€810.00');
+  });
+
+  it('a stamped documentLocale always wins over the caller locale', () => {
+    // 'en' as the caller locale (not 'fr-FR' as first drafted): on Node's ICU
+    // de-DE and fr-FR both render EUR as "810,00 €", so a fr override could not
+    // prove precedence — en's "€810.00" can.
+    const values = resolveAutoVariables(fixtureQuote({ currencyCode: 'EUR', documentLocale: 'de-DE' }), { locale: 'en' });
+    expect(values['totals.one_time']).toBe('810,00\u00a0€');
   });
 
   it('resolves the non-money auto variables from the quote fixture', () => {

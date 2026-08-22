@@ -51,8 +51,17 @@ jobs:
         run: |
           bash scripts/check-guided-setup-compose-rewrites.sh
           bash scripts/check-guided-setup-default-project.sh
-          bash scripts/check-guided-setup-db-urls.sh
+          bash scripts/check-selfhost-db-urls.sh
           bash scripts/check-guided-setup-env-roundtrip.sh
+          bash scripts/check-guided-setup-placeholders.sh
+
+      # The quickstart tells self-hosters to `cp .env.example .env` and bring the
+      # stack up, so a BREEZE_VERSION whose images were never published breaks
+      # every new install. The pin sat at 0.81.0 for ~25 releases (portal images
+      # start at 0.82.0) precisely because nothing checked it. Degrades to a
+      # warning if GHCR is unreachable, so a registry outage cannot redden CI.
+      - name: Guard .env.example version pin is published
+        run: bash scripts/security/check-env-example-version-pin.sh
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
@@ -709,6 +718,20 @@ jobs:
 
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
+
+      # release.yml and releaseAssetTrust.ts independently encode "which agent-family
+      # Windows assets ship unsigned". When they drifted in v0.105.0, the API rejected
+      # the four unsigned exes and aborted the ENTIRE binary sync — freezing
+      # agent_versions at 0.104.0 in both prod regions for nine days, and surfacing as a
+      # 404 on Linux and macOS too, which were signed correctly (#3504).
+      # The guard's own parser is tested first, deliberately. This check reads two
+      # hand-written declarations, so a parser regression would make it silently
+      # find nothing to compare — indistinguishable from passing.
+      - name: Test release trust allowlist guard
+        run: node --test scripts/security/check-release-trust-allowlist.test.mjs
+
+      - name: Run release trust allowlist drift guard
+        run: node scripts/security/check-release-trust-allowlist.mjs
 
       - name: Run M365 signing secret runtime smoke
         run: bash scripts/security/check-m365-graph-read-runtime.sh
@@ -1531,6 +1554,20 @@ jobs:
           persist-credentials: false
 
       - name: Install Tauri system dependencies
+        # Bound the STEP, not just the commands inside it. The per-command
+        # deadlines below sum to ~27.75m worst case (3 attempts x 8m, plus two
+        # 90s dpkg recoveries, plus 45s of backoff), and the job budget is 35m
+        # JOB-wide — so a worst-case apt would leave ~7m for Rust toolchain
+        # setup, a cold `cargo check` on two webkit2gtk-linked crates, and the
+        # viewer tests. On a cache miss that is not enough, and the job would
+        # die on GitHub's generic "job timed out" with no diagnostic: the exact
+        # failure #3730 reported and this step exists to prevent, merely
+        # relocated from apt to whatever ran last.
+        #
+        # 12m caps apt at roughly a third of the budget and fires as a labelled
+        # step timeout, leaving 23m for the Rust work regardless of how badly
+        # the mirror behaves.
+        timeout-minutes: 12
         run: |
           # The Azure apt mirror (azure.archive.ubuntu.com) is intermittently
           # degraded and can crawl at 1-4 min/package, blowing this job's
@@ -1538,24 +1575,54 @@ jobs:
           # reds `main` and fires main-red-alert with zero code signal (#1605).
           # Switch to the canonical mirror and retry update+install with
           # backoff so a slow mirror doesn't masquerade as a build failure.
+          #
+          # The retry loop above only helps when apt EXITS non-zero. Observed
+          # failures instead STALL: apt stops emitting output right after the
+          # InRelease fetches and never returns, so no attempt ever completes
+          # and the job burns its full 35-minute budget without logging a single
+          # retry warning (#3730). Give each phase its own deadline so a stall
+          # fails fast and the retry logic can actually run.
+          #
+          # `timeout` is invoked under sudo (not `timeout sudo ...`) so it
+          # signals apt-get itself as root; wrapping sudo would kill the wrapper
+          # and leave a root apt-get orphaned holding the dpkg lock.
+          #
+          # Deadlines bound each apt phase so a stall fails fast with a real
+          # message instead of consuming the job. Counting the --kill-after
+          # grace on every bound (each deadline can run to deadline + 30s),
+          # three attempts plus two recovery runs plus the sleeps come to
+          # ~27.75m — which is why the step-level timeout above exists: sized
+          # against the job budget alone, that worst case starves everything
+          # after it. Normal runs finish in well under a minute, so these are
+          # roughly 10x headroom rather than tight.
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/sources.list \
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           install_deps() {
-            sudo apt-get update && \
-            sudo apt-get install -y --no-install-recommends \
+            sudo timeout --kill-after=30s 2m apt-get update && \
+            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends \
               libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
           }
-          for attempt in 1 2 3; do
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
             if install_deps; then
               echo "Tauri system dependencies installed (attempt ${attempt})."
               exit 0
             fi
-            echo "::warning::apt install failed (attempt ${attempt}/3); retrying in $((attempt * 15))s"
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              break
+            fi
+            echo "::warning::apt install failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 15))s"
+            # A killed apt can leave the dpkg lock held or a package
+            # half-configured; clear that or the retry just fails on the lock.
+            # Bounded too: dpkg runs maintainer scripts and can block on its
+            # own, and an unbounded recovery would reintroduce the very stall
+            # this step exists to prevent.
+            sudo timeout --kill-after=30s 60s dpkg --configure -a || true
             sleep $((attempt * 15))
           done
-          echo "::error::Failed to install Tauri system dependencies after 3 attempts."
+          echo "::error::Failed to install Tauri system dependencies after ${attempts} attempts."
           exit 1
 
       - name: Setup Rust
@@ -1564,7 +1631,7 @@ jobs:
           toolchain: stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           workspaces: |
             apps/helper/src-tauri -> target
@@ -1627,7 +1694,7 @@ jobs:
 
       - name: Rust cache
         if: steps.changes.outputs.cargo == 'true'
-        uses: swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           workspaces: |
             apps/helper/src-tauri -> target
@@ -2280,28 +2347,87 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
+          # NOTE: deliberately no `-e`. This job is a notifier, not a gate, and
+          # it is a normal job in the CI workflow — so an unhandled failure here
+          # turns an otherwise fully green run red at the workflow and
+          # check-suite level. That happened on a transient
+          # `HTTP 503 ... api.github.com/graphql` with 41/41 real jobs green and
+          # `CI Success` itself passing (#3692). Under `set -e` an
+          # assignment-only command takes the exit status of its command
+          # substitution, so a failed `gh issue list` aborted the script before
+          # the `case` block ever ran. Every call is handled explicitly below.
+          set -uo pipefail
+
+          # RETRIES ARE FOR READS ONLY.
+          #
+          # The GitHub API returns transient 5xx often enough that a single
+          # attempt is the actual bug here, but a retried WRITE is worse than a
+          # missed one: if the server accepted `gh issue create` and only the
+          # response was lost, retrying opens a second ci-red issue. Same for
+          # `issue comment`. Reads are idempotent, so only they are retried; the
+          # mutations below get one attempt and an annotation if they fail, and
+          # self-heal on the next push to main or a re-run of this job.
+          #
+          # Progress goes to STDERR, never stdout: this is called inside
+          # `existing=$(gh_read_retry gh issue list ...)`, and anything on stdout
+          # is captured into that variable. Writing the retry notice to stdout
+          # made `existing` the notice text with the issue number glued on the
+          # end, so the next call became `gh issue close "gh call failed...42"`.
+          # Caught by driving this script against a stubbed `gh`; no linter sees
+          # it.
+          gh_read_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              echo "gh read failed (attempt ${attempt}/3): $*" >&2
+              # No sleep after the final attempt — there is no fourth.
+              if [ "$attempt" -lt 3 ]; then
+                sleep $(( attempt * 5 ))
+              fi
+            done
+            return 1
+          }
+
+          # Unchanged from before: one attempt, errors swallowed. The common
+          # failure is "already exists", which is why stderr is discarded.
           gh label create ci-red --repo "$GITHUB_REPOSITORY" \
             --color B60205 --description "CI is failing on main" 2>/dev/null || true
-          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci-red --state open \
-            --json number --jq ".[0].number // empty")
+
+          # Read the current state FIRST, and treat "could not read" as its own
+          # outcome rather than folding it into "none found". Defaulting to an
+          # empty string on failure would make the failure branch below open a
+          # SECOND ci-red issue every red push while the API is degraded.
+          if existing=$(gh_read_retry gh issue list --repo "$GITHUB_REPOSITORY" --label ci-red --state open \
+            --json number --jq ".[0].number // empty"); then
+            :
+          else
+            echo "::error::Could not read ci-red issues after 3 attempts; skipping reconciliation for this run."
+            echo "ci-success result was '$RESULT'. State is unchanged and will reconcile on the next push to main, or by re-running this job."
+            exit 0
+          fi
+
           short_sha="${SHA:0:8}"
           case "$RESULT" in
             success)
               if [ -n "$existing" ]; then
                 gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
-                  --comment "Main is green again as of \`$short_sha\`: $RUN_URL"
+                  --comment "Main is green again as of \`$short_sha\`: $RUN_URL" \
+                  || echo "::error::Failed to close ci-red issue #$existing; it will close on the next green main run."
               fi
               ;;
             failure)
               if [ -n "$existing" ]; then
                 gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
-                  --body "Still red at \`$short_sha\`: $RUN_URL"
+                  --body "Still red at \`$short_sha\`: $RUN_URL" \
+                  || echo "::error::Failed to comment on ci-red issue #$existing; the issue is already open, so main-red state is still tracked."
               else
                 body=$(printf "CI failed on a main push at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$short_sha" "$RUN_URL")
                 gh issue create --repo "$GITHUB_REPOSITORY" --label ci-red \
                   --title "CI is red on main" \
-                  --body "$body"
+                  --body "$body" \
+                  || echo "::error::Failed to open a ci-red issue for $short_sha — main is RED and untracked. Re-run this job once the API recovers."
               fi
               ;;
             *)

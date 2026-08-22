@@ -1,6 +1,7 @@
 import { FileText, AlertCircle } from 'lucide-react';
 import { type QuoteSummary } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { money } from '@/lib/money';
 
 interface QuoteListProps {
   quotes: QuoteSummary[];
@@ -34,15 +35,6 @@ function statusColor(status: string): string {
   }
 }
 
-function money(value: string | number, currencyCode: string): string {
-  const n = Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
 
 function shortDate(value: string | null): string {
   if (!value) return '—';

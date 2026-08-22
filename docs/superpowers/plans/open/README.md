@@ -1,5 +1,11 @@
 # Open plans — up for grabs
 
+> ⚠️ **STALE — this lane is being retired.** Work tracking is moving to GitHub
+> (issues + milestones + a public roadmap); this folder no longer reliably
+> reflects what's up for grabs. Check the
+> [issue tracker](https://github.com/LanternOps/breeze/issues) instead, or ask
+> Todd. The contents below are kept until each plan is re-homed to an issue.
+
 > 📖 **New here? Read the guide first:**
 > [Contributing → Coding with Claude Code](https://docs.breezermm.com/contributing/coding-with-claude-code/)
 > (source: `apps/docs/src/content/docs/contributing/coding-with-claude-code.mdx`).

@@ -22,32 +22,34 @@ export interface DraftLineSpec {
 export function timeEntryToLineSpec(r: {
   id: string; ticketId: string | null; description: string | null;
   durationMinutes: number | null; hourlyRate: string | null; isApproved: boolean;
-}): DraftLineSpec {
+}, currencyCode = 'USD'): DraftLineSpec {
   const hours = ((r.durationMinutes ?? 0) / 60).toFixed(2);
   const unitPrice = r.hourlyRate != null ? Number(r.hourlyRate).toFixed(2) : '0.00';
   return {
     sourceType: 'time_entry', sourceId: r.id, catalogItemId: null, ticketId: r.ticketId,
     description: r.description?.trim() || 'Labor',
     quantity: hours, unitPrice, costBasis: null, taxable: false, customerVisible: true,
-    lineTotal: computeLineTotal(hours, unitPrice), isUnapprovedTime: !r.isApproved
+    lineTotal: computeLineTotal(hours, unitPrice, currencyCode), isUnapprovedTime: !r.isApproved
   };
 }
 
 export function ticketPartToLineSpec(r: {
   id: string; ticketId: string | null; catalogItemId: string | null; description: string;
   quantity: string; unitPrice: string; costBasis: string | null;
-}): DraftLineSpec {
+}, currencyCode = 'USD'): DraftLineSpec {
   return {
     sourceType: 'part', sourceId: r.id, catalogItemId: r.catalogItemId, ticketId: r.ticketId,
     description: r.description,
     quantity: r.quantity, unitPrice: r.unitPrice, costBasis: r.costBasis ?? null,
     taxable: true, customerVisible: true,
-    lineTotal: computeLineTotal(r.quantity, r.unitPrice), isUnapprovedTime: false
+    lineTotal: computeLineTotal(r.quantity, r.unitPrice, currencyCode), isUnapprovedTime: false
   };
 }
 
-/** Unbilled billable time entries for an org within [from, to] (by ended_at). */
-export async function gatherOrgTimeEntries(orgId: string, from: Date, to: Date): Promise<DraftLineSpec[]> {
+/** Unbilled billable time entries for an org within [from, to] (by ended_at).
+ *  `currencyCode` is the currency of the draft invoice the specs will land on —
+ *  line totals must be rounded at that currency's minor unit (JPY → whole units). */
+export async function gatherOrgTimeEntries(orgId: string, from: Date, to: Date, currencyCode = 'USD'): Promise<DraftLineSpec[]> {
   const rows = await db.select({
     id: timeEntries.id, ticketId: timeEntries.ticketId, description: timeEntries.description,
     durationMinutes: timeEntries.durationMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved
@@ -62,11 +64,12 @@ export async function gatherOrgTimeEntries(orgId: string, from: Date, to: Date):
     gte(timeEntries.endedAt, from),
     lte(timeEntries.endedAt, to)
   ));
-  return rows.map(timeEntryToLineSpec);
+  return rows.map((r) => timeEntryToLineSpec(r, currencyCode));
 }
 
-/** Unbilled billable ticket parts for an org within [from, to] (by created_at). */
-export async function gatherOrgParts(orgId: string, from: Date, to: Date): Promise<DraftLineSpec[]> {
+/** Unbilled billable ticket parts for an org within [from, to] (by created_at).
+ *  `currencyCode`: see gatherOrgTimeEntries. */
+export async function gatherOrgParts(orgId: string, from: Date, to: Date, currencyCode = 'USD'): Promise<DraftLineSpec[]> {
   const rows = await db.select({
     id: ticketParts.id, ticketId: ticketParts.ticketId, catalogItemId: ticketParts.catalogItemId,
     description: ticketParts.description, quantity: ticketParts.quantity, unitPrice: ticketParts.unitPrice, costBasis: ticketParts.costBasis
@@ -80,11 +83,12 @@ export async function gatherOrgParts(orgId: string, from: Date, to: Date): Promi
     gte(ticketParts.createdAt, from),
     lte(ticketParts.createdAt, to)
   ));
-  return rows.map(ticketPartToLineSpec);
+  return rows.map((r) => ticketPartToLineSpec(r, currencyCode));
 }
 
-/** Per-ticket: all unbilled billable time + parts for one ticket. */
-export async function gatherTicketBillables(ticketId: string): Promise<DraftLineSpec[]> {
+/** Per-ticket: all unbilled billable time + parts for one ticket.
+ *  `currencyCode`: see gatherOrgTimeEntries. */
+export async function gatherTicketBillables(ticketId: string, currencyCode = 'USD'): Promise<DraftLineSpec[]> {
   const te = await db.select({
     id: timeEntries.id, ticketId: timeEntries.ticketId, description: timeEntries.description,
     durationMinutes: timeEntries.durationMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved
@@ -102,5 +106,5 @@ export async function gatherTicketBillables(ticketId: string): Promise<DraftLine
     // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
     ne(ticketParts.billingStatus, 'contract'), ne(ticketParts.billingStatus, 'no_charge')
   ));
-  return [...te.map(timeEntryToLineSpec), ...parts.map(ticketPartToLineSpec)];
+  return [...te.map((r) => timeEntryToLineSpec(r, currencyCode)), ...parts.map((r) => ticketPartToLineSpec(r, currencyCode))];
 }

@@ -158,7 +158,7 @@ export function exportRows(
     ...(showCost
       ? {
           unitCost: l.unitCost ?? '',
-          extCost: l.unitCost === null ? '' : computeLineTotal(l.quantity, l.unitCost),
+          extCost: l.unitCost === null ? '' : computeLineTotal(l.quantity, l.unitCost, currency),
           currency,
         }
       : {}),
@@ -201,11 +201,11 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteId
     () =>
       fromCents(
         lines.reduce(
-          (sum, l) => (l.unitCost === null ? sum : sum + toCents(computeLineTotal(l.quantity, l.unitCost))),
+          (sum, l) => (l.unitCost === null ? sum : sum + toCents(computeLineTotal(l.quantity, l.unitCost, currency))),
           0,
         ),
       ),
-    [lines],
+    [lines, currency],
   );
   const missingCostCount = useMemo(() => lines.filter((l) => l.unitCost === null).length, [lines]);
   // Keyed by sourceQuoteLineId so the item cell can look up this line's own
@@ -449,7 +449,7 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteId
                         {l.unitCost === null ? na : formatMoney(l.unitCost, currency)}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">
-                        {l.unitCost === null ? na : formatMoney(computeLineTotal(l.quantity, l.unitCost), currency)}
+                        {l.unitCost === null ? na : formatMoney(computeLineTotal(l.quantity, l.unitCost, currency), currency)}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
                         {mk === null ? na : formatPercent(mk / 100, { maximumFractionDigits: 2 })}

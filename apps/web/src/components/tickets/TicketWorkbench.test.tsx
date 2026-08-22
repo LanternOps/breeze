@@ -19,6 +19,12 @@ vi.mock('../../stores/auth', () => ({
 }));
 
 // Stub only fetchTicketConfig; the real display/grouping helpers run unchanged.
+// Capture the props the rail hands the parts card (#3775: the ticket org's currency).
+const partsCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; currencyCode?: string } }));
+vi.mock('./TicketPartsCard', () => ({
+  default: (p: { ticketId: string; currencyCode?: string }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
+}));
+
 vi.mock('../../lib/ticketConfigApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/ticketConfigApi')>();
   return { ...actual, fetchTicketConfig: vi.fn().mockResolvedValue(null) };
@@ -1797,5 +1803,28 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     await waitFor(() => {
       expect(navigateTo).toHaveBeenCalledWith('/tickets');
     });
+  });
+});
+
+describe('TicketWorkbench → TicketPartsCard currency (#3775)', () => {
+  beforeEach(() => { vi.clearAllMocks(); partsCardProps.last = null; });
+
+  it('passes the ticket org\'s currencyCode from the org list to the parts card', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-2', orgName: 'Globex Inc' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/orgs/organizations')) {
+        return makeJsonResponse({ data: [
+          { id: 'org-1', name: 'Acme Corp', currencyCode: 'USD' },
+          { id: 'org-2', name: 'Globex Inc', currencyCode: 'EUR' },
+        ] });
+      }
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-parts-card-stub');
+    await waitFor(() => expect(partsCardProps.last?.currencyCode).toBe('EUR'));
+    expect(partsCardProps.last?.ticketId).toBe('tk-1');
   });
 });

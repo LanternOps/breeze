@@ -1542,7 +1542,20 @@
     "saving": "Kaydediliyor…",
     "saveChanges": "Değişiklikleri kaydet",
     "createItem": "Öğe oluştur",
-    "unknownItem": "Bilinmeyen öğe"
+    "unknownItem": "Bilinmeyen öğe",
+    "priceBook": "Fiyat listesi",
+    "addCurrencyPrice": "Başka bir para biriminde fiyat ekle…",
+    "removePrice": "{{currency}} fiyatını kaldır",
+    "priceCurrency": "Fiyat para birimi",
+    "costCurrency": "Maliyet para birimi",
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+    "overrideCurrency": "Özel fiyat para birimi",
+    "noPricesYet": "Henüz fiyat yok. En az bir para birimi ekleyin.",
+    "loadingPartnerCurrency": "İş ortağı para birimi yükleniyor…",
+    "partnerCurrencyUnavailable": "İş ortağınızın para birimi yüklenemedi.",
+    "retry": "Yeniden dene",
+    "priceCouldNotBeSavedRetry": "{{currency}} fiyatı kaydedilemedi. Yeniden deneyin.",
+    "priceCouldNotBeRemovedRetry": "{{currency}} fiyatı kaldırılamadı. Yeniden deneyin."
   },
   "catalogItemsTab": {
     "itemArchived": "Öğe arşivlendi",
@@ -1589,7 +1602,12 @@
     "margin": "Marj",
     "unknownItem": "Bilinmeyen öğe",
     "collapseBundle": "Paketi daralt",
-    "expandBundle": "Paketi genişlet"
+    "expandBundle": "Paketi genişlet",
+    "nMoreCurrencies_one": "+{{count}} para birimi",
+    "nMoreCurrencies_other": "+{{count}} para birimi",
+    "incompletePriceBook": "Eksik fiyat listesi",
+    "marginUnavailable": "Marj kullanılamıyor",
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor"
   },
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",
@@ -2042,6 +2060,7 @@
     "saveChanges": "Değişiklikleri kaydet"
   },
   "tdSynnexCatalogPanel": {
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
     "tDSYNNEXSettingsFailedToLoad": "TD SYNNEX ayarları yüklenemedi.",
     "tDSYNNEXSettingsSaved": "TD SYNNEX ayarları kaydedildi",
     "tDSYNNEXConnectionTestSucceeded": "TD SYNNEX bağlantı testi başarılı oldu",
@@ -2107,6 +2126,7 @@
     "notConfigured": "Yapılandırılmadı"
   },
   "tdSynnexEcExpressPanel": {
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
     "tDSYNNEXPricingSettingsSaved": "TD SYNNEX Fiyatlandırma ayarları kaydedildi",
     "tDSYNNEXPricingConnectionTestSucceeded": "TD SYNNEX Fiyatlandırma bağlantı testi başarılı oldu",
     "enterAValidSellPrice": "Geçerli bir satış fiyatı girin.",
@@ -2251,7 +2271,7 @@
     "responseSLAMinutes": "Yanıt SLA (dakika)",
     "resolutionSLAMinutes": "Çözünürlük SLA (dakika)",
     "billableByDefault": "Varsayılan olarak faturalandırılabilir",
-    "defaultHourlyRate": "Varsayılan saatlik ücret ($)",
+    "defaultHourlyRate": "Varsayılan saatlik ücret",
     "save": "Kaydet",
     "cancel": "İptal",
     "responseMinutes": "{{count}}m yanıt",
@@ -2752,7 +2772,7 @@
     "billing": {
       "title": "Faturalandırma varsayılanları",
       "description": "Bu kuruluş için biletlerdeki zaman girişlerine ilişkin varsayılan faturalandırma ayarları.",
-      "hourlyRate": "Varsayılan saatlik ücret ($)",
+      "hourlyRate": "Varsayılan saatlik ücret",
       "billable": "Varsayılan faturalandırılabilir",
       "inherit": "Devral",
       "billableOption": "Faturalandırılabilir",

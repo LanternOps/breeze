@@ -8,7 +8,7 @@
 
 import { and, desc, eq, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { alerts, tickets } from '../db/schema';
+import { alerts, organizations, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
@@ -60,6 +60,17 @@ function timeEntryActorFrom(auth: AuthContext) {
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
     manageAll: false as const
   };
+}
+
+async function entryCurrency(entry: { orgId: string | null }): Promise<string | null> {
+  if (entry.orgId === null) return null;
+  // INTERIM (#3777): wave 4 stamps time_entries.currency_code and replaces this read with the row's own column.
+  const [organization] = await db
+    .select({ currencyCode: organizations.currencyCode })
+    .from(organizations)
+    .where(eq(organizations.id, entry.orgId))
+    .limit(1);
+  return organization?.currencyCode ?? null;
 }
 
 /**
@@ -353,7 +364,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           hourlyRate: {
             type: 'number',
-            description: 'Override hourly rate in currency units (log_time_entry; defaults from ticket category)'
+            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from ticket category / org rate)'
           }
         },
         required: ['action']
@@ -681,7 +692,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry });
+          return JSON.stringify({ timeEntry: entry, currencyCode: await entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });
@@ -705,7 +716,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry });
+          return JSON.stringify({ timeEntry: entry, currencyCode: await entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });
@@ -724,7 +735,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry });
+          return JSON.stringify({ timeEntry: entry, currencyCode: await entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });

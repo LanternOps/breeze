@@ -814,3 +814,9 @@ export * from './publicQuote';
 // ============================================
 
 export * from './officeAddin';
+
+// ============================================
+// Stripe account / multi-currency checkout (#3777)
+// ============================================
+
+export * from './stripeAccount';

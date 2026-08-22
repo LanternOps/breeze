@@ -30,6 +30,7 @@ it.runIf(!!process.env.DATABASE_URL)(
       }).returning({ id: partners.id });
 
       const [o] = await db.insert(organizations).values({
+        currencyCode: 'USD',
         partnerId: p!.id, name: 'WOrg', slug: `wo-${sfx}`
       }).returning({ id: organizations.id });
 
@@ -43,6 +44,7 @@ it.runIf(!!process.env.DATABASE_URL)(
         billingTiming: 'advance',
         intervalMonths: 1,
         startDate: '2026-07-01',
+        currencyCode: 'USD',
         endDate: '2027-07-01',
         nextBillingAt: '2027-07-01',
         autoRenew: true,

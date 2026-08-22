@@ -24,6 +24,8 @@ vi.mock('../../../lib/api/catalog', async (orig) => ({
 const canMock = vi.fn((_resource: string, _action: string) => true);
 vi.mock('../../../lib/permissions', () => ({ usePermissions: () => ({ can: (r: string, a: string) => canMock(r, a) }) }));
 
+vi.mock('../../../lib/usePartnerCurrency', () => ({ usePartnerCurrency: () => ({ currency: 'USD', failed: false, retry: () => {} }) }));
+
 import QuoteEditor from './QuoteEditor';
 import type { QuoteDetail } from './quoteTypes';
 
@@ -51,9 +53,9 @@ beforeEach(() => {
   addCatalogLine.mockResolvedValue(ok({ id: 'line-1' }));
 });
 
-const lookupOne = () => ecExpressLookup.mockResolvedValue(ok([{
+const lookupOne = (currency: string | null = 'USD') => ecExpressLookup.mockResolvedValue(ok([{
   source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: null, manufacturer: null, status: 'Active',
-  name: 'Widget', description: null, currency: 'USD', cost: 80, msrp: 100, discount: null,
+  name: 'Widget', description: null, currency, cost: 80, msrp: 100, discount: null,
   totalQty: 5, warehouses: [], weight: null, parcelShippable: null, raw: {},
 }]));
 
@@ -122,7 +124,8 @@ describe('QuoteEditor distributor mode', () => {
     fireEvent.click(screen.getByTestId('quote-distributor-add-ABC123'));
     await waitFor(() => expect(ecExpressImport).toHaveBeenCalled());
     expect(ecExpressImport).toHaveBeenCalledWith(expect.objectContaining({
-      item: expect.objectContaining({ sku: 'ABC123', unitPrice: 150, costBasis: 80 }),
+      // The typed sell price is in the QUOTE's currency → price-book row, not the legacy partner-currency unitPrice.
+      item: expect.objectContaining({ sku: 'ABC123', unitPrice: 150, sellCurrency: 'USD', costBasis: 80 }),
     }));
   });
 
@@ -142,5 +145,32 @@ describe('QuoteEditor distributor mode', () => {
     fireEvent.click(screen.getByTestId('quote-distributor-add-ABC123'));
     await waitFor(() => expect(addCatalogLine).toHaveBeenCalledWith('q1', expect.objectContaining({ catalogItemId: 'cat-existing', blockId: 'blk1' })));
     expect(ecExpressImport).not.toHaveBeenCalled();
+  });
+
+  const importViaDistributor = async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => screen.getByTestId('quote-block-add-line-toggle-blk1'));
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk1'));
+    await waitFor(() => screen.getByTestId('quote-line-mode-blk1-distributor'));
+    fireEvent.click(screen.getByTestId('quote-line-mode-blk1-distributor'));
+    fireEvent.change(screen.getByTestId('quote-distributor-search-blk1'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByTestId('quote-distributor-search-btn-blk1'));
+    await waitFor(() => screen.getByTestId('quote-distributor-add-ABC123'));
+    fireEvent.click(screen.getByTestId('quote-distributor-add-ABC123'));
+    await waitFor(() => expect(ecExpressImport).toHaveBeenCalled());
+    return ecExpressImport.mock.calls[0][0] as { product: Record<string, unknown> };
+  };
+
+  it('posts the feed currency uppercased, never coerced to USD', async () => {
+    lookupOne('cad');
+    const body = await importViaDistributor();
+    expect(body.product.currency).toBe('CAD');
+  });
+
+  it('posts an explicit null currency when the feed gave none (key present, not dropped)', async () => {
+    lookupOne(null);
+    const body = await importViaDistributor();
+    expect(Object.prototype.hasOwnProperty.call(body.product, 'currency')).toBe(true);
+    expect(body.product.currency).toBeNull();
   });
 });

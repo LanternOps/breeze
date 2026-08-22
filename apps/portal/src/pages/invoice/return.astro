@@ -1,0 +1,11 @@
+---
+// Stripe-Checkout return trampoline for public invoice payments. Client-only:
+// the session-id → public-url exchange (and the settle) happens in the browser
+// so this static shell never needs the bearer token — see InvoiceReturn.tsx.
+import PublicDocumentLayout from '../../layouts/PublicDocumentLayout.astro';
+import InvoiceReturn from '../../components/portal/InvoiceReturn';
+---
+
+<PublicDocumentLayout title="Confirming payment">
+  <InvoiceReturn client:load />
+</PublicDocumentLayout>

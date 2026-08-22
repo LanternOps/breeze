@@ -141,7 +141,8 @@
         "saveContract": "Could not save the contract.",
         "addLine": "Could not add the line.",
         "removeLine": "Could not remove the line.",
-        "activateContract": "Could not activate the contract."
+        "activateContract": "Could not activate the contract.",
+        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or clear the catalog link."
       },
       "toast": {
         "contractCreated": "Contract created",
@@ -198,7 +199,9 @@
         "taxable": "Taxable",
         "quantityResolvedAutomatically": "Quantity resolved automatically at billing time.",
         "lineTotal": "Line total: {{total}}",
-        "addLine": "Add line"
+        "addLine": "Add line",
+        "noPriceInCurrency": "No {{currency}} price for this item — add one in the catalog, or clear the catalog link and enter a manual line.",
+        "priceFromCatalog": "Unit price (from the catalog, in {{currency}})"
       },
       "estimate": {
         "title": "Estimated this period",
@@ -627,7 +630,8 @@
         "updateDeposit": "Could not update the deposit.",
         "updateLine": "Could not update the line.",
         "updateSection": "Could not update the section.",
-        "uploadImage": "Could not upload the image."
+        "uploadImage": "Could not upload the image.",
+        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line."
       },
       "image": {
         "alt": "Quote image",
@@ -887,7 +891,7 @@
         "toLabel": "To",
         "toPlaceholder": "Add recipient…",
         "tooManyRecipients": "Use at most {{max}} addresses.",
-        "zeroTotalWarning": "This quote totals $0.00 — check that its items are priced before sending.",
+        "zeroTotalWarning": "This quote totals {{zero}} — check that its items are priced before sending.",
         "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>."
       },
       "sendEmailWarning": {
@@ -931,7 +935,8 @@
       "resendNewLinkOriginalLive": "Proposal re-sent — but with a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside the new one.",
       "resendNewLinkOriginalDead": "Proposal re-sent — but with a NEW link. The previous link can no longer be opened, so anyone holding it must use the new one.",
       "shareLinkNewLinkOriginalLive": "Copied a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside this one.",
-      "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one."
+      "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one.",
+      "currencyMismatch": "This quote is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -1044,9 +1049,16 @@
         "title": "Totals"
       },
       "viewInvoice": "View invoice",
-      "sentTo": "Sent to"
+      "sentTo": "Sent to",
+      "declinedBanner": {
+        "title": "Declined {{date}}",
+        "reasonLabel": "Customer's note:",
+        "revise": "Duplicate & revise",
+        "revising": "Duplicating…"
+      }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
       "available": "{{count}} avail",
       "cost": "cost {{currency}} {{amount}}",
       "endOfLife": "End of life",
@@ -1214,6 +1226,7 @@
       "tryAgain": "Try again"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
       "cost": "cost {{currency}} {{amount}}",
       "importAndAdd": "Import & add",
       "option": "Option {{number}}",
@@ -1324,7 +1337,8 @@
       "removeLine": "Could not remove line.",
       "saveNotes": "Could not save notes.",
       "saveTerms": "Could not save terms.",
-      "updateLine": "Could not update line."
+      "updateLine": "Could not update line.",
+      "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line."
     },
     "fields": {
       "descriptionOptional": "Description (optional)",
@@ -1393,6 +1407,27 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "To",
+      "toPlaceholder": "billing@customer.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Subject",
+      "subjectPlaceholder": "Invoice {{number}} from your provider",
+      "subjectPlaceholderNoNumber": "Your invoice",
+      "messageLabel": "Message (optional)",
+      "messagePlaceholder": "Add a short note for the customer…",
+      "includePdfLabel": "Attach the invoice PDF",
+      "signaturePreviewLabel": "Your signature will be added:",
+      "invalidEmail": "Not a valid email address: {{addresses}}",
+      "tooManyRecipients": "Up to {{max}} addresses.",
+      "recipientRequired": "Add at least one recipient.",
+      "noBillingContactHint": "This company has no billing contact yet — <orgLink>add one</orgLink> or type an address above.",
+      "payLinkNote": "The email includes a secure link your customer can use to view, download, and pay this invoice — no sign-in needed."
+    },
+    "copyInvoiceLink": "Copy invoice link",
+    "copyInvoiceLinkTitle": "Copies the customer's view & pay link — no sign-in needed",
+    "copyingPaymentLink": "Copying…",
     "deleteConfirm": {
       "message": "This permanently deletes the draft invoice. This cannot be undone.",
       "title": "Delete draft invoice"
@@ -1404,6 +1439,9 @@
     "downloadPdfError": "Could not download the invoice PDF.",
     "issue": "Issue",
     "issueAndSend": "Issue & Send",
+    "issueBlockedUnsaved": "“{{field}}” has a change that hasn’t saved. Fix it there, then Issue.",
+    "issueCanceledSaveFailed": "A change failed to save, so Issue was canceled. Fix the highlighted field and try again.",
+    "issueCanceledStillSaving": "Still saving your changes — Issue was canceled. Try again once everything is saved.",
     "issueError": "Could not issue invoice.",
     "issueNoEmailWarning": "Invoice issued — but no email was sent (no billing contact / email not configured)",
     "issueSendConfirm": {
@@ -1416,12 +1454,21 @@
     "issueSuccess": "Invoice issued",
     "issuing": "Issuing…",
     "noVisibleLineHint": "Add at least one customer-visible line to issue.",
+    "paymentLinkCopyFailed": "Couldn’t copy automatically. Payment link: {{url}}",
     "preparing": "Preparing…",
+    "resend": "Re-send",
+    "resendConfirm": {
+      "title": "Re-send this invoice?",
+      "message": "This emails another copy to {{customer}} for {{amount}}. Nothing about the invoice changes — same number, same dates, same amounts."
+    },
+    "resendSuccess": "Invoice re-sent",
+    "resending": "Sending…",
     "savingHint": "Saving changes… Issue unlocks when everything is saved.",
     "savingTitle": "Saving your changes — Issue unlocks when everything is saved.",
-    "issueCanceledSaveFailed": "A change failed to save, so Issue was canceled. Fix the highlighted field and try again.",
-    "issueCanceledStillSaving": "Still saving your changes — Issue was canceled. Try again once everything is saved.",
-    "issueBlockedUnsaved": "“{{field}}” has a change that hasn’t saved. Fix it there, then Issue.",
+    "sendConfirm": {
+      "title": "Send this invoice?",
+      "message": "This emails the invoice to {{customer}} for {{amount}}."
+    },
     "unsavedHint": "“{{field}}” has an unsaved change — Issue unlocks once it saves.",
     "unsavedTitle": "“{{field}}” has an unsaved change — Issue unlocks once it saves."
   },
@@ -1460,6 +1507,7 @@
       "amount": "Amount",
       "amountRequired": "Enter a payment amount to record it",
       "connectStripe": "Connect Stripe to accept online payments.",
+      "currencyMismatch": "This invoice is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee.",
       "date": "Payment date",
       "draftHint": "Issue this invoice to record payments.",
       "empty": "No payments recorded.",
@@ -1522,7 +1570,15 @@
     },
     "empty": "This invoice has no lines yet.",
     "addContentInEditor": "Add lines in the Editor",
-    "linesScrollAria": "Invoice lines — scroll sideways for more columns"
+    "linesScrollAria": "Invoice lines — scroll sideways for more columns",
+    "resetLink": {
+      "button": "Reset customer link",
+      "title": "Reset the customer link?",
+      "description": "Anyone with the current link will lose access — including the link in previously sent emails. The next send or copy creates a new link.",
+      "confirm": "Reset link",
+      "success": "Link reset — previous links no longer work",
+      "error": "Could not reset the link"
+    }
   },
   "invoiceDocument": {
     "billTo": "Bill to",
@@ -1711,6 +1767,8 @@
       "aiStylePlaceholder": "Default: the item name is a short, generic customer-friendly name (\"Wireless Access Point\"); the description starts with the full product name, then bullet-point specs precise enough to verify an order against. Describe your own style here to override it.",
       "autoTaxHardware": "Auto-tax hardware items",
       "autoTaxHardwareHelp": "Newly imported hardware defaults to taxable.",
+      "autoEmailInvoice": "Email the invoice automatically when a quote is accepted",
+      "autoEmailInvoiceHelp": "When a customer accepts a proposal, the issued invoice is emailed right away with a secure view & pay link — no sign-in needed.",
       "currencyCode": "Currency code",
       "defaultMarkup": "Default markup (%)",
       "defaultTaxRate": "Default tax rate (%)",

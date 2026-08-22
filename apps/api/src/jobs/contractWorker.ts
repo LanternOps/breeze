@@ -65,6 +65,15 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         withSystemDbAccessContext(() => generateDueInvoice(row.id, asOf))
       );
       if (res.generated) billed++;
+      // Wave 3 (#3775): a catalog line billed at the contract snapshot because
+      // the price book has no row in the contract's currency is never silent —
+      // one structured warning per gap so ops can fill the book.
+      for (const gap of res.priceBookGaps) {
+        console.warn(
+          '[contract-billing] price-book gap: contract %s line %s item %s has no %s price — billed at the contract snapshot',
+          row.id, gap.contractLineId, gap.catalogItemId, gap.currencyCode
+        );
+      }
     } catch (err) {
       failed++;
       console.error('[ContractWorker] generation failed', `contractId=${row.id}`, err instanceof Error ? err.message : err);

@@ -21,6 +21,12 @@ vi.mock('../db', () => {
     return chain;
   };
   const db = makeChain();
+  // Draft writers wrap their invoice-first lock + mutation in db.transaction
+  // (#3774 B10); the callback gets the same chain so queued results behave
+  // identically inside it.
+  (db as { transaction?: unknown }).transaction = vi.fn(
+    async (fn: (tx: unknown) => unknown) => fn(db)
+  );
   return {
     db,
     runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -28,7 +34,10 @@ vi.mock('../db', () => {
   };
 });
 
-vi.mock('./catalogService', () => ({ resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() }));
+vi.mock('./catalogService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./catalogService')>();
+  return { ...actual, resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() };
+});
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./stripeConnectService', () => ({ getConnection: vi.fn().mockResolvedValue(null) }));
 

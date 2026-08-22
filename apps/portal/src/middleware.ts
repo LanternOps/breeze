@@ -77,6 +77,17 @@ export const onRequest = defineMiddleware(async (context, next) => {
   }
   applyBaseSecurityHeaders(headers);
 
+  // Token-bearing public document pages (/quote/<token>, /invoice/<token> and
+  // its checkout-return trampoline): the URL itself is the capability, so it
+  // must never land in referrer headers, shared caches, or search indexes.
+  // strict-origin-when-cross-origin (the base policy) still sends the full
+  // token url on same-origin navigation — no-referrer does not.
+  if (pathname.startsWith('/quote/') || pathname.startsWith('/invoice/')) {
+    headers.set('Referrer-Policy', 'no-referrer');
+    headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    headers.set('Cache-Control', 'no-store');
+  }
+
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

@@ -29,6 +29,20 @@ export default function VncViewerPage({ tunnelId }: Props) {
   const [attempt, setAttempt] = useState(0);
   const attemptRef = useRef(0);
 
+  // `t` must NOT be an effect dependency. react-i18next hands back a NEW `t`
+  // identity on `languageChanged`, and `scheduleStoredLocaleAfterHydration()`
+  // fires `changeLanguage` after mount on EVERY page load for any user with a
+  // saved non-English locale. With `t` in the deps below, that re-ran the mint
+  // and installed a fresh wsUrl underneath a live session — the `attemptRef`
+  // guard does not catch it, because `attempt` is unchanged (#3632).
+  //
+  // The messages still need the current translator, so keep it in a ref: read
+  // at call time, never a dependency.
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+
   useEffect(() => {
     attemptRef.current = attempt;
     let cancelled = false;
@@ -38,19 +52,19 @@ export default function VncViewerPage({ tunnelId }: Props) {
         const res = await fetchWithAuth(`/tunnels/${tunnelId}/ws-ticket`, { method: 'POST' });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || t('vncViewerPage.errors.obtainTicket'));
+          throw new Error(body.error || tRef.current('vncViewerPage.errors.obtainTicket'));
         }
         const body = await res.json();
         const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
         if (!ticket) {
-          throw new Error(t('vncViewerPage.errors.invalidTicket'));
+          throw new Error(tRef.current('vncViewerPage.errors.invalidTicket'));
         }
         if (!cancelled && attemptRef.current === attempt) {
           setWsUrl(buildTunnelWsUrl(tunnelId, ticket));
         }
       } catch (err) {
         if (!cancelled && attemptRef.current === attempt) {
-          setError(err instanceof Error ? err.message : t('vncViewerPage.errors.connect'));
+          setError(err instanceof Error ? err.message : tRef.current('vncViewerPage.errors.connect'));
         }
       }
     };
@@ -59,7 +73,7 @@ export default function VncViewerPage({ tunnelId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [tunnelId, attempt, t]);
+  }, [tunnelId, attempt]);
 
   // The tunnel is released exactly once. noVNC's own `disconnect` event fires
   // in addition to the operator's Disconnect click, so both land here.

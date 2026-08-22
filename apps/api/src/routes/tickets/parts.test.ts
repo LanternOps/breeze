@@ -79,7 +79,7 @@ vi.mock('../../db/schema', () => ({
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId', id: 'id', linkType: 'linkType' },
   alerts: { id: 'id', title: 'title', severity: 'severity', status: 'status', deviceId: 'deviceId' },
   devices: { id: 'id', hostname: 'hostname', orgId: 'orgId', siteId: 'siteId' },
-  organizations: { id: 'id', name: 'name' },
+  organizations: { id: 'id', name: 'name', currencyCode: 'currencyCode' },
   users: { id: 'id', name: 'name' },
   timeEntries: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', userId: 'userId',
@@ -195,6 +195,33 @@ describe('parts routes', () => {
     expect(Array.isArray(body.data)).toBe(true);
   });
 
+  it('GET /:id/parts labels every row with the ticket org currency (INTERIM #3777)', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    // The db mock calls dbSelectMock once at .where() and again at .limit():
+    // parts list (where) → org lookup (where, then limit).
+    dbSelectMock
+      .mockReturnValueOnce([{ id: PART_ID, ticketId: TICKET_ID, description: 'SSD', unitPrice: '99.00' }])
+      .mockReturnValueOnce([{ currencyCode: 'EUR' }])
+      .mockReturnValueOnce([{ currencyCode: 'EUR' }]);
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual([
+      { id: PART_ID, ticketId: TICKET_ID, description: 'SSD', unitPrice: '99.00', currencyCode: 'EUR' },
+    ]);
+  });
+
+  it('GET /:id/parts falls back to USD when the org row is missing', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    dbSelectMock
+      .mockReturnValueOnce([{ id: PART_ID, ticketId: TICKET_ID }])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`);
+    const body = await res.json();
+    expect(body.data[0].currencyCode).toBe('USD');
+  });
+
   it('GET /:id/parts 404s for out-of-scope ticket', async () => {
     getScopedTicketOr404Mock.mockResolvedValue(null);
     const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`);
@@ -275,6 +302,23 @@ describe('parts routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.time.billableAmount).toBe('125.00');
+  });
+
+  it('GET /:id/billing-summary carries the ticket org currency beside time + parts (INTERIM #3777)', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
+      time: { totalMinutes: 60, billableMinutes: 60, billableAmount: '125.00' },
+      parts: { partsCount: 1, billableTotal: '99.00' }
+    });
+    dbSelectMock.mockReturnValue([{ currencyCode: 'EUR' }]);
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({
+      time: { totalMinutes: 60, billableMinutes: 60, billableAmount: '125.00' },
+      parts: { partsCount: 1, billableTotal: '99.00' },
+      currencyCode: 'EUR'
+    });
   });
 });
 

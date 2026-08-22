@@ -14,7 +14,8 @@
 // route in routes/quotes/quotes.ts supplies the real quote_images loader.
 
 import PDFDocument from 'pdfkit';
-import { toCents, fromCents, type CoverPage } from '@breeze/shared';
+import { toCents, fromCents, formatMoney as sharedFormatMoney, type CoverPage } from '@breeze/shared';
+import { formatMoneyForPdf } from './pdfMoney';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
 import { renderRichTextIntoPdf } from './richTextPdf';
@@ -26,14 +27,13 @@ import { renderCalloutIntoPdf } from './calloutPdf';
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
 // ---------------------------------------------------------------------------
 
-// Exported so other renderers (contractTemplateRender.ts's auto-variable
-// resolver) format money identically instead of hand-rolling a second
-// Intl/toLocaleString call that could drift from this one.
-export function formatMoney(amount: string | number | null | undefined, currency: string): string {
-  const n = Number(amount ?? 0);
-  const symbol = currency === 'USD' ? '$' : '';
-  const formatted = n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return symbol ? `${symbol}${formatted}` : `${formatted} ${currency}`;
+// Compatibility shim over the shared Intl-backed formatter (@breeze/shared
+// `formatMoney`, #3777): kept as an export because contractTemplateRender.ts
+// and routes/portal/quotes.test.ts import it from here. New code should import
+// `formatMoney` from '@breeze/shared' directly. Locale precedence for PDFs:
+// the document's stamped `document_locale` → branding.locale → 'en'.
+export function formatMoney(amount: string | number | null | undefined, currency: string, locale?: string): string {
+  return sharedFormatMoney(amount, currency, locale);
 }
 
 // Exported for the same reason as formatMoney above — kept in lock-step so a
@@ -87,6 +87,10 @@ export interface QuotePdfBranding {
   primaryColor?: string | null;
   footer?: string | null;
   currencyCode?: string | null;
+  /** Render locale for money glyphs, used only when the quote carries no
+   *  `document_locale` snapshot (drafts/legacy). Resolved from the partner's
+   *  language by `resolvePartnerDocumentLocale`; defaults to 'en'. */
+  locale?: string | null;
   // Optional so existing callers/tests compile unchanged; default classic/a4
   // when absent (registerThemeFonts/pdfPageSize both treat undefined the same
   // as an explicit 'classic'/'a4').
@@ -100,6 +104,8 @@ interface QuoteHeader {
   title?: string | null;
   status?: string | null;
   currencyCode?: string | null;
+  /** Send-time locale snapshot (quotes.document_locale); null on drafts/legacy. */
+  documentLocale?: string | null;
   issueDate?: string | Date | null;
   expiryDate?: string | Date | null;
   billToName?: string | null;
@@ -201,13 +207,20 @@ export interface QuotePdfColumns {
 }
 
 // When showTax is set the table carries a fifth column (qty | description | unit
-// | tax | total) with 12.5%-wide money cells; the four-column layout gives each
-// money cell 14%. TOTAL gets its own wider box (16.5% / 17.5%) because it is the
-// one cell that renders money PLUS a recurrence suffix ("$12,000.00/mo") — sized
-// to colNumW it character-wraps, and the wrapped second line overprints the next
+// | tax | total) with 15.5%-wide money cells; the four-column layout gives each
+// money cell 16%. TOTAL gets its own wider box (19%) because it is the one cell
+// that renders money PLUS a recurrence suffix ("$12,000.00/mo") — sized to
+// colNumW it character-wraps, and the wrapped second line overprints the next
 // row (row height is measured from the description column only). The summary
-// gets a 19% amount box for its 14pt emphasis figure; both it and TOTAL share
+// gets a 24% amount box for its 14pt emphasis figure; both it and TOTAL share
 // the table's right edge so the amounts stay visually aligned.
+//
+// Boxes are sized for prefix-code currencies (#3777): the shared Intl
+// formatter emits "CHF 888’888.88" (code + space + groupers) rather than a
+// one-glyph "$", and money cells draw with lineBreak: false, so an undersized
+// box overprints instead of wrapping. Measured at Helvetica 10 / Helvetica-Bold
+// 14 on A4 (the narrower page) in quotePdf.test.ts; the taxed description
+// column shrinks to 42% to pay for it.
 export function columnsFor(doc: PDFKit.PDFDocument, showTax = false): QuotePdfColumns {
   const left = doc.page.margins.left;
   const right = doc.page.width - doc.page.margins.right;
@@ -219,14 +232,14 @@ export function columnsFor(doc: PDFKit.PDFDocument, showTax = false): QuotePdfCo
       colQtyX: left,
       colQtyW: contentWidth * 0.07,
       colDescX,
-      colDescW: contentWidth * 0.485,
-      colUnitX: left + contentWidth * 0.57,
-      colTaxX: left + contentWidth * 0.70,
-      colAmtX: left + contentWidth * 0.835,
-      colNumW: contentWidth * 0.125,
-      colAmtW: contentWidth * 0.165,
-      colSummaryAmtX: left + contentWidth * 0.81,
-      colSummaryNumW: contentWidth * 0.19,
+      colDescW: contentWidth * 0.42,
+      colUnitX: left + contentWidth * 0.50,
+      colTaxX: left + contentWidth * 0.655,
+      colAmtX: left + contentWidth * 0.81,
+      colNumW: contentWidth * 0.155,
+      colAmtW: contentWidth * 0.19,
+      colSummaryAmtX: left + contentWidth * 0.76,
+      colSummaryNumW: contentWidth * 0.24,
     };
   }
   return {
@@ -235,13 +248,13 @@ export function columnsFor(doc: PDFKit.PDFDocument, showTax = false): QuotePdfCo
     colQtyW: contentWidth * 0.07,
     colDescX,
     colDescW: contentWidth * 0.57,
-    colUnitX: left + contentWidth * 0.66,
+    colUnitX: left + contentWidth * 0.65,
     colTaxX: left + contentWidth * 0.70, // unused when !showTax
-    colAmtX: left + contentWidth * 0.825,
-    colNumW: contentWidth * 0.14,
-    colAmtW: contentWidth * 0.175,
-    colSummaryAmtX: left + contentWidth * 0.81,
-    colSummaryNumW: contentWidth * 0.19,
+    colAmtX: left + contentWidth * 0.81,
+    colNumW: contentWidth * 0.16,
+    colAmtW: contentWidth * 0.19,
+    colSummaryAmtX: left + contentWidth * 0.76,
+    colSummaryNumW: contentWidth * 0.24,
   };
 }
 
@@ -304,6 +317,7 @@ async function renderLineTable(
   doc: PDFKit.PDFDocument,
   lines: QuoteLine[],
   currency: string,
+  locale: string,
   startY: number,
   loadCatalogImage: LoadCatalogImage,
   loadQuoteImage: (imageId: string) => Promise<{ data: Buffer } | null>,
@@ -432,14 +446,14 @@ async function renderLineTable(
     // lineBreak: false on every money cell — row height is measured from the
     // description column only, so a wrapped amount would overprint the next
     // row. An amount too wide for its box clips into the column gap instead.
-    doc.font('Helvetica').fontSize(10).text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
+    doc.font('Helvetica').fontSize(10).text(formatMoneyForPdf(l.unitPrice, currency, locale), c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
     if (showTax) {
       const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
-      doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), c.colTaxX, y, { width: c.colNumW, align: 'right', lineBreak: false });
+      doc.fillColor('#6b7280').text(t === null ? '—' : formatMoneyForPdf(t, currency, locale), c.colTaxX, y, { width: c.colNumW, align: 'right', lineBreak: false });
       doc.fillColor('#1f2937');
     }
     const suffix = recurrenceSuffix(l.recurrence);
-    doc.font('Helvetica').fontSize(10).text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
+    doc.font('Helvetica').fontSize(10).text(`${formatMoneyForPdf(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency, locale)}${suffix}`, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
     y += rowHeight + 6;
   }
 
@@ -455,9 +469,9 @@ async function renderLineTable(
       sums[key] += Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice));
     }
     const parts: string[] = [];
-    if (sums.one_time > 0) parts.push(formatMoney(sums.one_time, currency));
-    if (sums.monthly > 0) parts.push(`${formatMoney(sums.monthly, currency)}/mo`);
-    if (sums.annual > 0) parts.push(`${formatMoney(sums.annual, currency)}/yr`);
+    if (sums.one_time > 0) parts.push(formatMoneyForPdf(sums.one_time, currency, locale));
+    if (sums.monthly > 0) parts.push(`${formatMoneyForPdf(sums.monthly, currency, locale)}/mo`);
+    if (sums.annual > 0) parts.push(`${formatMoneyForPdf(sums.annual, currency, locale)}/yr`);
     if (parts.length) {
       const subtotalText = parts.join('  +  ');
       doc.font('Helvetica-Bold').fontSize(9.5);
@@ -500,6 +514,7 @@ function renderRecurringSummary(
   doc: PDFKit.PDFDocument,
   quote: QuoteHeader,
   currency: string,
+  locale: string,
   primary: string,
   startY: number,
   showTax = false,
@@ -516,11 +531,12 @@ function renderRecurringSummary(
   const showTaxRow = quote.taxTotal != null && Number(quote.taxTotal) > 0;
   const hasRecurring =
     Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
-  // 0.36, not 0.40: the label box ends at colSummaryAmtX (0.81), and the widest
-  // label — "Remaining balance (due per terms)" at bold 12pt, ~200pt — needs the
-  // extra room. Rows advance by the fixed constants below, so a wrapped label
-  // overprints the next row exactly like a wrapped amount would.
-  const sumX = c.left + c.contentWidth * 0.36;
+  // 0.33, not 0.40: the label box ends at colSummaryAmtX (0.76 — widened for
+  // prefix-code currencies, #3777), and the widest label — "Remaining balance
+  // (due per terms)" at bold 12pt, ~200pt — needs the extra room. Rows advance
+  // by the fixed constants below, so a wrapped label overprints the next row
+  // exactly like a wrapped amount would.
+  const sumX = c.left + c.contentWidth * 0.33;
   const labelX = sumX;
   const labelW = c.colSummaryAmtX - sumX - 8;
   const categoryAmountX = c.colSummaryAmtX - 60;
@@ -529,9 +545,9 @@ function renderRecurringSummary(
   const breakdownRows = breakdown.length > 1 ? breakdown.map((b) => {
     const label = b.category === 'other' ? 'Other' : b.category[0]!.toUpperCase() + b.category.slice(1);
     const parts: string[] = [];
-    if (Number(b.oneTimeTotal) > 0) parts.push(formatMoney(b.oneTimeTotal, currency));
-    if (Number(b.monthlyTotal) > 0) parts.push(`${formatMoney(b.monthlyTotal, currency)}/mo`);
-    if (Number(b.annualTotal) > 0) parts.push(`${formatMoney(b.annualTotal, currency)}/yr`);
+    if (Number(b.oneTimeTotal) > 0) parts.push(formatMoneyForPdf(b.oneTimeTotal, currency, locale));
+    if (Number(b.monthlyTotal) > 0) parts.push(`${formatMoneyForPdf(b.monthlyTotal, currency, locale)}/mo`);
+    if (Number(b.annualTotal) > 0) parts.push(`${formatMoneyForPdf(b.annualTotal, currency, locale)}/yr`);
     const amount = parts.join(' + ');
     const stacked = doc.widthOfString(amount) > categoryAmountW;
     const amountHeight = stacked ? doc.heightOfString(amount, { width: c.right - sumX, align: 'right' }) : 0;
@@ -591,7 +607,7 @@ function renderRecurringSummary(
     doc.text(label, labelX, y, { width: labelW, align: 'left' });
     // lineBreak: false — the y advances below are fixed constants shared with
     // the page-break reservation; a wrapped amount would silently break both.
-    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(`${formatMoney(amount, currency)}${suffix}`, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right', lineBreak: false });
+    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(`${formatMoneyForPdf(amount, currency, locale)}${suffix}`, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right', lineBreak: false });
     y += emphasis ? EMPHASIS_ROW_ADVANCE : strong ? BOLD_ROW_ADVANCE : REGULAR_ROW_ADVANCE;
   };
 
@@ -770,6 +786,9 @@ export async function renderQuotePdf(
   contractRenderData: Map<string, ContractPdfBlockData> = new Map(),
 ): Promise<Buffer> {
   const currency = quote.currencyCode ?? branding.currencyCode ?? 'USD';
+  // Stamped send-time snapshot → partner-resolved branding locale → 'en'. Never
+  // changes the number, only the glyphs (#3777).
+  const locale = quote.documentLocale ?? branding.locale ?? 'en';
   const primary = hexToColor(branding.primaryColor, '#2563eb');
   const partnerName = branding.partnerName ?? 'Proposal';
   // Per-line Tax column only when this quote carries tax (mirrors the summary).
@@ -937,7 +956,7 @@ export async function renderQuotePdf(
         // row's real height. Reserving a flat minimum here instead stranded the
         // label + header at the foot of a page whenever the first row was tall.
         const showSubtotal = (b.content as { showSubtotal?: boolean }).showSubtotal === true;
-        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax, showSubtotal, label);
+        y = await renderLineTable(doc, blockLines, currency, locale, y, loadCatalogImage, loadImage, taxRate, showTax, showSubtotal, label);
       }
     } else if (b.blockType === 'contract') {
       // contractRenderData[b.id] is pre-fetched by the route (Task 14's
@@ -982,10 +1001,10 @@ export async function renderQuotePdf(
 
   // ---- Trailing default table for lines with no block ----------------------
   const orphanLines = lines.filter((l) => !l.blockId);
-  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax);
+  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, locale, y, loadCatalogImage, loadImage, taxRate, showTax);
 
   // ---- Recurring summary footer -------------------------------------------
-  y = renderRecurringSummary(doc, quote, currency, primary, y, showTax, {
+  y = renderRecurringSummary(doc, quote, currency, locale, primary, y, showTax, {
     monthly: lines.some((line) => line.recurrence === 'monthly'),
     annual: lines.some((line) => line.recurrence === 'annual'),
   });

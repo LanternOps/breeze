@@ -125,6 +125,84 @@ func TestParseFdbPortColumn_SkipsBadRows(t *testing.T) {
 	}
 }
 
+// dot1dTpFdbPort is INTEGER in the MIB, but agents have been observed answering
+// bridge columns with an OCTET STRING. Binary octet strings are hex-encoded, and
+// hex is all-digit far too often: {0x00,0x05} renders "0005" and Atoi-coerces
+// into a phantom bridge port 5, {0x05,0x00} into port 500. The hex flag exists
+// to prevent exactly that numeric coercion, so rows that had to be hex-encoded
+// are dropped rather than parsed.
+func TestParseFdbPortColumn_SkipsHexEncodedOctetStringPorts(t *testing.T) {
+	const oid = ".1.3.6.1.2.1.17.4.3.1.2.0.80.86.171.205.239"
+	tests := []struct {
+		name  string
+		value []byte
+	}{
+		{"leading NUL renders as 0005", []byte{0x00, 0x05}},
+		{"trailing NUL renders as 0500", []byte{0x05, 0x00}},
+		{"all-NUL renders as 0000", []byte{0x00, 0x00}},
+		{"invalid utf-8 renders as ff05", []byte{0xff, 0x05}},
+		{"binary MAC-shaped payload", []byte{0x00, 0x11, 0x22, 0x30, 0x40, 0x50}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := parseFdbPortColumn([]gosnmp.SnmpPDU{
+				{Name: oid, Type: gosnmp.OctetString, Value: tt.value},
+			})
+			if len(rows) != 0 {
+				t.Fatalf("got %d rows, want 0 (hex-encoded value must not coerce to a port): %+v", len(rows), rows)
+			}
+		})
+	}
+}
+
+// An OCTET STRING that really is text still parses — only hex-encoded (binary)
+// values are dropped.
+func TestParseFdbPortColumn_AcceptsTextOctetStringPort(t *testing.T) {
+	rows := parseFdbPortColumn([]gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.2.1.17.4.3.1.2.0.80.86.171.205.239", Type: gosnmp.OctetString, Value: []byte("5")},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	if rows[0].MAC != "00:50:56:ab:cd:ef" || rows[0].BridgePort != 5 {
+		t.Fatalf("unexpected row: %+v", rows[0])
+	}
+}
+
+// Same hazard one column over: a hex-encoded dot1dBasePortIfIndex would invent
+// an ifIndex and silently mislabel every FDB row on that bridge port.
+func TestParseBridgePortIfIndex_SkipsHexEncodedOctetStrings(t *testing.T) {
+	got := parseBridgePortIfIndex([]gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.2.1.17.1.4.1.2.3", Type: gosnmp.OctetString, Value: []byte{0x00, 0x05}},
+		{Name: ".1.3.6.1.2.1.17.1.4.1.2.5", Type: gosnmp.Integer, Value: big.NewInt(10003)},
+	})
+	if _, ok := got[3]; ok {
+		t.Errorf("bridge port 3 got ifIndex %d from a hex-encoded value, want it dropped", got[3])
+	}
+	if got[5] != 10003 {
+		t.Errorf("bridge port 5: got ifIndex %d, want 10003", got[5])
+	}
+}
+
+// A hex-encoded ifName is an octet dump, not a name: recording it would label an
+// interface "0005".
+func TestParseIfName_SkipsHexEncodedOctetStrings(t *testing.T) {
+	got := parseIfName([]gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.2.1.31.1.1.1.1.10001", Type: gosnmp.OctetString, Value: []byte{0x00, 0x05}},
+		{Name: ".1.3.6.1.2.1.31.1.1.1.1.10002", Type: gosnmp.OctetString, Value: []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+		{Name: ".1.3.6.1.2.1.31.1.1.1.1.10003", Type: gosnmp.OctetString, Value: []byte("Gi0/12\x00")},
+	})
+	if name, ok := got[10001]; ok {
+		t.Errorf("ifIndex 10001 got name %q from a hex-encoded value, want it dropped", name)
+	}
+	if name, ok := got[10002]; ok {
+		t.Errorf("ifIndex 10002 got name %q from an all-NUL value, want it dropped", name)
+	}
+	if got[10003] != "Gi0/12" {
+		t.Errorf("ifIndex 10003: got %q, want %q (NUL-padded text still recovers)", got[10003], "Gi0/12")
+	}
+}
+
 func TestParseBridgePortIfIndex(t *testing.T) {
 	pdus := []gosnmp.SnmpPDU{
 		{Name: ".1.3.6.1.2.1.17.1.4.1.2.3", Type: gosnmp.Integer, Value: big.NewInt(10001)},

@@ -7,19 +7,16 @@
 // Money fields arrive from the API as numeric(12,2) *dollar* strings
 // (e.g. '123.40') — these format dollars, NOT cents.
 
-import { formatCurrency, formatNumber } from '@/lib/i18n/format';
+import { formatMoney as sharedFormatMoney } from '@breeze/shared';
+import { resolvedFormattingLocale } from '@/lib/i18n/format';
 
-/** Currency-aware money formatter (invoices/quotes/contracts carry their own
- *  currencyCode, unlike the USD-only lib/timeFormat.formatMoney). */
+/** Currency-aware money formatter — the web's single entry point onto the
+ *  shared `@breeze/shared` `formatMoney` (multi-currency spec §9), rendered in
+ *  the console's resolved locale. Every money surface (billing documents,
+ *  ticketing, catalog) formats through here; an unknown/invalid currency code
+ *  falls back to a plain 2-decimal amount + uppercased code suffix. */
 export function formatMoney(value: string | number | null | undefined, currencyCode = 'USD'): string {
-  const n = typeof value === 'number' ? value : Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return formatCurrency(safe, currencyCode || 'USD');
-  } catch {
-    // Unknown/invalid currency code → fall back to plain 2-decimal + code suffix.
-    return `${formatNumber(safe, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyCode || ''}`.trim();
-  }
+  return sharedFormatMoney(value, currencyCode || 'USD', resolvedFormattingLocale());
 }
 
 /** Sum money amounts grouped by currency, preserving first-seen order.

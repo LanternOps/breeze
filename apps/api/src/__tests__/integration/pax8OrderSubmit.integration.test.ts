@@ -55,6 +55,7 @@ async function seedOrder(options: {
       billingType: 'recurring',
       billingFrequency: 'monthly',
       unitPrice: '10.00',
+      costCurrency: 'USD',
       taxable: false,
     }).returning();
     if (!catalogItem) throw new Error('failed to seed catalog item');
@@ -80,6 +81,7 @@ async function seedOrder(options: {
       name: 'Pax8 contract',
       intervalMonths: 1,
       startDate: '2026-07-14',
+      currencyCode: 'USD',
     }).returning();
     if (!contract) throw new Error('failed to seed contract');
     const [contractLine] = await db.insert(contractLines).values({

@@ -24,8 +24,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances } from '../../db/schema/quotes';
 import { invoices } from '../../db/schema/invoices';
 import { contracts } from '../../db/schema/contracts';
-import { catalogItems } from '../../db/schema/catalog';
-import { createPartner, createOrganization } from './db-utils';
+import { createPartner, createOrganization, createCatalogItemWithPrice } from './db-utils';
 import { createQuote, addManualLine, addCatalogLine, updateQuote, getQuote } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
 import { acceptQuote } from '../../services/quoteAcceptService';
@@ -56,18 +55,17 @@ async function seed() {
 
 /** Seed a taxable hardware catalog item (system scope bypasses RLS for the seed). */
 async function seedHardwareCatalogItem(partnerId: string) {
-  return withSystemDbAccessContext(async () => {
-    const [row] = await db.insert(catalogItems).values({
+  // Item + one USD price-book row (multi-currency wave 3): addCatalogLine
+  // resolves the sell price from catalog_item_prices, not unit_price.
+  return withSystemDbAccessContext(() =>
+    createCatalogItemWithPrice({
       partnerId,
-      itemType: 'hardware',
       name: 'Managed switch',
+      currencyCode: 'USD',
       unitPrice: '6200.00',
-      billingType: 'one_time',
-      taxable: true,
-      isBundle: false,
-    }).returning({ id: catalogItems.id });
-    return { id: row!.id };
-  });
+      itemType: 'hardware',
+    })
+  );
 }
 
 describe('quote deposits: accept → deposit → balance (breeze_app, real DB)', () => {

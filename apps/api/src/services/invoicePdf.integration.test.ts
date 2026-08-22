@@ -33,6 +33,7 @@ async function seedIssuedInvoice(): Promise<Fixture> {
     }).returning({ id: partners.id });
     const partnerId = p!.id;
     const [o] = await db.insert(organizations).values({
+      currencyCode: 'USD',
       partnerId, name: `Pdf Org ${suffix}`, slug: `pdf-org-${suffix}`,
       billingAddressLine1: '500 Test Ave', billingAddressCity: 'Testville', billingAddressRegion: 'CA',
       billingAddressPostalCode: '90001', billingAddressCountry: 'US'
@@ -64,6 +65,7 @@ async function seedDraftInvoice(): Promise<Fixture> {
     }).returning({ id: partners.id });
     const partnerId = p!.id;
     const [o] = await db.insert(organizations).values({
+      currencyCode: 'USD',
       partnerId, name: `Draft Org ${suffix}`, slug: `draft-org-${suffix}`
     }).returning({ id: organizations.id });
     const orgId = o!.id;

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, type InvoiceBranding } from './invoicePdf';
+import PDFDocument from 'pdfkit';
+import { formatMoney } from '@breeze/shared';
+import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, type InvoiceBranding } from './invoicePdf';
 import { invoices, invoiceLines } from '../db/schema';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -107,6 +109,27 @@ describe('renderInvoiceHtml', () => {
     expect(partial).toContain('$108.50');
   });
 
+  it('formats money with the stamped document locale (de-DE EUR)', () => {
+    const html = renderInvoiceHtml(
+      makeInvoice({ currencyCode: 'EUR', documentLocale: 'de-DE', subtotal: '1000.00', taxTotal: '0.00', total: '1000.00', balance: '1000.00' }),
+      [makeLine({ lineTotal: '1000.00' })],
+      branding,
+    );
+    expect(html).toContain('1.000,00\u00a0€');
+    expect(html).not.toContain('$');
+  });
+
+  it('falls back to the branding locale when the document is unstamped (fr-FR EUR)', () => {
+    const html = renderInvoiceHtml(
+      makeInvoice({ currencyCode: 'EUR', documentLocale: null, subtotal: '1000.00', taxTotal: '0.00', total: '1000.00', balance: '1000.00' }),
+      [makeLine({ lineTotal: '1000.00' })],
+      { ...branding, locale: 'fr-FR' },
+    );
+    // Intl fr-FR: narrow no-break space as the grouping separator, NBSP before the symbol.
+    expect(html).toContain('1\u202f000,00\u00a0€');
+    expect(html).toContain(formatMoney(1000, 'EUR', 'fr-FR'));
+  });
+
   it('escapes HTML in customer-controlled fields', () => {
     const html = renderInvoiceHtml(
       makeInvoice({ billToName: '<script>alert(1)</script>' }),
@@ -127,6 +150,39 @@ describe('renderInvoicePdfBuffer', () => {
     // sha256 is a stable 64-hex digest of the bytes (what renderInvoicePdf stores).
     const sha = createHash('sha256').update(pdf).digest('hex');
     expect(sha).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('sizes the money columns for prefix-code currencies at the row font', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const taxed = invoiceColumnsFor(doc, true);
+    const untaxed = invoiceColumnsFor(doc, false);
+    // Line rows draw money at Helvetica regular 10 — measure at the REAL font.
+    doc.font('Helvetica').fontSize(10);
+    const rowAmountWidth = doc.widthOfString(formatMoney(888888.88, 'CHF', 'de-CH'));
+    expect(taxed.colNumW).toBeGreaterThanOrEqual(rowAmountWidth + 2);
+    expect(untaxed.colNumW).toBeGreaterThanOrEqual(rowAmountWidth + 2);
+    expect(taxed.colAmtX + taxed.colNumW).toBeCloseTo(taxed.right, 5);
+    expect(untaxed.colAmtX + untaxed.colNumW).toBeCloseTo(untaxed.right, 5);
+    // Columns never overlap.
+    expect(taxed.colQtyX).toBeGreaterThanOrEqual(taxed.left + taxed.colDescW);
+    expect(taxed.colTaxX).toBeGreaterThanOrEqual(taxed.colQtyX + taxed.colNumW);
+    expect(taxed.colAmtX).toBeGreaterThanOrEqual(taxed.colTaxX + taxed.colNumW);
+    expect(untaxed.colAmtX).toBeGreaterThanOrEqual(untaxed.colQtyX + untaxed.colNumW);
+  });
+
+  it('gives the emphasised total its own box wide enough for bold 14', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.font('Helvetica-Bold').fontSize(14);
+    const emphasisWidth = doc.widthOfString(formatMoney(1000000, 'CHF', 'de-CH'));
+    const labelWidth = doc.widthOfString('Balance due');
+    for (const c of [invoiceColumnsFor(doc, true), invoiceColumnsFor(doc, false)]) {
+      expect(c.colSummaryNumW).toBeGreaterThanOrEqual(emphasisWidth + 2);
+      expect(c.colSummaryAmtX + c.colSummaryNumW).toBeCloseTo(c.right, 5);
+      // The widest static label at the same bold 14 must fit its own box —
+      // rows advance by fixed constants, so a wrapped label overprints.
+      expect(c.colSummaryLabelW).toBeGreaterThanOrEqual(labelWidth + 2);
+      expect(c.colSummaryLabelX + c.colSummaryLabelW + 4).toBeCloseTo(c.colSummaryAmtX, 5);
+    }
   });
 
   it('renders multiple grouped lines without throwing', async () => {
@@ -193,6 +249,19 @@ describe('buildInvoiceEmailAmounts (deposit-vs-balance split for the email)', ()
     const a = buildInvoiceEmailAmounts({ ...base, depositDue: null, amountPaid: '0.00', balance: '1000.00' });
     expect(a.amountDueNow).toBe('$1,000.00');
     expect(a.amountPaid).toBeUndefined();
+  });
+
+  it('formats with the stamped document locale and a zero-decimal currency', () => {
+    const a = buildInvoiceEmailAmounts({ total: '1000', currencyCode: 'JPY', depositDue: null, amountPaid: '0', balance: '1000', documentLocale: 'en' });
+    expect(a.total).toBe('¥1,000');
+    expect(a.amountDueNow).toBe('¥1,000');
+  });
+
+  it('document locale wins over the caller locale; the caller locale is the fallback', () => {
+    const stamped = buildInvoiceEmailAmounts({ ...base, currencyCode: 'EUR', depositDue: null, amountPaid: '0.00', balance: '1000.00', documentLocale: 'de-DE' }, 'fr-FR');
+    expect(stamped.total).toBe(formatMoney(1000, 'EUR', 'de-DE'));
+    const fallback = buildInvoiceEmailAmounts({ ...base, currencyCode: 'EUR', depositDue: null, amountPaid: '0.00', balance: '1000.00', documentLocale: null }, 'fr-FR');
+    expect(fallback.total).toBe(formatMoney(1000, 'EUR', 'fr-FR'));
   });
 
   it('clamps the charge to the balance when a manual payment shrank it below the deposit', () => {

@@ -141,7 +141,8 @@
         "saveContract": "Impossible d'enregistrer le contrat.",
         "addLine": "Impossible d'ajouter la ligne.",
         "removeLine": "Impossible de supprimer la ligne.",
-        "activateContract": "Impossible d'activer le contrat."
+        "activateContract": "Impossible d'activer le contrat.",
+        "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou supprimez le lien vers le catalogue."
       },
       "toast": {
         "contractCreated": "Contrat créé",
@@ -198,7 +199,9 @@
         "taxable": "Taxable",
         "quantityResolvedAutomatically": "Quantité résolue automatiquement au moment de la facturation.",
         "lineTotal": "Total de la ligne : {{total}}",
-        "addLine": "Ajouter la ligne"
+        "addLine": "Ajouter la ligne",
+        "noPriceInCurrency": "Aucun prix en {{currency}} pour cet article — ajoutez-en un au catalogue, ou supprimez le lien vers le catalogue et saisissez une ligne manuelle.",
+        "priceFromCatalog": "Prix unitaire (du catalogue, en {{currency}})"
       },
       "estimate": {
         "title": "Estimé pour cette période",
@@ -607,7 +610,8 @@
         "updateDeposit": "Impossible de mettre à jour l'acompte.",
         "updateLine": "Impossible de mettre à jour la ligne.",
         "updateSection": "Impossible de mettre à jour la section.",
-        "uploadImage": "Impossible de téléverser l'image."
+        "uploadImage": "Impossible de téléverser l'image.",
+        "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle."
       },
       "image": {
         "alt": "Image du devis",
@@ -887,7 +891,7 @@
         "toLabel": "À",
         "toPlaceholder": "Ajouter un destinataire…",
         "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
-        "zeroTotalWarning": "Ce devis totalise $0.00 — vérifiez que ses lignes sont tarifées avant l'envoi.",
+        "zeroTotalWarning": "Ce devis totalise {{zero}} — vérifiez que ses lignes sont tarifées avant l'envoi.",
         "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez une adresse courriel ou ajoutez-en une dans les <orgLink>paramètres de l'organisation</orgLink>."
       },
       "sendEmailWarning": {
@@ -931,7 +935,8 @@
       "resendNewLinkOriginalLive": "Proposition renvoyée, mais avec un NOUVEAU lien. Cette proposition est antérieure au suivi des liens : celui que le client possédait n'a pas pu être réutilisé; il fonctionne toujours en parallèle du nouveau.",
       "resendNewLinkOriginalDead": "Proposition renvoyée, mais avec un NOUVEAU lien. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser le nouveau.",
       "shareLinkNewLinkOriginalLive": "Un NOUVEAU lien a été copié. Cette proposition est antérieure au suivi des liens : celui que le client possédait n'a pas pu être réutilisé; il fonctionne toujours en parallèle de celui-ci.",
-      "shareLinkNewLinkOriginalDead": "Un NOUVEAU lien a été copié. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser celui-ci."
+      "shareLinkNewLinkOriginalDead": "Un NOUVEAU lien a été copié. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser celui-ci.",
+      "currencyMismatch": "Cette soumission est en {{documentCurrency}}, mais votre compte Stripe règle en {{accountCurrency}}. Stripe présentera {{documentCurrency}} au client et convertira au règlement — l'écart de change et les frais de conversion sont à votre charge."
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -1044,9 +1049,16 @@
         "title": "Totaux"
       },
       "viewInvoice": "Voir la facture",
-      "sentTo": "Envoyé à"
+      "sentTo": "Envoyé à",
+      "declinedBanner": {
+        "title": "Refusée le {{date}}",
+        "reasonLabel": "Note du client :",
+        "revise": "Dupliquer et réviser",
+        "revising": "Duplication…"
+      }
     },
     "distributorLookup": {
+      "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
       "available": "{{count}} dispo",
       "cost": "coût {{currency}} {{amount}}",
       "endOfLife": "Fin de vie",
@@ -1214,6 +1226,7 @@
       "tryAgain": "Réessayer"
     },
     "pax8ProductLookup": {
+      "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
       "cost": "coût {{currency}} {{amount}}",
       "importAndAdd": "Importer et ajouter",
       "option": "Option {{number}}",
@@ -1324,7 +1337,8 @@
       "removeLine": "Impossible de supprimer la ligne.",
       "saveNotes": "Impossible d'enregistrer les notes.",
       "saveTerms": "Impossible d'enregistrer les conditions.",
-      "updateLine": "Impossible de mettre à jour la ligne."
+      "updateLine": "Impossible de mettre à jour la ligne.",
+      "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle."
     },
     "fields": {
       "descriptionOptional": "Description (facultatif)",
@@ -1393,6 +1407,27 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "À",
+      "toPlaceholder": "facturation@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Objet",
+      "subjectPlaceholder": "Facture {{number}} de votre fournisseur",
+      "subjectPlaceholderNoNumber": "Votre facture",
+      "messageLabel": "Message (facultatif)",
+      "messagePlaceholder": "Ajoutez une courte note pour le client…",
+      "includePdfLabel": "Joindre le PDF de la facture",
+      "signaturePreviewLabel": "Votre signature sera ajoutée :",
+      "invalidEmail": "Adresse courriel non valide : {{addresses}}",
+      "tooManyRecipients": "Jusqu’à {{max}} adresses.",
+      "recipientRequired": "Ajoutez au moins un destinataire.",
+      "noBillingContactHint": "Cette entreprise n’a pas encore de contact de facturation — <orgLink>ajoutez-en un</orgLink> ou saisissez une adresse ci-dessus.",
+      "payLinkNote": "Le courriel contient un lien sécurisé permettant à votre client de consulter, télécharger et payer cette facture — sans connexion."
+    },
+    "copyInvoiceLink": "Copier le lien de la facture",
+    "copyInvoiceLinkTitle": "Copie le lien client pour consulter et payer — sans connexion",
+    "copyingPaymentLink": "Copie en cours…",
     "deleteConfirm": {
       "message": "Cette action supprime définitivement la facture brouillon. Elle est irréversible.",
       "title": "Supprimer la facture brouillon"
@@ -1404,6 +1439,9 @@
     "downloadPdfError": "Impossible de télécharger le PDF de la facture.",
     "issue": "Émettre",
     "issueAndSend": "Émettre et envoyer",
+    "issueBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la, puis émettez.",
+    "issueCanceledSaveFailed": "Une modification n'a pas pu être enregistrée, l'émission a donc été annulée. Corrigez le champ signalé et réessayez.",
+    "issueCanceledStillSaving": "Vos modifications sont toujours en cours d'enregistrement — l'émission a été annulée. Réessayez une fois tout enregistré.",
     "issueError": "Impossible d'émettre la facture.",
     "issueNoEmailWarning": "Facture émise — mais aucun courriel n'a été envoyé (aucun contact de facturation / courriel non configuré)",
     "issueSendConfirm": {
@@ -1416,12 +1454,21 @@
     "issueSuccess": "Facture émise",
     "issuing": "Émission…",
     "noVisibleLineHint": "Ajoutez au moins une ligne visible par le client pour émettre.",
+    "paymentLinkCopyFailed": "Copie automatique impossible. Lien de paiement : {{url}}",
     "preparing": "Préparation…",
+    "resend": "Renvoyer",
+    "resendConfirm": {
+      "title": "Renvoyer cette facture?",
+      "message": "Une autre copie de {{amount}} sera envoyée à {{customer}}. Rien ne change sur la facture : même numéro, mêmes dates, mêmes montants."
+    },
+    "resendSuccess": "Facture renvoyée",
+    "resending": "Envoi en cours…",
     "savingHint": "Enregistrement des modifications… L'émission sera disponible une fois tout enregistré.",
     "savingTitle": "Enregistrement de vos modifications — l'émission sera disponible une fois tout enregistré.",
-    "issueCanceledSaveFailed": "Une modification n'a pas pu être enregistrée, l'émission a donc été annulée. Corrigez le champ signalé et réessayez.",
-    "issueCanceledStillSaving": "Vos modifications sont toujours en cours d'enregistrement — l'émission a été annulée. Réessayez une fois tout enregistré.",
-    "issueBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la, puis émettez.",
+    "sendConfirm": {
+      "title": "Envoyer cette facture?",
+      "message": "La facture de {{amount}} sera envoyée par courriel à {{customer}}."
+    },
     "unsavedHint": "« {{field}} » contient une modification non enregistrée — l'émission sera disponible une fois enregistrée.",
     "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l'émission sera disponible une fois enregistrée."
   },
@@ -1460,6 +1507,7 @@
       "amount": "Montant",
       "amountRequired": "Saisissez un montant de paiement à enregistrer",
       "connectStripe": "Connectez Stripe pour accepter les paiements en ligne.",
+      "currencyMismatch": "Cette facture est en {{documentCurrency}}, mais votre compte Stripe règle en {{accountCurrency}}. Stripe présentera {{documentCurrency}} au client et convertira au règlement — l'écart de change et les frais de conversion sont à votre charge.",
       "date": "Date de paiement",
       "draftHint": "Émettez cette facture pour enregistrer des paiements.",
       "empty": "Aucun paiement enregistré.",
@@ -1522,7 +1570,15 @@
     },
     "empty": "Cette facture n'a encore aucune ligne.",
     "addContentInEditor": "Ajouter des lignes dans l'Éditeur",
-    "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes"
+    "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes",
+    "resetLink": {
+      "button": "Réinitialiser le lien client",
+      "title": "Réinitialiser le lien client ?",
+      "description": "Toute personne disposant du lien actuel perdra l'accès, y compris via les courriels déjà envoyés. Le prochain envoi ou la prochaine copie créera un nouveau lien.",
+      "confirm": "Réinitialiser le lien",
+      "success": "Lien réinitialisé — les anciens liens ne fonctionnent plus",
+      "error": "Impossible de réinitialiser le lien"
+    }
   },
   "invoiceDocument": {
     "billTo": "Facturer à",
@@ -1711,6 +1767,8 @@
       "aiStylePlaceholder": "Par défaut : le nom de l'article est un nom court, générique et compréhensible par le client (\"Point d'accès sans fil\") ; la description commence par le nom complet du produit, puis des spécifications en puces assez précises pour vérifier une commande. Décrivez ici votre propre style pour le remplacer.",
       "autoTaxHardware": "Taxer automatiquement le matériel",
       "autoTaxHardwareHelp": "Le nouveau matériel importé est taxable par défaut.",
+      "autoEmailInvoice": "Envoyer automatiquement la facture par courriel à l'acceptation d'une soumission",
+      "autoEmailInvoiceHelp": "Lorsqu'un client accepte une proposition, la facture émise est envoyée immédiatement par courriel avec un lien sécurisé pour consulter et payer — sans connexion.",
       "currencyCode": "Code devise",
       "defaultMarkup": "Marge par défaut (%)",
       "defaultTaxRate": "Taux de taxe par défaut (%)",

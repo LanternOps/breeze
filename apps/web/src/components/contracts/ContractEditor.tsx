@@ -28,7 +28,7 @@ import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import CatalogDistributorDrawer from '../settings/CatalogDistributorDrawer';
 import Pax8CatalogDrawer from '../settings/Pax8CatalogDrawer';
 import ContractPax8Drawer from './ContractPax8Drawer';
-import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
+import { listCatalog, priceFor, type CatalogItem } from '../../lib/api/catalog';
 import { ecExpressStatus, pax8Status } from '../../lib/api/distributors';
 import { formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
@@ -148,7 +148,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [lineQty, setLineQty] = useState('1');
   const [lineTaxable, setLineTaxable] = useState(false);
   const [lineSiteId, setLineSiteId] = useState('');
-  const [lineCatalogId, setLineCatalogId] = useState('');
+  // Linked catalog item (optional). A catalog line is priced by the SERVER in
+  // the contract's currency (#3775 — price book, no conversion): the editor
+  // shows that price read-only and never sends unitPrice/taxable for it.
+  const [lineCatalogItem, setLineCatalogItem] = useState<CatalogItem | null>(null);
   // TD SYNNEX EC Express import, offered only when the integration is connected
   // (best-effort status check; stays hidden on any failure).
   const [ecActive, setEcActive] = useState(false);
@@ -305,9 +308,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const onDistributorImported = useCallback((item: CatalogItem) => {
     setLineType('manual');
     setLineDesc(item.name);
-    setLinePrice(item.unitPrice);
-    setLineCatalogId(item.id);
-    setLineTaxable(item.taxable);
+    setLineCatalogItem(item);
     void loadCatalog();
   }, [loadCatalog]);
   useEffect(() => { void loadSites(orgId); }, [orgId, loadSites]);
@@ -345,11 +346,19 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     return m;
   }, [liveEstimate]);
 
+  // Price-book row for the linked catalog item in the CONTRACT's currency, or
+  // null when the book has no row (the server would refuse the add with
+  // NO_PRICE_FOR_CURRENCY, so the Add button is disabled on a gap).
+  const contractCurrency = contract?.currencyCode;
+  const catalogPrice = lineCatalogItem ? priceFor(lineCatalogItem, contractCurrency) : null;
+  const catalogPriceGap = lineCatalogItem != null && catalogPrice == null;
+  const effectiveLinePrice = lineCatalogItem ? (catalogPrice ?? '0') : linePrice;
+
   const newLineEstimate = useMemo(() => {
     if (AUTO_QTY_TYPES.has(lineType)) return null;
     const qty = lineType === 'manual' ? Number(lineQty || '0') : 1;
-    return qty * Number(linePrice || '0');
-  }, [lineType, lineQty, linePrice]);
+    return qty * Number(effectiveLinePrice || '0');
+  }, [lineType, lineQty, effectiveLinePrice]);
 
   const refresh = useCallback(() => { onChanged?.(); void loadEstimate(); }, [onChanged, loadEstimate]);
 
@@ -517,7 +526,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !lineDesc.trim()) return;
+    if (busy || !contract || !lineDesc.trim() || catalogPriceGap) return;
     setBusy(true);
     try {
       await runAction({
@@ -526,26 +535,30 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           description: lineDesc.trim(),
           // unitPrice/manualQuantity are money strings (see contractLineInputSchema);
           // omit absent optionals (undefined) rather than sending null, which the
-          // string-typed schema rejects.
-          unitPrice: linePrice,
+          // string-typed schema rejects. A catalog line omits unitPrice AND
+          // taxable: the server resolves both from the price book / item (#3775).
+          unitPrice: lineCatalogItem ? undefined : linePrice,
           manualQuantity: lineType === 'manual' ? lineQty : undefined,
           siteId: lineType === 'per_device' && lineSiteId ? lineSiteId : undefined,
-          catalogItemId: lineCatalogId || undefined,
-          taxable: lineTaxable,
+          catalogItemId: lineCatalogItem?.id,
+          taxable: lineCatalogItem ? undefined : lineTaxable,
         }),
         errorFallback: t('contracts.contractEditor.errors.addLine'),
+        friendly: (code) => (code === 'NO_PRICE_FOR_CURRENCY'
+          ? t('contracts.contractEditor.errors.noPriceForCurrency', { currency: contract.currencyCode })
+          : undefined),
         successMessage: t('contracts.contractEditor.toast.lineAdded'),
         onUnauthorized: UNAUTHORIZED,
       });
       setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
-      setLineTaxable(false); setLineSiteId(''); setLineCatalogId('');
+      setLineTaxable(false); setLineSiteId(''); setLineCatalogItem(null);
       refresh();
     } catch (err) {
       handleActionError(err, t('contracts.contractEditor.errors.addLine'));
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogId, lineTaxable, refresh, t]);
+  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogItem, lineTaxable, catalogPriceGap, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
@@ -951,13 +964,25 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     />
                   </label>
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                    {t('contracts.contractEditor.addLine.unitPrice')}
+                    {lineCatalogItem
+                      ? t('contracts.contractEditor.addLine.priceFromCatalog', { currency: contractCurrency })
+                      : t('contracts.contractEditor.addLine.unitPrice')}
+                    {/* A catalog line's price comes from the price book in the contract
+                        currency — read-only here; clear the link for a custom price. */}
                     <input
-                      type="number" min="0" step="0.01" value={linePrice}
-                      onChange={(e) => setLinePrice(e.target.value)}
+                      type="number" min="0" step="0.01"
+                      value={lineCatalogItem ? (catalogPrice ?? '') : linePrice}
+                      readOnly={lineCatalogItem != null}
+                      aria-readonly={lineCatalogItem != null}
+                      onChange={(e) => { if (!lineCatalogItem) setLinePrice(e.target.value); }}
                       data-testid="contract-line-price"
-                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring read-only:bg-muted/40 read-only:text-muted-foreground"
                     />
+                    {catalogPriceGap && (
+                      <span className="text-xs text-destructive" data-testid="contract-line-price-missing">
+                        {t('contracts.contractEditor.addLine.noPriceInCurrency', { currency: contractCurrency })}
+                      </span>
+                    )}
                   </label>
                   {lineType === 'manual' && (
                     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -986,19 +1011,21 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   {catalogItems.length > 0 && (
                     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
                       {t('contracts.contractEditor.addLine.linkCatalogItemOptional')}
-                      {lineCatalogId ? (
+                      {lineCatalogItem ? (
                         <span className="inline-flex h-9 items-center gap-1.5 self-start rounded-md border bg-muted/40 px-2.5 text-sm text-foreground" data-testid="contract-line-catalog-picked">
-                          <span className="font-medium">{catalogItems.find((i) => i.id === lineCatalogId)?.name ?? t('contracts.contractEditor.addLine.itemFallback')}</span>
-                          <button type="button" onClick={() => setLineCatalogId('')} aria-label={t('contracts.contractEditor.addLine.clearCatalogLink')} className="ml-1 text-muted-foreground hover:text-foreground">×</button>
+                          <span className="font-medium">{lineCatalogItem.name}</span>
+                          <button type="button" onClick={() => setLineCatalogItem(null)} aria-label={t('contracts.contractEditor.addLine.clearCatalogLink')} className="ml-1 text-muted-foreground hover:text-foreground">×</button>
                         </span>
                       ) : (
                         <CatalogItemPicker
                           items={catalogItems}
+                          currencyCode={contractCurrency ?? ''}
                           includeBundles={false}
                           onSelect={(it) => {
-                            setLineCatalogId(it.id);
+                            // No client-side price copy: the server resolves the
+                            // contract-currency price (and taxable) from the catalog.
+                            setLineCatalogItem(it);
                             if (!lineDesc.trim()) setLineDesc(it.name);
-                            setLinePrice(it.unitPrice);
                           }}
                           testId="contract-line-catalog-picker"
                           placeholder={t('contracts.contractEditor.addLine.searchCatalog')}
@@ -1008,7 +1035,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   )}
                   <label className="flex items-center gap-2 text-sm">
                     <input
-                      type="checkbox" checked={lineTaxable} onChange={(e) => setLineTaxable(e.target.checked)}
+                      type="checkbox"
+                      checked={lineCatalogItem ? lineCatalogItem.taxable : lineTaxable}
+                      disabled={lineCatalogItem != null}
+                      onChange={(e) => { if (!lineCatalogItem) setLineTaxable(e.target.checked); }}
                       data-testid="contract-line-taxable"
                     />
                     {t('contracts.contractEditor.addLine.taxable')}
@@ -1022,7 +1052,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim()}
+                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceGap}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >

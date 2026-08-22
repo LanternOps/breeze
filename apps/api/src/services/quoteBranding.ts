@@ -16,6 +16,7 @@ import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { buildSellerSnapshot, type SellerSnapshot } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize, type DocumentThemeId, type DocumentPageSize } from './documentThemes';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 
 export interface QuoteBranding {
   /** Partner display name. Falls back to the document's frozen seller name when
@@ -29,6 +30,9 @@ export interface QuoteBranding {
   footer: string | null;
   /** Resolved currency for money formatting. */
   currencyCode: string;
+  /** Render locale for money glyphs. Precedence: quote.documentLocale (send-time
+   *  snapshot, never overwritten) → partner language (`resolvePartnerDocumentLocale`) → 'en'. */
+  locale: string;
   /** Seller "From" block — the quote's frozen snapshot, or synthesized live for drafts. */
   seller: SellerSnapshot | null;
   /** Document theme. Precedence: quote.presentationSnapshot → partner.documentTheme → 'classic'. */
@@ -54,6 +58,9 @@ export interface QuoteBrandingSource {
    *  the customer has already been shown). Null on drafts, which fall through
    *  to the partner columns below. */
   presentationSnapshot: unknown;
+  /** quotes.document_locale — stamped once at first send (#3777); null on
+   *  drafts/legacy rows, which fall through to the partner's language. */
+  documentLocale: string | null;
 }
 
 export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<QuoteBranding> {
@@ -93,6 +100,7 @@ export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<
     primaryColor: brand?.primaryColor ?? null,
     footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,
     currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
+    locale: quote.documentLocale ?? resolvePartnerDocumentLocale(partner),
     seller,
     theme: resolveThemeId(snap?.theme ?? partner?.documentTheme),
     pageSize: resolvePageSize(snap?.pageSize ?? partner?.documentPageSize),

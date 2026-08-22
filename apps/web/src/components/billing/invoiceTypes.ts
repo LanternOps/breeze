@@ -34,7 +34,7 @@ export function sellerLines(a: SellerSnapshot['address'] | null | undefined): st
 // Invoice-domain enums come from the single source of truth in @breeze/shared
 // (packages/shared/src/types/billing-enums.ts). Imported for the Record maps
 // below and re-exported so existing './invoiceTypes' consumers are unaffected.
-import type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType } from '@breeze/shared';
+import type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType, StripeCurrencyWarning } from '@breeze/shared';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 export type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType };
 
@@ -114,6 +114,13 @@ export interface InvoiceDetail {
   /** Whether the partner has an active Stripe Connect account (gates "Send
    *  payment link"). Absent on older API responses → treated as not connected. */
   stripeConnected?: boolean;
+  /** The connected Stripe account's cached settlement currency (ISO 4217,
+   *  upper-case) — null when not connected or not cached yet. Read-only: the
+   *  web never calls Stripe and never derives the warning below itself. */
+  stripeAccountCurrency?: string | null;
+  /** Warn-don't-block (multi-currency #3777): set by the API when the invoice
+   *  currency differs from `stripeAccountCurrency`. Never blocks the pay link. */
+  currencyWarning?: StripeCurrencyWarning | null;
 }
 
 export interface InvoicePayment {

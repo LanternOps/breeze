@@ -114,6 +114,8 @@ export function SystemsScreen() {
     loading,
     refreshing,
     error,
+    activeAlertsTruncated,
+    devicesTruncated,
     refresh,
     refreshIfStale,
   } = useSystemsData();
@@ -225,6 +227,21 @@ export function SystemsScreen() {
   const showRecent = recent.length > 0;
   const showActiveIssues = activeIssues.length > 0;
   const showActiveSkeleton = loading && activeIssues.length === 0;
+  // Every section can hide independently, and the org filter suppresses the
+  // Organizations list outright — so a filtered org with nothing outstanding
+  // rendered a completely blank page under the chip, indistinguishable from a
+  // failed load. Say what is actually true instead.
+  // Gated on error and refreshing too: with all fetches failed the hook sets
+  // loading=false with empty slices, and an ungated banner would assert
+  // "everything is clear" directly beneath the failure notice.
+  const showNothingState =
+    !loading
+    && !refreshing
+    && !error
+    && !showOrgs
+    && !showRecent
+    && !showActiveIssues
+    && !showActiveSkeleton;
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
@@ -280,10 +297,46 @@ export function SystemsScreen() {
           loading={loading}
         />
 
+        <Pressable
+          onPress={() =>
+            navigation.navigate('SystemsDevices', {
+              orgId: filterOrgId,
+              orgName: filterOrgName,
+            })
+          }
+          accessibilityRole="button"
+          accessibilityLabel="View all devices"
+          style={{
+            marginHorizontal: spacing[6],
+            marginTop: spacing[3],
+            paddingVertical: spacing[3],
+            paddingHorizontal: spacing[4],
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: theme.border,
+            backgroundColor: theme.bg1,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Text style={{ ...type.bodyMd, color: theme.textHi }}>
+            {filterOrgName ? `${filterOrgName} devices` : 'All devices'}
+          </Text>
+          <Text style={{ ...type.meta, color: theme.textLo }}>View</Text>
+        </Pressable>
+
         {filterOrgId && filterOrgName ? (
           <FilterChip label={filterOrgName} onClear={() => setFilterOrgId(null)} />
         ) : null}
 
+        {/*
+          Renders the message the hook computed rather than one hardcoded
+          string. `ALL_FAILED_MESSAGE` ("nothing loaded") and
+          `PARTIAL_FAILED_MESSAGE` ("some of this is stale") were being
+          collapsed into the same sentence, so a screen showing NO real data
+          and a screen showing MOSTLY real data read identically.
+        */}
         {error ? (
           <View
             style={{
@@ -292,7 +345,29 @@ export function SystemsScreen() {
             }}
           >
             <Text style={[type.meta, { color: palette.deny.base }]}>
-              Couldn't refresh. Pull to try again.
+              {error} Pull to try again.
+            </Text>
+          </View>
+        ) : null}
+
+        {/*
+          Truncation is not an error — the rows shown are real. It still has to
+          be said, because Active Issues and every org issue count are computed
+          over this list, and a capped list renders as a confident total.
+        */}
+        {activeAlertsTruncated || devicesTruncated ? (
+          <View
+            style={{
+              paddingHorizontal: spacing[6],
+              paddingTop: spacing[4],
+            }}
+          >
+            <Text style={[type.meta, { color: palette.dark.textLo }]}>
+              {activeAlertsTruncated && devicesTruncated
+                ? 'Showing part of the fleet and part of the active alerts. Counts below are a partial view.'
+                : activeAlertsTruncated
+                  ? 'Showing the most recent active alerts only. Issue counts below are a partial view.'
+                  : 'Showing part of the fleet. Device counts below are a partial view.'}
             </Text>
           </View>
         ) : null}
@@ -351,6 +426,29 @@ export function SystemsScreen() {
               />
             ))}
           </>
+        ) : null}
+
+        {showNothingState ? (
+          <View style={{ paddingHorizontal: spacing[6], paddingTop: spacing[8] }}>
+            <Text
+              style={{ ...type.bodyMd, color: theme.textHi, textAlign: 'center' }}
+              accessibilityRole="text"
+            >
+              {filterOrgName ? `${filterOrgName} is all clear` : 'Everything is clear'}
+            </Text>
+            <Text
+              style={{
+                ...type.meta,
+                color: theme.textLo,
+                textAlign: 'center',
+                marginTop: spacing[2],
+              }}
+            >
+              {filterOrgName
+                ? 'No active issues for this organization. Clear the filter to see the rest of the fleet.'
+                : 'No active issues across your fleet.'}
+            </Text>
+          </View>
         ) : null}
       </ScrollView>
 

@@ -33,7 +33,11 @@ export const contracts = pgTable('contracts', {
   autoRenew: boolean('auto_renew').notNull().default(false),
   renewalTermMonths: integer('renewal_term_months'),
   renewalNoticeDays: integer('renewal_notice_days'),
-  currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
+  // Multi-currency (spec §5): stamped from the org (or copied from the source
+  // document) at creation and immutable once monetary lines exist. Deliberately
+  // NO .default() — every creation path must stamp it explicitly, so a missed
+  // path is a loud insert failure, never a silent USD document.
+  currencyCode: char('currency_code', { length: 3 }).notNull(),
   notes: text('notes'),
   terms: text('terms'),
   createdBy: uuid('created_by').references(() => users.id),

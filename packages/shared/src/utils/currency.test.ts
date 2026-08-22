@@ -1,0 +1,108 @@
+import { describe, it, expect } from 'vitest';
+import {
+  CURRENCY_CODES, isKnownCurrency, minorUnitExponent, isZeroDecimal,
+  toMinorUnits, fromMinorUnits, roundToCurrency, formatCurrencyAmount, formatMoney,
+  buildStripeCurrencyWarning,
+} from './currency';
+
+describe('currency core', () => {
+  it('curated list contains no 3-decimal currencies (spec §4)', () => {
+    for (const bad of ['BHD', 'KWD', 'OMR', 'JOD', 'TND']) {
+      expect(CURRENCY_CODES).not.toContain(bad);
+    }
+    expect(CURRENCY_CODES).toContain('USD');
+    expect(CURRENCY_CODES.length).toBe(34);
+  });
+
+  it('isKnownCurrency trims + uppercases', () => {
+    expect(isKnownCurrency(' eur ')).toBe(true);
+    expect(isKnownCurrency('ZZZ')).toBe(false);
+  });
+
+  it('minor-unit exponents: 0 for zero-decimal, else 2', () => {
+    expect(minorUnitExponent('JPY')).toBe(0);
+    expect(minorUnitExponent('CLP')).toBe(0);
+    expect(minorUnitExponent('EUR')).toBe(2);
+    expect(isZeroDecimal('jpy')).toBe(true);
+    expect(isZeroDecimal('USD')).toBe(false);
+  });
+
+  it('toMinorUnits matches the Stripe contract (JPY not x100)', () => {
+    expect(toMinorUnits('10.50', 'USD')).toBe(1050);
+    expect(toMinorUnits('1000', 'JPY')).toBe(1000);
+    expect(() => toMinorUnits(Number.NaN, 'USD')).toThrow();
+  });
+
+  it('fromMinorUnits returns fixed-2 major-unit strings', () => {
+    expect(fromMinorUnits(1050, 'USD')).toBe('10.50');
+    expect(fromMinorUnits(1000, 'JPY')).toBe('1000.00');
+  });
+
+  it('roundToCurrency rounds half-up at the currency exponent, fixed-2 output', () => {
+    expect(roundToCurrency('10.505', 'USD')).toBe('10.51');
+    expect(roundToCurrency('1000.50', 'JPY')).toBe('1001.00');
+    expect(roundToCurrency('1000.49', 'JPY')).toBe('1000.00');
+    expect(roundToCurrency(0, 'JPY')).toBe('0.00');
+  });
+
+  it('formatCurrencyAmount uses Intl and falls back on unknown codes', () => {
+    expect(formatCurrencyAmount('1234.5', 'USD', 'en-US')).toBe('$1,234.50');
+    expect(formatCurrencyAmount('1000.00', 'JPY', 'en-US')).toBe('¥1,000');
+    // Unknown code: bare-code fallback, never a throw.
+    expect(formatCurrencyAmount('12.00', 'ZZ1', 'en-US')).toBe('12.00 ZZ1');
+  });
+});
+
+describe('formatMoney', () => {
+  it('formats supported currencies with the requested locale', () => {
+    expect(formatMoney('1234.5', 'USD', 'en-US')).toBe('$1,234.50');
+    expect(formatMoney('1000.00', 'JPY', 'en-US')).toBe('¥1,000');
+    expect(formatMoney(1234.5, 'EUR', 'de-DE')).toBe('1.234,50 €');
+    expect(formatMoney(888888.88, 'CHF', 'de-CH')).toMatch(/^CHF/);
+    expect(formatMoney(-5, 'USD', 'en-US')).toBe('-$5.00');
+  });
+
+  it('coerces null and non-numeric values to zero', () => {
+    expect(formatMoney(null, 'USD', 'en-US')).toBe('$0.00');
+    expect(formatMoney('abc', 'USD', 'en-US')).toBe('$0.00');
+  });
+
+  it('normalizes unknown codes and falls back without throwing', () => {
+    expect(formatMoney('12.00', 'ZZ1', 'en-US')).toBe('12.00 ZZ1');
+    expect(formatMoney(5, 'us', 'en-US')).toBe('5.00 US');
+  });
+
+  it('uses the runtime default when locale is undefined', () => {
+    expect(() => formatMoney(1, 'USD', undefined)).not.toThrow();
+    expect(formatMoney(1, 'USD', undefined)).toContain('1');
+  });
+
+  it('retains formatCurrencyAmount as an alias', () => {
+    expect(formatCurrencyAmount).toBe(formatMoney);
+  });
+});
+
+describe('buildStripeCurrencyWarning', () => {
+  it('returns the warn-dont-block shape when the account settles in a different currency', () => {
+    const w = buildStripeCurrencyWarning('EUR', 'USD');
+    expect(w).toMatchObject({
+      code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
+      documentCurrency: 'EUR',
+      accountCurrency: 'USD',
+    });
+    expect(w?.message).toContain('FX spread');
+    expect(w?.message).toContain('EUR');
+    expect(w?.message).toContain('USD');
+  });
+
+  it('is null when the currencies match case-insensitively', () => {
+    expect(buildStripeCurrencyWarning('EUR', 'eur')).toBeNull();
+    expect(buildStripeCurrencyWarning('usd', 'USD')).toBeNull();
+  });
+
+  it('is null when the account currency is unknown', () => {
+    expect(buildStripeCurrencyWarning('EUR', null)).toBeNull();
+    expect(buildStripeCurrencyWarning('EUR', undefined)).toBeNull();
+    expect(buildStripeCurrencyWarning('EUR', '')).toBeNull();
+  });
+});

@@ -4,11 +4,14 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
-import { formatMinutes, formatMoney } from '../../lib/timeFormat';
+import { formatMinutes } from '../../lib/timeFormat';
+import { formatMoney } from '@/components/billing/shared/format';
 
 interface BillingSummary {
   time: { totalMinutes: number; billableMinutes: number; billableAmount: string };
   parts: { partsCount: number; billableTotal: string };
+  /** Ticket org currency (INTERIM #3777: wave 4 snapshots replace the org read). */
+  currencyCode?: string;
 }
 
 interface EntryRow {
@@ -122,11 +125,11 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           </div>
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.timeAmount')}</dt>
-            <dd data-testid="ticket-billing-amount">{formatMoney(summary.time.billableAmount)}</dd>
+            <dd data-testid="ticket-billing-amount">{formatMoney(summary.time.billableAmount, summary.currencyCode)}</dd>
           </div>
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.partsCount', { count: summary.parts.partsCount })}</dt>
-            <dd data-testid="ticket-billing-parts-total">{formatMoney(summary.parts.billableTotal)}</dd>
+            <dd data-testid="ticket-billing-parts-total">{formatMoney(summary.parts.billableTotal, summary.currencyCode)}</dd>
           </div>
         </dl>
       )}

@@ -72,9 +72,9 @@ beforeAll(async () => {
   await admin`INSERT INTO partners (id, name, slug)
               VALUES (${partnerA}, 'wsp-dash-a', ${`wsp-dash-a-${sfx}`}),
                      (${partnerB}, 'wsp-dash-b', ${`wsp-dash-b-${sfx}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${orgA}, ${partnerA}, 'wsp-dash-org-a', ${`wsp-dash-org-a-${sfx}`}),
-                     (${orgB}, ${partnerB}, 'wsp-dash-org-b', ${`wsp-dash-org-b-${sfx}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${orgA}, ${partnerA}, 'wsp-dash-org-a', ${`wsp-dash-org-a-${sfx}`}, 'USD'),
+                     (${orgB}, ${partnerB}, 'wsp-dash-org-b', ${`wsp-dash-org-b-${sfx}`}, 'USD')`;
 
   // Two sources: source1 ungrouped+active (content-eligible), source2
   // GROUPED — the org-operator-scope pin: the sources card must still count
