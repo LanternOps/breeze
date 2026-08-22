@@ -768,6 +768,45 @@ describe('catalogService (breeze_app, real DB)', () => {
     expect(legacy).toMatchObject({ priceBookComplete: true, marginAvailable: false, totalCost: null, margin: null, marginPct: null });
   });
 
+  // #3775 review #1: the bundle's OWN headline gap is a null headline, whatever
+  // its reason. A forged legacy fractional-yen headline row must not escape as a
+  // raw CatalogServiceError (which reaches the route as a 500 through
+  // addBundleLine, and contradicts this contract on GET /:id/economics).
+  runDb('computeBundleEconomics (#3775 review #1): a non-representable headline is a typed GAP, not a throw', async () => {
+    const fx = await seedFixture();
+    const mk = (name: string, isBundle: boolean) => withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem(
+        { itemType: 'hardware', name, billingType: 'one_time', prices: [{ currencyCode: 'JPY', unitPrice: 500 }], unitOfMeasure: 'each', taxable: true, isBundle, attributes: {} },
+        fx.actorA
+      ));
+    const bundle = await mk('JPY gap bundle', true);
+    const comp = await mk('JPY gap comp', false);
+    await withDbAccessContext(fx.ctxA, () =>
+      setBundleComponents(bundle.id, [{ componentItemId: comp.id, quantity: 1, showOnInvoice: true }], fx.actorA));
+
+    // Sanity: a representable headline resolves with no gap.
+    expect(await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'JPY', null, fx.actorA)))
+      .toMatchObject({ headlinePrice: '500.00', headlineGap: null, priceBookComplete: true });
+
+    // Forge what the backfills preserve: a sub-unit amount in a zero-decimal currency.
+    await withSystemDbAccessContext(() =>
+      db.update(catalogItemPrices).set({ unitPrice: '100.50' })
+        .where(and(eq(catalogItemPrices.itemId, bundle.id), eq(catalogItemPrices.currencyCode, 'JPY'))));
+
+    const econ = await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'JPY', null, fx.actorA));
+    expect(econ).toMatchObject({
+      headlinePrice: null, headlineGap: 'PRICE_NOT_REPRESENTABLE', priceBookComplete: false,
+      totalCost: null, margin: null,
+    });
+    expect(econ.headlineGapMessage).toContain('not representable in JPY');
+
+    // A missing row (no gap reason to state) still reports the ordinary gap.
+    await withSystemDbAccessContext(() =>
+      db.delete(catalogItemPrices).where(and(eq(catalogItemPrices.itemId, bundle.id), eq(catalogItemPrices.currencyCode, 'JPY'))));
+    expect(await withDbAccessContext(fx.ctxA, () => computeBundleEconomics(bundle.id, 'JPY', null, fx.actorA)))
+      .toMatchObject({ headlinePrice: null, headlineGap: 'NO_PRICE_FOR_CURRENCY', headlineGapMessage: null });
+  });
+
   runDb('setBundleComponents (#3775 review #7): stamps allocation_currency on allocation rows only; refuses an allocation without a currency; the CHECK rejects a forged row', async () => {
     const fx = await seedFixture();
     const { bundle, comp1, comp2 } = await seedBundleAndComponents(fx);

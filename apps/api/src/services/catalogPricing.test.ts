@@ -274,6 +274,38 @@ describe('computeBundleEconomicsFrom', () => {
     expect(r.allocationTotal).toBe('0.00');
   });
 
+  // #3775 review #1: the headline gap carries its REASON. A null headline with
+  // no stated reason is the ordinary "no price-book row" gap; a caller that
+  // knows better (a legacy non-representable row) states it, and the reason
+  // rides on the economics payload instead of throwing.
+  it('defaults headlineGap to NO_PRICE_FOR_CURRENCY for a null headline and null for a priced one', () => {
+    const comps = [{
+      componentItemId: componentA, quantity: '1', costBasis: '10.00', costCurrency: 'USD',
+      revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true
+    }];
+    expect(computeBundleEconomicsFrom({ currencyCode: 'USD', headlinePrice: null, components: comps }))
+      .toMatchObject({ headlineGap: 'NO_PRICE_FOR_CURRENCY', headlineGapMessage: null });
+    expect(computeBundleEconomicsFrom({ currencyCode: 'USD', headlinePrice: '100.00', components: comps }))
+      .toMatchObject({ headlineGap: null, headlineGapMessage: null });
+  });
+
+  it('carries an explicit PRICE_NOT_REPRESENTABLE headline gap and its actionable message', () => {
+    const r = computeBundleEconomicsFrom({
+      currencyCode: 'JPY',
+      headlinePrice: null,
+      headlineGap: 'PRICE_NOT_REPRESENTABLE',
+      headlineGapMessage: 'Price-book price 100.50 for "Kit" is not representable in JPY',
+      components: [{
+        componentItemId: componentA, quantity: '1', costBasis: '100', costCurrency: 'JPY',
+        revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true
+      }]
+    });
+    expect(r.headlinePrice).toBeNull();
+    expect(r.priceBookComplete).toBe(false);
+    expect(r.headlineGap).toBe('PRICE_NOT_REPRESENTABLE');
+    expect(r.headlineGapMessage).toContain('not representable in JPY');
+  });
+
   it('returns marginPct 0 (not NaN/Infinity) when the headline price is zero', () => {
     const r = computeBundleEconomicsFrom({
       currencyCode: 'USD',

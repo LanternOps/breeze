@@ -152,10 +152,23 @@ export function detectBundleProblems(args: {
   return [...problems];
 }
 
+/**
+ * Why the bundle's OWN headline price is unavailable in the target currency
+ * (#3775 review #1). The bundle's own gap is always a null headline — never an
+ * error — but the REASON rides along so a caller that must refuse (adding the
+ * bundle to a document) can raise the right typed 409 and repeat the
+ * actionable text instead of a generic "no price".
+ */
+export type BundleHeadlineGap = 'NO_PRICE_FOR_CURRENCY' | 'PRICE_NOT_REPRESENTABLE';
+
 export interface BundleEconomics {
   currencyCode: string;
-  /** null when the bundle itself has no price in currencyCode */
+  /** null when the bundle itself has no usable price in currencyCode */
   headlinePrice: string | null;
+  /** null iff headlinePrice !== null; why the headline is unavailable */
+  headlineGap: BundleHeadlineGap | null;
+  /** the resolver's actionable text for a stated gap; null for the plain missing-row gap */
+  headlineGapMessage: string | null;
   /** every component has a price-book row in currencyCode AND headlinePrice !== null */
   priceBookComplete: boolean;
   /** every component's costCurrency === currencyCode (null cost still counts as 0, as before) */
@@ -181,6 +194,9 @@ export interface BundleEconomics {
 export function computeBundleEconomicsFrom(args: {
   currencyCode: string;
   headlinePrice: string | null;
+  /** stated only for a non-obvious gap; a null headline defaults to NO_PRICE_FOR_CURRENCY */
+  headlineGap?: BundleHeadlineGap | null;
+  headlineGapMessage?: string | null;
   components: Array<{
     componentItemId: string;
     quantity: string;
@@ -231,6 +247,8 @@ export function computeBundleEconomicsFrom(args: {
   return {
     currencyCode: currency,
     headlinePrice: args.headlinePrice === null ? null : fromCents(headlineCents),
+    headlineGap: args.headlinePrice !== null ? null : (args.headlineGap ?? 'NO_PRICE_FOR_CURRENCY'),
+    headlineGapMessage: args.headlinePrice !== null ? null : (args.headlineGapMessage ?? null),
     priceBookComplete,
     marginAvailable,
     totalCost: economicsAvailable ? fromCents(costCents) : null,

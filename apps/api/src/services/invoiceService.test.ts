@@ -855,6 +855,24 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     expect(values()).not.toHaveBeenCalled();
   });
 
+  // #3775 review #1: a legacy non-representable headline (JPY 100.50) is a GAP
+  // for economics, not a raw CatalogServiceError. addBundleLine must map it to a
+  // typed InvoiceServiceError so the route answers 409 (not 500) and the
+  // operator gets the actionable "correct the JPY price" text.
+  it('addBundleLine maps a PRICE_NOT_REPRESENTABLE headline gap to a typed 409 and inserts nothing', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({
+      currencyCode: 'JPY', headlinePrice: null, priceBookComplete: false, totalCost: null,
+      headlineGap: 'PRICE_NOT_REPRESENTABLE',
+      headlineGapMessage: 'Price-book price 100.50 for "Kit" is not representable in JPY — correct the JPY price before using this item',
+    }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
+    await expect(svc.addBundleLine('i1', 'b-1', 1, actor)).rejects.toMatchObject({
+      code: 'PRICE_NOT_REPRESENTABLE', status: 409,
+      message: expect.stringContaining('not representable in JPY'),
+    });
+    expect(values()).not.toHaveBeenCalled();
+  });
+
   it('addBundleLine throws PRICE_BOOK_INCOMPLETE (409) when a component lacks a price and inserts nothing', async () => {
     bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'EUR', priceBookComplete: false, totalCost: null, missingPriceComponentIds: ['c-2', 'c-3'] }));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);

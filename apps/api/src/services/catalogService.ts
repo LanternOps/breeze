@@ -7,6 +7,7 @@ import { emitCatalogEvent } from './catalogEvents';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   deriveUnitPrice, resolvePriceFrom, isPriceGap, detectBundleProblems, computeBundleEconomicsFrom,
+  type BundleHeadlineGap,
   type ResolvedPrice, type BundleEconomics
 } from './catalogPricing';
 import { isRepresentableInCurrency, roundToCurrency } from '@breeze/shared';
@@ -659,13 +660,26 @@ export async function computeBundleEconomics(
   const bundle = await getOwnedItemOr404(bundleId, partnerId, dbc);
   if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
 
-  // The bundle's own gap is a null headline (economics unavailable), not an error.
+  // The bundle's own gap is a null headline (economics unavailable), not an
+  // error — for EVERY gap reason, including a legacy non-representable row
+  // (#3775 review #1). Letting PRICE_NOT_REPRESENTABLE escape here made
+  // GET /catalog/:id/economics answer 409 (contradicting this contract) and
+  // reached addBundleLine as an unmapped CatalogServiceError → HTTP 500. The
+  // reason travels on the payload so a document caller can still refuse with a
+  // typed 409 that repeats the resolver's actionable text.
   let headlinePrice: string | null;
+  let headlineGap: BundleHeadlineGap | null = null;
+  let headlineGapMessage: string | null = null;
   try {
     headlinePrice = (await resolvePrice(bundleId, targetCurrency, orgId, actor, dbc)).unitPrice;
   } catch (err) {
-    if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') headlinePrice = null;
-    else throw err;
+    if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+      headlinePrice = null;
+      headlineGap = err.code;
+      // The plain missing-row gap needs no message; a stated reason carries the
+      // resolver's "correct the <CUR> price" text through to the operator.
+      headlineGapMessage = err.code === 'PRICE_NOT_REPRESENTABLE' ? err.message : null;
+    } else throw err;
   }
 
   // A component "has a price" in the target currency when the price book has a
@@ -699,6 +713,8 @@ export async function computeBundleEconomics(
   return computeBundleEconomicsFrom({
     currencyCode: targetCurrency,
     headlinePrice,
+    headlineGap,
+    headlineGapMessage,
     components: comps.map((c) => ({
       componentItemId: c.componentItemId,
       quantity: c.quantity,

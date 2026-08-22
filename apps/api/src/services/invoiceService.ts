@@ -214,7 +214,14 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
     // never billed from a partial price book (wave 3, #3775).
     const econ = await computeBundleEconomics(bundleId, inv.currencyCode, inv.orgId, catalogActorFrom(actor), tx);
     if (econ.headlinePrice === null) {
-      throw new InvoiceServiceError(`Bundle has no ${inv.currencyCode} price`, 409, 'NO_PRICE_FOR_CURRENCY');
+      // Both headline gaps are typed 409s here (#3775 review #1). A legacy
+      // non-representable row keeps the resolver's actionable text — telling the
+      // operator to "add a price" when a wrong one already exists is a dead end.
+      throw new InvoiceServiceError(
+        econ.headlineGapMessage ?? `Bundle has no ${inv.currencyCode} price`,
+        409,
+        econ.headlineGap === 'PRICE_NOT_REPRESENTABLE' ? 'PRICE_NOT_REPRESENTABLE' : 'NO_PRICE_FOR_CURRENCY'
+      );
     }
     if (!econ.priceBookComplete) {
       throw new InvoiceServiceError(
