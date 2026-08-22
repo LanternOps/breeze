@@ -2635,7 +2635,8 @@ describe('moveTicketOrg', () => {
   it('(a) rejects with the guard error, runs no child rewrites, writes no feed/audit when the guard blocks', async () => {
     seedCrossCurrencyMove();
     const blocked = new TicketMoveCurrencyBlockedError('blocked', {
-      sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: false
+      sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: false,
+      blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 1, parts: 0 }]
     });
     guardMock.mockRejectedValueOnce(blocked);
 

@@ -199,7 +199,7 @@ describe('POST /tickets/:id/move-org', () => {
   // ── Multi-currency guard (#3776, Task 13) ──────────────────────────────────
   it('409s with code + details when the service blocks a cross-currency move', async () => {
     getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
-    const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 2, accepted: false };
+    const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 2, accepted: false, blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 1, parts: 2 }] };
     moveTicketOrgMock.mockRejectedValue(new TicketMoveCurrencyBlockedError('Cannot move: stranded money', details));
 
     const res = await ticketsRoutes.request(`/${TICKET_ID}/move-org`, {

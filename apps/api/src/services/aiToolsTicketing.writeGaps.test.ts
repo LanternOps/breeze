@@ -230,7 +230,7 @@ describe('manage_tickets write-gap actions', () => {
 
   it('move_org never passes acceptCurrencyMismatch and surfaces a currency block as JSON with code + details (#3776)', async () => {
     mockAccessibleTicket();
-    const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: false };
+    const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: false, blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 1, parts: 0 }] };
     serviceMocks.moveTicketOrg.mockRejectedValueOnce(new TicketMoveCurrencyBlockedError('Cannot move: stranded money', details));
 
     const out = await getTool().handler(

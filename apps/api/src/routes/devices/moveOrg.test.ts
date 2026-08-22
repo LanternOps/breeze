@@ -548,7 +548,7 @@ describe('POST /devices/:id/move-org', () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
       rigTransactionSuccess();
-      const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 1, accepted: false };
+      const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 1, accepted: false, blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 0, parts: 1 }] };
       guardMock.mockRejectedValue(new TicketMoveCurrencyBlockedError('Cannot move: stranded money', details));
 
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
