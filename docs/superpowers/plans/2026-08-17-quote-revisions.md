@@ -1,6 +1,17 @@
+---
+tracking_issue: LanternOps/breeze#3796
+---
+
 # Quote Revisions Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **State lives on GitHub, not here.** This feature is tracked via the
+> `feature-lifecycle` MCP server (parent issue + one `wave` sub-issue per wave).
+> Call `get_feature_status` BEFORE reading this doc — the checkboxes below are
+> intent, the sub-issues are reality. Branch per wave:
+> `feature/<parent#>-quote-revisions/wave-<subissue#>`; PR bodies carry
+> `Closes #<sub-issue>`.
 
 **Goal:** Let an MSP revise an already-sent quote — create a linked editable copy, send it, and atomically retire the original so the customer can no longer accept the outdated version.
 
@@ -20,6 +31,38 @@
 - The public superseded response must never include the successor's token, content, or totals.
 - Unit suites run with `pnpm --filter @breeze/api test -- <file>` / `pnpm --filter @breeze/web test -- <file>`. Integration suites (`vitest.integration.config.ts`) need a real Postgres (see `docs` in that config; locally use the fsync=off tmpfs container per memory) and do NOT run under `pnpm test`.
 - Commit after every task with a `feat(quotes):`/`fix(quotes):`/`test(quotes):` message ending in the Claude co-author trailer.
+
+---
+
+## Wave Map
+
+Six waves, each one reviewable PR. Dependencies are strictly linear — every
+wave consumes the one before it, so they do not parallelize. Tasks below are
+the implementation detail *within* a wave; the wave is the unit that gets a
+sub-issue, a branch, and a PR.
+
+Sub-issue numbers are recorded here for orientation only — **`get_feature_status`
+is the source of truth**, and per-wave state (open/in-progress/done, branch,
+linked PRs) is never written back into this doc.
+
+| Wave | Title | Tasks | Deliverable | Risk |
+|---|---|---|---|---|
+| W01 ([#3797](https://github.com/LanternOps/breeze/issues/3797)) | Schema + status foundation | 1, 2 | `revision_of_quote_id`/`revision_number` columns, `superseded` enum value, export-policy classification, all status mirrors | Low — additive DDL, no behavior |
+| W02 ([#3798](https://github.com/LanternOps/breeze/issues/3798)) | Revise service + route | 3, 4 | `reviseQuote()`, `POST /quotes/:id/revise`, lineage in the read payload, `quote.revised` audit | Medium — new numbering + linearity semantics |
+| W03 ([#3799](https://github.com/LanternOps/breeze/issues/3799)) | Supersede-at-send + concurrency hardening | 5, 6 | Parent retired atomically on revision send; `acceptQuote` 410s; `loadDraft` row lock; CAS predicates on view/decline/resend | **High — the core of the feature; touches shared lifecycle paths** |
+| W04 ([#3800](https://github.com/LanternOps/breeze/issues/3800)) | Public + portal API | 7 | 410 `QUOTE_SUPERSEDED` public view, asset routes closed, portal successor pointer | Medium — customer-facing, must not leak the successor token |
+| W05 ([#3801](https://github.com/LanternOps/breeze/issues/3801)) | Web + portal UI | 8, 9 | Revise action, revision/superseded banners, lineage links, portal replaced view, locale parity | Medium — broad surface, locale sweep |
+| W06 ([#3802](https://github.com/LanternOps/breeze/issues/3802)) | Integration proof + verification | 10, 11 | Race matrix against real Postgres, lineage erasure, constraint proofs, full-suite + live acceptance | Medium — proves W03's claims |
+
+**Wave gating:** W03 must not start until W02's route is merged (it depends on
+`revisionOfQuoteId` being populated by a real code path). W06 is the only wave
+that can meaningfully fail W03 retroactively — if its race matrix disproves the
+supersede atomicity, W03 reopens rather than W06 absorbing a fix.
+
+**Status at time of wave registration:** Task 1 is already implemented and
+reviewed clean on branch `quote-revisions` (commit `704552c7d`, rebased onto
+main 2026-08-21). W01 therefore starts partially complete — only Task 2 remains
+in it. Everything from Task 3 onward is unstarted.
 
 ---
 
