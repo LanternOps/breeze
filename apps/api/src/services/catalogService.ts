@@ -473,43 +473,112 @@ export async function removeOrgPriceOverride(itemId: string, orgId: string, acto
   return { ok: true };
 }
 
+/**
+ * Lock the parent AND every proposed component as ONE globally ordered set.
+ *
+ * Not parent-first-then-components. That order deadlocks: `set(A,[B])` takes A
+ * then wants B while `set(B,[A])` takes B then wants A, and the cycle forms
+ * BEFORE the under-lock validation can reject either — so two requests that
+ * should both be a clean 400 become a 40P01 instead. Sorting each component
+ * list does not help, because the already-held parent sits outside that
+ * ordering. Deduplicating and sorting the UNION puts every caller on one global
+ * order, so the pair serialises and the loser rejects properly.
+ *
+ * Locking `catalog_items` — not the `catalog_bundle_components` edge rows — is
+ * also what closes the conversion race in `updateCatalogItem`. That check
+ * searches for the ABSENCE of an edge, and `FOR UPDATE` cannot lock a row that
+ * does not exist yet. It works because the component item must already exist
+ * (FK), so both transactions contend on that same item row.
+ */
+async function lockItemsInGlobalOrder(tx: DbExecutor, ids: readonly string[]) {
+  const ordered = [...new Set(ids)].sort();
+  // ONE query, not one per id. The validator permits 200 components, so a loop
+  // here would be up to 201 serial round trips with every earlier row lock held
+  // open across all of them. `ORDER BY id` is load-bearing and must not be
+  // dropped: Postgres sorts the qualifying tuples before the locking node takes
+  // the row locks, which is what gives every caller the same order. `= ANY(...)`
+  // argument order guarantees nothing by itself.
+  const rows = await tx.select({
+    id: catalogItems.id, isBundle: catalogItems.isBundle, partnerId: catalogItems.partnerId
+  }).from(catalogItems)
+    .where(inArray(catalogItems.id, [...ordered]))
+    .orderBy(asc(catalogItems.id))
+    .for('update');
+  // Rows absent or invisible under RLS are simply missing from the map, so
+  // `detectBundleProblems` raises COMPONENT_NOT_FOUND / CROSS_PARTNER rather
+  // than this helper leaking whether a foreign id exists.
+  return new Map(rows.map((r) => [r.id, { isBundle: r.isBundle, partnerId: r.partnerId }]));
+}
+
 export async function setBundleComponents(bundleId: string, components: BundleComponentInput[], actor: CatalogActor) {
   const partnerId = requirePartner(actor);
-  const bundle = await getOwnedItemOr404(bundleId, partnerId);
-  if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
 
-  const ids = components.map((c) => c.componentItemId);
-  const metaRows = ids.length
-    ? await db.select({ id: catalogItems.id, isBundle: catalogItems.isBundle, partnerId: catalogItems.partnerId })
-        .from(catalogItems).where(inArray(catalogItems.id, ids))
-    : [];
-  const componentMeta = new Map(metaRows.map((r) => [r.id, { isBundle: r.isBundle, partnerId: r.partnerId }]));
+  // One transaction for the whole read-validate-replace.
+  //
+  // NOT because the old code was non-atomic on the request path — it was not.
+  // `db` is already the outer `withDbAccessContext` transaction there, so the
+  // previous bare `db.delete` / `db.insert` were inside it and a failure between
+  // them rolled both back. The reason to be explicit is that this function is
+  // ALSO reachable without that context (system/background callers holding the
+  // raw handle), where those two statements really would autocommit
+  // independently and a failed insert would leave the bundle empty. Making the
+  // boundary explicit also scopes the row locks taken below.
+  const id = await db.transaction(async (tx) => {
+    const componentIds = components.map((c) => c.componentItemId);
+    const locked = await lockItemsInGlobalOrder(tx, [bundleId, ...componentIds]);
 
-  const problems = detectBundleProblems({
-    bundleId, bundlePartnerId: partnerId,
-    components: components.map((c) => ({ componentItemId: c.componentItemId, quantity: c.quantity })),
-    componentMeta
+    // Re-read the parent from the LOCKED set: its is_bundle flag is exactly what
+    // a concurrent updateCatalogItem flips, so validating an unlocked copy is
+    // the race. Ownership is enforced here, not by the lock helper.
+    const bundle = locked.get(bundleId);
+    if (!bundle || bundle.partnerId !== partnerId) {
+      throw new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND');
+    }
+    if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
+
+    const componentMeta = new Map(
+      componentIds
+        .filter((id) => id !== bundleId && locked.has(id))
+        .map((id) => [id, locked.get(id)!])
+    );
+
+    const problems = detectBundleProblems({
+      bundleId, bundlePartnerId: partnerId,
+      components: components.map((c) => ({ componentItemId: c.componentItemId, quantity: c.quantity })),
+      componentMeta
+    });
+    if (problems.includes('SELF_REFERENCE')) throw new CatalogServiceError('A bundle cannot contain itself', 400, 'BUNDLE_SELF_REFERENCE');
+    if (problems.includes('NESTED_BUNDLE')) throw new CatalogServiceError('A bundle component cannot itself be a bundle', 400, 'BUNDLE_NESTED');
+    if (problems.includes('CROSS_PARTNER')) throw new CatalogServiceError('Components must belong to the same partner', 400, 'BUNDLE_CROSS_PARTNER');
+    if (problems.includes('COMPONENT_NOT_FOUND')) throw new CatalogServiceError('One or more components were not found', 404, 'BUNDLE_COMPONENT_NOT_FOUND');
+    if (problems.includes('DUPLICATE_COMPONENT')) throw new CatalogServiceError('Duplicate component in bundle', 400, 'BUNDLE_DUPLICATE_COMPONENT');
+
+    // Replace-set, now atomic with the validation above.
+    await tx.delete(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, bundleId));
+    if (components.length) {
+      await tx.insert(catalogBundleComponents).values(components.map((c) => ({
+        partnerId,
+        bundleItemId: bundleId,
+        componentItemId: c.componentItemId,
+        quantity: c.quantity.toFixed(2),
+        showOnInvoice: c.showOnInvoice,
+        revenueAllocation: c.revenueAllocation != null ? c.revenueAllocation.toFixed(2) : null
+      })));
+    }
+    return bundleId;
   });
-  if (problems.includes('SELF_REFERENCE')) throw new CatalogServiceError('A bundle cannot contain itself', 400, 'BUNDLE_SELF_REFERENCE');
-  if (problems.includes('NESTED_BUNDLE')) throw new CatalogServiceError('A bundle component cannot itself be a bundle', 400, 'BUNDLE_NESTED');
-  if (problems.includes('CROSS_PARTNER')) throw new CatalogServiceError('Components must belong to the same partner', 400, 'BUNDLE_CROSS_PARTNER');
-  if (problems.includes('COMPONENT_NOT_FOUND')) throw new CatalogServiceError('One or more components were not found', 404, 'BUNDLE_COMPONENT_NOT_FOUND');
-  if (problems.includes('DUPLICATE_COMPONENT')) throw new CatalogServiceError('Duplicate component in bundle', 400, 'BUNDLE_DUPLICATE_COMPONENT');
 
-  // Replace-set: delete existing, insert new.
-  await db.delete(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, bundleId));
-  if (components.length) {
-    await db.insert(catalogBundleComponents).values(components.map((c) => ({
-      partnerId,
-      bundleItemId: bundleId,
-      componentItemId: c.componentItemId,
-      quantity: c.quantity.toFixed(2),
-      showOnInvoice: c.showOnInvoice,
-      revenueAllocation: c.revenueAllocation != null ? c.revenueAllocation.toFixed(2) : null
-    })));
-  }
-  await emitCatalogEvent({ type: 'catalog.item.updated', catalogItemId: bundleId, partnerId, actorUserId: actor.userId });
-  return getCatalogItem(bundleId, actor);
+  // NOT an after-commit hook, and deliberately not labelled as one. Request
+  // handlers already run inside `withDbAccessContext`, which opens the real
+  // transaction, so the `db.transaction` above is a SAVEPOINT within it — this
+  // line still executes before the outer commit, exactly as the old code did.
+  // Emitting here is unchanged behaviour, not an improvement. What this
+  // codebase lacks is a GENERIC after-commit callback usable from a
+  // request-scoped transaction (it does have hand-rolled post-commit flows
+  // elsewhere); building one is out of scope for a lock fix. Note the row locks
+  // taken above are still held across this enqueue.
+  await emitCatalogEvent({ type: 'catalog.item.updated', catalogItemId: id, partnerId, actorUserId: actor.userId });
+  return getCatalogItem(id, actor);
 }
 
 /**
