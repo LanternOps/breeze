@@ -15,6 +15,7 @@ import {
 import { getBinaryEdition } from "./binaryEdition";
 import {
   isReleaseArtifactManifestVerificationConfigured,
+  ReleaseManifestAssetLookupError,
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactManifestIntegrity,
 } from "./releaseArtifactManifest";
@@ -25,6 +26,7 @@ import {
   getReleaseSourceRepository,
   isOfficialReleaseSource,
 } from "./releaseSource";
+import { captureException } from "./sentry";
 
 const GH_PLATFORM_MAP: Record<string, string> = {
   linux: "linux",
@@ -470,12 +472,95 @@ async function loadOfficialLocalManifestPair(
   }
 }
 
+// Per-(component, assetName) dedup for the "policy-refused / mismatched
+// manifest asset" report below (D4, #3836). syncBinaries() only runs at boot
+// (index.ts), so in practice this fires at most once per process per asset —
+// but it exists for the same reason warnedMissingPinBuilds
+// (routes/agents/helpers.ts) does: a persistent misconfig (e.g. today's
+// unsigned hosted darwin artifacts, see below) must not flood Sentry on
+// every future call site that resyncs.
+const warnedRefusedManifestAssets = new Set<string>();
+
+/** Test-only: reset the per-asset refusal dedup between cases. */
+export function __resetRefusedManifestAssetWarnCache(): void {
+  warnedRefusedManifestAssets.clear();
+}
+
+// verifyReleaseArtifactManifestAsset's ReleaseManifestAssetLookupError covers
+// two very different shapes: the asset name isn't in the manifest's `assets`
+// array at all (the legitimate local/BYO case — this component simply isn't
+// covered by the staged official manifest), and the asset name IS present but
+// its entry is malformed (invalid/missing sha256 or size). Only the former is
+// "absent"; the latter is a manifest that affirmatively claims to cover this
+// asset with garbage metadata, which must fail closed exactly like a
+// distributability-policy refusal. selectManifestAsset's not-found message
+// ("...does not include <name>") is the only textual signal that
+// distinguishes the two — there is no separate error class because no other
+// caller in the repo has needed the distinction (agentVersions.ts's
+// validateReleaseManifest treats the whole class as one "asset lookup
+// failed" reason, which is fine for a serve-or-refuse decision but not for
+// this absent-vs-refused fallback decision).
+function isAssetAbsentFromManifest(err: unknown): boolean {
+  return (
+    err instanceof ReleaseManifestAssetLookupError &&
+    err.message.includes("does not include")
+  );
+}
+
+// Reports (console.error + deduped captureException) a manifest asset that
+// was PRESENT but refused, or whose local file disagrees with the manifest's
+// claim for it — the two "fail closed" branches of registerFromOfficialManifest
+// below. Never called for the "genuinely absent from the manifest" branch,
+// which is the legitimate local/BYO case and keeps its own (non-Sentry)
+// console.warn.
+function reportRefusedManifestAsset(
+  component: string,
+  assetName: string,
+  err: unknown,
+): void {
+  const reason = err instanceof Error ? err.message : String(err);
+  console.error(
+    `[binarySync] Refusing to register ${component} asset ${assetName} from the official release manifest — fail closed, excluded from the per-deployment fallback too: ${reason}`,
+  );
+  const key = `${component}:${assetName}`;
+  if (warnedRefusedManifestAssets.has(key)) return;
+  warnedRefusedManifestAssets.add(key);
+  captureException(
+    new Error(
+      `[binarySync] Official-manifest asset registration refused (D4, #3836): ${component} asset ${assetName} is present in the manifest but was rejected — ${reason}. Excluded from BOTH the official-manifest path and the per-deployment re-sign fallback (fail closed): registerLocalBinaries has no distributability gate, so falling back would silently serve the very artifact the manifest (or its checksum) refused.`,
+    ),
+  );
+}
+
 // Registers whichever of `binaries` the official manifest actually covers
 // (matched by on-disk filename == manifest asset name), verifying each
 // asset's checksum against the LOCAL file before trusting the manifest's
-// claim for it. Binaries the manifest doesn't cover (or whose local checksum
-// disagrees with it) are left unregistered here — the caller falls back to
-// registerLocalBinaries (deploy-key re-sign) for those.
+// claim for it.
+//
+// Three outcomes per binary:
+//   - genuinely ABSENT from the manifest (no entry for this filename at all)
+//     → left unregistered here; the caller falls back to registerLocalBinaries
+//     (deploy-key re-sign). This is the legitimate local/BYO case: a
+//     self-hoster's staged official manifest simply doesn't claim to cover
+//     this component/asset.
+//   - PRESENT but refused (assertDistributableReleaseAsset's policy checks,
+//     unknown platformTrust/edition vocabulary, or a malformed sha256/size
+//     entry) or PRESENT with a checksum that disagrees with the local file
+//     → FAIL CLOSED: not registered here AND excluded from the
+//     registerLocalBinaries fallback (see excludedFilenames below). A
+//     policy-refused or mismatched artifact must never be served through the
+//     weaker per-deployment-resign path, which has no distributability gate
+//     at all — this is exactly how unsigned darwin binaries (manifest-labeled
+//     release-workflow-produced, refused because darwin Mach-Os require
+//     macos-developer-id-notarization-required) shipped to production macOS
+//     devices with the trust policy silently bypassed (D4, #3836).
+//
+// NOTE: with this fail-closed behavior and TODAY's (unsigned) hosted darwin
+// release artifacts, a fresh local sync registers NO macOS agent rows — every
+// darwin binary hits the "present but refused" branch above. That is the
+// INTENDED outcome, not a bug: macOS serving resumes once D2 (signed darwin
+// artifacts + manifest coverage) ships a manifest that actually labels them
+// macos-developer-id-notarization-required.
 async function registerFromOfficialManifest(args: {
   binaries: BinaryInfo[];
   component: string;
@@ -483,12 +568,16 @@ async function registerFromOfficialManifest(args: {
   manifestBytes: Buffer;
   signatureBytes: Buffer;
   downloadUrlFor: (osParam: string, arch: string) => string;
-}): Promise<{ registeredFilenames: Set<string> }> {
+}): Promise<{ registeredFilenames: Set<string>; excludedFilenames: Set<string> }> {
   const { binaries, component, version, manifestBytes, signatureBytes, downloadUrlFor } = args;
   const autoPromote = getAgentAutoPromote();
   const manifestString = manifestBytes.toString("utf8");
   const signatureString = signatureBytes.toString("utf8").trim();
   const registeredFilenames = new Set<string>();
+  // Present-but-refused or checksum-mismatched assets (D4, #3836) — the
+  // caller must exclude these from the registerLocalBinaries fallback too,
+  // not just skip them here.
+  const excludedFilenames = new Set<string>();
 
   await db.transaction(async (tx) => {
     for (const bin of binaries) {
@@ -500,16 +589,27 @@ async function registerFromOfficialManifest(args: {
           signatureBytes,
         });
       } catch (err) {
-        console.warn(
-          `[binarySync] Official release manifest does not cover ${bin.filename}: ${err instanceof Error ? err.message : err}`,
-        );
+        if (isAssetAbsentFromManifest(err)) {
+          console.warn(
+            `[binarySync] Official release manifest does not cover ${bin.filename}: ${err instanceof Error ? err.message : err}`,
+          );
+          continue;
+        }
+        // Present in the manifest but refused: distributability policy,
+        // unknown platformTrust/edition vocabulary, or a malformed
+        // sha256/size entry. Fail closed — see the function doc comment.
+        reportRefusedManifestAsset(component, bin.filename, err);
+        excludedFilenames.add(bin.filename);
         continue;
       }
 
       if (verified.sha256 !== bin.checksum) {
-        console.error(
-          `[binarySync] Checksum mismatch between the local file and the official release manifest for ${bin.filename} — not registering from the official manifest for this asset`,
+        reportRefusedManifestAsset(
+          component,
+          bin.filename,
+          `Checksum mismatch between the local file (${bin.checksum}) and the official release manifest (${verified.sha256}) for ${bin.filename}`,
         );
+        excludedFilenames.add(bin.filename);
         continue;
       }
 
@@ -571,7 +671,7 @@ async function registerFromOfficialManifest(args: {
     }
   });
 
-  return { registeredFilenames };
+  return { registeredFilenames, excludedFilenames };
 }
 
 /**
@@ -741,6 +841,10 @@ export async function syncBinaries(): Promise<void> {
     const { keyId } = await ensureActiveSigningKey();
 
     let coveredAgentFilenames = new Set<string>();
+    // D4 (#3836): assets present in the official manifest but refused (policy)
+    // or checksum-mismatched must be excluded from the registerLocalBinaries
+    // fallback below too — that path has no distributability gate at all.
+    let excludedAgentFilenames = new Set<string>();
     if (officialManifest) {
       const result = await registerFromOfficialManifest({
         binaries,
@@ -752,6 +856,7 @@ export async function syncBinaries(): Promise<void> {
           `${serverUrl}/api/v1/agents/download/${osParam}/${arch}`,
       });
       coveredAgentFilenames = result.registeredFilenames;
+      excludedAgentFilenames = result.excludedFilenames;
       if (coveredAgentFilenames.size > 0) {
         console.log(
           `[binarySync] Registered ${coveredAgentFilenames.size} agent binaries from the official release manifest (version: ${version})`,
@@ -760,7 +865,7 @@ export async function syncBinaries(): Promise<void> {
     }
 
     const remainingAgentBinaries = binaries.filter(
-      (b) => !coveredAgentFilenames.has(b.filename),
+      (b) => !coveredAgentFilenames.has(b.filename) && !excludedAgentFilenames.has(b.filename),
     );
     if (remainingAgentBinaries.length > 0) {
       await registerLocalBinaries({
@@ -787,6 +892,10 @@ export async function syncBinaries(): Promise<void> {
       // registered — mirrors the GitHub path's per-component try/catch.
       try {
         let coveredWatchdogFilenames = new Set<string>();
+        // D4 (#3836): same exclusion as the agent loop above — a
+        // policy-refused or checksum-mismatched watchdog asset must not fall
+        // through to registerLocalBinaries either.
+        let excludedWatchdogFilenames = new Set<string>();
         if (officialManifest) {
           const result = await registerFromOfficialManifest({
             binaries: watchdogBinaries,
@@ -798,9 +907,12 @@ export async function syncBinaries(): Promise<void> {
               `${serverUrl}/api/v1/agents/download/watchdog/${osParam}/${arch}`,
           });
           coveredWatchdogFilenames = result.registeredFilenames;
+          excludedWatchdogFilenames = result.excludedFilenames;
         }
         const remainingWatchdogBinaries = watchdogBinaries.filter(
-          (b) => !coveredWatchdogFilenames.has(b.filename),
+          (b) =>
+            !coveredWatchdogFilenames.has(b.filename) &&
+            !excludedWatchdogFilenames.has(b.filename),
         );
         if (remainingWatchdogBinaries.length > 0) {
           await registerLocalBinaries({
