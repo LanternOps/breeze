@@ -632,21 +632,31 @@ git commit -m "feat(api): allow requester-less agent-originated action intents"
 
 ---
 
-### Task 3: Drizzle column + drift check
+### Task 3: Drizzle column + composite FK + drift check
 
 **Files:**
-- Modify: `apps/api/src/db/schema/actionIntents.ts:108-120`
+- Modify: `apps/api/src/db/schema/actionIntents.ts` (identity block + table-options block)
+- Modify: `apps/api/src/db/schema/aiAgents.ts` (the `ai_agent_runs` table-options block)
 
 **Interfaces:**
 - Consumes: the migration from Task 2.
-- Produces: `actionIntents.requestingAgentRunId` — `string | null` on
-  `ActionIntent`. PR 3b writes it; PR 3b's `actorContext` reads it.
+- Produces: `actionIntents.requestingAgentRunId` — `string | null` on `ActionIntent`.
+  PR 3b writes it; PR 3b's `actorContext` reads it.
 
-- [ ] **Step 1: Add the column**
+Task 2's review added a **composite** tenant FK — `(requesting_agent_run_id,
+org_id) → ai_agent_runs(id, org_id)` — plus the `UNIQUE (id, org_id)` on
+`ai_agent_runs` that backs it. Drizzle must model both, or `db:check-drift`
+reports drift against a database that is actually correct.
 
-Immediately after `requestingApiKeyId`, and update the block comment above
-`requestedByUserId` (it currently says "Exactly one of requestedByUserId /
-requestingApiKeyId is set"):
+**Do not write a single-column `.references()` on this column.** The exact
+in-repo precedent is `elevation_audit` (`apps/api/src/db/schema/elevations.ts:197-228`)
+— open it and mirror it. Its comment states the rule plainly: *"No single-column
+`.references()` here — the composite FK is the only DB-level tie, which
+guarantees the denormalized org_id matches the parent's org_id."*
+
+- [ ] **Step 1: Add the column (no `.references()`)**
+
+Replace the identity block's comment and add the column after `requestingApiKeyId`:
 
 ```ts
     // Identity / attribution. Exactly ONE of requestedByUserId /
@@ -662,48 +672,84 @@ requestingApiKeyId is set"):
     /**
      * The ai_agent_runs row that produced this intent (wave 3, #3824). Set iff
      * origin_principal_kind = 'ai_agent' — paired by
-     * action_intents_agent_origin_chk.
+     * action_intents_agent_origin_chk, and `source` is paired to both by
+     * action_intents_agent_source_chk.
      *
-     * This is the requester's replacement, not merely a breadcrumb: release
+     * This is the requester's replacement, not a breadcrumb: release
      * revalidation reconstructs the agent AuthContext from this run's immutable
      * policy_snapshot and re-checks it against the agent's CURRENT effective
      * policy, so a flipped kill switch or a tightened allowlist vetoes an
      * already-approved proposal.
      *
+     * FK declared as a COMPOSITE (requesting_agent_run_id, org_id) →
+     * ai_agent_runs(id, org_id) in the table-options block below. No
+     * single-column .references() here — the composite FK is the only DB-level
+     * tie, and it is what stops an intent in one org from being attributed to
+     * an agent run in another (mirrors elevation_audit, elevations.ts:197).
+     *
      * ON DELETE RESTRICT — agents and their runs are never hard-deleted
-     * (spec §2), and attribution must survive. Immutable, covered by
+     * (spec §2) and attribution must survive. Immutable, covered by
      * action_intents_immutable_trg.
      */
-    requestingAgentRunId: uuid('requesting_agent_run_id').references(
-      () => aiAgentRuns.id,
-      { onDelete: 'restrict' },
-    ),
+    requestingAgentRunId: uuid('requesting_agent_run_id'),
 ```
 
-Add the import: `import { aiAgentRuns } from './aiAgents';`
+- [ ] **Step 2: Declare the composite FK in the table-options block**
 
-- [ ] **Step 2: Verify no drift between schema and migrations**
+Add to the object returned by `actionIntents`' second argument, and add
+`foreignKey` to the `drizzle-orm/pg-core` import plus
+`import { aiAgentRuns } from './aiAgents';`:
+
+```ts
+    // Composite FK: (requesting_agent_run_id, org_id) → ai_agent_runs(id, org_id).
+    // Structural guarantee that an agent proposal can never be filed under a
+    // different tenant than the run that produced it — RLS on action_intents
+    // checks only action_intents.org_id and would not catch it.
+    // ON DELETE RESTRICT: runs are never hard-deleted; attribution survives.
+    requestingAgentRunOrgFk: foreignKey({
+      columns: [table.requestingAgentRunId, table.orgId],
+      foreignColumns: [aiAgentRuns.id, aiAgentRuns.orgId],
+      name: 'action_intents_requesting_agent_run_id_org_id_fkey',
+    }).onDelete('restrict'),
+```
+
+- [ ] **Step 3: Model the backing UNIQUE on `ai_agent_runs`**
+
+In `apps/api/src/db/schema/aiAgents.ts`, add to the `aiAgentRuns` table-options
+block (`unique` is already imported there):
+
+```ts
+  // Declares the tuple the action_intents composite tenant FK references.
+  // `id` is already PK, so this adds no new tenancy invariant on its own —
+  // it exists so (requesting_agent_run_id, org_id) has a target.
+  idOrgUq: unique('ai_agent_runs_id_org_id_key').on(table.id, table.orgId),
+```
+
+- [ ] **Step 4: Verify no drift between schema and migrations**
 
 ```bash
 export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
 pnpm db:check-drift
 ```
 
-Expected: no drift reported.
+Expected: no drift. Drift here means the Drizzle model and the migration
+disagree — most likely a single-column `.references()` left on the column, or a
+missing `unique` on `ai_agent_runs`.
 
-- [ ] **Step 3: Typecheck**
+- [ ] **Step 5: Typecheck**
 
 ```bash
 pnpm --filter @breeze/api exec tsc --noEmit
 ```
 
-Expected: 0 errors. (If this OOMs, see the known `NODE_OPTIONS=--max-old-space-size` workaround.)
+Expected: 0 errors. If it OOMs, retry once with
+`NODE_OPTIONS=--max-old-space-size=8192`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/db/schema/actionIntents.ts
-git commit -m "feat(api): model requesting_agent_run_id in the Drizzle schema"
+git add apps/api/src/db/schema/actionIntents.ts apps/api/src/db/schema/aiAgents.ts
+git commit -m "feat(api): model the agent-run composite tenant FK in Drizzle"
 ```
 
 ---
