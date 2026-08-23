@@ -96,7 +96,8 @@ describe('reliability retention worker', () => {
       }),
       expect.objectContaining({
         jobId: __testOnly.REPEAT_JOB_ID,
-        repeat: { every: 24 * 60 * 60 * 1000 },
+        // Staggered daily slot, not an epoch-anchored interval (scheduleRegistry.ts).
+        repeat: { pattern: '5 14 * * *' },
       }),
     );
   });

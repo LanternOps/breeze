@@ -12,6 +12,7 @@ import { playbookExecutions } from '../db/schema';
 import { and, eq, lt, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -131,14 +132,15 @@ export async function initializePlaybookRetention(): Promise<void> {
       await queue.removeRepeatableByKey(job.key);
     }
 
-    // Schedule daily cleanup
+    // Daily at a registry-allocated slot (jobs/scheduleRegistry.ts).
     await queue.add(
       'cleanup',
       {},
       {
-        repeat: {
-          every: 24 * 60 * 60 * 1000 // Every 24 hours
-        },
+        // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+        // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+        // together (see jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('playbook-execution-retention') },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 }
       }

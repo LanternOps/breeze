@@ -11,6 +11,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -141,7 +142,10 @@ export async function initializeReliabilityRetention(): Promise<void> {
       { retentionDays: DEFAULT_RETENTION_DAYS, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
       {
         jobId: REPEAT_JOB_ID,
-        repeat: { every: 24 * 60 * 60 * 1000 },
+        // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+        // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+        // together (see jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('reliability-history-retention') },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 }
       }

@@ -99,7 +99,8 @@ describe('ML output retention worker', () => {
       }),
       expect.objectContaining({
         jobId: __testOnly.REPEAT_JOB_ID,
-        repeat: { every: __testOnly.RETENTION_INTERVAL_MS },
+        // Staggered daily slot, not an epoch-anchored interval (scheduleRegistry.ts).
+        repeat: { pattern: '25 8 * * *' },
       }),
     );
   });
