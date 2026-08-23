@@ -173,6 +173,64 @@ export function isReleaseArtifactManifestVerificationConfigured(): boolean {
   return getConfiguredPublicKeyStrings().length > 0;
 }
 
+// Task 2 (#3836): agentVersions.ts's legacy (non schema-v1) manifest
+// verification used to check a row's signature against the UNION of env
+// keys AND every DB-provisioned per-deployment key (manifest_signing_keys),
+// regardless of what the row's signingKeyId actually claimed. That let a row
+// stamped with the official key ID ("release-artifact-manifest-ed25519")
+// pass the server by virtue of an otherwise-trusted deployment key's
+// signature — even though a real agent's exact-ID lookup (agent/internal/
+// updater/updater.go verifyManifestSignature) binds that ID to ONLY its
+// embedded official key and would reject it (P1-UPD-001-style confusion,
+// just moved from "any trusted key" to "any trusted key regardless of the
+// claimed ID"). This function is what closes that gap for the legacy
+// manifest shape: it answers "does this verify against an official key",
+// using exactly the same trust root (getConfiguredPublicKeys) the schema-v1
+// path (verifyManifestSignature above) already uses, with no DB access.
+//
+// Returns false (never throws) on any failure — no configured official
+// keys, malformed signature, or a signature that doesn't verify against any
+// of them. Deliberately no soft-pass-when-empty (unlike agentVersions.ts's
+// verifyEd25519ManifestSignature default): an explicit claim of official
+// provenance must be provable, not assumed — this is narrower than the
+// default because it is only reached once a row has ALREADY claimed to be
+// officially signed.
+export function verifyManifestSignatureAgainstOfficialKeysOnly(
+  manifest: string,
+  signature: string,
+): boolean {
+  let publicKeys: KeyObject[];
+  try {
+    // getConfiguredPublicKeys throws if a configured key string is
+    // malformed. Unlike the schema-v1 path (verifyManifestSignature above),
+    // this function's caller (agentVersions.ts's legacy-shape dispatch) has
+    // no surrounding try/catch of its own — fail closed here rather than let
+    // a misconfigured env var surface as an uncaught exception on the
+    // download route.
+    publicKeys = getConfiguredPublicKeys();
+  } catch {
+    return false;
+  }
+  if (publicKeys.length === 0) return false;
+
+  let signatureBytes: Buffer;
+  try {
+    signatureBytes = Buffer.from(signature, "base64");
+  } catch {
+    return false;
+  }
+  if (signatureBytes.length !== 64) return false;
+
+  const manifestBytes = Buffer.from(manifest, "utf8");
+  return publicKeys.some((publicKey) => {
+    try {
+      return verifySignature(null, manifestBytes, publicKey, signatureBytes);
+    } catch {
+      return false;
+    }
+  });
+}
+
 function releaseArtifactManifestVerificationRequired(): boolean {
   const mode =
     process.env.RELEASE_ARTIFACT_MANIFEST_VERIFICATION?.trim().toLowerCase();

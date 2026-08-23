@@ -5,6 +5,7 @@ import {
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactBuffer,
   verifyReleaseArtifactManifestIntegrity,
+  verifyManifestSignatureAgainstOfficialKeysOnly,
 } from "./releaseArtifactManifest";
 import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
@@ -624,6 +625,70 @@ describe("releaseArtifactManifest", () => {
       expect(() =>
         verifyReleaseArtifactManifestIntegrity(signed.manifest, signed.signature),
       ).toThrow(/public key is not configured/);
+    });
+  });
+
+  // Task 2 (#3836): agentVersions.ts's legacy (non schema-v1) manifest
+  // verification dispatches an official-signingKeyId row here instead of
+  // the whole-set (env + DB deployment keys) check it used before. This
+  // function is the "official keys ONLY, no DB access" primitive that
+  // makes that narrowing possible.
+  describe("verifyManifestSignatureAgainstOfficialKeysOnly (Task 2, #3836)", () => {
+    it("returns true for a signature that verifies under a configured official key", () => {
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPublicKey;
+      const manifest = JSON.stringify({ foo: "bar" });
+      const signature = sign(null, Buffer.from(manifest, "utf8"), privateKey).toString("base64");
+
+      expect(verifyManifestSignatureAgainstOfficialKeysOnly(manifest, signature)).toBe(true);
+    });
+
+    it("returns false for a signature made by a DIFFERENT key, even one otherwise present in the process (not falling back to any other trust store)", () => {
+      const official = generateKeyPairSync("ed25519");
+      const officialDer = official.publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = officialDer
+        .subarray(officialDer.length - 32)
+        .toString("base64");
+
+      const other = generateKeyPairSync("ed25519");
+      const manifest = JSON.stringify({ foo: "bar" });
+      const signature = sign(null, Buffer.from(manifest, "utf8"), other.privateKey).toString(
+        "base64",
+      );
+
+      expect(verifyManifestSignatureAgainstOfficialKeysOnly(manifest, signature)).toBe(false);
+    });
+
+    it("returns false (no soft-pass) when no official key is configured", () => {
+      delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+      delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+
+      expect(
+        verifyManifestSignatureAgainstOfficialKeysOnly("{}", "A".repeat(88)),
+      ).toBe(false);
+    });
+
+    it("returns false (never throws) when the configured official key value is malformed", () => {
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = "not-a-valid-key===";
+
+      expect(() =>
+        verifyManifestSignatureAgainstOfficialKeysOnly("{}", "A".repeat(88)),
+      ).not.toThrow();
+      expect(verifyManifestSignatureAgainstOfficialKeysOnly("{}", "A".repeat(88))).toBe(false);
+    });
+
+    it("returns false for a malformed (wrong-length) signature", () => {
+      const { publicKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = publicDer
+        .subarray(publicDer.length - 32)
+        .toString("base64");
+
+      expect(
+        verifyManifestSignatureAgainstOfficialKeysOnly("{}", "too-short"),
+      ).toBe(false);
     });
   });
 });

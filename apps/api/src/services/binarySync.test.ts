@@ -1300,6 +1300,26 @@ describe("binarySync", () => {
       return createHash("sha256").update("local agent bytes").digest("hex");
     }
 
+    // NOTE (Task 2, #3836): this helper configures RELEASE_ARTIFACT_MANIFEST_
+    // PUBLIC_KEYS to an arbitrary freshly-generated key and signs with the
+    // SAME key, then the tests below assert the row gets stamped
+    // signingKeyId="release-artifact-manifest-ed25519". That only proves
+    // registration correctly identifies "signed by whatever this test run
+    // configured as official" — it does NOT, on its own, prove the
+    // server-side download-path binding (that an official-ID stamp can
+    // ONLY ever be satisfied by that same official key, never by a
+    // DB-provisioned per-deployment key). This file mocks db/manifestSigning
+    // too heavily to reach the real validateReleaseManifest for that
+    // property cheaply — the exact-binding assertions live instead in:
+    //   - apps/api/src/routes/agentVersions.test.ts, describe
+    //     "validateReleaseManifest — key-ID-aware dispatch (Task 2, #3836)"
+    //     (unit-level, both directions: official-ID-vs-deploy-key and
+    //     deploy-ID-vs-official-key)
+    //   - apps/api/src/routes/agentVersionsLocalModeRoundtrip.test.ts,
+    //     describe "Task 2 — key-ID-aware verification rejects an
+    //     official-ID row not actually signed by the official key" (a real
+    //     registerFromOfficialManifest row fed into the real
+    //     validateReleaseManifest, proving the negative case end-to-end).
     function makeOfficialLocalManifest(
       assets: { name: string; sha256: string; size: number; edition?: string }[],
     ) {
@@ -1365,6 +1385,10 @@ describe("binarySync", () => {
 
       await syncBinaries();
 
+      // This asserts REGISTRATION stamping only (unchanged by Task 2 — see
+      // the NOTE above makeOfficialLocalManifest for where the download-path
+      // exact-binding property this used to be conflated with is actually
+      // proven).
       expect(dbMocks.insertValues).toHaveBeenCalledWith(
         expect.objectContaining({
           signingKeyId: "release-artifact-manifest-ed25519",

@@ -57,6 +57,7 @@ vi.mock("../services/auditEvents", () => ({
 }));
 vi.mock("../services/manifestSigning", () => ({
   getActivePublicKeys: vi.fn().mockResolvedValue([]),
+  getActiveTrustKeyset: vi.fn().mockResolvedValue([]),
   ensureActiveSigningKey: vi
     .fn()
     .mockResolvedValue({ keyId: "test-key", publicKeyB64: "" }),
@@ -83,6 +84,7 @@ vi.mock("node:fs", () => ({
 import { syncBinaries, syncFromGitHub } from "../services/binarySync";
 import { validateReleaseManifest } from "./agentVersions";
 import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
+import * as manifestSigning from "../services/manifestSigning";
 
 function localAssetChecksum(): string {
   return createHash("sha256").update("local agent bytes").digest("hex");
@@ -164,7 +166,7 @@ describe("D1 — local-mode registration roundtrip survives validateReleaseManif
     expect(dbMocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({ signingKeyId: "release-artifact-manifest-ed25519" }),
     );
-    const row = dbMocks.insertValues.mock.calls[0]![0] as {
+    const row = (dbMocks.insertValues.mock.calls as unknown[][])[0]![0] as {
       version: string;
       component: string;
       platform: string;
@@ -174,6 +176,7 @@ describe("D1 — local-mode registration roundtrip survives validateReleaseManif
       fileSize: bigint;
       releaseManifest: string;
       manifestSignature: string;
+      signingKeyId: string;
     };
 
     // Confirms this row really does carry the server-relative shape the
@@ -191,9 +194,119 @@ describe("D1 — local-mode registration roundtrip survives validateReleaseManif
       downloadUrl: row.downloadUrl,
       checksum: row.checksum,
       fileSize: row.fileSize,
+      // Task 2 (#3836): pass the real stamped signingKeyId through, matching
+      // GET /:version/download's own call — this is now load-bearing, not
+      // cosmetic. See the "key-ID-aware verification" suite below for the
+      // negative case this makes possible.
+      signingKeyId: row.signingKeyId,
     });
 
     expect(result).toEqual({ ok: true });
+  });
+});
+
+// Task 2 (#3836): key-ID-aware verification. Extends the roundtrip above
+// with the negative case that motivated it — a row can genuinely register
+// via registerFromOfficialManifest (real stamp: signingKeyId =
+// "release-artifact-manifest-ed25519"), and validateReleaseManifest must
+// still refuse to serve it at download time if the bytes it is ACTUALLY
+// asked to verify were not signed by the configured OFFICIAL key — even
+// when a different key that IS otherwise trusted (a manifest_signing_keys /
+// deploy-* row) made that signature. Before this task, validateReleaseManifest's
+// legacy (non schema-v1) branch checked the UNION of env keys and every DB
+// deployment key regardless of what signingKeyId claimed, so this exact
+// combination would have passed the server while a real agent's exact-ID
+// lookup (agent/internal/updater/updater.go verifyManifestSignature) would
+// still reject it. See agentVersions.test.ts's "key-ID-aware dispatch"
+// suite for the exhaustive unit-level cases (both directions, plus the
+// schema-v1 defensive guard).
+describe("Task 2 — key-ID-aware verification rejects an official-ID row not actually signed by the official key (#3836)", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/data/binaries/agent";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    delete process.env.BREEZE_VERSION;
+    delete process.env.PUBLIC_API_URL;
+    delete process.env.PUBLIC_APP_URL;
+    delete process.env.BREEZE_SERVER;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it("rejects a legacy-shape manifest stamped with the genuinely-registered official key ID but signed by an otherwise-trusted deployment key", async () => {
+    const assetName = "breeze-agent-windows-amd64.exe";
+    const official = makeOfficialLocalManifest(assetName);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+    fsMocks.readdir.mockResolvedValue([assetName] as never);
+    fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 18 } as never);
+    mockReadFileWithOfficialManifest("1.2.3", official.manifest, official.signature);
+
+    await syncBinaries();
+
+    const row = (dbMocks.insertValues.mock.calls as unknown[][])[0]![0] as {
+      version: string;
+      component: string;
+      platform: string;
+      architecture: string;
+      downloadUrl: string;
+      checksum: string;
+      fileSize: bigint;
+      signingKeyId: string;
+    };
+    // Sanity: this really is the official-ID stamp the bug depends on.
+    expect(row.signingKeyId).toBe("release-artifact-manifest-ed25519");
+
+    // Simulate the exact bug this task closes: the row still claims the
+    // official key ID, but the manifest bytes actually being verified were
+    // signed by a per-deployment key that IS otherwise trusted (present in
+    // manifest_signing_keys) — never a genuinely official signature.
+    const deployKey = generateKeyPairSync("ed25519");
+    const rawDeployPub = (
+      deployKey.publicKey.export({ format: "der", type: "spki" }) as Buffer
+    ).subarray(-32);
+    const legacyManifest = JSON.stringify({
+      version: row.version,
+      component: row.component,
+      platform: row.platform,
+      arch: row.architecture,
+      url: row.downloadUrl,
+      checksum: row.checksum,
+      size: Number(row.fileSize),
+    });
+    const deploySignature = sign(
+      null,
+      Buffer.from(legacyManifest, "utf8"),
+      deployKey.privateKey,
+    ).toString("base64");
+
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawDeployPub.toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      manifest: legacyManifest,
+      signature: deploySignature,
+      version: row.version,
+      platform: row.platform,
+      arch: row.architecture,
+      component: row.component,
+      downloadUrl: row.downloadUrl,
+      checksum: row.checksum,
+      fileSize: row.fileSize,
+      signingKeyId: row.signingKeyId,
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
   });
 });
 
@@ -320,6 +433,7 @@ describe("D1 fix-round-1 — GitHub-mode helper registration stays byte-for-byte
       fileSize: bigint;
       releaseManifest: string;
       manifestSignature: string;
+      signingKeyId: string;
     };
 
     // Confirms this row really does carry the GitHub-sourced shape the
@@ -339,6 +453,7 @@ describe("D1 fix-round-1 — GitHub-mode helper registration stays byte-for-byte
       downloadUrl: row.downloadUrl,
       checksum: row.checksum,
       fileSize: row.fileSize,
+      signingKeyId: row.signingKeyId,
     });
 
     expect(result).toEqual({ ok: true });
