@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { createNotification } from '../userNotifications';
 import {
   actionIntents,
   intentOutbox,
@@ -660,6 +661,33 @@ export async function createActionIntent(
       const approvalId = creation.approvalRequestIds[i];
       const userId = creation.fanOutUserIds[i];
       if (!approvalId || !userId) continue;
+      // In-app FIRST, then push. getUserPushTokens reads mobile_devices
+      // exclusively, so before wave 2 an approver with no enrolled phone was
+      // notified by NOTHING — no row, no email, no event — while the push
+      // failure was swallowed to console.error. The in-app row is the channel
+      // that always exists, so it must not be downstream of the phone lookup.
+      try {
+        await withSystemDbAccessContext(() =>
+          createNotification({
+            userId,
+            orgId,
+            type: 'approval',
+            priority: 'high',
+            title: 'Approval requested',
+            message: `${requestingClientLabel}: ${targetSummary}`,
+            link: '/approvals',
+            metadata: { approvalId, intentId: creation.intent.id },
+            // Survives outbox/BullMQ redelivery: one approver, one intent, one
+            // row in the bell.
+            dedupeKey: `intent-approval:${creation.intent.id}`,
+          }));
+      } catch (err) {
+        console.error(
+          `[intentService] in-app approval notification failed (approval=${approvalId} user=${userId})`,
+          err,
+        );
+      }
+
       try {
         const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
         await dispatchApprovalPushToTokens(tokens, {
