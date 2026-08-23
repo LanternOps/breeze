@@ -18,7 +18,28 @@ import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssem
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import { changeOrgCurrency } from './orgCurrencyService';
-import { readOrgStampingDefaults } from './orgCurrencyCore';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
@@ -102,7 +123,7 @@ export async function createManualInvoice(input: { orgId: string; siteId?: strin
   const rows = await db.transaction(async (tx) => {
     let currencyCode = input.currencyCode;
     if (!currencyCode) {
-      currencyCode = (await readOrgStampingDefaults(tx, input.orgId)).currencyCode;
+      currencyCode = (await lockOrgStampingDefaults(tx, input.orgId)).currencyCode;
     }
     return tx.insert(invoices).values({
       partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
@@ -1014,7 +1035,7 @@ export async function assembleDraftFromOrg(
   // are returned under `blockedByCurrency`. The default read takes the org
   // SHARE barrier so the stamp cannot lose a race with changeOrgCurrency (#3778).
   const [inv] = await db.transaction(async (tx) => {
-    const org = await readOrgStampingDefaults(tx, input.orgId);
+    const org = await lockOrgStampingDefaults(tx, input.orgId);
     const currencyCode = input.currencyCode ?? org.currencyCode;
     return tx.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
   });
@@ -1038,7 +1059,7 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7),
   // read under the org SHARE barrier (#3778).
   const [inv] = await db.transaction(async (tx) => {
-    const org = await readOrgStampingDefaults(tx, tk.orgId);
+    const org = await lockOrgStampingDefaults(tx, tk.orgId);
     const currencyCode = opts.currencyCode ?? org.currencyCode;
     return tx.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
   });

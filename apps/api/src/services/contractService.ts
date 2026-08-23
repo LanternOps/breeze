@@ -7,7 +7,28 @@ import { isRepresentableInCurrency, minorUnitExponent, PERMISSION_GRANTS } from 
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
-import { readOrgStampingDefaults } from './orgCurrencyCore';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new ContractServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { countContractDevices, countContractSeats } from './contractQuantities';
@@ -82,10 +103,12 @@ export async function createContract(input: {
   // Creation barrier (#3778): org SHARE lock first, held to commit, so a
   // concurrent changeOrgCurrency cannot let a default-derived stamp land unseen.
   const [row] = await db.transaction(async (tx) => {
-  const locked = await readOrgStampingDefaults(tx, input.orgId);
+  const locked = await lockOrgStampingDefaults(tx, input.orgId);
   const [org] = await tx.select({ partnerId: organizations.partnerId })
     .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
-  if (!org) throw new ContractServiceError('Organization not found', 404, 'CONTRACT_NOT_FOUND');
+  // Unreachable while the barrier above holds the org SHARE lock, but keep the
+  // same code the barrier maps to rather than the misleading CONTRACT_NOT_FOUND.
+  if (!org) throw new ContractServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
   return tx.insert(contracts).values({
     partnerId: org.partnerId, orgId: input.orgId, name: input.name, status: 'draft',
     billingTiming: input.billingTiming, intervalMonths: input.intervalMonths,
@@ -284,8 +307,25 @@ const LINEAGE_DEPTH_CAP = 32;
  * migration 2026-09-02-a — NOT a current contract_lines membership join, which
  * removeContractLine can erase on an ACTIVE contract).
  */
+export interface InspectContractCurrencyOptions {
+  /**
+   * READ-ONLY REPORT USE ONLY. Memo for blocker (4), whose scan is ORG-scoped,
+   * not contract-scoped, and therefore identical for every contract of the same
+   * org. Keyed by orgId. The mismatch report walks up to MAX_LIMIT rows and
+   * without this re-ran the same org-wide invoice_lines scan once per row —
+   * the connection-hold shape this repo has been bitten by before.
+   *
+   * The MUTATION never passes one: changeContractCurrency must re-read blocker
+   * (4) fresh under the contract's own FOR UPDATE, and a memo would let a stale
+   * verdict authorize a restamp. The report is explicitly advisory-at-this-
+   * instant already (it holds no lock), so sharing one snapshot across its rows
+   * costs it nothing it had.
+   */
+  orphanScanCache?: Map<string, string[]>;
+}
+
 export async function inspectContractCurrencyEligibility(
-  tx: DbExecutor, contractId: string
+  tx: DbExecutor, contractId: string, opts: InspectContractCurrencyOptions = {}
 ): Promise<ContractCurrencyEligibility> {
   const [c] = await tx.select({ id: contracts.id, orgId: contracts.orgId, partnerId: contracts.partnerId })
     .from(contracts).where(eq(contracts.id, contractId)).limit(1);
@@ -350,17 +390,25 @@ export async function inspectContractCurrencyEligibility(
   // invoices that can never be edited or deleted, and ONE of them 409'd EVERY
   // active contract in the org forever — locking the pre-wave-2 legacy orgs out
   // of the escape hatch that was built for them.
-  const orphanSources = await tx.execute<{ id: string }>(sql`
-    SELECT il.id AS id
-      FROM invoice_lines il
-      JOIN invoices i ON i.id = il.invoice_id
-     WHERE il.org_id = ${c.orgId}
-       AND i.status = 'draft'
-       AND il.source_type = 'contract'
-       AND il.source_contract_id IS NULL
-       AND NOT EXISTS (SELECT 1 FROM contract_lines cl WHERE cl.id = il.source_id)
-     ORDER BY il.id
-  `);
+  const cachedOrphans = opts.orphanScanCache?.get(c.orgId);
+  let orphanedContractSourceLineIds: string[];
+  if (cachedOrphans) {
+    orphanedContractSourceLineIds = cachedOrphans;
+  } else {
+    const orphanSources = await tx.execute<{ id: string }>(sql`
+      SELECT il.id AS id
+        FROM invoice_lines il
+        JOIN invoices i ON i.id = il.invoice_id
+       WHERE il.org_id = ${c.orgId}
+         AND i.status = 'draft'
+         AND il.source_type = 'contract'
+         AND il.source_contract_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM contract_lines cl WHERE cl.id = il.source_id)
+       ORDER BY il.id
+    `);
+    orphanedContractSourceLineIds = orphanSources.map((r) => r.id);
+    opts.orphanScanCache?.set(c.orgId, orphanedContractSourceLineIds);
+  }
 
   // (5) Explicit per-period lineage proof. (a)/(b) -> ORPHANED_BILLING_PERIOD;
   // (c)/(d)/(e) -> BROKEN_CONTRACT_LINEAGE. The ANCESTRY walk runs upward
@@ -423,8 +471,6 @@ export async function inspectContractCurrencyEligibility(
     if (p.invoice_id === null || !p.invoice_exists) { orphanedBillingPeriodIds.push(p.period_id); continue; }
     if (!p.same_tenant || !p.attributable || !p.ancestry_ok) brokenLineageInvoiceIds.push(p.invoice_id);
   }
-
-  const orphanedContractSourceLineIds = orphanSources.map((r) => r.id);
 
   return {
     eligible: draftInvoiceIds.length === 0

@@ -15,7 +15,28 @@ import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
-import { readOrgStampingDefaults } from './orgCurrencyCore';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   sanitizeRichTextHtml,
@@ -369,7 +390,7 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   const quoteNumber = formatQuoteNumber('Q', year, counter);
   const [row] = await db.transaction(async (tx) => {
     const currencyCode = input.currencyCode
-      ?? (await readOrgStampingDefaults(tx, input.orgId)).currencyCode;
+      ?? (await lockOrgStampingDefaults(tx, input.orgId)).currencyCode;
     return tx.insert(quotes).values({
       partnerId,
       orgId: input.orgId,
@@ -555,7 +576,7 @@ async function cloneQuoteCore(
       // the FIRST statement of this transaction. The pre-transaction read above
       // is a fast-fail: a changeOrgCurrency committing between the two would
       // otherwise let a clone land on an org billing in another currency.
-      const locked = await readOrgStampingDefaults(tx, targetOrgId);
+      const locked = await lockOrgStampingDefaults(tx, targetOrgId);
       if (locked.currencyCode !== source.currencyCode) {
         throw new QuoteServiceError(
           `target organization uses ${locked.currencyCode}; this quote is in ${source.currencyCode} — clone within the same currency or recreate the quote`,
@@ -1101,7 +1122,7 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
       // #3778: re-verify the same-currency guard under the org SHARE barrier as
       // the FIRST statement of this transaction (the pre-transaction check above
       // is a fast-fail only).
-      const lockedTarget = await readOrgStampingDefaults(tx, targetOrgId);
+      const lockedTarget = await lockOrgStampingDefaults(tx, targetOrgId);
       if (lockedTarget.currencyCode !== q.currencyCode) {
         throw new QuoteServiceError(
           `target organization uses ${lockedTarget.currencyCode}; this quote is in ${q.currencyCode} — reassign within the same currency or recreate the quote`,

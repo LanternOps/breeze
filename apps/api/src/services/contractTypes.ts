@@ -32,6 +32,10 @@ export interface Period {
 
 export type ContractServiceErrorCode =
   | 'ORG_DENIED'
+  // #3778 (finding 1): the organization is gone at the locking read that opens
+  // every creation transaction. Distinct from CONTRACT_NOT_FOUND — the contract
+  // was never created because its ORG does not exist / is invisible.
+  | 'ORG_NOT_FOUND'
   | 'CONTRACT_NOT_FOUND'
   | 'CONTRACT_CREATE_FAILED'
   | 'CONTRACT_LINE_CREATE_FAILED'

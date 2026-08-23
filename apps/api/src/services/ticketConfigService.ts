@@ -8,7 +8,28 @@ import { isHosted } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { readOrgStampingDefaults } from './orgCurrencyCore';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new TicketConfigServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { countConnectedMailboxes } from './ticketMailbox/connectionService';
 import type {
   CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
@@ -287,6 +308,9 @@ export type TicketConfigServiceErrorCode =
   | 'INBOUND_ROW_ALREADY_RESOLVED'
   | 'INBOUND_ROW_NO_SENDER'
   | 'ORG_NOT_ACCESSIBLE'
+  // #3778 (finding 1): the organization is gone at the org SHARE barrier that
+  // opens upsertOrgTicketSettings' transaction.
+  | 'ORG_NOT_FOUND'
   | 'DOMAIN_ALREADY_MAPPED'
   | 'DOMAIN_MAPPING_NOT_FOUND'
   // Wave-6 release gate (W6-G4-1): a default hourly rate that cannot be expressed
@@ -663,7 +687,7 @@ export async function upsertOrgTicketSettings(
   // separate pre-transaction read (`resolveAccessibleOrg`), which let a
   // concurrent changeOrgCurrency stamp `rate_currency` with a stale code.
   return db.transaction(async (tx) => {
-  const orgCurrencyCode = (await readOrgStampingDefaults(tx, orgId)).currencyCode;
+  const orgCurrencyCode = (await lockOrgStampingDefaults(tx, orgId)).currencyCode;
   const fields: Record<string, unknown> = {};
   if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
   if (input.defaultHourlyRate !== undefined) {
