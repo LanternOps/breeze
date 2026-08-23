@@ -1,9 +1,15 @@
-import { createHash } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from 'node:crypto';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   authBrowserTransitions,
   refreshTokenFamilies,
+  ssoProviders,
   ssoSessions,
   ssoTokenExchangeGrants,
   users,
@@ -13,10 +19,12 @@ import {
   beginAuthIssuanceForStoredTransition,
   type AuthIssuanceCapability,
 } from './authBrowserTransition';
-import { decryptSecret, encryptSecret } from './secretCrypto';
+import { getSecretDerivedKeyMaterials } from './secretCrypto';
 
 const SSO_EXCHANGE_CODE_AAD = 'sso-token-exchange-grant.code:v1';
+const SSO_EXCHANGE_CODE_PREFIX = 'sso-exchange:v1:';
 const SSO_EXCHANGE_GRANT_TTL_MINUTES = 2;
+const SSO_EXCHANGE_KEY_ID_PATTERN = /^(?:~|[A-Za-z0-9._-]+)$/;
 
 async function withSsoSystemTransaction<T>(
   callback: (tx: AuthLifecycleTransaction) => Promise<T>,
@@ -46,20 +54,73 @@ export function digestSsoExchangeCode(code: string): string {
   return createHash('sha256').update(code, 'utf8').digest('hex');
 }
 
+function encryptSsoExchangePayload(value: string): string {
+  const { active } = getSecretDerivedKeyMaterials(SSO_EXCHANGE_CODE_AAD);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', active.key, iv);
+  cipher.setAAD(Buffer.from(SSO_EXCHANGE_CODE_AAD, 'utf8'));
+  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${SSO_EXCHANGE_CODE_PREFIX}${active.keyId ?? '~'}:${iv.toString('base64url')}.${authTag.toString('base64url')}.${ciphertext.toString('base64url')}`;
+}
+
+function decryptSsoExchangePayload(code: string): string {
+  if (!code.startsWith(SSO_EXCHANGE_CODE_PREFIX)) {
+    throw new Error('Invalid SSO exchange code envelope');
+  }
+  const encoded = code.slice(SSO_EXCHANGE_CODE_PREFIX.length);
+  const keyIdSeparator = encoded.indexOf(':');
+  if (keyIdSeparator <= 0) throw new Error('Invalid SSO exchange code envelope');
+  const envelopeKeyId = encoded.slice(0, keyIdSeparator);
+  const parts = encoded.slice(keyIdSeparator + 1).split('.');
+  if (!SSO_EXCHANGE_KEY_ID_PATTERN.test(envelopeKeyId) || parts.length !== 3) {
+    throw new Error('Invalid SSO exchange code envelope');
+  }
+  const [ivText, authTagText, ciphertextText] = parts;
+  if (!ivText || !authTagText || !ciphertextText) {
+    throw new Error('Invalid SSO exchange code envelope');
+  }
+  const iv = Buffer.from(ivText, 'base64url');
+  const authTag = Buffer.from(authTagText, 'base64url');
+  const ciphertext = Buffer.from(ciphertextText, 'base64url');
+  if (iv.length !== 12 || authTag.length !== 16 || ciphertext.length === 0) {
+    throw new Error('Invalid SSO exchange code envelope');
+  }
+
+  const materials = getSecretDerivedKeyMaterials(SSO_EXCHANGE_CODE_AAD);
+  const candidates = [materials.active, ...materials.retained]
+    .filter((material) => envelopeKeyId === '~' || material.keyId === envelopeKeyId)
+    .filter((material, index, all) =>
+      all.findIndex((candidate) => candidate.key.equals(material.key)) === index,
+    );
+  if (candidates.length === 0) throw new Error('Unknown SSO exchange key ID');
+
+  let lastError: unknown;
+  for (const material of candidates) {
+    try {
+      const decipher = createDecipheriv('aes-256-gcm', material.key, iv);
+      decipher.setAAD(Buffer.from(SSO_EXCHANGE_CODE_AAD, 'utf8'));
+      decipher.setAuthTag(authTag);
+      return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Invalid SSO exchange code');
+}
+
 export function sealSsoExchangeCode(
   payload: SsoExchangeTokenHandoff,
 ): Readonly<{ code: string; codeDigest: string }> {
   if (!isSsoExchangeTokenHandoff(payload)) {
     throw new Error('Invalid SSO token handoff');
   }
-  const code = encryptSecret(JSON.stringify(payload), { aad: SSO_EXCHANGE_CODE_AAD });
-  if (!code) throw new Error('Failed to seal SSO exchange code');
+  const code = encryptSsoExchangePayload(JSON.stringify(payload));
   return Object.freeze({ code, codeDigest: digestSsoExchangeCode(code) });
 }
 
 export function openSsoExchangeCode(code: string): SsoExchangeTokenHandoff {
-  const plaintext = decryptSecret(code, { aad: SSO_EXCHANGE_CODE_AAD });
-  if (!plaintext) throw new Error('Invalid SSO exchange code');
+  const plaintext = decryptSsoExchangePayload(code);
   const parsed: unknown = JSON.parse(plaintext);
   if (!isSsoExchangeTokenHandoff(parsed)) throw new Error('Invalid SSO token handoff');
   return Object.freeze({ ...parsed });
@@ -70,6 +131,70 @@ export class SsoCallbackStateUnavailableError extends Error {
     super('SSO callback state is unavailable');
     this.name = 'SsoCallbackStateUnavailableError';
   }
+}
+
+// Reauthentication shares link-mode provider admission: `testing` is allowed,
+// while `inactive` and generation mismatches remain terminal.
+export type SsoProviderAuthorityMode = 'login' | 'link' | 'reauth';
+export type SsoProviderAuthorityFailureReason =
+  | 'provider_not_found'
+  | 'provider_inactive'
+  | 'provider_not_usable'
+  | 'provider_version_missing'
+  | 'provider_version_mismatch';
+
+export function checkSsoProviderAuthority(
+  provider: Readonly<{ status: string; configVersion: number }>,
+  input: Readonly<{ providerVersion: number | null; mode: SsoProviderAuthorityMode }>,
+): { ok: true } | { ok: false; reason: SsoProviderAuthorityFailureReason } {
+  if (provider.status === 'inactive') return { ok: false, reason: 'provider_inactive' };
+  if (input.mode === 'login' && provider.status !== 'active') {
+    return { ok: false, reason: 'provider_not_usable' };
+  }
+  if (input.providerVersion === null) {
+    return { ok: false, reason: 'provider_version_missing' };
+  }
+  if (input.providerVersion !== provider.configVersion) {
+    return { ok: false, reason: 'provider_version_mismatch' };
+  }
+  return { ok: true };
+}
+
+/** Lock the provider after IdP work, at the route-specific end of auth lock order. */
+export async function lockSsoProviderAuthority(
+  tx: AuthLifecycleTransaction,
+  input: Readonly<{
+    providerId: string;
+    providerVersion: number | null;
+    mode: SsoProviderAuthorityMode;
+  }>,
+): Promise<{ ok: true } | { ok: false; reason: SsoProviderAuthorityFailureReason }> {
+  const [provider] = await tx
+    .select({ status: ssoProviders.status, configVersion: ssoProviders.configVersion })
+    .from(ssoProviders)
+    .where(eq(ssoProviders.id, input.providerId))
+    .for('update')
+    .limit(1);
+  if (!provider) return { ok: false, reason: 'provider_not_found' };
+  return checkSsoProviderAuthority(provider, input);
+}
+
+export async function withLockedSsoProviderAuthority<T>(
+  input: Readonly<{
+    providerId: string;
+    providerVersion: number | null;
+    mode: SsoProviderAuthorityMode;
+  }>,
+  callback: (tx: AuthLifecycleTransaction) => Promise<T>,
+): Promise<
+  | { ok: true; value: T }
+  | { ok: false; reason: SsoProviderAuthorityFailureReason }
+> {
+  return withSsoSystemTransaction(async (tx) => {
+    const authority = await lockSsoProviderAuthority(tx, input);
+    if (!authority.ok) return authority;
+    return { ok: true as const, value: await callback(tx) };
+  });
 }
 
 export type ClaimedSsoCallback =

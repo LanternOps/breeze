@@ -54,6 +54,8 @@ const ssoTransitionMocks = vi.hoisted(() => ({
   claimSsoCallbackIssuance: vi.fn(),
   createDurableSsoExchangeGrant: vi.fn(),
   consumeDurableSsoExchangeGrant: vi.fn(),
+  lockSsoProviderAuthority: vi.fn(),
+  withLockedSsoProviderAuthority: vi.fn(),
   grants: new Map<string, { accessToken: string; refreshToken: string; expiresInSeconds: number }>(),
   nextCode: 0,
 }));
@@ -61,9 +63,25 @@ const ssoTransitionMocks = vi.hoisted(() => ({
 vi.mock('../services/authBrowserTransition', () => authTransitionMocks);
 vi.mock('../services/ssoBrowserTransition', () => ({
   SsoCallbackStateUnavailableError: class SsoCallbackStateUnavailableError extends Error {},
+  checkSsoProviderAuthority: (
+    provider: { status: string; configVersion: number },
+    input: { providerVersion: number | null; mode: 'login' | 'link' },
+  ) => {
+    if (provider.status === 'inactive') return { ok: false, reason: 'provider_inactive' };
+    if (input.mode === 'login' && provider.status !== 'active') {
+      return { ok: false, reason: 'provider_not_usable' };
+    }
+    if (input.providerVersion === null) return { ok: false, reason: 'provider_version_missing' };
+    if (input.providerVersion !== provider.configVersion) {
+      return { ok: false, reason: 'provider_version_mismatch' };
+    }
+    return { ok: true };
+  },
   claimSsoCallbackIssuance: ssoTransitionMocks.claimSsoCallbackIssuance,
   createDurableSsoExchangeGrant: ssoTransitionMocks.createDurableSsoExchangeGrant,
   consumeDurableSsoExchangeGrant: ssoTransitionMocks.consumeDurableSsoExchangeGrant,
+  lockSsoProviderAuthority: ssoTransitionMocks.lockSsoProviderAuthority,
+  withLockedSsoProviderAuthority: ssoTransitionMocks.withLockedSsoProviderAuthority,
 }));
 
 vi.mock('../services/sso', () => ({
@@ -538,6 +556,10 @@ describe('sso routes', () => {
       ssoTransitionMocks.grants.delete(code);
       return grant;
     });
+    ssoTransitionMocks.lockSsoProviderAuthority.mockResolvedValue({ ok: true });
+    ssoTransitionMocks.withLockedSsoProviderAuthority.mockImplementation(
+      async (_input, callback) => ({ ok: true, value: await callback(db) }),
+    );
     // clearAllMocks clears call history but NOT the mockReturnValueOnce queue.
     // Reset the db mocks to their default chain so a prior test's unconsumed
     // `*Once` entries can't bleed into the next test (e.g. a leftover
@@ -1827,9 +1849,40 @@ describe('sso routes', () => {
       expect(location).toMatch(/ssoCode=/);
       // Session was claimed atomically.
       expect(db.delete).toHaveBeenCalledTimes(1);
+      expect(authTransitionMocks.cancelAuthIssuance).not.toHaveBeenCalled();
+      expect(ssoTransitionMocks.lockSsoProviderAuthority).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({
+          providerId: PROVIDER_UUID,
+          providerVersion: 1,
+          mode: 'login',
+        }),
+      );
+      expect(vi.mocked(exchangeCodeForTokens).mock.invocationCallOrder[0]).toBeLessThan(
+        ssoTransitionMocks.lockSsoProviderAuthority.mock.invocationCallOrder[0]!,
+      );
       // Binding cookie is cleared after a successful flow.
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_sso_state=;');
+    });
+
+    it('rejects provider drift during guarded login finalization and releases the claim', async () => {
+      wireHappyPathDb();
+      ssoTransitionMocks.lockSsoProviderAuthority.mockResolvedValueOnce({
+        ok: false,
+        reason: 'provider_version_mismatch',
+      });
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') },
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=sso_config_changed');
+      expect(exchangeCodeForTokens).toHaveBeenCalled();
+      expect(ssoTransitionMocks.createDurableSsoExchangeGrant).not.toHaveBeenCalled();
+      expect(authTransitionMocks.cancelAuthIssuance).toHaveBeenCalledTimes(1);
     });
 
     it('rejects replay of an already-consumed state (atomic single-use)', async () => {
@@ -1847,6 +1900,33 @@ describe('sso routes', () => {
       // The atomic claim was attempted (and lost the race).
       expect(db.delete).toHaveBeenCalledTimes(1);
       // No tokens were minted for the replay.
+      expect(exchangeCodeForTokens).not.toHaveBeenCalled();
+    });
+
+    it('releases a claimed login capability when the provider no longer exists', async () => {
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'sso-session-provider-gone',
+            providerId: PROVIDER_UUID,
+            state: 'state',
+            nonce: 'nonce',
+            codeVerifier: 'verifier',
+            redirectUrl: '/dashboard',
+            providerVersion: 1,
+            linkUserId: null,
+          }]),
+        }),
+      } as any);
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') },
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=provider_not_found');
+      expect(authTransitionMocks.cancelAuthIssuance).toHaveBeenCalledTimes(1);
       expect(exchangeCodeForTokens).not.toHaveBeenCalled();
     });
 
@@ -1893,6 +1973,7 @@ describe('sso routes', () => {
       expect(res.headers.get('location') ?? '').toContain('error=sso_no_id_token');
       // No userinfo lookup / account linking happened.
       expect(getUserInfo).not.toHaveBeenCalled();
+      expect(authTransitionMocks.cancelAuthIssuance).toHaveBeenCalledTimes(1);
     });
 
     // security review #2 (C-1): userinfo identity must be bound to the
@@ -3666,6 +3747,33 @@ describe('sso routes', () => {
       expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
         userId: USER_UUID, providerId: PROVIDER_UUID, externalId: 'external-user-1'
       }));
+      expect(ssoTransitionMocks.withLockedSsoProviderAuthority).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: PROVIDER_UUID,
+          providerVersion: 1,
+          mode: 'link',
+        }),
+        expect.any(Function),
+      );
+      expect(vi.mocked(exchangeCodeForTokens).mock.invocationCallOrder[0]).toBeLessThan(
+        ssoTransitionMocks.withLockedSsoProviderAuthority.mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it('callback link mode rejects provider drift after IdP verification without linking', async () => {
+      primeLinkCallback({ linkUserId: USER_UUID });
+      ssoTransitionMocks.withLockedSsoProviderAuthority.mockResolvedValueOnce({
+        ok: false,
+        reason: 'provider_version_mismatch',
+      });
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=config_changed');
+      expect(exchangeCodeForTokens).toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
     });
 
     it('callback link mode rejects an email mismatch (no insert)', async () => {

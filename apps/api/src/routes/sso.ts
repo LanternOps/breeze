@@ -101,9 +101,12 @@ import {
 } from '../services/authBrowserTransition';
 import {
   SsoCallbackStateUnavailableError,
+  checkSsoProviderAuthority,
   claimSsoCallbackIssuance,
   consumeDurableSsoExchangeGrant,
   createDurableSsoExchangeGrant,
+  lockSsoProviderAuthority,
+  withLockedSsoProviderAuthority,
 } from '../services/ssoBrowserTransition';
 
 export const ssoRoutes = new Hono();
@@ -596,50 +599,6 @@ async function revalidateSsoDefaultRole(params: {
 }
 
 type SsoCallbackMode = 'login' | 'link' | 'reauth';
-
-/**
- * SR2-11: a pending SSO transaction is valid only against the provider
- * GENERATION it was created under, and only while the provider is still usable
- * for its own mode.
- *
- * Status per mode mirrors each mode's INIT gate: /login/* requires
- * status='active', /link/start requires status!=='inactive' (a `testing`
- * provider may be linked). Neither was checked at the callback before this
- * change — a provider disabled inside the <=10-minute state TTL still completed
- * a full login or link.
- *
- * #4018: reauth mode shares LINK's rule — /reauth/start also admits a
- * `testing` provider and refuses only `inactive` — so it deliberately falls
- * outside the `mode === 'login'` branch below, which needs no change.
- *
- * A NULL providerVersion (a row written before the column existed) is a REJECT,
- * not a pass: those are exactly the unbound sessions this change invalidates.
- *
- * PURE function over already-fetched rows — adds NO db access. Called from the
- * callback right after the org-XOR-partner axis guard and before any
- * default-role work, so a stale/disabled transaction never reaches JIT logic.
- */
-function checkProviderGeneration(
-  provider: typeof ssoProviders.$inferSelect,
-  session: typeof ssoSessions.$inferSelect,
-  mode: SsoCallbackMode,
-):
-  | { ok: true }
-  | { ok: false; reason: 'provider_inactive' | 'provider_not_usable' | 'provider_version_missing' | 'provider_version_mismatch' } {
-  if (provider.status === 'inactive') {
-    return { ok: false, reason: 'provider_inactive' };
-  }
-  if (mode === 'login' && provider.status !== 'active') {
-    return { ok: false, reason: 'provider_not_usable' };
-  }
-  if (session.providerVersion == null) {
-    return { ok: false, reason: 'provider_version_missing' };
-  }
-  if (session.providerVersion !== provider.configVersion) {
-    return { ok: false, reason: 'provider_version_mismatch' };
-  }
-  return { ok: true };
-}
 
 type LinkRejectReason =
   | 'link_binding_missing'
@@ -2656,7 +2615,10 @@ ssoRoutes.get('/callback', async (c) => {
   const callbackMode: SsoCallbackMode =
     session.reauthUserId ? 'reauth' : session.linkUserId ? 'link' : 'login';
 
-  const generation = checkProviderGeneration(provider, session, callbackMode);
+  const generation = checkSsoProviderAuthority(provider, {
+    providerVersion: session.providerVersion,
+    mode: callbackMode,
+  });
   if (!generation.ok) {
     writeRouteAudit(c, {
       orgId: provider.orgId,
@@ -3021,7 +2983,11 @@ ssoRoutes.get('/callback', async (c) => {
     // and BEFORE the login-path user resolution. Link mode NEVER mints tokens,
     // NEVER creates users, and NEVER touches login's identity resolution.
     if (session.linkUserId) {
-      const outcome = await withSystemDbAccessContext(async () => {
+      const lockedOutcome = await withLockedSsoProviderAuthority({
+        providerId: provider.id,
+        providerVersion: session.providerVersion,
+        mode: 'link',
+      }, async (tx) => {
         // SR2-11b: live re-check of the binding captured at /link/start.
         const binding = await validateSessionBinding(session, provider, session.linkUserId!);
         if (!binding.ok) {
@@ -3038,7 +3004,7 @@ ssoRoutes.get('/callback', async (c) => {
 
         // (provider, sub) must not already belong to someone else — a link must
         // never overwrite or hijack another user's identity.
-        const [existing] = await db
+        const [existing] = await tx
           .select({ id: userSsoIdentities.id, userId: userSsoIdentities.userId })
           .from(userSsoIdentities)
           .where(and(
@@ -3051,7 +3017,7 @@ ssoRoutes.get('/callback', async (c) => {
         }
 
         if (!existing) {
-          await db.insert(userSsoIdentities).values({
+          await tx.insert(userSsoIdentities).values({
             userId: linkingUser.id,
             providerId: provider.id,
             externalId: externalSub,
@@ -3067,6 +3033,16 @@ ssoRoutes.get('/callback', async (c) => {
         }
         return { ok: true as const };
       });
+      const outcome = lockedOutcome.ok
+        ? lockedOutcome.value
+        : {
+            error: (lockedOutcome.reason === 'provider_inactive'
+              || lockedOutcome.reason === 'provider_not_found'
+              || lockedOutcome.reason === 'provider_not_usable'
+              ? 'provider_inactive'
+              : 'config_changed') as 'provider_inactive' | 'config_changed',
+            auditReason: lockedOutcome.reason,
+          };
 
       clearStateCookie();
       if ('error' in outcome) {
@@ -3520,6 +3496,40 @@ ssoRoutes.get('/callback', async (c) => {
       },
     });
 
+    // The IdP exchange and assertion verification intentionally happen before
+    // this transaction. Re-lock the provider only after the guarded issuer has
+    // established transition -> user -> family order, then fail closed before
+    // membership, identity, last-login, or exchange-grant writes.
+    const liveProviderAuthority = await lockSsoProviderAuthority(tx, {
+      providerId: provider.id,
+      providerVersion: session.providerVersion,
+      mode: 'login',
+    });
+    if (!liveProviderAuthority.ok) {
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: 'sso.callback.rejected',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name,
+        result: 'denied',
+        details: {
+          mode: 'login',
+          phase: 'provider_generation_finalization',
+          reason: liveProviderAuthority.reason,
+          partnerId: provider.partnerId,
+          sessionVersion: session.providerVersion,
+        },
+      });
+      throw new SsoLoginFinalizationError(
+        liveProviderAuthority.reason === 'provider_inactive'
+          || liveProviderAuthority.reason === 'provider_not_found'
+          || liveProviderAuthority.reason === 'provider_not_usable'
+          ? '/login?error=sso_provider_inactive'
+          : '/login?error=sso_config_changed',
+      );
+    }
+
     if (provisionedRoleId) {
       await tx.insert(organizationUsers).values({
         orgId: provider.orgId!,
@@ -3666,7 +3676,6 @@ ssoRoutes.get('/callback', async (c) => {
     return c.redirect(`${redirectPath}#ssoCode=${encodeURIComponent(finalized.tokenExchangeCode)}`);
 
   } catch (error: any) {
-    await abandonLoginClaim();
     if (error instanceof SsoLoginFinalizationError) {
       clearStateCookie();
       return c.redirect(error.location);
@@ -3679,6 +3688,11 @@ ssoRoutes.get('/callback', async (c) => {
     captureException(error, c);
     clearStateCookie();
     return c.redirect(`/login?error=sso_error&message=${encodeURIComponent(error.message || 'Authentication failed')}`);
+  } finally {
+    // Every claimed-but-uncommitted login path releases its short issuance
+    // lease, including early redirects before and after the IdP exchange.
+    // Successful finalization clears loginCapability immediately after commit.
+    await abandonLoginClaim();
   }
 });
 

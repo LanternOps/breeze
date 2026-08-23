@@ -26,6 +26,7 @@ import {
   consumeDurableSsoExchangeGrant,
   createDurableSsoExchangeGrant,
   digestSsoExchangeCode,
+  lockSsoProviderAuthority,
 } from '../../services/ssoBrowserTransition';
 import {
   createOrganization,
@@ -71,6 +72,23 @@ async function waitForBlockedTransitionQueries(minimum: number): Promise<void> {
   }
 }
 
+async function waitForBlockedProviderQueries(minimum: number): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const rows = await getTestDb().execute<{ blockedCount: number }>(sql`
+      SELECT count(*)::int AS "blockedCount"
+      FROM pg_catalog.pg_stat_activity
+      WHERE datname = current_database()
+        AND state = 'active'
+        AND cardinality(pg_catalog.pg_blocking_pids(pid)) > 0
+        AND position('sso_providers' in lower(query)) > 0
+    `);
+    if (Number(rows[0]?.blockedCount ?? 0) >= minimum) return;
+    if (Date.now() > deadline) throw new Error(`Expected ${minimum} blocked provider queries`);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 async function queueTransitionRacers<TFirst, TSecond>(
   transitionId: string,
   first: () => Promise<TFirst>,
@@ -90,6 +108,29 @@ async function queueTransitionRacers<TFirst, TSecond>(
     secondPromise = second();
     void secondPromise.catch(() => undefined);
     await waitForBlockedTransitionQueries(2);
+  });
+  return [firstPromise, secondPromise];
+}
+
+async function queueProviderRacers<TFirst, TSecond>(
+  providerId: string,
+  first: () => Promise<TFirst>,
+  second: () => Promise<TSecond>,
+): Promise<[Promise<TFirst>, Promise<TSecond>]> {
+  let firstPromise!: Promise<TFirst>;
+  let secondPromise!: Promise<TSecond>;
+  await getTestDb().transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT id FROM sso_providers
+      WHERE id = ${providerId}::uuid
+      FOR UPDATE
+    `);
+    firstPromise = first();
+    void firstPromise.catch(() => undefined);
+    await waitForBlockedProviderQueries(1);
+    secondPromise = second();
+    void secondPromise.catch(() => undefined);
+    await waitForBlockedProviderQueries(2);
   });
   return [firstPromise, secondPromise];
 }
@@ -201,6 +242,16 @@ async function createCallbackStateFixture() {
     })
     .returning();
   if (!provider) throw new Error('Missing SSO provider fixture');
+  const role = await createRole({
+    scope: 'organization',
+    partnerId: partner.id,
+    orgId: org.id,
+  });
+  const user = await createUser({
+    partnerId: partner.id,
+    orgId: org.id,
+    email: `sso-callback-${randomUUID()}@example.com`,
+  });
   const snapshot = await beginAuthIssuance({
     kind: 'browser',
     value: await freshBrowserBinding(),
@@ -218,7 +269,59 @@ async function createCallbackStateFixture() {
     browserGeneration: snapshot.generation,
     expiresAt: new Date(Date.now() + 10 * 60 * 1000),
   });
-  return { snapshot, state };
+  return { snapshot, state, partner, org, provider, role, user };
+}
+
+async function finishProviderBoundCallback(
+  fixture: Awaited<ReturnType<typeof createCallbackStateFixture>>,
+  capability: Extract<Awaited<ReturnType<typeof claimSsoCallbackIssuance>>, { kind: 'login' }>['capability'],
+) {
+  return finishAuthIssuance(capability, async (tx) => {
+    const issued = await issueUserSession({
+      userId: fixture.user.id,
+      email: fixture.user.email,
+      roleId: fixture.role.id,
+      orgId: fixture.org.id,
+      partnerId: fixture.partner.id,
+      scope: 'organization',
+      mfa: false,
+    }, {
+      tx,
+      capability,
+      expectedEpochs: {
+        authEpoch: fixture.user.authEpoch,
+        mfaEpoch: fixture.user.mfaEpoch,
+      },
+    });
+    const authority = await lockSsoProviderAuthority(tx, {
+      providerId: fixture.provider.id,
+      providerVersion: fixture.provider.configVersion,
+      mode: 'login',
+    });
+    if (!authority.ok) throw new Error(`provider authority rejected: ${authority.reason}`);
+    const code = await createDurableSsoExchangeGrant(tx, {
+      capability,
+      userId: fixture.user.id,
+      familyId: issued.familyId,
+      tokens: {
+        accessToken: issued.accessToken,
+        refreshToken: issued.refreshToken,
+        expiresInSeconds: issued.expiresInSeconds,
+      },
+    });
+    return { issued, code };
+  });
+}
+
+async function disableProvider(providerId: string): Promise<void> {
+  await getTestDb()
+    .update(ssoProviders)
+    .set({
+      status: 'inactive',
+      configVersion: sql`${ssoProviders.configVersion} + 1`,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(ssoProviders.id, providerId));
 }
 
 describe('durable SSO exchange authority', () => {
@@ -345,5 +448,52 @@ describe('durable SSO callback state claim', () => {
     expect(localWrites).toBe(0);
     expect(await getTestDb().select().from(ssoSessions)
       .where(eq(ssoSessions.state, fixture.state))).toHaveLength(0);
+  });
+
+  runDb('rejects finalization when provider disable wins before the guarded callback', async () => {
+    const fixture = await createCallbackStateFixture();
+    const admitted = await claimSsoCallbackIssuance(fixture.state);
+    if (!admitted || admitted.kind !== 'login') throw new Error('Missing login claim');
+
+    const [disable, callback] = await queueProviderRacers(
+      fixture.provider.id,
+      () => disableProvider(fixture.provider.id),
+      () => finishProviderBoundCallback(fixture, admitted.capability),
+    );
+
+    await expect(disable).resolves.toBeUndefined();
+    await expect(callback).rejects.toThrow('provider authority rejected: provider_inactive');
+    await cancelAuthIssuance(admitted.capability);
+    const [transition] = await getTestDb()
+      .select({ currentFamilyId: authBrowserTransitions.currentFamilyId })
+      .from(authBrowserTransitions)
+      .where(eq(authBrowserTransitions.id, fixture.snapshot.transitionId));
+    expect(transition?.currentFamilyId).toBeNull();
+    expect(await getTestDb().select().from(ssoTokenExchangeGrants)
+      .where(eq(ssoTokenExchangeGrants.browserTransitionId, fixture.snapshot.transitionId)))
+      .toHaveLength(0);
+  });
+
+  runDb('commits callback authority before a queued provider disable', async () => {
+    const fixture = await createCallbackStateFixture();
+    const admitted = await claimSsoCallbackIssuance(fixture.state);
+    if (!admitted || admitted.kind !== 'login') throw new Error('Missing login claim');
+
+    const [callback, disable] = await queueProviderRacers(
+      fixture.provider.id,
+      () => finishProviderBoundCallback(fixture, admitted.capability),
+      () => disableProvider(fixture.provider.id),
+    );
+
+    const finalized = await callback;
+    await expect(disable).resolves.toBeUndefined();
+    const [transition] = await getTestDb()
+      .select({ currentFamilyId: authBrowserTransitions.currentFamilyId })
+      .from(authBrowserTransitions)
+      .where(eq(authBrowserTransitions.id, fixture.snapshot.transitionId));
+    expect(transition?.currentFamilyId).toBe(finalized.issued.familyId);
+    expect(await getTestDb().select().from(ssoTokenExchangeGrants)
+      .where(eq(ssoTokenExchangeGrants.codeDigest, digestSsoExchangeCode(finalized.code))))
+      .toHaveLength(1);
   });
 });
