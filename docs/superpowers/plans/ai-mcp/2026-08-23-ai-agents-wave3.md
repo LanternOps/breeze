@@ -852,22 +852,34 @@ describe('agent-originated action_intents constraints', () => {
 });
 ```
 
-- [ ] **Step 2: Run it against a real database and verify it fails**
+- [ ] **Step 2: Verify it fails against the pre-wave-3 snapshot**
+
+Task 2's migration is already applied to `breeze` by the time this task runs, so
+pointing the test at `breeze` cannot show a red. A frozen pre-wave-3 snapshot
+database, `breeze_base`, exists on the same server for exactly this check — same
+556 migrations, none of wave 3's.
 
 ```bash
-export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
+DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze_base" \
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/agentIntentConstraints.integration.test.ts
 ```
 
-Expected on a database **without** Task 2's migration: the first test fails with
-`23514`. Confirm the suite actually **ran** — a `runIf` guard skipping silently
-reads as green (see the integration-placement trap in CLAUDE.md).
+Expected: the *accept* case ("accepts an intent with a run and no human actor")
+fails — `column "requesting_agent_run_id" of relation "action_intents" does not
+exist`. That is the red that proves the test is load-bearing.
 
-- [ ] **Step 3: Apply the migration and re-run**
+Confirm the suite actually **ran** — a `runIf` guard skipping silently reads as
+green (see the integration-placement trap in CLAUDE.md). `Test Files 1 passed`
+with `Tests 0 passed` means it skipped; that is a failure, not a pass.
+
+Do **not** write to `breeze_base` beyond what the test's own transaction rolls
+back — later tasks reuse it as the clean red baseline.
+
+- [ ] **Step 3: Run against the migrated database**
 
 ```bash
-pnpm db:migrate
+DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze" \
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/agentIntentConstraints.integration.test.ts
 ```
