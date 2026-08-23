@@ -108,7 +108,7 @@ When a customer accepts a quote that has a deposit, Breeze issues the invoice wi
 
 When a customer accepts a quote, Breeze turns it into the documents that bill it:
 
-- **One-time lines** become an **invoice** (with the deposit due first, if one was set).
+- **One-time lines** become an **invoice** (with the deposit due first, if one was set). The customer is taken straight to that invoice's own view-and-pay page, and unless you turn it off in **Settings → Billing**, Breeze emails them the invoice with the same link right away.
 - **Recurring lines** become one or more **draft contracts** -- monthly and annual lines split into separate drafts, one billing cadence each -- that you review and activate. See [Recurring Contracts → From an Accepted Quote](/features/contracts/#from-an-accepted-quote).
 
 If the accepted quote contains **Pax8-backed** catalog items, acceptance also **stages a Pax8 order** for those items alongside the invoice and contracts. Acceptance doesn't submit anything to Pax8; you complete the commitment and provisioning details and submit it afterward. See [Distributor Integrations → Complete an order staged from a quote](/features/distributor-integrations/#complete-an-order-staged-from-a-quote).
@@ -150,6 +150,14 @@ You can send or delete quotes in bulk from the quote list -- select quotes with 
 A sent quote can be **re-sent** without rebuilding it — useful when a contact changes, a quote expires unread, or you need to record recipients on an older quote (see the caution above). The quote also shows **who it was sent to and when**, so you can tell at a glance whether the right person actually received it.
 
 **Copy share link** puts the customer-facing link on your clipboard, for when you would rather paste it into an existing email thread or a chat than send from Breeze.
+
+### Declined quotes
+
+A customer can decline from the quote page and leave a short note explaining why. Breeze emails the technician who created the quote (falling back to your billing address), and the quote detail shows a **Declined** banner with the date and the customer's own words -- so the reason lives with the quote instead of in someone's inbox. From there, **Duplicate & revise** builds a follow-up proposal from the declined quote. A quote you decline yourself on the customer's behalf is attributed to your team and sends no email.
+
+### Quotes and currency
+
+A quote is priced in the customer organization's billing currency, which it inherits from your partner currency when the organization is created. Retargeting a draft or a clone to an organization that bills in a different currency is refused rather than silently re-pricing the lines -- build the quote in the right organization instead.
 
 ## Document themes and content blocks
 

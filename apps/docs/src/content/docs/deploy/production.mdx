@@ -219,7 +219,7 @@ Grafana is available at `http://127.0.0.1:3000` (localhost only by default).
 
 ## Pinning a Version
 
-By default, images pull the `latest` tag. To pin to a specific release:
+`.env.example` ships with an explicit `BREEZE_VERSION` pin, so a fresh deployment is already pinned. Change it deliberately when you upgrade; if you clear it, images fall back to the `latest` tag. To pin to a specific release:
 
 ```bash
 # In .env
