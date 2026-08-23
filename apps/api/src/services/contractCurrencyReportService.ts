@@ -86,6 +86,16 @@ function reasonFor(
   return null;
 }
 
+/** Placeholder verdict for rows whose eligibility is never computed (non-active).
+ *  Never reaches reasonFor's blocker branches — STATUS_NOT_ACTIVE wins first. */
+const EMPTY_ELIGIBILITY: Awaited<ReturnType<typeof inspectContractCurrencyEligibility>> = {
+  eligible: false,
+  draftInvoiceIds: [],
+  orphanedBillingPeriodIds: [],
+  orphanedContractSourceLineIds: [],
+  brokenLineageInvoiceIds: [],
+};
+
 export async function listContractCurrencyMismatches(
   query: ContractCurrencyMismatchQueryInput,
   actor: ContractActor,
@@ -124,22 +134,37 @@ export async function listContractCurrencyMismatches(
   const page = rows.slice(0, limit);
   const nextCursor = rows.length > limit ? (page[page.length - 1]!.contractId) : null;
 
+  // Blocker (4)'s scan is ORG-scoped, so it is identical for every contract of
+  // the same org. Memoised across the page (see InspectContractCurrencyOptions):
+  // a 100-row page of one org went from 100 org-wide invoice_lines scans to 1.
+  // Report-only — the mutation re-reads it fresh under the contract's row lock.
+  const orphanScanCache = new Map<string, string[]>();
+
   const items: ContractCurrencyMismatchItem[] = [];
   for (const r of page) {
-    // The SAME helper changeContractCurrency gates on, so the report can never
-    // disagree with the mutation. Called WITHOUT the contract's FOR UPDATE —
-    // a read-only report must never serialize against a billing run — so the
-    // verdict is advisory-at-this-instant; the mutation re-checks under the
-    // lock and is the authority. One transaction per row gives its three
-    // queries a consistent snapshot.
-    const eligibility = await db.transaction((tx) => inspectContractCurrencyEligibility(tx, r.contractId));
-    const reason = reasonFor(r.status as ContractStatus, eligibility);
+    const status = r.status as ContractStatus;
+    // A non-active contract can NEVER be accepted by the Task 14 hatch, and
+    // reasonFor short-circuits to STATUS_NOT_ACTIVE for it — so computing
+    // eligibility would issue four queries per row only to discard every one.
+    // Skip it entirely. Consequence, deliberate: the informational counts read 0
+    // for non-active rows because nothing was measured; ineligibleReason is the
+    // authority on why the row cannot be acted on.
+    const eligibility = status === 'active'
+      // The SAME helper changeContractCurrency gates on, so the report can never
+      // disagree with the mutation. Called WITHOUT the contract's FOR UPDATE —
+      // a read-only report must never serialize against a billing run — so the
+      // verdict is advisory-at-this-instant; the mutation re-checks under the
+      // lock and is the authority. One transaction per row gives its queries a
+      // consistent snapshot.
+      ? await db.transaction((tx) => inspectContractCurrencyEligibility(tx, r.contractId, { orphanScanCache }))
+      : EMPTY_ELIGIBILITY;
+    const reason = reasonFor(status, eligibility);
     items.push({
       contractId: r.contractId,
       contractName: r.contractName,
       orgId: r.orgId,
       orgName: r.orgName,
-      status: r.status as ContractStatus,
+      status,
       contractCurrencyCode: r.contractCurrencyCode,
       orgCurrencyCode: r.orgCurrencyCode,
       nextBillingAt: r.nextBillingAt === null || r.nextBillingAt === undefined
