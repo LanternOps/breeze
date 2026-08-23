@@ -586,3 +586,58 @@ describe('acceptQuote contract document snapshot', () => {
     expect(createExecutedDocumentsMock).not.toHaveBeenCalled();
   });
 });
+
+describe('acceptQuote superseded public-link guard', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
+
+  function queueGuardQuote(overrides: Record<string, unknown>) {
+    queueResult([{
+      id: 'q1',
+      orgId: 'org1',
+      partnerId: 'p1',
+      quoteNumber: 'Q-2026-0001',
+      currencyCode: 'USD',
+      expiryDate: null,
+      publicResponseConsumedAt: null,
+      publicResponseJti: null,
+      publicTokenVersion: 0,
+      ...overrides,
+    }]);
+  }
+
+  it('rejects a superseded quote with 410 QUOTE_SUPERSEDED', async () => {
+    queueGuardQuote({ status: 'superseded', publicLinkRevokedAt: null });
+
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({
+      status: 410,
+      code: 'QUOTE_SUPERSEDED',
+    });
+  });
+
+  it('rejects a sent quote whose publicLinkRevokedAt is set with 410 QUOTE_SUPERSEDED', async () => {
+    queueGuardQuote({ status: 'sent', publicLinkRevokedAt: new Date('2026-08-23T12:00:00.000Z') });
+
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({
+      status: 410,
+      code: 'QUOTE_SUPERSEDED',
+    });
+  });
+
+  it('reports QUOTE_SUPERSEDED before the generic non-sent INVALID_STATE guard', async () => {
+    queueGuardQuote({ status: 'superseded', publicLinkRevokedAt: new Date('2026-08-23T12:00:00.000Z') });
+
+    let thrown: unknown;
+    try {
+      await acceptQuote(baseParams);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ status: 410, code: 'QUOTE_SUPERSEDED' });
+    expect(thrown).not.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+});

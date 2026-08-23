@@ -81,7 +81,11 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
     const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
     const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
-    return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
+    // Draft successors stay private until sent; customers must not learn that a
+    // revision is still being prepared for them.
+    const [successor] = await db.select({ id: quotes.id }).from(quotes)
+      .where(and(eq(quotes.revisionOfQuoteId, quote.id), ne(quotes.status, 'draft'))).limit(1);
+    return c.json({ data: { quote: { ...quote, supersededByQuoteId: successor?.id ?? null, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
       partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
       supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
       theme, pageSize,
