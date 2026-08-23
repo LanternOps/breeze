@@ -150,6 +150,11 @@ function setAuth(overrides: Partial<{
 // before anything else in the move transaction, and the currency guard now
 // compares those locked values rather than the pre-transaction read.
 let currentOrgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }> = [];
+/** Org ids that exist in the PRE-transaction read but are gone by the time the
+ *  in-transaction SHARE barrier locks them (#3778 finding 7): an org deleted
+ *  between the two reads. readOrgStampingDefaultsMany omits such ids from its
+ *  map by design, so the route must guard instead of `!`-asserting. */
+let barrierMissingOrgIds = new Set<string>();
 
 function rigOrgAndSiteSelects(opts: {
   orgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }>;
@@ -245,7 +250,8 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
                 statements.push(`SELECT organizations FOR ${mode} (after ${updatedTables.length} updates)`);
                 const ordered = [...currentOrgRows].sort((a, b) => a.id.localeCompare(b.id));
                 const row = ordered[barrierReads++];
-                return Promise.resolve(row ? [{ currencyCode: row.currencyCode ?? 'USD' }] : []);
+                if (!row || barrierMissingOrgIds.has(row.id)) return Promise.resolve([]);
+                return Promise.resolve([{ currencyCode: row.currencyCode ?? 'USD' }]);
               }),
             })),
           })),
@@ -263,6 +269,7 @@ describe('POST /devices/:id/move-org', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    barrierMissingOrgIds = new Set<string>();
     guardMock.mockReset();
     guardMock.mockResolvedValue(null);
     setAuth();
@@ -632,6 +639,46 @@ describe('POST /devices/:id/move-org', () => {
     it('400s a non-boolean acceptCurrencyMismatch', async () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: 'yes' }));
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('org vanished at the in-transaction SHARE barrier (#3778 finding 7)', () => {
+    const postBody = () => ({
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+    });
+    const orgRows = [
+      { id: SOURCE_ORG, partnerId: 'partner-1', name: 'Alpha' },
+      { id: TARGET_ORG, partnerId: 'partner-1', name: 'Beta' },
+    ];
+
+    it('404s "Target organization not found" instead of a TypeError 500', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      barrierMissingOrgIds.add(TARGET_ORG);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Target organization not found' });
+      // A row deleted under us is not an exception: no Sentry, and the move
+      // rolled back so the guard must never have run.
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(guardMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('500s "Source organization not found" (mirrors the pre-transaction check)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      barrierMissingOrgIds.add(SOURCE_ORG);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Source organization not found' });
+      expect(guardMock).not.toHaveBeenCalled();
     });
   });
 
