@@ -5,6 +5,7 @@ import { users } from '../db/schema/users';
 import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
 import {
   assertAuthIssuanceCapability,
+  AuthIssuanceCapabilityError,
   bindAuthIssuanceSession,
   type AuthIssuanceCapability,
 } from './authBrowserTransition';
@@ -18,6 +19,7 @@ import {
 } from './refreshTokenFamily';
 
 const AUTHORIZED_USER_SESSION: unique symbol = Symbol('AuthorizedUserSession');
+const LEGACY_USER_SESSION_DURING_TRANSITION: unique symbol = Symbol('LegacyUserSessionDuringTransition');
 
 export type UserSessionIdentity = Readonly<{
   userId: string;
@@ -41,16 +43,33 @@ export type AuthorizedUserSession = Readonly<TokenPair & {
   readonly [AUTHORIZED_USER_SESSION]: true;
 }>;
 
+export type LegacyUserSessionDuringTransition = Readonly<TokenPair & {
+  familyId: string;
+  readonly [LEGACY_USER_SESSION_DURING_TRANSITION]: true;
+}>;
+
+export type UserSessionEpochSnapshot = Readonly<{
+  authEpoch: number;
+  mfaEpoch: number;
+}>;
+
 export type GuardedUserSessionIssueOptions = Readonly<{
   tx: AuthLifecycleTransaction;
   capability: AuthIssuanceCapability;
+  expectedEpochs: UserSessionEpochSnapshot;
   familyId?: string;
   refreshRotation?: Readonly<{
     presentedJti: string;
-    authEpoch: number;
-    mfaEpoch: number;
   }>;
 }>;
+
+export class UserSessionEpochMismatchError extends AuthIssuanceCapabilityError {
+  constructor() {
+    super();
+    this.name = 'UserSessionEpochMismatchError';
+    this.message = 'Verified authentication state changed before session issuance';
+  }
+}
 
 export function authBrowserTransitionsEnforced(): boolean {
   return envFlag('AUTH_BROWSER_TRANSITIONS_ENFORCED', false);
@@ -81,8 +100,8 @@ export async function issueUserSession(
   identity: UserSessionIdentity,
   options: GuardedUserSessionIssueOptions,
 ): Promise<AuthorizedUserSession> {
-  if (!options?.tx || !options.capability) {
-    throw new Error('Guarded user-session issuance requires a transaction and capability');
+  if (!options?.tx || !options.capability || !options.expectedEpochs) {
+    throw new Error('Guarded user-session issuance requires a transaction, capability, and expected epochs');
   }
 
   await assertAuthIssuanceCapability(options.tx, options.capability);
@@ -90,13 +109,11 @@ export async function issueUserSession(
   // Global lock order: transition (asserted above), user, then refresh family.
   const epochs = await lockLiveUserSecurityState(options.tx, identity.userId);
   if (
-    options.refreshRotation
-    && (
-      epochs.authEpoch !== options.refreshRotation.authEpoch
-      || epochs.mfaEpoch !== options.refreshRotation.mfaEpoch
-    )
+    epochs.authEpoch !== options.expectedEpochs.authEpoch
+    || epochs.mfaEpoch !== options.expectedEpochs.mfaEpoch
   ) {
-    throw new RefreshTokenCurrentnessError();
+    if (options.refreshRotation) throw new RefreshTokenCurrentnessError();
+    throw new UserSessionEpochMismatchError();
   }
 
   const refreshJti = randomUUID();
@@ -149,7 +166,7 @@ export async function issueUserSession(
  */
 export async function issueUserSessionLegacyDuringTransition(
   identity: UserSessionIdentity,
-): Promise<TokenPair & { familyId: string }> {
+): Promise<LegacyUserSessionDuringTransition> {
   if (authBrowserTransitionsEnforced()) {
     throw new Error('Legacy user-session issuance is disabled');
   }
@@ -170,7 +187,11 @@ export async function issueUserSessionLegacyDuringTransition(
     mdid: identity.mobileDeviceId,
   }, { refreshFam: familyId });
   await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
-  return { ...tokens, familyId };
+  return Object.freeze({
+    ...tokens,
+    familyId,
+    [LEGACY_USER_SESSION_DURING_TRANSITION]: true as const,
+  });
 }
 
 /** Populate the Redis JTI accelerator only after the authoritative commit. */

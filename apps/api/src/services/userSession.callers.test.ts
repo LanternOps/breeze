@@ -28,6 +28,7 @@ const expectedGuardedIssuerFiles = new Map([
 
 const expectedLegacyIssuerFiles = new Map(expectedGuardedIssuerFiles);
 const expectedGuardedCookieInstallerFiles = new Map(expectedGuardedIssuerFiles);
+const expectedLegacyCookieInstallerFiles = new Map(expectedGuardedIssuerFiles);
 
 function productionTypeScriptFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -63,6 +64,7 @@ function directCalls(file: string): Map<string, number> {
         || calledName === 'issueUserSession'
         || calledName === 'issueUserSessionLegacyDuringTransition'
         || calledName === 'installAuthorizedUserSessionCookies'
+        || calledName === 'installLegacyUserSessionCookiesDuringTransition'
         || calledName === 'recordAuthTransitionLegacyIssuer'
       ) {
         counts.set(calledName, (counts.get(calledName) ?? 0) + 1);
@@ -80,6 +82,7 @@ function buildInventories(): Readonly<{
   issueUserSession: Map<string, number>;
   issueUserSessionLegacyDuringTransition: Map<string, number>;
   installAuthorizedUserSessionCookies: Map<string, number>;
+  installLegacyUserSessionCookiesDuringTransition: Map<string, number>;
   recordAuthTransitionLegacyIssuer: Map<string, number>;
 }> {
   const createTokenPair = new Map<string, number>();
@@ -87,6 +90,7 @@ function buildInventories(): Readonly<{
   const issueUserSession = new Map<string, number>();
   const issueUserSessionLegacyDuringTransition = new Map<string, number>();
   const installAuthorizedUserSessionCookies = new Map<string, number>();
+  const installLegacyUserSessionCookiesDuringTransition = new Map<string, number>();
   const recordAuthTransitionLegacyIssuer = new Map<string, number>();
   for (const file of productionTypeScriptFiles(SRC_DIR)) {
     const rel = relative(SRC_DIR, file);
@@ -100,6 +104,7 @@ function buildInventories(): Readonly<{
     const guardedCount = counts.get('issueUserSession') ?? 0;
     const legacyCount = counts.get('issueUserSessionLegacyDuringTransition') ?? 0;
     const installerCount = counts.get('installAuthorizedUserSessionCookies') ?? 0;
+    const legacyInstallerCount = counts.get('installLegacyUserSessionCookiesDuringTransition') ?? 0;
     const metricCount = counts.get('recordAuthTransitionLegacyIssuer') ?? 0;
     if (guardedCount > 0 && rel !== 'services/userSession.ts') issueUserSession.set(rel, guardedCount);
     if (legacyCount > 0 && rel !== 'services/userSession.ts') {
@@ -107,6 +112,9 @@ function buildInventories(): Readonly<{
     }
     if (installerCount > 0 && rel !== 'routes/auth/helpers.ts') {
       installAuthorizedUserSessionCookies.set(rel, installerCount);
+    }
+    if (legacyInstallerCount > 0 && rel !== 'routes/auth/helpers.ts') {
+      installLegacyUserSessionCookiesDuringTransition.set(rel, legacyInstallerCount);
     }
     if (metricCount > 0 && rel !== 'services/authTransitionMetrics.ts') {
       recordAuthTransitionLegacyIssuer.set(rel, metricCount);
@@ -118,6 +126,7 @@ function buildInventories(): Readonly<{
     issueUserSession,
     issueUserSessionLegacyDuringTransition,
     installAuthorizedUserSessionCookies,
+    installLegacyUserSessionCookiesDuringTransition,
     recordAuthTransitionLegacyIssuer,
   };
 }
@@ -143,6 +152,7 @@ describe('frozen authentication issuer inventory', () => {
     expect(frozenInventory.issueUserSession).toEqual(expectedGuardedIssuerFiles);
     expect(frozenInventory.issueUserSessionLegacyDuringTransition).toEqual(expectedLegacyIssuerFiles);
     expect(frozenInventory.installAuthorizedUserSessionCookies).toEqual(expectedGuardedCookieInstallerFiles);
+    expect(frozenInventory.installLegacyUserSessionCookiesDuringTransition).toEqual(expectedLegacyCookieInstallerFiles);
     expect(frozenInventory.recordAuthTransitionLegacyIssuer).toEqual(expectedLegacyIssuerFiles);
   });
 
@@ -160,6 +170,44 @@ describe('frozen authentication issuer inventory', () => {
     expect(declarations).toHaveLength(1);
     expect(declarations[0]?.parameters).toHaveLength(1);
     expect(declarations[0]?.parameters[0]?.name.getText(ast)).toBe('identity');
+    expect(declarations[0]?.type?.getText(ast)).toBe('Promise<LegacyUserSessionDuringTransition>');
+  });
+
+  it('keeps the legacy cookie boundary exact and branded', () => {
+    const source = readFileSync(join(SRC_DIR, 'routes/auth/helpers.ts'), 'utf8');
+    const ast = ts.createSourceFile('helpers.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const declarations: ts.FunctionDeclaration[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === 'installLegacyUserSessionCookiesDuringTransition') {
+        declarations.push(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    expect(declarations).toHaveLength(1);
+    expect(declarations[0]?.parameters).toHaveLength(2);
+    expect(declarations[0]?.parameters[0]?.name.getText(ast)).toBe('c');
+    expect(declarations[0]?.parameters[1]?.name.getText(ast)).toBe('issued');
+    expect(declarations[0]?.parameters[1]?.type?.getText(ast)).toBe('LegacyUserSessionDuringTransition');
+  });
+
+  it('has no assertion bypass around either branded cookie boundary', () => {
+    const assertions: string[] = [];
+    for (const [rel] of expectedGuardedIssuerFiles) {
+      const file = join(SRC_DIR, rel);
+      const ast = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isAsExpression(node)
+          && /^(AuthorizedUserSession|LegacyUserSessionDuringTransition)$/.test(node.type.getText(ast))
+        ) {
+          assertions.push(`${rel}:${ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1}`);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(ast);
+    }
+    expect(assertions).toEqual([]);
   });
 
   it.skip('has no process-local SSO exchange grant', () => {});

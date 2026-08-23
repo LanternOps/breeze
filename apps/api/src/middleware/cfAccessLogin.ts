@@ -315,13 +315,19 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
   };
 
-  let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+  let tokens: ReturnType<typeof toPublicTokens>;
+  let installSessionCookies: () => void;
   if (capability) {
+    let issued: AuthorizedUserSession;
     try {
-      tokens = await finishAuthIssuance(capability, async (tx) => {
-        const issued = await issueUserSession(identity, { tx, capability });
+      issued = await finishAuthIssuance(capability, async (tx) => {
+        const session = await issueUserSession(identity, {
+          tx,
+          capability,
+          expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+        });
         await tx.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
-        return issued;
+        return session;
       });
     } catch (error) {
       await cancelAuthIssuance(capability).catch(() => undefined);
@@ -329,13 +335,17 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       if (!response) throw error;
       return response;
     }
-    await bindIssuedUserSession(tokens);
+    await bindIssuedUserSession(issued);
+    tokens = toPublicTokens(issued);
+    installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
   } else {
     recordAuthTransitionLegacyIssuer('cf_access', readMobileDeviceId(c) ? 'native' : 'web');
-    tokens = await issueUserSessionLegacyDuringTransition(identity);
+    const issued = await issueUserSessionLegacyDuringTransition(identity);
     await withSystemDbAccessContext(() =>
       db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
     );
+    tokens = toPublicTokens(issued);
+    installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
   }
 
   createAuditLogAsync({
@@ -358,8 +368,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     result: 'success',
   });
 
-  if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
-  else installLegacyUserSessionCookiesDuringTransition(c, tokens);
+  installSessionCookies();
 
   return c.json({
     user: {
@@ -369,7 +378,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       mfaEnabled: ENABLE_2FA ? user.mfaEnabled : false,
       avatarUrl: user.avatarUrl,
     },
-    tokens: toPublicTokens(tokens),
+    tokens,
     mfaRequired: false,
     requiresSetup: userRequiresSetup(user),
     // Same contract the password /login handler returns, so the SPA drives the

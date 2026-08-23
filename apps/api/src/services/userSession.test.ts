@@ -78,16 +78,20 @@ describe('guarded user-session issuance', () => {
     delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
   });
 
-  it('requires both the finalization transaction and branded capability', async () => {
+  it('requires the finalization transaction, branded capability, and verified epoch snapshot', async () => {
     await expect(issueUserSession(identity, undefined as never)).rejects.toThrow(
-      'requires a transaction and capability',
+      'requires a transaction, capability, and expected epochs',
     );
   });
 
   it('asserts the transition, locks live epochs, stores current JTI, and binds the family before returning', async () => {
     const harness = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }]]);
 
-    const issued = await issueUserSession(identity, { tx: harness.tx, capability });
+    const issued = await issueUserSession(identity, {
+      tx: harness.tx,
+      capability,
+      expectedEpochs: { authEpoch: 8, mfaEpoch: 13 },
+    });
 
     expect(transitionMocks.assertAuthIssuanceCapability).toHaveBeenCalledWith(
       harness.tx,
@@ -141,8 +145,9 @@ describe('guarded user-session issuance', () => {
     const issued = await issueUserSession(identity, {
       tx: harness.tx,
       capability,
+      expectedEpochs: { authEpoch: 4, mfaEpoch: 7 },
       familyId,
-      refreshRotation: { presentedJti, authEpoch: 4, mfaEpoch: 7 },
+      refreshRotation: { presentedJti },
     });
 
     expect(harness.inserted).toHaveLength(0);
@@ -161,13 +166,26 @@ describe('guarded user-session issuance', () => {
     await expect(issueUserSession(identity, {
       tx: harness.tx,
       capability,
+      expectedEpochs: { authEpoch: 4, mfaEpoch: 7 },
       familyId: '77777777-7777-4777-8777-777777777777',
       refreshRotation: {
         presentedJti: '88888888-8888-4888-8888-888888888888',
-        authEpoch: 4,
-        mfaEpoch: 7,
       },
     })).rejects.toMatchObject({ name: 'RefreshTokenCurrentnessError' });
+
+    expect(harness.inserted).toHaveLength(0);
+    expect(harness.updated).toHaveLength(0);
+    expect(transitionMocks.bindAuthIssuanceSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale non-refresh proof before minting a family or signing tokens', async () => {
+    const harness = transactionHarness([[{ status: 'active', authEpoch: 5, mfaEpoch: 8 }]]);
+
+    await expect(issueUserSession(identity, {
+      tx: harness.tx,
+      capability,
+      expectedEpochs: { authEpoch: 4, mfaEpoch: 8 },
+    })).rejects.toMatchObject({ name: 'UserSessionEpochMismatchError' });
 
     expect(harness.inserted).toHaveLength(0);
     expect(harness.updated).toHaveLength(0);

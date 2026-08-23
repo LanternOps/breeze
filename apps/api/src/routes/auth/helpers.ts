@@ -23,7 +23,10 @@ import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../../
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../../services/auditEvents';
-import type { AuthorizedUserSession } from '../../services/userSession';
+import type {
+  AuthorizedUserSession,
+  LegacyUserSessionDuringTransition,
+} from '../../services/userSession';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
   decryptMfaTotpSecret,
@@ -904,7 +907,7 @@ export function installAuthorizedUserSessionCookies(c: Context, issued: Authoriz
 /** Temporary companion boundary for the source-frozen enforcement-false seam. */
 export function installLegacyUserSessionCookiesDuringTransition(
   c: Context,
-  issued: Readonly<{ refreshToken: string }>,
+  issued: LegacyUserSessionDuringTransition,
 ): void {
   setRefreshTokenCookie(c, issued.refreshToken);
 }

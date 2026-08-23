@@ -603,12 +603,18 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     mobileDeviceId: readMobileDeviceId(c) ?? undefined,
   };
 
-  let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+  let tokens: ReturnType<typeof toPublicTokens>;
+  let installSessionCookies: () => void;
   if (capability) {
     const guardedCapability = capability;
+    let issued: AuthorizedUserSession;
     try {
-      tokens = await finishAuthIssuance(guardedCapability, async (tx) => {
-        const issued = await issueUserSession(identity, { tx, capability: guardedCapability });
+      issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+        const session = await issueUserSession(identity, {
+          tx,
+          capability: guardedCapability,
+          expectedEpochs: { authEpoch: pending.authEpoch, mfaEpoch: pending.mfaEpoch },
+        });
         await tx
           .update(userPasskeys)
           .set({
@@ -623,7 +629,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
           .update(users)
           .set({ lastLoginAt: new Date() })
           .where(eq(users.id, user.id));
-        return issued;
+        return session;
       });
     } catch (error) {
       await cancelAuthIssuance(guardedCapability).catch(() => undefined);
@@ -631,7 +637,9 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       if (!response) throw error;
       return response;
     }
-    await bindIssuedUserSession(tokens);
+    await bindIssuedUserSession(issued);
+    tokens = toPublicTokens(issued);
+    installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
   } else {
     await withSystemDbAccessContext(() =>
       db
@@ -646,13 +654,15 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
         .where(eq(userPasskeys.id, passkey.id))
     );
     recordAuthTransitionLegacyIssuer('passkey', authTransitionClientClass(c));
-    tokens = await issueUserSessionLegacyDuringTransition(identity);
+    const issued = await issueUserSessionLegacyDuringTransition(identity);
     await withSystemDbAccessContext(() =>
       db
         .update(users)
         .set({ lastLoginAt: new Date() })
         .where(eq(users.id, user.id))
     );
+    tokens = toPublicTokens(issued);
+    installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
   }
 
   // Single-use only after session authority commits.
@@ -668,8 +678,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     ip: getClientIP(c)
   });
 
-  if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
-  else installLegacyUserSessionCookiesDuringTransition(c, tokens);
+  installSessionCookies();
 
   return c.json({
     user: {
@@ -678,7 +687,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       name: user.name,
       mfaEnabled: true
     },
-    tokens: toPublicTokens(tokens),
+    tokens,
     mfaRequired: false,
     requiresSetup: userRequiresSetup(user)
   });

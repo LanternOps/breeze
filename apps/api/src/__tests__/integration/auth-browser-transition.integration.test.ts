@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import postgres, { type Sql } from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
-import { authBrowserTransitions, refreshTokenFamilies } from '../../db/schema';
+import { withSystemDbAccessContext } from '../../db';
+import {
+  authBrowserTransitions,
+  refreshTokenFamilies,
+  userPasskeys,
+} from '../../db/schema';
 import { authBindingRoutes } from '../../routes/auth/binding';
 import {
   AuthIssuanceCapabilityError,
@@ -15,7 +20,12 @@ import {
   digestRefreshTokenJti,
   mintRefreshTokenFamily,
 } from '../../services/refreshTokenFamily';
-import { issueUserSession, type UserSessionIdentity } from '../../services/userSession';
+import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import {
+  issueUserSession,
+  UserSessionEpochMismatchError,
+  type UserSessionIdentity,
+} from '../../services/userSession';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -112,11 +122,10 @@ describe('guarded auth browser transition races', () => {
       return issueUserSession(identity, {
         tx,
         capability,
+        expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
         familyId,
         refreshRotation: {
           presentedJti,
-          authEpoch: user.authEpoch,
-          mfaEpoch: user.mfaEpoch,
         },
       });
     });
@@ -156,7 +165,11 @@ describe('guarded auth browser transition races', () => {
 
     try {
       const issuance = finishAuthIssuance(capability, async (tx) => {
-        const issued = await issueUserSession(identity, { tx, capability });
+        const issued = await issueUserSession(identity, {
+          tx,
+          capability,
+          expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+        });
         issuedInside.resolve();
         await releaseIssuance.promise;
         return issued;
@@ -241,6 +254,173 @@ describe('guarded auth browser transition races', () => {
     } finally {
       releaseLogout.resolve();
       await closeClient(holder);
+    }
+  });
+
+  runDb('lets a committed password change win over a verified password proof waiting to finalize', async () => {
+    const { user, identity } = await fixture();
+    const capability = await beginAuthIssuance({ kind: 'browser', value: await freshBrowserBinding() });
+    const passwordWriter = postgres(DATABASE_URL, { max: 1, onnotice: () => undefined });
+    const writerPid = (await passwordWriter<{ pid: number }[]>`
+      SELECT pg_backend_pid()::int AS pid
+    `)[0]?.pid;
+    if (writerPid === undefined) throw new Error('could not determine password-writer backend PID');
+    const passwordChanged = deferred<void>();
+    const releasePasswordChange = deferred<void>();
+
+    try {
+      const change = passwordWriter.begin(async (tx) => {
+        await tx`
+          UPDATE users
+          SET auth_epoch = auth_epoch + 1,
+              password_changed_at = now(),
+              updated_at = now()
+          WHERE id = ${user.id}
+        `;
+        passwordChanged.resolve();
+        await releasePasswordChange.promise;
+      });
+      await passwordChanged.promise;
+
+      const finalization = finishAuthIssuance(capability, (tx) => issueUserSession(identity, {
+        tx,
+        capability,
+        expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+      }));
+      await waitForBackendBlockedBy(writerPid);
+      releasePasswordChange.resolve();
+      await change;
+
+      await expect(finalization).rejects.toBeInstanceOf(UserSessionEpochMismatchError);
+      const families = await getTestDb()
+        .select({ id: refreshTokenFamilies.familyId })
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.userId, user.id));
+      expect(families).toEqual([]);
+    } finally {
+      releasePasswordChange.resolve();
+      await closeClient(passwordWriter);
+    }
+  });
+
+  runDb('lets passkey deletion win without deadlock when factor change reaches its mutation first', async () => {
+    const { user, identity } = await fixture();
+    const [passkey] = await getTestDb().insert(userPasskeys).values({
+      userId: user.id,
+      credentialId: `delete-wins-${randomUUID()}`,
+      publicKey: 'dGVzdC1wdWJsaWMta2V5',
+      counter: 0,
+      deviceType: 'singleDevice',
+      backedUp: false,
+    }).returning();
+    if (!passkey) throw new Error('failed to create passkey race fixture');
+
+    const capability = await beginAuthIssuance({ kind: 'browser', value: await freshBrowserBinding() });
+    const factorMutated = deferred<void>();
+    const releaseFactorChange = deferred<void>();
+    let factorPid: number | undefined;
+
+    const factorChange = withSystemDbAccessContext(() =>
+      invalidateMfaAssuranceAfterFactorChange(user.id, 'passkey-delete-race', async (tx) => {
+        const pidRows = await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid()::int AS pid`);
+        factorPid = pidRows[0]?.pid;
+        await tx.delete(userPasskeys).where(eq(userPasskeys.id, passkey.id));
+        factorMutated.resolve();
+        await releaseFactorChange.promise;
+      })
+    );
+
+    try {
+      await factorMutated.promise;
+      if (factorPid === undefined) throw new Error('could not determine factor-change backend PID');
+      const finalization = finishAuthIssuance(capability, async (tx) => {
+        const issued = await issueUserSession(identity, {
+          tx,
+          capability,
+          expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+        });
+        await tx.update(userPasskeys).set({ counter: 1 }).where(eq(userPasskeys.id, passkey.id));
+        return issued;
+      });
+      await waitForBackendBlockedBy(factorPid);
+      releaseFactorChange.resolve();
+      await factorChange;
+
+      await expect(finalization).rejects.toBeInstanceOf(UserSessionEpochMismatchError);
+      const remaining = await getTestDb()
+        .select({ id: userPasskeys.id })
+        .from(userPasskeys)
+        .where(eq(userPasskeys.id, passkey.id));
+      expect(remaining).toEqual([]);
+      const families = await getTestDb()
+        .select({ id: refreshTokenFamilies.familyId })
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.userId, user.id));
+      expect(families).toEqual([]);
+    } finally {
+      releaseFactorChange.resolve();
+      await factorChange.catch(() => undefined);
+    }
+  });
+
+  runDb('serializes passkey verify before deletion using user then family then passkey order', async () => {
+    const { user, identity } = await fixture();
+    const [passkey] = await getTestDb().insert(userPasskeys).values({
+      userId: user.id,
+      credentialId: `verify-wins-${randomUUID()}`,
+      publicKey: 'dGVzdC1wdWJsaWMta2V5',
+      counter: 0,
+      deviceType: 'singleDevice',
+      backedUp: false,
+    }).returning();
+    if (!passkey) throw new Error('failed to create passkey race fixture');
+
+    const capability = await beginAuthIssuance({ kind: 'browser', value: await freshBrowserBinding() });
+    const verifyMutated = deferred<void>();
+    const releaseVerify = deferred<void>();
+    let issuancePid: number | undefined;
+
+    const finalization = finishAuthIssuance(capability, async (tx) => {
+      const issued = await issueUserSession(identity, {
+        tx,
+        capability,
+        expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+      });
+      const pidRows = await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid()::int AS pid`);
+      issuancePid = pidRows[0]?.pid;
+      await tx.update(userPasskeys).set({ counter: 1 }).where(eq(userPasskeys.id, passkey.id));
+      verifyMutated.resolve();
+      await releaseVerify.promise;
+      return issued;
+    });
+
+    try {
+      await verifyMutated.promise;
+      if (issuancePid === undefined) throw new Error('could not determine issuance backend PID');
+      const factorChange = withSystemDbAccessContext(() =>
+        invalidateMfaAssuranceAfterFactorChange(user.id, 'passkey-delete-after-verify', async (tx) => {
+          await tx.delete(userPasskeys).where(eq(userPasskeys.id, passkey.id));
+        })
+      );
+      await waitForBackendBlockedBy(issuancePid);
+      releaseVerify.resolve();
+      const issued = await finalization;
+      await factorChange;
+
+      const [family] = await getTestDb()
+        .select()
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, issued.familyId))
+        .limit(1);
+      expect(family?.revokedReason).toBe('passkey-delete-after-verify');
+      const remaining = await getTestDb()
+        .select({ id: userPasskeys.id })
+        .from(userPasskeys)
+        .where(eq(userPasskeys.id, passkey.id));
+      expect(remaining).toEqual([]);
+    } finally {
+      releaseVerify.resolve();
+      await finalization.catch(() => undefined);
     }
   });
 });

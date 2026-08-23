@@ -637,12 +637,19 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     mobileDeviceId: readMobileDeviceId(c) ?? undefined,
   };
 
-  let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+  let tokens: ReturnType<typeof toPublicTokens>;
+  let familyId: string;
+  let installSessionCookies: () => void;
   if (capability) {
     const guardedCapability = capability;
+    let issued: AuthorizedUserSession;
     try {
-      tokens = await finishAuthIssuance(guardedCapability, async (tx) => {
-        const issued = await issueUserSession(identity, { tx, capability: guardedCapability });
+      issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+        const session = await issueUserSession(identity, {
+          tx,
+          capability: guardedCapability,
+          expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+        });
         await dbWriteExpectingRows('users.last_login_at', () =>
           tx
             .update(users)
@@ -650,7 +657,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
             .where(eq(users.id, user.id))
             .returning({ id: users.id })
         );
-        return issued;
+        return session;
       });
     } catch (error) {
       await cancelAuthIssuance(guardedCapability).catch(() => undefined);
@@ -659,11 +666,15 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       await floorPromise;
       return response;
     }
-    await bindIssuedUserSession(tokens);
+    await bindIssuedUserSession(issued);
+    tokens = toPublicTokens(issued);
+    familyId = issued.familyId;
+    installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
   } else {
     recordAuthTransitionLegacyIssuer('password', authTransitionClientClass(c));
+    let issued;
     try {
-      tokens = await issueUserSessionLegacyDuringTransition(identity);
+      issued = await issueUserSessionLegacyDuringTransition(identity);
     } catch (error) {
       if (error instanceof Error && error.message === 'Cannot issue session for missing user') {
         await floorPromise;
@@ -680,8 +691,10 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
         .returning({ id: users.id })
       )
     );
+    tokens = toPublicTokens(issued);
+    familyId = issued.familyId;
+    installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
   }
-  const familyId = tokens.familyId;
 
   // Task 10: clear the per-account failure counter on successful login so
   // a real user with one fat-finger doesn't slowly approach a lockout over
@@ -696,8 +709,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 
   auditLogin(c, { orgId: orgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: false, scope, ip });
 
-  if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
-  else installLegacyUserSessionCookiesDuringTransition(c, tokens);
+  installSessionCookies();
 
   const requiresSetup = userRequiresSetup(user);
 
@@ -726,7 +738,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       // password login — omit it and platform admins lose that nav entirely.
       isPlatformAdmin: user.isPlatformAdmin === true
     },
-    tokens: toPublicTokens(tokens),
+    tokens,
     mfaRequired: false,
     requiresSetup,
     mfaEnrollmentRequired,
@@ -1037,19 +1049,20 @@ loginRoutes.post('/refresh', async (c) => {
     legacyFamilyId: familyId,
   };
 
-  let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+  let tokens: ReturnType<typeof toPublicTokens>;
+  let installSessionCookies: () => void;
   if (capability) {
     const guardedCapability = capability;
+    let issued: AuthorizedUserSession;
     try {
-      tokens = await finishAuthIssuance(guardedCapability, (tx) =>
+      issued = await finishAuthIssuance(guardedCapability, (tx) =>
         issueUserSession(identity, {
           tx,
           capability: guardedCapability,
+          expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
           familyId,
           refreshRotation: {
             presentedJti: payload.jti!,
-            authEpoch: user.authEpoch,
-            mfaEpoch: user.mfaEpoch,
           },
         })
       );
@@ -1062,7 +1075,7 @@ loginRoutes.post('/refresh', async (c) => {
       if (!response) throw error;
       return response;
     }
-    await bindIssuedUserSession(tokens);
+    await bindIssuedUserSession(issued);
     await markRefreshTokenJtiRotated(payload.jti).catch((error) => {
       console.error('[auth] Failed to write post-commit refresh rotation marker:', error);
     });
@@ -1070,6 +1083,8 @@ loginRoutes.post('/refresh', async (c) => {
       console.error('[auth] Failed to write post-commit refresh revocation marker:', error);
       return false;
     });
+    tokens = toPublicTokens(issued);
+    installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
   } else {
     await markRefreshTokenJtiRotated(payload.jti);
     let claimedRevocation: boolean;
@@ -1084,14 +1099,15 @@ loginRoutes.post('/refresh', async (c) => {
       return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
     }
     recordAuthTransitionLegacyIssuer('refresh', authTransitionClientClass(c));
-    tokens = await issueUserSessionLegacyDuringTransition(identity);
+    const issued = await issueUserSessionLegacyDuringTransition(identity);
+    tokens = toPublicTokens(issued);
+    installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
   }
 
   // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
   // blocks the refresh.
   void touchFamilyLastUsed(familyId);
 
-  if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
-  else installLegacyUserSessionCookiesDuringTransition(c, tokens);
-  return c.json({ tokens: toPublicTokens(tokens) });
+  installSessionCookies();
+  return c.json({ tokens });
 });

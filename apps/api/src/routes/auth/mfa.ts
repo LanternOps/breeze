@@ -446,13 +446,20 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
     };
 
-    let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+    let tokens: ReturnType<typeof toPublicTokens>;
+    let mfaFamilyId: string;
+    let installSessionCookies: () => void;
     if (capability) {
       const guardedCapability = capability;
+      let issued: AuthorizedUserSession;
       try {
-        tokens = await finishAuthIssuance(guardedCapability, async (tx) => {
+        issued = await finishAuthIssuance(guardedCapability, async (tx) => {
           if (method === 'recovery') await consumeRecoveryCode(tx, user.id, code);
-          const issued = await issueUserSession(identity, { tx, capability: guardedCapability });
+          const session = await issueUserSession(identity, {
+            tx,
+            capability: guardedCapability,
+            expectedEpochs: { authEpoch: pending.authEpoch, mfaEpoch: pending.mfaEpoch },
+          });
           await tx
             .update(users)
             .set({
@@ -460,7 +467,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
               ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {}),
             })
             .where(eq(users.id, user.id));
-          return issued;
+          return session;
         });
       } catch (error) {
         await cancelAuthIssuance(guardedCapability).catch(() => undefined);
@@ -475,7 +482,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         if (!response) throw error;
         return response;
       }
-      await bindIssuedUserSession(tokens);
+      await bindIssuedUserSession(issued);
+      tokens = toPublicTokens(issued);
+      mfaFamilyId = issued.familyId;
+      installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
     } else {
       const issuer = method === 'recovery' ? 'recovery' : effectiveMethod;
       if (method === 'recovery') {
@@ -493,7 +503,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         }
       }
       recordAuthTransitionLegacyIssuer(issuer, authTransitionClientClass(c));
-      tokens = await issueUserSessionLegacyDuringTransition(identity);
+      const issued = await issueUserSessionLegacyDuringTransition(identity);
       await withSystemDbAccessContext(() =>
         db
           .update(users)
@@ -503,8 +513,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
           })
           .where(eq(users.id, user.id))
       );
+      tokens = toPublicTokens(issued);
+      mfaFamilyId = issued.familyId;
+      installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
     }
-    const mfaFamilyId = tokens.familyId;
 
     // Consume the pending bearer only after the guarded authority commits.
     await redis.del(`mfa:pending:${tempToken}`);
@@ -523,8 +535,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
     auditLogin(c, { orgId: mfaOrgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: true, scope: mfaScope, ip: getClientIP(c) });
 
-    if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
-    else installLegacyUserSessionCookiesDuringTransition(c, tokens);
+    installSessionCookies();
 
     const requiresSetup = userRequiresSetup(user);
 
@@ -544,7 +555,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         // platform-admin-only nav on this flag.
         isPlatformAdmin: user.isPlatformAdmin === true
       },
-      tokens: toPublicTokens(tokens),
+      tokens,
       mfaRequired: false,
       requiresSetup,
       ...(authenticatorRegisterGrantId ? { authenticatorRegisterGrantId } : {})
