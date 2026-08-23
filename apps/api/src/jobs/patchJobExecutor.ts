@@ -347,7 +347,24 @@ export async function filterOrphanedJobIds(jobs: StaleScheduledJob[]): Promise<S
   const orphaned: StaleScheduledJob[] = [];
   for (const job of jobs) {
     const stableJobId = getPatchJobExecutionId(job.id);
-    const existing = await resolveActiveQueueJob(queue, [stableJobId]);
+    let existing: Awaited<ReturnType<typeof resolveActiveQueueJob>>;
+    try {
+      existing = await resolveActiveQueueJob(queue, [stableJobId]);
+    } catch (error) {
+      // One wedged id must not cost every OTHER orphan its recovery for as long
+      // as it stays wedged — a lost patch run staying lost is the hazard this
+      // sweep exists to prevent. Report it and carry on; it is deliberately NOT
+      // reported as orphaned, because re-adding onto an id we could not clear
+      // would be the silent no-op resolveActiveQueueJob just refused to hide.
+      console.error(
+        `[PatchJobExecutor] Skipping reconcile of patch job ${job.id}:`,
+        error instanceof Error ? error.message : error,
+      );
+      captureException(error instanceof Error ? error : new StaleQueueJobRemovalError(
+        `[PatchJobExecutor] Skipping reconcile of patch job ${job.id}`,
+      ));
+      continue;
+    }
     if (!existing) {
       orphaned.push(job);
     }

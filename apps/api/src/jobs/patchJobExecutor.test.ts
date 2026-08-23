@@ -877,17 +877,32 @@ describe('orphaned scheduled-job reconcile (#1733)', () => {
   });
 
   it('refuses to report an id as free when the stale job could not be removed', async () => {
-    const removeMock = vi.fn().mockRejectedValue(new Error('WRONGTYPE'));
-    shared.getJobMock.mockResolvedValue({
-      id: 'patch-job-job-x',
-      // Still terminal after the failed removal → the id remains occupied.
-      getState: vi.fn().mockResolvedValue('failed'),
-      remove: removeMock,
-    });
+    // Re-adding onto an id we could not clear is the silent no-op the helper
+    // exists to prevent, so a wedged id is surfaced and SKIPPED — never handed
+    // back as recoverable — while the rest of the batch still recovers.
+    shared.getJobMock.mockImplementation(async (id: string) =>
+      id === 'patch-job-job-x'
+        ? {
+            id,
+            // Still terminal after the failed removal → the id remains occupied.
+            getState: vi.fn().mockResolvedValue('failed'),
+            remove: vi.fn().mockRejectedValue(new Error('WRONGTYPE')),
+          }
+        : null,
+    );
 
-    await expect(
-      filterOrphanedJobIds([{ id: 'job-x', scheduledAt: null }]),
-    ).rejects.toThrow(StaleQueueJobRemovalError);
+    const orphaned = await filterOrphanedJobIds([
+      { id: 'job-x', scheduledAt: null },
+      { id: 'job-ok', scheduledAt: null },
+    ]);
+
+    expect(orphaned).toEqual([{ id: 'job-ok', scheduledAt: null }]);
+    // Named so the report survives Sentry's scrubber, and carrying the original
+    // driver error as its cause.
+    const reported = vi.mocked(captureException).mock.calls[0]?.[0] as Error;
+    expect(reported).toBeInstanceOf(StaleQueueJobRemovalError);
+    expect(reported.message).toContain('job-x');
+    expect((reported as Error & { cause?: Error }).cause).toEqual(new Error('WRONGTYPE'));
   });
 
   it('does not re-add onto an occupied id when removal fails (the silent no-op path)', async () => {

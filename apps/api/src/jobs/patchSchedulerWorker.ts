@@ -617,24 +617,6 @@ async function scanAndCreateJobs(): Promise<{
   };
 }
 
-// Post-scan Redis work, run OUTSIDE the system DB access context (#1105): all
-// DB writes committed when scanAndCreateJobs returned, so doing the BullMQ
-// round-trips here keeps the pooled connection from sitting idle-in-transaction.
-// Two phases:
-//   1. Enqueue the just-created jobs.
-//   2. Orphan-recovery sweep (#1733). The create->enqueue gap is not atomic: a
-//      process restart or Redis-connection drop between the DB commit and
-//      enqueuePatchJob leaves the patch_jobs row status='scheduled' with no
-//      queue job, and the occurrence-idempotency guard stops the next scan from
-//      ever re-creating it. We re-enqueue any `scheduled` row whose run time has
-//      passed (past the grace window) that has no active queue job, preserving
-//      the remaining delay so a future-scheduled job recovered early still waits
-//      for its window. Just-created ids are also in this list, but they were
-//      enqueued moments ago so the filter normally sees their active job and
-//      skips them; in the rare case a just-created job already completed, the
-//      status re-check in processExecutePatchJob makes the redundant enqueue a
-//      no-op. enqueuePatchJob is idempotent on the stable jobId.
-//
 /**
  * A #1733 orphan was found and re-enqueued. Not a fault — the backstop worked —
  * but the RATE matters, so it is reported at warning level. Named so it stays
@@ -751,6 +733,24 @@ function reportReconcileOutcome(recoveredIds: string[]): void {
   });
 }
 
+// Post-scan Redis work, run OUTSIDE the system DB access context (#1105): all
+// DB writes committed when scanAndCreateJobs returned, so doing the BullMQ
+// round-trips here keeps the pooled connection from sitting idle-in-transaction.
+// Two phases:
+//   1. Enqueue the just-created jobs.
+//   2. Orphan-recovery sweep (#1733). The create->enqueue gap is not atomic: a
+//      process restart or Redis-connection drop between the DB commit and
+//      enqueuePatchJob leaves the patch_jobs row status='scheduled' with no
+//      queue job, and the occurrence-idempotency guard stops the next scan from
+//      ever re-creating it. We re-enqueue any `scheduled` row whose run time has
+//      passed (past the grace window) that has no active queue job, preserving
+//      the remaining delay so a future-scheduled job recovered early still waits
+//      for its window. Just-created ids are also in this list, but they were
+//      enqueued moments ago so the filter normally sees their active job and
+//      skips them; in the rare case a just-created job already completed, the
+//      status re-check in processExecutePatchJob makes the redundant enqueue a
+//      no-op. enqueuePatchJob is idempotent on the stable jobId.
+//
 // Observability (#1379/BREEZE-1A): failing to recover an orphan, or the #1733
 // race actually firing in prod, is surfaced to Sentry — console-only logging is
 // not observable in this stack. See reportReconcileOutcome for WHICH sweeps
