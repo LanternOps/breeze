@@ -12,8 +12,10 @@ import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } f
 import {
   deleteConnection,
   getConnection,
+  updateHomeCurrency,
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
+import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
 import {
   importQuickbooksCustomers,
   listQuickbooksCustomersAnnotated,
@@ -239,14 +241,20 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   // partnerId taken from the verified state. Guard the persist: a failure
   // after a successful exchange leaves a live-but-unrecorded grant, so surface
   // it rather than 500-ing on a raw page.
+  let connection: AccountingConnection;
   try {
-    await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
+    connection = await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
       realmId: tokens.realmId,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       accessTokenExpiresAt: tokens.accessTokenExpiresAt,
       refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
       environment: QBO_ENVIRONMENT as 'sandbox' | 'production',
+      // Explicit null, not omission: upsertConnection's conflict set strips
+      // undefined, so omitting this would carry a PREVIOUS realm's home currency
+      // across a reconnect. Unknown must fail closed at push time instead
+      // (multi-currency §11).
+      homeCurrency: null,
       status: 'connected',
       lastError: null,
       connectedBy: state.userId,
@@ -256,6 +264,33 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     console.error('[accounting] QuickBooks connection persist failed', { partnerId: state.partnerId, provider });
     deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
     return c.redirect('/integrations?accounting=quickbooks&error=persist_failed#accounting');
+  }
+
+  // Capture the realm's home currency (multi-currency §11). NON-FATAL by design:
+  // the connection is already live and usable for customer import, and the
+  // invoice-push guard fails closed on a NULL home currency, so a Preferences
+  // outage must never turn a successful OAuth grant into a connect error.
+  // The QBO call runs with no ambient DB context; the write is a short
+  // compare-and-set on the row we just persisted.
+  try {
+    const homeCurrency = await runOutsideDbContext(() => providerClient.fetchHomeCurrency(connection));
+    if (homeCurrency && connection.updatedAt) {
+      // The generation this capture belongs to: the row as we just wrote it
+      // (updatedAt) AND the realm we just exchanged for. A reconnect to another
+      // realm in between — even inside the same millisecond — aborts the write.
+      await withSystemDbAccessContext(() => updateHomeCurrency(
+        db,
+        connection.id,
+        state.partnerId,
+        { updatedAt: connection.updatedAt as Date, realmId: tokens.realmId },
+        homeCurrency,
+      ));
+    } else {
+      console.warn('[accounting] QuickBooks home currency unavailable', { partnerId: state.partnerId, provider });
+    }
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), c);
+    console.warn('[accounting] QuickBooks home currency capture failed', { partnerId: state.partnerId, provider });
   }
 
   deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
@@ -283,6 +318,7 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
       pushMode: 'auto',
       connectedAt: null,
       lastError: null,
+      homeCurrency: null,
     });
   }
   return c.json({
@@ -293,6 +329,10 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     lastError: connection.lastError,
     defaultIncomeAccountRef: connection.defaultIncomeAccountRef,
     defaultTaxCodeRef: connection.defaultTaxCodeRef,
+    // A captured external fact, exposed so an operator can see whether connect-time
+    // capture succeeded. Deliberately absent from settingsSchema — PATCH must never
+    // accept it.
+    homeCurrency: connection.homeCurrency,
   });
 });
 

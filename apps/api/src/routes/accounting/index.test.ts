@@ -28,6 +28,9 @@ const { authState, mocks } = vi.hoisted(() => ({
     upsertConnection: vi.fn(),
     deleteConnection: vi.fn(),
     exchangeCode: vi.fn(),
+    fetchHomeCurrency: vi.fn(),
+    updateHomeCurrency: vi.fn(),
+    captureException: vi.fn(),
     buildAuthUrl: vi.fn((state: string) => `https://qbo.example.test/connect?scope=com.intuit.quickbooks.accounting&state=${encodeURIComponent(state)}`),
   },
 }));
@@ -83,10 +86,11 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   getConnection: mocks.getConnection,
   upsertConnection: mocks.upsertConnection,
   deleteConnection: mocks.deleteConnection,
+  updateHomeCurrency: mocks.updateHomeCurrency,
 }));
 
 vi.mock('../../services/sentry', () => ({
-  captureException: vi.fn(),
+  captureException: mocks.captureException,
 }));
 
 vi.mock('../../services/accounting/providerRegistry', () => ({
@@ -94,10 +98,32 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
     provider: 'quickbooks',
     buildAuthUrl: mocks.buildAuthUrl,
     exchangeCode: mocks.exchangeCode,
+    fetchHomeCurrency: mocks.fetchHomeCurrency,
   })),
 }));
 
 import { accountingRoutes } from './index';
+
+const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const PERSISTED_AT = new Date('2026-09-04T00:00:00Z');
+
+function exchangedTokens(realmId = 'realm-A') {
+  return {
+    realmId,
+    accessToken: 'at',
+    refreshToken: 'rt',
+    accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
+    refreshTokenExpiresAt: new Date(Date.now() + 8_640_000_000),
+  };
+}
+
+async function runCallback(app: Hono, realmId = 'realm-A') {
+  const { state, cookie } = mintState(authState.partnerId!, '33333333-3333-3333-3333-333333333333');
+  return app.request(
+    `/accounting/quickbooks/callback?code=abc&realmId=${realmId}&state=${encodeURIComponent(state)}`,
+    { headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` } },
+  );
+}
 
 describe('accounting routes', () => {
   let app: Hono;
@@ -109,6 +135,17 @@ describe('accounting routes', () => {
     authState.mfa = true;
     app = new Hono();
     app.route('/accounting', accountingRoutes);
+    // The callback now reads the persisted row back (multi-currency §11), so the
+    // upsert must resolve a real connection for every callback case.
+    mocks.upsertConnection.mockResolvedValue({
+      id: CONNECTION_ID,
+      partnerId: authState.partnerId,
+      provider: 'quickbooks',
+      realmId: 'realm-A',
+      updatedAt: PERSISTED_AT,
+      homeCurrency: null,
+    });
+    mocks.fetchHomeCurrency.mockResolvedValue('CAD');
   });
 
   it('connect returns an authUrl containing the QuickBooks accounting scope', async () => {
@@ -182,7 +219,15 @@ describe('accounting routes', () => {
       expect.anything(),
       authState.partnerId,
       'quickbooks',
-      expect.objectContaining({ accessToken: 'at', refreshToken: 'rt', connectedBy: '33333333-3333-3333-3333-333333333333' }),
+      expect.objectContaining({
+        accessToken: 'at',
+        refreshToken: 'rt',
+        connectedBy: '33333333-3333-3333-3333-333333333333',
+        // Explicit null, never omission: upsertConnection strips undefined from
+        // its conflict set, so omitting this carries a PREVIOUS realm's home
+        // currency across a reconnect (multi-currency §11).
+        homeCurrency: null,
+      }),
     );
   });
 
@@ -238,6 +283,123 @@ describe('accounting routes', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('error=exchange_failed');
     expect(mocks.upsertConnection).not.toHaveBeenCalled();
+  });
+
+  it('callback captures the realm home currency and persists it against the row it just wrote', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+
+    const res = await runCallback(app, 'realm-A');
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.fetchHomeCurrency).toHaveBeenCalledWith(expect.objectContaining({ id: CONNECTION_ID, realmId: 'realm-A' }));
+    expect(mocks.updateHomeCurrency).toHaveBeenCalledWith(
+      expect.anything(),
+      CONNECTION_ID,
+      authState.partnerId,
+      // The generation this capture belongs to: the row as we just wrote it AND
+      // the realm we just exchanged for.
+      { updatedAt: PERSISTED_AT, realmId: 'realm-A' },
+      'CAD',
+    );
+  });
+
+  it('callback still connects when the QBO Preferences fetch fails (non-fatal capture)', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchHomeCurrency.mockRejectedValueOnce(new Error('qbo 403'));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+  });
+
+  it('callback still connects when the realm reports no home currency', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchHomeCurrency.mockResolvedValueOnce(null);
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+  });
+
+  it('callback still connects when the compare-and-set loses the race', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.updateHomeCurrency.mockRejectedValueOnce(new Error('updateHomeCurrency matched no accounting_connections row'));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+  });
+
+  it('callback short-circuits to error=persist_failed when the credential upsert throws', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.upsertConnection.mockRejectedValueOnce(new Error('boom'));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('error=persist_failed');
+    expect(mocks.fetchHomeCurrency).not.toHaveBeenCalled();
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+  });
+
+  it('captured home-currency telemetry carries no QBO body, realm id, token or auth code', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+    mocks.fetchHomeCurrency.mockRejectedValueOnce(Object.assign(
+      new Error('QuickBooks preferences request failed with 403'),
+      { status: 403, operation: 'fetchHomeCurrency' },
+    ));
+
+    const res = await runCallback(app, 'realm-A');
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.captureException).toHaveBeenCalled();
+    const captured = mocks.captureException.mock.calls[0]![0] as Error & Record<string, unknown>;
+    expect(Object.keys(captured)).not.toContain('body');
+    const serialized = JSON.stringify({ ...captured, message: captured.message });
+    for (const secret of ['realm-A', 'at', 'rt', 'abc']) {
+      // Whole-token match: 'at'/'rt'/'abc' as substrings would false-positive on
+      // ordinary prose, so look for them as delimited words.
+      expect(serialized).not.toMatch(new RegExp(`(^|[^A-Za-z0-9-])${secret}([^A-Za-z0-9-]|$)`));
+    }
+    expect(serialized).toContain('403');
+  });
+
+  it('status exposes the captured home currency, and null when disconnected', async () => {
+    mocks.getConnection.mockResolvedValueOnce({
+      id: CONNECTION_ID,
+      partnerId: authState.partnerId,
+      provider: 'quickbooks',
+      realmId: 'realm-1',
+      accessToken: 'secret-access-token',
+      refreshToken: 'secret-refresh-token',
+      accessTokenExpiresAt: new Date(),
+      refreshTokenExpiresAt: new Date(),
+      environment: 'production',
+      homeCurrency: 'CAD',
+      defaultIncomeAccountRef: null,
+      defaultTaxCodeRef: null,
+      pushMode: 'auto',
+      status: 'connected',
+      createdAt: new Date('2026-06-23T00:00:00Z'),
+      updatedAt: new Date(),
+      lastError: null,
+    });
+
+    const connected = await app.request('/accounting/quickbooks');
+    expect(connected.status).toBe(200);
+    await expect(connected.json()).resolves.toMatchObject({ homeCurrency: 'CAD' });
+
+    mocks.getConnection.mockResolvedValueOnce(null);
+    const disconnected = await app.request('/accounting/quickbooks');
+    expect(disconnected.status).toBe(200);
+    await expect(disconnected.json()).resolves.toMatchObject({ status: 'disconnected', homeCurrency: null });
   });
 
   it('disconnect requires MFA', async () => {
