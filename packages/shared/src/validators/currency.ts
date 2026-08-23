@@ -43,6 +43,14 @@ const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-
 const positiveRateSchema = z
   .string()
   .regex(/^\d+(\.\d{1,8})?$/, 'Expected a positive decimal with at most 8 places')
+  // The scale is bounded above; the PRECISION must be bounded too. numeric(18,8)
+  // leaves 10 digits left of the point, and an over-long integer part would
+  // reach Postgres as a `numeric field overflow` — which is not an
+  // ExchangeRateServiceError, so the admin route rethrows it as a 500 instead
+  // of the intended coded 400.
+  .refine((s) => s.split('.')[0]!.replace(/^0+(?=\d)/, '').length <= 10, {
+    message: 'Expected at most 10 digits before the decimal point',
+  })
   .refine((s) => Number(s) > 0, { message: 'Rate must be greater than zero' });
 
 export const exchangeRateKeyParamSchema = z.object({

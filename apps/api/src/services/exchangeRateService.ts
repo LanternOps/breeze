@@ -15,6 +15,8 @@ import { exchangeRates } from '../db/schema';
 export const REPORTING_RATE_BASE_CODE = 'EUR';
 export const DEFAULT_MAX_STALENESS_DAYS = 7;
 const RATE_SCALE = 8;
+/** numeric(18,8) => 18 - 8 = 10 digits available left of the decimal point. */
+const RATE_WHOLE_DIGITS = 10;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_LIST_LIMIT = 200;
 const MAX_LIST_LIMIT = 500;
@@ -73,6 +75,16 @@ function assertRate(raw: string): string {
     throw new ExchangeRateServiceError(400, 'INVALID_RATE', 'Rate must be greater than zero');
   }
   const normalizedWhole = whole!.replace(/^0+(?=\d)/, '');
+  // numeric(18,8) leaves 10 digits left of the point. Without this cap a longer
+  // integer part reaches Postgres as `numeric field overflow`, which is not an
+  // ExchangeRateServiceError and so escapes the route's mapping as a 500.
+  if (normalizedWhole.length > RATE_WHOLE_DIGITS) {
+    throw new ExchangeRateServiceError(
+      400,
+      'INVALID_RATE',
+      `Rate "${raw}" exceeds ${RATE_WHOLE_DIGITS} digits before the decimal point`,
+    );
+  }
   return `${normalizedWhole}.${frac.padEnd(RATE_SCALE, '0')}`;
 }
 
@@ -404,4 +416,36 @@ export async function convertForReporting(
     // Exact half-up at the TARGET currency's minor unit (JPY → whole yen).
     convertedAmount: multiplyToCurrency(amount, resolved.rate, resolved.toCode),
   };
+}
+
+/**
+ * The BATCH reporting conversion — one leg snapshot for the whole set.
+ *
+ * A caller totalling several currencies (a dashboard row, a reporting total)
+ * MUST use this rather than looping `convertForReporting`: each single-pair
+ * call runs its OWN `loadLatestLegs`, and under READ COMMITTED every statement
+ * takes a fresh snapshot, so a feed or manual-rate commit landing mid-request
+ * yields a total whose legs came from two different database states — the
+ * hybrid cross-rate failure `loadLatestLegs` exists to prevent, reappearing one
+ * layer up. It is also N round trips per request against a pool with a
+ * documented starvation history.
+ *
+ * Still reporting-only: display data, labelled approximate with its rate date,
+ * never written to a money column and never part of document math.
+ */
+export async function convertForReportingBatch(
+  items: readonly { amount: string | number; from: string }[],
+  to: string, date: string, options: ReportingRateOptions = {},
+): Promise<ReportingConversionResult[]> {
+  if (items.length === 0) return [];
+  const resolved = await resolveReportingRates(items.map((i) => i.from), to, date, options);
+  return items.map((item, i) => {
+    const r = resolved[i]!;
+    if (r.status === 'unavailable') return r;
+    return {
+      ...r,
+      amount: String(item.amount),
+      convertedAmount: multiplyToCurrency(item.amount, r.rate, r.toCode),
+    };
+  });
 }

@@ -188,6 +188,11 @@ describe('upsertFeedRates validation', () => {
     ['zero with decimals', '0.00000000'],
     ['negative', '-1.5'],
     ['not a number', 'abc'],
+    // numeric(18,8) holds 10 integer digits; an 11th would reach Postgres as a
+    // numeric field overflow, which escapes the route's coded-error mapping as
+    // a 500 instead of the intended 400.
+    ['more than 10 integer digits', '12345678901.5'],
+    ['a very long integer part', '1'.repeat(40)],
   ])('rejects a rate that is %s with INVALID_RATE', async (_label, rate) => {
     await expect(upsertFeedRates([feedRate({ rate })])).rejects.toMatchObject({ code: 'INVALID_RATE' });
   });

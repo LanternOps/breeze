@@ -197,6 +197,8 @@ describe('admin exchange-rate routes', () => {
       ['negative', '-1'],
       ['empty', ''],
       ['not a number', 'abc'],
+      // numeric(18,8) overflow would escape mapServiceError as a 500.
+      ['11 integer digits', '12345678901.5'],
     ])('400s INVALID_RATE for %s', async (_label, rate) => {
       const res = await put(buildApp(platformAdmin), KEY, { rate });
       expect(res.status).toBe(400);
