@@ -1,10 +1,13 @@
-import * as Sentry from '@sentry/node';
 import { eq, sql } from 'drizzle-orm';
+// The wrapper, NOT raw `@sentry/node`: it carries the init guard and scrubEvent.
+import { captureMessage } from './sentry';
 import { devices } from '../db/schema';
 // Shared postgres-js/drizzle row-count reader. Imported rather than re-derived:
-// this repo already has six copies of the same three-shape check, and getting it
-// wrong here reports the opposite of the truth (see the lock check below).
-import { extractRowCount } from '../jobs/deviceMetricsRetention';
+// this repo already has several copies of the same three-shape check, and
+// getting it wrong here reports the opposite of the truth (see the lock check
+// below). It lives in `db/` so this request-path service does not import from
+// `jobs/`, which would drag BullMQ + ioredis into a plain DELETE's module graph.
+import { extractRowCount } from '../db/rowCount';
 import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
@@ -28,30 +31,25 @@ import {
 const DEVICE_LOCK_TIMEOUT_MS = 3000;
 
 /**
- * Read `current_setting('lock_timeout')` out of a postgres-js result.
+ * Read the `prior_ms` column out of the tighten-and-report statement below.
  *
  * postgres-js resolves to an array-like of row objects, so the value is at
- * `[0].lock_timeout`.
+ * `[0].prior_ms`. `bigint` comes back as a string, hence the Number().
  *
- * Throws rather than substituting a default. There is no safe guess: `'0'`
- * means "wait forever" in Postgres, so inventing it would silently WIDEN a
- * caller or role that had deliberately set a stricter timeout, for the whole
- * remainder of the outer transaction. This can only fire if the driver's result
- * shape changes, which is precisely the class of silent breakage that produced
- * the row-count bug this same commit fixes — fail loudly instead. Nothing has
- * been mutated at this point, so aborting here is safe.
+ * Returns null if it is not there in the shape we expect. That is NOT a
+ * decision point about whether to bound the lock — by the time this runs the
+ * bound has ALREADY been applied inside the same SQL statement, so an
+ * unreadable value only costs us the ability to restore the caller's original
+ * setting afterwards. See the call site for why that direction is safe.
  */
-function extractLockTimeout(result: unknown): string {
+function extractPriorLockTimeoutMs(result: unknown): number | null {
   const row = Array.isArray(result)
-    ? (result[0] as { lock_timeout?: unknown } | undefined)
+    ? (result[0] as { prior_ms?: unknown } | undefined)
     : undefined;
-  if (typeof row?.lock_timeout !== 'string') {
-    throw new Error(
-      "deleteDeviceCascade: could not read current_setting('lock_timeout') — " +
-        'refusing to change the lock timeout without being able to restore it'
-    );
-  }
-  return row.lock_timeout;
+  const raw = row?.prior_ms;
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+  if (typeof raw === 'string' && /^\d+$/.test(raw)) return Number(raw);
+  return null;
 }
 
 /**
@@ -141,12 +139,56 @@ export async function deleteDeviceCascade(
   // purged after this one. Capture the caller's value and restore it as soon as
   // the row lock is held; the lock itself survives to transaction end, so the
   // timeout does not need to stay in force.
-  const priorLockTimeout = extractLockTimeout(
-    await tx.execute(sql`SELECT current_setting('lock_timeout') AS lock_timeout`)
-  );
-  await tx.execute(
-    sql`select set_config('lock_timeout', ${`${DEVICE_LOCK_TIMEOUT_MS}ms`}, true)`
-  );
+  // Tighten the lock bound and read the caller's prior value in ONE statement,
+  // entirely in SQL.
+  //
+  // `pg_settings.setting` for `lock_timeout` is a plain INTEGER of milliseconds
+  // (verified on Postgres 16: `0`, `250`, `7000`, always with unit `ms`),
+  // unlike `current_setting`, which renders `250ms` / `3s` / `2min` and has to
+  // be unit-parsed on the client. Doing the comparison here removes that parser
+  // and, more importantly, removes the failure mode it created: an earlier
+  // revision decided whether to bound the lock based on a value it had to
+  // decode first, so an unreadable result meant choosing between aborting a
+  // delete whose SELF_UNINSTALL had already gone out and proceeding on an
+  // UNBOUNDED wait that pins a pooled connection. This statement always leaves
+  // the timeout bounded, so neither branch can arise.
+  //
+  // `ms = 0` is Postgres's "disable the timeout", i.e. infinitely loose, so it
+  // is always worth tightening. A caller already stricter than the bound keeps
+  // its own value — this must never WIDEN a stricter caller, since SET LOCAL
+  // lasts for the rest of the outer transaction.
+  const tightened = await tx.execute(sql`
+    WITH prior AS (SELECT setting::bigint AS ms FROM pg_settings WHERE name = 'lock_timeout')
+    SELECT prior.ms AS prior_ms,
+           set_config(
+             'lock_timeout',
+             (CASE WHEN prior.ms = 0 OR prior.ms > ${DEVICE_LOCK_TIMEOUT_MS}
+                   THEN ${DEVICE_LOCK_TIMEOUT_MS}
+                   ELSE prior.ms END)::text || 'ms',
+             true
+           ) AS applied
+    FROM prior
+  `);
+  const priorMs = extractPriorLockTimeoutMs(tightened);
+  // Restore only if we both changed it and can name what it was. Skipping the
+  // restore leaves the 3s bound in force for the caller's remaining work, which
+  // is STRICTER than what they had — the safe direction. Reported with an
+  // allowlisted tag because `scrubEvent` strips message/extra from every event,
+  // so an unallowlisted warning arrives as a contentless blank.
+  // Restore only if the statement above actually CHANGED the setting, which it
+  // did exactly when the caller's value was 0 (disabled) or looser than the
+  // bound. A stricter caller was left alone, so there is nothing to put back
+  // and re-issuing its own value would just be a wasted round trip.
+  const changed = priorMs !== null && (priorMs === 0 || priorMs > DEVICE_LOCK_TIMEOUT_MS);
+  const restoreTo = changed ? priorMs : null;
+  if (priorMs === null) {
+    captureMessage(
+      'device cascade could not read the prior lock_timeout',
+      'warning',
+      undefined,
+      { device_deletion_warning: 'lock-timeout-unreadable' }
+    );
+  }
   const locked = await tx.execute(
     sql`SELECT id FROM devices WHERE id = ${deviceId} FOR UPDATE`
   );
@@ -156,20 +198,23 @@ export async function deleteDeviceCascade(
   // to see. Nothing leaks on that path: rolling back to the savepoint that
   // precedes a SET LOCAL undoes it, which is exactly what Drizzle's nested
   // transaction does on error.
-  await tx.execute(
-    sql`select set_config('lock_timeout', ${priorLockTimeout}, true)`
-  );
+  if (restoreTo !== null) {
+    await tx.execute(
+      sql`select set_config('lock_timeout', ${`${restoreTo}ms`}, true)`
+    );
+  }
   // postgres-js resolves to an array-like carrying `.count` — NOT node-postgres'
   // `.rowCount`/`.rows`. Reading the wrong shape yields 0 on every call, which
   // would fire the warning below on every successful delete and bury the one
   // signal that the RLS/absent-row branch actually happened.
   const lockedRows = extractRowCount(locked);
   if (lockedRows === 0) {
-    Sentry.captureMessage('device cascade ran without holding the devices row lock', {
-      level: 'warning',
-      tags: { area: 'device-deletion' },
-      extra: { deviceId, reason: 'device row absent or filtered by RLS' },
-    });
+    captureMessage(
+      'device cascade ran without holding the devices row lock',
+      'warning',
+      undefined,
+      { device_deletion_warning: 'parent-lock-missing' }
+    );
   }
 
   const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;

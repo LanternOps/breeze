@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { deleteDeviceCascade, type DeviceDeletionTx } from './deviceDeletion';
 
 const sentry = { captureMessage: vi.fn() };
-vi.mock('@sentry/node', () => ({
+// The service reports through the `services/sentry` WRAPPER (init guard +
+// scrubEvent), not raw `@sentry/node`, so that is what has to be mocked —
+// mocking the raw SDK here would silently intercept nothing.
+vi.mock('./sentry', () => ({
   captureMessage: (...a: unknown[]) => sentry.captureMessage(...a),
 }));
 
@@ -47,9 +50,11 @@ function captureTx(lockedRowCount = 1) {
       if (text.includes('FOR UPDATE')) {
         return Promise.resolve(pgResult(lockedRowCount));
       }
-      // current_setting('lock_timeout') — postgres-js returns a row array.
-      if (text.includes('current_setting')) {
-        const row: Record<string, unknown>[] = [{ lock_timeout: '7s' }];
+      // The tighten statement reads pg_settings (milliseconds, as an integer)
+      // and applies the bound in the SAME statement — postgres-js returns a row
+      // array carrying a non-enumerable `.count`.
+      if (text.includes('pg_settings')) {
+        const row: Record<string, unknown>[] = [{ prior_ms: '7000' }];
         Object.defineProperty(row, 'count', { value: 1, enumerable: false });
         return Promise.resolve(row);
       }
@@ -86,17 +91,20 @@ describe('deleteDeviceCascade lock ordering', () => {
     // a different pooled connection. Proving the bound actually fires needs two
     // real connections and belongs in an integration test.
     //
-    // Emission order: read the caller's lock_timeout, narrow it, take the lock,
-    // put it back — all before any child table is touched.
-    expect(statements[0]).toContain('current_setting');
-    expect(statements[1]).toContain('set_config');
-    expect(statements[1]).toContain('lock_timeout');
-    expect(statements[2]).toContain('FOR UPDATE');
-    expect(statements[2]).toContain('devices');
+    // Emission order: ONE tighten-and-read statement, take the lock, put it
+    // back — all before any child table is touched. This used to be four
+    // statements; reading pg_settings and applying the bound now ride together,
+    // which is what removes the client-side unit parsing.
+    expect(statements[0]).toContain('pg_settings');
+    expect(statements[0]).toContain('set_config');
+    expect(statements[1]).toContain('FOR UPDATE');
+    expect(statements[1]).toContain('devices');
+    expect(statements[2]).toContain('set_config');
+    expect(statements[2]).toContain('lock_timeout');
 
     // And nothing touches a child table ahead of it.
-    const lockIndex = statements.findIndex((s) => s.includes('FOR UPDATE'));
-    expect(lockIndex).toBe(2);
+    const lockIndex = statements.findIndex((t) => t.includes('FOR UPDATE'));
+    expect(lockIndex).toBe(1);
   });
 
   it('restores the caller lock_timeout immediately after taking the lock', async () => {
@@ -111,11 +119,11 @@ describe('deleteDeviceCascade lock ordering', () => {
     await deleteDeviceCascade(tx, 'device-1');
 
     const restoreIndex = statements.findIndex(
-      (s, i) => i > 2 && s.includes('set_config') && s.includes('lock_timeout')
+      (t, i) => i > 1 && t.includes('set_config') && t.includes('lock_timeout')
     );
-    expect(restoreIndex).toBe(3);
+    expect(restoreIndex).toBe(2);
     // Restored to the caller's value, not blindly reset to a hardcoded default.
-    expect(statements[restoreIndex]).toContain('7s');
+    expect(statements[restoreIndex]).toContain('7000ms');
 
     // Nothing that can block may sit between the lock and the restore.
     const firstChildWrite = statements.findIndex(
@@ -124,22 +132,29 @@ describe('deleteDeviceCascade lock ordering', () => {
     expect(firstChildWrite).toBeGreaterThan(restoreIndex);
   });
 
-  it('aborts instead of guessing when the prior lock_timeout cannot be read', async () => {
-    // '0' means "wait forever" in Postgres, so substituting it on an
-    // unrecognised result shape would silently WIDEN a caller that had set a
-    // stricter timeout — for the rest of the outer transaction. Only a driver
-    // shape change can trigger this, which is exactly the silent-breakage class
-    // the row-count fix in this commit addresses. Fail loudly, before mutating.
+  it('stays bounded, reports, and skips the restore when the prior lock_timeout cannot be read', async () => {
+    // This used to assert a throw, then briefly asserted an UNBOUNDED wait —
+    // both wrong. Aborting kills a delete whose SELF_UNINSTALL already went out;
+    // proceeding unbounded pins a pooled connection, which is the outage class
+    // the bound exists to prevent. Applying the bound inside the SQL statement
+    // makes the question moot: the timeout is ALREADY tightened by the time the
+    // client tries to decode the prior value, so an unreadable result costs
+    // only the restore — and skipping that leaves the STRICTER value in force.
     const statements: string[] = [];
     const tx: DeviceDeletionTx = {
       execute: vi.fn().mockImplementation((query: unknown) => {
         const text = JSON.stringify(query);
         statements.push(text);
-        // node-postgres shape: what a driver swap would hand back.
-        if (text.includes('current_setting')) {
-          return Promise.resolve({ rows: [{ lock_timeout: '7s' }], rowCount: 1 });
+        // node-postgres shape: what a driver swap would hand back. The point of
+        // this fixture is that `[0].prior_ms` is NOT reachable on it, so the
+        // service cannot learn what to restore.
+        if (text.includes('pg_settings')) {
+          return Promise.resolve({ rows: [{ prior_ms: '7000' }], rowCount: 1 });
         }
-        return Promise.resolve(undefined);
+        // Stay in that same node-postgres shape for every other statement,
+        // rather than handing back undefined — a driver returns results, and
+        // the point here is a shape swap, not a missing response.
+        return Promise.resolve({ rows: [{ id: 'device-1' }], rowCount: 1 });
       }),
       delete: vi.fn().mockImplementation(() => {
         statements.push('__DELETE_DEVICES_ROW__');
@@ -147,12 +162,64 @@ describe('deleteDeviceCascade lock ordering', () => {
       }),
     };
 
-    await expect(deleteDeviceCascade(tx, 'device-1')).rejects.toThrow(/lock_timeout/);
+    sentry.captureMessage.mockClear();
+    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toBeUndefined();
 
-    // Aborted before changing the setting and before touching any table.
-    expect(statements.some((s) => s.includes('set_config'))).toBe(false);
-    expect(statements.some((s) => s.includes('FOR UPDATE'))).toBe(false);
-    expect(statements).not.toContain('__DELETE_DEVICES_ROW__');
+    expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('lock_timeout');
+    // The bound WAS applied (it rides on the same statement), so exactly one
+    // set_config was issued and none afterwards to undo it.
+    expect(statements.filter((t) => t.includes('set_config')).length).toBe(1);
+    expect(statements[0]).toContain('pg_settings');
+    expect(statements.some((t) => t.includes('FOR UPDATE'))).toBe(true);
+    expect(statements).toContain('__DELETE_DEVICES_ROW__');
+  });
+
+  it('does not widen a caller that already set a stricter lock_timeout', async () => {
+    // The doc comment promises this function will not relax a tighter bound.
+    // An unconditional set_config broke that promise: a caller holding 500ms
+    // was silently relaxed to 3000ms for the REST of the outer transaction,
+    // because SET LOCAL is transaction-scoped, not statement-scoped.
+    const statements: string[] = [];
+    const tx: DeviceDeletionTx = {
+      execute: vi.fn().mockImplementation((query: unknown) => {
+        const text = JSON.stringify(query);
+        statements.push(text);
+        if (text.includes('pg_settings')) {
+          const row: Record<string, unknown>[] = [{ prior_ms: '500' }];
+          Object.defineProperty(row, 'count', { value: 1, enumerable: false });
+          return Promise.resolve(row);
+        }
+        const empty: Record<string, unknown>[] = [{ id: 'device-1' }];
+        Object.defineProperty(empty, 'count', { value: 1, enumerable: false });
+        return Promise.resolve(empty);
+      }),
+      delete: vi.fn().mockImplementation(() => {
+        statements.push('__DELETE_DEVICES_ROW__');
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    };
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    // The SQL CASE keeps the caller's 500ms, and because nothing changed there
+    // is no restore statement afterwards — one set_config total, not two.
+    expect(statements.filter((t) => t.includes('set_config')).length).toBe(1);
+    // Still took the lock and still completed under the caller's own bound.
+    expect(statements.some((t) => t.includes('FOR UPDATE'))).toBe(true);
+    expect(statements).toContain('__DELETE_DEVICES_ROW__');
+  });
+
+  it('applies the bound when the caller\'s is looser, and restores exactly what was there', async () => {
+    const { tx, statements } = captureTx();
+    await deleteDeviceCascade(tx, 'device-1');
+    // captureTx reports 7000ms > 3000ms, so the bound genuinely tightens and
+    // must be applied — then restored to the caller's ORIGINAL value, not to a
+    // hard-coded default.
+    const sets = statements.filter((t) => t.includes('set_config'));
+    expect(sets.length).toBe(2);
+    expect(sets[0]).toContain('3000');
+    expect(sets[1]).toContain('7000ms');
   });
 
   it('deletes the devices row last, after the child tables', async () => {

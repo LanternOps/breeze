@@ -293,17 +293,28 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
         execute: vi.fn().mockImplementation(async (q: any) => {
           const text = sqlToText(q);
           statements.push(text);
-          // The cascade reads the caller's lock_timeout so it can restore it
-          // after taking the parent row lock, and REFUSES to change the setting
-          // if it cannot read it back (a wrong-shaped result would otherwise
-          // silently widen a stricter caller). A bare [] here is not a result
-          // this driver can produce, and made the route 500.
-          if (text.includes('current_setting')) {
-            const row: Record<string, unknown>[] = [{ lock_timeout: '0' }];
-            Object.defineProperty(row, 'count', { value: 1, enumerable: false });
-            return row;
+          // postgres-js resolves to an array-like carrying a non-enumerable
+          // `.count`. A bare [] is not a result this driver can produce, and
+          // returning one made every statement look like it affected 0 rows.
+          const pgResult = (rows: Record<string, unknown>[], count = rows.length) => {
+            Object.defineProperty(rows, 'count', { value: count, enumerable: false });
+            return rows;
+          };
+          // The cascade tightens the lock bound and reads the caller's prior
+          // value in ONE pg_settings statement (milliseconds, as an integer).
+          // '0' is Postgres's "wait forever", the value that makes it actually
+          // apply its 3s bound, so this keeps the mock on the interesting path.
+          if (text.includes('pg_settings')) {
+            return pgResult([{ prior_ms: '0' }]);
           }
-          return [];
+          // The parent row lock must report ONE row. Returning [] here sent the
+          // whole route suite down the "ran without holding the lock" branch,
+          // so a regression that permanently lost the lock would have been
+          // invisible to these tests.
+          if (text.includes('FOR UPDATE')) {
+            return pgResult([{ id: DEVICE.id }]);
+          }
+          return pgResult([]);
         }),
         delete: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined),
