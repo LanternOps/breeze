@@ -1273,6 +1273,98 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
     "untitled": "Untitled"
   },
+  "aiAgentsPage": {
+    "title": "AI Agents",
+    "description": "Named AI workers with a policy. Partners set the baseline; organizations can only tighten it.",
+    "empty": "No agents yet.",
+    "allOrgs": "All orgs",
+    "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
+    "stateEnabled": "Enabled",
+    "stateDisabled": "Disabled",
+    "errors": {
+      "load": "Could not load agents.",
+      "kindExists": "An agent of this kind already exists for this owner. Edit the existing one, or disable it first.",
+      "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act."
+    },
+    "actions": {
+      "add": "New agent",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "disable": "Disable",
+      "confirmDisable": "Confirm disable"
+    },
+    "toasts": {
+      "saved": "Agent saved",
+      "saveFailed": "Could not save the agent.",
+      "disabled": "Agent disabled",
+      "disableFailed": "Could not disable the agent."
+    },
+    "issues": {
+      "name": "Give the agent a name.",
+      "severities": "Select at least one alert severity.",
+      "org": "Select an organization before creating an org-owned agent.",
+      "allKindsTaken": "Every agent kind already has an agent for this owner. Edit an existing agent instead."
+    },
+    "editor": {
+      "newTitle": "New agent",
+      "editTitle": "Edit agent",
+      "scopeLegend": "Applies to",
+      "allOrgs": "All organizations",
+      "allOrgsHint": "(partner-wide baseline)",
+      "thisOrg": "This organization only"
+    },
+    "sections": {
+      "scope": "When it runs",
+      "permissions": "Permissions",
+      "limits": "Limits",
+      "notifications": "Notifications",
+      "instructions": "Instructions"
+    },
+    "kinds": {
+      "triage": "Alert triage",
+      "patch": "Patching",
+      "helpdesk": "Help desk"
+    },
+    "modes": {
+      "off": "Off",
+      "shadow": "Shadow — investigate and propose only",
+      "act": "Act — available in a later release"
+    },
+    "severities": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Informational"
+    },
+    "fields": {
+      "kind": "Kind",
+      "kindImmutable": "An agent's kind cannot be changed after it is created.",
+      "name": "Name",
+      "mode": "Mode",
+      "enabled": "Enabled",
+      "respectMaintenanceWindows": "Respect maintenance windows",
+      "toolAllowlist": "Tool allowlist",
+      "toolAllowlistHint": "Read-only tools are always available. List the mutating tools this agent may propose, one per line.",
+      "protectedHint": "Never touched, whatever the agent proposes. One entry per line.",
+      "protectedServices": "Protected services",
+      "protectedPaths": "Protected paths",
+      "protectedRegistryKeys": "Protected registry keys",
+      "maxDevicesPerRun": "Max devices per run",
+      "maxRunsPerHour": "Max runs per hour",
+      "maxBudgetCentsPerDay": "Daily budget (cents)",
+      "wallClockSeconds": "Max run duration (seconds)",
+      "maxFleetPercentPerDay": "Max fleet share per day (%)",
+      "cooldownSeconds": "Per-device cooldown (seconds)",
+      "recipientRolesHint": "Roles notified when this agent proposes something.",
+      "recipientRolesEmpty": "No roles available.",
+      "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
+      "charactersLeft": "{{count}} characters left",
+      "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now."
+    },
+    "loading": "Loading agents…"
+  },
   "apiKeyForm": {
     "devicesRead": "Devices: Read",
     "viewDeviceInformationAndStatus": "View device information and status",
@@ -1741,6 +1833,7 @@
     "close": "Close",
     "imported": "Imported \"{{name}}\" to the catalog",
     "importedWithoutCleanup": "Imported \"{{name}}\" — AI clean-up was unavailable, kept the original name.",
+    "importedPricePreserved": "Imported \"{{name}}\" — kept your existing {{currencies}} price; only the cost was updated from Pax8.",
     "couldNotImportThePax8Product": "Could not import the Pax8 product."
   },
   "profilePage": {

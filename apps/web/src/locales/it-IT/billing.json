@@ -96,6 +96,7 @@
           "cancel": "Contratto annullato"
         },
         "invoiceGenerated": "Fattura generata",
+        "priceBookGaps": "{{count}} riga/righe di catalogo fatturate al prezzo salvato nel contratto — nessun prezzo in {{currency}} nel catalogo: {{lines}}",
         "draftDeleted": "Bozza eliminata"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Totale riga: {{total}}",
         "addLine": "Aggiungi riga",
         "noPriceInCurrency": "Nessun prezzo in {{currency}} per questo elemento: aggiungine uno nel catalogo oppure cancella il collegamento al catalogo e inserisci una riga manuale.",
-        "priceFromCatalog": "Prezzo unitario (dal catalogo, in {{currency}})"
+        "priceFromCatalog": "Prezzo unitario (dal catalogo, in {{currency}})",
+        "resolvingPrice": "Ricerca del prezzo in {{currency}}…",
+        "priceLookupFailed": "Impossibile recuperare il prezzo in {{currency}}.",
+        "priceNotRepresentable": "Il prezzo in {{currency}} salvato per questo articolo non è valido in {{currency}}: correggilo nel catalogo oppure rimuovi il collegamento al catalogo e inserisci una riga manuale.",
+        "priceSourceOrgOverride": "Prezzo specifico per l’organizzazione {{org}}"
       },
       "estimate": {
         "title": "Stimato per questo periodo",
@@ -936,7 +941,8 @@
       "resendNewLinkOriginalDead": "Proposta inviata di nuovo, ma con un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare quello nuovo.",
       "shareLinkNewLinkOriginalLive": "Copiato un link NUOVO. Questa proposta precede il tracciamento dei link, quindi non è stato possibile riutilizzare quello che il cliente aveva già; continua a funzionare insieme a questo.",
       "shareLinkNewLinkOriginalDead": "Copiato un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare questo.",
-      "currencyMismatch": "Questo preventivo è in {{documentCurrency}}, ma il tuo account Stripe regola in {{accountCurrency}}. Stripe presenterà {{documentCurrency}} al cliente e convertirà al momento del regolamento: lo spread di cambio ed eventuali commissioni di conversione sono a tuo carico."
+      "currencyMismatch": "Questo preventivo è in {{documentCurrency}}, ma il tuo account Stripe regola in {{accountCurrency}}. Stripe presenterà {{documentCurrency}} al cliente e convertirà al momento del regolamento: lo spread di cambio ed eventuali commissioni di conversione sono a tuo carico.",
+      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questo preventivo in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "detail": {
       "addContentInEditor": "Aggiungi contenuto nell'Editor",
@@ -1058,7 +1064,8 @@
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Costo in {{currency}} — margine non disponibile",
+      "feedPriceCurrencyUnknown": "Valuta del prezzo del feed sconosciuta — inserisci un prezzo in {{currency}}",
+      "feedPriceIn": "Il prezzo del feed è in {{feedCurrency}} — inserisci un prezzo in {{currency}}",
       "available": "{{count}} disp.",
       "cost": "costo {{currency}} {{amount}}",
       "endOfLife": "Fine vita",
@@ -1226,7 +1233,8 @@
       "tryAgain": "Riprova"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Costo in {{currency}} — margine non disponibile",
+      "feedPriceCurrencyUnknown": "Valuta del prezzo del feed sconosciuta — inserisci un prezzo in {{currency}}",
+      "feedPriceIn": "Il prezzo del feed è in {{feedCurrency}} — inserisci un prezzo in {{currency}}",
       "cost": "costo {{currency}} {{amount}}",
       "importAndAdd": "Importa e aggiungi",
       "option": "Opzione {{number}}",
@@ -1541,7 +1549,8 @@
       "shareLinkPrompt": "Condividi questo link di pagamento con il cliente:",
       "stripeNudge": "Collega Stripe per accettare pagamenti online con carta.",
       "title": "Pagamenti",
-      "viaStripe": "tramite Stripe"
+      "viaStripe": "tramite Stripe",
+      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questa fattura in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "requestPayment": {
       "invoiceSent": "Fattura inviata",

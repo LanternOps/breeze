@@ -156,6 +156,88 @@ describe('ScriptTestRunner', () => {
     expect(screen.getByText(/target/)).toBeInTheDocument();
   });
 
+  // #3409 PR4c-2: a `tenantSecret` row is forced `required: true` and the shared
+  // schema REJECTS a `defaultValue` on it, so gating Test Run on
+  // "required with no default" over the whole list locked the button forever and
+  // told the author to do something the schema forbids.
+  it('leaves test runs enabled when the only required parameter is a secret', async () => {
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows']}
+        parameters={[
+          { name: 'api_token', type: 'string', required: true, source: 'tenantSecret', variableKey: 'vendor_password' },
+        ]}
+        isDirty={false}
+        onSaveChanges={async () => true}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    expect(screen.getByTestId('test-run-button')).toBeEnabled();
+    expect(screen.queryByText(/Required parameters without defaults/i)).toBeNull();
+  });
+
+  it('leaves test runs enabled when a required parameter is bound to a tenant variable', async () => {
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows']}
+        parameters={[
+          { name: 'api_key', type: 'string', required: true, source: 'tenantVariable', variableKey: 'vendor_token' },
+        ]}
+        isDirty={false}
+        onSaveChanges={async () => true}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    expect(screen.getByTestId('test-run-button')).toBeEnabled();
+  });
+
+  // A bound parameter's `defaultValue` is the SERVER's fallback (resolved value
+  // -> definition default -> missing). Sending it as a runtime value would be
+  // ignored and reported back in `ignoredParameters`.
+  it('never submits a bound parameter as a runtime value', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        return jsonResponse({ id: EXECUTION_ID, status: 'completed', exitCode: 0, stdout: '', stderr: '' });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows']}
+        parameters={[
+          { name: 'message', type: 'string', required: true, defaultValue: 'hello' },
+          { name: 'api_key', type: 'string', required: true, defaultValue: 'fallback', source: 'tenantVariable', variableKey: 'vendor_token' },
+          { name: 'org', type: 'string', required: true, defaultValue: 'seed', source: 'builtin', builtinKey: 'org.name' },
+        ]}
+        isDirty={false}
+        onSaveChanges={async () => true}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+
+    await waitFor(() => expect(
+      fetchWithAuthMock.mock.calls.some(([url]) => url === `/scripts/${SCRIPT_ID}/execute`)
+    ).toBe(true));
+    const executeCall = fetchWithAuthMock.mock.calls.find(([url]) => url === `/scripts/${SCRIPT_ID}/execute`);
+    const body = JSON.parse((executeCall![1] as RequestInit).body as string) as { parameters: Record<string, unknown> };
+    expect(body.parameters).toEqual({ message: 'hello' });
+  });
+
   it('treats a cancelled execution as terminal and shows its status', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });

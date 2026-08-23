@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import {
   contractTransition,
@@ -14,6 +15,7 @@ import {
   type ContractLineType,
   type ContractStatus,
   type ContractTransition,
+  type PriceBookGap,
 } from '../../lib/api/contracts';
 import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
@@ -98,13 +100,28 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await runAction<{ data?: { invoiceId?: string } }>({
+      const result = await runAction<{ data?: { invoiceId?: string; priceBookGaps?: PriceBookGap[] } }>({
         request: () => generateContractInvoice(contract.id),
         errorFallback: t('contracts.contractDetail.errors.generateInvoice'),
         successMessage: t('contracts.contractDetail.toast.invoiceGenerated'),
         onUnauthorized: UNAUTHORIZED,
       });
       const invoiceId = result?.data?.invoiceId;
+      // Multi-currency wave 3 (#3775): a catalog line with no price in the
+      // contract's currency was still billed — at the contract's stamped
+      // snapshot. That fallback is permitted but never silent: name the lines
+      // and the currency so the operator can fix the catalog (review #10).
+      const gaps = result?.data?.priceBookGaps ?? [];
+      if (gaps.length > 0) {
+        showToast({
+          type: 'warning',
+          message: t('contracts.contractDetail.toast.priceBookGaps', {
+            count: gaps.length,
+            currency: gaps[0]!.currencyCode,
+            lines: gaps.map((g) => g.itemName).join(', '),
+          }),
+        });
+      }
       if (invoiceId) {
         void navigateTo(`/billing/invoices/${invoiceId}`);
       } else {

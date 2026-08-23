@@ -91,7 +91,7 @@ describe('buildClientAuthContext', () => {
     expect(auth.canAccessOrg(ORG)).toBe(true);
     expect(auth.canAccessOrg('9d9d9d9d-1111-4222-8333-444455556666')).toBe(false);
     expect(auth.partnerId).toBeNull();
-    expect(auth.token.mfa).toBe(false);
+    expect(auth.token!.mfa).toBe(false);
   });
 
   it('falls back to the email when the user has no display name', () => {

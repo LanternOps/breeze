@@ -1,0 +1,69 @@
+import { describe, expect, it } from 'vitest';
+import {
+  aiAgentLimitsSchema,
+  aiAgentPolicyFieldsSchema,
+  createAiAgentSchema,
+  updateAiAgentSchema,
+} from './aiAgents';
+import { AI_AGENT_LIMIT_DEFAULTS, minAgentMode } from '../types/aiAgents';
+
+describe('aiAgents validators', () => {
+  it('fills limit defaults and clamps maxima', () => {
+    expect(aiAgentLimitsSchema.parse({})).toEqual(AI_AGENT_LIMIT_DEFAULTS);
+    expect(aiAgentLimitsSchema.safeParse({ maxDevicesPerRun: 51 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ wallClockSeconds: 1801 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxDevicesPerRun: 0 }).success).toBe(false);
+  });
+
+  it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
+    expect(aiAgentPolicyFieldsSchema.safeParse({ instructions: 'x'.repeat(2001) }).success).toBe(false);
+    expect(aiAgentPolicyFieldsSchema.safeParse({ toolAllowlist: ['run_script', 'manage_services:restart'] }).success).toBe(true);
+    expect(aiAgentPolicyFieldsSchema.safeParse({ toolAllowlist: ['bad tool name!'] }).success).toBe(false);
+  });
+
+  it('create requires kind + name; update forbids ownerScope/kind/orgId', () => {
+    expect(createAiAgentSchema.safeParse({ name: 'Triage' }).success).toBe(false);
+    expect(createAiAgentSchema.safeParse({ kind: 'triage', name: 'Triage', ownerScope: 'partner' }).success).toBe(true);
+    const parsed = updateAiAgentSchema.parse({ ownerScope: 'partner', kind: 'patch', orgId: 'x', name: 'New' });
+    expect(parsed).toEqual({ name: 'New' });
+  });
+
+  it('a PATCH never invents a value the caller did not send — at any depth', () => {
+    // Regression: per-field .default() on the nested schemas meant a PATCH of
+    // one guardrail path came back with services/registryKeys reset to [],
+    // silently erasing an act-mode agent's protections. Same shape of bug reset
+    // limits siblings and dropped triggers scoping (widening blast radius).
+    expect(updateAiAgentSchema.parse({ protectedResources: { paths: ['/etc'] } })).toEqual({
+      protectedResources: { paths: ['/etc'] },
+    });
+    expect(updateAiAgentSchema.parse({ limits: { maxDevicesPerRun: 5 } })).toEqual({
+      limits: { maxDevicesPerRun: 5 },
+    });
+    expect(updateAiAgentSchema.parse({ triggers: { alertSeverities: ['low'] } })).toEqual({
+      triggers: { alertSeverities: ['low'] },
+    });
+    expect(updateAiAgentSchema.parse({})).toEqual({});
+    // ...while still validating the keys it IS given.
+    expect(updateAiAgentSchema.safeParse({ limits: { maxDevicesPerRun: 51 } }).success).toBe(false);
+  });
+
+  it('create still materializes complete nested objects', () => {
+    const created = createAiAgentSchema.parse({ kind: 'triage', name: 'Triage' });
+    expect(created.limits).toEqual(AI_AGENT_LIMIT_DEFAULTS);
+    expect(created.protectedResources).toEqual({ services: [], paths: [], registryKeys: [], deviceTags: [] });
+    expect(created.recipients).toEqual({ userIds: [], roleIds: [] });
+    expect(created.triggers.alertSeverities).toEqual(['critical', 'high']);
+  });
+
+  it('recipients target roles by id, and narrowing lists reject the empty array', () => {
+    expect(aiAgentPolicyFieldsSchema.safeParse({ recipients: { roleIds: ['not-a-uuid'] } }).success).toBe(false);
+    // [] would read as "matches nothing" — the opposite of "unrestricted".
+    expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { siteIds: [] } }).success).toBe(false);
+  });
+
+  it('minAgentMode picks the stricter mode', () => {
+    expect(minAgentMode('act', 'shadow')).toBe('shadow');
+    expect(minAgentMode('off', 'act')).toBe('off');
+    expect(minAgentMode('act', 'act')).toBe('act');
+  });
+});

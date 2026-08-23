@@ -463,7 +463,7 @@ describe('tdSynnexDigitalBridge service', () => {
     expect(mocks.enrichDistributorListing).not.toHaveBeenCalled(); // aiCleanup unset → no AI
   });
 
-  it('omits cost currency when the provider product has no currency', async () => {
+  it('stores the cost as NULL (not partner currency) when the provider product has no currency (#3775 review #2)', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([enabledRow]));
     mocks.createCatalogItem.mockResolvedValueOnce({ id: 'catalog-1' });
     await importTdSynnexCatalogItem({
@@ -473,13 +473,14 @@ describe('tdSynnexDigitalBridge service', () => {
         cost: '100.00', currency: null, availability: 4, warehouses: [{ code: 'A' }],
         raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
       },
-      item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, taxable: true },
+      item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, costBasis: 100, taxable: true },
     }, actor, dbCtx);
 
     expect(mocks.createCatalogItem).toHaveBeenCalledWith(
       expect.not.objectContaining({ costCurrency: expect.anything() }),
       actor,
     );
+    expect(mocks.createCatalogItem.mock.calls[0]![0].costBasis).toBeNull();
   });
 
   it('stores a sell price entered in a document currency as that price-book row', async () => {

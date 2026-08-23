@@ -307,17 +307,25 @@ quoteRoutes.post('/quotes/:id/decline', zValidator('param', idParam), zValidator
 });
 
 // POST /quotes/:id/pay — mint a Stripe checkout link for an accepted (converted)
-// quote's invoice. Runs in a system sub-context: createQuotePayLink →
-// createInvoicePayLink reads the partner-axis stripe connection, which this org
-// scope would RLS-filter to 0 rows (#1375). Org access stays enforced by the
-// org-scoped quote lookup below + the actor's accessibleOrgIds.
+// quote's invoice.
+//
+// #1448 — this route opts out of the auth middleware's auto request-transaction
+// (see selfManagedDbContextRoutes.ts), so there is NO ambient DB context here,
+// exactly like POST /portal/invoices/:id/pay. The ownership read below runs in
+// its own short system context (org isolation is the explicit `auth.user.orgId`
+// filter, not RLS scope), and createQuotePayLink is called with NO enclosing
+// context: it and createInvoicePayLink open short system contexts around each
+// DB step (quote read, invoice read, partner-axis Stripe key read, mapping
+// write) and run checkout.sessions.create truly outside any transaction. Never
+// wrap the call in withSystemDbAccessContext — that pins a pooled connection
+// idle-in-transaction across the Stripe round-trip (#1105 class; #3777 review F2).
 quoteRoutes.post('/quotes/:id/pay', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
-  const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
+  const [quote] = await withSystemDbAccessContext(() =>
+    db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1));
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
   try {
-    const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      createQuotePayLink(id, { userId: null, partnerId: null, accessibleOrgIds: [auth.user.orgId] })));
+    const link = await createQuotePayLink(id, { userId: null, partnerId: null, accessibleOrgIds: [auth.user.orgId] });
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof QuoteServiceError || err instanceof InvoiceServiceError) {

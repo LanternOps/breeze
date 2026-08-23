@@ -763,10 +763,19 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     expect(values()).not.toHaveBeenCalled();
   });
 
+  it('addCatalogLine maps a PRICE_NOT_REPRESENTABLE legacy row to a typed 409 (#3775 review #4) and inserts nothing', async () => {
+    resolvePriceMock.mockRejectedValue(new CatalogServiceError('JPY 100.50 not representable', 409, 'PRICE_NOT_REPRESENTABLE'));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
+    await expect(svc.addCatalogLine('i1', 'cat-1', 1, actor))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 409 });
+    expect(values()).not.toHaveBeenCalled();
+  });
+
   const econUsd = (over: Partial<Awaited<ReturnType<typeof computeBundleEconomics>>> = {}) => ({
-    currencyCode: 'USD', headlinePrice: '100.00', priceBookComplete: true, marginAvailable: true,
+    currencyCode: 'USD', headlinePrice: '100.00', headlineGap: null, headlineGapMessage: null,
+    priceBookComplete: true, marginAvailable: true,
     totalCost: '40.00', margin: '60.00', marginPct: 60, allocationTotal: '100.00',
-    allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[], ...over,
+    allocationAvailable: true, allocationMatchesHeadline: true, missingPriceComponentIds: [] as string[], ...over,
   });
 
   it('addBundleLine computes economics in the INVOICE currency and snapshots child cost only in the same currency', async () => {
@@ -794,11 +803,74 @@ describe('addCatalogLine / addBundleLine price-book resolution (#3775)', () => {
     expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-cad', costBasis: null }));
   });
 
+  it('addBundleLine (JPY, #3775 review #4/#8): persists the whole-yen parent cost and snapshots a fractional-yen legacy child cost as null', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'JPY', headlinePrice: '1000.00', totalCost: '51.00', margin: '949.00', marginPct: 94.9, allocationTotal: '0.00' }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
+    queueResult([{ name: 'Bundle', description: null }]);
+    queueInsertAndRecompute({ id: 'parent', sortOrder: 1, unitPrice: '1000.00', lineTotal: '1000.00' });
+    queueResult([
+      { componentItemId: 'c-ok', quantity: '1.00', showOnInvoice: true, revenueAllocation: null, name: 'A', description: null, costBasis: '250.00', costCurrency: 'JPY' },
+      { componentItemId: 'c-legacy', quantity: '0.50', showOnInvoice: true, revenueAllocation: null, name: 'B', description: null, costBasis: '100.50', costCurrency: 'JPY' },
+    ]);
+    queueResult([]); queueResult([]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'JPY' }]);
+    queueResult([{ lineTotal: '1000.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]);
+
+    await svc.addBundleLine('i1', 'b-1', 1, actor);
+    expect(computeBundleEconomics).toHaveBeenCalledWith('b-1', 'JPY', 'org1', expect.anything(), expect.anything());
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'b-1', unitPrice: '1000.00', costBasis: '51.00' }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-ok', costBasis: '250.00' }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-legacy', costBasis: null }));
+  });
+
+  it('addBundleLine (#3775 review #7): copies a component revenueAllocation only when its allocationCurrency is the INVOICE currency', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'EUR', allocationAvailable: false, allocationTotal: null, allocationMatchesHeadline: false }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([{ name: 'Bundle', description: null }]);
+    queueInsertAndRecompute({ id: 'parent', sortOrder: 1, unitPrice: '100.00', lineTotal: '100.00' });
+    queueResult([
+      { componentItemId: 'c-eur', quantity: '1.00', showOnInvoice: true, revenueAllocation: '60.00', allocationCurrency: 'EUR', name: 'A', description: null, costBasis: '10.00', costCurrency: 'EUR' },
+      { componentItemId: 'c-usd', quantity: '1.00', showOnInvoice: true, revenueAllocation: '40.00', allocationCurrency: 'USD', name: 'B', description: null, costBasis: '10.00', costCurrency: 'EUR' },
+      { componentItemId: 'c-none', quantity: '1.00', showOnInvoice: true, revenueAllocation: null, allocationCurrency: null, name: 'C', description: null, costBasis: null, costCurrency: 'EUR' },
+    ]);
+    queueResult([]); queueResult([]); queueResult([]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', amountPaid: '0.00', currencyCode: 'EUR' }]);
+    queueResult([{ lineTotal: '100.00', taxable: true, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]);
+
+    await svc.addBundleLine('i1', 'b-1', 1, actor);
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-eur', revenueAllocation: '60.00' }));
+    // USD allocation on an EUR invoice: unavailable (null), never relabelled as EUR 40.00
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-usd', revenueAllocation: null }));
+    expect(values()).toHaveBeenCalledWith(expect.objectContaining({ catalogItemId: 'c-none', revenueAllocation: null }));
+  });
+
   it('addBundleLine throws NO_PRICE_FOR_CURRENCY (409) when the bundle has no headline price', async () => {
     bundleEconMock.mockResolvedValue(econUsd({ currencyCode: 'EUR', headlinePrice: null, priceBookComplete: false, totalCost: null }));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     await expect(svc.addBundleLine('i1', 'b-1', 1, actor))
       .rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409 });
+    expect(values()).not.toHaveBeenCalled();
+  });
+
+  // #3775 review #1: a legacy non-representable headline (JPY 100.50) is a GAP
+  // for economics, not a raw CatalogServiceError. addBundleLine must map it to a
+  // typed InvoiceServiceError so the route answers 409 (not 500) and the
+  // operator gets the actionable "correct the JPY price" text.
+  it('addBundleLine maps a PRICE_NOT_REPRESENTABLE headline gap to a typed 409 and inserts nothing', async () => {
+    bundleEconMock.mockResolvedValue(econUsd({
+      currencyCode: 'JPY', headlinePrice: null, priceBookComplete: false, totalCost: null,
+      headlineGap: 'PRICE_NOT_REPRESENTABLE',
+      headlineGapMessage: 'Price-book price 100.50 for "Kit" is not representable in JPY — correct the JPY price before using this item',
+    }));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
+    await expect(svc.addBundleLine('i1', 'b-1', 1, actor)).rejects.toMatchObject({
+      code: 'PRICE_NOT_REPRESENTABLE', status: 409,
+      message: expect.stringContaining('not representable in JPY'),
+    });
     expect(values()).not.toHaveBeenCalled();
   });
 
@@ -874,6 +946,24 @@ describe('addContractLine', () => {
     expect(pricedFrom).toBe('price_book');
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '99.00', costBasis: '45.00', taxable: true }));
+  });
+
+  it('catalog path: a PRICE_NOT_REPRESENTABLE legacy row (#3775 review #4) also falls back to the contract snapshot — the bad row never lands', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    resolvePriceMock.mockRejectedValue(new CatalogServiceError('JPY 100.50 not representable', 409, 'PRICE_NOT_REPRESENTABLE'));
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
+    queueResult([{ currencyCode: 'JPY' }]);
+    queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
+      description: 'Managed endpoint', quantity: '2', unitPrice: '100.00', lineTotal: '200.00', taxable: true, customerVisible: true });
+
+    const { pricedFrom } = await svc.addContractLine('i1', {
+      description: 'Managed endpoint', quantity: '2', unitPrice: '100', taxable: true,
+      catalogItemId: 'cat-1', sourceId: 'cl-1',
+    }, actor);
+
+    expect(pricedFrom).toBe('contract_snapshot');
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '100.00', costBasis: null, catalogItemId: 'cat-1' }));
   });
 
   it('catalog path: a price-book gap falls back to the contract line snapshot (pricedFrom contract_snapshot, costBasis null)', async () => {
@@ -1262,6 +1352,18 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeAccountCurrency).toBe('EUR');
     expect(out.currencyWarning).toBeNull();
+  });
+
+  it('connected but the account currency was never cached (pre-wave-5 row): explicit UNKNOWN warning, not "no warning" (review F6)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
+    queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: null, accountCountry: null }]);
+    const out = await svc.getInvoice('i1', actor);
+    expect(out.stripeConnected).toBe(true);
+    expect(out.stripeAccountCurrency).toBeNull();
+    expect(out.currencyWarning).toMatchObject({
+      code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN', documentCurrency: 'EUR', accountCurrency: null,
+    });
   });
 
   it('both null when the partner is not connected', async () => {

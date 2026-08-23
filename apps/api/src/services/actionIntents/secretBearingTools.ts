@@ -8,9 +8,9 @@
  * with the credential encrypted under the same v3/AAD contract the reveal
  * endpoint already expects).
  *
- * The registry is a readonly tuple with a module-private predicate, not an
- * exported Set: an exported mutable Set would let any importer edit the
- * security registry at runtime.
+ * The registry is a frozen readonly array, rather than a Set: callers can
+ * enumerate it for fail-closed contract tests without gaining a mutable
+ * security registry.
  */
 import { encryptSecret } from '../secretCrypto';
 import {
@@ -20,7 +20,10 @@ import {
   TEMP_PASSWORD_SEAL_FAILED_KEY,
 } from './resultSecrets';
 
-const SECRET_BEARING_TOOLS = ['m365_reset_password', 'google_reset_password'] as const;
+export const SECRET_BEARING_TOOLS: readonly string[] = Object.freeze([
+  'm365_reset_password',
+  'google_reset_password',
+]);
 
 const ENC_V3_PREFIX = 'enc:v3:';
 
@@ -68,7 +71,7 @@ function stripMcpPrefix(toolName: string): string {
 
 export function isSecretBearingTool(toolName: string): boolean {
   const bare = stripMcpPrefix(toolName);
-  return (SECRET_BEARING_TOOLS as readonly string[]).includes(bare);
+  return SECRET_BEARING_TOOLS.includes(bare);
 }
 
 export type SecretToolResult =

@@ -8,6 +8,7 @@ import {
   type Database
 } from '../db';
 import { organizations, tenantVariables } from '../db/schema';
+import { captureException } from './sentry';
 import { decryptTenantVariableValue } from './tenantVariables';
 
 /**
@@ -105,11 +106,20 @@ interface RawResolvedRow {
 }
 
 /**
- * Decrypt one row, or return null and warn (id only — never the ciphertext or
- * an attempted plaintext) on failure. An unreadable variable must fail the
+ * Decrypt one row, or return null and report (id only — never the ciphertext
+ * or an attempted plaintext) on failure. An unreadable variable must fail the
  * device it would have been substituted into, never silently resolve to an
  * empty string, so the row is OMITTED from the snapshot rather than inserted
  * with a placeholder value.
+ *
+ * Reported to BOTH channels, deliberately. A decrypt failure here is not a
+ * per-row curiosity: the plausible causes are a botched key rotation, a
+ * keyring that no longer carries the key id a row was sealed under, or a
+ * restored database meeting the wrong `APP_ENCRYPTION_KEY` — all of which
+ * fail EVERY affected row at once and break script dispatch for a variable
+ * the UI still shows as set. Left on `console.warn` alone it is invisible on
+ * hosted (nobody tails container logs) and the operator's only symptom is
+ * devices failing on a variable that visibly exists.
  */
 function decryptRow(row: RawResolvedRow): ResolvedVariable | null {
   try {
@@ -124,6 +134,13 @@ function decryptRow(row: RawResolvedRow): ResolvedVariable | null {
     };
   } catch (err) {
     console.warn('[tenant-variable-resolution] failed to decrypt tenant variable value', { id: row.id });
+    // Identity only. `err` comes from the crypto layer and the tag set is
+    // hand-built, so neither carries the ciphertext, an attempted plaintext,
+    // or the variable's key name (which can itself describe the credential).
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'tenantVariableResolution',
+      tenantVariableId: row.id
+    });
     return null;
   }
 }

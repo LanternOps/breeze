@@ -646,7 +646,7 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
   const auth = c.get('auth');
   // Resolve the family: access-token `sid` is authoritative; fall back to the
   // refresh cookie's verified `fam` when present.
-  let familyId: string | null = auth.token.sid ?? null;
+  let familyId: string | null = auth.token?.sid ?? null;
   if (!familyId) {
     const refreshToken = resolveRefreshToken(c);
     if (refreshToken) {

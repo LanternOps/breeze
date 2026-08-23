@@ -234,13 +234,17 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const [sendSubject, setSendSubject] = useState('');
   const [includePdf, setIncludePdf] = useState(true);
   // Partner-scope support data, loaded when the composer opens: the partner's
-  // email signature (preview only — the server appends it) and Stripe-connect
-  // status (drives the deposit-can't-be-paid warning). null = unknown/not loaded.
+  // email signature (preview only — the server appends it). null = unknown.
   const [signature, setSignature] = useState<string | null>(null);
-  const [stripeStatus, setStripeStatus] = useState<'connected' | 'disconnected' | null>(null);
-  // The connected account's cached settlement currency (API-owned cache, #3777);
-  // null = not connected / not cached → no mismatch warning can be shown.
-  const [stripeDefaultCurrency, setStripeDefaultCurrency] = useState<string | null>(null);
+  // Stripe-connect status (drives the deposit-can't-be-paid warning) and the
+  // warn-don't-block currency warning come PRECOMPUTED on the detail payload
+  // (GET /quotes/:id). Never fetched from /partner/stripe-connect here: that
+  // endpoint is BILLING_MANAGE-only while `quotes:send` is independently
+  // grantable, so a sender without billing admin got a silent 403 and no
+  // FX-spread warning (#3777 review F5). null = unknown → show neither note.
+  const stripeStatus: 'connected' | 'disconnected' | null =
+    detail.stripeConnected === true ? 'connected' : detail.stripeConnected === false ? 'disconnected' : null;
+  const currencyWarning = stripeStatus === 'connected' ? detail.currencyWarning ?? null : null;
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [cloning, setCloning] = useState(false);
@@ -348,8 +352,6 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setSendSubject('');
     setIncludePdf(true);
     setSignature(null);
-    setStripeStatus(null);
-    setStripeDefaultCurrency(null);
     setToPrefillMissing(false);
     setSendOpen(true);
     if (opts.prefillTo.length === 0) {
@@ -371,11 +373,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         } catch { /* leave To empty — the user types the recipient */ }
       })();
     }
-    // Signature + Stripe status are partner-level support data. The endpoints
-    // aren't scope-gated (they gate on permission + a non-null partnerId, not a
-    // partner-vs-org token), but an org-scoped session has no partner context
-    // worth previewing here — so gate the round-trips on partner scope
-    // client-side (see lib/authScope.ts) rather than fire doomed/irrelevant GETs.
+    // The signature is partner-level support data. The endpoint isn't
+    // scope-gated (it gates on a non-null partnerId, not a partner-vs-org
+    // token), but an org-scoped session has no partner context worth
+    // previewing here — so gate the round-trip on partner scope client-side
+    // (see lib/authScope.ts) rather than fire a doomed/irrelevant GET.
     if (getJwtClaims().scope === 'partner') {
       void (async () => {
         try {
@@ -384,16 +386,6 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           const partner = (await res.json()) as { emailSignature?: string | null };
           setSignature(partner.emailSignature?.trim() || null);
         } catch { /* no preview — the server still appends the signature */ }
-      })();
-      void (async () => {
-        try {
-          const res = await fetchWithAuth('/partner/stripe-connect');
-          if (!res.ok) return;
-          const body = (await res.json()) as { status?: string; defaultCurrency?: string | null };
-          const connected = body.status === 'connected';
-          setStripeStatus(connected ? 'connected' : 'disconnected');
-          setStripeDefaultCurrency(connected && typeof body.defaultCurrency === 'string' ? body.defaultCurrency : null);
-        } catch { /* unknown status — show neither the warning nor the note */ }
       })();
     }
   }, [quote.orgId]);
@@ -1303,8 +1295,20 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         )}
         {/* Warn-don't-block (#3777): the quote's currency differs from the
             account's cached settlement currency. Amber info only — Send stays
-            armed; the web never computes this from anything but the API cache. */}
-        {stripeStatus === 'connected' && stripeDefaultCurrency && stripeDefaultCurrency !== quote.currencyCode && (
+            armed; the warning is precomputed by the API from its own cache. */}
+        {/* Unknown is NOT "matches" (#3777 review F6): a connection that predates
+            the currency cache, or an account Stripe reports no default for, gets
+            an explicit "refresh required" note rather than silence. */}
+        {currencyWarning?.code === 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN' && (
+          <p
+            className="mt-2 text-xs text-muted-foreground"
+            role="status"
+            data-testid="quote-stripe-currency-unknown"
+          >
+            {t('quotes.actions.currencyUnknown', { documentCurrency: currencyWarning.documentCurrency })}
+          </p>
+        )}
+        {currencyWarning?.code === 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT' && (
           <div
             className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300"
             role="status"
@@ -1313,8 +1317,8 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span>
               {t('quotes.actions.currencyMismatch', {
-                documentCurrency: quote.currencyCode,
-                accountCurrency: stripeDefaultCurrency,
+                documentCurrency: currencyWarning.documentCurrency,
+                accountCurrency: currencyWarning.accountCurrency,
               })}
             </span>
           </div>

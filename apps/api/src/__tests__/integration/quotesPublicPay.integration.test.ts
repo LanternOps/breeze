@@ -10,10 +10,11 @@
  * doesn't perturb that suite.
  */
 import './setup';
+import { getTestDb } from './setup';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { eq, sql } from 'drizzle-orm';
+import { db, withSystemDbAccessContext, hasDbAccessContext } from '../../db';
 import { quotes, quoteLines } from '../../db/schema/quotes';
 import { invoices } from '../../db/schema/invoices';
 import { createPartner, createOrganization } from './db-utils';
@@ -118,9 +119,25 @@ describe('public accept → durable invoice link → pay', () => {
     expect(viewBody.data.payable).toBe(true);
     expect(viewBody.data.chargeNow.amount).toBe('250.00');
 
+    // #3777 review F2 — the public pay route used to wrap createInvoicePayLink in
+    // withSystemDbAccessContext, holding a pooled connection idle-in-transaction
+    // across the Stripe round-trip. Observe the ALS from INSIDE the mocked call.
+    // The ALS alone can't see a held transaction (runOutsideDbContext only exits
+    // the store), so also count app-pool backends idle-in-transaction — files
+    // run serially here, so any >0 is this request's own held connection.
+    const observedContext: { hasContext: boolean; idleInTx: number }[] = [];
+    sessionsCreateMock.mockImplementation(async () => {
+      const rows = await getTestDb().execute(sql`
+        select count(*)::int as n from pg_stat_activity
+        where datname = current_database() and usename = 'breeze_app' and state = 'idle in transaction'
+      `);
+      observedContext.push({ hasContext: hasDbAccessContext(), idleInTx: Number((rows[0] as { n: number }).n) });
+      return { id: 'cs_pub_1', url: 'https://checkout.stripe.com/c/pay/pub', payment_intent: null };
+    });
     const pay = await postJson(`/invoices/public/${invToken}/pay`, {});
     expect(pay.status).toBe(200);
     expect(((await pay.json()) as { data: { url: string } }).data.url).toContain('checkout.stripe.com');
+    expect(observedContext).toEqual([{ hasContext: false, idleInTx: 0 }]);
     const args = sessionsCreateMock.mock.calls[0]![0];
     expect(args.line_items[0].price_data.unit_amount).toBe(25000);
     // The durable bearer token must never reach Stripe's logs.

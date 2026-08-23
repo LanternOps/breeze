@@ -203,17 +203,32 @@ export function formatMoney(value: string | number | null | undefined, currency:
 }
 
 /**
- * Warn-don't-block (multi-currency spec §10). `null` when the account currency
- * is unknown (nothing cached yet) or matches the document currency
- * (case-insensitive); otherwise the single warning shape shared by the pay-link
- * response, `getInvoice`, and the web. Never blocks and never converts.
+ * Warn-don't-block (multi-currency spec §10). The single warning shape shared by
+ * the pay-link response, `getInvoice`, and the web. Never blocks, never converts.
+ *
+ * - account currency known and equal (case-insensitive) → `null` (nothing to say)
+ * - known and different → `CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT`
+ * - UNKNOWN (never cached) → `STRIPE_ACCOUNT_CURRENCY_UNKNOWN`. An unknown
+ *   account currency must not be read as "matches" — existing connections
+ *   predate the cache, so silence here would hide every mismatch for them
+ *   until someone happened to open the settings page (#3777 review F6).
+ * - `null` only when the DOCUMENT currency is missing (nothing to compare).
  */
 export function buildStripeCurrencyWarning(
   documentCurrency: string, accountCurrency: string | null | undefined,
 ): StripeCurrencyWarning | null {
   const doc = String(documentCurrency ?? '').trim().toUpperCase();
   const acc = String(accountCurrency ?? '').trim().toUpperCase();
-  if (!acc || !doc || acc === doc) return null;
+  if (!doc) return null;
+  if (!acc) {
+    return {
+      code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN',
+      documentCurrency: doc,
+      accountCurrency: null,
+      message: `Your Stripe account's settlement currency is not cached, so it could not be checked against this ${doc} document. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check.`,
+    };
+  }
+  if (acc === doc) return null;
   return {
     code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
     documentCurrency: doc,

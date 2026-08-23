@@ -52,8 +52,7 @@ vi.mock('../../services/partnerStripe', async (importOriginal) => {
   return {
     PartnerStripeError: actual.PartnerStripeError,
     savePartnerStripeKey: vi.fn(),
-    getPartnerStripeStatus: vi.fn(),
-    getStripeAccountCurrency: vi.fn(),
+    getPartnerStripeAccountSnapshot: vi.fn(),
     refreshPartnerStripeAccount: vi.fn(),
     disconnectPartnerStripe: vi.fn(),
   };
@@ -63,8 +62,7 @@ import { stripeConnectRoutes } from './index';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   savePartnerStripeKey,
-  getPartnerStripeStatus,
-  getStripeAccountCurrency,
+  getPartnerStripeAccountSnapshot,
   refreshPartnerStripeAccount,
   disconnectPartnerStripe,
   PartnerStripeError,
@@ -95,22 +93,21 @@ describe('stripe-connect (API-key) routes', () => {
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
     });
-    (getPartnerStripeStatus as any).mockResolvedValue({
+    (getPartnerStripeAccountSnapshot as any).mockResolvedValue({
       connected: true,
       stripeAccountId: 'acct_9',
       last4: '4242',
       livemode: false,
-      defaultCurrency: 'USD',
-      accountCountry: 'US',
-      accountRefreshedAt: new Date('2026-08-21T00:00:00.000Z'),
-    });
-    (getStripeAccountCurrency as any).mockResolvedValue({
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
-      stale: false,
+      cacheState: 'fresh',
+      error: null,
     });
     (refreshPartnerStripeAccount as any).mockResolvedValue({
+      stripeAccountId: 'acct_9',
+      last4: '4242',
+      livemode: false,
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
@@ -154,7 +151,7 @@ describe('stripe-connect (API-key) routes', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
-  it('GET / returns connected status with lazily refreshed account metadata', async () => {
+  it('GET / returns ONE consistent snapshot (status + cache from the same row) — never a separate status read (review F9)', async () => {
     const res = await stripeConnectRoutes.request('/', { method: 'GET' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -165,12 +162,65 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+      cacheState: 'fresh',
+      stale: false,
+      error: null,
     });
-    expect(getStripeAccountCurrency).toHaveBeenCalledWith('partner-1');
+    expect(getPartnerStripeAccountSnapshot).toHaveBeenCalledWith('partner-1');
+  });
+
+  it('GET / surfaces a transient refresh failure as stale (cached values kept, flagged) (review F4)', async () => {
+    (getPartnerStripeAccountSnapshot as any).mockResolvedValue({
+      connected: true,
+      stripeAccountId: 'acct_9',
+      last4: '4242',
+      livemode: true,
+      defaultCurrency: 'USD',
+      accountCountry: 'US',
+      accountRefreshedAt: new Date('2026-08-01T00:00:00.000Z'),
+      cacheState: 'stale',
+      error: { code: 'STRIPE_UNAVAILABLE', message: 'Could not reach Stripe right now — try again in a moment.' },
+    });
+    const res = await stripeConnectRoutes.request('/', { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'connected',
+      stripeAccountId: 'acct_9',
+      livemode: true,
+      last4: '4242',
+      defaultCurrency: 'USD',
+      accountCountry: 'US',
+      accountRefreshedAt: '2026-08-01T00:00:00.000Z',
+      cacheState: 'stale',
+      stale: true,
+      error: { code: 'STRIPE_UNAVAILABLE', message: 'Could not reach Stripe right now — try again in a moment.' },
+    });
+  });
+
+  it('GET / reports a revoked/unreadable key as reconnect_required — NOT as connected (review F4)', async () => {
+    (getPartnerStripeAccountSnapshot as any).mockResolvedValue({
+      connected: true,
+      stripeAccountId: 'acct_9',
+      last4: '4242',
+      livemode: true,
+      defaultCurrency: 'USD',
+      accountCountry: 'US',
+      accountRefreshedAt: new Date('2026-08-01T00:00:00.000Z'),
+      cacheState: 'reconnect_required',
+      error: { code: 'INVALID_STRIPE_KEY', message: 'Stripe rejected the stored key — reconnect Stripe.' },
+    });
+    const res = await stripeConnectRoutes.request('/', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe('reconnect_required');
+    expect(body.cacheState).toBe('reconnect_required');
+    expect(body.stale).toBe(true);
+    expect(body.last4).toBe('4242');
+    expect(body.error).toEqual({ code: 'INVALID_STRIPE_KEY', message: 'Stripe rejected the stored key — reconnect Stripe.' });
   });
 
   it('GET / returns disconnected when no key is configured', async () => {
-    (getPartnerStripeStatus as any).mockResolvedValue({ connected: false, last4: null });
+    (getPartnerStripeAccountSnapshot as any).mockResolvedValue({ connected: false, last4: null });
     const res = await stripeConnectRoutes.request('/', { method: 'GET' });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ status: 'disconnected' });
@@ -181,9 +231,15 @@ describe('stripe-connect (API-key) routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       status: 'connected',
+      stripeAccountId: 'acct_9',
+      livemode: false,
+      last4: '4242',
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+      cacheState: 'fresh',
+      stale: false,
+      error: null,
     });
     expect(refreshPartnerStripeAccount).toHaveBeenCalledWith('partner-1');
     expect(writeRouteAudit).toHaveBeenCalledWith(

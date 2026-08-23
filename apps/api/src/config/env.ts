@@ -92,6 +92,11 @@ export const PARTNER_API_CURSOR_SIGNING_KEY =
 // Gates tool registration (aiAgentSdkTools.ts) and the connect routes.
 export const GOOGLE_WORKSPACE_ENABLED = envFlag('GOOGLE_WORKSPACE_ENABLED', false);
 
+// AI operator (spec docs/superpowers/specs/ai-mcp/2026-08-22-ai-agents-program-and-wave1-design.md §5.1).
+// Platform kill switch: false forces every effective agent to enabled=false.
+// Default OFF until the wave-3 runner ships.
+export const AI_AGENTS_ENABLED = envFlag('BREEZE_AI_AGENTS_ENABLED', false);
+
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have
 // an explicit m365_connections row before any tool is usable. Gates tool
 // registration (aiAgentSdkTools.ts) and the connect routes.

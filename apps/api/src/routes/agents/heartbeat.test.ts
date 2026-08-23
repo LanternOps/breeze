@@ -83,6 +83,25 @@ vi.mock('../../db/schema', () => ({
     tokenIssuedAt: 'devices.token_issued_at',
   },
   deviceMetrics: { deviceId: 'device_metrics.device_id' },
+  // #3409 PR4c-2 — the real services/commandDelivery runs here, and its
+  // secret-delivery claim gate touches these three tables when it withholds
+  // an envelope-bearing command.
+  deviceCommands: {
+    id: 'device_commands.id',
+    status: 'device_commands.status',
+    payload: 'device_commands.payload',
+  },
+  scriptExecutions: {
+    id: 'script_executions.id',
+    deviceId: 'script_executions.device_id',
+    status: 'script_executions.status',
+    scriptId: 'script_executions.script_id',
+  },
+  scriptExecutionBatches: {
+    id: 'script_execution_batches.id',
+    scriptId: 'script_execution_batches.script_id',
+    devicesFailed: 'script_execution_batches.devices_failed',
+  },
   agentLogs: { deviceId: 'agent_logs.device_id' },
   agentVersions: {
     platform: 'agent_versions.platform',
@@ -3701,6 +3720,122 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
       'self_uninstall',
     ]);
+  });
+
+  // #3409 PR4c-2 Amendment A — the claim gate trusts the capability THIS
+  // heartbeat REPORTED, not the stored column. The device write that persists
+  // it is guarded on the device not being decommissioned/quarantined and is a
+  // separate statement from the claim, so a stale stored 1 must never win over
+  // a reported 0. Proven by asserting the capability SELECT never happens:
+  // the only possible source of the verdict is the reported value.
+  const capabilitySelects = () =>
+    selectMock.mock.calls.filter(
+      (call) => call[0] && typeof call[0] === 'object' && 'scriptSecretEnvVersion' in (call[0] as object),
+    );
+
+  const secretCommand = {
+    id: 'cmd-secret',
+    type: 'script',
+    deviceId: 'device-1',
+    payload: { scriptId: 'script-1', secretEnvEnvelope: 'enc:v3:key-1:ciphertext' },
+    executedAt: claimedAt,
+  };
+
+  const seedAgentDeviceLookup = () => {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+  };
+
+  it('agent path: withholds a secret-bearing command when THIS beat reports capability 0', async () => {
+    seedAgentDeviceLookup();
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([goodCommand, secretCommand]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { scriptSecretEnvVersion: 0 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { commands: Array<{ id: string }> };
+    expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
+    expect(JSON.stringify(body)).not.toContain('secretEnvEnvelope');
+    // Terminal, NOT released back to pending — an incapable agent would just
+    // re-claim it.
+    expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    // The verdict came from the report, not from a (possibly stale) read.
+    expect(capabilitySelects()).toHaveLength(0);
+  });
+
+  // Capability 1: the gate must NOT withhold. The stand-in envelope here is not
+  // decryptable (no keyring in this suite), so the command then falls into the
+  // ordinary #2414 decrypt-failure path — being RELEASED back to pending is
+  // precisely the proof that the gate passed it through instead of driving it
+  // terminal, which is the one thing the gate would have done at capability 0.
+  it('agent path: passes the secret-bearing command through the gate when THIS beat reports capability 1, with no capability read', async () => {
+    seedAgentDeviceLookup();
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([goodCommand, secretCommand]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { scriptSecretEnvVersion: 1 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { commands: Array<{ id: string }> };
+    expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-secret', claimedAt);
+    expect(capabilitySelects()).toHaveLength(0);
+  });
+
+  it('watchdog path: withholds a secret-bearing command when the beat reports capability 0', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          lastSeenAt: new Date(),
+          mainAgentSilentSince: null,
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([goodCommand, secretCommand]);
+
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentVersion: '0.65.15', role: 'watchdog', watchdogState: 'MONITORING' }),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { commands: Array<{ id: string }> };
+    expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
+    expect(capabilitySelects()).toHaveLength(0);
   });
 
   it('watchdog path: narrows the claim to self_uninstall when the tenant is draining', async () => {

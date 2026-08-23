@@ -32,9 +32,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pay\/?$/ },
+  // Customer-portal "Pay quote" — createQuotePayLink → createInvoicePayLink →
+  // checkout.sessions.create. Same shape as the invoice pay route; it was missed
+  // when the route shipped, so the portal request tx was pinned across Stripe
+  // (#3777 review F2).
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/quotes\/[^/]+\/pay\/?$/ },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
-  // Stripe cache lazy refresh — getStripeAccountCurrency may call accounts.retrieve.
+  // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.
   { method: 'GET', pattern: /^\/api\/v1\/partner\/stripe-connect\/?$/ },
   // Stripe cache forced refresh — refreshPartnerStripeAccount calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/refresh\/?$/ },

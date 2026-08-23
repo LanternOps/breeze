@@ -1,7 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
   pgTable, uuid, text, varchar, char, boolean, numeric, integer, jsonb, timestamp, date, pgEnum,
-  index, uniqueIndex, foreignKey
+  index, uniqueIndex, foreignKey, check
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users, bytea } from './users';
@@ -130,11 +130,17 @@ export const catalogBundleComponents = pgTable('catalog_bundle_components', {
   quantity: numeric('quantity', { precision: 12, scale: 2 }).notNull().default('1'),
   showOnInvoice: boolean('show_on_invoice').notNull().default(false),
   revenueAllocation: numeric('revenue_allocation', { precision: 12, scale: 2 }),
+  // Currency the allocation was authored in (#3775 review #7). Stamped at write
+  // time from the bundle price being edited; an allocation is only USED when
+  // this equals the target currency — otherwise it is unavailable, never
+  // relabelled. Required whenever revenue_allocation is set (CHECK below).
+  allocationCurrency: char('allocation_currency', { length: 3 }).references(() => supportedCurrencies.code),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
   uniqueIndex('catalog_bundle_components_bundle_comp_uq').on(t.bundleItemId, t.componentItemId),
-  index('catalog_bundle_components_partner_idx').on(t.partnerId)
+  index('catalog_bundle_components_partner_idx').on(t.partnerId),
+  check('catalog_bundle_components_allocation_currency_chk', sql`${t.revenueAllocation} IS NULL OR ${t.allocationCurrency} IS NOT NULL`)
 ]);
 
 // Partner-axis (RLS shape 3). TD SYNNEX EC Express Price & Availability SOAP

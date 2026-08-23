@@ -6,7 +6,8 @@ import {
 import { emitCatalogEvent } from './catalogEvents';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
-  deriveUnitPrice, resolvePriceFrom, detectBundleProblems, computeBundleEconomicsFrom,
+  deriveUnitPrice, resolvePriceFrom, isPriceGap, detectBundleProblems, computeBundleEconomicsFrom,
+  type BundleHeadlineGap,
   type ResolvedPrice, type BundleEconomics
 } from './catalogPricing';
 import { isRepresentableInCurrency, roundToCurrency } from '@breeze/shared';
@@ -19,6 +20,7 @@ export type CatalogServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'ITEM_NOT_FOUND'
   | 'NOT_A_BUNDLE'
+  | 'ALLOCATION_CURRENCY_REQUIRED'
   | 'DUPLICATE_SKU'
   | 'ORG_DENIED'
   | 'PRICE_OUT_OF_RANGE'
@@ -269,6 +271,88 @@ export async function removeItemPrice(itemId: string, currencyCode: string, acto
   return { ok: true };
 }
 
+/**
+ * Importer duplicate-SKU recovery (#3775 review #9). When a distributor / Pax8
+ * import hits a SKU the partner already owns, the requested pricing must not be
+ * silently discarded: the requested sell-currency rows (explicit `prices`, or a
+ * legacy `unitPrice` in the partner currency) are upserted onto the existing
+ * item, and the freshly fetched feed cost + currency replaces the stored cost.
+ *
+ * A re-import NEVER overwrites an existing price-book row (#3775 review #3).
+ * The distributor feed is authoritative for COST, never for the partner's sell
+ * price: an operator who hand-adjusted the EUR row would otherwise have it
+ * silently reset to Pax8 MSRP by a re-import, reported as a plain "Imported"
+ * toast. Only a currency with no row at all is added; existing rows are left
+ * alone (and reported back as `preserved` so the caller can say so), and the
+ * deprecated unit_price mirror is rewritten only when the partner-currency row
+ * is one of the ADDED ones. No cost × markup derivation here either. A cost
+ * without a currency (the importedCost gap) leaves the stored cost untouched.
+ *
+ * Runs under the catalog-side lock order (item row FIRST, price rows, mirror
+ * LAST) and returns the same item-plus-price-book shape createCatalogItem does,
+ * plus `pricingApplied`.
+ */
+export async function applyImportedPricingBySku(
+  sku: string,
+  input: Pick<CreateCatalogItemInput, 'unitPrice' | 'prices' | 'costBasis' | 'costCurrency' | 'markupPercent'>,
+  actor: CatalogActor
+) {
+  const partnerId = requirePartner(actor);
+  const result = await db.transaction(async (tx) => {
+    const [existing] = await tx.select().from(catalogItems)
+      .where(and(eq(catalogItems.partnerId, partnerId), eq(catalogItems.sku, sku))).limit(1).for('update');
+    if (!existing) throw new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND');
+    const partnerCurrency = await resolvePartnerCurrency(partnerId, tx);
+
+    const priceMap = new Map<string, string>();
+    for (const p of input.prices ?? []) priceMap.set(p.currencyCode, p.unitPrice.toFixed(2));
+    if (input.unitPrice !== undefined && !priceMap.has(partnerCurrency)) {
+      priceMap.set(partnerCurrency, Number(input.unitPrice).toFixed(2));
+    }
+    for (const [code, v] of priceMap) {
+      assertPriceInRange(v);
+      assertRepresentable(v, code);
+    }
+    const costPatch: Partial<typeof catalogItems.$inferInsert> = {};
+    if (input.costBasis != null && input.costCurrency) {
+      const costBasis = input.costBasis.toFixed(2);
+      assertRepresentable(costBasis, input.costCurrency);
+      costPatch.costBasis = costBasis;
+      costPatch.costCurrency = input.costCurrency;
+      if (input.markupPercent != null) costPatch.markupPercent = input.markupPercent.toFixed(2);
+    }
+
+    // Which currencies already have a row? Read under the item lock, before any
+    // write, so the add/preserve split is decided against a stable price book.
+    const existingRows = await tx.select({ currencyCode: catalogItemPrices.currencyCode })
+      .from(catalogItemPrices).where(eq(catalogItemPrices.itemId, existing.id));
+    const existingCodes = new Set(existingRows.map((r) => r.currencyCode));
+    const added: string[] = [];
+    const preserved: string[] = [];
+    for (const code of priceMap.keys()) (existingCodes.has(code) ? preserved : added).push(code);
+    added.sort(); preserved.sort();
+
+    let item: typeof catalogItems.$inferSelect = existing;
+    for (const currencyCode of added) {
+      await upsertPriceRow(tx, existing.id, partnerId, currencyCode, priceMap.get(currencyCode)!);
+    }
+    if (Object.keys(costPatch).length > 0) {
+      const rows = await tx.update(catalogItems).set({ ...costPatch, updatedAt: new Date() })
+        .where(and(eq(catalogItems.id, existing.id), eq(catalogItems.partnerId, partnerId))).returning();
+      item = rows[0] ?? item;
+    }
+    // Mirror only a row we actually added — rewriting it for a PRESERVED row
+    // would reset the mirror to the feed price the price book just refused.
+    const mirror = added.includes(partnerCurrency) ? priceMap.get(partnerCurrency) : undefined;
+    if (mirror !== undefined) item = (await writeUnitPriceMirror(tx, existing.id, partnerId, mirror)) ?? item; // mirror LAST
+    const prices = await tx.select({ currencyCode: catalogItemPrices.currencyCode, unitPrice: catalogItemPrices.unitPrice })
+      .from(catalogItemPrices).where(eq(catalogItemPrices.itemId, existing.id)).orderBy(asc(catalogItemPrices.currencyCode));
+    return { ...item, prices, pricingApplied: { added, preserved } };
+  });
+  await emitCatalogEvent({ type: 'catalog.item.price_changed', catalogItemId: result.id, partnerId, actorUserId: actor.userId });
+  return result;
+}
+
 export async function listItemPrices(itemId: string, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
   await getOwnedItemOr404(itemId, partnerId);
@@ -473,10 +557,26 @@ export async function removeOrgPriceOverride(itemId: string, orgId: string, acto
   return { ok: true };
 }
 
-export async function setBundleComponents(bundleId: string, components: BundleComponentInput[], actor: CatalogActor) {
+/**
+ * Replace a bundle's component set. `allocationCurrency` is the currency the
+ * revenueAllocation amounts were authored in (the bundle price being edited,
+ * #3775 review #7) and is stamped on every row that carries an allocation; it
+ * is required whenever any does (the shared schema enforces it at the edge,
+ * this is the backstop). Allocations are later used ONLY in that currency.
+ */
+export async function setBundleComponents(
+  bundleId: string,
+  components: BundleComponentInput[],
+  actor: CatalogActor,
+  allocationCurrency?: string
+) {
   const partnerId = requirePartner(actor);
   const bundle = await getOwnedItemOr404(bundleId, partnerId);
   if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
+  const allocCurrency = allocationCurrency?.trim().toUpperCase() || null;
+  if (!allocCurrency && components.some((c) => c.revenueAllocation != null)) {
+    throw new CatalogServiceError('allocationCurrency is required when a component carries a revenueAllocation', 400, 'ALLOCATION_CURRENCY_REQUIRED');
+  }
 
   const ids = components.map((c) => c.componentItemId);
   const metaRows = ids.length
@@ -505,7 +605,8 @@ export async function setBundleComponents(bundleId: string, components: BundleCo
       componentItemId: c.componentItemId,
       quantity: c.quantity.toFixed(2),
       showOnInvoice: c.showOnInvoice,
-      revenueAllocation: c.revenueAllocation != null ? c.revenueAllocation.toFixed(2) : null
+      revenueAllocation: c.revenueAllocation != null ? c.revenueAllocation.toFixed(2) : null,
+      allocationCurrency: c.revenueAllocation != null ? allocCurrency : null
     })));
   }
   await emitCatalogEvent({ type: 'catalog.item.updated', catalogItemId: bundleId, partnerId, actorUserId: actor.userId });
@@ -514,7 +615,12 @@ export async function setBundleComponents(bundleId: string, components: BundleCo
 
 /**
  * Spec §6 resolution: org override in the target currency → price-book row for
- * the target currency → typed NO_PRICE_FOR_CURRENCY gap. Never converts and
+ * the target currency → typed NO_PRICE_FOR_CURRENCY gap. A winning row whose
+ * amount is not representable in the target currency (legacy backfill, e.g.
+ * JPY 100.50 — the migrations keep such rows as-is, snapshots rule) is the
+ * typed PRICE_NOT_REPRESENTABLE gap (409, #3775 review #4): it never enters a
+ * new document, is never rounded, and is never skipped in favour of the next
+ * candidate. Fix it with PUT /catalog/:id/prices/:code. Never converts and
  * NEVER reads the deprecated catalog_items.unit_price mirror. Runs on `dbc` so
  * document services resolve inside their already-locked transaction (document
  * row → lines → sources); every catalog read here is a plain SELECT — no
@@ -545,7 +651,14 @@ export async function resolvePrice(
     bookRows[0] ?? null,
     targetCurrency
   );
-  if (!resolved) {
+  if (isPriceGap(resolved)) {
+    if (resolved.gap === 'PRICE_NOT_REPRESENTABLE') {
+      throw new CatalogServiceError(
+        `${resolved.source === 'org_override' ? 'Org override' : 'Price-book'} price ${resolved.unitPrice} for "${item.name}" is not representable in ${targetCurrency} — correct the ${targetCurrency} price before using this item`,
+        409,
+        'PRICE_NOT_REPRESENTABLE'
+      );
+    }
     throw new CatalogServiceError(
       `No price for "${item.name}" in ${targetCurrency} — add a price-book entry or enter a manual line`,
       409,
@@ -567,13 +680,26 @@ export async function computeBundleEconomics(
   const bundle = await getOwnedItemOr404(bundleId, partnerId, dbc);
   if (!bundle.isBundle) throw new CatalogServiceError('Item is not a bundle', 400, 'NOT_A_BUNDLE');
 
-  // The bundle's own gap is a null headline (economics unavailable), not an error.
+  // The bundle's own gap is a null headline (economics unavailable), not an
+  // error — for EVERY gap reason, including a legacy non-representable row
+  // (#3775 review #1). Letting PRICE_NOT_REPRESENTABLE escape here made
+  // GET /catalog/:id/economics answer 409 (contradicting this contract) and
+  // reached addBundleLine as an unmapped CatalogServiceError → HTTP 500. The
+  // reason travels on the payload so a document caller can still refuse with a
+  // typed 409 that repeats the resolver's actionable text.
   let headlinePrice: string | null;
+  let headlineGap: BundleHeadlineGap | null = null;
+  let headlineGapMessage: string | null = null;
   try {
     headlinePrice = (await resolvePrice(bundleId, targetCurrency, orgId, actor, dbc)).unitPrice;
   } catch (err) {
-    if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') headlinePrice = null;
-    else throw err;
+    if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+      headlinePrice = null;
+      headlineGap = err.code;
+      // The plain missing-row gap needs no message; a stated reason carries the
+      // resolver's "correct the <CUR> price" text through to the operator.
+      headlineGapMessage = err.code === 'PRICE_NOT_REPRESENTABLE' ? err.message : null;
+    } else throw err;
   }
 
   // A component "has a price" in the target currency when the price book has a
@@ -583,6 +709,7 @@ export async function computeBundleEconomics(
     componentItemId: catalogBundleComponents.componentItemId,
     quantity: catalogBundleComponents.quantity,
     revenueAllocation: catalogBundleComponents.revenueAllocation,
+    allocationCurrency: catalogBundleComponents.allocationCurrency,
     costBasis: catalogItems.costBasis,
     costCurrency: catalogItems.costCurrency,
     priceId: catalogItemPrices.id,
@@ -606,12 +733,15 @@ export async function computeBundleEconomics(
   return computeBundleEconomicsFrom({
     currencyCode: targetCurrency,
     headlinePrice,
+    headlineGap,
+    headlineGapMessage,
     components: comps.map((c) => ({
       componentItemId: c.componentItemId,
       quantity: c.quantity,
       costBasis: c.costBasis,
       costCurrency: c.costCurrency,
       revenueAllocation: c.revenueAllocation,
+      allocationCurrency: c.allocationCurrency,
       hasPriceInCurrency: c.priceId !== null || c.overrideId !== null
     }))
   });

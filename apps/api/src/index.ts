@@ -130,6 +130,7 @@ import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './routes/tunne
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
+import { aiAgentsRoutes } from './routes/aiAgents';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -216,6 +217,10 @@ import { initializeMlOutputRetention, shutdownMlOutputRetention } from './jobs/m
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
+import {
+  initializeStripeAccountCacheRefreshWorker,
+  shutdownStripeAccountCacheRefreshWorker,
+} from './jobs/stripeAccountCacheRefresh';
 import {
   initializeOAuthRevocationRetryWorker,
   shutdownOAuthRevocationRetryWorker,
@@ -1124,6 +1129,7 @@ api.route('/metrics', metricsRoutes);
 api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/viewers', viewerRoutes);
+api.route('/ai/agents', aiAgentsRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
@@ -1429,6 +1435,9 @@ async function initializeWorkers(): Promise<void> {
     ['serviceProcessCheckRetention', initializeServiceProcessCheckRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
+    // #3777 review F6: bootstrap/refresh the Stripe account currency cache for
+    // connections that predate it (boot one-shot + daily sweep).
+    ['stripeAccountCacheRefresh', initializeStripeAccountCacheRefreshWorker],
     ['oauthRevocationRetryWorker', async () => { initializeOAuthRevocationRetryWorker(); }],
     // Wave 5 Task 3: durable/idempotent provider certificate revocation
     // (worker + 5-minute sweep for due retries and expired pending-activation
@@ -1664,6 +1673,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownServiceProcessCheckRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
+    shutdownStripeAccountCacheRefreshWorker,
     shutdownOAuthRevocationRetryWorker,
     shutdownMtlsCertificateRevocationWorker,
     shutdownAuthEmailWorker,

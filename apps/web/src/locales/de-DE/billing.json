@@ -96,6 +96,7 @@
           "cancel": "Vertrag gekündigt"
         },
         "invoiceGenerated": "Rechnung erstellt",
+        "priceBookGaps": "{{count}} Katalogposition(en) zum Vertrags-Snapshot abgerechnet — kein {{currency}}-Preis im Katalog: {{lines}}",
         "draftDeleted": "Entwurf gelöscht"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Positionssumme: {{total}}",
         "addLine": "Position hinzufügen",
         "noPriceInCurrency": "Kein Preis in {{currency}} für dieses Element — legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
-        "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})"
+        "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})",
+        "resolvingPrice": "{{currency}}-Preis wird ermittelt…",
+        "priceLookupFailed": "Der {{currency}}-Preis konnte nicht ermittelt werden.",
+        "priceNotRepresentable": "Der gespeicherte {{currency}}-Preis dieses Artikels ist in {{currency}} ungültig — korrigieren Sie ihn im Katalog oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
+        "priceSourceOrgOverride": "Organisationsspezifischer Preis für {{org}}"
       },
       "estimate": {
         "title": "Geschätzter Zeitraum",
@@ -936,7 +941,8 @@
       "resendNewLinkOriginalDead": "Angebot erneut gesendet — jedoch mit einem NEUEN Link. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss den neuen verwenden.",
       "shareLinkNewLinkOriginalLive": "NEUEN Link kopiert. Dieses Angebot stammt aus der Zeit vor der Linkverfolgung, daher konnte der bisherige Link des Kunden nicht wiederverwendet werden; er funktioniert weiterhin parallel zu diesem.",
       "shareLinkNewLinkOriginalDead": "NEUEN Link kopiert. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss diesen verwenden.",
-      "currencyMismatch": "Dieses Angebot lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie."
+      "currencyMismatch": "Dieses Angebot lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie.",
+      "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit diesem Angebot in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren."
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -1058,7 +1064,8 @@
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
+      "feedPriceCurrencyUnknown": "Währung des Feed-Preises unbekannt — bitte einen Preis in {{currency}} eingeben",
+      "feedPriceIn": "Feed-Preis in {{feedCurrency}} — bitte einen Preis in {{currency}} eingeben",
       "available": "{{count}} verfügbar",
       "cost": "kostet {{currency}} {{amount}}",
       "endOfLife": "Auslaufmodell",
@@ -1226,7 +1233,8 @@
       "tryAgain": "Versuchen Sie es erneut"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
+      "feedPriceCurrencyUnknown": "Währung des Feed-Preises unbekannt — bitte einen Preis in {{currency}} eingeben",
+      "feedPriceIn": "Feed-Preis in {{feedCurrency}} — bitte einen Preis in {{currency}} eingeben",
       "cost": "kostet {{currency}} {{amount}}",
       "importAndAdd": "Importieren und hinzufügen",
       "option": "Option {{number}}",
@@ -1541,7 +1549,8 @@
       "shareLinkPrompt": "Teilen Sie diesen Zahlungslink mit Ihrem Kunden:",
       "stripeNudge": "Verbinden Sie Stripe, um Online-Kartenzahlungen zu akzeptieren.",
       "title": "Zahlungen",
-      "viaStripe": "über Stripe"
+      "viaStripe": "über Stripe",
+      "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit dieser Rechnung in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren."
     },
     "requestPayment": {
       "invoiceSent": "Rechnung verschickt",

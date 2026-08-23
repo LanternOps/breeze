@@ -96,6 +96,7 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Fatura gerada",
+        "priceBookGaps": "{{count}} linha(s) de catálogo faturada(s) pelo preço salvo no contrato — sem preço em {{currency}} no catálogo: {{lines}}",
         "draftDeleted": "Rascunho excluído"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Total da linha: {{total}}",
         "addLine": "Adicionar linha",
         "noPriceInCurrency": "Este item não tem preço em {{currency}} — adicione um no catálogo, ou limpe o vínculo do catálogo e insira uma linha manual.",
-        "priceFromCatalog": "Preço unitário (do catálogo, em {{currency}})"
+        "priceFromCatalog": "Preço unitário (do catálogo, em {{currency}})",
+        "resolvingPrice": "Consultando o preço em {{currency}}…",
+        "priceLookupFailed": "Não foi possível consultar o preço em {{currency}}.",
+        "priceNotRepresentable": "O preço em {{currency}} salvo para este item não é válido em {{currency}} — corrija-o no catálogo ou remova o vínculo com o catálogo e informe uma linha manual.",
+        "priceSourceOrgOverride": "Preço específico da organização {{org}}"
       },
       "estimate": {
         "title": "Estimado neste período",
@@ -936,7 +941,8 @@
       "resendNewLinkOriginalDead": "Proposta reenviada, mas com um link NOVO. O link anterior não pode mais ser aberto, então quem o tiver precisa usar o novo.",
       "shareLinkNewLinkOriginalLive": "Um link NOVO foi copiado. Esta proposta é anterior ao rastreamento de links, então o link que o cliente já tinha não pôde ser reutilizado; ele continua funcionando junto com este.",
       "shareLinkNewLinkOriginalDead": "Um link NOVO foi copiado. O link anterior não pode mais ser aberto, então quem o tiver precisa usar este.",
-      "currencyMismatch": "Este orçamento está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta."
+      "currencyMismatch": "Este orçamento está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta.",
+      "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com este orçamento em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "detail": {
       "addContentInEditor": "Adicionar conteúdo no Editor",
@@ -1058,7 +1064,8 @@
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
+      "feedPriceCurrencyUnknown": "Moeda do preço do feed desconhecida — informe um preço em {{currency}}",
+      "feedPriceIn": "O preço do feed está em {{feedCurrency}} — informe um preço em {{currency}}",
       "available": "{{count}} disponíveis",
       "cost": "custo {{currency}} {{amount}}",
       "endOfLife": "Fim de vida",
@@ -1226,7 +1233,8 @@
       "tryAgain": "Tentar novamente"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
+      "feedPriceCurrencyUnknown": "Moeda do preço do feed desconhecida — informe um preço em {{currency}}",
+      "feedPriceIn": "O preço do feed está em {{feedCurrency}} — informe um preço em {{currency}}",
       "cost": "custo {{currency}} {{amount}}",
       "importAndAdd": "Importar e adicionar",
       "option": "Opção {{number}}",
@@ -1541,7 +1549,8 @@
       "shareLinkPrompt": "Compartilhe este link de pagamento com o cliente:",
       "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
       "title": "Pagamentos",
-      "viaStripe": "via Stripe"
+      "viaStripe": "via Stripe",
+      "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {
       "invoiceSent": "Fatura enviada",

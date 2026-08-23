@@ -554,7 +554,7 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   const id = c.req.param('id');
   const { currentPassword } = c.req.valid('json');
 
-  if (auth.token.mfa !== true) {
+  if (auth.token?.mfa !== true) {
     return c.json({ error: 'MFA verification is required to delete a passkey' }, 403);
   }
 

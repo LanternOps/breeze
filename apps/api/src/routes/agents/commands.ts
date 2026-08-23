@@ -178,24 +178,33 @@ commandsRoutes.get('/:id/commands', async (c) => {
     return c.json({ error: 'Agent context not found' }, 401);
   }
 
-  const commands = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(
+  // #2414 — decrypt just-in-time; a command whose payload fails decryption is
+  // released back to `pending` (not stranded as `sent`) while its siblings
+  // still deliver.
+  //
+  // Both the claim AND the delivery pass run inside the SAME system context.
+  // This route is self-managed-context (agentAuth leaves no ambient context
+  // behind on the REST paths), and since #3409 PR4c-2 the delivery pass is no
+  // longer pure CPU: `decryptClaimedCommandsForDelivery` first runs the
+  // secret-delivery claim gate, which reads `devices` (RLS-scoped) and drives
+  // offending `device_commands` / `script_executions` rows terminal. Called
+  // outside the closure those would be contextless bare-pool queries (#1375).
+  // Unlike the heartbeat there is no capability report on this path, so the
+  // gate reads the stored column.
+  const deliverableCommands = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const commands = await claimPendingCommandsForDevice(
         agent.deviceId,
         10,
         agent.role,
         // #2774 — offboarding drain: only self_uninstall is deliverable.
         agent.tenantDraining ? ['self_uninstall'] : undefined
-      )
-    )
+      );
+      return decryptClaimedCommandsForDelivery(commands);
+    })
   );
 
-  // #2414 — decrypt just-in-time; a command whose payload fails decryption is
-  // released back to `pending` (not stranded as `sent`) while its siblings
-  // still deliver.
-  return c.json({
-    commands: await decryptClaimedCommandsForDelivery(commands),
-  });
+  return c.json({ commands: deliverableCommands });
 });
 
 commandsRoutes.post(
@@ -305,8 +314,9 @@ commandsRoutes.post(
     // secrets THIS command carried, before the device_commands write below and
     // before the per-type handlers persist anything. Unlike the heuristic above
     // this DOES touch stdout, because a script that echoes a credential is
-    // exactly the case it exists for. Inert until PR4c — no command carries an
-    // envelope yet, so both bindings are the originals unchanged.
+    // exactly the case it exists for. Live since PR4c-2: scriptDispatch sets
+    // `secretEnv` for `tenantSecret` parameters, so a script command can carry
+    // a sealed envelope whose values this pass strips from both bindings.
     const { result: normalizedData, stdout } = redactResultAgainstCommandSecrets(
       { id: commandId, type: command.type, deviceId, payload: command.payload },
       heuristicallyRedacted,

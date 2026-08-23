@@ -9,6 +9,19 @@ process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-mate
 const selectMock = vi.fn();
 const updateMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
+// Tracks whether we are currently INSIDE the route's explicit system context.
+// This route is self-managed-context (middleware/agentAuth leaves none behind
+// on the REST paths), so anything touching the DB must run inside it.
+let insideSystemDbContext = false;
+const withSystemDbAccessContextMock = vi.fn(async (fn: () => any) => {
+  const prior = insideSystemDbContext;
+  insideSystemDbContext = true;
+  try {
+    return await fn();
+  } finally {
+    insideSystemDbContext = prior;
+  }
+});
 const updateRestoreJobByCommandIdMock = vi.fn().mockResolvedValue(true);
 const claimPendingCommandsForDeviceMock = vi.fn();
 
@@ -26,7 +39,8 @@ vi.mock('../../db', () => ({
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withSystemDbAccessContext: (...args: unknown[]) =>
+    withSystemDbAccessContextMock(...(args as [any])),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -66,6 +80,28 @@ vi.mock('../../services/commandQueue', () => ({
 
 vi.mock('../../services/commandDispatch', () => ({
   claimPendingCommandsForDevice: (...args: unknown[]) => claimPendingCommandsForDeviceMock(...(args as [])),
+  releaseClaimedCommandDelivery: vi.fn(async () => undefined),
+}));
+
+// #3409 PR4c-2 — the secret-delivery claim gate. `services/commandDelivery`
+// itself runs for real here (that is the point of the route-level test); only
+// the gate's DB work is stubbed. The stub records the context it was called
+// in, and models a capability-0 device by withholding envelope-bearing script
+// commands — its real terminal-write behavior has its own suite in
+// services/scriptSecretDelivery.test.ts.
+const secretGateContexts: boolean[] = [];
+let secretGateWithholds = false;
+const failClaimedSecretCommandsMock = vi.fn(async (claimed: any[]) => {
+  secretGateContexts.push(insideSystemDbContext);
+  return secretGateWithholds
+    ? claimed.filter(
+        (cmd) => !(cmd.type === 'script' && typeof cmd.payload?.secretEnvEnvelope === 'string'),
+      )
+    : claimed;
+});
+vi.mock('../../services/scriptSecretDelivery', () => ({
+  failClaimedSecretCommandsForUnsupportedAgent: (...args: unknown[]) =>
+    failClaimedSecretCommandsMock(...(args as [any])),
 }));
 
 vi.mock('../../services/vaultSyncPersistence', () => ({
@@ -123,6 +159,9 @@ describe('agent commands routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    secretGateContexts.length = 0;
+    secretGateWithholds = false;
+    insideSystemDbContext = false;
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
@@ -304,6 +343,47 @@ describe('agent commands routes', () => {
       'agent',
       ['self_uninstall']
     );
+  });
+
+  // #3409 PR4c-2 — the claim gate reads `devices` (RLS) and drives offending
+  // device_commands/script_executions rows terminal, so it MUST run inside the
+  // route's own system context. Calling it after the claim closure returned
+  // would make those contextless bare-pool queries (#1375).
+  it('runs the secret-delivery claim gate inside the route system db context', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([
+      { id: commandId, type: 'run_script', deviceId: 'device-1', payload: { scriptId: 'script-1' } },
+    ]);
+
+    const res = await app.request(`/agents/${agentId}/commands`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(failClaimedSecretCommandsMock).toHaveBeenCalledTimes(1);
+    expect(secretGateContexts).toEqual([true]);
+    // …and the whole thing still ran outside any inherited request context.
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('withholds an envelope-bearing command from the poll response when the agent cannot open it', async () => {
+    secretGateWithholds = true;
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([
+      {
+        id: commandId,
+        type: 'script',
+        deviceId: 'device-1',
+        payload: { scriptId: 'script-1', executionId: 'exec-1', secretEnvEnvelope: 'enc:v3:key-1:ciphertext' },
+      },
+      { id: 'cmd-sibling', type: 'run_script', deviceId: 'device-1', payload: { scriptId: 'script-2' } },
+    ]);
+
+    const res = await app.request(`/agents/${agentId}/commands`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { commands: Array<{ id: string }> };
+    // The secret-bearing command is gone; its sibling still delivers.
+    expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-sibling']);
+    expect(JSON.stringify(body)).not.toContain('secretEnvEnvelope');
+    expect(secretGateContexts).toEqual([true]);
   });
 
   // A complete, well-formed PEM private-key block (header + base64 body +

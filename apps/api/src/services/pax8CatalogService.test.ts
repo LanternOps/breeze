@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   db: { select: vi.fn(), insert: vi.fn() },
   createPax8ClientForIntegration: vi.fn(),
   createCatalogItem: vi.fn(),
+  applyImportedPricingBySku: vi.fn(),
   getRedis: vi.fn(() => null),
   enrichDistributorListing: vi.fn(),
   // #2190 — pass-through wrapper; kept as a vi.fn (not an inline arrow) so
@@ -13,7 +14,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../db', () => ({ db: mocks.db, withDbAccessContext: mocks.withDbAccessContext }));
 vi.mock('./pax8SyncService', () => ({ createPax8ClientForIntegration: mocks.createPax8ClientForIntegration }));
-vi.mock('./catalogService', async (orig) => ({ ...(await orig<typeof import('./catalogService')>()), createCatalogItem: mocks.createCatalogItem }));
+vi.mock('./catalogService', async (orig) => ({
+  ...(await orig<typeof import('./catalogService')>()),
+  createCatalogItem: mocks.createCatalogItem,
+  applyImportedPricingBySku: mocks.applyImportedPricingBySku,
+}));
 vi.mock('./redis', () => ({ getRedis: mocks.getRedis }));
 vi.mock('./catalogEnrichmentService', () => ({ enrichDistributorListing: mocks.enrichDistributorListing }));
 
@@ -38,6 +43,7 @@ beforeEach(() => {
   mocks.createPax8ClientForIntegration.mockReset(); mocks.createCatalogItem.mockReset();
   mocks.getRedis.mockReturnValue(null);
   mocks.enrichDistributorListing.mockReset();
+  mocks.applyImportedPricingBySku.mockReset();
   // mockClear (not mockReset) preserves the pass-through implementation while
   // resetting call history/order between tests.
   mocks.withDbAccessContext.mockClear();
@@ -65,16 +71,35 @@ describe('searchPax8Products', () => {
 });
 
 describe('importPax8CatalogItem', () => {
-  it('is idempotent on DUPLICATE_SKU: resolves existing item and still upserts mapping', async () => {
-    mocks.db.select
-      .mockReturnValueOnce(selectChain([integration]))   // getActiveIntegration
-      .mockReturnValueOnce(selectChain([{ id: 'existing-1', name: 'Microsoft 365 Business Premium' }])); // fallback lookup
+  it('on DUPLICATE_SKU applies the requested sell-currency price + feed cost to the existing item and returns item + price book (#3775 review #9)', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([integration])); // getActiveIntegration
     mocks.createCatalogItem.mockRejectedValueOnce(new CatalogServiceError('dup', 409, 'DUPLICATE_SKU'));
+    const merged = { id: 'existing-1', name: 'Microsoft 365 Business Premium', costBasis: '18.50', costCurrency: 'USD', prices: [{ currencyCode: 'EUR', unitPrice: '22.00' }, { currencyCode: 'USD', unitPrice: '30.00' }] };
+    mocks.applyImportedPricingBySku.mockResolvedValueOnce(merged);
     mocks.db.insert.mockReturnValueOnce(insertChain());
     const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw: {} };
-    const item = await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22 } }, actor, dbCtx);
-    expect(item.id).toBe('existing-1');
-    expect(mocks.db.insert).toHaveBeenCalled();
+    const item = await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22, sellCurrency: 'EUR' } }, actor, dbCtx);
+    expect(mocks.applyImportedPricingBySku).toHaveBeenCalledWith(
+      'CFQ7',
+      expect.objectContaining({ prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: 18.5, costCurrency: 'USD' }),
+      actor,
+    );
+    expect(item).toBe(merged); // same shape as creation — includes the price book
+    // No raw catalog_items lookup: the service resolves + locks the row itself.
+    expect(mocks.db.select).toHaveBeenCalledTimes(1);
+    expect(mocks.db.insert).toHaveBeenCalled(); // mapping upsert still happens
+    const mapping = (mocks.db.insert.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> }).values.mock.calls[0]![0];
+    expect(mapping).toMatchObject({ catalogItemId: 'existing-1', pax8ProductId: 'p1' });
+  });
+
+  it('re-throws a non-duplicate createCatalogItem error without touching the existing item', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([integration]));
+    mocks.createCatalogItem.mockRejectedValueOnce(new CatalogServiceError('bad', 400, 'PRICE_NOT_REPRESENTABLE'));
+    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'M', vendorName: null, vendorSku: 'CFQ7', commitmentTerm: null, billingTerm: null, partnerBuyRate: null, currency: null, raw: {} };
+    await expect(importPax8CatalogItem({ product, item: { name: 'M', sku: 'CFQ7', unitPrice: 22.5, sellCurrency: 'JPY' } }, actor, dbCtx))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE' });
+    expect(mocks.applyImportedPricingBySku).not.toHaveBeenCalled();
+    expect(mocks.db.insert).not.toHaveBeenCalled();
   });
 
   it('creates a recurring software catalog item and upserts the product mapping', async () => {
@@ -102,13 +127,15 @@ describe('importPax8CatalogItem', () => {
     expect(arg).not.toHaveProperty('unitPrice');
   });
 
-  it('omits cost currency when the Pax8 feed currency is null', async () => {
+  it('stores the cost as NULL (not partner currency) when the Pax8 feed currency is null (#3775 review #2)', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([integration]));
     mocks.createCatalogItem.mockResolvedValue({ id: 'item-2', name: 'Microsoft 365 Business Premium' });
     mocks.db.insert.mockReturnValueOnce(insertChain());
     const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: null, raw: {} };
-    await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22 } }, actor, dbCtx);
+    // item.costBasis is the web form's echo of partnerBuyRate — same unknown currency.
+    await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22, costBasis: 18.5 } }, actor, dbCtx);
     const arg = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(arg.costBasis).toBeNull();
     expect(arg.costCurrency).toBeUndefined();
   });
 

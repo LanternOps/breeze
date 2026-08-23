@@ -96,6 +96,7 @@
           "cancel": "Sözleşme iptal edildi"
         },
         "invoiceGenerated": "Fatura oluşturuldu",
+        "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
         "draftDeleted": "Taslak silindi"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Satır toplamı: {{total}}",
         "addLine": "Satır ekle",
         "noPriceInCurrency": "Bu öğenin {{currency}} fiyatı yok — katalogda bir fiyat ekleyin ya da katalog bağlantısını temizleyip manuel bir hat girin.",
-        "priceFromCatalog": "Birim fiyatı (katalogdan, {{currency}} cinsinden)"
+        "priceFromCatalog": "Birim fiyatı (katalogdan, {{currency}} cinsinden)",
+        "resolvingPrice": "{{currency}} fiyatı aranıyor…",
+        "priceLookupFailed": "{{currency}} fiyatı alınamadı.",
+        "priceNotRepresentable": "Bu ürün için kayıtlı {{currency}} fiyatı {{currency}} para biriminde geçerli değil — katalogda düzeltin ya da katalog bağlantısını kaldırıp elle satır girin.",
+        "priceSourceOrgOverride": "{{org}} için kuruluşa özel fiyat"
       },
       "estimate": {
         "title": "Tahmini bu dönem",
@@ -936,7 +941,8 @@
       "resendNewLinkOriginalDead": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes yeni bağlantıyı kullanmalıdır.",
       "shareLinkNewLinkOriginalLive": "YENİ bir bağlantı kopyalandı. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı bununla birlikte çalışmaya devam eder.",
       "shareLinkNewLinkOriginalDead": "YENİ bir bağlantı kopyalandı. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes bu bağlantıyı kullanmalıdır.",
-      "currencyMismatch": "Bu teklif {{documentCurrency}} cinsinden, ancak Stripe hesabınız {{accountCurrency}} olarak ödeme yapıyor. Stripe müşteriye {{documentCurrency}} gösterecek ve ödeme sırasında dönüştürecek — kur farkı ve varsa dönüştürme ücreti size aittir."
+      "currencyMismatch": "Bu teklif {{documentCurrency}} cinsinden, ancak Stripe hesabınız {{accountCurrency}} olarak ödeme yapıyor. Stripe müşteriye {{documentCurrency}} gösterecek ve ödeme sırasında dönüştürecek — kur farkı ve varsa dönüştürme ücreti size aittir.",
+      "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} teklifle karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "detail": {
       "addContentInEditor": "Editör'e içerik ekleyin",
@@ -1058,7 +1064,8 @@
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+      "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
+      "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
       "available": "{{count}} mevcut",
       "cost": "maliyet {{currency}} {{amount}}",
       "endOfLife": "Hayatın sonu",
@@ -1226,7 +1233,8 @@
       "tryAgain": "Tekrar deneyin"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+      "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
+      "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
       "cost": "maliyet {{currency}} {{amount}}",
       "importAndAdd": "İçe aktar ve ekle",
       "option": "Seçenek {{number}}",
@@ -1541,7 +1549,8 @@
       "shareLinkPrompt": "Bu ödeme bağlantısını müşterinizle paylaşın:",
       "stripeNudge": "Çevrimiçi kart ödemelerini kabul etmek için Stripe bağlanın.",
       "title": "Ödemeler",
-      "viaStripe": "Stripe aracılığıyla"
+      "viaStripe": "Stripe aracılığıyla",
+      "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "requestPayment": {
       "invoiceSent": "Fatura gönderildi",

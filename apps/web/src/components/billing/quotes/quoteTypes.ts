@@ -6,7 +6,7 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
-import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuotePresentation } from '@breeze/shared';
+import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuotePresentation, StripeCurrencyWarning } from '@breeze/shared';
 export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuoteTableContent, QuoteCalloutContent, QuotePresentation } from '@breeze/shared';
 // Type-only (erased at compile time), so this pulls no runtime dep on the API
 // client into the types module.
@@ -317,6 +317,19 @@ export interface QuoteDetail {
    *  tracking). Optional: older payloads and list fixtures don't carry it, and
    *  a quote nobody has ordered against yet gets an empty array. */
   orders?: QuoteOrder[];
+  /** Whether the quote's partner has a connected Stripe account (gates the
+   *  send composer's deposit-can't-be-paid warning). `null` = the server could
+   *  not look it up (show neither note); omitted on older payloads/fixtures,
+   *  which also reads as unknown. Precomputed server-side because `quotes:send`
+   *  is grantable without `billing:manage` (#3777 review F5). */
+  stripeConnected?: boolean | null;
+  /** The connected account's CACHED settlement currency; null when not
+   *  connected or never cached. Display only — never drives a conversion. */
+  stripeAccountCurrency?: string | null;
+  /** Warn-don't-block (#3777 spec §10): precomputed by GET /quotes/:id from
+   *  the cached account currency. null = nothing to say (matches, or not
+   *  connected). */
+  currencyWarning?: StripeCurrencyWarning | null;
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {

@@ -16,6 +16,7 @@
 import PDFDocument from 'pdfkit';
 import { toCents, fromCents, formatMoney as sharedFormatMoney, type CoverPage } from '@breeze/shared';
 import { formatMoneyForPdf } from './pdfMoney';
+import { fitFontSize } from './pdfFitText';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
 import { renderRichTextIntoPdf } from './richTextPdf';
@@ -445,15 +446,26 @@ async function renderLineTable(
     }
     // lineBreak: false on every money cell — row height is measured from the
     // description column only, so a wrapped amount would overprint the next
-    // row. An amount too wide for its box clips into the column gap instead.
-    doc.font('Helvetica').fontSize(10).text(formatMoneyForPdf(l.unitPrice, currency, locale), c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
+    // row. pdfkit TRUNCATES an over-wide single-line string (not a clip into
+    // the gutter — "CHF 9'999'999'99" is a different number), and the boxes are
+    // sized for ~1M while numeric(12,2) permits 9'999'999'999.99, so every
+    // money cell shrinks its font to fit its box (#3777 review F10).
+    const unitText = formatMoneyForPdf(l.unitPrice, currency, locale);
+    doc.font('Helvetica');
+    fitFontSize(doc, unitText, c.colNumW, 10);
+    doc.text(unitText, c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
     if (showTax) {
       const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
-      doc.fillColor('#6b7280').text(t === null ? '—' : formatMoneyForPdf(t, currency, locale), c.colTaxX, y, { width: c.colNumW, align: 'right', lineBreak: false });
+      const taxText = t === null ? '—' : formatMoneyForPdf(t, currency, locale);
+      fitFontSize(doc, taxText, c.colNumW, 10);
+      doc.fillColor('#6b7280').text(taxText, c.colTaxX, y, { width: c.colNumW, align: 'right', lineBreak: false });
       doc.fillColor('#1f2937');
     }
     const suffix = recurrenceSuffix(l.recurrence);
-    doc.font('Helvetica').fontSize(10).text(`${formatMoneyForPdf(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency, locale)}${suffix}`, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
+    const totalText = `${formatMoneyForPdf(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency, locale)}${suffix}`;
+    fitFontSize(doc, totalText, c.colAmtW, 10);
+    doc.text(totalText, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
+    doc.fontSize(10);
     y += rowHeight + 6;
   }
 
@@ -603,11 +615,15 @@ function renderRecurringSummary(
   ) => {
     const { bold = false, emphasis = false } = opts;
     const strong = bold || emphasis;
-    doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(emphasis ? 14 : strong ? 12 : 10).fillColor(strong ? '#111827' : '#6b7280');
+    const size = emphasis ? 14 : strong ? 12 : 10;
+    doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(size).fillColor(strong ? '#111827' : '#6b7280');
     doc.text(label, labelX, y, { width: labelW, align: 'left' });
     // lineBreak: false — the y advances below are fixed constants shared with
     // the page-break reservation; a wrapped amount would silently break both.
-    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(`${formatMoneyForPdf(amount, currency, locale)}${suffix}`, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right', lineBreak: false });
+    // Shrink-to-fit so a schema-maximum figure is never truncated by pdfkit.
+    const amountText = `${formatMoneyForPdf(amount, currency, locale)}${suffix}`;
+    fitFontSize(doc, amountText, c.colSummaryNumW, size);
+    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(amountText, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right', lineBreak: false });
     y += emphasis ? EMPHASIS_ROW_ADVANCE : strong ? BOLD_ROW_ADVANCE : REGULAR_ROW_ADVANCE;
   };
 

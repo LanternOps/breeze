@@ -1273,6 +1273,98 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",
     "untitled": "Sem título"
   },
+  "aiAgentsPage": {
+    "title": "Agentes de IA",
+    "description": "Trabalhadores de IA nomeados, com uma política. Os parceiros definem a linha de base; as organizações só podem restringi-la.",
+    "empty": "Nenhum agente ainda.",
+    "allOrgs": "Todas as organizações",
+    "allOrgsHint": "Em todo o parceiro: vale para cada organização, a menos que uma organização a restrinja.",
+    "stateEnabled": "Ativado",
+    "stateDisabled": "Desativado",
+    "errors": {
+      "load": "Não foi possível carregar os agentes.",
+      "kindExists": "Já existe um agente deste tipo para este proprietário. Edite o existente ou desative-o primeiro.",
+      "modeNotSupported": "Esse modo ainda não está disponível. Por enquanto os agentes podem investigar e propor, mas não agir."
+    },
+    "actions": {
+      "add": "Novo agente",
+      "edit": "Editar",
+      "save": "Salvar",
+      "cancel": "Cancelar",
+      "disable": "Desativar",
+      "confirmDisable": "Confirmar desativação"
+    },
+    "toasts": {
+      "saved": "Agente salvo",
+      "saveFailed": "Não foi possível salvar o agente.",
+      "disabled": "Agente desativado",
+      "disableFailed": "Não foi possível desativar o agente."
+    },
+    "issues": {
+      "name": "Dê um nome ao agente.",
+      "severities": "Selecione ao menos uma severidade de alerta.",
+      "org": "Selecione uma organização antes de criar um agente pertencente à organização.",
+      "allKindsTaken": "Todos os tipos de agente já possuem um agente para este proprietário. Edite um agente existente."
+    },
+    "editor": {
+      "newTitle": "Novo agente",
+      "editTitle": "Editar agente",
+      "scopeLegend": "Aplica-se a",
+      "allOrgs": "Todas as organizações",
+      "allOrgsHint": "(linha de base em todo o parceiro)",
+      "thisOrg": "Somente esta organização"
+    },
+    "sections": {
+      "scope": "Quando é executado",
+      "permissions": "Permissões",
+      "limits": "Limites",
+      "notifications": "Notificações",
+      "instructions": "Instruções"
+    },
+    "kinds": {
+      "triage": "Triagem de alertas",
+      "patch": "Aplicação de patches",
+      "helpdesk": "Central de ajuda"
+    },
+    "modes": {
+      "off": "Desligado",
+      "shadow": "Sombra — apenas investigar e propor",
+      "act": "Agir — disponível em uma versão futura"
+    },
+    "severities": {
+      "critical": "Crítica",
+      "high": "Alta",
+      "medium": "Média",
+      "low": "Baixa",
+      "info": "Informativa"
+    },
+    "fields": {
+      "kind": "Tipo",
+      "kindImmutable": "O tipo de um agente não pode ser alterado depois de criado.",
+      "name": "Nome",
+      "mode": "Modo",
+      "enabled": "Ativado",
+      "respectMaintenanceWindows": "Respeitar as janelas de manutenção",
+      "toolAllowlist": "Ferramentas permitidas",
+      "toolAllowlistHint": "Ferramentas somente leitura estão sempre disponíveis. Liste as ferramentas que alteram e que este agente pode propor, uma por linha.",
+      "protectedHint": "Nunca são tocados, independentemente do que o agente propuser. Uma entrada por linha.",
+      "protectedServices": "Serviços protegidos",
+      "protectedPaths": "Caminhos protegidos",
+      "protectedRegistryKeys": "Chaves de registro protegidas",
+      "maxDevicesPerRun": "Máx. de dispositivos por execução",
+      "maxRunsPerHour": "Máx. de execuções por hora",
+      "maxBudgetCentsPerDay": "Orçamento diário (centavos)",
+      "wallClockSeconds": "Duração máx. da execução (segundos)",
+      "maxFleetPercentPerDay": "Parcela máx. da frota por dia (%)",
+      "cooldownSeconds": "Intervalo por dispositivo (segundos)",
+      "recipientRolesHint": "Funções notificadas quando este agente propõe algo.",
+      "recipientRolesEmpty": "Nenhuma função disponível.",
+      "instructionsHint": "Apenas orientação — tom, o que verificar primeiro, convenções internas. Nunca concede permissões.",
+      "charactersLeft": "Restam {{count}} caracteres",
+      "recipientRolesFailed": "Não foi possível carregar as funções, então os destinatários das notificações não podem ser alterados agora."
+    },
+    "loading": "Carregando agentes…"
+  },
   "apiKeyForm": {
     "devicesRead": "Dispositivos: leitura",
     "viewDeviceInformationAndStatus": "Ver informações e status do dispositivo",
@@ -1741,6 +1833,7 @@
     "close": "Fechar",
     "imported": "Importou \"{{name}}\" para o catálogo",
     "importedWithoutCleanup": "\"{{name}}\" importado — A limpeza de IA não estava disponível, manteve o nome original.",
+    "importedPricePreserved": "\"{{name}}\" importado — seu preço existente em {{currencies}} foi mantido; apenas o custo foi atualizado do Pax8.",
     "couldNotImportThePax8Product": "Não foi possível importar o produto Pax8."
   },
   "profilePage": {

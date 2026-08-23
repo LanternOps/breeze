@@ -152,9 +152,21 @@ describe('buildStripeCurrencyWarning', () => {
     expect(buildStripeCurrencyWarning('usd', 'USD')).toBeNull();
   });
 
-  it('is null when the account currency is unknown', () => {
-    expect(buildStripeCurrencyWarning('EUR', null)).toBeNull();
-    expect(buildStripeCurrencyWarning('EUR', undefined)).toBeNull();
-    expect(buildStripeCurrencyWarning('EUR', '')).toBeNull();
+  it('an UNKNOWN account currency is an explicit "cache unavailable" warning, never silent no-warning (review F6)', () => {
+    for (const unknown of [null, undefined, '', '  ']) {
+      const w = buildStripeCurrencyWarning('EUR', unknown);
+      expect(w).toMatchObject({
+        code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN',
+        documentCurrency: 'EUR',
+        accountCurrency: null,
+      });
+      expect(w?.message).toMatch(/refresh/i);
+      expect(w?.message).toContain('EUR');
+    }
+  });
+
+  it('is null only when the document currency itself is missing (nothing to compare)', () => {
+    expect(buildStripeCurrencyWarning('', 'USD')).toBeNull();
+    expect(buildStripeCurrencyWarning('', null)).toBeNull();
   });
 });

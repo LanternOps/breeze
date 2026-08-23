@@ -843,6 +843,9 @@
       "linux": "Linux"
     }
   },
+  "secretParameters": {
+    "requiresSystemContext": "This script uses secret variables, which are only delivered to system-context runs with no session target. Devices will fail with \"not executed\" under Run as user, or when a specific session is targeted."
+  },
   "scriptExecutionsPage": {
     "errors": {
       "fetchScript": "Failed to fetch script",
@@ -998,14 +1001,15 @@
       "button": "Variables",
       "insertTitle": "Insert a variable",
       "empty": "No variables yet.",
-      "secretUnavailable": "Secret — a later release delivers it as an environment variable.",
+      "secretUnavailable": "Secret — bind it through a parameter with source \"From a secret variable\".",
       "unknown": "No variable exists for {{keys}} — targeted devices will fail until you create it."
     },
     "parameterSources": {
       "runtime": "Asked at run time",
       "tenantVariable": "From a variable",
       "deviceCustomField": "From a device custom field",
-      "builtin": "From a device property"
+      "builtin": "From a device property",
+      "tenantSecret": "From a secret variable (environment variable)"
     },
     "parameterBinding": {
       "variableLabel": "Variable key",
@@ -1015,6 +1019,9 @@
       "builtinLabel": "Property",
       "chooseTitle": "Choose a variable",
       "secretRejected": "\"{{key}}\" is a secret — the save will be rejected. Choose a variable that is not a secret.",
+      "notSecret": "\"{{key}}\" is not a secret. Choose a secret variable, or switch the source to \"From a variable\".",
+      "notSecretRow": "Not a secret — use \"From a variable\"",
+      "secretHint": "Delivered only as the environment variable {{env}} — never written into the script. Requires system-context execution and an agent that supports secure secret delivery.",
       "hint": "Resolved for every target device when the script runs — nobody is asked for it."
     }
   },
@@ -1077,7 +1084,8 @@
     "suppliedBy": {
       "tenantVariable": "Supplied automatically from variable {{key}}",
       "deviceCustomField": "Supplied automatically from device custom field {{key}}",
-      "builtin": "Supplied automatically from {{key}}"
+      "builtin": "Supplied automatically from {{key}}",
+      "tenantSecret": "Supplied securely from secret variable {{key}} as an environment variable"
     }
   },
   "scriptTagManager": {
