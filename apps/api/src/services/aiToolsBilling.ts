@@ -311,6 +311,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
               taxable: line.taxable,
               catalogItemId: line.catalogItemId,
               sourceId: line.id,
+              // Durable contract lineage (#3778).
+              contractId,
             }, actor));
           }
           case 'update_line':

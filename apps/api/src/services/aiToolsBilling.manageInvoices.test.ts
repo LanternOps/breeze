@@ -193,6 +193,8 @@ describe('manage_invoices', () => {
         taxable: true,
         catalogItemId: 'catalog-1',
         sourceId: 'contract-line-1',
+        // Durable contract lineage (#3778) — the ACTIVE-contract restamp keys on it.
+        contractId: 'contract-1',
       },
       actor,
     );

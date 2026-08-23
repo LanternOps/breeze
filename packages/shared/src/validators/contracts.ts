@@ -85,3 +85,25 @@ export const bulkContractIdsSchema = z.object({
 export type ContractLineInput = z.infer<typeof contractLineInputSchema>;
 export type CreateContractInput = z.infer<typeof createContractSchema>;
 export type UpdateContractInput = z.infer<typeof updateContractSchema>;
+
+/**
+ * Body for POST /contracts/:id/currency (multi-currency wave 6, #3778).
+ *
+ * Contract-specific superset of the shared `changeCurrencySchema`: a DRAFT
+ * contract behaves exactly as it did in wave 2, but an ACTIVE contract may be
+ * restamped through the owner-approved escape hatch for pre-wave-2 contracts
+ * stamped in the wrong currency. `confirmActiveChange` is the explicit opt-in;
+ * eligibility ("no unbilled monetary rows") is re-checked by the service under
+ * the contract's row lock, never here. Strict, so a mis-keyed field is a 400.
+ */
+export const changeContractCurrencySchema = z.object({
+  currencyCode: currencyCodeSchema,
+  clearLines: z.boolean().default(false),
+  reprice: z.boolean().default(false),
+  confirmActiveChange: z.boolean().default(false),
+}).strict().refine((v) => !(v.clearLines && v.reprice), {
+  message: 'clearLines and reprice are mutually exclusive',
+  path: ['reprice'],
+});
+
+export type ChangeContractCurrencyInput = z.infer<typeof changeContractCurrencySchema>;

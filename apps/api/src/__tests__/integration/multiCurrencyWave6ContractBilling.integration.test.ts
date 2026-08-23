@@ -43,6 +43,7 @@ import {
   activateContract, addContractLineToContract, changeContractCurrency, createContract,
 } from '../../services/contractService';
 import { ContractServiceError } from '../../services/contractTypes';
+import { issueInvoice } from '../../services/invoiceService';
 import { runContractBillingSweep } from '../../jobs/contractWorker';
 import { createCatalogItemWithPrice } from './db-utils';
 import { gateLabel, seedGateOrg, type GateOrgFixture } from './multiCurrencyWave6GateFixtures';
@@ -318,23 +319,48 @@ describe.runIf(RUN)(gateLabel('G3', 'recurring contract billing run'), () => {
       assertionMessage('stale-stamp sweep', 'USD-on-EUR-org', 'invoices.currency_code', 'USD', row?.currencyCode),
     ).toBe('USD');
 
-    // CURRENT TRUTH (Task 14 baseline): the only correction tool refuses on an
-    // ACTIVE contract — changeContractCurrency asserts draft immediately after
-    // taking the contract row lock.
+    // TASK 14 (#3778) FLIPS THIS. Wave 6 opened the owner-approved escape hatch,
+    // so the correction tool no longer refuses ACTIVE outright — it refuses
+    // UNPRIVILEGED and UNCONFIRMED and INELIGIBLE callers instead. All three
+    // rejections are asserted here, then the legitimate correction is proved.
     let caught: unknown;
     try {
+      // (a) no verified contracts:manage evidence -> 403, not NOT_A_DRAFT.
       await withSystemDbAccessContext(() =>
-        changeContractCurrency(contract.id, { currencyCode: 'EUR', clearLines: true }, fixture.actor));
+        changeContractCurrency(contract.id, { currencyCode: 'EUR', clearLines: true, confirmActiveChange: true }, fixture.actor));
     } catch (err) {
       caught = err;
     }
-    expect(caught, 'changeContractCurrency must refuse on an active contract today').toBeInstanceOf(ContractServiceError);
-    expect((caught as ContractServiceError).code).toBe('NOT_A_DRAFT');
-    expect((caught as ContractServiceError).status).toBe(409);
+    expect(caught, 'changeContractCurrency must refuse an unprivileged active correction').toBeInstanceOf(ContractServiceError);
+    expect((caught as ContractServiceError).code).toBe('ACTIVE_CHANGE_FORBIDDEN');
+    expect((caught as ContractServiceError).status).toBe(403);
 
-    const [after] = await withSystemDbAccessContext(() => db
+    const manageActor = {
+      ...fixture.actor,
+      permissions: new Set(['contracts:read', 'contracts:write', 'contracts:manage']),
+    };
+
+    // (b) the sweep above left an unissued draft, so the contract is INELIGIBLE.
+    await expect(withSystemDbAccessContext(() => changeContractCurrency(
+      contract.id, { currencyCode: 'EUR', clearLines: true, confirmActiveChange: true }, manageActor,
+    ))).rejects.toMatchObject({ code: 'UNBILLED_MONETARY_ROWS', status: 409 });
+
+    const [stillStale] = await withSystemDbAccessContext(() => db
       .select({ currencyCode: contracts.currencyCode }).from(contracts).where(eq(contracts.id, contract.id)).limit(1));
-    expect(after?.currencyCode, 'a refused correction must leave the stamp untouched').toBe('USD');
+    expect(stillStale?.currencyCode, 'a refused correction must leave the stamp untouched').toBe('USD');
+
+    // (c) issue the draft (the money is now billed), and the correction lands.
+    await withSystemDbAccessContext(() => issueInvoice(invoiceId!, {
+      userId: fixture.userId, partnerId: fixture.partnerId, accessibleOrgIds: [fixture.orgId],
+    }));
+    const corrected = await withSystemDbAccessContext(() => changeContractCurrency(
+      contract.id, { currencyCode: 'EUR', clearLines: true, confirmActiveChange: true }, manageActor));
+    expect(corrected.currencyCode, 'the wave-6 escape hatch must correct a stale ACTIVE stamp').toBe('EUR');
+    expect(corrected.status, 'the correction must not disturb the lifecycle').toBe('active');
+
+    // The already-issued USD invoice is untouched — no bulk restamp, ever.
+    const historical = await readInvoice(invoiceId!);
+    expect(historical?.currencyCode).toBe('USD');
   });
 
   it('guard: the BullMQ billing-sweep processor still routes through runContractBillingSweep', () => {

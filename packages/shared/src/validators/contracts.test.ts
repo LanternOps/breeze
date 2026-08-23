@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createContractSchema, contractLineInputSchema, updateContractSchema } from './contracts';
+import { createContractSchema, contractLineInputSchema, updateContractSchema, changeContractCurrencySchema } from './contracts';
 
 describe('createContractSchema', () => {
   it('accepts a valid monthly advance contract', () => {
@@ -132,5 +132,30 @@ describe('contractLineInputSchema — catalog lines omit taxable', () => {
       const issue = r.error.issues.find((i) => i.path.join('.') === 'taxable');
       expect(issue?.message).toBe('taxable is required unless catalogItemId is set');
     }
+  });
+});
+
+describe('changeContractCurrencySchema (#3778)', () => {
+  it('defaults confirmActiveChange to false — an ACTIVE restamp is never implicit', () => {
+    const parsed = changeContractCurrencySchema.parse({ currencyCode: 'eur' });
+    expect(parsed).toEqual({ currencyCode: 'EUR', clearLines: false, reprice: false, confirmActiveChange: false });
+  });
+
+  it('accepts confirmActiveChange alongside clearLines', () => {
+    expect(changeContractCurrencySchema.parse({ currencyCode: 'EUR', clearLines: true, confirmActiveChange: true }))
+      .toMatchObject({ clearLines: true, confirmActiveChange: true });
+  });
+
+  it('keeps clearLines and reprice mutually exclusive', () => {
+    expect(changeContractCurrencySchema.safeParse({ currencyCode: 'EUR', clearLines: true, reprice: true }).success).toBe(false);
+  });
+
+  it('is strict — a mis-keyed field is a parse error, never a silent default', () => {
+    expect(changeContractCurrencySchema.safeParse({ currencyCode: 'EUR', convert: true }).success).toBe(false);
+    expect(changeContractCurrencySchema.safeParse({ currencyCode: 'EUR', confirmActive: true }).success).toBe(false);
+  });
+
+  it('rejects an unsupported currency code', () => {
+    expect(changeContractCurrencySchema.safeParse({ currencyCode: 'XXX' }).success).toBe(false);
   });
 });

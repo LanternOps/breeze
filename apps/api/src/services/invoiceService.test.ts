@@ -898,14 +898,15 @@ describe('addContractLine', () => {
 
   it('non-catalog path: sets sourceType=contract and returns the inserted line with normalized values', async () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
-    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]); // #3778: parent contract locked FOR UPDATE
     queueInsertAndRecompute({ id: 'l1', sourceType: 'contract', sourceId: null, catalogItemId: null,
       description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
       lineTotal: '500.00', taxable: false, customerVisible: true });
 
     const { line, pricedFrom } = await svc.addContractLine('i1', {
       description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
-      taxable: false, catalogItemId: null, sourceId: null
+      taxable: false, catalogItemId: null, sourceId: null, contractId: 'ct1'
     }, actor);
 
     expect(line.sourceType).toBe('contract');
@@ -919,7 +920,7 @@ describe('addContractLine', () => {
     // resolvePrice returns a known price that differs from what caller would supply
     resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '99.00', costBasis: '45.00' }));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
-    queueResult([{ currencyCode: 'USD' }]); // B2 guard: contract currency lookup via sourceId — matches
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]); // #3778: parent contract locked FOR UPDATE — B2 guard reads its currency
     queueInsertAndRecompute({ id: 'l2', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '3', unitPrice: '99.00',
       lineTotal: '297.00', taxable: true, customerVisible: true });
@@ -931,6 +932,7 @@ describe('addContractLine', () => {
       taxable: false,      // caller-supplied taxable — must be overridden by resolvePrice
       catalogItemId: 'cat-1',
       sourceId: 'cl-1',
+      contractId: 'ct1',
     }, actor);
 
     // resolvePrice must have been called in the INVOICE's currency, on the
@@ -952,13 +954,13 @@ describe('addContractLine', () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     resolvePriceMock.mockRejectedValue(new CatalogServiceError('JPY 100.50 not representable', 409, 'PRICE_NOT_REPRESENTABLE'));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
-    queueResult([{ currencyCode: 'JPY' }]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'JPY' }]); // #3778: parent contract locked FOR UPDATE
     queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '2', unitPrice: '100.00', lineTotal: '200.00', taxable: true, customerVisible: true });
 
     const { pricedFrom } = await svc.addContractLine('i1', {
       description: 'Managed endpoint', quantity: '2', unitPrice: '100', taxable: true,
-      catalogItemId: 'cat-1', sourceId: 'cl-1',
+      catalogItemId: 'cat-1', sourceId: 'cl-1', contractId: 'ct1',
     }, actor);
 
     expect(pricedFrom).toBe('contract_snapshot');
@@ -970,13 +972,13 @@ describe('addContractLine', () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     resolvePriceMock.mockRejectedValue(new CatalogServiceError('No EUR price', 409, 'NO_PRICE_FOR_CURRENCY'));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
-    queueResult([{ currencyCode: 'EUR' }]); // B2 guard: the snapshot is in the invoice currency
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'EUR' }]); // #3778: parent contract locked FOR UPDATE — B2 guard: the snapshot is in the invoice currency
     queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '2', unitPrice: '80.00', lineTotal: '160.00', taxable: true, customerVisible: true });
 
     const { line, pricedFrom } = await svc.addContractLine('i1', {
       description: 'Managed endpoint', quantity: '2', unitPrice: '80', taxable: true,
-      catalogItemId: 'cat-1', sourceId: 'cl-1',
+      catalogItemId: 'cat-1', sourceId: 'cl-1', contractId: 'ct1',
     }, actor);
 
     expect(pricedFrom).toBe('contract_snapshot');
@@ -991,8 +993,9 @@ describe('addContractLine', () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     resolvePriceMock.mockRejectedValue(new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND'));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'EUR' }]); // #3778: parent contract locked FOR UPDATE
     await expect(
-      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1' }, actor)
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ status: 404, code: 'ITEM_NOT_FOUND' });
     expect((db as unknown as { values: Mock }).values).not.toHaveBeenCalled();
   });
@@ -1000,28 +1003,30 @@ describe('addContractLine', () => {
   it('throws CURRENCY_MISMATCH (400) when the source contract currency differs from the invoice header', async () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'GBP' }]);
-    queueResult([{ currencyCode: 'EUR' }]); // B2 guard: contract is EUR, invoice is GBP
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'EUR' }]); // #3778: parent contract locked FOR UPDATE
     await expect(
       svc.addContractLine('i1', {
         description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
-        taxable: false, catalogItemId: null, sourceId: 'cl-1'
+        taxable: false, catalogItemId: null, sourceId: 'cl-1', contractId: 'ct1'
       }, actor)
     ).rejects.toMatchObject({ code: 'CURRENCY_MISMATCH', status: 400 });
   });
 
   it('non-catalog path: throws INVALID_AMOUNT (400) when unitPrice is negative', async () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
-    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]); // #3778: parent contract locked FOR UPDATE
     await expect(
-      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '-5.00', taxable: false }, actor)
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '-5.00', taxable: false, contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ code: 'INVALID_AMOUNT', status: 400 });
   });
 
   it('non-catalog path: throws INVALID_AMOUNT (400) when quantity is negative', async () => {
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
-    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]); // #3778: parent contract locked FOR UPDATE
     await expect(
-      svc.addContractLine('i1', { description: 'x', quantity: '-2', unitPrice: '10.00', taxable: false }, actor)
+      svc.addContractLine('i1', { description: 'x', quantity: '-2', unitPrice: '10.00', taxable: false, contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ code: 'INVALID_AMOUNT', status: 400 });
   });
 
@@ -1029,7 +1034,7 @@ describe('addContractLine', () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
     await expect(
-      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false }, actor)
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false, contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
   });
 
@@ -1037,7 +1042,7 @@ describe('addContractLine', () => {
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
     await expect(
-      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false }, actor)
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false, contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 });
@@ -1500,8 +1505,9 @@ describe('invoiceService currency representability guard (W6-G1-1)', () => {
 
   it('addContractLine rejects a fractional non-catalog JPY snapshot price', async () => {
     queueResult([draft('JPY')]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'JPY' }]); // #3778: parent contract locked FOR UPDATE
     await expect(
-      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: 100.5, taxable: false }, actor)
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.5', taxable: false, contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
     expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
   });

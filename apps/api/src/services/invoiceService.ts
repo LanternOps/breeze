@@ -327,27 +327,45 @@ export async function addContractLine(
     taxable: boolean;        // used on non-catalog path
     catalogItemId?: string | null;
     sourceId?: string | null; // contract_line id
+    /** The owning CONTRACT id — durable lineage (#3778). REQUIRED: a
+     *  source_type='contract' line without it is a 500-worthy bug, never a
+     *  silent insert, because the ACTIVE-contract restamp keys on this column. */
+    contractId: string;
   },
   actor: InvoiceActor
 ): Promise<{ line: typeof invoiceLines.$inferSelect; pricedFrom: ContractLinePricedFrom }> {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
 
+    // Wave 6 (#3778): the contract id is not optional at the service layer.
+    if (!input.contractId) {
+      throw new InvoiceServiceError('contractId is required for a contract-sourced line', 500, 'INVALID_STATE');
+    }
+
+    // PRODUCER SERIALIZATION (#3778): lock the PARENT CONTRACT after the invoice
+    // lock and before validating/inserting, preserving the established
+    // `invoice -> contract` order. Without it, a concurrent ACTIVE-contract
+    // restamp could commit between this read and this insert, leaving an
+    // old-currency line on a live draft that eligibility never saw.
+    const [contractRow] = await tx.select({
+      id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode,
+    }).from(contracts).where(eq(contracts.id, input.contractId)).limit(1).for('update');
+    if (!contractRow) throw new InvoiceServiceError('Contract not found', 404, 'INVALID_STATE');
+    if (contractRow.orgId !== inv.orgId) {
+      throw new InvoiceServiceError('Contract belongs to a different organization', 400, 'INVALID_STATE');
+    }
+
     // B2 guard (spec §5): a contract-sourced line may only land on an invoice in
     // the SAME currency as its contract — no conversion, no silent restamp. This
     // is the source-vs-header validation for contract lines; time entries/parts
     // are asserted the same way on the locked rows in issueInvoice (wave 4, #3776).
-    if (input.sourceId) {
-      const [src] = await tx.select({ currencyCode: contracts.currencyCode })
-        .from(contractLines)
-        .innerJoin(contracts, eq(contracts.id, contractLines.contractId))
-        .where(eq(contractLines.id, input.sourceId)).limit(1);
-      if (src && src.currencyCode !== inv.currencyCode) {
-        throw new InvoiceServiceError(
-          `Contract is in ${src.currencyCode}; this invoice is in ${inv.currencyCode} — contract lines cannot cross currencies`,
-          400, 'CURRENCY_MISMATCH'
-        );
-      }
+    // Asserted against the LOCKED contract row (wave 6) rather than an unlocked
+    // contract_lines join, so the stamp cannot move underneath it.
+    if (contractRow.currencyCode !== inv.currencyCode) {
+      throw new InvoiceServiceError(
+        `Contract is in ${contractRow.currencyCode}; this invoice is in ${inv.currencyCode} — contract lines cannot cross currencies`,
+        400, 'CURRENCY_MISMATCH'
+      );
     }
 
     // Quantity is always engine-supplied (e.g. device count) — normalize but do not override.
@@ -398,7 +416,8 @@ export async function addContractLine(
     }
 
     const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
-      sourceType: 'contract', sourceId: input.sourceId ?? null, catalogItemId: input.catalogItemId ?? null,
+      sourceType: 'contract', sourceId: input.sourceId ?? null, sourceContractId: input.contractId,
+      catalogItemId: input.catalogItemId ?? null,
       parentLineId: null, ticketId: null, description: input.description, quantity,
       unitPrice, costBasis, taxable, customerVisible: true,
       lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode), isUnapprovedTime: false
@@ -1406,20 +1425,96 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
 // Void + reissue + overdue sweep + viewed (Task 3.8)
 // ---------------------------------------------------------------------------
 
+/**
+ * Void an issued invoice and optionally reissue it as a fresh draft.
+ *
+ * WAVE 6 (#3778) LOCK DISCIPLINE. Until wave 6 the invoice and its lines were
+ * read BEFORE the transaction opened, and the transaction then flipped the
+ * status and RELEASED the source rows off that unlocked snapshot — so a void
+ * could interleave with issueInvoice, with line mutation, or with source
+ * attachment/removal, and release rows that a concurrent issue had just claimed.
+ * The source release is the dangerous half and it happens with AND without
+ * reissue, so ALL authoritative reads now live inside one transaction and take
+ * the established chain in order:
+ *
+ *     invoices -> invoice_lines -> contracts -> contract_lines
+ *              -> time_entries -> ticket_parts
+ *
+ * HISTORICAL REISSUE EDGE. After an ACTIVE-contract restamp, cloning an old
+ * contract-sourced invoice would carry the HISTORICAL currency while issue
+ * validation demands the contract's live one — an invoice that can never be
+ * issued. `reissue: true` is therefore rejected with CURRENCY_MISMATCH when any
+ * referenced contract now carries a different currency; void WITHOUT reissue
+ * still works, and the operator creates an explicit old-currency correction
+ * draft. Sources are never detached, historical lines are never restamped, and
+ * issue validation is never bypassed (owner-fixed: no conversion, snapshots rule).
+ */
 export async function voidInvoice(invoiceId: string, reason: string, opts: { reissue?: boolean }, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireInvoiceAccess(actor, inv);
-  if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
-  if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
-
-  const lines = await db.select({ sourceType: invoiceLines.sourceType, sourceId: invoiceLines.sourceId }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
-  const timeIds = lines.filter((l) => l.sourceType === 'time_entry' && l.sourceId).map((l) => l.sourceId!) as string[];
-  const partIds = lines.filter((l) => l.sourceType === 'part' && l.sourceId).map((l) => l.sourceId!) as string[];
-
   // Void + (optional) reissue commit atomically in ONE system transaction: the
   // void/release and the fresh-draft clone must not be observable independently.
   let draftId: string | null = null;
+  let voidedOrgId = '';
+  let voidedPartnerId = '';
   await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    // 1. Invoice row FIRST, FOR UPDATE — status is re-validated on the LOCKED row.
+    const [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
+    if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    requireInvoiceAccess(actor, inv);
+    if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
+    if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
+    voidedOrgId = inv.orgId;
+    voidedPartnerId = inv.partnerId;
+
+    // 2. Lines FOR UPDATE (deterministic id order), so a concurrent line
+    //    mutation or source attach/detach cannot slip between read and release.
+    const srcLines = await db.select().from(invoiceLines)
+      .where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id).for('update');
+    const timeIds = [...new Set(srcLines.filter((l) => l.sourceType === 'time_entry' && l.sourceId).map((l) => l.sourceId!))].sort();
+    const partIds = [...new Set(srcLines.filter((l) => l.sourceType === 'part' && l.sourceId).map((l) => l.sourceId!))].sort();
+    const contractLineIds = [...new Set(srcLines.filter((l) => l.sourceType === 'contract' && l.sourceId).map((l) => l.sourceId!))].sort();
+
+    // 3. Contracts, then contract_lines (parents before children, repo order).
+    //    Durable lineage first (#3778); the contract_lines join is the legacy
+    //    fallback for rows written before the column existed.
+    const legacy = contractLineIds.length
+      ? await db.select({ contractId: contractLines.contractId })
+          .from(contractLines).where(inArray(contractLines.id, contractLineIds))
+      : [];
+    const contractIds = [...new Set([
+      ...srcLines.map((l) => l.sourceContractId).filter((x): x is string => !!x),
+      ...legacy.map((r) => r.contractId),
+    ])].sort();
+    const lockedContracts = contractIds.length
+      ? await db.select({ id: contracts.id, currencyCode: contracts.currencyCode })
+          .from(contracts).where(inArray(contracts.id, contractIds)).orderBy(contracts.id).for('update')
+      : [];
+    if (contractLineIds.length) {
+      await db.select({ id: contractLines.id }).from(contractLines)
+        .where(inArray(contractLines.id, contractLineIds)).orderBy(contractLines.id).for('update');
+    }
+
+    // 4. Source rows FOR UPDATE before they are released.
+    if (timeIds.length) {
+      await db.select({ id: timeEntries.id }).from(timeEntries)
+        .where(inArray(timeEntries.id, timeIds)).orderBy(timeEntries.id).for('update');
+    }
+    if (partIds.length) {
+      await db.select({ id: ticketParts.id }).from(ticketParts)
+        .where(inArray(ticketParts.id, partIds)).orderBy(ticketParts.id).for('update');
+    }
+
+    // 5. Historical-reissue guard, on the LOCKED contract rows.
+    if (opts.reissue) {
+      const drifted = lockedContracts.filter((c) => c.currencyCode !== inv.currencyCode);
+      if (drifted.length) {
+        const codes = [...new Set(drifted.map((c) => c.currencyCode))].join(', ');
+        throw new InvoiceServiceError(
+          `This invoice is in ${inv.currencyCode} but its contract(s) are now in ${codes} — reissue would create a draft that can never be issued. Void without reissue and create an explicit ${inv.currencyCode} correction draft instead`,
+          400, 'CURRENCY_MISMATCH'
+        );
+      }
+    }
+
     const now = new Date();
     await db.update(invoices).set({ status: 'void', voidedAt: now, voidReason: reason, updatedAt: now }).where(eq(invoices.id, invoiceId));
     // release source rows so they can be re-invoiced
@@ -1436,13 +1531,15 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
-    const srcLines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+    // Cloned from the rows LOCKED in step 2 — not re-read unlocked.
+    srcLines.sort((a, b) => a.sortOrder - b.sortOrder);
 
     // Two-pass clone to preserve bundle hierarchy: insert parents (parentLineId IS
     // NULL) first, map old line id → new line id, then insert children with their
     // parentLineId remapped to the cloned parent.
     const cloneValues = (l: typeof srcLines[number], parentLineId: string | null) => ({
       invoiceId: draft!.id, orgId: l.orgId, sourceType: l.sourceType, sourceId: l.sourceId, catalogItemId: l.catalogItemId,
+      sourceContractId: l.sourceContractId,
       parentLineId, ticketId: l.ticketId, name: l.name, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
       lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
@@ -1459,7 +1556,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     }
   }));
 
-  await emitInvoiceEvent({ type: 'invoice.voided', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
+  await emitInvoiceEvent({ type: 'invoice.voided', invoiceId, orgId: voidedOrgId, partnerId: voidedPartnerId, actorUserId: actor.userId });
 
   if (opts.reissue && draftId) {
     await recomputeInvoiceTotals(draftId);
