@@ -4,6 +4,10 @@
     "dashboard": "Dashboard",
     "devices": "Geräte",
     "alerts": "Warnmeldungen",
+    "approvals": "Genehmigungen",
+    "pendingApprovals": "{{count}} ausstehende Genehmigungen",
+    "pendingApprovals_one": "{{count}} ausstehende Genehmigung",
+    "pendingApprovals_other": "{{count}} ausstehende Genehmigungen",
     "tickets": "Tickets",
     "incidents": "Vorfälle",
     "remoteAccess": "Fernzugriff",
@@ -700,7 +704,20 @@
       "recently": "Kürzlich",
       "markUnread": "Als ungelesen markieren",
       "markRead": "Als gelesen markieren",
-      "preferences": "Benachrichtigungseinstellungen"
+      "preferences": "Benachrichtigungseinstellungen",
+      "types": {
+        "alert": "Warnmeldung",
+        "device": "Gerät",
+        "script": "Skript",
+        "automation": "Automatisierung",
+        "system": "Systemmeldung",
+        "user": "Benutzer",
+        "security": "Sicherheit",
+        "ticket": "Vorgang",
+        "approval": "Genehmigung",
+        "ai": "KI",
+        "unknown": "Benachrichtigung"
+      }
     },
     "sidebar": {
       "autoHide": "Seitenleiste automatisch ausblenden",
