@@ -30,6 +30,8 @@ const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion:
   'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 }
 };
 
+export const SUPPORTED_AI_MODELS: readonly string[] = Object.freeze(Object.keys(MODEL_PRICING));
+
 // Conservative last-resort pricing for an unrecognized model id. Mirrors the most
 // expensive current Opus-tier rate so we never silently undercount. Hitting this is logged.
 const DEFAULT_PRICING = { inputPerMillion: 500, outputPerMillion: 2500 };

@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'crypto';
 
 const ENCRYPTED_V1_PREFIX = 'enc:v1:';
 const ENCRYPTED_V2_PREFIX = 'enc:v2:';
@@ -116,6 +116,12 @@ function getEncryptionKey(): Buffer {
 
   cachedEncryptionKey = deriveEncryptionKey(keySource);
   return cachedEncryptionKey;
+}
+
+export function hmacFingerprint(value: string): string {
+  const activeKeyId = getActiveKeyId();
+  const key = activeKeyId ? getV2EncryptionKey(activeKeyId) : getEncryptionKey();
+  return createHmac('sha256', key).update(value).digest('hex');
 }
 
 function getActiveKeyId(): string | null {
