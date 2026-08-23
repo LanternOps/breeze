@@ -9,19 +9,17 @@ import {
   pgEnum,
   index
 } from 'drizzle-orm/pg-core';
+import { NOTIFICATION_TYPES } from '@breeze/shared';
 import { users } from './users';
 import { organizations } from './orgs';
 
-export const notificationTypeEnum = pgEnum('notification_type', [
-  'alert',
-  'device',
-  'script',
-  'automation',
-  'system',
-  'user',
-  'security',
-  'ticket'
-]);
+// Single-sourced from @breeze/shared (same pattern as alerts.ts /
+// NOTIFICATION_CHANNEL_TYPES) so API validation, web rendering, and this
+// column type can never drift. Wave 2 (#3823) added 'approval' (= a four-eyes
+// decision is waiting on this user) and 'ai' (= an agent produced something
+// worth a human's attention). Note the DB enum's actual value order comes
+// from the migrations — this array only types the TS side.
+export const notificationTypeEnum = pgEnum('notification_type', NOTIFICATION_TYPES);
 
 export const notificationPriorityEnum = pgEnum('notification_priority', [
   'low',
@@ -40,6 +38,14 @@ export const userNotifications = pgTable('user_notifications', {
   message: text('message'),
   link: varchar('link', { length: 500 }),
   metadata: jsonb('metadata'),
+  /**
+   * Idempotency key for producers that can redeliver. The outbox publisher
+   * marks a row published on ENQUEUE rather than on completion, and BullMQ
+   * retries, so one intent can otherwise notify the same approver repeatedly.
+   * NULL (the default, and what every pre-wave-2 producer writes) opts out —
+   * the unique index is partial.
+   */
+  dedupeKey: text('dedupe_key'),
   read: boolean('read').notNull().default(false),
   readAt: timestamp('read_at'),
   createdAt: timestamp('created_at').defaultNow().notNull()

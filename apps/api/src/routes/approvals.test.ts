@@ -1871,7 +1871,7 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     vi.mocked(userCanDecideApprovals).mockReturnValue(true);
   });
 
-  it('denying an intent-linked row transitions the intent to rejected, expires siblings, and writes NO outbox row', async () => {
+  it('denying an intent-linked row transitions the intent to rejected, expires siblings, and records intent_rejected', async () => {
     mockDecideWithIntent({ requestedByUserId: 'requester-1' });
     const { intentCasSet, siblingSet, tx } = mockIntentFanInTx();
 
@@ -1891,7 +1891,18 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     expect(siblingSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'expired' }),
     );
-    expect(tx.insert).not.toHaveBeenCalled();
+    // Wave 2 (#3823) INVERTED this assertion. It previously read
+    // `expect(tx.insert).not.toHaveBeenCalled()` — a denied intent wrote no
+    // outbox row at all, which is precisely why a requester whose chat turn had
+    // ended could never learn the outcome. The row is written in the same
+    // transaction as the status change so the record cannot disagree with the
+    // decision, and it carries ids only, never argument content.
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    const outboxValues = (tx.insert as ReturnType<typeof vi.fn>).mock.results[0]!.value.values as
+      ReturnType<typeof vi.fn>;
+    expect(outboxValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'intent_rejected' }),
+    );
     expect(recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'rejected' }),
     );

@@ -78,7 +78,16 @@ export const actionIntentOriginPrincipalKindEnum = [
 export type ActionIntentOriginPrincipalKind =
   (typeof actionIntentOriginPrincipalKindEnum)[number];
 
-export const intentOutboxEventEnum = ['intent_created', 'intent_approved'] as const;
+// Widened in wave 2 (#3823): a DENIED or EXPIRED intent previously wrote no
+// outbox row at all, so a requester whose chat turn had ended could never be
+// told the outcome. Pinned by a CHECK in SQL — see
+// 2026-09-04-ai-agent-notifications.sql.
+export const intentOutboxEventEnum = [
+  'intent_created',
+  'intent_approved',
+  'intent_rejected',
+  'intent_expired',
+] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
 
 /**
