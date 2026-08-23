@@ -142,7 +142,7 @@ describe('POST /client-ai/sessions (create)', () => {
       userId: null,
       clientUserId: CLIENT_USER_ID,
       type: 'excel_client',
-      model: 'claude-sonnet-4-5-20250929',
+      model: 'claude-sonnet-4-6',
       systemPrompt: expect.stringContaining('spreadsheet assistant'),
     }));
     expect(recordClientUsageMock).toHaveBeenCalledWith(ORG_ID, CLIENT_USER_ID, { sessionCount: 1 });

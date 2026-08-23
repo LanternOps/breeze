@@ -35,6 +35,7 @@ import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
+import { resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const HELPER_RATE_LIMIT = 30;
@@ -62,8 +63,9 @@ async function runHelperPreFlight(
   sessionId: string,
   content: string,
   device: HelperDevice,
+  partnerId: string | null,
 ): Promise<
-  | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; clientTools: ClientToolDeclaration[] }
+  | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; clientTools: ClientToolDeclaration[]; resolved: UsableLlmConfig }
   | { ok: false; error: string; status: number }
 > {
   // Fetch session
@@ -93,6 +95,11 @@ async function runHelperPreFlight(
 
   if (session.turnCount >= session.maxTurns) {
     return { ok: false, error: `Session turn limit reached (${session.maxTurns})`, status: 400 };
+  }
+
+  const resolved = await resolveLlmConfig(partnerId);
+  if (resolved.source === 'unavailable') {
+    return { ok: false, error: 'ai_unavailable', status: 503 };
   }
 
   // Rate limit per device
@@ -151,7 +158,7 @@ async function runHelperPreFlight(
     // Non-fatal
   }
 
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools };
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools, resolved };
 }
 
 // ============================================
@@ -178,7 +185,12 @@ helperRoutes.post(
   }).optional()),
   async (c) => {
     const device = c.get('helperDevice');
+    const auth = c.get('auth');
     const body = c.req.valid('json') ?? {};
+    const resolved = await resolveLlmConfig(auth.partnerId ?? null);
+    if (resolved.source === 'unavailable') {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
     const permissionLevel: HelperPermissionLevel = await resolveHelperPermissionLevelForDevice(
       device.id,
       DEFAULT_PERMISSION_LEVEL,
@@ -204,7 +216,7 @@ helperRoutes.post(
         orgId: device.orgId,
         userId: null,
         deviceId: device.id,
-        model: 'claude-sonnet-4-5-20250929',
+        model: resolved.model,
         systemPrompt,
         contextSnapshot: {
           permissionLevel,
@@ -242,12 +254,12 @@ helperRoutes.post(
     const { content } = c.req.valid('json');
 
     // Pre-flight checks
-    const preflight = await runHelperPreFlight(sessionId, content, device);
+    const preflight = await runHelperPreFlight(sessionId, content, device, auth.partnerId ?? null);
     if (!preflight.ok) {
       return c.json({ error: preflight.error }, preflight.status as 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools, resolved } = preflight;
 
     // When the session declared client tools, build the generic client-declared
     // MCP server: each model tool call publishes `client_tool_request` and parks
@@ -284,8 +296,9 @@ helperRoutes.post(
       c,
       systemPrompt,
       maxBudgetUsd,
+      resolved,
       allowedTools,
-      mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[7],
+      mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
     );
 
     // Concurrent message guard. If the turn is blocked only on pending

@@ -1,15 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { rateLimiterMock, getRedisMock } = vi.hoisted(() => ({
+const { rateLimiterMock, getRedisMock, dbSelectMock, resolveLlmConfigMock } = vi.hoisted(() => ({
   rateLimiterMock: vi.fn(),
   getRedisMock: vi.fn(() => ({}) as never),
+  dbSelectMock: vi.fn(),
+  resolveLlmConfigMock: vi.fn(),
 }));
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 vi.mock('./rate-limit', () => ({ rateLimiter: rateLimiterMock }));
+vi.mock('../db', () => ({ db: { select: dbSelectMock } }));
+vi.mock('../db/schema', () => ({ organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' } }));
+vi.mock('./llm/llmConfigResolver', () => ({
+  resolveLlmConfig: (...args: unknown[]) => resolveLlmConfigMock(...args),
+}));
 
 import {
-  DEFAULT_CLIENT_AI_MODEL,
   EXCEL_CLIENT_SYSTEM_PROMPT,
   WORD_CLIENT_SYSTEM_PROMPT,
   POWERPOINT_CLIENT_SYSTEM_PROMPT,
@@ -20,6 +26,7 @@ import {
   buildClientAuthContext,
   checkClientRateLimits,
   generateClientSessionTitle,
+  resolveClientLlmConfig,
 } from './clientAiSessions';
 import { CLIENT_HOSTS, type ClientHost } from './clientAiHosts';
 import { CLIENT_TOOL_REGISTRIES, isClientHostSupported } from './clientAiTools';
@@ -31,6 +38,11 @@ const USER = 'beefbeef-1111-4222-8333-444455556666';
 beforeEach(() => {
   vi.clearAllMocks();
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
+  resolveLlmConfigMock.mockResolvedValue({
+    source: 'platform',
+    apiKey: 'platform-key',
+    model: 'claude-sonnet-4-6',
+  });
 });
 
 describe('system prompt', () => {
@@ -135,9 +147,25 @@ describe('generateClientSessionTitle', () => {
   });
 });
 
-describe('DEFAULT_CLIENT_AI_MODEL', () => {
-  it('matches the platform default model', () => {
-    expect(DEFAULT_CLIENT_AI_MODEL).toBe('claude-sonnet-4-5-20250929');
+describe('resolveClientLlmConfig', () => {
+  it('resolves the provider from the authenticated organization owner', async () => {
+    const limit = vi.fn(() => Promise.resolve([{ partnerId: 'partner-from-org' }]));
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    dbSelectMock.mockReturnValue({ from });
+
+    await resolveClientLlmConfig(ORG);
+
+    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-from-org');
+    expect(where).toHaveBeenCalledOnce();
+  });
+
+  it('has no caller-supplied partner seam and fails if the authenticated org no longer exists', async () => {
+    const limit = vi.fn(() => Promise.resolve([]));
+    dbSelectMock.mockReturnValue({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit })) })) });
+
+    await expect(resolveClientLlmConfig(ORG)).rejects.toThrow('Organization not found');
+    expect(resolveLlmConfigMock).not.toHaveBeenCalled();
   });
 });
 

@@ -85,6 +85,10 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('../services/llm/llmConfigResolver', () => ({
+  resolveLlmConfig: vi.fn(),
+}));
+
 import { authMiddleware } from '../middleware/auth';
 import { scriptAiRoutes } from './scriptAi';
 import {
@@ -94,6 +98,7 @@ import {
   closeScriptBuilderSession,
 } from '../services/scriptBuilderService';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { resolveLlmConfig } from '../services/llm/llmConfigResolver';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -106,7 +111,7 @@ function setAuth(overrides: Record<string, unknown> = {}) {
       user: { id: 'user-1', email: 'test@test.com', name: 'Test' },
       scope: 'organization',
       orgId: ORG_ID,
-      partnerId: null,
+      partnerId: 'partner-1',
       accessibleOrgIds: [ORG_ID],
       canAccessOrg: (id: string) => id === ORG_ID,
       orgCondition: () => undefined,
@@ -130,6 +135,11 @@ describe('scriptAi routes — session CRUD', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setAuth();
+    vi.mocked(resolveLlmConfig).mockResolvedValue({
+      source: 'platform',
+      apiKey: 'platform-key',
+      model: 'claude-sonnet-4-6',
+    });
     app = makeApp();
   });
 
@@ -153,6 +163,30 @@ describe('scriptAi routes — session CRUD', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe(SESSION_ID);
+      expect(resolveLlmConfig).toHaveBeenCalledWith('partner-1');
+      expect(createScriptBuilderSession).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ title: 'Build a backup script' }),
+        'claude-sonnet-4-6',
+      );
+    });
+
+    it('returns ai_unavailable as 503 before creating the database session', async () => {
+      vi.mocked(resolveLlmConfig).mockResolvedValue({
+        source: 'unavailable',
+        partnerId: 'partner-1',
+        reason: 'key_error',
+      });
+
+      const res = await app.request('/ai/script-builder/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Test' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(createScriptBuilderSession).not.toHaveBeenCalled();
     });
 
     it('returns 400 when organization context is missing', async () => {

@@ -531,6 +531,7 @@ aiRoutes.post(
     const preflight = await runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c);
     if (!preflight.ok) {
       const err = preflight.error;
+      if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
@@ -538,7 +539,7 @@ aiRoutes.post(
       return c.json({ error: err }, 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, resolved } = preflight;
 
     // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
     if (isOpenAICompatibleProvider()) {
@@ -625,6 +626,7 @@ aiRoutes.post(
       c,
       systemPrompt,
       maxBudgetUsd,
+      resolved,
     );
 
     // Concurrent message guard — atomic check-and-set

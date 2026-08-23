@@ -32,6 +32,7 @@ import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
+import { resolveLlmConfig } from '../services/llm/llmConfigResolver';
 
 export const scriptAiRoutes = new Hono();
 const requireScriptAiRead = requirePermission(
@@ -73,7 +74,11 @@ scriptAiRoutes.post(
     const body = c.req.valid('json');
 
     try {
-      const session = await createScriptBuilderSession(auth, body);
+      const resolved = await resolveLlmConfig(auth.partnerId ?? null);
+      if (resolved.source === 'unavailable') {
+        return c.json({ error: 'ai_unavailable' }, 503);
+      }
+      const session = await createScriptBuilderSession(auth, body, resolved.model);
       writeRouteAudit(c, {
         orgId: session.orgId,
         action: 'ai.script_builder.session.create',
@@ -165,6 +170,7 @@ scriptAiRoutes.post(
     const preflight = await runPreFlightChecks(sessionId, content, auth, undefined, c);
     if (!preflight.ok) {
       const err = preflight.error;
+      if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
@@ -177,7 +183,7 @@ scriptAiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, resolved } = preflight;
 
     // Now safe to update editor context
     let updatedSystemPrompt: string | undefined;
@@ -206,6 +212,7 @@ scriptAiRoutes.post(
       c,
       effectiveSystemPrompt,
       maxBudgetUsd,
+      resolved,
       SCRIPT_BUILDER_MCP_TOOL_NAMES,
       // Custom MCP server factory for script builder tools
       (getAuth, onPreToolUse, onPostToolUse) => ({

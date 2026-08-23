@@ -10,13 +10,25 @@
  */
 
 import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { organizations } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import type { ClientAiOrgPolicy } from './clientAiPolicy';
 import type { ClientHost } from './clientAiHosts';
+import { resolveLlmConfig, type ResolvedLlmConfig } from './llm/llmConfigResolver';
 
-export const DEFAULT_CLIENT_AI_MODEL = 'claude-sonnet-4-5-20250929';
+export async function resolveClientLlmConfig(orgId: string): Promise<ResolvedLlmConfig> {
+  const [organization] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!organization) throw new Error('Organization not found');
+  return resolveLlmConfig(organization.partnerId ?? null);
+}
 
 /**
  * The Excel-assistant system prompt (spec §5/§11; pinned in the plan).

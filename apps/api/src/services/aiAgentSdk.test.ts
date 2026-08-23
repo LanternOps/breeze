@@ -48,6 +48,11 @@ vi.mock('./aiAgent', () => ({
   waitForApproval: vi.fn(),
 }));
 
+const mockResolveLlmConfig = vi.fn();
+vi.mock('./llm/llmConfigResolver', () => ({
+  resolveLlmConfig: (...args: unknown[]) => mockResolveLlmConfig(...args),
+}));
+
 const mockCheckAiRateLimit = vi.fn();
 const mockCheckBudget = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
@@ -191,6 +196,7 @@ vi.mock('./sentry', () => ({
 type TestAuth = {
   user: { id: string; email: string; name: string };
   orgId: string | null; // null for partner-scope logins — the real AuthContext.orgId type
+  partnerId: string | null;
   scope: string;
   accessibleOrgIds: string[];
   canAccessOrg: (orgId: string) => boolean;
@@ -201,6 +207,7 @@ function makeAuth(overrides?: Partial<TestAuth>) {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
     orgId: 'org-1',
+    partnerId: 'partner-1',
     scope: 'org',
     accessibleOrgIds: ['org-1'],
     canAccessOrg: () => true,
@@ -302,6 +309,11 @@ describe('runPreFlightChecks', () => {
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
     mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
+    mockResolveLlmConfig.mockResolvedValue({
+      source: 'platform',
+      apiKey: 'platform-key',
+      model: 'claude-sonnet-4-6',
+    });
   });
 
   // --- Session ---
@@ -310,6 +322,22 @@ describe('runPreFlightChecks', () => {
     mockGetSession.mockResolvedValue(null);
     const result = await runPreFlightChecks('bad-id', 'hello', auth);
     expect(result).toEqual({ ok: false, error: 'Session not found' });
+  });
+
+  it('returns the ai_unavailable 503 contract before rate, budget, or SDK preparation', async () => {
+    mockResolveLlmConfig.mockResolvedValue({
+      source: 'unavailable',
+      partnerId: 'partner-1',
+      reason: 'key_error',
+    });
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
+    expect(mockResolveLlmConfig).toHaveBeenCalledWith('partner-1');
+    expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+    expect(mockCheckBudget).not.toHaveBeenCalled();
+    expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
   });
 
   // --- Rate limits use session's org, not auth's org ---
@@ -570,6 +598,11 @@ describe('runPreFlightChecks', () => {
       expect(result.sanitizedContent).toBe('clean input');
       expect(result.systemPrompt).toBeDefined();
       expect(result.maxBudgetUsd).toBe(25.0);
+      expect(result.resolved).toEqual({
+        source: 'platform',
+        apiKey: 'platform-key',
+        model: 'claude-sonnet-4-6',
+      });
     }
   });
 });

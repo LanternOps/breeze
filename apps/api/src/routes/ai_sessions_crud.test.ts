@@ -359,6 +359,24 @@ describe('AI routes', () => {
   // POST /sessions/:id/messages
   // ============================================
   describe('POST /ai/sessions/:id/messages', () => {
+    it('returns ai_unavailable as 503 before touching the SDK manager', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
+        ok: false,
+        error: 'ai_unavailable',
+        status: 503,
+      });
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
     it('passes the bound device id from the DB session into streamingSessionManager.getOrCreate (#3087 route wiring)', async () => {
       // This is the seam that arms the #3087 fix: getOrCreate uses `deviceId`
       // to decide whether to narrow tool execution to the device's org. If
@@ -380,6 +398,14 @@ describe('AI routes', () => {
         sanitizedContent: 'hello there',
         systemPrompt: 'SYSTEM PROMPT',
         maxBudgetUsd: undefined,
+        resolved: {
+          source: 'partner',
+          partnerId: 'partner-1',
+          apiKey: 'partner-key',
+          model: 'claude-sonnet-4-6',
+          configId: 'config-1',
+          configVersion: 3,
+        },
       });
 
       const fakeActiveSession = {
@@ -409,6 +435,7 @@ describe('AI routes', () => {
         expect.anything(),
         'SYSTEM PROMPT',
         undefined,
+        expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 3 }),
       );
     });
   });
