@@ -165,6 +165,7 @@ The capability and authorized-session result use module-private runtime symbols.
 - Create: `apps/api/src/__tests__/integration/auth-browser-transition-rls.integration.test.ts`
 - Modify: `apps/api/src/db/schema/{index,refreshTokenFamilies,sso}.ts`
 - Modify: `apps/api/src/services/{index,refreshTokenFamily}.ts`
+- Modify: `apps/api/src/services/secretCrypto.ts` and `.test.ts`
 - Modify: `apps/api/src/routes/auth/index.ts`
 - Modify: `apps/api/src/routes/auth/helpers.ts`
 - Modify: `apps/api/src/routes/auth/helpers.test.ts`
@@ -172,7 +173,7 @@ The capability and authorized-session result use module-private runtime symbols.
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
 
 **Interfaces:**
-- Consumes: current `withSystemDbAccessContext`, `runOutsideDbContext`, trusted cookie transport helpers, refresh-family schema, and existing SSO session schema.
+- Consumes: current `withSystemDbAccessContext`, `runOutsideDbContext`, trusted cookie transport helpers, the active/retained `APP_ENCRYPTION_KEY` keyring, refresh-family schema, and existing SSO session schema.
 - Produces: the stable binding/capability interfaces above; `AUTH_BINDING_COOKIE_NAME`, `NATIVE_AUTH_BINDING_HEADER`, `requestAuthBinding`, `installAuthBindingReplacement`; durable family currentness helpers.
 
 - [ ] **Step 1: Freeze the current issuer and cookie-writer inventory**
@@ -288,7 +289,7 @@ export function installAuthBindingReplacement(c: Context, source: AuthBindingSou
 
 - [ ] **Step 5: Implement the lease/capability and durable current-JTI helpers**
 
-Use database `now()` for lease decisions. Store only HMAC digests, use retained secret-derived keys for verification, never reopen a retired row, and make the successor deterministic per predecessor/generation so concurrent bootstrap retries converge.
+Use database `now()` for lease decisions. Add a tested `getSecretDerivedKeyMaterials(domain)` boundary in `secretCrypto.ts` that derives domain-separated HMAC keys from the active and retained `APP_ENCRYPTION_KEY` keyring without exposing the master material; record its key ID in `binding_key_id`. Store only HMAC digests, use every retained derived key for verification, never reopen a retired row, and make the successor deterministic per predecessor/generation so concurrent bootstrap retries converge.
 
 Add these refresh helpers:
 
@@ -331,7 +332,7 @@ Expected: all pass; migration reapplication is a no-op and tenant forges are den
 - [ ] **Step 7: Commit W07-A**
 
 ```bash
-git add apps/api/migrations/2026-08-23-z-auth-browser-transitions.sql apps/api/src/db/schema apps/api/src/services/authBrowserTransition.ts apps/api/src/services/authBrowserTransition.test.ts apps/api/src/services/userSession.callers.test.ts apps/api/src/services/refreshTokenFamily.ts apps/api/src/services/refreshTokenFamily.test.ts apps/api/src/routes/auth/binding.ts apps/api/src/routes/auth/binding.test.ts apps/api/src/routes/auth/index.ts apps/api/src/routes/auth/helpers.ts apps/api/src/routes/auth/helpers.test.ts apps/api/vitest.config.rls.ts apps/api/src/__tests__/integration/auth-browser-transition-rls.integration.test.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts
+git add apps/api/migrations/2026-08-23-z-auth-browser-transitions.sql apps/api/src/db/schema apps/api/src/services/authBrowserTransition.ts apps/api/src/services/authBrowserTransition.test.ts apps/api/src/services/userSession.callers.test.ts apps/api/src/services/refreshTokenFamily.ts apps/api/src/services/refreshTokenFamily.test.ts apps/api/src/services/secretCrypto.ts apps/api/src/services/secretCrypto.test.ts apps/api/src/routes/auth/binding.ts apps/api/src/routes/auth/binding.test.ts apps/api/src/routes/auth/index.ts apps/api/src/routes/auth/helpers.ts apps/api/src/routes/auth/helpers.test.ts apps/api/vitest.config.rls.ts apps/api/src/__tests__/integration/auth-browser-transition-rls.integration.test.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts
 git commit -m "feat(auth): add durable browser transition foundation"
 ```
 
