@@ -1124,6 +1124,12 @@
         "reasonLabel": "Müşterinin notu:",
         "revise": "Çoğalt ve gözden geçir",
         "revising": "Çoğaltılıyor…"
+      },
+      "lineage": {
+        "supersededTitle": "Bu teklifin yerini alan",
+        "inProgressTitle": "Bu teklifin bir revizyonu hazırlanıyor — gönderildiğinde bu teklifin yerini alacak ve müşteri bağlantısını devre dışı bırakacak:",
+        "revisionOfTitle": "Şu teklifin revizyonu:",
+        "untitled": "daha yeni bir sürüm"
       }
     },
     "distributorLookup": {

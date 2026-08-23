@@ -1124,6 +1124,12 @@
         "reasonLabel": "Customer's note:",
         "revise": "Duplicate & revise",
         "revising": "Duplicating…"
+      },
+      "lineage": {
+        "supersededTitle": "This quote was replaced by",
+        "inProgressTitle": "A revision of this quote is being drafted — sending it will replace this quote and disable the customer’s link:",
+        "revisionOfTitle": "Revision of",
+        "untitled": "a newer version"
       }
     },
     "distributorLookup": {

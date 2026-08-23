@@ -1124,6 +1124,12 @@
         "reasonLabel": "Anmerkung des Kunden:",
         "revise": "Duplizieren & überarbeiten",
         "revising": "Wird dupliziert…"
+      },
+      "lineage": {
+        "supersededTitle": "Dieses Angebot wurde ersetzt durch",
+        "inProgressTitle": "Eine Überarbeitung dieses Angebots wird erstellt – beim Senden wird dieses Angebot ersetzt und der Kundenlink deaktiviert:",
+        "revisionOfTitle": "Überarbeitung von",
+        "untitled": "eine neuere Version"
       }
     },
     "distributorLookup": {

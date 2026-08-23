@@ -1124,6 +1124,12 @@
         "reasonLabel": "Note du client :",
         "revise": "Dupliquer et réviser",
         "revising": "Duplication…"
+      },
+      "lineage": {
+        "supersededTitle": "Ce devis a été remplacé par",
+        "inProgressTitle": "Une révision de ce devis est en préparation — l'envoyer remplacera ce devis et désactivera le lien du client :",
+        "revisionOfTitle": "Révision de",
+        "untitled": "une version plus récente"
       }
     },
     "distributorLookup": {

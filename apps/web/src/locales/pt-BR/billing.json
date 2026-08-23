@@ -1124,6 +1124,12 @@
         "reasonLabel": "Observação do cliente:",
         "revise": "Duplicar e revisar",
         "revising": "Duplicando…"
+      },
+      "lineage": {
+        "supersededTitle": "Este orçamento foi substituído por",
+        "inProgressTitle": "Uma revisão deste orçamento está sendo preparada — enviá-la substituirá este orçamento e desativará o link do cliente:",
+        "revisionOfTitle": "Revisão de",
+        "untitled": "uma versão mais recente"
       }
     },
     "distributorLookup": {

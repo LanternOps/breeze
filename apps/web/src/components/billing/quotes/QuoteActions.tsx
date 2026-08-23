@@ -17,6 +17,7 @@ import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { useShowMargin } from '../billingUi';
+import { useReviseQuote, isRevisable } from './useReviseQuote';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type Quote, type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
@@ -716,39 +717,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
 
   // Revise: create a linked draft that will REPLACE this quote when sent.
   // Distinct from Clone, which starts an unrelated quote and leaves this one
-  // live. Navigation mirrors clone() exactly so both land the tech on the new
-  // draft the same way.
-  const [revising, setRevising] = useState(false);
-  const revise = useCallback(async () => {
-    if (revising || savePending) return;
-    setRevising(true);
-    setMenuOpen(false);
-    try {
-      const result = await runAction<{ data: { id: string } }>({
-        request: () => reviseQuote(quote.id),
-        errorFallback: t('quotes.actions.reviseError'),
-        successMessage: t('quotes.actions.reviseSuccess'),
-        onUnauthorized: UNAUTHORIZED,
-      });
-      if (result?.data?.id) void navigateTo(`/billing/quotes/${result.data.id}`);
-    } catch (err) {
-      // Only one open revision per quote is allowed. A bare 409 would leave the
-      // tech stuck with no route to the draft that is blocking them, so steer
-      // them to it instead. Without the id there is nothing to open — fall
-      // through to the normal error handling rather than navigating nowhere.
-      const existingId = err instanceof ActionError && err.status === 409 && err.code === 'REVISION_IN_PROGRESS'
-        ? (err.body as { meta?: { revisionQuoteId?: string } } | undefined)?.meta?.revisionQuoteId
-        : undefined;
-      if (existingId) {
-        showToast({ message: t('quotes.actions.reviseInProgress'), type: 'info' });
-        void navigateTo(`/billing/quotes/${existingId}`);
-      } else {
-        handleActionError(err, t('quotes.actions.reviseError'));
-      }
-    } finally {
-      setRevising(false);
-    }
-  }, [revising, quote.id, savePending, t]);
+  // live. Shared with the declined banner's Revise via useReviseQuote so both
+  // entry points mean the same thing.
+  const { revise, revising } = useReviseQuote(quote.id, { onStart: () => setMenuOpen(false) });
 
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
@@ -851,8 +822,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // Exactly the statuses the server will supersede (SUPERSEDABLE in
   // services/quoteLifecycle.ts). A draft has nothing to replace; accepted and
   // converted are settled; superseded is already retired.
-  const canRevise = can('quotes', 'write')
-    && (['sent', 'viewed', 'declined', 'expired'] as const).includes(quote.status as 'sent');
+  const canRevise = can('quotes', 'write') && isRevisable(quote.status);
   const canDelete = can('quotes', 'write') && isDraft;
   // Resend and share-link share one gate (see quoteShareLinkAvailable above,
   // which mirrors assertLinkableQuote in services/quoteLifecycle.ts).

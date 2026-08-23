@@ -1124,6 +1124,12 @@
         "reasonLabel": "Nota del cliente:",
         "revise": "Duplicar y revisar",
         "revising": "Duplicando…"
+      },
+      "lineage": {
+        "supersededTitle": "Esta cotización fue reemplazada por",
+        "inProgressTitle": "Se está preparando una revisión de esta cotización: al enviarla se reemplazará esta cotización y se desactivará el enlace del cliente:",
+        "revisionOfTitle": "Revisión de",
+        "untitled": "una versión más reciente"
       }
     },
     "distributorLookup": {

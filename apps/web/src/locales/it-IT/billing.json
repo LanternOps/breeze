@@ -1124,6 +1124,12 @@
         "reasonLabel": "Nota del cliente:",
         "revise": "Duplica e rivedi",
         "revising": "Duplicazione…"
+      },
+      "lineage": {
+        "supersededTitle": "Questo preventivo è stato sostituito da",
+        "inProgressTitle": "È in preparazione una revisione di questo preventivo: inviarla sostituirà questo preventivo e disattiverà il link del cliente:",
+        "revisionOfTitle": "Revisione di",
+        "untitled": "una versione più recente"
       }
     },
     "distributorLookup": {

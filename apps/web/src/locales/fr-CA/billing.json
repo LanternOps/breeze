@@ -1124,6 +1124,12 @@
         "reasonLabel": "Note du client :",
         "revise": "Dupliquer et réviser",
         "revising": "Duplication…"
+      },
+      "lineage": {
+        "supersededTitle": "Cette soumission a été remplacée par",
+        "inProgressTitle": "Une révision de cette soumission est en préparation — l'envoyer remplacera cette soumission et désactivera le lien du client :",
+        "revisionOfTitle": "Révision de",
+        "untitled": "une version plus récente"
       }
     },
     "distributorLookup": {
