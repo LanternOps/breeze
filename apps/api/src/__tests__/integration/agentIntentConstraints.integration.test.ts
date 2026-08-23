@@ -1,0 +1,294 @@
+/**
+ * Live-Postgres proof for the agent-originated `action_intents` constraints
+ * added by `migrations/2026-09-05-a-agent-originated-intents.sql` (AI agents
+ * wave 3, #3824, task 5). Unit tests cannot cover any of this: every
+ * invariant here lives in a CHECK constraint, a composite FK, or the
+ * immutability trigger, none of which a mocked Drizzle client evaluates.
+ *
+ * Every insert below goes through `db.insert(actionIntents).values(...)` (the
+ * real Drizzle model), not raw SQL. `pnpm db:check-drift` does not compare
+ * the Drizzle schema to the database (see `scripts/check-drift.ts:16-26`), so
+ * this suite is the only automated thing that would catch a mis-modelled
+ * column, a transposed composite-FK column pair, or a stray single-column
+ * `.references()` on `requestingAgentRunId`.
+ *
+ * Fixtures are seeded fresh in `beforeEach` (not `beforeAll`): the shared
+ * integration setup (`./setup`) TRUNCATEs the core tenant tables in a global
+ * `beforeEach`, and both `action_intents.org_id` and `ai_agent_runs.org_id`
+ * reference `organizations(id)`, so anything seeded in `beforeAll` would be
+ * cascade-deleted before the second test runs (same trap documented in
+ * `actionIntentsImmutabilityTrigger.integration.test.ts`).
+ */
+import './setup';
+
+import { randomUUID } from 'node:crypto';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../../db';
+import { actionIntents, aiAgents, aiAgentRuns } from '../../db/schema';
+import type { NewActionIntent } from '../../db/schema/actionIntents';
+import { createOrganization, createPartner, createUser } from './db-utils';
+
+describe('agent-originated action_intents constraints', () => {
+  let orgId: string;
+  let otherOrgId: string;
+  let partnerId: string;
+  let userId: string;
+  let agentId: string;
+  let runId: string;
+  let otherRunId: string;
+
+  beforeEach(async () => {
+    const partner = await createPartner();
+    // Two orgs under the SAME partner: the cross-tenant FK case needs a
+    // second org to point an intent at while the run stays under the first.
+    const org = await createOrganization({ partnerId: partner.id });
+    const otherOrg = await createOrganization({ partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, orgId: org.id });
+
+    partnerId = partner.id;
+    orgId = org.id;
+    otherOrgId = otherOrg.id;
+    userId = user.id;
+
+    await withSystemDbAccessContext(async () => {
+      const [agent] = await db
+        .insert(aiAgents)
+        .values({ orgId, partnerId: null, kind: 'triage', name: 'Triage', createdBy: userId })
+        .returning();
+      agentId = agent!.id;
+
+      const [run] = await db
+        .insert(aiAgentRuns)
+        .values({
+          agentId,
+          orgId,
+          triggerKind: 'alert',
+          dedupeKey: `agent-intent-constraints-${randomUUID()}`,
+          modeAtStart: 'shadow',
+          policySnapshot: { schemaVersion: 1 } as never,
+        })
+        .returning();
+      runId = run!.id;
+
+      // A second live run under the SAME org, used only as the "swap to"
+      // target for the immutability case — never inserted onto an intent.
+      const [run2] = await db
+        .insert(aiAgentRuns)
+        .values({
+          agentId,
+          orgId,
+          triggerKind: 'alert',
+          dedupeKey: `agent-intent-constraints-${randomUUID()}`,
+          modeAtStart: 'shadow',
+          policySnapshot: { schemaVersion: 1 } as never,
+        })
+        .returning();
+      otherRunId = run2!.id;
+    });
+  });
+
+  /** Inserts an action_intents row with sane defaults for every NOT NULL column, via the real Drizzle model. */
+  async function insertIntent(overrides: Partial<NewActionIntent>): Promise<string> {
+    const sfx = randomUUID().slice(0, 8);
+    const values: NewActionIntent = {
+      orgId,
+      partnerId,
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: null,
+      source: 'chat',
+      originPrincipalKind: 'unknown',
+      originPrincipalId: null,
+      actionName: 'm365.mailbox.disable',
+      actionVersion: 1,
+      arguments: { mailbox: 'user@example.com' },
+      argumentDigest: 'a'.repeat(64),
+      targetSummary: 'Disable mailbox user@example.com',
+      impactSummary: 'User loses mailbox access immediately',
+      reason: 'Offboarding',
+      riskTier: 3, // smallint, not the text tier name
+      idempotencyKey: `idem-${sfx}`,
+      correlationId: randomUUID(), // uuid column, not free text
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      ...overrides,
+    };
+    const [row] = await withSystemDbAccessContext(() =>
+      db.insert(actionIntents).values(values).returning({ id: actionIntents.id }),
+    );
+    return row!.id;
+  }
+
+  async function deleteRun(id: string): Promise<void> {
+    await withSystemDbAccessContext(() => db.delete(aiAgentRuns).where(eq(aiAgentRuns.id, id)));
+  }
+
+  async function updateIntentRun(id: string, newRunId: string): Promise<void> {
+    await withSystemDbAccessContext(() =>
+      db.update(actionIntents).set({ requestingAgentRunId: newRunId }).where(eq(actionIntents.id, id)),
+    );
+  }
+
+  /**
+   * Drizzle/postgres-js wraps the underlying Postgres error in a
+   * `DrizzleQueryError` whose own `.code` is undefined — the SQLSTATE lands
+   * on `.cause.code` instead (mirrors `aiAgentRuns.integration.test.ts`'s
+   * `expectSqlState`). A plain `.rejects.toMatchObject({ code })` against the
+   * top-level error silently mismatches, so unwrap `.cause` first.
+   */
+  async function expectSqlState(fn: () => Promise<unknown>, code: string): Promise<void> {
+    let raised: unknown;
+    try {
+      await fn();
+    } catch (err) {
+      raised = err;
+    }
+    expect(raised, `expected SQLSTATE ${code}, but the statement succeeded`).toBeDefined();
+    const cause = (raised as { cause?: { code?: string } })?.cause;
+    expect(cause?.code ?? (raised as { code?: string })?.code).toBe(code);
+  }
+
+  it('accepts an intent with a run and no human actor', async () => {
+    const id = await insertIntent({
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: runId,
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: agentId,
+      source: 'ai_agent',
+    });
+    expect(id).toBeTruthy();
+  });
+
+  it('rejects an intent with NO actor at all (23514)', async () => {
+    await expectSqlState(
+      () =>
+        insertIntent({
+          requestedByUserId: null,
+          requestingApiKeyId: null,
+          requestingAgentRunId: null,
+          originPrincipalKind: 'unknown',
+          source: 'chat',
+        }),
+      '23514',
+    );
+  });
+
+  it('rejects an intent with TWO actor roots (23514)', async () => {
+    await expectSqlState(
+      () =>
+        insertIntent({
+          requestedByUserId: userId,
+          requestingApiKeyId: null,
+          requestingAgentRunId: runId,
+          originPrincipalKind: 'ai_agent',
+          source: 'ai_agent',
+        }),
+      '23514',
+    );
+  });
+
+  it('rejects an ai_agent origin with no run (23514)', async () => {
+    // The half-formed row action_intents_agent_origin_chk exists to stop:
+    // claims an agent origin, carries no run, so release revalidation would
+    // have nothing to re-check against.
+    await expectSqlState(
+      () =>
+        insertIntent({
+          requestedByUserId: userId,
+          requestingApiKeyId: null,
+          requestingAgentRunId: null,
+          originPrincipalKind: 'ai_agent',
+          source: 'ai_agent',
+        }),
+      '23514',
+    );
+  });
+
+  it('rejects a run link that does not claim an agent origin (23514)', async () => {
+    await expectSqlState(
+      () =>
+        insertIntent({
+          requestedByUserId: null,
+          requestingApiKeyId: null,
+          requestingAgentRunId: runId,
+          originPrincipalKind: 'system',
+          source: 'chat',
+        }),
+      '23514',
+    );
+  });
+
+  it('rejects an intent whose org differs from its run org (23503)', async () => {
+    // The composite FK (requesting_agent_run_id, org_id) -> ai_agent_runs(id, org_id)
+    // is what makes agent attribution tenant-safe. A single-column FK would let
+    // an intent in org A cite a run in org B, and RLS would not catch it: the
+    // action_intents policy checks only action_intents.org_id. Precedent:
+    // elevation_audit -> elevation_requests(id, org_id).
+    await expectSqlState(
+      () =>
+        insertIntent({
+          orgId: otherOrgId, // run belongs to orgId, not otherOrgId
+          requestedByUserId: null,
+          requestingApiKeyId: null,
+          requestingAgentRunId: runId,
+          originPrincipalKind: 'ai_agent',
+          originPrincipalId: agentId,
+          source: 'ai_agent',
+        }),
+      '23503',
+    );
+  });
+
+  it('rejects a source that disagrees with the origin kind (23514)', async () => {
+    // source drives notification + expiry; origin_principal_kind drives
+    // authorization. A row where they disagree takes one path while claiming
+    // the other.
+    await expectSqlState(
+      () =>
+        insertIntent({
+          requestedByUserId: null,
+          requestingApiKeyId: null,
+          requestingAgentRunId: runId,
+          originPrincipalKind: 'ai_agent',
+          originPrincipalId: agentId,
+          source: 'chat',
+        }),
+      '23514',
+    );
+  });
+
+  it('refuses to delete a run that an intent still attributes (23503)', async () => {
+    await insertIntent({
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: runId,
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: agentId,
+      source: 'ai_agent',
+    });
+    await expectSqlState(() => deleteRun(runId), '23503');
+  });
+
+  it('treats requesting_agent_run_id as immutable content', async () => {
+    const id = await insertIntent({
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: runId,
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: agentId,
+      source: 'ai_agent',
+    });
+    let caught: unknown;
+    try {
+      await updateIntentRun(id, otherRunId);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught, 'expected the immutability trigger to reject the UPDATE').toBeDefined();
+    const cause = (caught as { cause?: unknown })?.cause;
+    const causeMessage = cause instanceof Error ? cause.message : undefined;
+    const topMessage = caught instanceof Error ? caught.message : String(caught);
+    expect(causeMessage ?? topMessage).toMatch(/action_intents content is immutable/);
+  });
+});
