@@ -74,6 +74,7 @@ export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Pr
       case 'agent': initiatedBy = 'agent'; break;
       case 'api_key': initiatedBy = 'integration'; break;
       case 'system': initiatedBy = 'schedule'; break;
+      case 'ai_agent': initiatedBy = 'ai'; break;
       default: initiatedBy = 'manual'; break;
     }
   }

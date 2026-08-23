@@ -31,10 +31,13 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   }
 
   // The migration's action_intents_one_actor_chk CHECK guarantees exactly
-  // one of requestedByUserId/requestingApiKeyId is set — an intent with
-  // neither is a data-integrity violation, not a normal revalidation
-  // failure. Fail closed the same as any other actor_invalid case rather
-  // than throwing out of a background worker.
+  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId is set.
+  // An agent-originated intent (requestingAgentRunId set) falling through to
+  // here is EXPECTED, not corruption: createActionIntent fails closed on
+  // 'ai_agent' origin until the next PR wires up the requester-less release
+  // path, so no code today produces an intent this function can rebuild an
+  // AuthContext for. Fail closed the same as any other actor_invalid case
+  // rather than throwing out of a background worker.
   console.error(
     `[actorContext] intent ${intent.id} has neither requestedByUserId nor requestingApiKeyId set`,
   );

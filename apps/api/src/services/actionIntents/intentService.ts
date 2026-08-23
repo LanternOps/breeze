@@ -276,11 +276,12 @@ export async function createActionIntent(
 ): Promise<ActionIntentSnapshot> {
   // Agent-originated intents are a wave-3 design (requester-less model: this
   // function writes requestedByUserId unconditionally, approval_requests.user_id
-  // is NOT NULL, and isRequester gates read/decide). Until that lands, an agent
-  // reaching this path fails CLOSED rather than being recorded as whatever
-  // synthetic user its attribution record carries. 'ai_agent' is deliberately
-  // absent from action_intents_origin_principal_kind_chk, so the alternative
-  // is a runtime 23514 mid-transaction.
+  // is NOT NULL, and isRequester gates read/decide). 'ai_agent' is already a
+  // valid value in action_intents_origin_principal_kind_chk, but the
+  // requester-less write path, fan-out, decide, and release reconstruction
+  // for it aren't implemented yet — so an agent reaching this path fails
+  // CLOSED until the next PR, rather than being recorded as whatever
+  // synthetic user its attribution record carries.
   if (auth.principal.kind === 'ai_agent') {
     throw new ActionIntentError(
       'AI agents cannot create action intents yet (agent-originated intents ship in wave 3)',

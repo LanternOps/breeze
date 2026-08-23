@@ -534,7 +534,7 @@ export interface RemoteSession {
 // Audit Types
 // ============================================
 
-export type ActorType = 'user' | 'api_key' | 'agent' | 'system';
+export type ActorType = 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
 export type AuditResult = 'success' | 'failure' | 'denied';
 
 export interface AuditLog {

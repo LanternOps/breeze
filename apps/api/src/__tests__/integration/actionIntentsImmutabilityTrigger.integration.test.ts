@@ -173,9 +173,11 @@ describe('action_intents immutability trigger (live DB)', () => {
   //
   // Every value here also violates a CHECK/FK (or would, for org_id and the
   // actor columns, including requesting_agent_run_id — a fixed random UUID
-  // here is not a real ai_agent_runs row, and combined with the base fixture
-  // now being agent-originated, also collides with
-  // action_intents_one_actor_chk). That is fine and deliberate:
+  // here is not a real ai_agent_runs row, so it collides with the composite
+  // FK (requesting_agent_run_id, org_id) -> ai_agent_runs(id, org_id), a
+  // 23503, not action_intents_one_actor_chk: swapping the column's value
+  // in place still leaves exactly one actor column non-null). That is fine
+  // and deliberate:
   // action_intents_immutable_trg is a BEFORE UPDATE ... FOR EACH ROW trigger,
   // and BEFORE-row triggers run ahead of CHECK and referential-integrity
   // evaluation, so the immutability RAISE is always the error that surfaces.

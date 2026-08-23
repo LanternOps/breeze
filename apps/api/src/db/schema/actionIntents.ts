@@ -50,8 +50,10 @@ export type ActionIntentStatus = (typeof actionIntentStatusEnum)[number];
 
 // 'ai_agent' (wave 3, #3824): a headless agent proposal. Distinct from 'chat'
 // because nobody is watching a chat pane — supervised agent intents must be
-// notified, and they carry an agent-specific expiry rather than the 5-minute
-// chat deadline.
+// notified. computeExpiresAt (intentService.ts) currently branches only on
+// `source === 'chat'`, so 'ai_agent' silently inherits the 24-hour MCP
+// expiry window rather than an agent-specific one; picking a deadline that
+// actually fits headless agent proposals is a decision for the next PR.
 export const actionIntentSourceEnum = ['chat', 'mcp_api', 'ai_agent'] as const;
 export type ActionIntentSource = (typeof actionIntentSourceEnum)[number];
 
@@ -144,8 +146,8 @@ export const actionIntents = pgTable(
      * The KIND of principal that created this intent, recorded as a durable
      * fact rather than derived at release time.
      *
-     * `source` is a lossy proxy: it has only 'chat' | 'mcp_api', while an
-     * AuthContext principal can be user_session/client_user/api_key/
+     * `source` is a lossy proxy: it has only 'chat' | 'mcp_api' | 'ai_agent',
+     * while an AuthContext principal can be user_session/client_user/api_key/
      * oauth_grant/agent/helper/system. And the actor columns cannot stand in
      * for it either — `requested_by_user_id` is written for EVERY intent
      * (holding the key's CREATOR for API-key callers) and

@@ -1406,7 +1406,7 @@ export function createBreezeMcpServer(
         action: z.string().max(100).optional(),
         resourceType: z.string().max(100).optional(),
         resourceId: uuid.optional(),
-        actorType: z.enum(['user', 'api_key', 'agent', 'system']).optional(),
+        actorType: z.enum(['user', 'api_key', 'agent', 'system', 'ai_agent']).optional(),
         hoursBack: z.number().int().min(1).max(168).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },

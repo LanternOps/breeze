@@ -202,6 +202,26 @@ describe('writeAuditEvent', () => {
         expect.objectContaining({ actorType: 'ai_agent' })
       );
     });
+
+    it('derives initiatedBy "ai" (not "manual") for actorType "ai_agent"', () => {
+      const c = buildRequestLike({ 'user-agent': 'vitest' });
+
+      // Bucketing ai_agent audit events under initiatedBy 'manual' (the
+      // switch's default case) would undo the point of separating agent
+      // actions from human ones — DeviceEventLogViewer.tsx renders and
+      // filters on initiatedBy, so this is user-visible.
+      writeAuditEvent(c, {
+        orgId: '123e4567-e89b-42d3-a456-426614174000',
+        actorType: 'ai_agent',
+        action: 'action_intent.created',
+        resourceType: 'action_intent',
+        resourceId: '123e4567-e89b-42d3-a456-426614174002',
+      });
+
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ initiatedBy: 'ai' })
+      );
+    });
   });
 
   it('normalizes non-UUID resource IDs and preserves raw resource ID in details', () => {
