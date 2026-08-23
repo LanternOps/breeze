@@ -18,6 +18,8 @@
  *   visible, in every state.
  */
 
+import { roundToCurrency } from '@breeze/shared';
+
 /** One converted group exactly as the API returns it. Amounts are exact
  *  decimal STRINGS computed server-side; this module never multiplies. */
 export interface ReportingConvertedGroup {
@@ -48,8 +50,22 @@ export type ApproxTotalView =
 
 const PLAIN_NON_NEGATIVE_DECIMAL = /^(\d+)(?:\.(\d*))?$/;
 
-/** `USD:12300.00,EUR:4100.00` — sorted, deduplicated, amounts normalized to a
- *  plain decimal string. Returns '' when there is nothing to ask about. */
+/** `USD:12300.00,EUR:4100.00` — sorted, deduplicated, every amount quantized to
+ *  the currency's minor unit. Returns '' when there is nothing to ask about,
+ *  and ALSO when any single leg is unusable (negative, non-finite): the caller
+ *  then makes no request and renders no line at all. Skipping the bad leg
+ *  instead would ask the server to approximate a book it was not given, and the
+ *  answer would come back `available` — a partial approximate total, which the
+ *  spec forbids (§8: one unavailable leg suppresses the WHOLE line).
+ *
+ *  Quantization is mandatory, not cosmetic: the callers' per-currency sums come
+ *  from `sumByCurrency`, which accumulates in JS `number`, so a rollup of a
+ *  dozen 2-decimal amounts routinely lands on 24714.529999999995. The server's
+ *  `toMinorBigInt` rejects any residue past the minor unit (400 INVALID_RATE),
+ *  which would silently hide the line on roughly half of real books. Rounding
+ *  half-up at the minor unit through the shared money primitive is the only
+ *  arithmetic this module does, and it is done on the REQUEST, never on a
+ *  converted figure. */
 export function buildGroupsParam(
   byCurrency: readonly { code: string; amount: string | number }[],
 ): string {
@@ -61,8 +77,13 @@ export function buildGroupsParam(
     if (!code || seenCodes.has(code)) continue;
     seenCodes.add(code);
 
-    const amount = String(group.amount).trim();
-    if (!PLAIN_NON_NEGATIVE_DECIMAL.test(amount)) continue;
+    let amount: string;
+    try {
+      amount = roundToCurrency(group.amount, code);
+    } catch {
+      return '';
+    }
+    if (!PLAIN_NON_NEGATIVE_DECIMAL.test(amount)) return '';
 
     groups.set(code, amount);
   }
