@@ -69,3 +69,27 @@ export const exchangeRateListQuerySchema = z.object({
 export type ExchangeRateKeyParam = z.infer<typeof exchangeRateKeyParamSchema>;
 export type ManualExchangeRateBody = z.infer<typeof manualExchangeRateBodySchema>;
 export type ExchangeRateListQuery = z.infer<typeof exchangeRateListQuerySchema>;
+
+/**
+ * Query for GET /api/v1/billing/reporting-totals (wave 7, #3779).
+ *
+ * `groups` is the caller's OWN per-currency segmentation as `CODE:amount`
+ * pairs; the server converts and totals it (spec §8 — the browser never
+ * multiplies money). Amount is a decimal STRING because a JS number loses
+ * precision on a large portfolio. The pair grammar is validated in
+ * `parseGroupsParam` (reportingTotals.ts), which owns the currency-code and
+ * duplicate rules; Zod only bounds the raw string here.
+ *
+ * `to` is OPTIONAL — omitted, the server derives the actor's partner reporting
+ * currency, which is what lets ORGANIZATION-scoped viewers use this endpoint.
+ * `date` is REQUIRED and never defaulted server-side, and there is deliberately
+ * no `maxStalenessDays` param: a client must not be able to widen the ceiling.
+ * `.strict()` so a mis-keyed field is a 400 rather than a silent default.
+ */
+export const reportingTotalsQuerySchema = z.object({
+  groups: z.string().min(1).max(1024),
+  to: currencyCodeSchema.optional(),
+  date: isoDateSchema,
+}).strict();
+
+export type ReportingTotalsQuery = z.infer<typeof reportingTotalsQuerySchema>;
