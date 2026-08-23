@@ -15,6 +15,7 @@ import type {
   CreateCustomerEmailDomainInput, UpdateCustomerEmailDomainInput
 } from '@breeze/shared';
 import type { TicketSlaPriority } from './ticketSla';
+import { isRepresentableInCurrency, minorUnitExponent } from '@breeze/shared';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -286,7 +287,10 @@ export type TicketConfigServiceErrorCode =
   | 'INBOUND_ROW_NO_SENDER'
   | 'ORG_NOT_ACCESSIBLE'
   | 'DOMAIN_ALREADY_MAPPED'
-  | 'DOMAIN_MAPPING_NOT_FOUND';
+  | 'DOMAIN_MAPPING_NOT_FOUND'
+  // Wave-6 release gate (W6-G4-1): a default hourly rate that cannot be expressed
+  // in the org currency it is stamped under (¥100.50). Refused, never rounded.
+  | 'RATE_NOT_REPRESENTABLE';
 
 export class TicketConfigServiceError extends Error {
   constructor(message: string, public status: 400 | 404 | 409 = 400, public code?: TicketConfigServiceErrorCode) {
@@ -657,7 +661,21 @@ export async function upsertOrgTicketSettings(
   const fields: Record<string, unknown> = {};
   if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
   if (input.defaultHourlyRate !== undefined) {
-    fields.defaultHourlyRate = input.defaultHourlyRate == null ? null : String(input.defaultHourlyRate);
+    if (input.defaultHourlyRate == null) {
+      fields.defaultHourlyRate = null;
+    } else {
+      const rate = String(input.defaultHourlyRate);
+      // W6-G4-1: the rate is stamped with `orgCurrencyCode` below, so it must be
+      // representable in it. The validator's multipleOf(0.01) is only the outer
+      // bound — the currency-specific exponent is knowable only here.
+      if (!isRepresentableInCurrency(rate, orgCurrencyCode)) {
+        throw new TicketConfigServiceError(
+          `${rate} is not representable in ${orgCurrencyCode} — this currency has ${minorUnitExponent(orgCurrencyCode)} decimal place(s)`,
+          400, 'RATE_NOT_REPRESENTABLE'
+        );
+      }
+      fields.defaultHourlyRate = rate;
+    }
   }
   if (input.defaultBillable !== undefined) fields.defaultBillable = input.defaultBillable;
 

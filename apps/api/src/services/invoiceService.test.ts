@@ -1436,3 +1436,73 @@ describe('changeInvoiceCurrency reprice (price-book reprice of catalog lines, #3
     expect((db as unknown as { set: Mock }).set).not.toHaveBeenCalled();
   });
 });
+
+// Wave-6 release gate (W6-G1-1): the representability guard on every hand-entered
+// money value persisted on an invoice line, validated against the INVOICE's
+// stamped currency — never the org's current one, and never silently rounded.
+describe('invoiceService currency representability guard (W6-G1-1)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draft = (currencyCode: string) => ({ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode });
+
+  it('addManualLine rejects a fractional minor unit on a JPY invoice (PRICE_NOT_REPRESENTABLE 400)', async () => {
+    queueResult([draft('JPY')]);
+    await expect(
+      svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100.5, taxable: false }, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    // Nothing may be written once the guard fires.
+    expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
+  });
+
+  it('addManualLine rejects a fractional JPY costBasis even when the unit price is whole', async () => {
+    queueResult([draft('JPY')]);
+    await expect(
+      svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, costBasis: 40.5, taxable: false }, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
+  });
+
+  it('addManualLine accepts a whole-unit JPY price', async () => {
+    queueResult([draft('JPY')]);
+    queueResult([{ max: 0 }]);                                    // next sortOrder
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]);              // insert … returning
+    queueResult([draft('JPY')]);                                  // recompute: invoice re-read
+    queueResult([{ lineTotal: '100', taxable: false, customerVisible: true }]); // recompute: lines
+    queueResult([{ taxExempt: false, taxRate: null }]);            // recompute: org tax rate
+    queueResult([]);                                              // recompute: header update
+    await expect(
+      svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100, taxable: false }, actor)
+    ).resolves.toMatchObject({ id: 'l1' });
+  });
+
+  it('addManualLine leaves a 2-decimal currency unchanged — 100.50 USD is accepted', async () => {
+    queueResult([draft('USD')]);
+    queueResult([{ max: 0 }]);
+    queueResult([{ id: 'l1', unitPrice: '100.50' }]);
+    queueResult([draft('USD')]);
+    queueResult([{ lineTotal: '100.50', taxable: false, customerVisible: true }]);
+    queueResult([{ taxExempt: false, taxRate: null }]);
+    queueResult([]);
+    await expect(
+      svc.addManualLine('i1', { description: 'x', quantity: 1, unitPrice: 100.5, taxable: false }, actor)
+    ).resolves.toMatchObject({ id: 'l1' });
+  });
+
+  it('updateLine rejects a patch that would make an existing JPY line fractional', async () => {
+    queueResult([draft('JPY')]);
+    queueResult([{ id: 'l1', quantity: '1', unitPrice: '100.00' }]); // existing line
+    await expect(
+      svc.updateLine('i1', 'l1', { unitPrice: 100.5 }, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { update: Mock }).update).not.toHaveBeenCalled();
+  });
+
+  it('addContractLine rejects a fractional non-catalog JPY snapshot price', async () => {
+    queueResult([draft('JPY')]);
+    await expect(
+      svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: 100.5, taxable: false }, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
+  });
+});

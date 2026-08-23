@@ -589,6 +589,28 @@ describe('upsertOrgTicketSettings', () => {
     // slaOverrides not provided => not in values
     expect(dbMocks.insertedValues[0]!).not.toHaveProperty('slaOverrides');
   });
+
+  // Wave-6 release gate (W6-G4-1): the rate is stamped with `orgCurrencyCode`,
+  // so it must be representable in it. The shared validator's multipleOf(0.01)
+  // is only the outer bound — the currency exponent is knowable only here.
+  it('rejects a fractional rate under a zero-decimal org currency (RATE_NOT_REPRESENTABLE 400)', async () => {
+    await expect(upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100.5 }, 'JPY'))
+      .rejects.toMatchObject({ code: 'RATE_NOT_REPRESENTABLE', status: 400 });
+    expect(dbMocks.insertedValues.length).toBe(0);
+  });
+
+  it('accepts a whole-unit rate under a zero-decimal org currency', async () => {
+    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: '100.00', defaultBillable: null, rateCurrency: 'JPY' }];
+    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100 }, 'JPY');
+    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBe('100');
+    expect(dbMocks.insertedValues[0]!.rateCurrency).toBe('JPY');
+  });
+
+  it('leaves a 2-decimal currency unchanged — 100.50 USD is accepted', async () => {
+    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: '100.50', defaultBillable: null, rateCurrency: 'USD' }];
+    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100.5 }, 'USD');
+    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBe('100.5');
+  });
 });
 
 describe('TicketConfigServiceError', () => {

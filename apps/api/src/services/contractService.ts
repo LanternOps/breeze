@@ -3,6 +3,7 @@ import { db } from '../db';
 import { contracts, contractLines, contractBillingPeriods, organizations } from '../db/schema';
 import { ContractServiceError, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
@@ -298,6 +299,22 @@ export async function changeContractCurrency(
  * price adds a non-catalog line, which still requires and stamps the client
  * unitPrice/taxable verbatim. A price-book gap is a typed 409.
  */
+/**
+ * Wave-6 release gate (W6-G3-1): a hand-entered non-catalog contract line price
+ * must be representable in the CONTRACT's stamped currency. A contract line is
+ * the template for every future generated invoice snapshot, so an unrepresentable
+ * ¥100.50 here propagates to every invoice the sweep produces. Never rounded
+ * silently (owner-fixed: no conversion).
+ */
+function assertRepresentable(value: string, currencyCode: string): void {
+  if (!isRepresentableInCurrency(value, currencyCode)) {
+    throw new ContractServiceError(
+      `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
+      400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
+
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
@@ -328,6 +345,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
         throw new ContractServiceError('unitPrice and taxable are required unless catalogItemId is set', 400, 'INVALID_STATE');
       }
       unitPrice = input.unitPrice;
+      assertRepresentable(unitPrice, c.currencyCode);
       taxable = input.taxable;
     }
     const [row] = await tx.insert(contractLines).values({
@@ -643,6 +661,9 @@ export async function createContractWithLinesDetailed(
   const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
     const l = spec.lines[i]!;
+    // Same guard as addContractLineToContract — the quote→contract conversion
+    // path must not be a way around it (W6-G3-1).
+    assertRepresentable(l.unitPrice, spec.currencyCode);
     const [insertedLine] = await db.insert(contractLines).values({
       contractId: contract.id,
       orgId: spec.orgId,

@@ -338,3 +338,48 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     expect(res).toMatchObject({ generated: false, skipped: 'not_due', priceBookGaps: [] });
   });
 });
+
+// Wave-6 release gate (W6-G3-1): a contract line is the template every future
+// generated invoice snapshots from, so a hand-entered non-catalog price must be
+// representable in the CONTRACT's stamped currency before it can propagate.
+describe('contractService currency representability guard (W6-G3-1)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draft = (currencyCode: string) => ({ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode });
+
+  it('addContractLineToContract rejects a fractional minor unit on a JPY contract (PRICE_NOT_REPRESENTABLE 400)', async () => {
+    queueResult([draft('JPY')]); // lockContract
+    await expect(
+      svc.addContractLineToContract('c1', { lineType: 'flat', description: 'x', unitPrice: '100.50', taxable: false } as never, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(0);
+  });
+
+  it('addContractLineToContract accepts a whole-unit JPY price', async () => {
+    queueResult([draft('JPY')]);
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]); // insert returning
+    await expect(
+      svc.addContractLineToContract('c1', { lineType: 'flat', description: 'x', unitPrice: '100.00', taxable: false } as never, actor)
+    ).resolves.toMatchObject({ id: 'l1' });
+  });
+
+  it('addContractLineToContract leaves a 2-decimal currency unchanged — 100.50 EUR is accepted', async () => {
+    queueResult([draft('EUR')]);
+    queueResult([{ id: 'l1', unitPrice: '100.50' }]);
+    await expect(
+      svc.addContractLineToContract('c1', { lineType: 'flat', description: 'x', unitPrice: '100.50', taxable: false } as never, actor)
+    ).resolves.toMatchObject({ id: 'l1' });
+  });
+
+  it('createContractWithLinesDetailed applies the same guard — the quote→contract path is not a way around it', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY', status: 'draft' }]); // contract insert returning
+    await expect(
+      svc.createContractWithLinesDetailed({
+        partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
+        startDate: '2026-01-01', currencyCode: 'JPY',
+        lines: [{ lineType: 'flat', description: 'x', unitPrice: '100.50', taxable: false }],
+      } as never)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+  });
+});

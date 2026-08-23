@@ -21,7 +21,7 @@ import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import { isRepresentableInCurrency, roundToCurrency, buildStripeCurrencyWarning, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -158,6 +158,21 @@ async function resolveInvoicePrice(tx: DbExecutor, catalogItemId: string, inv: {
   }
 }
 
+/**
+ * Wave-6 release gate (W6-G1-1): every hand-entered money value persisted on an
+ * invoice line must be representable in the INVOICE's stamped currency — never
+ * the org's current one, and never silently re-rounded (owner-fixed: no
+ * conversion, snapshots rule). Mirrors catalogService's assertRepresentable.
+ */
+function assertRepresentable(value: string, currencyCode: string): void {
+  if (!isRepresentableInCurrency(value, currencyCode)) {
+    throw new InvoiceServiceError(
+      `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
+      400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
+
 async function insertLineAndRecompute(
   tx: DbExecutor,
   invoiceId: string,
@@ -175,11 +190,15 @@ async function insertLineAndRecompute(
 export async function addManualLine(invoiceId: string, input: ManualLineInput, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const unitPrice = Number(input.unitPrice).toFixed(2);
+    const costBasis = input.costBasis != null ? Number(input.costBasis).toFixed(2) : null;
+    assertRepresentable(unitPrice, inv.currencyCode);
+    if (costBasis != null) assertRepresentable(costBasis, inv.currencyCode);
     const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice), inv.currencyCode);
     return insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'manual', sourceId: null, catalogItemId: null, parentLineId: null, ticketId: null,
-      name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice: Number(input.unitPrice).toFixed(2),
-      costBasis: input.costBasis != null ? Number(input.costBasis).toFixed(2) : null,
+      name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice,
+      costBasis,
       taxable: input.taxable, customerVisible: true, lineTotal, isUnapprovedTime: false
     });
   });
@@ -356,6 +375,7 @@ export async function addContractLine(
         pricedFrom = resolved.source;
       } else {
         unitPrice = Number(input.unitPrice).toFixed(2);
+        assertRepresentable(unitPrice, inv.currencyCode);
         taxable = input.taxable;
         costBasis = null;
         pricedFrom = 'contract_snapshot';
@@ -363,6 +383,7 @@ export async function addContractLine(
     } else {
       // Non-catalog path: normalize like addManualLine/updateLine (Finding 2).
       unitPrice = Number(input.unitPrice).toFixed(2);
+      assertRepresentable(unitPrice, inv.currencyCode);
       taxable = input.taxable;
       pricedFrom = 'contract_snapshot';
       if (Number(quantity) < 0 || Number(unitPrice) < 0) {
@@ -387,6 +408,7 @@ export async function updateLine(invoiceId: string, lineId: string, patch: { nam
     if (!existing) throw new InvoiceServiceError('Line not found', 404, 'LINE_NOT_FOUND');
     const quantity = patch.quantity != null ? String(patch.quantity) : existing.quantity;
     const unitPrice = patch.unitPrice != null ? Number(patch.unitPrice).toFixed(2) : existing.unitPrice;
+    if (patch.unitPrice != null) assertRepresentable(unitPrice, inv.currencyCode);
     await tx.update(invoiceLines).set({
       name: patch.name !== undefined ? patch.name : existing.name,
       description: patch.description !== undefined ? patch.description : existing.description, quantity, unitPrice,

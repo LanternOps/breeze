@@ -3,7 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
-import { CURRENCY_CODES, isZeroDecimal, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
+import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -22,7 +22,10 @@ export type TimeEntryServiceErrorCode =
   | 'CURRENCY_MISMATCH'
   /** 409 — issueInvoice already flipped the row to `billed`; only description-class fields may change. */
   | 'ENTRY_BILLED'
-  | 'PART_BILLED';
+  | 'PART_BILLED'
+  // Wave-6 release gate (W6-G4-2/3): a rate or part price that cannot be expressed
+  // in the row's stamped currency (¥100.50). Refused, never silently rounded.
+  | 'PRICE_NOT_REPRESENTABLE';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -87,6 +90,22 @@ export function computeDurationMinutes(startedAt: Date, endedAt: Date): number {
 
 const toRate = (rate: number | null | undefined): string | null =>
   rate == null ? null : rate.toFixed(2);
+
+/**
+ * Wave-6 release gate (W6-G4-2 / W6-G4-3): money persisted on a time entry or a
+ * ticket part must be representable in that row's OWN stamped currency snapshot
+ * (spec §7 — a snapshot is never reinterpreted, and never re-rounded).
+ * `currencyCode` null = a standalone, money-less row; nothing to validate.
+ */
+function assertRepresentable(value: string | null, currencyCode: string | null): void {
+  if (value == null || currencyCode == null) return;
+  if (!isRepresentableInCurrency(value, currencyCode)) {
+    throw new TimeEntryServiceError(
+      `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
+      400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
 
 interface TicketForTimeTracking {
   id: string;
@@ -336,6 +355,9 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
     currencyCode = await getPartnerCurrency(partnerId);
   }
 
+  const hourlyRate = input.hourlyRate !== undefined ? toRate(input.hourlyRate) : defaultRate;
+  assertRepresentable(hourlyRate, currencyCode);
+
   const rows = await db
     .insert(timeEntries)
     .values({
@@ -349,7 +371,7 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
       description: input.description ?? null,
       // D2: apply category defaults only when input omits the field
       isBillable: input.isBillable !== undefined ? input.isBillable : defaultBillable,
-      hourlyRate: input.hourlyRate !== undefined ? toRate(input.hourlyRate) : defaultRate,
+      hourlyRate,
       // Snapshot (spec §7): null only for standalone, money-less entries; never restamped.
       currencyCode,
       billingStatus: input.billingStatus ?? 'not_billed'
@@ -623,6 +645,16 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
     changed.push('durationMinutes');
   }
 
+  // W6-G4-2: validate the rate against the currency this row will actually carry
+  // after the edit — the freshly stamped one when this call stamps it, otherwise
+  // the existing snapshot.
+  if (set.hourlyRate !== undefined) {
+    assertRepresentable(
+      set.hourlyRate as string | null,
+      (set.currencyCode as string | undefined) ?? entry.currencyCode
+    );
+  }
+
   // Spec §3: any edit clears approval — re-approval required, including for approvers.
   set.isApproved = false;
   set.approvedBy = null;
@@ -759,6 +791,10 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
 export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
   // Lock order tickets → ticket_parts (see lockTicketRow).
   const link = await resolveAndLockTicketLink(ticketId, actor);
+  const partUnitPrice = (input.unitPrice ?? 0).toFixed(2);
+  const partCostBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;
+  assertRepresentable(partUnitPrice, link.currencyCode);
+  assertRepresentable(partCostBasis, link.currencyCode);
   const rows = await db
     .insert(ticketParts)
     .values({
@@ -771,8 +807,8 @@ export async function addTicketPart(ticketId: string, input: TicketPartInput, ac
       vendor: input.vendor ?? null,
       catalogItemId: input.catalogItemId ?? null,
       quantity: input.quantity.toFixed(2),
-      unitPrice: (input.unitPrice ?? 0).toFixed(2),
-      costBasis: input.costBasis != null ? input.costBasis.toFixed(2) : null,
+      unitPrice: partUnitPrice,
+      costBasis: partCostBasis,
       isBillable: input.isBillable ?? link.defaultBillable,
       billingStatus: input.billingStatus ?? 'not_billed',
       addedBy: actor.userId,
@@ -806,8 +842,14 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
   if (input.vendor !== undefined) set.vendor = input.vendor;
   if (input.catalogItemId !== undefined) set.catalogItemId = input.catalogItemId;
   if (input.quantity !== undefined) set.quantity = input.quantity.toFixed(2);
-  if (input.unitPrice !== undefined) set.unitPrice = input.unitPrice.toFixed(2);
-  if (input.costBasis !== undefined) set.costBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;
+  if (input.unitPrice !== undefined) {
+    set.unitPrice = input.unitPrice.toFixed(2);
+    assertRepresentable(set.unitPrice as string, part.currencyCode);
+  }
+  if (input.costBasis !== undefined) {
+    set.costBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;
+    assertRepresentable(set.costBasis as string | null, part.currencyCode);
+  }
   if (input.isBillable !== undefined) set.isBillable = input.isBillable;
   if (input.billingStatus !== undefined) set.billingStatus = input.billingStatus;
   if (input.notes !== undefined) set.notes = input.notes;

@@ -992,3 +992,47 @@ persists a fractional minor unit. None is a wrong assertion; no gate assertion w
 - `apps/api/src/services/catalogService.ts:524` `setOrgPriceOverride` — already calls `assertRepresentable(unitPrice, currencyCode)` after resolving the org currency inside the locked tx. The pre-lock `.toFixed(2)` is a numeric-column normalize, not a rounding escape: `100.50` in JPY still reaches the guard and 400s. No change.
 - `apps/api/src/services/catalogService.ts:101-106` — the precedent guard itself. No change.
 - `apps/api/src/services/invoiceAssembly.ts:82-99` `timeEntryToLineSpec` / `ticketPartToLineSpec` — **not a money author**; it copies an already-stamped snapshot onto a draft line and rounds `lineTotal` with `computeLineTotal(…, currencyCode)`, which is already currency-aware. With W6-G4-2/3 fixed, no fractional-yen snapshot can be created for it to copy. Throwing here on a legacy row would abort an entire sweep for one bad row, and silently re-rounding is forbidden by the owner-fixed "no conversion" rule, so the guard stays at the write seam. No change.
+
+### Disposition (Task 9, Steps 3-7)
+
+All six findings **FIXED** in one commit (see the Task 9 fix commit on
+`feature/3772-multi-currency/wave-3778`; ledger commit `c68509463` precedes it). Nothing deferred,
+no issue filed, no gate assertion weakened or skipped.
+
+| ID | Status | Fix |
+|---|---|---|
+| W6-G1-1 | **FIXED** | `invoiceService.assertRepresentable(value, inv.currencyCode)` — a module-level guard mirroring `catalogService`'s. Applied in `addManualLine` (unit price **and** cost basis), `updateLine` (only when the patch supplies a price, so a legacy row stays editable), and both `addContractLine` snapshot branches. Throws `InvoiceServiceError(400, 'PRICE_NOT_REPRESENTABLE')` — the code already existed in `invoiceTypes.ts`. |
+| W6-G2-1 | **FIXED** | `quoteService.assertRepresentable(value, q.currencyCode)` under `lockDraftQuote`, on `addManualLine` (unit price + unit cost) and `updateLine`. `QuoteServiceErrorCode` already carried `PRICE_NOT_REPRESENTABLE`. |
+| W6-G3-1 | **FIXED** | `contractService.assertRepresentable(value, c.currencyCode)` on the non-catalog branch of `addContractLineToContract` under `lockContract`, **and** on every line of `createContractWithLinesDetailed` against `spec.currencyCode` — the quote→contract conversion path must not be a way around the seam. `ContractServiceErrorCode` already carried the code. |
+| W6-G4-1 | **FIXED** | `upsertOrgTicketSettings` validates `defaultHourlyRate` against the `orgCurrencyCode` it already receives and stamps into `rate_currency`, throwing `TicketConfigServiceError(400, 'RATE_NOT_REPRESENTABLE')` (new code added to `TicketConfigServiceErrorCode`). The validator keeps `multipleOf(0.01)` as the outer bound — currency is not knowable at validator time. |
+| W6-G4-2 | **FIXED** | `timeEntryService.assertRepresentable(value, currencyCode)` (null-tolerant: a standalone money-less entry has nothing to validate). `createTimeEntry` validates the resolved rate against the snapshot it is about to stamp; `updateTimeEntry` validates against the currency the row will carry **after** the edit — the freshly stamped one when that call stamps it, otherwise the existing snapshot. New code `PRICE_NOT_REPRESENTABLE` on `TimeEntryServiceErrorCode`. |
+| W6-G4-3 | **FIXED** | Same guard on `addTicketPart` (unit price + cost basis, against `link.currencyCode` under the ticket lock) and `updateTicketPart` (against `part.currencyCode` under the part's `FOR UPDATE`). |
+
+**Also fixed — a pre-existing red outside the seven slices (recorded by Task 1, resolved here so
+Step 6 exits green):** `invoicePdf.integration.test.ts:179` pinned the customer invoice-line DTO to
+five keys, but `toCustomerInvoiceLine` (`invoiceService.ts:635-647`) has carried a sixth, `name`,
+since **#3319** — an intentional product change ("a line with both a title and a blurb must show
+the customer both"). The assertion, not the product, was stale. Corrected to the real six-key set
+and **not relaxed**: the exact key list is still pinned and `name`'s presence on every line is now
+asserted separately.
+
+**Guard semantics, deliberate:**
+- validated against the **document/snapshot header currency**, never the org's current one — a
+  restamped org must not retroactively invalidate an in-flight draft;
+- **rejection, never rounding** (owner-fixed: no conversion, snapshots rule) — `100.50 JPY` is a
+  400, not a silent `100`;
+- update paths validate only when the caller supplies the value, so a legacy fractional row stays
+  editable in its non-monetary fields rather than becoming unmaintainable;
+- 2-decimal currencies are unchanged — every guarded writer has an explicit "100.50 USD/EUR is
+  accepted" unit test.
+
+**Verification (Task 9, Steps 5-6):**
+
+| Command | Result |
+|---|---|
+| the seven gate files, one invocation (Step 5) | **7 files / 29 tests, all pass** |
+| `vitest run invoiceService quoteService contractService timeEntryService invoiceAssembly ticketConfigService` | **11 files / 437 tests, all pass** |
+| `vitest run` (whole API unit suite — 5 services changed) | **1410 files / 23,959 tests pass, 22 skipped** |
+| Step 6 pre-existing suites (`changeCurrency`, `contractCurrency`, `assemblyBlockedByCurrency`, `documentLocaleStamping`, `invoiceService.issue`, `invoicePdf`) | **6 files / 47 tests, all pass** |
+
+**GATE EXIT: GREEN.** Tasks 10+ (deliverables B and C) are unblocked.

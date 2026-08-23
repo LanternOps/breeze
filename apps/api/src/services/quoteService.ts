@@ -25,7 +25,7 @@ import {
   type RichTextSanitizeReport,
   type RichTextStripWarning,
 } from './richTextSanitize';
-import { quoteTableContentSchema, quoteCalloutContentSchema } from '@breeze/shared';
+import { quoteTableContentSchema, quoteCalloutContentSchema, isRepresentableInCurrency, minorUnitExponent } from '@breeze/shared';
 import type {
   CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery,
   QuoteTableContent, QuoteCalloutContent,
@@ -1371,11 +1371,27 @@ async function resolveLineBlockId(quoteId: string, orgId: string, blockId: strin
   return block!.id;
 }
 
+/**
+ * Wave-6 release gate (W6-G2-1): hand-entered money on a quote line must be
+ * representable in the QUOTE's stamped currency (¥100.50 is refused, never
+ * silently rounded — owner-fixed: no conversion, snapshots rule).
+ */
+function assertRepresentable(value: string, currencyCode: string): void {
+  if (!isRepresentableInCurrency(value, currencyCode)) {
+    throw new QuoteServiceError(
+      `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
+      400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
+
 export async function addManualLine(quoteId: string, input: QuoteLineInput, actor: QuoteActor) {
   return db.transaction(async (tx) => {
     const q = await lockDraftQuote(tx, quoteId, actor);
     const quantity = String(input.quantity);
     const unitPrice = Number(input.unitPrice).toFixed(2);
+    assertRepresentable(unitPrice, q.currencyCode);
+    if (input.unitCost != null) assertRepresentable(Number(input.unitCost).toFixed(2), q.currencyCode);
     const blockId = await resolveLineBlockId(quoteId, q.orgId, input.blockId, tx);
     const sortOrder = await nextLineSortOrder(quoteId, tx);
     const [row] = await tx.insert(quoteLines).values({
@@ -1530,6 +1546,8 @@ export async function updateLine(
     if (!existing) throw new QuoteServiceError('Line not found', 404, 'LINE_NOT_FOUND');
     const quantity = input.quantity != null ? String(input.quantity) : existing.quantity;
     const unitPrice = input.unitPrice != null ? Number(input.unitPrice).toFixed(2) : existing.unitPrice;
+    if (input.unitPrice != null) assertRepresentable(unitPrice, q.currencyCode);
+    if (input.unitCost != null) assertRepresentable(Number(input.unitCost).toFixed(2), q.currencyCode);
     const set: Record<string, unknown> = {
       // name/description are independently patchable; undefined leaves them as-is,
       // an explicit null clears them (the refine on the route schema keeps ≥1 set).

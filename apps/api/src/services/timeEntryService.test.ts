@@ -1482,3 +1482,76 @@ describe('currency snapshots (wave 4 / Task 7)', () => {
     expect(dbMocks.updateSetArgs).toHaveLength(0);
   });
 });
+
+// Wave-6 release gate (W6-G4-2 / W6-G4-3): money persisted on a time entry or a
+// ticket part must be representable in that row's OWN currency snapshot — a JPY
+// org cannot end up holding a fractional-yen rate or part price.
+describe('timeEntryService currency representability guard (W6-G4-2 / W6-G4-3)', () => {
+  const queueJpyLink = (currencyCode = 'JPY') => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // lock row
+  };
+  const span = { startedAt: new Date('2026-06-11T09:00:00Z'), endedAt: new Date('2026-06-11T10:00:00Z') };
+
+  it('createTimeEntry rejects a fractional hourly rate under a JPY ticket org', async () => {
+    queueJpyLink();
+    await expect(createTimeEntry({ ticketId: 't-1', ...span, hourlyRate: 100.5 }, ACTOR))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry accepts a whole-unit rate under a JPY ticket org', async () => {
+    queueJpyLink();
+    dbMocks.insertResult = [{ id: 'te-1' }];
+    await createTimeEntry({ ticketId: 't-1', ...span, hourlyRate: 100 }, ACTOR);
+    expect(dbMocks.insertedValues[0]!.hourlyRate).toBe('100.00');
+    expect(dbMocks.insertedValues[0]!.currencyCode).toBe('JPY');
+  });
+
+  it('createTimeEntry leaves a 2-decimal currency unchanged — 100.50 EUR is accepted', async () => {
+    queueJpyLink('EUR');
+    dbMocks.insertResult = [{ id: 'te-1' }];
+    await createTimeEntry({ ticketId: 't-1', ...span, hourlyRate: 100.5 }, ACTOR);
+    expect(dbMocks.insertedValues[0]!.hourlyRate).toBe('100.50');
+  });
+
+  it('updateTimeEntry rejects a rate edit that is fractional in the entry\'s own snapshot', async () => {
+    dbMocks.selectResults.push([{
+      id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: 't-1', userId: 'u-1',
+      ...span, durationMinutes: 60, isApproved: false, billingStatus: 'not_billed',
+      currencyCode: 'JPY', hourlyRate: '100.00',
+    }]);
+    await expect(updateTimeEntry('te-1', { hourlyRate: 100.5 }, ACTOR))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
+  it('addTicketPart rejects a fractional unit price under a JPY ticket org', async () => {
+    queueJpyLink();
+    await expect(addTicketPart('t-1', { description: 'SSD', quantity: 1, unitPrice: 100.5 }, ACTOR))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('addTicketPart rejects a fractional JPY costBasis even when the price is whole', async () => {
+    queueJpyLink();
+    await expect(addTicketPart('t-1', { description: 'SSD', quantity: 1, unitPrice: 100, costBasis: 40.5 }, ACTOR))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('updateTicketPart rejects a price edit that is fractional in the part\'s own snapshot', async () => {
+    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'JPY' }]);
+    await expect(updateTicketPart('part-1', { unitPrice: 100.5 }, ACTOR))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
+  it('updateTicketPart accepts a whole-unit JPY price', async () => {
+    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'JPY' }]);
+    dbMocks.updateResult = [{ id: 'part-1' }];
+    await updateTicketPart('part-1', { unitPrice: 100 }, ACTOR);
+    expect(dbMocks.updateSetArgs[0]!.unitPrice).toBe('100.00');
+  });
+});
