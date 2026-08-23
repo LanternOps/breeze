@@ -101,6 +101,11 @@ describe('Action intents migration', () => {
     'approval_scope',
     'classification_version',
     'effect_digest',
+    // 2026-09-05-a: the originating agent run is part of the intent's
+    // immutable content, for the same reason as the origin fields above — an
+    // intent whose attributed run could be swapped after approval would
+    // defeat release revalidation.
+    'requesting_agent_run_id',
   ] as const;
 
   // Deliberately MUTABLE. release_by is written by the approve fan-in

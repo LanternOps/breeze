@@ -95,6 +95,10 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.
   dedupeUq: unique('ai_agent_runs_org_dedupe_key_uq').on(table.orgId, table.dedupeKey),
+  // Declares the tuple the action_intents composite tenant FK references.
+  // `id` is already PK, so this adds no new tenancy invariant on its own —
+  // it exists so (requesting_agent_run_id, org_id) has a target.
+  idOrgUq: unique('ai_agent_runs_id_org_id_key').on(table.id, table.orgId),
   agentQueuedIdx: index('ai_agent_runs_agent_queued_idx').on(table.agentId, table.queuedAt.desc()),
   orgQueuedIdx: index('ai_agent_runs_org_queued_idx').on(table.orgId, table.queuedAt.desc()),
   deviceIdx: index('ai_agent_runs_device_id_idx').on(table.deviceId),

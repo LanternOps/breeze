@@ -147,6 +147,83 @@ describe('writeAuditEvent', () => {
     expect(persistedError).toContain('[REDACTED]');
   });
 
+  describe('actorType resolution (auditEvents.ts:68)', () => {
+    // recordActionIntentEvent (services/actionIntents/metrics.ts) passes
+    // actorType straight through without resolving it — this is the ONLY
+    // place the actual fallback formula
+    // (`event.actorType ?? (event.actorId ? 'user' : 'system')`) runs, so it
+    // must be pinned here against the real, unmocked function.
+    it('resolves to "user" when actorType is omitted but actorId is present', () => {
+      const c = buildRequestLike({ 'user-agent': 'vitest' });
+
+      writeAuditEvent(c, {
+        orgId: '123e4567-e89b-42d3-a456-426614174000',
+        actorId: '123e4567-e89b-42d3-a456-426614174001',
+        action: 'action_intent.created',
+        resourceType: 'action_intent',
+        resourceId: '123e4567-e89b-42d3-a456-426614174002',
+      });
+
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ actorType: 'user' })
+      );
+    });
+
+    it('resolves to "system" when both actorType and actorId are omitted', () => {
+      const c = buildRequestLike({ 'user-agent': 'vitest' });
+
+      writeAuditEvent(c, {
+        orgId: '123e4567-e89b-42d3-a456-426614174000',
+        action: 'action_intent.expired',
+        resourceType: 'action_intent',
+        resourceId: '123e4567-e89b-42d3-a456-426614174002',
+      });
+
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ actorType: 'system' })
+      );
+    });
+
+    it('keeps an explicit actorType of "ai_agent" — the fallback never overrides a supplied value', () => {
+      const c = buildRequestLike({ 'user-agent': 'vitest' });
+
+      writeAuditEvent(c, {
+        orgId: '123e4567-e89b-42d3-a456-426614174000',
+        actorType: 'ai_agent',
+        action: 'action_intent.created',
+        resourceType: 'action_intent',
+        resourceId: '123e4567-e89b-42d3-a456-426614174002',
+        // No actorId — an ai_agent proposal has no human actor. If the
+        // fallback ever ran (it must not, since actorType is supplied), the
+        // absence of actorId would push this to 'system' instead.
+      });
+
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ actorType: 'ai_agent' })
+      );
+    });
+
+    it('derives initiatedBy "ai" (not "manual") for actorType "ai_agent"', () => {
+      const c = buildRequestLike({ 'user-agent': 'vitest' });
+
+      // Bucketing ai_agent audit events under initiatedBy 'manual' (the
+      // switch's default case) would undo the point of separating agent
+      // actions from human ones — DeviceEventLogViewer.tsx renders and
+      // filters on initiatedBy, so this is user-visible.
+      writeAuditEvent(c, {
+        orgId: '123e4567-e89b-42d3-a456-426614174000',
+        actorType: 'ai_agent',
+        action: 'action_intent.created',
+        resourceType: 'action_intent',
+        resourceId: '123e4567-e89b-42d3-a456-426614174002',
+      });
+
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ initiatedBy: 'ai' })
+      );
+    });
+  });
+
   it('normalizes non-UUID resource IDs and preserves raw resource ID in details', () => {
     const c = buildRequestLike({ 'user-agent': 'vitest' });
 
