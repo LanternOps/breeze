@@ -1,5 +1,5 @@
 import { and, desc, eq, lte, sql } from 'drizzle-orm';
-import { isKnownCurrency } from '@breeze/shared';
+import { isKnownCurrency, multiplyToCurrency } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { exchangeRates } from '../db/schema';
 
@@ -186,4 +186,222 @@ export async function listExchangeRates(input: {
     .orderBy(desc(exchangeRates.rateDate), exchangeRates.baseCode, exchangeRates.quoteCode)
     .limit(Math.min(input.limit ?? DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT));
   return rows as ExchangeRateRecord[];
+}
+
+// ---------------------------------------------------------------------------
+// Resolution half — reporting-only conversion (multi-currency spec §8).
+//
+// EUR is the fixed pivot because the feed is explicitly ECB-backed: a
+// conversion `from → to` is `from → EUR → to` off the stored `EUR→from` and
+// `EUR→to` legs. `from === to` is the ONLY synthetic 1:1 in the program; a pair
+// the feed does not cover is `unavailable`, never 1:1 and never a guess.
+// ---------------------------------------------------------------------------
+
+export interface ReportingRateLeg {
+  currencyCode: string;
+  kind: 'identity' | 'stored';
+  rate: string;
+  rateDate: string;
+  source: 'identity' | ExchangeRateSource;
+}
+
+export interface ReportingUnavailableLeg {
+  currencyCode: string;
+  reason: 'missing' | 'stale';
+  lastRateDate?: string;
+}
+
+export type ReportingRateResult =
+  | {
+      status: 'available';
+      fromCode: string; toCode: string; requestedDate: string;
+      rate: string; rateDate: string;
+      source: 'identity' | 'ecb' | 'manual' | 'mixed';
+      legs: ReportingRateLeg[];
+    }
+  | {
+      status: 'unavailable';
+      fromCode: string; toCode: string; requestedDate: string;
+      unavailableLegs: ReportingUnavailableLeg[];
+    };
+
+export interface ReportingRateOptions { maxStalenessDays?: number }
+
+const IDENTITY_RATE = '1.00000000';
+
+/** Calendar-day distance in UTC — never a local-timezone or DST-sensitive diff. */
+function utcDayDiff(fromIso: string, toIso: string): number {
+  const [fy, fm, fd] = fromIso.split('-').map(Number);
+  const [ty, tm, td] = toIso.split('-').map(Number);
+  return Math.round((Date.UTC(ty!, tm! - 1, td!) - Date.UTC(fy!, fm! - 1, fd!)) / 86_400_000);
+}
+
+type LegLookup = { rate: string; rateDate: string; source: ExchangeRateSource } | null;
+type LegSnapshot = Map<string, LegLookup>;
+
+/**
+ * EVERY requested leg in ONE statement, so every cross rate is derived from a
+ * SINGLE database snapshot. Two separate "latest leg" queries can straddle a
+ * feed or manual commit and yield a hybrid cross rate that never existed at any
+ * instant — the exact failure mode the manual-precedence work exists to
+ * prevent, reappearing one layer up. `DISTINCT ON` keeps the "latest row on or
+ * before" semantics and rides `exchange_rates_lookup_idx`.
+ *
+ * Reads run in the ambient context; the permissive SELECT policy makes that
+ * safe from an org-scoped request.
+ */
+async function loadLatestLegs(
+  quoteCodes: readonly string[], requestedDate: string,
+): Promise<LegSnapshot> {
+  const codes = [...new Set(quoteCodes)].filter((c) => c !== REPORTING_RATE_BASE_CODE);
+  const out: LegSnapshot = new Map(codes.map((c) => [c, null]));
+  if (codes.length === 0) return out;
+  const rows = await db.execute<{ quote_code: string; rate: string; rate_date: string; source: ExchangeRateSource }>(sql`
+    SELECT DISTINCT ON (quote_code)
+      quote_code, rate::text AS rate, rate_date::text AS rate_date, source
+    FROM exchange_rates
+    WHERE base_code = ${REPORTING_RATE_BASE_CODE}
+      AND quote_code IN (${sql.join(codes.map((c) => sql`${c}`), sql`, `)})
+      AND rate_date <= ${requestedDate}::date
+    ORDER BY quote_code, rate_date DESC
+  `);
+  for (const r of rows) {
+    out.set(r.quote_code.trim(), { rate: r.rate, rateDate: r.rate_date, source: r.source });
+  }
+  return out;
+}
+
+function classifyLeg(
+  code: string, row: LegLookup, requestedDate: string, maxStalenessDays: number,
+): { ok: true; leg: ReportingRateLeg } | { ok: false; leg: ReportingUnavailableLeg } {
+  if (!row) return { ok: false, leg: { currencyCode: code, reason: 'missing' } };
+  const age = utcDayDiff(row.rateDate, requestedDate);
+  if (age > maxStalenessDays) {
+    // Beyond the ceiling the number is not honest enough to show. The caller
+    // renders segmented totals only — never a guessed conversion.
+    return { ok: false, leg: { currencyCode: code, reason: 'stale', lastRateDate: row.rateDate } };
+  }
+  return { ok: true, leg: { currencyCode: code, kind: 'stored', rate: row.rate, rateDate: row.rateDate, source: row.source } };
+}
+
+/** toLeg / fromLeg in Postgres numeric — never a JavaScript double division.
+ *  Touches NO table (both operands are literals already read under the single
+ *  leg snapshot), so it cannot introduce snapshot skew. */
+async function deriveCrossRate(fromRate: string, toRate: string): Promise<string> {
+  const [row] = await db.execute<{ rate: string }>(
+    sql`select round(${toRate}::numeric / ${fromRate}::numeric, ${RATE_SCALE}) as rate`,
+  );
+  return String(row!.rate);
+}
+
+/**
+ * The pure half of `resolveReportingRate`: classification + cross-rate
+ * derivation against a PRE-LOADED leg snapshot. Both entry points funnel
+ * through it so single-pair and batch resolution cannot drift.
+ */
+async function resolveFromLegs(
+  fromCode: string, toCode: string, requestedDate: string,
+  lookups: LegSnapshot, options: ReportingRateOptions,
+): Promise<ReportingRateResult> {
+  const maxStalenessDays = options.maxStalenessDays ?? DEFAULT_MAX_STALENESS_DAYS;
+
+  // The ONLY synthetic 1:1 in the whole program. A pair the feed does not cover
+  // is unavailable, never 1:1 (spec §8).
+  if (fromCode === toCode) {
+    return {
+      status: 'available', fromCode, toCode, requestedDate,
+      rate: IDENTITY_RATE, rateDate: requestedDate, source: 'identity',
+      legs: [{ currencyCode: fromCode, kind: 'identity', rate: IDENTITY_RATE, rateDate: requestedDate, source: 'identity' }],
+    };
+  }
+
+  const legs: ReportingRateLeg[] = [];
+  const unavailableLegs: ReportingUnavailableLeg[] = [];
+  for (const code of [fromCode, toCode]) {
+    if (code === REPORTING_RATE_BASE_CODE) {
+      legs.push({ currencyCode: code, kind: 'identity', rate: IDENTITY_RATE, rateDate: requestedDate, source: 'identity' });
+      continue;
+    }
+    const classified = classifyLeg(code, lookups.get(code) ?? null, requestedDate, maxStalenessDays);
+    if (classified.ok) legs.push(classified.leg); else unavailableLegs.push(classified.leg);
+  }
+  // ONE unavailable leg suppresses the WHOLE result. Never a partial rate.
+  if (unavailableLegs.length > 0) {
+    return { status: 'unavailable', fromCode, toCode, requestedDate, unavailableLegs };
+  }
+
+  const fromLeg = legs.find((l) => l.currencyCode === fromCode)!;
+  const toLeg = legs.find((l) => l.currencyCode === toCode)!;
+  const rate = fromLeg.kind === 'identity'
+    ? toLeg.rate
+    : await deriveCrossRate(fromLeg.rate, toLeg.rate);
+
+  const stored = legs.filter((l) => l.kind === 'stored');
+  const sources = new Set(stored.map((l) => l.source));
+  return {
+    status: 'available', fromCode, toCode, requestedDate, rate,
+    // The single disclosed date is the OLDEST contributing leg — conservative,
+    // so the UI never claims a rate is fresher than its weakest leg.
+    rateDate: stored.map((l) => l.rateDate).sort()[0] ?? requestedDate,
+    source: sources.size === 1 ? ([...sources][0] as 'ecb' | 'manual') : 'mixed',
+    legs,
+  };
+}
+
+export async function resolveReportingRate(
+  from: string, to: string, date: string, options: ReportingRateOptions = {},
+): Promise<ReportingRateResult> {
+  const fromCode = assertCurrency(from, 'from');
+  const toCode = assertCurrency(to, 'to');
+  const requestedDate = assertIsoDate(date);
+  // ONE statement for both legs — see loadLatestLegs for why this must not be
+  // two round trips. An identity pair reads nothing at all.
+  const lookups: LegSnapshot = fromCode === toCode
+    ? new Map()
+    : await loadLatestLegs([fromCode, toCode], requestedDate);
+  return resolveFromLegs(fromCode, toCode, requestedDate, lookups, options);
+}
+
+/**
+ * Batched AND snapshot-consistent: ONE `loadLatestLegs` call covering every
+ * distinct source currency PLUS the target, then pure classification per pair.
+ * Never one statement per dashboard row, and never a second read of the target
+ * leg — re-reading it per pair is how a batch ends up mixing two snapshots.
+ */
+export async function resolveReportingRates(
+  fromCodes: readonly string[], to: string, date: string, options: ReportingRateOptions = {},
+): Promise<ReportingRateResult[]> {
+  const toCode = assertCurrency(to, 'to');
+  const requestedDate = assertIsoDate(date);
+  const unique = [...new Set(fromCodes.map((c) => assertCurrency(c, 'from')))];
+  if (unique.length === 0) return [];
+  const lookups = await loadLatestLegs([...unique, toCode], requestedDate);
+  const results = await Promise.all(
+    unique.map((code) => resolveFromLegs(code, toCode, requestedDate, lookups, options)),
+  );
+  const byCode = new Map(results.map((r) => [r.fromCode, r]));
+  return fromCodes.map((code) => byCode.get(assertCurrency(code, 'from'))!);
+}
+
+export type ReportingConversionResult =
+  | (Extract<ReportingRateResult, { status: 'available' }> & { amount: string; convertedAmount: string })
+  | Extract<ReportingRateResult, { status: 'unavailable' }>;
+
+/**
+ * Reporting-only conversion. Consumed by dashboards and reports ONLY — the
+ * result is display data, is labelled approximate with its rate date, is never
+ * written to a money column, and never reaches document math. There is
+ * deliberately NO assertRepresentable guard: this is not a persisted amount.
+ */
+export async function convertForReporting(
+  amount: string | number, from: string, to: string, date: string, options: ReportingRateOptions = {},
+): Promise<ReportingConversionResult> {
+  const resolved = await resolveReportingRate(from, to, date, options);
+  if (resolved.status === 'unavailable') return resolved;
+  return {
+    ...resolved,
+    amount: String(amount),
+    // Exact half-up at the TARGET currency's minor unit (JPY → whole yen).
+    convertedAmount: multiplyToCurrency(amount, resolved.rate, resolved.toCode),
+  };
 }
