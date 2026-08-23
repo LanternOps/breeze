@@ -241,6 +241,25 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   // partnerId taken from the verified state. Guard the persist: a failure
   // after a successful exchange leaves a live-but-unrecorded grant, so surface
   // it rather than 500-ing on a raw page.
+  // Does this reconnect change realms? A DIFFERENT realm's home currency must
+  // never persist, but blanking it on a SAME-realm reconnect degrades a healthy
+  // connection: capture below is non-fatal and there is no retry, no refresh
+  // route and no job, so a transient Preferences failure would strand the row at
+  // NULL until someone completes another full OAuth round-trip that succeeds.
+  // Read failure falls back to the fail-closed answer (null) rather than losing
+  // the freshly-exchanged grant.
+  let priorRealmId: string | null = null;
+  let priorRealmKnown = false;
+  try {
+    const existing = await withSystemDbAccessContext(() => getConnection(db, state.partnerId, provider));
+    priorRealmId = existing?.realmId ?? null;
+    priorRealmKnown = true;
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), c);
+    console.warn('[accounting] QuickBooks pre-reconnect realm read failed; clearing home currency', { partnerId: state.partnerId, provider });
+  }
+  const sameRealm = priorRealmKnown && priorRealmId !== null && priorRealmId === tokens.realmId;
+
   let connection: AccountingConnection;
   try {
     connection = await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
@@ -250,11 +269,12 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
       accessTokenExpiresAt: tokens.accessTokenExpiresAt,
       refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
       environment: QBO_ENVIRONMENT as 'sandbox' | 'production',
-      // Explicit null, not omission: upsertConnection's conflict set strips
-      // undefined, so omitting this would carry a PREVIOUS realm's home currency
-      // across a reconnect. Unknown must fail closed at push time instead
-      // (multi-currency §11).
-      homeCurrency: null,
+      // Explicit null on a realm CHANGE, not omission: upsertConnection's
+      // conflict set strips undefined, so omitting it would carry a PREVIOUS
+      // realm's home currency across a reconnect. Unknown must fail closed at
+      // push time instead (multi-currency §11). On a same-realm reconnect the
+      // undefined is deliberate — it leaves an already-captured currency intact.
+      homeCurrency: sameRealm ? undefined : null,
       status: 'connected',
       lastError: null,
       connectedBy: state.userId,

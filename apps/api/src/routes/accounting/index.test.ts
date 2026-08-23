@@ -304,9 +304,67 @@ describe('accounting routes', () => {
     );
   });
 
+  it('same-realm reconnect RETAINS the prior captured currency when the capture then fails', async () => {
+    // Reconnecting to the SAME realm must not blank a currency that was already
+    // captured: there is no retry, no refresh route and no job, so a transient
+    // Intuit failure would strand the connection at NULL forever.
+    mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+    mocks.fetchHomeCurrency.mockRejectedValueOnce(new Error('qbo 503'));
+
+    const res = await runCallback(app, 'realm-A');
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    const fields = mocks.upsertConnection.mock.calls[0]![3] as Record<string, unknown>;
+    // undefined, not null: upsertConnection strips undefined from its conflict
+    // set, so the stored currency survives untouched.
+    expect(fields.homeCurrency).toBeUndefined();
+  });
+
+  it('different-realm reconnect NULLS the prior captured currency', async () => {
+    mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
+
+    const res = await runCallback(app, 'realm-B');
+
+    expect(res.status).toBe(302);
+    const fields = mocks.upsertConnection.mock.calls[0]![3] as Record<string, unknown>;
+    expect(fields.homeCurrency).toBeNull();
+  });
+
+  it('nulls the currency when the pre-upsert realm read fails (fail closed, still connects)', async () => {
+    mocks.getConnection.mockRejectedValueOnce(new Error('db down'));
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+
+    const res = await runCallback(app, 'realm-A');
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    const fields = mocks.upsertConnection.mock.calls[0]![3] as Record<string, unknown>;
+    expect(fields.homeCurrency).toBeNull();
+  });
+
   it('callback still connects when the QBO Preferences fetch fails (non-fatal capture)', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
     mocks.fetchHomeCurrency.mockRejectedValueOnce(new Error('qbo 403'));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+  });
+
+  it('callback still connects when the Preferences fetch is ABORTED by its timeout', async () => {
+    // The capture is awaited before deleteCookie + redirect, so it carries an
+    // abort budget; a hung Intuit must surface as a plain connected redirect,
+    // never as a stalled /callback or a connect error.
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchHomeCurrency.mockRejectedValueOnce(Object.assign(
+      new Error('QuickBooks preferences request timed out'),
+      { operation: 'fetchHomeCurrency' },
+    ));
 
     const res = await runCallback(app);
 
