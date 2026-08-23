@@ -57,6 +57,36 @@ Anthropic SDK.
   that touches tenancy must run `vitest.config.rls.ts` and
   `vitest.integration.config.ts` explicitly before review.
 
+## Local environment (integration + RLS suites)
+
+The integration suite refuses any database that is not a recognised test target
+(`apps/api/src/testUtils/integrationDatabaseSafety.ts`): the name must match
+`^breeze_test(_[a-z0-9]+)?$`, the host must be local, the port must **not** be
+5432, and `NODE_ENV=test` is required. Use the repo's own stack, not an ad-hoc
+container:
+
+```bash
+pnpm --filter @breeze/api test:docker:up     # postgres :5433, redis :6380
+
+export NODE_ENV=test
+export DATABASE_URL="postgresql://breeze_test:breeze_test@localhost:5433/breeze_test"
+export DATABASE_URL_APP="postgresql://breeze_app:breeze_test@localhost:5433/breeze_test"
+export REDIS_URL="redis://localhost:6380"
+```
+
+`DATABASE_URL_APP` connects as the unprivileged `breeze_app` role — the one RLS
+actually applies to. `globalSetup` runs migrations once per invocation, holds a
+cross-session advisory lock, and refuses to run if the ledger contains core
+migrations this checkout does not have (i.e. a sibling worktree polluted the
+shared DB). If you hit that guard, the fix is a clean test DB, not the bypass flag.
+
+**`breeze_test_base`** on the same server is a frozen **pre-wave-3** snapshot —
+all 556 migrations except this wave's. Task 5 uses it as the red baseline.
+**Never migrate or write to it.** If it is missing or has been polluted, rebuild
+it: create the database, move `2026-09-05-a-agent-originated-intents.sql` out of
+`apps/api/migrations/` temporarily, run `db:migrate` against it, then move the
+file back and confirm `git status` is clean.
+
 ---
 
 ## 0. Reality check — what the spec gets wrong
@@ -732,7 +762,6 @@ block (`unique` is already imported there):
 - [ ] **Step 4: Replay the migration set, then hand-verify the model**
 
 ```bash
-export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
 pnpm db:check-drift
 ```
 
@@ -818,7 +847,6 @@ In `tenantExportPolicyRegistry.ts`, in the `"action_intents"` entry, add
 - [ ] **Step 2: Run both export-policy suites**
 
 ```bash
-export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/tenant-export-policy.integration.test.ts \
   src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts
@@ -995,7 +1023,8 @@ database, `breeze_base`, exists on the same server for exactly this check — sa
 556 migrations, none of wave 3's.
 
 ```bash
-DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze_base" \
+DATABASE_URL="postgresql://breeze_test:breeze_test@localhost:5433/breeze_test_base" \
+DATABASE_URL_APP="postgresql://breeze_app:breeze_test@localhost:5433/breeze_test_base" \
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/agentIntentConstraints.integration.test.ts
 ```
@@ -1008,13 +1037,14 @@ Confirm the suite actually **ran** — a `runIf` guard skipping silently reads a
 green (see the integration-placement trap in CLAUDE.md). `Test Files 1 passed`
 with `Tests 0 passed` means it skipped; that is a failure, not a pass.
 
-Do **not** write to `breeze_base` beyond what the test's own transaction rolls
-back — later tasks reuse it as the clean red baseline.
+Do **not** migrate `breeze_test_base` or leave data in it — it is the clean red
+baseline. Note `globalSetup` applies migrations to whatever `DATABASE_URL` names,
+so pointing a normal run at it would destroy the baseline; only ever use it for
+this one red check, and rebuild it if the ledger changes.
 
 - [ ] **Step 3: Run against the migrated database**
 
 ```bash
-DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze" \
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/agentIntentConstraints.integration.test.ts
 ```
@@ -1186,7 +1216,6 @@ fallback applies unchanged.
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/actionIntents/metrics.test.ts
-export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
 pnpm db:check-drift
 ```
 
