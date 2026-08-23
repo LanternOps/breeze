@@ -100,6 +100,41 @@ describe('partner_llm_configs partner-axis RLS', () => {
     expect(visible).toEqual([]);
   });
 
+  runDb('partner scope can SELECT, UPDATE, and DELETE its own config row', async () => {
+    const partner = await withSystemDbAccessContext(() => createPartner());
+    const [inserted] = await withSystemDbAccessContext(() =>
+      db
+        .insert(partnerLlmConfigs)
+        .values({ partnerId: partner.id, ...configValues })
+        .returning({ id: partnerLlmConfigs.id }),
+    );
+
+    const visible = await withDbAccessContext(partnerContext(partner.id), () =>
+      db
+        .select({ id: partnerLlmConfigs.id })
+        .from(partnerLlmConfigs)
+        .where(eq(partnerLlmConfigs.id, inserted!.id)),
+    );
+    expect(visible).toEqual([{ id: inserted!.id }]);
+
+    const updated = await withDbAccessContext(partnerContext(partner.id), () =>
+      db
+        .update(partnerLlmConfigs)
+        .set({ defaultModel: 'claude-haiku-4-5' })
+        .where(eq(partnerLlmConfigs.id, inserted!.id))
+        .returning({ id: partnerLlmConfigs.id, defaultModel: partnerLlmConfigs.defaultModel }),
+    );
+    expect(updated).toEqual([{ id: inserted!.id, defaultModel: 'claude-haiku-4-5' }]);
+
+    const deleted = await withDbAccessContext(partnerContext(partner.id), () =>
+      db
+        .delete(partnerLlmConfigs)
+        .where(eq(partnerLlmConfigs.id, inserted!.id))
+        .returning({ id: partnerLlmConfigs.id }),
+    );
+    expect(deleted).toEqual([{ id: inserted!.id }]);
+  });
+
   runDb('system context can write and read config rows', async () => {
     const partner = await withSystemDbAccessContext(() => createPartner());
     const [inserted] = await withSystemDbAccessContext(() =>

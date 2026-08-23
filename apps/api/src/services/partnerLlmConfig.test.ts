@@ -6,32 +6,50 @@ const USER_ID = '22222222-2222-4222-8222-222222222222';
 const CONFIG_ID = '33333333-3333-4333-8333-333333333333';
 const API_KEY = 'sk-ant-api03-unit-test-key-1234567890';
 
-const { anthropicState, dbState } = vi.hoisted(() => ({
-  anthropicState: {
-    constructorOptions: [] as Array<{ apiKey?: string }>,
-    create: vi.fn(),
-  },
-  dbState: {
-    insertResults: [] as unknown[][],
-    selectResults: [] as unknown[][],
-    updateResults: [] as unknown[][],
-    insertedValues: [] as Array<Record<string, unknown>>,
-    updateSets: [] as Array<Record<string, unknown>>,
-    deleteWheres: [] as unknown[],
-  },
-}));
+const { anthropicState, captureExceptionMock, dbState } = vi.hoisted(() => {
+  class MockAnthropicApiError extends Error {
+    constructor(message: string, readonly status?: number) {
+      super(message);
+      this.name = 'APIError';
+    }
+  }
 
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: class MockAnthropic {
+  return {
+    anthropicState: {
+      constructorOptions: [] as Array<{ apiKey?: string }>,
+      create: vi.fn(),
+      apiErrorClass: MockAnthropicApiError,
+    },
+    captureExceptionMock: vi.fn(),
+    dbState: {
+      insertResults: [] as unknown[][],
+      selectResults: [] as unknown[][],
+      updateResults: [] as unknown[][],
+      deleteResults: [] as unknown[][],
+      insertedValues: [] as Array<Record<string, unknown>>,
+      updateSets: [] as Array<Record<string, unknown>>,
+      deleteWheres: [] as unknown[],
+    },
+  };
+});
+
+vi.mock('@anthropic-ai/sdk', () => {
+  class MockAnthropic {
+    static APIError = anthropicState.apiErrorClass;
     messages = { create: anthropicState.create };
     constructor(options: { apiKey?: string }) {
       anthropicState.constructorOptions.push(options);
     }
-  },
-}));
+  }
+  return { default: MockAnthropic };
+});
 
 vi.mock('./aiAgent', () => ({
   resolveDefaultModel: () => 'claude-sonnet-4-6',
+}));
+
+vi.mock('./sentry', () => ({
+  captureException: captureExceptionMock,
 }));
 
 vi.mock('../db', () => ({
@@ -68,7 +86,9 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn((condition: unknown) => {
         dbState.deleteWheres.push(condition);
-        return Promise.resolve();
+        return {
+          returning: vi.fn(() => Promise.resolve(dbState.deleteResults.shift() ?? [])),
+        };
       }),
     })),
   },
@@ -77,11 +97,13 @@ vi.mock('../db', () => ({
 import { decryptSecret } from './secretCrypto';
 import { columnAad, encryptedColumnRegistry } from './encryptedColumnRegistry';
 import {
+  deletePartnerLlmConfig,
   getPartnerLlmStatus,
   PartnerLlmError,
   savePartnerLlmKey,
   updatePartnerLlmConfig,
 } from './partnerLlmConfig';
+import { captureException } from './sentry';
 
 const originalEncryptionEnv = {
   key: process.env.APP_ENCRYPTION_KEY,
@@ -97,7 +119,8 @@ function expectedFingerprint(value: string): string {
   const encryptionKey = createHash('sha256')
     .update('partner-llm-unit-test-key-material')
     .digest();
-  return createHmac('sha256', encryptionKey).update(value).digest('hex');
+  const hex = createHmac('sha256', encryptionKey).update(value).digest('hex');
+  return `fp1:partner-llm-test:${hex}`;
 }
 
 function apiKeyAad(id: string): string {
@@ -114,6 +137,7 @@ beforeEach(() => {
   dbState.insertResults.length = 0;
   dbState.selectResults.length = 0;
   dbState.updateResults.length = 0;
+  dbState.deleteResults.length = 0;
   dbState.insertedValues.length = 0;
   dbState.updateSets.length = 0;
   dbState.deleteWheres.length = 0;
@@ -131,7 +155,7 @@ afterAll(() => {
 
 describe('savePartnerLlmKey', () => {
   it('leaves the existing row untouched when Anthropic rejects the probe', async () => {
-    anthropicState.create.mockRejectedValue(Object.assign(new Error('rejected'), { status: 401 }));
+    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('rejected', 401));
 
     await expect(
       savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
@@ -146,11 +170,51 @@ describe('savePartnerLlmKey', () => {
   });
 
   it('maps an Anthropic permission rejection to 409 without persisting', async () => {
-    anthropicState.create.mockRejectedValue(Object.assign(new Error('forbidden'), { status: 403 }));
+    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('forbidden', 403));
 
     await expect(
       savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
     ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
+
+    expect(dbState.insertedValues).toHaveLength(0);
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('rethrows a non-APIError from the probe without wrapping or persisting', async () => {
+    const error = new Error('unexpected programming failure');
+    anthropicState.create.mockRejectedValue(error);
+
+    await expect(
+      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
+    ).rejects.toBe(error);
+
+    expect(dbState.insertedValues).toHaveLength(0);
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('maps another Anthropic 4xx rejection to 400 without exposing the response body', async () => {
+    const error = new anthropicState.apiErrorClass('sensitive upstream response', 404);
+    anthropicState.create.mockRejectedValue(error);
+
+    await expect(
+      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
+    ).rejects.toMatchObject({
+      name: 'PartnerLlmError',
+      status: 400,
+      message: 'Anthropic rejected the verification request (HTTP 404). The probe model may be unavailable — contact support if this persists.',
+    });
+
+    expect(captureException).toHaveBeenCalledWith(error, undefined, { service: 'partnerLlmConfig' });
+    expect(dbState.insertedValues).toHaveLength(0);
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('maps Anthropic rate limiting to a transient 503 without persisting', async () => {
+    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('rate limited', 429));
+
+    await expect(
+      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
+    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 503 });
 
     expect(dbState.insertedValues).toHaveLength(0);
     expect(dbState.updateSets).toHaveLength(0);
@@ -237,5 +301,16 @@ describe('getPartnerLlmStatus', () => {
       configured: true,
       defaultModel: null,
     });
+  });
+});
+
+describe('deletePartnerLlmConfig', () => {
+  it.each([
+    [[{ id: CONFIG_ID }], true],
+    [[], false],
+  ] as const)('returns whether a config row was deleted', async (deletedRows, expected) => {
+    dbState.deleteResults.push([...deletedRows]);
+
+    await expect(deletePartnerLlmConfig(PARTNER_ID)).resolves.toBe(expected);
   });
 });

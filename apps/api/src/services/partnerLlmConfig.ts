@@ -11,6 +11,7 @@ import {
   type EncryptedColumnSpec,
 } from './encryptedColumnRegistry';
 import { decryptSecret, encryptSecret, hmacFingerprint } from './secretCrypto';
+import { captureException } from './sentry';
 
 const API_KEY_SPEC: EncryptedColumnSpec = (() => {
   const spec = encryptedColumnRegistry.find(
@@ -52,25 +53,31 @@ export function decryptPartnerLlmApiKey(row: { id: string; apiKeyEncrypted: stri
   return apiKey;
 }
 
-function anthropicStatus(error: unknown): number | undefined {
-  return (error as { status?: number } | null)?.status;
-}
-
 async function probeAnthropicKey(apiKey: string): Promise<void> {
+  const model = resolveDefaultModel();
   try {
     const client = new Anthropic({ apiKey });
     await runOutsideDbContext(() => client.messages.create({
-      model: resolveDefaultModel(),
+      model,
       max_tokens: 1,
       messages: [{ role: 'user', content: 'ping' }],
     }));
   } catch (error) {
-    const status = anthropicStatus(error);
+    if (!(error instanceof Anthropic.APIError)) throw error;
+    const status = error.status;
     if (status === 401) {
       throw new PartnerLlmError('That Anthropic API key was rejected. Check the key and try again.', 400);
     }
     if (status === 403) {
       throw new PartnerLlmError('Anthropic denied access for that API key. Check its permissions and try again.', 409);
+    }
+    if (status !== undefined && status >= 400 && status < 500 && status !== 429) {
+      captureException(error, undefined, { service: 'partnerLlmConfig' });
+      throw new PartnerLlmError(
+        `Anthropic rejected the verification request (HTTP ${status}). ` +
+        'The probe model may be unavailable — contact support if this persists.',
+        400,
+      );
     }
     throw new PartnerLlmError('Anthropic could not verify the API key right now. Try again later.', 503);
   }
@@ -231,6 +238,10 @@ export async function updatePartnerLlmConfig(input: {
   };
 }
 
-export async function deletePartnerLlmConfig(partnerId: string): Promise<void> {
-  await db.delete(partnerLlmConfigs).where(eq(partnerLlmConfigs.partnerId, partnerId));
+export async function deletePartnerLlmConfig(partnerId: string): Promise<boolean> {
+  const [deleted] = await db
+    .delete(partnerLlmConfigs)
+    .where(eq(partnerLlmConfigs.partnerId, partnerId))
+    .returning({ id: partnerLlmConfigs.id });
+  return deleted !== undefined;
 }

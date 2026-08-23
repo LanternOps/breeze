@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
 const CONFIG_ID = '22222222-2222-4222-8222-222222222222';
 
-const { anthropicOptions, dbState, decryptMock, contextState } = vi.hoisted(() => ({
+const { anthropicOptions, captureExceptionMock, dbState, decryptMock, contextState } = vi.hoisted(() => ({
   anthropicOptions: [] as Array<{ apiKey?: string }>,
+  captureExceptionMock: vi.fn(),
   dbState: {
     selectResults: [] as unknown[][],
     updateResults: [] as unknown[][],
+    updateError: null as unknown,
     updateSets: [] as Array<Record<string, unknown>>,
     updateWheres: [] as unknown[],
   },
@@ -29,6 +32,10 @@ vi.mock('../aiAgent', () => ({
 
 vi.mock('../partnerLlmConfig', () => ({
   decryptPartnerLlmApiKey: decryptMock,
+}));
+
+vi.mock('../sentry', () => ({
+  captureException: captureExceptionMock,
 }));
 
 vi.mock('../../db', () => ({
@@ -55,7 +62,9 @@ vi.mock('../../db', () => ({
           where: vi.fn((condition: unknown) => {
             dbState.updateWheres.push(condition);
             return {
-              returning: vi.fn(() => Promise.resolve(dbState.updateResults.shift() ?? [])),
+              returning: vi.fn(() => dbState.updateError
+                ? Promise.reject(dbState.updateError)
+                : Promise.resolve(dbState.updateResults.shift() ?? [])),
             };
           }),
         };
@@ -70,6 +79,8 @@ import {
   markPartnerLlmError,
   resolveLlmConfig,
 } from './llmConfigResolver';
+import { SecretKeyMaterialError } from '../secretCrypto';
+import { captureException } from '../sentry';
 
 const originalPlatformKey = process.env.ANTHROPIC_API_KEY;
 
@@ -85,17 +96,9 @@ function row(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function boundParams(node: unknown, out: unknown[] = []): unknown[] {
-  if (!node || typeof node !== 'object') return out;
-  const record = node as Record<string, unknown>;
-  if (Array.isArray(record.queryChunks)) {
-    for (const chunk of record.queryChunks) boundParams(chunk, out);
-  } else if (Array.isArray(node)) {
-    for (const chunk of node) boundParams(chunk, out);
-  } else if ('encoder' in record && 'value' in record) {
-    out.push(record.value);
-  }
-  return out;
+function compileWhere(condition: unknown): { sql: string; params: unknown[] } {
+  const { sql, params } = new PgDialect().sqlToQuery(condition as never);
+  return { sql, params };
 }
 
 beforeEach(() => {
@@ -103,6 +106,7 @@ beforeEach(() => {
   anthropicOptions.length = 0;
   dbState.selectResults.length = 0;
   dbState.updateResults.length = 0;
+  dbState.updateError = null;
   dbState.updateSets.length = 0;
   dbState.updateWheres.length = 0;
   contextState.outsideCalls = 0;
@@ -145,11 +149,12 @@ describe('resolveLlmConfig', () => {
     expect(contextState.systemCalls).toBe(1);
   });
 
-  it('marks an undecryptable active row as errored and returns unavailable', async () => {
+  it('marks a deterministic decrypt failure by config id and returns unavailable', async () => {
     dbState.selectResults.push([row()]);
     dbState.updateResults.push([{ id: CONFIG_ID }]);
+    const error = new Error('bad auth tag');
     decryptMock.mockImplementation(() => {
-      throw new Error('bad auth tag');
+      throw error;
     });
 
     await expect(resolveLlmConfig(PARTNER_ID)).resolves.toEqual({
@@ -158,6 +163,65 @@ describe('resolveLlmConfig', () => {
       reason: 'key_error',
     });
     expect(dbState.updateSets[0]).toMatchObject({ status: 'error', lastError: 'decrypt_failed' });
+    const compiled = compileWhere(dbState.updateWheres[0]);
+    expect(compiled.sql).toBe('(\"partner_llm_configs\".\"id\" = $1 and \"partner_llm_configs\".\"config_version\" = $2)');
+    expect(compiled.params).toEqual([CONFIG_ID, 4]);
+    expect(captureException).toHaveBeenCalledWith(error, undefined, {
+      service: 'llmConfigResolver',
+      partnerId: PARTNER_ID,
+    });
+  });
+
+  it('returns unavailable without persisting when decrypt fails from node key material', async () => {
+    dbState.selectResults.push([row()]);
+    const error = new SecretKeyMaterialError('Unknown encrypted secret key ID');
+    decryptMock.mockImplementation(() => {
+      throw error;
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(resolveLlmConfig(PARTNER_ID)).resolves.toEqual({
+      source: 'unavailable',
+      partnerId: PARTNER_ID,
+      reason: 'key_error',
+    });
+    expect(dbState.updateSets).toHaveLength(0);
+    expect(captureException).toHaveBeenCalledWith(error, undefined, {
+      service: 'llmConfigResolver',
+      partnerId: PARTNER_ID,
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      '[llmConfigResolver] partner config cannot be decrypted with this node key material',
+      { partnerId: PARTNER_ID, error },
+    );
+    consoleError.mockRestore();
+  });
+
+  it('captures a failure to persist deterministic decrypt status', async () => {
+    dbState.selectResults.push([row()]);
+    const decryptError = new Error('bad auth tag');
+    const persistError = new Error('database unavailable');
+    decryptMock.mockImplementation(() => {
+      throw decryptError;
+    });
+    dbState.updateError = persistError;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(resolveLlmConfig(PARTNER_ID)).resolves.toMatchObject({ source: 'unavailable' });
+
+    expect(captureException).toHaveBeenNthCalledWith(1, decryptError, undefined, {
+      service: 'llmConfigResolver',
+      partnerId: PARTNER_ID,
+    });
+    expect(captureException).toHaveBeenNthCalledWith(2, persistError, undefined, {
+      service: 'llmConfigResolver',
+      partnerId: PARTNER_ID,
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      '[llmConfigResolver] failed to mark unreadable partner config',
+      { partnerId: PARTNER_ID, configVersion: 4, error: persistError },
+    );
+    consoleError.mockRestore();
   });
 
   it('returns unavailable for an error row without attempting decryption', async () => {
@@ -178,18 +242,18 @@ describe('markPartnerLlmError', () => {
     dbState.updateResults.push([]);
 
     await expect(markPartnerLlmError({
-      partnerId: PARTNER_ID,
+      configId: CONFIG_ID,
       configVersion: 3,
-      reason: 'anthropic_auth_error:401',
+      reason: 'auth_rejected',
     })).resolves.toBe(false);
 
     expect(dbState.updateSets[0]).toMatchObject({
       status: 'error',
-      lastError: 'anthropic_auth_error:401',
+      lastError: 'auth_rejected',
     });
-    const params = boundParams(dbState.updateWheres[0]);
-    expect(params).toContain(PARTNER_ID);
-    expect(params).toContain(3);
+    const compiled = compileWhere(dbState.updateWheres[0]);
+    expect(compiled.sql).toBe('(\"partner_llm_configs\".\"id\" = $1 and \"partner_llm_configs\".\"config_version\" = $2)');
+    expect(compiled.params).toEqual([CONFIG_ID, 3]);
   });
 });
 
@@ -198,6 +262,24 @@ describe('getAnthropicClientForPartner', () => {
     dbState.selectResults.push([row({ status: 'error' })]);
 
     await expect(getAnthropicClientForPartner(PARTNER_ID)).rejects.toBeInstanceOf(LlmUnavailableError);
+    expect(anthropicOptions).toHaveLength(0);
+  });
+
+  it('reports a deployment configuration error when the platform key is blank', async () => {
+    process.env.ANTHROPIC_API_KEY = '   ';
+
+    await expect(getAnthropicClientForPartner(null)).rejects.toMatchObject({
+      name: 'LlmUnavailableError',
+      message: 'AI is not configured on this deployment.',
+    });
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'LlmUnavailableError',
+        message: 'AI is not configured on this deployment.',
+      }),
+      undefined,
+      { service: 'llmConfigResolver' },
+    );
     expect(anthropicOptions).toHaveLength(0);
   });
 });

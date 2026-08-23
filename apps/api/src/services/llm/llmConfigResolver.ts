@@ -4,6 +4,8 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { partnerLlmConfigs } from '../../db/schema';
 import { resolveDefaultModel } from '../aiAgent';
 import { decryptPartnerLlmApiKey } from '../partnerLlmConfig';
+import { SecretKeyMaterialError } from '../secretCrypto';
+import { captureException } from '../sentry';
 
 export type ResolvedLlmConfig =
   | { source: 'platform'; apiKey: string | undefined; model: string }
@@ -21,8 +23,8 @@ export class LlmUnavailableError extends Error {
   readonly status = 503;
   readonly code = 'ai_unavailable';
 
-  constructor() {
-    super('AI is unavailable until the Anthropic API key is reconnected.');
+  constructor(message = 'AI is unavailable until the Anthropic API key is reconnected.') {
+    super(message);
     this.name = 'LlmUnavailableError';
   }
 }
@@ -65,18 +67,28 @@ export async function resolveLlmConfig(partnerId: string | null): Promise<Resolv
   let apiKey: string;
   try {
     apiKey = decryptPartnerLlmApiKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
-  } catch {
+  } catch (error) {
+    captureException(error, undefined, { service: 'llmConfigResolver', partnerId });
+    if (error instanceof SecretKeyMaterialError) {
+      console.error(
+        '[llmConfigResolver] partner config cannot be decrypted with this node key material',
+        { partnerId, error },
+      );
+      return { source: 'unavailable', partnerId, reason: 'key_error' };
+    }
     try {
       await markPartnerLlmError({
-        partnerId,
+        configId: row.id,
         configVersion: row.configVersion,
         reason: 'decrypt_failed',
       });
-    } catch {
+    } catch (markError) {
       console.error('[llmConfigResolver] failed to mark unreadable partner config', {
         partnerId,
         configVersion: row.configVersion,
+        error: markError,
       });
+      captureException(markError, undefined, { service: 'llmConfigResolver', partnerId });
     }
     return { source: 'unavailable', partnerId, reason: 'key_error' };
   }
@@ -92,13 +104,16 @@ export async function resolveLlmConfig(partnerId: string | null): Promise<Resolv
 }
 
 /**
- * Marks normalized credential failures only. Callers must not invoke this for
- * Anthropic 429, 5xx, network, timeout, or other retryable failures.
+ * Marks normalized credential failures only when the exact config row id and
+ * version still match. Callers must not invoke this for Anthropic 429, 5xx,
+ * network, timeout, or other retryable failures.
  */
+export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
+
 export async function markPartnerLlmError(input: {
-  partnerId: string;
+  configId: string;
   configVersion: number;
-  reason: string;
+  reason: PartnerLlmErrorReason;
 }): Promise<boolean> {
   const reason = input.reason.trim().slice(0, 160) || 'credential_error';
   return runOutsideDbContext(() =>
@@ -111,7 +126,7 @@ export async function markPartnerLlmError(input: {
           updatedAt: new Date(),
         })
         .where(and(
-          eq(partnerLlmConfigs.partnerId, input.partnerId),
+          eq(partnerLlmConfigs.id, input.configId),
           eq(partnerLlmConfigs.configVersion, input.configVersion),
         ))
         .returning({ id: partnerLlmConfigs.id });
@@ -125,8 +140,13 @@ export async function getAnthropicClientForPartner(partnerId: string | null): Pr
   resolved: Exclude<ResolvedLlmConfig, { source: 'unavailable' }>;
 }> {
   const resolved = await resolveLlmConfig(partnerId);
-  if (resolved.source === 'unavailable' || !resolved.apiKey?.trim()) {
+  if (resolved.source === 'unavailable') {
     throw new LlmUnavailableError();
+  }
+  if (!resolved.apiKey?.trim()) {
+    const error = new LlmUnavailableError('AI is not configured on this deployment.');
+    captureException(error, undefined, { service: 'llmConfigResolver' });
+    throw error;
   }
   return {
     client: new Anthropic({ apiKey: resolved.apiKey }),

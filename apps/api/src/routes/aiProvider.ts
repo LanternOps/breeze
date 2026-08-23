@@ -12,6 +12,11 @@ import {
   updatePartnerLlmConfig,
 } from '../services/partnerLlmConfig';
 import { PERMISSIONS } from '../services/permissions';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
+import { captureException } from '../services/sentry';
 
 export const aiProviderRoutes = new Hono();
 
@@ -31,6 +36,7 @@ aiProviderRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     const status = await getPartnerLlmStatus(auth.partnerId);
     return c.json({
       configured: status.configured,
@@ -52,6 +58,7 @@ aiProviderRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     const { apiKey } = c.req.valid('json');
     try {
       const result = await savePartnerLlmKey({
@@ -77,6 +84,7 @@ aiProviderRoutes.post(
       });
     } catch (error) {
       if (error instanceof PartnerLlmError) {
+        if (error.status >= 500) captureException(error, undefined, { service: 'aiProvider' });
         return c.json({ error: error.message }, error.status);
       }
       throw error;
@@ -91,6 +99,7 @@ aiProviderRoutes.patch(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     const { defaultModel } = c.req.valid('json');
     try {
       const result = await updatePartnerLlmConfig({ partnerId: auth.partnerId, defaultModel });
@@ -104,6 +113,7 @@ aiProviderRoutes.patch(
       return c.json(result);
     } catch (error) {
       if (error instanceof PartnerLlmError) {
+        if (error.status >= 500) captureException(error, undefined, { service: 'aiProvider' });
         return c.json({ error: error.message }, error.status);
       }
       throw error;
@@ -118,13 +128,16 @@ aiProviderRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    await deletePartnerLlmConfig(auth.partnerId);
-    writeRouteAudit(c, {
-      orgId: null,
-      action: 'ai_provider.disconnected',
-      resourceType: 'partner',
-      resourceId: auth.partnerId,
-    });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    const deleted = await deletePartnerLlmConfig(auth.partnerId);
+    if (deleted) {
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'ai_provider.disconnected',
+        resourceType: 'partner',
+        resourceId: auth.partnerId,
+      });
+    }
     return c.json({ configured: false, status: 'platform' });
   },
 );

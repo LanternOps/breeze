@@ -5,10 +5,16 @@ const authGates = vi.hoisted(() => ({
   mfaDenied: false,
 }));
 
+const { captureExceptionMock } = vi.hoisted(() => ({
+  captureExceptionMock: vi.fn(),
+}));
+
 const authState: { value: any } = {
   value: {
     user: { id: '11111111-1111-4111-8111-111111111111', email: 'admin@example.com', name: 'Admin' },
+    scope: 'partner',
     partnerId: '22222222-2222-4222-8222-222222222222',
+    partnerOrgAccess: 'all',
   },
 };
 
@@ -37,6 +43,10 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+vi.mock('../services/sentry', () => ({
+  captureException: captureExceptionMock,
+}));
+
 vi.mock('../services/partnerLlmConfig', () => {
   class PartnerLlmError extends Error {
     constructor(message: string, readonly status: 400 | 409 | 500 | 503) {
@@ -55,6 +65,7 @@ vi.mock('../services/partnerLlmConfig', () => {
 
 import { aiProviderRoutes } from './aiProvider';
 import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
 import {
   deletePartnerLlmConfig,
   getPartnerLlmStatus,
@@ -78,7 +89,9 @@ describe('AI provider routes', () => {
     authGates.mfaDenied = false;
     authState.value = {
       user: { id: '11111111-1111-4111-8111-111111111111', email: 'admin@example.com', name: 'Admin' },
+      scope: 'partner',
       partnerId: '22222222-2222-4222-8222-222222222222',
+      partnerOrgAccess: 'all',
     };
     vi.mocked(getPartnerLlmStatus).mockResolvedValue({
       configured: true,
@@ -101,7 +114,7 @@ describe('AI provider routes', () => {
       defaultModel: 'claude-haiku-4-5',
       configVersion: 4,
     });
-    vi.mocked(deletePartnerLlmConfig).mockResolvedValue(undefined);
+    vi.mocked(deletePartnerLlmConfig).mockResolvedValue(true);
   });
 
   it('returns 403 when the authenticated request has no partner context', async () => {
@@ -114,6 +127,52 @@ describe('AI provider routes', () => {
 
     expect(response.status).toBe(403);
     expect(getPartnerLlmStatus).not.toHaveBeenCalled();
+  });
+
+  const handlerRequests = [
+    ['GET /', () => aiProviderRoutes.request('/', { method: 'GET' })],
+    ['POST /key', () => postKey()],
+    ['PATCH /', () => aiProviderRoutes.request('/', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ defaultModel: 'claude-haiku-4-5' }),
+    })],
+    ['DELETE /', () => aiProviderRoutes.request('/', { method: 'DELETE' })],
+  ] as const;
+
+  it.each(handlerRequests)('%s rejects organization-scoped auth even when it carries a partnerId', async (_name, request) => {
+    authState.value = {
+      user: { id: '11111111-1111-4111-8111-111111111111', email: 'admin@example.com', name: 'Admin' },
+      scope: 'organization',
+      orgId: '33333333-3333-4333-8333-333333333333',
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      partnerOrgAccess: null,
+    };
+
+    const response = await request();
+
+    expect(response.status).toBe(403);
+    expect(getPartnerLlmStatus).not.toHaveBeenCalled();
+    expect(savePartnerLlmKey).not.toHaveBeenCalled();
+    expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
+    expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
+  });
+
+  it.each(handlerRequests)('%s rejects partner auth limited to selected organizations', async (_name, request) => {
+    authState.value = {
+      user: { id: '11111111-1111-4111-8111-111111111111', email: 'admin@example.com', name: 'Admin' },
+      scope: 'partner',
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      partnerOrgAccess: 'selected',
+    };
+
+    const response = await request();
+
+    expect(response.status).toBe(403);
+    expect(getPartnerLlmStatus).not.toHaveBeenCalled();
+    expect(savePartnerLlmKey).not.toHaveBeenCalled();
+    expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
+    expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
   });
 
   it('requires MFA for POST /key', async () => {
@@ -163,6 +222,16 @@ describe('AI provider routes', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
+  it('POST /key captures mapped PartnerLlmError responses at 5xx', async () => {
+    const error = new PartnerLlmError('Anthropic could not verify the API key right now.', 503);
+    vi.mocked(savePartnerLlmKey).mockRejectedValue(error);
+
+    const response = await postKey();
+
+    expect(response.status).toBe(503);
+    expect(captureException).toHaveBeenCalledWith(error, undefined, { service: 'aiProvider' });
+  });
+
   it('POST /key saves and audits only last4 and configVersion', async () => {
     const response = await postKey();
 
@@ -199,6 +268,20 @@ describe('AI provider routes', () => {
     }));
   });
 
+  it('PATCH / captures mapped PartnerLlmError responses at 5xx', async () => {
+    const error = new PartnerLlmError('Could not update the Anthropic configuration.', 500);
+    vi.mocked(updatePartnerLlmConfig).mockRejectedValue(error);
+
+    const response = await aiProviderRoutes.request('/', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ defaultModel: 'claude-haiku-4-5' }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(captureException).toHaveBeenCalledWith(error, undefined, { service: 'aiProvider' });
+  });
+
   it('DELETE / removes the config and audits the disconnect', async () => {
     const response = await aiProviderRoutes.request('/', { method: 'DELETE' });
 
@@ -207,5 +290,15 @@ describe('AI provider routes', () => {
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'ai_provider.disconnected',
     }));
+  });
+
+  it('DELETE / remains idempotent without auditing when no config existed', async () => {
+    vi.mocked(deletePartnerLlmConfig).mockResolvedValue(false);
+
+    const response = await aiProviderRoutes.request('/', { method: 'DELETE' });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ configured: false, status: 'platform' });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 });

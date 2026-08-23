@@ -6,6 +6,13 @@ const ENCRYPTED_V3_PREFIX = 'enc:v3:';
 const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
 const KEY_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
+export class SecretKeyMaterialError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SecretKeyMaterialError';
+  }
+}
+
 export interface SecretCryptoOptions {
   /**
    * Optional Additional Authenticated Data (AAD) binding for the ciphertext.
@@ -98,7 +105,7 @@ function getEncryptionKey(): Buffer {
         'Set APP_ENCRYPTION_KEY to a dedicated random value. See .env.example for details.'
       );
     }
-    throw new Error(
+    throw new SecretKeyMaterialError(
       'Missing APP_ENCRYPTION_KEY for secret encryption in production. ' +
       'Set APP_ENCRYPTION_KEY (or SSO_ENCRYPTION_KEY/SECRET_ENCRYPTION_KEY) in your environment.'
     );
@@ -121,7 +128,9 @@ function getEncryptionKey(): Buffer {
 export function hmacFingerprint(value: string): string {
   const activeKeyId = getActiveKeyId();
   const key = activeKeyId ? getV2EncryptionKey(activeKeyId) : getEncryptionKey();
-  return createHmac('sha256', key).update(value).digest('hex');
+  const hex = createHmac('sha256', key).update(value).digest('hex');
+  // Fingerprints are comparable only within one encryption-key generation.
+  return `fp1:${activeKeyId ?? 'legacy'}:${hex}`;
 }
 
 function getActiveKeyId(): string | null {
@@ -197,7 +206,7 @@ function getV2EncryptionKey(keyId: string): Buffer {
     }
   }
 
-  throw new Error('Unknown encrypted secret key ID');
+  throw new SecretKeyMaterialError('Unknown encrypted secret key ID');
 }
 
 function parseEncryptedPayload(encoded: string): {
@@ -409,7 +418,7 @@ export function decryptSecret(
     // decrypt with empty AAD which doesn't match what we encrypted with. We
     // fail closed instead of trying empty AAD.
     if (!options.aad) {
-      throw new Error('AAD is required to decrypt v3 secrets');
+      throw new SecretKeyMaterialError('AAD is required to decrypt v3 secrets');
     }
     return decryptWithKey(payload, getV2EncryptionKey(keyId), Buffer.from(options.aad, 'utf8'));
   }
