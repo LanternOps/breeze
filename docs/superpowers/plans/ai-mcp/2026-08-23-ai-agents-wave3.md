@@ -788,6 +788,11 @@ Follow the setup/teardown of the existing
 agent/run fixture creation and the system DB context helper; reuse its helpers
 rather than re-deriving them.
 
+You need **two** orgs under the same partner (`orgId` and `otherOrgId`) so the
+cross-tenant case has somewhere to point. Column types that bite when hand-rolling
+fixtures: `organizations.currency_code` is NOT NULL, `action_intents.risk_tier` is
+a **smallint** (not the text tier name), and `correlation_id` is a **uuid**.
+
 ```ts
 describe('agent-originated action_intents constraints', () => {
   it('accepts an intent with a run and no human actor', async () => {
@@ -841,6 +846,37 @@ describe('agent-originated action_intents constraints', () => {
       requestingApiKeyId: null,
       requestingAgentRunId: runId,
       originPrincipalKind: 'system',
+      source: 'chat',
+    })).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('rejects an intent whose org differs from its run org (23503)', async () => {
+    // The composite FK (requesting_agent_run_id, org_id) -> ai_agent_runs(id, org_id)
+    // is what makes agent attribution tenant-safe. A single-column FK would let
+    // an intent in org A cite a run in org B, and RLS would not catch it: the
+    // action_intents policy checks only action_intents.org_id. Precedent:
+    // elevation_audit -> elevation_requests(id, org_id).
+    await expect(insertIntent({
+      orgId: otherOrgId,                 // run belongs to orgId, not otherOrgId
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: runId,
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: agentId,
+      source: 'ai_agent',
+    })).rejects.toMatchObject({ code: '23503' });
+  });
+
+  it('rejects a source that disagrees with the origin kind (23514)', async () => {
+    // source drives notification + expiry; origin_principal_kind drives
+    // authorization. A row where they disagree takes one path while claiming
+    // the other.
+    await expect(insertIntent({
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: runId,
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: agentId,
       source: 'chat',
     })).rejects.toMatchObject({ code: '23514' });
   });
@@ -899,7 +935,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
   src/__tests__/integration/agentIntentConstraints.integration.test.ts
 ```
 
-Expected: 7 passed.
+Expected: 9 passed.
 
 - [ ] **Step 4: Run the full RLS + integration contract set**
 
