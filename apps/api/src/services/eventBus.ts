@@ -105,7 +105,16 @@ export type EventType =
   | 'elevation.denied'
   | 'elevation.activated'
   | 'elevation.expired'
-  | 'elevation.revoked';
+  | 'elevation.revoked'
+  // AI operator agents (spec 2026-08-22 §7). Wave 1 publishes policy_changed;
+  // the run.* members are reserved for the wave-3 runner.
+  | 'ai.agent.policy_changed'
+  | 'ai.agent.run.queued'
+  | 'ai.agent.run.started'
+  | 'ai.agent.run.awaiting_approval'
+  | 'ai.agent.run.completed'
+  | 'ai.agent.run.failed'
+  | 'ai.agent.run.skipped';
 
 export type EventPriority = 'low' | 'normal' | 'high' | 'critical';
 
@@ -621,7 +630,13 @@ export const EVENT_TYPES = {
   ALERT_TRIGGERED: 'alert.triggered' as const,
   ALERT_ACKNOWLEDGED: 'alert.acknowledged' as const,
   ALERT_RESOLVED: 'alert.resolved' as const,
+  ALERT_SUPPRESSED: 'alert.suppressed' as const,
   ALERT_ESCALATED: 'alert.escalated' as const,
+  // Incident
+  INCIDENT_CREATED: 'incident.created' as const,
+  INCIDENT_CONTAINED: 'incident.contained' as const,
+  INCIDENT_ESCALATED: 'incident.escalated' as const,
+  INCIDENT_CLOSED: 'incident.closed' as const,
   // Script
   SCRIPT_STARTED: 'script.started' as const,
   SCRIPT_COMPLETED: 'script.completed' as const,
@@ -649,6 +664,10 @@ export const EVENT_TYPES = {
   BACKUP_VERIFICATION_FAILED: 'backup.verification_failed' as const,
   BACKUP_VERIFICATION_PASSED: 'backup.verification_passed' as const,
   BACKUP_RECOVERY_READINESS_LOW: 'backup.recovery_readiness_low' as const,
+  // Backup and ticket SLA
+  BACKUP_SLA_BREACH: 'backup.sla_breach' as const,
+  BACKUP_SLA_RESOLVED: 'backup.sla_resolved' as const,
+  TICKET_SLA_BREACHED: 'ticket.sla_breached' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,
@@ -663,6 +682,7 @@ export const EVENT_TYPES = {
   COMPLIANCE_SENSITIVE_DATA_FOUND: 'compliance.sensitive_data_found' as const,
   COMPLIANCE_CREDENTIAL_EXPOSED: 'compliance.credential_exposed' as const,
   COMPLIANCE_SENSITIVE_DATA_REMEDIATED: 'compliance.sensitive_data_remediated' as const,
+  COMPLIANCE_BROWSER_POLICY_APPLIED: 'compliance.browser_policy_applied' as const,
   // DNS Security (#829)
   DNS_THREAT_BLOCKED: 'dns.threat.blocked' as const,
   // Remote
@@ -672,6 +692,9 @@ export const EVENT_TYPES = {
   USER_LOGIN: 'user.login' as const,
   USER_LOGOUT: 'user.logout' as const,
   USER_MFA_ENABLED: 'user.mfa.enabled' as const,
+  USER_RISK_SCORE_HIGH: 'user.risk_score_high' as const,
+  USER_RISK_SCORE_SPIKE: 'user.risk_score_spike' as const,
+  USER_TRAINING_ASSIGNED: 'user.training_assigned' as const,
   // Device sessions
   SESSION_LOGIN: 'session.login' as const,
   SESSION_LOGOUT: 'session.logout' as const,
@@ -682,4 +705,23 @@ export const EVENT_TYPES = {
   PERIPHERAL_UNAUTHORIZED_DEVICE: 'peripheral.unauthorized_device' as const,
   PERIPHERAL_BLOCKED: 'peripheral.blocked' as const,
   PERIPHERAL_POLICY_CHANGED: 'peripheral.policy_changed' as const,
+  // Service and process monitoring
+  MONITORING_CHECK_FAILED: 'monitoring.check_failed' as const,
+  MONITORING_CHECK_RECOVERED: 'monitoring.check_recovered' as const,
+  // PAM elevation lifecycle
+  ELEVATION_REQUESTED: 'elevation.requested' as const,
+  ELEVATION_AUTO_APPROVED: 'elevation.auto_approved' as const,
+  ELEVATION_APPROVED: 'elevation.approved' as const,
+  ELEVATION_DENIED: 'elevation.denied' as const,
+  ELEVATION_ACTIVATED: 'elevation.activated' as const,
+  ELEVATION_EXPIRED: 'elevation.expired' as const,
+  ELEVATION_REVOKED: 'elevation.revoked' as const,
+  // AI agents
+  AI_AGENT_POLICY_CHANGED: 'ai.agent.policy_changed' as const,
+  AI_AGENT_RUN_QUEUED: 'ai.agent.run.queued' as const,
+  AI_AGENT_RUN_STARTED: 'ai.agent.run.started' as const,
+  AI_AGENT_RUN_AWAITING_APPROVAL: 'ai.agent.run.awaiting_approval' as const,
+  AI_AGENT_RUN_COMPLETED: 'ai.agent.run.completed' as const,
+  AI_AGENT_RUN_FAILED: 'ai.agent.run.failed' as const,
+  AI_AGENT_RUN_SKIPPED: 'ai.agent.run.skipped' as const,
 };

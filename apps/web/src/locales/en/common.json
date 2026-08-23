@@ -46,6 +46,7 @@
     "partner": "Partner",
     "organizations": "Organizations",
     "aiUsageBudget": "AI Usage & Budget",
+    "aiAgents": "AI Agents",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",

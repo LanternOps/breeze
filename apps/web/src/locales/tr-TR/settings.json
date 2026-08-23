@@ -1273,6 +1273,98 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Eylem Planını beğenin, artı adımlar arasında canlı ekran görüntüleri ve kalıcı Durdur düğmesi.",
     "untitled": "Başlıksız"
   },
+  "aiAgentsPage": {
+    "title": "Yapay Zeka Aracıları",
+    "description": "Bir politikaya sahip, adlandırılmış yapay zeka çalışanları. Temel çizgiyi iş ortakları belirler; kuruluşlar yalnızca daraltabilir.",
+    "empty": "Henüz aracı yok.",
+    "allOrgs": "Tüm kuruluşlar",
+    "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
+    "stateEnabled": "Etkin",
+    "stateDisabled": "Devre dışı",
+    "errors": {
+      "load": "Aracılar yüklenemedi.",
+      "kindExists": "Bu sahip için bu türde bir aracı zaten var. Var olanı düzenleyin veya önce devre dışı bırakın.",
+      "modeNotSupported": "Bu mod henüz kullanılamıyor. Aracılar şimdilik inceleyip önerebilir, ancak uygulayamaz."
+    },
+    "actions": {
+      "add": "Yeni aracı",
+      "edit": "Düzenle",
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "disable": "Devre dışı bırak",
+      "confirmDisable": "Devre dışı bırakmayı onayla"
+    },
+    "toasts": {
+      "saved": "Aracı kaydedildi",
+      "saveFailed": "Aracı kaydedilemedi.",
+      "disabled": "Aracı devre dışı bırakıldı",
+      "disableFailed": "Aracı devre dışı bırakılamadı."
+    },
+    "issues": {
+      "name": "Aracıya bir ad verin.",
+      "severities": "En az bir uyarı önem derecesi seçin.",
+      "org": "Kuruluşa ait bir aracı oluşturmadan önce bir kuruluş seçin.",
+      "allKindsTaken": "Bu sahip için her aracı türünün zaten bir aracısı var. Bunun yerine var olan bir aracıyı düzenleyin."
+    },
+    "editor": {
+      "newTitle": "Yeni aracı",
+      "editTitle": "Aracıyı düzenle",
+      "scopeLegend": "Şunun için geçerli",
+      "allOrgs": "Tüm kuruluşlar",
+      "allOrgsHint": "(iş ortağı genelinde temel çizgi)",
+      "thisOrg": "Yalnızca bu kuruluş"
+    },
+    "sections": {
+      "scope": "Ne zaman çalışır",
+      "permissions": "İzinler",
+      "limits": "Sınırlar",
+      "notifications": "Bildirimler",
+      "instructions": "Yönergeler"
+    },
+    "kinds": {
+      "triage": "Uyarı önceliklendirme",
+      "patch": "Yama yönetimi",
+      "helpdesk": "Yardım masası"
+    },
+    "modes": {
+      "off": "Kapalı",
+      "shadow": "Gölge — yalnızca inceler ve önerir",
+      "act": "Uygula — sonraki bir sürümde kullanılabilir"
+    },
+    "severities": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi"
+    },
+    "fields": {
+      "kind": "Tür",
+      "kindImmutable": "Bir aracının türü oluşturulduktan sonra değiştirilemez.",
+      "name": "Ad",
+      "mode": "Mod",
+      "enabled": "Etkin",
+      "respectMaintenanceWindows": "Bakım pencerelerine uy",
+      "toolAllowlist": "İzin verilen araçlar",
+      "toolAllowlistHint": "Yalnızca okuyan araçlar her zaman kullanılabilir. Bu aracının önerebileceği değişiklik yapan araçları her satıra bir tane olacak şekilde yazın.",
+      "protectedHint": "Aracı ne önerirse önersin bunlara asla dokunulmaz. Her satıra bir giriş.",
+      "protectedServices": "Korunan hizmetler",
+      "protectedPaths": "Korunan yollar",
+      "protectedRegistryKeys": "Korunan kayıt defteri anahtarları",
+      "maxDevicesPerRun": "Çalıştırma başına en fazla cihaz",
+      "maxRunsPerHour": "Saat başına en fazla çalıştırma",
+      "maxBudgetCentsPerDay": "Günlük bütçe (sent)",
+      "wallClockSeconds": "En uzun çalışma süresi (saniye)",
+      "maxFleetPercentPerDay": "Gün başına en fazla filo payı (%)",
+      "cooldownSeconds": "Cihaz başına bekleme (saniye)",
+      "recipientRolesHint": "Bu aracı bir öneride bulunduğunda bilgilendirilecek roller.",
+      "recipientRolesEmpty": "Kullanılabilir rol yok.",
+      "instructionsHint": "Yalnızca yönlendirme — üslup, önce neyin denetleneceği, kurum içi teamüller. Asla izin vermez.",
+      "charactersLeft": "{{count}} karakter kaldı",
+      "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor."
+    },
+    "loading": "Aracılar yükleniyor…"
+  },
   "apiKeyForm": {
     "devicesRead": "Cihazlar: Okuma",
     "viewDeviceInformationAndStatus": "Cihaz bilgilerini ve durumunu görüntüleyin",

@@ -95,7 +95,9 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
 // detaches: it's an operator corpus that must survive device hard-delete so
 // cross-partner endpoint correlation still works after the originating
 // device is gone. Its device_id FK is declared ON DELETE SET NULL to match.
-export const DEVICE_DETACH_DEVICE_ID_TABLES = ['abuse_endpoint_fingerprints', 'support_sessions', 'tickets'] as const;
+export const DEVICE_DETACH_DEVICE_ID_TABLES = [
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'support_sessions', 'tickets',
+] as const;
 
 /**
  * Subset of {@link getDeviceCascadeDeleteTables} ∪
@@ -116,7 +118,7 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = ['abuse_endpoint_fingerprints', 's
  *   psa_ticket_mappings, software_compliance_status
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
-  'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
+  'agent_logs', 'ai_agent_runs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_sla_events',

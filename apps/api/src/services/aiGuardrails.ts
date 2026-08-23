@@ -11,16 +11,19 @@
  */
 
 import type { AiApprovalScope } from '@breeze/shared/types/ai';
+import type { AiAgentMode, AiAgentProtectedResources } from '@breeze/shared';
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
 import { getRedis } from './redis';
+import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
+import { envFlag } from '../config/env';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
 // Tools that are always blocked (Tier 4)
-const BLOCKED_TOOLS = new Set<string>([
+export const BLOCKED_TOOLS: ReadonlySet<string> = new Set<string>([
   // No tools are explicitly blocked at the tool level —
   // cross-org access is enforced by orgCondition in each handler
 ]);
@@ -1286,6 +1289,302 @@ export function checkGuardrails(
   };
 }
 
+export interface AgentGuardrailPolicy {
+  /**
+   * Both carried, both enforced here. The resolver computes them, but returning
+   * a snapshot makes enforcement advisory — the gate must be able to deny a
+   * disabled or propose-only agent on its own.
+   */
+  enabled: boolean;
+  mode: AiAgentMode;
+  toolAllowlist: string[];
+  protectedResources: AiAgentProtectedResources;
+  /** Resolved from the run device, not from caller-controlled tool input. */
+  deviceSiteId?: string | null;
+}
+
+const SERVICE_INPUT_KEYS = ['serviceName', 'service', 'name'];
+const PATH_INPUT_KEYS = [
+  'path', 'filePath', 'source', 'destination', 'directory',
+  // Swept from the real tool schemas — each of these carries a filesystem path
+  // and every one of them was unprotected.
+  'newPath', 'targetPath', 'selectedPaths', 'paths', 'filePaths',
+  'itemPath', 'quarantineDir', 'scriptPath', 'dest',
+];
+const REGISTRY_INPUT_KEYS = ['key', 'registryKey', 'keyPath'];
+const DEVICE_TAG_INPUT_KEYS = ['deviceTag', 'tag', 'tagName'];
+const DEVICE_TAG_ARRAY_INPUT_KEYS = ['deviceTags', 'tags'];
+const SITE_INPUT_KEYS = ['siteId', 'site_id', 'targetSiteId'];
+const SITE_ARRAY_INPUT_KEYS = ['siteIds', 'site_ids'];
+
+/** Tools whose real tier depends on an `action` argument. */
+function isActionMultiplexedTool(toolName: string): boolean {
+  return Boolean(
+    TIER3_ACTIONS[toolName] ?? TIER2_ACTIONS[toolName] ?? TIER1_ACTIONS[toolName],
+  );
+}
+
+function describeType(value: unknown): string {
+  if (value === undefined) return 'nothing';
+  if (value === null) return 'null';
+  return Array.isArray(value) ? 'an array' : `a ${typeof value}`;
+}
+
+/**
+ * Every string leaf of the input, at any depth, paired with the key it sat
+ * under. A top-level key lookup missed nested parameter objects entirely —
+ * `execute_command { commandType:'file_list', payload:{ path:'C:\\Windows\\...' } }`
+ * dispatches the same agent command as `file_operations` but hid its path from
+ * the protected-resource matcher, with no allowlist entry required.
+ */
+function collectStringLeaves(
+  value: unknown,
+  depth = 0,
+  out: Array<{ key: string; value: string }> = [],
+  key = '',
+): Array<{ key: string; value: string }> {
+  if (depth > 6 || out.length > 500) return out;
+  if (typeof value === 'string') {
+    out.push({ key, value });
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectStringLeaves(item, depth + 1, out, key);
+  } else if (value && typeof value === 'object') {
+    for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
+      collectStringLeaves(child, depth + 1, out, childKey);
+    }
+  }
+  return out;
+}
+
+function leafValuesFor(input: Record<string, unknown>, keys: string[]): string[] {
+  const wanted = new Set(keys.map((key) => key.toLowerCase()));
+  return collectStringLeaves(input)
+    .filter((leaf) => wanted.has(leaf.key.toLowerCase()))
+    .map((leaf) => leaf.value);
+}
+
+function inputStrings(input: Record<string, unknown>, keys: string[]): string[] {
+  return keys.map((key) => input[key]).filter((value): value is string => typeof value === 'string');
+}
+
+function inputStringArrays(input: Record<string, unknown>, keys: string[]): string[] {
+  return keys.flatMap((key) => {
+    const value = input[key];
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  });
+}
+
+function isWindowsStylePath(value: string): boolean {
+  return /^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.includes('\\');
+}
+
+function normalizeHierarchy(value: string, separator: '\\' | '/', caseInsensitive: boolean): string {
+  const separatorPattern = separator === '\\' ? /[\\/]+/g : /\/+/g;
+  let normalized = value.trim().replace(separatorPattern, separator);
+  while (normalized.length > 1 && normalized.endsWith(separator)) {
+    normalized = normalized.slice(0, -1);
+  }
+  return caseInsensitive ? normalized.toLowerCase() : normalized;
+}
+
+function normalizePath(value: string, separator: '\\' | '/', caseInsensitive: boolean): string {
+  const normalized = normalizeHierarchy(value, separator, caseInsensitive);
+  const segments: string[] = [];
+
+  for (const segment of normalized.split(separator)) {
+    if (segment === '.') continue;
+    if (segment === '..' && segments.length > 0) {
+      const previous = segments[segments.length - 1];
+      if (previous !== undefined && previous !== '' && !previous.endsWith(':') && previous !== '..') {
+        segments.pop();
+        continue;
+      }
+    }
+    segments.push(segment);
+  }
+
+  return segments.join(separator) || separator;
+}
+
+function isSameOrDescendant(candidate: string, root: string, separator: '\\' | '/'): boolean {
+  return candidate === root || candidate.startsWith(root === separator ? root : `${root}${separator}`);
+}
+
+function pathIsProtected(candidate: string, protectedPath: string): boolean {
+  const windowsStyle = isWindowsStylePath(candidate) || isWindowsStylePath(protectedPath);
+  const separator = windowsStyle ? '\\' : '/';
+  return isSameOrDescendant(
+    normalizePath(candidate, separator, windowsStyle),
+    normalizePath(protectedPath, separator, windowsStyle),
+    separator,
+  );
+}
+
+function registryKeyIsProtected(candidate: string, protectedKey: string): boolean {
+  return isSameOrDescendant(
+    normalizeHierarchy(candidate, '\\', true),
+    normalizeHierarchy(protectedKey, '\\', true),
+    '\\',
+  );
+}
+
+function touchesProtected(
+  input: Record<string, unknown>,
+  protectedResources: AiAgentProtectedResources,
+): string | null {
+  for (const serviceName of leafValuesFor(input, SERVICE_INPUT_KEYS)) {
+    if (protectedResources.services.some(
+      (protectedService) => protectedService.toLowerCase() === serviceName.toLowerCase(),
+    )) {
+      return `service "${serviceName}" is protected`;
+    }
+  }
+
+  for (const path of leafValuesFor(input, PATH_INPUT_KEYS)) {
+    if (protectedResources.paths.some((protectedPath) => pathIsProtected(path, protectedPath))) {
+      return `path "${path}" is protected`;
+    }
+  }
+
+  for (const registryKey of leafValuesFor(input, REGISTRY_INPUT_KEYS)) {
+    if (protectedResources.registryKeys.some(
+      (protectedKey) => registryKeyIsProtected(registryKey, protectedKey),
+    )) {
+      return `registry key "${registryKey}" is protected`;
+    }
+  }
+
+  const deviceTags = [
+    ...leafValuesFor(input, DEVICE_TAG_INPUT_KEYS),
+    ...leafValuesFor(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
+  ];
+  for (const deviceTag of deviceTags) {
+    // Case-insensitive, matching services/paths/registry. 'Production' vs
+    // 'production' passed before.
+    if (protectedResources.deviceTags.some(
+      (protectedTag) => protectedTag.toLowerCase() === deviceTag.toLowerCase(),
+    )) {
+      return `device tag "${deviceTag}" is protected`;
+    }
+  }
+
+  return null;
+}
+
+function isAgentGuardrailPolicy(
+  policy: AgentGuardrailPolicy | null | undefined,
+): policy is AgentGuardrailPolicy {
+  if (!policy || !Array.isArray(policy.toolAllowlist)) return false;
+  if (typeof policy.enabled !== 'boolean') return false;
+  if (policy.mode !== 'off' && policy.mode !== 'shadow' && policy.mode !== 'act') return false;
+  if (!policy.toolAllowlist.every((toolName) => typeof toolName === 'string')) return false;
+
+  const resources = policy.protectedResources;
+  if (!resources || typeof resources !== 'object') return false;
+  return [resources.services, resources.paths, resources.registryKeys, resources.deviceTags]
+    .every((values) => Array.isArray(values) && values.every((value) => typeof value === 'string'));
+}
+
+function siteScopeDenial(
+  input: Record<string, unknown>,
+  deviceSiteId: string | null | undefined,
+): string | null {
+  const selectedSiteIds: string[] = [];
+
+  for (const key of SITE_INPUT_KEYS) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    if (typeof value !== 'string') return `site selector "${key}" is invalid`;
+    selectedSiteIds.push(value);
+  }
+
+  for (const key of SITE_ARRAY_INPUT_KEYS) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    if (!Array.isArray(value) || !value.every((siteId) => typeof siteId === 'string')) {
+      return `site selector "${key}" is invalid`;
+    }
+    selectedSiteIds.push(...value);
+  }
+
+  if (selectedSiteIds.length === 0) return null;
+  if (!deviceSiteId) return 'run device site is unavailable';
+  const outsideSite = selectedSiteIds.find((siteId) => siteId !== deviceSiteId);
+  return outsideSite ? `site "${outsideSite}" is outside the run device site` : null;
+}
+
+/**
+ * Structural guardrails for the ai_agent principal. This path intentionally
+ * never consults user RBAC: an agent has no user role to authorize against.
+ */
+export function checkAgentGuardrails(
+  toolName: string,
+  input: Record<string, unknown>,
+  policy: AgentGuardrailPolicy | null | undefined,
+): GuardrailCheck {
+  const base = checkGuardrails(toolName, input);
+  const deny = (reason: string): GuardrailCheck =>
+    ({ ...base, allowed: false, requiresApproval: false, reason });
+
+  // envFlag reads process.env at CALL time and shares its normalization with
+  // config/env, so the two readers of this flag cannot disagree (a module-level
+  // const also made the kill switch unstubbable, and therefore untestable).
+  if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) {
+    return deny('Autonomous AI agents are disabled');
+  }
+  if (!isAgentGuardrailPolicy(policy)) {
+    return deny('AI agent run policy snapshot is missing or invalid');
+  }
+  if (!base.allowed || base.tier === 4 || BLOCKED_TOOLS.has(toolName)) {
+    return deny(base.reason ?? `Tool "${toolName}" is not available to agents`);
+  }
+  if (isSecretBearingTool(toolName)) {
+    return deny(`Tool "${toolName}" is secret-bearing and never available to agents`);
+  }
+
+  const siteDenial = siteScopeDenial(input, policy.deviceSiteId);
+  if (siteDenial) return deny(`Denied: ${siteDenial}`);
+
+  // An operator switching the agent off, or holding it at propose-only, must be
+  // enforced HERE. The resolver computes enabled/mode but returning a snapshot
+  // makes that advisory — every caller would have to remember to re-check it.
+  if (policy.enabled === false) return deny('Agent is disabled');
+  if (policy.mode === 'off') return deny('Agent mode is off');
+
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  const action = typeof actionValue === 'string' ? actionValue : undefined;
+
+  // A non-string action (`action: ['write']`) makes checkGuardrails skip its
+  // TIER3_ACTIONS escalation and fall back to the tool's REGISTERED BASE TIER —
+  // which is 1 for most action-multiplexed tools. Falling back is a DOWNGRADE,
+  // not a floor: it collapsed 15 mutating tools to Tier 1 and skipped the
+  // allowlist entirely. An unresolvable action on a multiplexed tool denies.
+  if (action === undefined && isActionMultiplexedTool(toolName)) {
+    return deny(
+      `Tool "${toolName}" requires a string "${actionKey}"; got ${describeType(actionValue)}`,
+    );
+  }
+
+  const readOnly = base.tier === 1
+    || (base.tier === 2 && (base.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+
+  // shadow mode proposes; it never mutates. Read-only tools stay available.
+  if (policy.mode === 'shadow' && !readOnly) {
+    return deny(`Tool "${toolName}" mutates; the agent is in shadow mode`);
+  }
+  const allowlisted = policy.toolAllowlist.includes(toolName)
+    || (action !== undefined && policy.toolAllowlist.includes(`${toolName}:${action}`));
+  if (!readOnly && !allowlisted) {
+    return deny(`Tool "${toolName}"${action ? `:${action}` : ''} is not in the agent's allowlist`);
+  }
+
+  const protectedHit = touchesProtected(input, policy.protectedResources);
+  if (protectedHit) return deny(`Denied: ${protectedHit}`);
+
+  return base;
+}
+
 /**
  * Core role-resolution + permission-check primitive shared by checkToolPermission
  * (tools/call) and any other MCP dispatch path that needs to authorize a single
@@ -1316,6 +1615,11 @@ export async function checkPermissionRequirements(
   auth: AuthContext,
   requirements: Array<{ resource: string; action: string }>
 ): Promise<string | null> {
+  // Spec 2026-08-22 §3.2: an agent has no role; this helper's "no token ⇒
+  // allowed" fallback would fail OPEN for it. Deny before anything else.
+  if (auth.principal?.kind === 'ai_agent') {
+    return 'AI agent principals are never granted user permissions';
+  }
   if (requirements.length === 0) return null;
   if (!auth.token) {
     const described = requirements.map((r) => `${r.resource}.${r.action}`).join(', ');
@@ -1353,6 +1657,14 @@ export async function checkToolPermission(
   input: Record<string, unknown>,
   auth: AuthContext
 ): Promise<string | null> {
+  // An agent has no user role, so the token-less fallback below would grant it
+  // EVERY tool. This must stay the first statement: checkToolPermission
+  // short-circuits before it delegates to checkPermissionRequirements, so the
+  // deny there does not cover this path. (aiAgentSdk's tool loop, intent
+  // release revalidation, approvals and the MCP server all enter here.)
+  if (auth.principal?.kind === 'ai_agent') {
+    return 'AI agent principals are never granted user permissions';
+  }
   // Helper sessions use a synthetic auth with no roleId — tool access is
   // governed by the helper whitelist (helperToolFilter), not user RBAC.
   if (!auth.token) {

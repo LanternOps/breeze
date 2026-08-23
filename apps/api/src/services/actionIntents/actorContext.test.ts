@@ -266,9 +266,9 @@ describe('buildAuthContextForIntent — user-owned intents', () => {
       name: 'Requester',
       isPlatformAdmin: false,
     });
-    expect(result!.token.roleId).toBe('role-1');
-    expect(result!.token.sub).toBe('user-1');
-    expect(result!.token.scope).toBe('organization');
+    expect(result!.token!.roleId).toBe('role-1');
+    expect(result!.token!.sub).toBe('user-1');
+    expect(result!.token!.scope).toBe('organization');
     // CRITICAL-2b: intent.partnerId is threaded into getUserPermissions so a
     // partner-scope requester's role (which lives in partner_users, not
     // organization_users) can resolve at release time.

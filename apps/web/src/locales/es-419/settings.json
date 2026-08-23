@@ -1273,6 +1273,98 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como Plan de acción, además de capturas de pantalla en vivo entre los pasos y un botón Detener persistente.",
     "untitled": "Sin título"
   },
+  "aiAgentsPage": {
+    "title": "Agentes de IA",
+    "description": "Trabajadores de IA con nombre y una política. Los partners definen la línea base; las organizaciones solo pueden restringirla.",
+    "empty": "Aún no hay agentes.",
+    "allOrgs": "Todas las organizaciones",
+    "allOrgsHint": "Para todo el partner: se aplica a cada organización, salvo que una organización la restrinja.",
+    "stateEnabled": "Habilitado",
+    "stateDisabled": "Deshabilitado",
+    "errors": {
+      "load": "No se pudieron cargar los agentes.",
+      "kindExists": "Ya existe un agente de este tipo para este propietario. Edite el existente o deshabilítelo primero.",
+      "modeNotSupported": "Ese modo aún no está disponible. Por ahora los agentes pueden investigar y proponer, pero no actuar."
+    },
+    "actions": {
+      "add": "Nuevo agente",
+      "edit": "Editar",
+      "save": "Guardar",
+      "cancel": "Cancelar",
+      "disable": "Deshabilitar",
+      "confirmDisable": "Confirmar deshabilitación"
+    },
+    "toasts": {
+      "saved": "Agente guardado",
+      "saveFailed": "No se pudo guardar el agente.",
+      "disabled": "Agente deshabilitado",
+      "disableFailed": "No se pudo deshabilitar el agente."
+    },
+    "issues": {
+      "name": "Asigne un nombre al agente.",
+      "severities": "Seleccione al menos una severidad de alerta.",
+      "org": "Seleccione una organización antes de crear un agente propio de la organización.",
+      "allKindsTaken": "Todos los tipos de agente ya tienen un agente para este propietario. Edite uno existente."
+    },
+    "editor": {
+      "newTitle": "Nuevo agente",
+      "editTitle": "Editar agente",
+      "scopeLegend": "Se aplica a",
+      "allOrgs": "Todas las organizaciones",
+      "allOrgsHint": "(línea base de todo el partner)",
+      "thisOrg": "Solo esta organización"
+    },
+    "sections": {
+      "scope": "Cuándo se ejecuta",
+      "permissions": "Permisos",
+      "limits": "Límites",
+      "notifications": "Notificaciones",
+      "instructions": "Instrucciones"
+    },
+    "kinds": {
+      "triage": "Clasificación de alertas",
+      "patch": "Aplicación de parches",
+      "helpdesk": "Mesa de ayuda"
+    },
+    "modes": {
+      "off": "Desactivado",
+      "shadow": "Sombra: solo investigar y proponer",
+      "act": "Actuar: disponible en una versión posterior"
+    },
+    "severities": {
+      "critical": "Crítica",
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Baja",
+      "info": "Informativa"
+    },
+    "fields": {
+      "kind": "Tipo",
+      "kindImmutable": "El tipo de un agente no se puede cambiar después de crearlo.",
+      "name": "Nombre",
+      "mode": "Modo",
+      "enabled": "Habilitado",
+      "respectMaintenanceWindows": "Respetar las ventanas de mantenimiento",
+      "toolAllowlist": "Herramientas permitidas",
+      "toolAllowlistHint": "Las herramientas de solo lectura siempre están disponibles. Indique las herramientas que modifican y que este agente puede proponer, una por línea.",
+      "protectedHint": "Nunca se tocan, sin importar lo que proponga el agente. Una entrada por línea.",
+      "protectedServices": "Servicios protegidos",
+      "protectedPaths": "Rutas protegidas",
+      "protectedRegistryKeys": "Claves de registro protegidas",
+      "maxDevicesPerRun": "Máx. de dispositivos por ejecución",
+      "maxRunsPerHour": "Máx. de ejecuciones por hora",
+      "maxBudgetCentsPerDay": "Presupuesto diario (centavos)",
+      "wallClockSeconds": "Duración máx. de la ejecución (segundos)",
+      "maxFleetPercentPerDay": "Porción máx. de la flota por día (%)",
+      "cooldownSeconds": "Enfriamiento por dispositivo (segundos)",
+      "recipientRolesHint": "Roles que se notifican cuando este agente propone algo.",
+      "recipientRolesEmpty": "No hay roles disponibles.",
+      "instructionsHint": "Solo orientación: tono, qué revisar primero, convenciones internas. Nunca otorga permisos.",
+      "charactersLeft": "Quedan {{count}} caracteres",
+      "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones."
+    },
+    "loading": "Cargando agentes…"
+  },
   "apiKeyForm": {
     "devicesRead": "Dispositivos: Leer",
     "viewDeviceInformationAndStatus": "Ver información y estado del dispositivo",

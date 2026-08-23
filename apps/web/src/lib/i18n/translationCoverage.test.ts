@@ -190,7 +190,9 @@ const namespaceDuplicateBaselines = {
     // +1: officeAddinBindings.actions — "Actions" is the same word in French
     // and is already the reviewed value for the eight other table
     // action-column headers in this namespace.
-    'settings.json': 151,
+    // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
+    // in French.
+    'settings.json': 153,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -252,7 +254,9 @@ const namespaceDuplicateBaselines = {
     // +1: officeAddinBindings.actions — "Actions" is the same word in French
     // and is already the reviewed value for the other table action-column
     // headers in this namespace.
-    'settings.json': 156,
+    // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
+    // in French.
+    'settings.json': 158,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -305,7 +309,8 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 54,
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
-    'settings.json': 167,
+    // +1: aiAgentsPage.fields.name — "Name" is the German word too.
+    'settings.json': 168,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

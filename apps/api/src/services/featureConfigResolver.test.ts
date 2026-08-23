@@ -411,10 +411,10 @@ describe('createSystemAuthContext', () => {
 
   it('token has expected system fields', () => {
     const ctx = createSystemAuthContext();
-    expect(ctx.token.scope).toBe('system');
-    expect(ctx.token.type).toBe('access');
-    expect(ctx.token.mfa).toBe(false);
-    expect(ctx.token.roleId).toBeNull();
+    expect(ctx.token!.scope).toBe('system');
+    expect(ctx.token!.type).toBe('access');
+    expect(ctx.token!.mfa).toBe(false);
+    expect(ctx.token!.roleId).toBeNull();
   });
 });
 

@@ -1273,6 +1273,98 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Wie ein Aktionsplan, plus Live-Screenshots zwischen den Schritten und eine dauerhafte Stopp-Schaltfläche.",
     "untitled": "Ohne Titel"
   },
+  "aiAgentsPage": {
+    "title": "KI-Agenten",
+    "description": "Benannte KI-Mitarbeiter mit einer Richtlinie. Partner legen die Grundlinie fest; Organisationen können sie nur verschärfen.",
+    "empty": "Noch keine Agenten vorhanden.",
+    "allOrgs": "Alle Organisationen",
+    "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
+    "stateEnabled": "Aktiviert",
+    "stateDisabled": "Deaktiviert",
+    "errors": {
+      "load": "Agenten konnten nicht geladen werden.",
+      "kindExists": "Für diesen Eigentümer existiert bereits ein Agent dieser Art. Bearbeiten Sie den vorhandenen oder deaktivieren Sie ihn zuerst.",
+      "modeNotSupported": "Dieser Modus ist noch nicht verfügbar. Agenten können derzeit untersuchen und vorschlagen, aber nicht handeln."
+    },
+    "actions": {
+      "add": "Neuer Agent",
+      "edit": "Bearbeiten",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "disable": "Deaktivieren",
+      "confirmDisable": "Deaktivierung bestätigen"
+    },
+    "toasts": {
+      "saved": "Agent gespeichert",
+      "saveFailed": "Der Agent konnte nicht gespeichert werden.",
+      "disabled": "Agent deaktiviert",
+      "disableFailed": "Der Agent konnte nicht deaktiviert werden."
+    },
+    "issues": {
+      "name": "Geben Sie dem Agenten einen Namen.",
+      "severities": "Wählen Sie mindestens einen Schweregrad aus.",
+      "org": "Wählen Sie eine Organisation aus, bevor Sie einen organisationseigenen Agenten anlegen.",
+      "allKindsTaken": "Für diesen Eigentümer gibt es bereits zu jeder Art einen Agenten. Bearbeiten Sie stattdessen einen vorhandenen Agenten."
+    },
+    "editor": {
+      "newTitle": "Neuer Agent",
+      "editTitle": "Agent bearbeiten",
+      "scopeLegend": "Gilt für",
+      "allOrgs": "Alle Organisationen",
+      "allOrgsHint": "(partnerweite Grundlinie)",
+      "thisOrg": "Nur diese Organisation"
+    },
+    "sections": {
+      "scope": "Wann er ausgeführt wird",
+      "permissions": "Berechtigungen",
+      "limits": "Grenzwerte",
+      "notifications": "Benachrichtigungen",
+      "instructions": "Anweisungen"
+    },
+    "kinds": {
+      "triage": "Alarm-Triage",
+      "patch": "Patch-Verwaltung",
+      "helpdesk": "Helpdesk"
+    },
+    "modes": {
+      "off": "Aus",
+      "shadow": "Schattenbetrieb — nur untersuchen und vorschlagen",
+      "act": "Handeln — in einer späteren Version verfügbar"
+    },
+    "severities": {
+      "critical": "Kritisch",
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig",
+      "info": "Info"
+    },
+    "fields": {
+      "kind": "Art",
+      "kindImmutable": "Die Art eines Agenten kann nach dem Anlegen nicht mehr geändert werden.",
+      "name": "Name",
+      "mode": "Modus",
+      "enabled": "Aktiviert",
+      "respectMaintenanceWindows": "Wartungsfenster berücksichtigen",
+      "toolAllowlist": "Zugelassene Werkzeuge",
+      "toolAllowlistHint": "Nur lesende Werkzeuge sind immer verfügbar. Listen Sie die ändernden Werkzeuge auf, die dieser Agent vorschlagen darf — eines pro Zeile.",
+      "protectedHint": "Wird nie angefasst, unabhängig vom Vorschlag des Agenten. Ein Eintrag pro Zeile.",
+      "protectedServices": "Geschützte Dienste",
+      "protectedPaths": "Geschützte Pfade",
+      "protectedRegistryKeys": "Geschützte Registry-Schlüssel",
+      "maxDevicesPerRun": "Max. Geräte pro Durchlauf",
+      "maxRunsPerHour": "Max. Durchläufe pro Stunde",
+      "maxBudgetCentsPerDay": "Tagesbudget (Cent)",
+      "wallClockSeconds": "Max. Laufzeit (Sekunden)",
+      "maxFleetPercentPerDay": "Max. Flottenanteil pro Tag (%)",
+      "cooldownSeconds": "Abkühlzeit pro Gerät (Sekunden)",
+      "recipientRolesHint": "Rollen, die benachrichtigt werden, wenn dieser Agent etwas vorschlägt.",
+      "recipientRolesEmpty": "Keine Rollen verfügbar.",
+      "instructionsHint": "Nur zur Orientierung — Tonfall, was zuerst zu prüfen ist, interne Gepflogenheiten. Es werden dadurch keine Berechtigungen erteilt.",
+      "charactersLeft": "Noch {{count}} Zeichen",
+      "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern."
+    },
+    "loading": "Agenten werden geladen …"
+  },
   "apiKeyForm": {
     "devicesRead": "Geräte: Lesen",
     "viewDeviceInformationAndStatus": "Geräteinformationen und -status anzeigen",

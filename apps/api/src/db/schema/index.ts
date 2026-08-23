@@ -52,6 +52,7 @@ export * from './auditBaselines';
 export * from './reliability';
 export * from './userRisk';
 export * from './ai';
+export * from './aiAgents';
 export * from './monitors';
 export * from './filesystem';
 export * from './sessions';
