@@ -11,7 +11,7 @@ import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
-import { resolveLlmConfigForOrg } from './llm/llmConfigResolver';
+import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -50,7 +50,7 @@ const CACHE_WRITE_INPUT_MULTIPLIER = 1.25;
 
 export async function checkBillingCredits(
   orgId: string,
-  billingSource: AiBillingSource = 'platform',
+  billingSource: AiBillingSource,
 ): Promise<string | null> {
   const billingUrl = process.env.BILLING_SERVICE_URL;
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
@@ -217,7 +217,7 @@ export function calculateCostCents(
  */
 export async function checkBudget(
   orgId: string,
-  billingSource: AiBillingSource = 'platform',
+  billingSource: AiBillingSource,
 ): Promise<string | null> {
   const creditError = await checkBillingCredits(orgId, billingSource);
   if (creditError) return creditError;
@@ -346,7 +346,7 @@ export async function recordUsage(
   inputTokens: number,
   outputTokens: number,
   isToolExecution: boolean,
-  billingSource: AiBillingSource = 'platform',
+  billingSource: AiBillingSource,
 ): Promise<void> {
   const costCents = calculateCostCents(model, inputTokens, outputTokens);
   const now = new Date();
@@ -462,7 +462,7 @@ export async function recordUsageFromSdkResult(
      */
     toolExecutionCount?: number;
   },
-  billingSource: AiBillingSource = 'platform',
+  billingSource: AiBillingSource,
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
@@ -596,7 +596,7 @@ export async function recordOpenAIUsage(
   inputTokens: number,
   outputTokens: number,
   costUsd: number,
-  billingSource: AiBillingSource = 'platform',
+  billingSource: AiBillingSource,
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordOpenAIUsage — empty orgId for session=${sessionId}`);
@@ -881,7 +881,7 @@ export async function getUsageSummary(orgId: string): Promise<{
     .where(eq(aiBudgets.orgId, orgId))
     .limit(1);
 
-  const resolved = await resolveLlmConfigForOrg(orgId);
+  const billedTo = await getLlmBillingSourceForOrg(orgId);
 
   return {
     daily: {
@@ -904,6 +904,6 @@ export async function getUsageSummary(orgId: string): Promise<{
       dailyUsedCents: dailyUsage?.totalCostCents ?? 0,
       approvalMode: budget.approvalMode ?? 'per_step',
     } : null,
-    billedTo: resolved.source === 'platform' ? 'platform' : 'partner_key',
+    billedTo,
   };
 }

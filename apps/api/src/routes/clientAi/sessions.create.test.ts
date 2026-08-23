@@ -158,6 +158,7 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
       type: 'excel_client',
       model: 'claude-opus-4-6',
+      billingSource: 'partner_key',
     }));
     expect(resolveClientLlmConfigMock).toHaveBeenCalledWith(ORG_ID);
     expect(checkBillingCreditsMock).toHaveBeenCalledWith(ORG_ID, 'partner_key');
@@ -169,6 +170,18 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
         details: expect.objectContaining({ host: 'excel' }),
       }),
     );
+  });
+
+  it('runs the rate limit before provider resolution', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({}), headers: AUTHED,
+    });
+
+    expect(res.status).toBe(429);
+    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
+    expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
   it('rejects a request-supplied partner id before provider resolution', async () => {
@@ -292,6 +305,19 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
 });
 
 describe('use-path host guard (ensureActiveClientSession)', () => {
+  it('rate limits a turn before resolving its provider or checking an unsupported stored host', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'keynote_client' }]));
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/messages`, {
+      method: 'POST', headers: AUTHED, body: JSON.stringify({ content: 'hi' }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
+    expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+  });
+
   it('refuses to start a stored keynote_client session (400 on /messages)', async () => {
     // Every REAL Office host (excel/word/powerpoint/outlook) is now fully
     // supported, so the fail-loud baton moves to a SYNTHETIC keynote_client row:

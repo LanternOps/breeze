@@ -71,11 +71,11 @@ vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
 vi.mock('./rate-limit', () => ({ rateLimiter: vi.fn() }));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn() }));
 
-const { resolveLlmConfigForOrgMock } = vi.hoisted(() => ({
-  resolveLlmConfigForOrgMock: vi.fn(),
+const { getLlmBillingSourceForOrgMock } = vi.hoisted(() => ({
+  getLlmBillingSourceForOrgMock: vi.fn(),
 }));
 vi.mock('./llm/llmConfigResolver', () => ({
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
+  getLlmBillingSourceForOrg: (...args: unknown[]) => getLlmBillingSourceForOrgMock(...args),
 }));
 
 const mockDb = db as unknown as {
@@ -159,11 +159,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.BILLING_SERVICE_URL;
   delete process.env.BILLING_SERVICE_API_KEY;
-  resolveLlmConfigForOrgMock.mockResolvedValue({
-    source: 'platform',
-    apiKey: 'platform-key',
-    model: 'claude-sonnet-4-6',
-  });
+  getLlmBillingSourceForOrgMock.mockResolvedValue('platform');
 });
 
 afterEach(() => {
@@ -345,7 +341,7 @@ describe('recordUsageFromSdkResult', () => {
       usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     // 1M/1M on sonnet-4-6 → 1800 cents, NOT 0.
     expect(recordedCostCents(captured.sessionSet)).toBe(1800);
@@ -359,7 +355,7 @@ describe('recordUsageFromSdkResult', () => {
       usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
     expect(recordedCostCents(baselineCapture.sessionSet)).toBe(1800);
 
     // Now the same in+out PLUS cache tokens. cache-read 1M (+30) and
@@ -375,7 +371,7 @@ describe('recordUsageFromSdkResult', () => {
       },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
     const cachedCost = recordedCostCents(cachedCapture.sessionSet);
     expect(cachedCost).toBe(2205);
     expect(cachedCost).toBeGreaterThan(1800);
@@ -395,7 +391,7 @@ describe('recordUsageFromSdkResult', () => {
       },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
     expect(recordedCostCents(captured.sessionSet)).toBe(30);
   });
 
@@ -407,7 +403,7 @@ describe('recordUsageFromSdkResult', () => {
       usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
       num_turns: 1,
       // no model — should be looked up from aiSessions row (opus-4-8 → 3000 cents)
-    });
+    }, 'platform');
 
     expect(recordedCostCents(captured.sessionSet)).toBe(3000);
   });
@@ -420,7 +416,7 @@ describe('recordUsageFromSdkResult', () => {
       usage: { input_tokens: 5_000, output_tokens: 2_000 },
       num_turns: 2,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     // Must record the exact SDK value, not a token-derived one.
     expect(recordedCostCents(captured.sessionSet)).toBe(12.34);
@@ -434,7 +430,7 @@ describe('recordUsageFromSdkResult', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     expect(recordedCostCents(captured.sessionSet)).toBe(0);
   });
@@ -447,7 +443,7 @@ describe('recordUsageFromSdkResult', () => {
       usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     expect(mockDb.update).not.toHaveBeenCalled();
   });
@@ -475,7 +471,7 @@ describe('recordUsageFromSdkResult — tool_execution_count rollup', () => {
       num_turns: 1,
       model: 'claude-sonnet-4-6',
       toolExecutionCount: 1,
-    });
+    }, 'platform');
 
     expect(captured.aggregateValues).toHaveLength(2); // daily + monthly
     for (const values of captured.aggregateValues) {
@@ -492,7 +488,7 @@ describe('recordUsageFromSdkResult — tool_execution_count rollup', () => {
       num_turns: 1,
       model: 'claude-sonnet-4-6',
       toolExecutionCount: 1,
-    });
+    }, 'platform');
 
     expect(captured.aggregateConflictSets).toHaveLength(2); // daily + monthly
     for (const set of captured.aggregateConflictSets) {
@@ -510,7 +506,7 @@ describe('recordUsageFromSdkResult — tool_execution_count rollup', () => {
       num_turns: 1,
       model: 'claude-sonnet-4-6',
       // toolExecutionCount omitted — must default to 0, not throw or skip the column.
-    });
+    }, 'platform');
 
     for (const values of captured.aggregateValues) {
       expect(values.toolExecutionCount).toBe(0);
@@ -549,7 +545,7 @@ describe('recordUsageFromSdkResult — input token accounting', () => {
       },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     expect(recordedTokens(captured.sessionSet, 'totalInputTokens')).toBe(17 + 120_000 + 4_500);
     expect(recordedTokens(captured.sessionSet, 'totalOutputTokens')).toBe(1_029);
@@ -568,7 +564,7 @@ describe('recordUsageFromSdkResult — input token accounting', () => {
       },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     // One insert per period (daily + monthly); both carry the summed input.
     expect(captured.aggregateValues).toHaveLength(2);
@@ -591,7 +587,7 @@ describe('recordUsageFromSdkResult — input token accounting', () => {
       },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     expect(recordedTokens(captured.sessionSet, 'totalInputTokens')).toBe(1_000_000);
     // ...and the cost path is untouched by the summing: still priced off the
@@ -615,7 +611,7 @@ describe('recordUsageFromSdkResult — input token accounting', () => {
       },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     expect(recordedTokens(captured.sessionSet, 'totalInputTokens')).toBe(3_000_000);
     expect(recordedCostCents(captured.sessionSet)).toBe(2205); // unchanged from the pricing test above
@@ -630,7 +626,7 @@ describe('recordUsageFromSdkResult — input token accounting', () => {
       usage: { input_tokens: 5_000, output_tokens: 2_000 },
       num_turns: 1,
       model: 'claude-sonnet-4-6',
-    });
+    }, 'platform');
 
     expect(recordedTokens(captured.sessionSet, 'totalInputTokens')).toBe(5_000);
   });
@@ -706,7 +702,7 @@ describe('recordUsage', () => {
     const captured = setupDbMocks(null);
 
     // sonnet-4-6 1M/1M → 1800 cents on the session row.
-    await recordUsage('sess-1', 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, true);
+    await recordUsage('sess-1', 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, true, 'platform');
 
     expect(mockDb.update).toHaveBeenCalledTimes(1);
     expect(recordedCostCents(captured.sessionSet)).toBe(1800);
@@ -718,7 +714,7 @@ describe('recordUsage', () => {
     // issue #1949) yet must still record the org-budget aggregates.
     const captured = setupDbMocks(null);
 
-    await recordUsage(null, 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, true);
+    await recordUsage(null, 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, true, 'platform');
 
     // No session update at all.
     expect(mockDb.update).not.toHaveBeenCalled();
@@ -739,22 +735,21 @@ describe('recordUsage', () => {
   it('does not throw on the sessionless path (budget enforcement always sees the spend)', async () => {
     setupDbMocks(null);
     await expect(
-      recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, true),
+      recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, true, 'platform'),
     ).resolves.toBeUndefined();
   });
 });
 
 describe('getUsageSummary billing display', () => {
   it.each([
-    [{ source: 'partner', partnerId: 'partner-1', apiKey: 'key', model: 'claude-sonnet-4-6', configId: 'config-1', configVersion: 1 }, 'partner_key'],
-    [{ source: 'unavailable', partnerId: 'partner-1', reason: 'key_error' }, 'partner_key'],
-    [{ source: 'platform', apiKey: 'platform-key', model: 'claude-sonnet-4-6' }, 'platform'],
-  ] as const)('reports %s as %s', async (resolved, billedTo) => {
-    resolveLlmConfigForOrgMock.mockResolvedValueOnce(resolved);
+    ['partner_key', 'partner_key'],
+    ['platform', 'platform'],
+  ] as const)('reports billing-source lookup %s as %s', async (source, billedTo) => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce(source);
     setupDbMocks(null);
 
     await expect(getUsageSummary('org-1')).resolves.toMatchObject({ billedTo });
-    expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith('org-1');
+    expect(getLlmBillingSourceForOrgMock).toHaveBeenCalledWith('org-1');
   });
 });
 
@@ -793,7 +788,7 @@ describe('#2190 self-contexted DB ops', () => {
       })),
     }));
 
-    const res = await checkBudget('org-1');
+    const res = await checkBudget('org-1', 'platform');
 
     expect(res).toContain('Daily AI budget exceeded');
     // getEffectiveAiBudget + the daily usage read each ran inside the wrapper.
@@ -808,7 +803,7 @@ describe('#2190 self-contexted DB ops', () => {
       })),
     }));
 
-    await expect(checkBudget('org-1')).resolves.toBeNull();
+    await expect(checkBudget('org-1', 'platform')).resolves.toBeNull();
     // budget read + daily read + monthly read all self-contexted.
     expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(3);
   });
@@ -825,7 +820,7 @@ describe('#2190 self-contexted DB ops', () => {
   it('recordUsage (sessionless) wraps each aggregate upsert and still writes both periods', async () => {
     const captured = setupDbMocks(null);
 
-    await recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, false);
+    await recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, false, 'platform');
 
     // Both aggregates written, each inside its own short context (a third call
     // may come from the fire-and-forget anomaly check — assert at least the two

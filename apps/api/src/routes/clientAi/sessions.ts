@@ -139,16 +139,13 @@ function auditClient(
   });
 }
 
-/** Shared preflight (spec §4 order): rate limits → org budget → partner credits. */
+/** Shared post-resolution preflight: org budget → partner credits. */
 async function runClientPreflight(
   c: Context,
   auth: ClientAiAuthContext,
   policy: ClientAiOrgPolicy,
   resolved: UsableLlmConfig,
 ): Promise<Response | null> {
-  const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
-  if (rateError) return c.json({ error: rateError }, 429);
-
   const budgetError = await checkClientBudget(policy);
   if (budgetError) return c.json({ error: budgetError }, 402);
 
@@ -261,6 +258,9 @@ clientAiSessionRoutes.post('/', async (c) => {
   }
   const { workbookName, host } = parsed.data;
 
+  const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
+  if (rateError) return c.json({ error: rateError }, 429);
+
   // A host the server can't actually serve (no tool registry / system prompt
   // yet — e.g. word/powerpoint/outlook in Phase 1) is rejected up front so we
   // never persist a session that ensureActiveClientSession would refuse to run.
@@ -285,6 +285,7 @@ clientAiSessionRoutes.post('/', async (c) => {
       clientUserId: auth.clientUserId,
       type: clientSessionType(host),
       model,
+      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
       systemPrompt,
       workbookName: workbookName ?? null,
     })
@@ -538,6 +539,9 @@ clientAiSessionRoutes.post(
     if (session.status !== 'active') {
       return c.json({ error: 'Session is no longer active' }, 410);
     }
+
+    const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
+    if (rateError) return c.json({ error: rateError }, 429);
 
     const resolved = await resolveClientLlmConfig(auth.orgId);
     if (resolved.source === 'unavailable') {

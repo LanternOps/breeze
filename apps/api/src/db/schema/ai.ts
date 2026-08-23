@@ -151,6 +151,7 @@ export const aiCostUsage = pgTable('ai_cost_usage', {
   sessionCount: integer('session_count').notNull().default(0),
   messageCount: integer('message_count').notNull().default(0),
   toolExecutionCount: integer('tool_execution_count').notNull().default(0),
+  // Most-recent-writer label, not a per-source cost split; deductions are decided per turn, never from this column.
   billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull().default('platform'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({

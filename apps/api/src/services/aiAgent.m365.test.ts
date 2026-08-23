@@ -125,7 +125,10 @@ describe('createSession M365 binding', () => {
     // no connection lookup performed
     expect(selectMock).not.toHaveBeenCalled();
     expect(valuesSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ delegantM365ConnectionId: null })
+      expect.objectContaining({
+        delegantM365ConnectionId: null,
+        billingSource: 'platform',
+      })
     );
   });
 });

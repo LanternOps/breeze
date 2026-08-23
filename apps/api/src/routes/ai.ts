@@ -403,18 +403,19 @@ aiRoutes.post(
       .from(organizations)
       .where(eq(organizations.id, session.orgId))
       .limit(1);
+    if (!org) return c.json({ error: 'ai_unavailable' }, 503);
 
     let draft;
     let billingSource: 'platform' | 'partner_key' = 'platform';
     try {
-      const { client, resolved } = await getAnthropicClientForPartner(org?.partnerId ?? null);
+      const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null);
       billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
         contextSnapshot: session.contextSnapshot,
         elapsedMinutes,
         model,
-        partnerId: org?.partnerId ?? null,
+        partnerId: org.partnerId ?? null,
         client,
       });
     } catch (err) {

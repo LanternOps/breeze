@@ -25,7 +25,7 @@ function orgContext(orgId: string): DbAccessContext {
 
 describe('partner LLM BYOK billing split', () => {
   runDb('records partner-key usage without calling the billing-service deduct endpoint', async () => {
-    const { org, session } = await withSystemDbAccessContext(async () => {
+    const { partner, org, session } = await withSystemDbAccessContext(async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
       await db.insert(partnerLlmConfigs).values({
@@ -43,7 +43,7 @@ describe('partner LLM BYOK billing split', () => {
           type: 'general',
         })
         .returning({ id: aiSessions.id });
-      return { org, session: session! };
+      return { partner, org, session: session! };
     });
 
     const previousBillingUrl = process.env.BILLING_SERVICE_URL;
@@ -78,6 +78,21 @@ describe('partner LLM BYOK billing split', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toEqual({ billingSource: 'partner_key', totalCostCents: 12.34 });
       expect(fetchSpy).not.toHaveBeenCalled();
+
+      await withDbAccessContext(orgContext(org.id), () =>
+        recordUsageFromSdkResult(session.id, org.id, {
+          total_cost_usd: 0.1234,
+          usage: { input_tokens: 5_000, output_tokens: 2_000 },
+          num_turns: 1,
+          model: 'claude-sonnet-4-6',
+        }, 'platform'),
+      );
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `https://billing.internal/api/internal/partners/${partner.id}/ai-credits/deduct`,
+        expect.objectContaining({ method: 'POST' }),
+      );
     } finally {
       fetchSpy.mockRestore();
       if (previousBillingUrl === undefined) delete process.env.BILLING_SERVICE_URL;

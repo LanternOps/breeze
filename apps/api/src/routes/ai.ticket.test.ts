@@ -375,6 +375,25 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     expect(res.status).toBe(404);
   });
 
+  it('503s when the session organization is missing without constructing a client or recording usage', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectRows([]) as any);
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(routeMocks.getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
   it('422 on a thin transcript', async () => {
     vi.mocked(getSessionMessages).mockResolvedValueOnce({
       session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },

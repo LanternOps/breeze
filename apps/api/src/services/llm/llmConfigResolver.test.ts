@@ -17,6 +17,8 @@ const {
   captureMessageMock: vi.fn(),
   dbState: {
     selectResults: [] as unknown[][],
+    selectErrors: [] as unknown[],
+    selectFields: [] as unknown[],
     updateResults: [] as unknown[][],
     updateError: null as unknown,
     updateSets: [] as Array<Record<string, unknown>>,
@@ -57,13 +59,21 @@ vi.mock('../../db', () => ({
     return fn();
   },
   db: {
-    select: vi.fn(() => ({
+    select: vi.fn((fields: unknown) => {
+      dbState.selectFields.push(fields);
+      return ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve(dbState.selectResults.shift() ?? [])),
+          limit: vi.fn(() => {
+            const error = dbState.selectErrors.shift();
+            return error
+              ? Promise.reject(error)
+              : Promise.resolve(dbState.selectResults.shift() ?? []);
+          }),
         })),
       })),
-    })),
+      });
+    }),
     update: vi.fn(() => ({
       set: vi.fn((values: Record<string, unknown>) => {
         dbState.updateSets.push(values);
@@ -84,6 +94,7 @@ vi.mock('../../db', () => ({
 
 import {
   getAnthropicClientForPartner,
+  getLlmBillingSourceForOrg,
   LlmOrgResolutionError,
   LlmUnavailableError,
   markPartnerLlmError,
@@ -118,6 +129,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   anthropicOptions.length = 0;
   dbState.selectResults.length = 0;
+  dbState.selectErrors.length = 0;
+  dbState.selectFields.length = 0;
   dbState.updateResults.length = 0;
   dbState.updateError = null;
   dbState.updateSets.length = 0;
@@ -166,6 +179,92 @@ describe('resolveLlmConfigForOrg', () => {
     expect(decryptMock).not.toHaveBeenCalled();
     expect(contextState.outsideCalls).toBe(1);
     expect(contextState.systemCalls).toBe(1);
+  });
+});
+
+describe('getLlmBillingSourceForOrg', () => {
+  it.each([
+    ['active', { id: CONFIG_ID, status: 'active' }],
+    ['error', { id: CONFIG_ID, status: 'error' }],
+  ] as const)('returns partner_key when a partner config row exists in %s status', async (_status, configRow) => {
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [configRow]);
+
+    await expect(
+      getLlmBillingSourceForOrg('33333333-3333-4333-8333-333333333333'),
+    ).resolves.toBe('partner_key');
+
+    expect(Object.keys(dbState.selectFields[1] as Record<string, unknown>)).toEqual(['id']);
+    expect(decryptMock).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toHaveLength(0);
+    expect(contextState.outsideCalls).toBe(2);
+    expect(contextState.systemCalls).toBe(2);
+  });
+
+  it('returns platform when the partner has no config row', async () => {
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], []);
+
+    await expect(
+      getLlmBillingSourceForOrg('44444444-4444-4444-8444-444444444444'),
+    ).resolves.toBe('platform');
+    expect(decryptMock).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('returns platform when the organization is missing', async () => {
+    dbState.selectResults.push([]);
+
+    await expect(
+      getLlmBillingSourceForOrg('55555555-5555-4555-8555-555555555555'),
+    ).resolves.toBe('platform');
+    expect(decryptMock).not.toHaveBeenCalled();
+    expect(contextState.systemCalls).toBe(1);
+  });
+
+  it('captures lookup failures at most hourly and never throws', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    const error = new Error('database unavailable');
+    const orgId = '66666666-6666-4666-8666-666666666666';
+    dbState.selectErrors.push(error, error, error);
+
+    await expect(getLlmBillingSourceForOrg(orgId)).resolves.toBe('platform');
+    await expect(getLlmBillingSourceForOrg(orgId)).resolves.toBe('platform');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    await expect(getLlmBillingSourceForOrg(orgId)).resolves.toBe('platform');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(2);
+    expect(captureExceptionMock).toHaveBeenLastCalledWith(error, undefined, {
+      service: 'llmConfigResolver',
+      orgId,
+    });
+  });
+
+  it('returns platform when the partner-config existence lookup fails', async () => {
+    const error = new Error('config lookup unavailable');
+    const orgId = '77777777-7777-4777-8777-777777777777';
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }]);
+    dbState.selectErrors.push(null, error);
+
+    await expect(getLlmBillingSourceForOrg(orgId)).resolves.toBe('platform');
+    expect(captureExceptionMock).toHaveBeenCalledWith(error, undefined, {
+      service: 'llmConfigResolver',
+      orgId,
+    });
+    expect(decryptMock).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('returns platform even when telemetry capture throws', async () => {
+    const lookupError = new Error('database unavailable');
+    const telemetryError = new Error('telemetry unavailable');
+    const orgId = '88888888-8888-4888-8888-888888888888';
+    dbState.selectErrors.push(lookupError);
+    captureExceptionMock.mockImplementationOnce(() => {
+      throw telemetryError;
+    });
+
+    await expect(getLlmBillingSourceForOrg(orgId)).resolves.toBe('platform');
   });
 });
 
