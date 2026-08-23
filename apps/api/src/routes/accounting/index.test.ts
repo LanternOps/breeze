@@ -31,6 +31,7 @@ const { authState, mocks } = vi.hoisted(() => ({
     fetchHomeCurrency: vi.fn(),
     updateHomeCurrency: vi.fn(),
     captureException: vi.fn(),
+    captureMessage: vi.fn(),
     buildAuthUrl: vi.fn((state: string) => `https://qbo.example.test/connect?scope=com.intuit.quickbooks.accounting&state=${encodeURIComponent(state)}`),
   },
 }));
@@ -87,10 +88,15 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   upsertConnection: mocks.upsertConnection,
   deleteConnection: mocks.deleteConnection,
   updateHomeCurrency: mocks.updateHomeCurrency,
+  // Real implementation, not a mock: the route's benign-race branch must key on
+  // the error CODE, so the test exercises the real predicate.
+  isHomeCurrencyCasAbort: (err: unknown) => typeof err === 'object' && err !== null
+    && (err as { code?: unknown }).code === 'ACCOUNTING_HOME_CURRENCY_CAS_ABORT',
 }));
 
 vi.mock('../../services/sentry', () => ({
   captureException: mocks.captureException,
+  captureMessage: mocks.captureMessage,
 }));
 
 vi.mock('../../services/accounting/providerRegistry', () => ({
@@ -384,14 +390,31 @@ describe('accounting routes', () => {
     expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
   });
 
-  it('callback still connects when the compare-and-set loses the race', async () => {
+  it('callback still connects when the compare-and-set loses the race, WITHOUT reporting an exception', async () => {
+    // A lost CAS is an expected race on a normal user action (double connect),
+    // so it must not reach Sentry at error level.
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.updateHomeCurrency.mockRejectedValueOnce(new Error('updateHomeCurrency matched no accounting_connections row'));
+    mocks.updateHomeCurrency.mockRejectedValueOnce(Object.assign(
+      new Error('updateHomeCurrency matched no accounting_connections row at the expected generation'),
+      { code: 'ACCOUNTING_HOME_CURRENCY_CAS_ABORT' },
+    ));
 
     const res = await runCallback(app);
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.captureException).not.toHaveBeenCalled();
+    expect(mocks.captureMessage).toHaveBeenCalledWith(expect.stringContaining('home currency'), 'warning', expect.anything());
+  });
+
+  it('a GENUINE home-currency write failure still reports an exception', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.updateHomeCurrency.mockRejectedValueOnce(new Error('deadlock detected'));
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(mocks.captureException).toHaveBeenCalled();
   });
 
   it('callback short-circuits to error=persist_failed when the credential upsert throws', async () => {

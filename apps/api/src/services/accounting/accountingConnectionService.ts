@@ -243,6 +243,29 @@ export async function updateTokens(
  * Lock note: this is the only row lock wave 8 takes. It is a single leaf-table
  * row, held across no other lock and no network call.
  */
+/**
+ * A lost compare-and-set on the home-currency capture: the row was reconnected
+ * (same realm or another) between the capture starting and the write. That is an
+ * EXPECTED race on a normal user action — double connect, concurrent reconnect —
+ * not a defect, so callers report it as a warning rather than an exception.
+ * Callers MUST branch on the code, never on message text.
+ */
+export const ACCOUNTING_HOME_CURRENCY_CAS_ABORT = 'ACCOUNTING_HOME_CURRENCY_CAS_ABORT';
+
+export class AccountingHomeCurrencyCasAbortError extends Error {
+  readonly code = ACCOUNTING_HOME_CURRENCY_CAS_ABORT;
+  constructor(message: string) {
+    super(message);
+    this.name = 'AccountingHomeCurrencyCasAbortError';
+  }
+}
+
+export function isHomeCurrencyCasAbort(err: unknown): boolean {
+  return typeof err === 'object'
+    && err !== null
+    && (err as { code?: unknown }).code === ACCOUNTING_HOME_CURRENCY_CAS_ABORT;
+}
+
 export async function updateHomeCurrency(
   db: DbTransactor,
   connectionId: string,
@@ -274,11 +297,11 @@ export async function updateHomeCurrency(
     }
 
     if (decryptNullable(row.realmIdEncrypted) !== expected.realmId) {
-      throw new Error(`updateHomeCurrency aborted: connection ${connectionId} now points at a different realm than the capture started for`);
+      throw new AccountingHomeCurrencyCasAbortError(`updateHomeCurrency aborted: connection ${connectionId} now points at a different realm than the capture started for`);
     }
 
     if (row.updatedAt === null || row.updatedAt.getTime() !== expected.updatedAt.getTime()) {
-      throw new Error(`updateHomeCurrency matched no accounting_connections row (id=${connectionId}) at the expected generation; the connection changed underneath the capture`);
+      throw new AccountingHomeCurrencyCasAbortError(`updateHomeCurrency matched no accounting_connections row (id=${connectionId}) at the expected generation; the connection changed underneath the capture`);
     }
 
     const updated = await tx

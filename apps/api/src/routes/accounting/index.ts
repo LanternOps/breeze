@@ -12,6 +12,7 @@ import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } f
 import {
   deleteConnection,
   getConnection,
+  isHomeCurrencyCasAbort,
   updateHomeCurrency,
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
@@ -23,7 +24,7 @@ import {
 } from '../../services/accounting/quickbooksCustomerImport';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
-import { captureException } from '../../services/sentry';
+import { captureException, captureMessage } from '../../services/sentry';
 import type { AccountingProviderId } from '../../services/accounting/types';
 
 export const accountingRoutes = new Hono();
@@ -309,8 +310,17 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
       console.warn('[accounting] QuickBooks home currency unavailable', { partnerId: state.partnerId, provider });
     }
   } catch (err) {
-    captureException(err instanceof Error ? err : new Error(String(err)), c);
-    console.warn('[accounting] QuickBooks home currency capture failed', { partnerId: state.partnerId, provider });
+    // A lost compare-and-set is an EXPECTED race (double connect, concurrent
+    // reconnect), not a defect: the winning capture already wrote a currency for
+    // the generation that survived. Report it as a warning so it stops filing
+    // Sentry issues on a normal user action; genuine failures stay exceptions.
+    if (isHomeCurrencyCasAbort(err)) {
+      captureMessage('[accounting] QuickBooks home currency capture lost the compare-and-set', 'warning', { partnerId: state.partnerId, provider });
+      console.warn('[accounting] QuickBooks home currency capture lost the compare-and-set', { partnerId: state.partnerId, provider });
+    } else {
+      captureException(err instanceof Error ? err : new Error(String(err)), c);
+      console.warn('[accounting] QuickBooks home currency capture failed', { partnerId: state.partnerId, provider });
+    }
   }
 
   deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });

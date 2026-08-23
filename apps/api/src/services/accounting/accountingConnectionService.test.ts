@@ -191,6 +191,34 @@ describe('accountingConnectionService', () => {
     expect(setSpy).not.toHaveBeenCalled();
   });
 
+  it('tags the two lost-CAS aborts with a distinct code, and leaves a zero-row read untagged', async () => {
+    // A lost compare-and-set is an EXPECTED race (double connect, concurrent
+    // reconnect), so the caller must be able to tell it apart from a genuine
+    // failure by code — never by matching on message text. A zero-row read is
+    // ambiguous (deleted underneath OR a wrong RLS context), so it stays
+    // untagged and keeps error-level reporting.
+    const sameMs = new Date('2026-09-04T00:00:00.000Z');
+    const mod = await import('./accountingConnectionService');
+    const { updateHomeCurrency, isHomeCurrencyCasAbort } = mod;
+
+    const wrongRealm = await updateHomeCurrency(
+      makeCasDb(await casRow('realm-B', sameMs)).db, 'c1', 'p1', { updatedAt: sameMs, realmId: 'realm-A' }, 'USD',
+    ).catch((err: unknown) => err);
+    expect(isHomeCurrencyCasAbort(wrongRealm)).toBe(true);
+    expect((wrongRealm as { code: string }).code).toBe('ACCOUNTING_HOME_CURRENCY_CAS_ABORT');
+
+    const staleGeneration = await updateHomeCurrency(
+      makeCasDb(await casRow('realm-A', new Date('2026-09-04T00:00:05Z'))).db,
+      'c1', 'p1', { updatedAt: sameMs, realmId: 'realm-A' }, 'USD',
+    ).catch((err: unknown) => err);
+    expect(isHomeCurrencyCasAbort(staleGeneration)).toBe(true);
+
+    const missingRow = await updateHomeCurrency(
+      makeCasDb(null).db, 'c1', 'p1', { updatedAt: sameMs, realmId: 'realm-A' }, 'USD',
+    ).catch((err: unknown) => err);
+    expect(isHomeCurrencyCasAbort(missingRow)).toBe(false);
+  });
+
   it('updateHomeCurrency throws when the lock read returns nothing (deleted row or wrong RLS context)', async () => {
     const { db } = makeCasDb(null);
     const { updateHomeCurrency } = await import('./accountingConnectionService');
