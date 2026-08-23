@@ -557,13 +557,12 @@ CREATE OR REPLACE FUNCTION action_intents_block_content_update()
 RETURNS TRIGGER AS $$
 BEGIN
   IF NEW.org_id IS DISTINCT FROM OLD.org_id
-     OR NEW.partner_id IS DISTINCT FROM OLD.partner_id
      OR NEW.requested_by_user_id IS DISTINCT FROM OLD.requested_by_user_id
      OR NEW.requesting_api_key_id IS DISTINCT FROM OLD.requesting_api_key_id
      OR NEW.requesting_agent_run_id IS DISTINCT FROM OLD.requesting_agent_run_id
+     OR NEW.source IS DISTINCT FROM OLD.source
      OR NEW.origin_principal_kind IS DISTINCT FROM OLD.origin_principal_kind
      OR NEW.origin_principal_id IS DISTINCT FROM OLD.origin_principal_id
-     OR NEW.source IS DISTINCT FROM OLD.source
      OR NEW.action_name IS DISTINCT FROM OLD.action_name
      OR NEW.action_version IS DISTINCT FROM OLD.action_version
      OR NEW.arguments IS DISTINCT FROM OLD.arguments
@@ -577,18 +576,34 @@ BEGIN
      OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
      OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
      OR NEW.created_at IS DISTINCT FROM OLD.created_at
-     OR NEW.expires_at IS DISTINCT FROM OLD.expires_at THEN
+     OR NEW.expires_at IS DISTINCT FROM OLD.expires_at
+     OR NEW.approval_scope IS DISTINCT FROM OLD.approval_scope
+     OR NEW.classification_version IS DISTINCT FROM OLD.classification_version
+     OR NEW.effect_digest IS DISTINCT FROM OLD.effect_digest THEN
     RAISE EXCEPTION 'action_intents content is immutable';
   END IF;
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 ```
 
-**Before writing the `CREATE OR REPLACE FUNCTION` block, open
-`apps/api/migrations/2026-08-14-intent-approval-scope-and-deadlines.sql:62` and
-copy the CURRENT body**, then add the one new line. The block above reproduces
-the deny-list as of `2026-08-06-e`; if a later migration added a field, dropping
-it here would silently make that field mutable again.
+**The deny-list above is the live function body**, read from a fully-migrated
+database with `pg_get_functiondef`, plus the one new
+`requesting_agent_run_id` line. It is authoritative — an earlier draft of this
+plan reconstructed it from the migration files and got it wrong in both
+directions: it omitted `approval_scope`, `classification_version` and
+`effect_digest` (silently making three immutable fields mutable) and invented a
+`partner_id` check that does not exist.
+
+Before you commit, diff your version against the live one and confirm the ONLY
+difference is the added line:
+
+```bash
+psql "$DATABASE_URL" -tAc \
+  "select pg_get_functiondef(oid) from pg_proc where proname='action_intents_block_content_update';"
+```
+
+`CREATE OR REPLACE FUNCTION` silently replaces the whole body — a dropped line
+here is not an error, it is a permanently missing guard.
 
 - [ ] **Step 2: Verify the migration applies and re-applies cleanly**
 
