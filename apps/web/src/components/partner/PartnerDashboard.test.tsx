@@ -141,7 +141,7 @@ describe('PartnerDashboard MRR (multi-currency, wave 7)', () => {
 
     const total = await screen.findByTestId('partner-dashboard-total-mrr');
     await waitFor(() => expect(fetchWithAuth)
-      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals')));
+      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
     expect(total.textContent).toBe('$12,300.00 + €4,100.00');
     await waitFor(() => expect(screen.queryByTestId('partner-dashboard-mrr-approx')).toBeNull());
   });

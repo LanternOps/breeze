@@ -283,7 +283,7 @@ describe.each(SURFACES)('$name — reporting-only approximate line', (surface) =
     const total = await assertSegmentation(surface);
 
     await waitFor(() => expect(fetchWithAuth)
-      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals')));
+      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
     await waitFor(() => expect(screen.queryByTestId(surface.testId)).toBeNull());
     expect(total.textContent).not.toContain('≈');
   });
@@ -294,7 +294,7 @@ describe.each(SURFACES)('$name — reporting-only approximate line', (surface) =
     await assertSegmentation(surface);
 
     await waitFor(() => expect(fetchWithAuth)
-      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals')));
+      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
     await waitFor(() => expect(screen.queryByTestId(surface.testId)).toBeNull());
   });
 
@@ -304,7 +304,7 @@ describe.each(SURFACES)('$name — reporting-only approximate line', (surface) =
     await assertSegmentation(surface);
 
     await waitFor(() => expect(fetchWithAuth)
-      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals')));
+      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
     await waitFor(() => expect(screen.queryByTestId(surface.testId)).toBeNull());
     // The no-silent-1:1 guard: the foreign group is neither converted at 1.0
     // nor relabelled with the reporting currency.
@@ -319,7 +319,7 @@ describe.each(SURFACES)('$name — reporting-only approximate line', (surface) =
     await assertSegmentation(surface);
 
     await waitFor(() => expect(fetchWithAuth)
-      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals')));
+      .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
     await waitFor(() => expect(screen.queryByTestId(surface.testId)).toBeNull());
     expect(showToast).not.toHaveBeenCalled();
   });
