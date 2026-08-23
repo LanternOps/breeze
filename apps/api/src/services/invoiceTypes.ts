@@ -39,6 +39,14 @@ export type InvoiceServiceErrorCode =
   // from CatalogServiceError — never another currency's number, never converted.
   | 'NO_PRICE_FOR_CURRENCY'
   | 'PRICE_NOT_REPRESENTABLE'
+  // Multi-currency wave 6 (#3778): the org's currency changed under the caller
+  // between the preflight summary and the confirm (optimistic precondition).
+  // 409, body carries a freshly computed impact summary.
+  | 'ORG_CURRENCY_CHANGED'
+  // Multi-currency wave 6 (#3778): a REAL org currency change was requested
+  // without `confirmSnapshotRetention: true`. Only the LOCKED row can tell a
+  // real change from a same-currency no-op, so this check lives in the service.
+  | 'CONFIRMATION_REQUIRED'
   // Multi-currency wave 3 (#3775): addBundleLine — the bundle has a headline
   // price but one or more components lack a price in the invoice's currency.
   | 'PRICE_BOOK_INCOMPLETE'

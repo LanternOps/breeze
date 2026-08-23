@@ -17,6 +17,7 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
+import { changeOrgCurrency } from './orgCurrencyService';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
@@ -776,6 +777,17 @@ export async function updatePartnerBillingSettings(
   return row;
 }
 
+/** Org billing-settings projection. `currencyCode` is included (#3778) so the
+ *  web form reads the org's currency back from the same response it PATCHes. */
+const orgBillingProjection = {
+  id: organizations.id, taxId: organizations.taxId, taxExempt: organizations.taxExempt, taxRate: organizations.taxRate,
+  billingContact: organizations.billingContact,
+  billingAddressLine1: organizations.billingAddressLine1, billingAddressLine2: organizations.billingAddressLine2,
+  billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
+  billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
+  currencyCode: organizations.currencyCode,
+};
+
 export async function updateOrgBillingSettings(
   orgId: string,
   patch: {
@@ -784,10 +796,47 @@ export async function updateOrgBillingSettings(
     billingAddressLine1?: string | null; billingAddressLine2?: string | null;
     billingAddressCity?: string | null; billingAddressRegion?: string | null;
     billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
+    // Multi-currency wave 6 (#3778): the currency branch is delegated wholesale
+    // to orgCurrencyService (org row FOR UPDATE, optimistic precondition,
+    // explicit confirmation). See the currency-only rule below.
+    currencyCode?: string; expectedCurrentCurrencyCode?: string; confirmSnapshotRetention?: boolean;
   },
   actor: InvoiceActor
 ) {
   requireOrgAccess(actor, orgId);
+  // --- currency branch (#3778) -------------------------------------------
+  // A currency-carrying PATCH is deliberately currency-ONLY. The contact-merge
+  // path below opens its own transaction whose first statement is a plain
+  // `SELECT id`; combining it with the currency change would either put the org
+  // `FOR UPDATE` behind that read (breaking the wave-6 lock order, which
+  // requires the organizations lock to be the FIRST statement of its
+  // transaction) or split one request across two transactions with a partial
+  // success. The plan sanctions this fallback explicitly (Task 11, Step 5) and
+  // the wave-6 UI sends a currency-only payload, so nothing legitimate is lost.
+  if (patch.currencyCode !== undefined) {
+    const CURRENCY_KEYS = ['currencyCode', 'expectedCurrentCurrencyCode', 'confirmSnapshotRetention'];
+    const others = Object.entries(patch)
+      .filter(([k, v]) => v !== undefined && !CURRENCY_KEYS.includes(k))
+      .map(([k]) => k);
+    if (others.length > 0) {
+      throw new InvoiceServiceError(
+        `A currency change must be sent on its own (also received: ${others.join(', ')})`,
+        400, 'INVALID_STATE'
+      );
+    }
+    if (patch.expectedCurrentCurrencyCode === undefined) {
+      throw new InvoiceServiceError('expectedCurrentCurrencyCode is required when currencyCode is supplied', 400, 'INVALID_STATE');
+    }
+    const change = await changeOrgCurrency(orgId, {
+      currencyCode: patch.currencyCode,
+      expectedCurrentCurrencyCode: patch.expectedCurrentCurrencyCode,
+      confirmSnapshotRetention: patch.confirmSnapshotRetention
+    }, actor);
+    const [current] = await db.select(orgBillingProjection).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    if (!current) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    return { ...current, currencyChange: change };
+  }
+
   const set: Record<string, unknown> = {};
   if (patch.taxId !== undefined) set.taxId = patch.taxId;
   if (patch.taxExempt !== undefined) set.taxExempt = patch.taxExempt;
@@ -808,13 +857,7 @@ export async function updateOrgBillingSettings(
   if (patch.billingAddressRegion !== undefined) set.billingAddressRegion = patch.billingAddressRegion;
   if (patch.billingAddressPostalCode !== undefined) set.billingAddressPostalCode = patch.billingAddressPostalCode;
   if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
-  const projection = {
-    id: organizations.id, taxId: organizations.taxId, taxExempt: organizations.taxExempt, taxRate: organizations.taxRate,
-    billingContact: organizations.billingContact,
-    billingAddressLine1: organizations.billingAddressLine1, billingAddressLine2: organizations.billingAddressLine2,
-    billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
-    billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
-  };
+  const projection = orgBillingProjection;
 
   // One transaction so the contact merge and the column update still land
   // together, as they did when this was a single statement.
