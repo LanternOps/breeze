@@ -49,6 +49,10 @@ Anthropic SDK.
   (`services/tenantExportPolicyRegistry.ts:44`) in the same PR. Cascade order
   already satisfies children-before-parents for a new FK to `ai_agent_runs`
   (`action_intents` line 67 < `ai_agent_runs` line 70).
+- `pnpm db:check-drift` does **not** compare the Drizzle schema to the database —
+  it only replays the migration set and checks the ledger
+  (`apps/api/scripts/check-drift.ts:16-26`). Schema-vs-DB agreement is enforced
+  only by integration tests that go through the Drizzle client, and by review.
 - `pnpm test` does **not** run the RLS/integration contract suites. Any PR here
   that touches tenancy must run `vitest.config.rls.ts` and
   `vitest.integration.config.ts` explicitly before review.
@@ -725,16 +729,43 @@ block (`unique` is already imported there):
   idOrgUq: unique('ai_agent_runs_id_org_id_key').on(table.id, table.orgId),
 ```
 
-- [ ] **Step 4: Verify no drift between schema and migrations**
+- [ ] **Step 4: Replay the migration set, then hand-verify the model**
 
 ```bash
 export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
 pnpm db:check-drift
 ```
 
-Expected: no drift. Drift here means the Drizzle model and the migration
-disagree — most likely a single-column `.references()` left on the column, or a
-missing `unique` on `ai_agent_runs`.
+Expected: no drift.
+
+**But be clear what that does and does not prove.** Despite the name,
+`db:check-drift` does **not** structurally diff the Drizzle schema against the
+database — its own header says so (`apps/api/scripts/check-drift.ts:16-26`):
+schema-vs-live-DB comparison "would require drizzle-kit's introspect/generate
+round-trip, which is not symmetric enough to be useful in this repo". What it
+actually checks is that the migration set replays cleanly onto a fresh database
+and that the `breeze_migrations` ledger has one row per file. A Drizzle model
+that disagrees with the migration passes this check.
+
+So the model has to be verified by hand. Compare each new declaration against
+the live constraint definition and confirm the name, the column order, the
+target columns and the delete rule all match:
+
+```bash
+psql "$DATABASE_URL" -tAc \
+  "select conname||' | '||pg_get_constraintdef(oid) from pg_constraint
+   where conname in ('action_intents_requesting_agent_run_id_org_id_fkey',
+                     'ai_agent_runs_id_org_id_key');"
+```
+
+Expected, exactly:
+```
+ai_agent_runs_id_org_id_key | UNIQUE (id, org_id)
+action_intents_requesting_agent_run_id_org_id_fkey | FOREIGN KEY (requesting_agent_run_id, org_id) REFERENCES ai_agent_runs(id, org_id) ON DELETE RESTRICT
+```
+
+Task 5 closes this gap properly by inserting **through the Drizzle client**, so
+a mis-modelled column fails a test rather than relying on review.
 
 - [ ] **Step 5: Typecheck**
 
@@ -826,6 +857,13 @@ git commit -m "chore(api): classify requesting_agent_run_id for tenant export"
 Unit tests cannot prove any of this — every constraint lives in SQL. Place this
 under `src/__tests__/integration/` (a file outside that directory runs in **zero
 CI jobs**) and confirm it appears in a shard log, not merely that it passes.
+
+**Insert through the Drizzle client** (`db.insert(actionIntents).values({...})`),
+not raw SQL. `db:check-drift` does not compare the Drizzle model to the database
+(`apps/api/scripts/check-drift.ts:16-26`), so these tests are the only automated
+thing that will catch a mis-modelled column, a wrong composite-FK column order,
+or a stray single-column `.references()`. Raw SQL here would exercise the
+constraints while leaving the schema model unverified.
 
 - [ ] **Step 1: Write the failing test**
 
