@@ -20,7 +20,11 @@ export const notificationTypeEnum = pgEnum('notification_type', [
   'system',
   'user',
   'security',
-  'ticket'
+  'ticket',
+  // Wave 2 (#3823). 'approval' = a four-eyes decision is waiting on this user;
+  // 'ai' = an agent produced something worth a human's attention.
+  'approval',
+  'ai'
 ]);
 
 export const notificationPriorityEnum = pgEnum('notification_priority', [
@@ -40,6 +44,14 @@ export const userNotifications = pgTable('user_notifications', {
   message: text('message'),
   link: varchar('link', { length: 500 }),
   metadata: jsonb('metadata'),
+  /**
+   * Idempotency key for producers that can redeliver. The outbox publisher
+   * marks a row published on ENQUEUE rather than on completion, and BullMQ
+   * retries, so one intent can otherwise notify the same approver repeatedly.
+   * NULL (the default, and what every pre-wave-2 producer writes) opts out —
+   * the unique index is partial.
+   */
+  dedupeKey: text('dedupe_key'),
   read: boolean('read').notNull().default(false),
   readAt: timestamp('read_at'),
   createdAt: timestamp('created_at').defaultNow().notNull()

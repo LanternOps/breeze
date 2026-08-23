@@ -624,6 +624,14 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // m365ConnectionsRls.integration.test.ts. Do not read a green run here as coverage of
   // the user axis.
   'm365_connections',
+  // Dual-axis as of 2026-09-04 (wave 2, #3823): user_id AND org access, where
+  // the four baseline policies were org-only with no user predicate at all.
+  // Auto-discovery keys on org_id and so only ever proved the org half; this
+  // entry pins the user half. As with m365_connections, a green run here proves
+  // the policy MENTIONS breeze_current_user_id and nothing more — the
+  // behavioural proof that one org member cannot read another's notifications
+  // is userNotificationsRls.integration.test.ts.
+  'user_notifications',
   'user_sso_identities',
   'push_notifications',
   'mobile_devices',
