@@ -1663,7 +1663,12 @@ Content-Type: application/json
 - For partner/system users spanning multiple orgs, pass `orgId` explicitly for writes.
 - Use `/events` to review explainability context for score changes.
 - Use policy tuning conservatively to prevent alert fatigue.
-- Job cadence is configurable via environment variables (for example: `USER_RISK_SCAN_INTERVAL_MS`).
+- Job cadence is configurable via environment variables holding a cron pattern
+  (for example: `USER_RISK_SCAN_CRON`, `USER_RISK_RETENTION_CRON`). These replace
+  the former `*_INTERVAL_MS` knobs: BullMQ anchors a plain `every` interval to the
+  Unix epoch, so every daily job ended up firing at 00:00:00.000 UTC together.
+  Pick a minute that no other job already owns — see
+  `apps/api/src/jobs/scheduleRegistry.ts` for the allocated slots.
 
 ## Appendix A: API Quick Reference
 

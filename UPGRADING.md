@@ -1,5 +1,41 @@
 # Upgrading Breeze
 
+## No action required: nightly job schedules were staggered
+
+Every BullMQ job registered with `repeat: { every: N }` fires on a wall-clock
+boundary derived from the Unix epoch, so all `every: 24h` jobs used to fire at
+exactly 00:00:00.000 UTC together — 18 of the 97 repeat entries on hosted
+production shared a single millisecond, and eleven of those were batched
+retention `DELETE`s competing for the same Postgres pool as live agent traffic.
+
+Those registrations are now explicit, staggered cron slots allocated in
+`apps/api/src/jobs/scheduleRegistry.ts`.
+
+**No Redis cleanup is needed.** Each job's initializer removes its queue's
+existing repeat entries before re-registering, so the first boot of the new API
+image replaces the old schedule rather than adding a second one. To confirm
+after deploying, the total repeat count should stay flat rather than roughly
+double:
+
+```bash
+docker exec -i breeze-redis redis-cli --scan --pattern 'bull:*:repeat' \
+  | while read -r k; do printf '%s %s\n' "$(docker exec -i breeze-redis redis-cli ZCARD "$k")" "$k"; done \
+  | sort -rn
+```
+
+Two renamed environment variables (both optional, both previously undocumented
+apart from one example line in the admin guide):
+
+| Removed | Replacement | Notes |
+|---|---|---|
+| `USER_RISK_SCAN_INTERVAL_MS` | `USER_RISK_SCAN_CRON` | Value is now a cron pattern, e.g. `57 4,10,16,22 * * *`. |
+| `USER_RISK_RETENTION_INTERVAL_MS` | `USER_RISK_RETENTION_CRON` | Value is now a cron pattern, e.g. `45 8 * * *`. |
+| `ML_OUTPUT_RETENTION_INTERVAL_MS` | `ML_OUTPUT_RETENTION_CRON` | Value is now a cron pattern, e.g. `25 8 * * *`. |
+
+If you set one of the removed variables, the job silently falls back to its
+allocated default slot. Pick a minute no other job owns — the registry lists
+every allocated slot in one place.
+
 ## Action required: reconnect Microsoft 365 ticket mailboxes
 
 This release strengthens Microsoft 365 ticket mailbox consent by verifying the Microsoft tenant and consenting administrator identity and binding the tenant to its Breeze partner. During the upgrade, every non-disabled Microsoft 365 ticket mailbox connection becomes `reauth_required`. Disabled rows that still hold a legacy tenant or delta cursor also become `reauth_required` and have that state cleared. Already-disabled rows with neither value remain disabled and are not reactivated.
