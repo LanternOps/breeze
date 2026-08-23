@@ -1,6 +1,6 @@
 import { and, asc, eq, getTableColumns, gt, ilike, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { tightenLockTimeout, tightenStatementTimeout, lockTimeoutWasChanged, LOCK_WAIT_ABORT_CODES } from '../db/lockTimeout';
+import { tightenLockTimeout, tightenStatementTimeout, lockTimeoutWasChanged } from '../db/lockTimeout';
 import {
   catalogItems, catalogItemPrices, catalogItemOrgPricing, catalogBundleComponents, partners, organizations
 } from '../db/schema';
@@ -686,6 +686,25 @@ function canonicalUuid(value: string): string {
  */
 const CATALOG_LOCK_TIMEOUT_MS = 3000;
 
+/**
+ * Hard cap for the whole locking statement, DELIBERATELY LOOSER than the
+ * per-lock bound above.
+ *
+ * They are not interchangeable and must not be equal. `lock_timeout` fires per
+ * lock ACQUISITION, so it is the one that means "a specific row is contended" —
+ * that is the retryable, reportable case. `statement_timeout` is a deadline for
+ * the entire statement and exists only so a RUN of staggered blockers cannot
+ * add up to an unbounded wait; its 57014 is generic `query_canceled` and says
+ * nothing about why.
+ *
+ * If they were equal the statement deadline would always fire first and the
+ * per-lock signal would be dead code, so ordinary contention would surface as
+ * an uninformative cancellation instead of ITEM_BUSY. Keeping this looser means
+ * the common case (one blocked row) still reports contention, and this only
+ * takes over when the per-lock bound cannot.
+ */
+const CATALOG_LOCK_STATEMENT_TIMEOUT_MS = 8000;
+
 async function lockOwnedItemsInGlobalOrder(
   tx: DbExecutor,
   ids: readonly string[],
@@ -703,7 +722,18 @@ async function lockOwnedItemsInGlobalOrder(
   // SUCCEEDED. `statement_timeout` is the actual deadline; `lock_timeout` stays
   // as the per-lock backstop so a single long blocker still fails faster.
   const priorMs = await tightenLockTimeout(tx, CATALOG_LOCK_TIMEOUT_MS);
-  const priorStmtMs = await tightenStatementTimeout(tx, CATALOG_LOCK_TIMEOUT_MS);
+  const priorStmtMs = await tightenStatementTimeout(tx, CATALOG_LOCK_STATEMENT_TIMEOUT_MS);
+  if (priorStmtMs === null) {
+    // Fail here rather than proceed. Unlike lock_timeout, an unrestorable
+    // statement_timeout is NOT behaviour-neutral: on the success path it would
+    // govern the caller's remaining work — the unlocked read, the replace DML,
+    // and everything after this savepoint is released. Throwing lets the
+    // savepoint roll back, which undoes both SET LOCALs automatically.
+    // A plain Error on purpose: CatalogServiceError is the client-facing domain
+    // type (400/403/404/409 only), and this is an internal fault, not something
+    // the caller did wrong.
+    throw new Error('setBundleComponents: could not read the prior statement_timeout to restore it');
+  }
   const cols = { id: catalogItems.id, isBundle: catalogItems.isBundle, partnerId: catalogItems.partnerId };
 
   // ONE locking query, not one per id. The validator permits 200 components, so
@@ -724,7 +754,7 @@ async function lockOwnedItemsInGlobalOrder(
   // Restore the statement deadline immediately: left in force it would govern
   // the unlocked read and the replace DML below too, which is a broader promise
   // than this bound is making.
-  if (lockTimeoutWasChanged(priorStmtMs, CATALOG_LOCK_TIMEOUT_MS)) {
+  if (lockTimeoutWasChanged(priorStmtMs, CATALOG_LOCK_STATEMENT_TIMEOUT_MS)) {
     await tx.execute(sql`select set_config('statement_timeout', ${`${priorStmtMs}ms`}, true)`);
   }
 
@@ -938,7 +968,16 @@ async function withBundleLockTimeoutMapped<T>(fn: () => Promise<T>): Promise<T> 
   try {
     return await fn();
   } catch (err) {
-    if (LOCK_WAIT_ABORT_CODES.has(pgErrorCode(err) ?? '')) {
+    // ONLY 55P03. It is specifically `lock_not_available`, so it genuinely
+    // means "another writer holds these rows, retry".
+    //
+    // 57014 is deliberately NOT mapped: it is generic `query_canceled` and
+    // carries no evidence of its source. It is equally what an administrative
+    // cancel, a client disconnect, or a slow uncontended write under a
+    // stricter caller's own deadline raises — and this wrapper spans the whole
+    // transaction, so claiming any of those as ITEM_BUSY would tell an operator
+    // to retry a request that was never contended.
+    if (pgErrorCode(err) === '55P03') {
       throw new CatalogServiceError(
         'Catalog item is busy: another operation is modifying it. Try again in a moment.',
         409,

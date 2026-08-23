@@ -106,5 +106,3 @@ export async function tightenStatementTimeout(
   return null;
 }
 
-/** SQLSTATEs meaning "we gave up waiting", from either bound above. */
-export const LOCK_WAIT_ABORT_CODES = new Set(['55P03', '57014']);
