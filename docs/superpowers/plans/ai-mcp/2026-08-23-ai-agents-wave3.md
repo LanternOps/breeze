@@ -832,11 +832,25 @@ only under **Integration Tests**, never in `pnpm test`.
 row), so it belongs in `included` — not `excludedOpen` (it is `uuid`, not
 `jsonb`/`bytea`) and not `excludedSensitive` (it is not credential material).
 
-No cascade-list change is needed, but **verify** rather than assume: the new FK
-makes `action_intents` a child of `ai_agent_runs`, and the cascade must delete
-children first. `action_intents` is at line 67 and `ai_agent_runs` at line 70 —
-alphabetical order already satisfies it. `tenantCascade.integration.test.ts`
-asserts this property; do not rely on the eyeball.
+**No cascade-list change is needed, and the reason is not the one CLAUDE.md
+implies.** `CORE_ORG_CASCADE_DELETE_ORDER`'s literal array order is *not* the
+deletion order. `cascadeDeleteOrg` computes the real order at delete time via
+`topologicalCascadeOrder()`, which queries live `pg_constraint` FK edges and
+sorts children-first (`tenantCascade.ts:14-20`: *"We do NOT trust a
+hand-maintained topo order; FKs change"*). The array is only checked for two
+properties — alphabetised by `localeCompare`
+(`tenantCascade.integration.test.ts:51`) and complete. The
+children-before-parents assertion at `:115` is made against
+`topologicalCascadeOrder()`'s **output**, not the array.
+
+So a new FK between two tables that are *already* in the list needs no array
+change at all — the runtime topo-sort discovers it from `pg_constraint`
+automatically. Do **not** reorder the array to express FK direction; that would
+break the alphabetical assertion. What still matters is **membership**: a new
+`org_id` table must be added (alphabetically, `organizations` last).
+
+Run the cascade suite anyway to confirm the topo-sort is happy with the new
+edge.
 
 - [ ] **Step 1: Add the column to the export policy**
 
