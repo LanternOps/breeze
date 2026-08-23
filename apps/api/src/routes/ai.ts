@@ -50,6 +50,7 @@ import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
+import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
@@ -58,9 +59,9 @@ import { timeActorFrom } from './timeEntries/timeEntries';
 // call validateConfig(), and getConfig() throws in that state. Without a
 // validated config, behave as the default anthropic path. Production always
 // validates at boot, so this never masks a misconfiguration there.
-function isOpenAICompatibleProvider(): boolean {
+export function isOpenAICompatibleProvider(): boolean {
   try {
-    return isOpenAICompatibleProvider();
+    return getConfig().MCP_LLM_PROVIDER === 'openai-compatible';
   } catch {
     return false;
   }
@@ -404,9 +405,11 @@ aiRoutes.post(
         contextSnapshot: session.contextSnapshot,
         elapsedMinutes,
         model,
+        partnerId: auth.partnerId ?? null,
       });
     } catch (err) {
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
+      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       console.error('[AI] Ticket draft failed:', err);
       captureException(err);
       return c.json({ error: 'Could not draft a ticket from this conversation' }, 502);

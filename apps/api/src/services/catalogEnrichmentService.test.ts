@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureMessage } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureMessage, getAnthropicClientForPartner } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   checkUserAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   recordUsage: vi.fn(async () => {}),
   captureMessage: vi.fn(),
+  getAnthropicClientForPartner: vi.fn(),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
@@ -14,10 +15,20 @@ vi.mock('@anthropic-ai/sdk', () => ({
 vi.mock('./aiAgent', () => ({ resolveDefaultModel: () => 'claude-sonnet-4-6' }));
 vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage }));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage }));
+vi.mock('./llm/llmConfigResolver', () => ({
+  getAnthropicClientForPartner,
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    constructor() {
+      super('AI is unavailable for this partner.');
+      this.name = 'LlmUnavailableError';
+    }
+  },
+}));
 
 import { enrichCatalogItem, enrichDistributorListing, polishCatalogText, EnrichmentError } from './catalogEnrichmentService';
+import { LlmUnavailableError } from './llm/llmConfigResolver';
 
-const actor = { userId: 'u1', orgId: 'o1' };
+const actor = { userId: 'u1', orgId: 'o1', partnerId: 'p1' };
 
 function aiMessage(json: object) {
   return {
@@ -29,6 +40,11 @@ function aiMessage(json: object) {
 
 beforeEach(() => {
   create.mockReset();
+  getAnthropicClientForPartner.mockReset();
+  getAnthropicClientForPartner.mockResolvedValue({
+    client: { messages: { create } },
+    resolved: { source: 'partner', partnerId: 'p1', apiKey: 'partner-key', model: 'claude-sonnet-4-6' },
+  });
   captureMessage.mockClear();
   checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
   checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
@@ -51,6 +67,18 @@ describe('enrichCatalogItem', () => {
     expect(res.estimatedCost).toBe(80);
     expect(res.provenance.source).toBe('ai_enrich');
     expect(recordUsage).toHaveBeenCalledTimes(1);
+    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
+  });
+
+  it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
+    getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
+
+    await expect(enrichCatalogItem('APC Back-UPS 600VA', 'hardware', actor)).rejects.toMatchObject({
+      name: 'EnrichmentError',
+      code: 'AI_UNAVAILABLE',
+      status: 503,
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('prefers an explicit costEstimate over the priceLow fallback', async () => {
@@ -227,7 +255,7 @@ describe('enrichCatalogItem', () => {
       unitOfMeasure: 'each', taxable: true, taxCategory: null,
       priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
     }));
-    await enrichCatalogItem('x', undefined, { userId: 'u1', orgId: null });
+    await enrichCatalogItem('x', undefined, { userId: 'u1', orgId: null, partnerId: 'p1' });
     expect(checkBudget).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
   });
@@ -290,6 +318,18 @@ describe('polishCatalogText', () => {
     expect(res.description).toMatch(/7 outlets/);
     expect(res.changed).toBe(true);
     expect(res.factChanges).toBeNull();
+    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
+  });
+
+  it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
+    getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
+
+    await expect(polishCatalogText({ name: 'APC Back-UPS 600VA' }, actor)).rejects.toMatchObject({
+      name: 'EnrichmentError',
+      code: 'AI_UNAVAILABLE',
+      status: 503,
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('warns (does not block) when a number CHANGES, after retrying for a clean version', async () => {
@@ -382,7 +422,7 @@ describe('polishCatalogText', () => {
 
   it('falls back to a per-user rate limit (no org budget/recordUsage) when orgId is null', async () => {
     create.mockResolvedValueOnce(aiMessage({ name: 'Clean Name', description: null }));
-    await polishCatalogText({ name: 'clean name' }, { userId: 'u1', orgId: null });
+    await polishCatalogText({ name: 'clean name' }, { userId: 'u1', orgId: null, partnerId: 'p1' });
     expect(checkUserAiRateLimit).toHaveBeenCalledWith('u1');
     expect(checkBudget).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
@@ -390,7 +430,7 @@ describe('polishCatalogText', () => {
 
   it('rejects with AI_LIMIT when the no-org per-user rate limit is exceeded', async () => {
     checkUserAiRateLimit.mockResolvedValueOnce('Rate limit exceeded');
-    await expect(polishCatalogText({ name: 'x' }, { userId: 'u1', orgId: null }))
+    await expect(polishCatalogText({ name: 'x' }, { userId: 'u1', orgId: null, partnerId: 'p1' }))
       .rejects.toMatchObject({ code: 'AI_LIMIT', status: 429 });
     expect(create).not.toHaveBeenCalled();
   });

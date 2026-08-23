@@ -29,6 +29,23 @@ const routeMocks = vi.hoisted(() => ({
   writeRouteAuditMock: vi.fn(),
 }));
 
+const configRef = vi.hoisted(() => ({
+  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
+}));
+
+vi.mock('../config/validate', () => ({
+  getConfig: vi.fn(() => ({ MCP_LLM_PROVIDER: configRef.provider })),
+}));
+
+vi.mock('../services/llm/llmConfigResolver', () => ({
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    constructor() {
+      super('AI is unavailable for this partner.');
+      this.name = 'LlmUnavailableError';
+    }
+  },
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -185,12 +202,13 @@ vi.mock('../services/effectiveSettings', () => ({
   assertNotLocked: vi.fn(),
 }));
 
-import { aiRoutes } from './ai';
+import { aiRoutes, isOpenAICompatibleProvider } from './ai';
 import { db } from '../db';
 import { getSessionMessages } from '../services/aiAgent';
 import { recordUsage } from '../services/aiCostTracker';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
 import { TicketServiceError } from '../services/ticketService';
+import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 
 const partnerAuth = authHarness.partnerAuth;
 const orgAuth = authHarness.orgAuth;
@@ -217,6 +235,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    configRef.provider = 'anthropic';
     authHarness.currentAuth.value = partnerAuth;
     app = new Hono();
     app.route('/ai', aiRoutes);
@@ -277,6 +296,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
         contextSnapshot: null,
         elapsedMinutes: expect.any(Number),
         model: 'claude-test',
+        partnerId: 'partner-111',
       })
     );
     expect(recordUsage).toHaveBeenCalledWith('s1', 'org1', 'claude-test', 10, 5, false);
@@ -347,6 +367,32 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     const res = await postDraft('s1', partnerAuth);
 
     expect(res.status).toBe(502);
+  });
+
+  it('503s with ai_unavailable when the partner LLM config is unavailable', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockRejectedValueOnce(new LlmUnavailableError());
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+  });
+});
+
+describe('isOpenAICompatibleProvider', () => {
+  it.each([
+    ['openai-compatible', true],
+    ['anthropic', false],
+  ] as const)('returns %s only for the openai-compatible config', (provider, expected) => {
+    configRef.provider = provider;
+    expect(isOpenAICompatibleProvider()).toBe(expected);
   });
 });
 

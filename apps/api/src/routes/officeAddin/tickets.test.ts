@@ -30,6 +30,7 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     applyDlp: vi.fn(),
     draftTicketFromEmail: vi.fn(),
     recordUsage: vi.fn(),
+    resolveLlmConfig: vi.fn(),
   },
 }));
 
@@ -148,6 +149,10 @@ vi.mock('../../services/officeAddin/aiEmailDraft', async (importOriginal) => ({
 
 vi.mock('../../services/aiAgent', () => ({
   resolveDefaultModel: () => 'claude-x',
+}));
+
+vi.mock('../../services/llm/llmConfigResolver', () => ({
+  resolveLlmConfig: hoisted.resolveLlmConfig,
 }));
 
 import { officeAddinTicketRoutes } from './tickets';
@@ -270,6 +275,11 @@ beforeEach(() => {
   hoisted.insertEmailAuthoredComment.mockResolvedValue({ commentId: 'comment-1' });
   hoisted.addTicketComment.mockResolvedValue({ comment: { id: 'comment-1' }, firstResponseStamped: false });
   process.env.ANTHROPIC_API_KEY = 'test-key';
+  hoisted.resolveLlmConfig.mockImplementation(async () => ({
+    source: 'platform',
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    model: 'claude-x',
+  }));
   hoisted.getOrgPolicy.mockResolvedValue({ dlpConfig: {} });
   hoisted.applyDlp.mockResolvedValue({ action: 'allow', text: 'redacted body', redactions: [] });
   hoisted.draftTicketFromEmail.mockResolvedValue({
@@ -279,6 +289,7 @@ beforeEach(() => {
     inputTokens: 100,
     outputTokens: 50,
   });
+  hoisted.recordUsage.mockResolvedValue(undefined);
 });
 
 describe('POST /tickets/from-email', () => {
@@ -742,7 +753,7 @@ describe('POST /tickets/draft', () => {
       outputTokens: 50,
     });
     expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ subject: draftBody.subject, bodyText: 'redacted body', model: 'claude-x' })
+      expect.objectContaining({ subject: draftBody.subject, bodyText: 'redacted body', model: 'claude-x', partnerId: PARTNER_ID })
     );
     // Usage accounting: sessionless (null session id), org-scoped, real token counts.
     expect(hoisted.recordUsage).toHaveBeenCalledWith(null, ORG_A, 'claude-x', 100, 50, false);
@@ -774,7 +785,7 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
   });
 
-  it('503s when ANTHROPIC_API_KEY is not configured, without calling DLP or the model', async () => {
+  it('503s when the platform config has no API key, without calling DLP or the model', async () => {
     delete process.env.ANTHROPIC_API_KEY;
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
@@ -782,6 +793,52 @@ describe('POST /tickets/draft', () => {
     expect(body).toEqual({ error: 'ai_unavailable' });
     expect(hoisted.applyDlp).not.toHaveBeenCalled();
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with a partner BYOK config when no platform API key exists', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    hoisted.resolveLlmConfig.mockResolvedValueOnce({
+      source: 'partner',
+      partnerId: PARTNER_ID,
+      apiKey: 'partner-key',
+      model: 'claude-partner-model',
+      configId: 'config-1',
+      configVersion: 1,
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(200);
+    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
+      partnerId: PARTNER_ID,
+      model: 'claude-partner-model',
+    }));
+  });
+
+  it('503s before DLP when the partner LLM config is unavailable', async () => {
+    hoisted.resolveLlmConfig.mockResolvedValueOnce({
+      source: 'unavailable',
+      partnerId: PARTNER_ID,
+      reason: 'key_error',
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(hoisted.applyDlp).not.toHaveBeenCalled();
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+  });
+
+  it('keeps the platform-key draft path unchanged when the platform key is configured', async () => {
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(200);
+    expect(hoisted.resolveLlmConfig).toHaveBeenCalledWith(PARTNER_ID);
+    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
+      partnerId: PARTNER_ID,
+      model: 'claude-x',
+    }));
   });
 
   it('422s when DLP blocks the body, and never calls the model', async () => {
