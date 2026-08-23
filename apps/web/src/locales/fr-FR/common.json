@@ -2399,5 +2399,8 @@
     "later": "Afficher plus tard",
     "learnMore": "En savoir plus",
     "link": "Nouveautés"
+  },
+  "money": {
+    "approximateTotal": "≈ {{amount}} approximatif · taux du {{rateDate}}"
   }
 }

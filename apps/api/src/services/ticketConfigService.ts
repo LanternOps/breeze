@@ -8,6 +8,28 @@ import { isHosted } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new TicketConfigServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { countConnectedMailboxes } from './ticketMailbox/connectionService';
 import type {
   CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
@@ -15,6 +37,7 @@ import type {
   CreateCustomerEmailDomainInput, UpdateCustomerEmailDomainInput
 } from '@breeze/shared';
 import type { TicketSlaPriority } from './ticketSla';
+import { isRepresentableInCurrency, minorUnitExponent } from '@breeze/shared';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -285,8 +308,14 @@ export type TicketConfigServiceErrorCode =
   | 'INBOUND_ROW_ALREADY_RESOLVED'
   | 'INBOUND_ROW_NO_SENDER'
   | 'ORG_NOT_ACCESSIBLE'
+  // #3778 (finding 1): the organization is gone at the org SHARE barrier that
+  // opens upsertOrgTicketSettings' transaction.
+  | 'ORG_NOT_FOUND'
   | 'DOMAIN_ALREADY_MAPPED'
-  | 'DOMAIN_MAPPING_NOT_FOUND';
+  | 'DOMAIN_MAPPING_NOT_FOUND'
+  // Wave-6 release gate (W6-G4-1): a default hourly rate that cannot be expressed
+  // in the org currency it is stamped under (¥100.50). Refused, never rounded.
+  | 'RATE_NOT_REPRESENTABLE';
 
 export class TicketConfigServiceError extends Error {
   constructor(message: string, public status: 400 | 404 | 409 = 400, public code?: TicketConfigServiceErrorCode) {
@@ -652,12 +681,31 @@ export async function getOrgTicketSettings(orgId: string) {
 export async function upsertOrgTicketSettings(
   orgId: string,
   input: OrgTicketSettingsInput,
-  orgCurrencyCode: string,
 ) {
+  // #3778: the org currency is resolved INSIDE this transaction, under the
+  // SHARE barrier, as its first statement — the route used to resolve it in a
+  // separate pre-transaction read (`resolveAccessibleOrg`), which let a
+  // concurrent changeOrgCurrency stamp `rate_currency` with a stale code.
+  return db.transaction(async (tx) => {
+  const orgCurrencyCode = (await lockOrgStampingDefaults(tx, orgId)).currencyCode;
   const fields: Record<string, unknown> = {};
   if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
   if (input.defaultHourlyRate !== undefined) {
-    fields.defaultHourlyRate = input.defaultHourlyRate == null ? null : String(input.defaultHourlyRate);
+    if (input.defaultHourlyRate == null) {
+      fields.defaultHourlyRate = null;
+    } else {
+      const rate = String(input.defaultHourlyRate);
+      // W6-G4-1: the rate is stamped with `orgCurrencyCode` below, so it must be
+      // representable in it. The validator's multipleOf(0.01) is only the outer
+      // bound — the currency-specific exponent is knowable only here.
+      if (!isRepresentableInCurrency(rate, orgCurrencyCode)) {
+        throw new TicketConfigServiceError(
+          `${rate} is not representable in ${orgCurrencyCode} — this currency has ${minorUnitExponent(orgCurrencyCode)} decimal place(s)`,
+          400, 'RATE_NOT_REPRESENTABLE'
+        );
+      }
+      fields.defaultHourlyRate = rate;
+    }
   }
   if (input.defaultBillable !== undefined) fields.defaultBillable = input.defaultBillable;
 
@@ -673,7 +721,7 @@ export async function upsertOrgTicketSettings(
       }
     : {};
 
-  const [row] = await db
+  const [row] = await tx
     .insert(orgTicketSettings)
     .values({ orgId, rateCurrency: orgCurrencyCode, ...fields })
     .onConflictDoUpdate({
@@ -682,6 +730,7 @@ export async function upsertOrgTicketSettings(
     })
     .returning();
   return toOrgTicketSettingsResponse(orgId, row);
+  });
 }
 
 // ============================================================================

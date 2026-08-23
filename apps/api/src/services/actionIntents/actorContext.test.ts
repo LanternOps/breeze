@@ -340,3 +340,22 @@ describe('buildAuthContextForIntent — malformed intent (neither actor set)', (
     expect(result).toBeNull();
   });
 });
+
+describe('buildAuthContextForIntent — agent-originated intent (wave 3a inert window)', () => {
+  it('fails closed (null) for a requester-less intent that carries a run id', async () => {
+    // Pins that release stays fail-closed for agent intents until PR 3b wires
+    // the requester-less reconstruction: a run-attributed intent must map to
+    // actor_invalid, not to a half-built context.
+    const result = await buildAuthContextForIntent(
+      baseIntent({
+        requestedByUserId: null,
+        requestingApiKeyId: null,
+        requestingAgentRunId: 'run-1',
+        originPrincipalKind: 'ai_agent',
+        originPrincipalId: 'agent-1',
+      }),
+    );
+
+    expect(result).toBeNull();
+  });
+});

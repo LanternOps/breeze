@@ -16,6 +16,7 @@ import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from '../bulk/useBulkSelection';
 import { BulkActionBar } from '../bulk/BulkActionBar';
 import { SortableTh } from '../shared/SortableTh';
+import { ApproximateMoneyLine } from '../shared/ApproximateMoneyLine';
 import {
   type Quote,
   type QuoteStatus,
@@ -399,6 +400,8 @@ export function QuotesPage() {
               label={t('quotes.page.stats.outForSignature')}
               value={outForSignatureDisplay}
               hint={t('quotes.page.stats.awaiting', { count: summary.awaitingCount })}
+              detail={<ApproximateMoneyLine byCurrency={summary.byCurrency} testId="quotes-signature-approx" />}
+              testId="quotes-signature-card"
             />
           )}
           {summary.draftCount > 0 && (

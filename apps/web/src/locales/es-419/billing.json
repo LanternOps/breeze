@@ -323,7 +323,65 @@
     "tabs": {
       "contracts": "Contratos",
       "templates": "Plantillas",
-      "documents": "Documentos"
+      "documents": "Documentos",
+      "currencyMismatches": "Diferencias de moneda"
+    },
+    "currencyMismatches": {
+      "title": "Diferencias de moneda",
+      "description": "Contratos que siguen registrados en una moneda que su organización ya no factura. Abre un contrato para revisarlo: aquí no se cambia nada de forma masiva.",
+      "loading": "Cargando…",
+      "loadError": "No se pudo cargar el informe de diferencias de moneda.",
+      "loadMore": "Cargar más",
+      "emptyTitle": "Sin diferencias de moneda",
+      "emptyBody": "Todos los contratos están registrados en la moneda de facturación de su organización.",
+      "eligible": "Listo para volver a registrar",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} facturas en borrador",
+      "blockingDrafts_one": "{{count}} factura en borrador",
+      "columns": {
+        "contract": "Contrato",
+        "organization": "Organización",
+        "status": "Estado",
+        "currencies": "Contrato → organización",
+        "nextBilling": "Próxima facturación",
+        "eligibility": "Elegibilidad para volver a registrar"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "No activo: solo los contratos activos pueden volver a registrarse",
+        "ORPHANED_CONTRACT_SOURCE": "No se pueden atribuir las líneas de factura originadas en contratos",
+        "ORPHANED_BILLING_PERIOD": "Un período de facturación no tiene una factura accesible",
+        "BROKEN_CONTRACT_LINEAGE": "La verificación del origen de la factura falló",
+        "UNBILLED_MONETARY_ROWS": "Las facturas en borrador todavía retienen importes de este contrato"
+      }
+    },
+    "currency": {
+      "actions": {
+        "change": "Cambiar moneda"
+      },
+      "dialog": {
+        "title": "Cambiar la moneda del contrato",
+        "description": "Este contrato se factura en {{currency}}. El nuevo sellado afecta solo a las facturas futuras: las facturas ya emitidas y los períodos de facturación pasados nunca cambian.",
+        "currencyLabel": "Nueva moneda",
+        "modeLegend": "Qué ocurre con las líneas del contrato",
+        "modeClear": "Eliminar todas las líneas del contrato",
+        "modeClearHint": "Las líneas se eliminan y se vuelven a agregar a mano en la nueva moneda. Obligatorio cuando alguna línea es manual.",
+        "modeReprice": "Recalcular precios de las líneas del catálogo",
+        "modeRepriceHint": "Cada línea del catálogo se resuelve con la lista de precios de la nueva moneda. Solo es posible si todas las líneas provienen del catálogo.",
+        "confirm": "Entiendo que esto vuelve a sellar un contrato activo y no se puede deshacer de forma masiva.",
+        "submit": "Cambiar moneda"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Emita o elimine primero estos borradores de factura: todavía llevan montos de este contrato:",
+        "ORPHANED_BILLING_PERIOD": "Estos períodos de facturación no tienen una factura accesible. Resuélvalos antes de volver a sellar:",
+        "ORPHANED_CONTRACT_SOURCE": "Estas líneas de factura originadas en contratos no se pueden atribuir a un contrato. Resuélvalas antes de volver a sellar:",
+        "BROKEN_CONTRACT_LINEAGE": "La verificación del linaje de facturas falló para estas facturas. Resuélvalas antes de volver a sellar:"
+      },
+      "toast": {
+        "changed": "Moneda del contrato cambiada a {{currency}}."
+      },
+      "errors": {
+        "change": "No se pudo cambiar la moneda del contrato."
+      }
     },
     "templatesTab": {
       "title": "Plantillas de contrato",
@@ -862,6 +920,11 @@
       "cloneError": "No se pudo clonar la cotización.",
       "cloneQuote": "Clonar cotización",
       "cloneSavingTitle": "Espere a que se guarden los cambios antes de clonar.",
+      "reviseQuote": "Revisar cotización",
+      "revising": "Creando revisión…",
+      "reviseSuccess": "Revisión creada.",
+      "reviseError": "No se pudo crear una revisión.",
+      "reviseInProgress": "Ya hay una revisión en curso: se abrirá.",
       "cloneSuccess": "Cotización clonada.",
       "cloning": "Clonando…",
       "deleteConfirm": {
@@ -897,7 +960,8 @@
         "toPlaceholder": "Agregar destinatario…",
         "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
         "zeroTotalWarning": "Esta cotización totaliza {{zero}} — verifica que sus ítems tengan precio antes de enviar.",
-        "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>."
+        "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>.",
+        "revisionWarning": "Al enviarla se reemplazará {{number}} y se desactivará el enlace que el cliente ya tiene."
       },
       "sendEmailWarning": {
         "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización y vuelva a enviar.",
@@ -1061,6 +1125,12 @@
         "reasonLabel": "Nota del cliente:",
         "revise": "Duplicar y revisar",
         "revising": "Duplicando…"
+      },
+      "lineage": {
+        "supersededTitle": "Esta cotización fue reemplazada por",
+        "inProgressTitle": "Se está preparando una revisión de esta cotización: al enviarla se reemplazará esta cotización y se desactivará el enlace del cliente:",
+        "revisionOfTitle": "Revisión de",
+        "untitled": "una versión más reciente"
       }
     },
     "distributorLookup": {
@@ -1274,7 +1344,8 @@
         "preview": "Vista previa",
         "detail": "Detalles"
       },
-      "loading": "Cargando cotización…"
+      "loading": "Cargando cotización…",
+      "revisionBanner": "Esta es una revisión de {{number}}. Al enviarla se reemplazará el original y se desactivará el enlace que el cliente ya tiene."
     }
   },
   "billingUi": {
@@ -1746,6 +1817,44 @@
       "emailPlaceholder": "billing@customer.example",
       "name": "Nombre de contacto",
       "title": "contacto de facturación"
+    },
+    "currency": {
+      "title": "Moneda",
+      "description": "Las nuevas cotizaciones, facturas, contratos, entradas de tiempo y partes de esta organización se sellan con esta moneda. Nada de lo que ya existe se modifica.",
+      "label": "Moneda de facturación",
+      "loading": "Verificando qué afectaría un cambio a {{currency}}…",
+      "error": "No se pudo cargar el resumen del cambio de moneda.",
+      "panelTitle": "¿Cambiar la moneda de facturación a {{currency}}?",
+      "none": "Nada en esta organización está sellado en otra moneda.",
+      "groupTitle": "Sellado en {{currency}}",
+      "counts": {
+        "draftInvoices": "Facturas en borrador",
+        "draftQuotes": "Cotizaciones en borrador",
+        "sentQuotes": "Cotizaciones enviadas",
+        "viewedQuotes": "Cotizaciones vistas",
+        "draftContracts": "Contratos en borrador",
+        "activeContracts": "Contratos activos",
+        "pausedContracts": "Contratos en pausa",
+        "timeEntries": "Entradas de tiempo sin facturar",
+        "parts": "Partes sin facturar"
+      },
+      "timeDetail": "{{ready}} listas para facturar, {{running}} en curso, {{nonBillable}} no facturables, {{missingRate}} sin tarifa",
+      "partsDetail": "{{ready}} listas para facturar, {{nonBillable}} no facturables",
+      "amounts": "Mano de obra {{labor}} · Partes {{parts}}",
+      "warningsTitle": "Configuración que dejará de aplicarse",
+      "warningRate": "La tarifa por hora predeterminada de la organización está en {{currency}} y ya no se aplicará a las nuevas entradas de tiempo.",
+      "warningCategories": "Se omitirán {{count}} tarifas de categoría de tickets en otra moneda.",
+      "warningOverrides": "Se omitirán {{count}} anulaciones de precio de catálogo de la organización en otra moneda.",
+      "recovery": "Para facturar los elementos en {{currency}} anteriores, arme un borrador en {{currency}}.",
+      "rateLess": "{{count}} entradas de tiempo sin facturar tienen horas pero no tarifa por hora. Defina una tarifa: un cambio de moneda no las afecta.",
+      "retention": "Solo cambian los documentos, entradas de tiempo y partes futuros. Ningún importe se convierte y los borradores, contratos y elementos sin facturar existentes conservan la moneda con la que fueron sellados.",
+      "advisory": "Estos conteos son una vista previa, no una promesa: no incluyen nada creado después.",
+      "stale": "La moneda de facturación cambió a {{currency}} mientras revisaba. Revise el resumen actualizado y confirme de nuevo.",
+      "confirm": "Cambiar moneda",
+      "changing": "Cambiando…",
+      "cancel": "Cancelar",
+      "changeError": "No se pudo cambiar la moneda de facturación de la organización.",
+      "changeSuccess": "Moneda de facturación de la organización actualizada"
     },
     "loadError": "No se pudo cargar la configuración de facturación.",
     "loading": "Cargando configuración de facturación...",

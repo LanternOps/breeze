@@ -2399,5 +2399,8 @@
     "later": "Mostrar más tarde",
     "learnMore": "Más información",
     "link": "Novedades"
+  },
+  "money": {
+    "approximateTotal": "≈ {{amount}} aproximado · tipos de cambio del {{rateDate}}"
   }
 }

@@ -17,11 +17,34 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
+import { changeOrgCurrency } from './orgCurrencyService';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import { isRepresentableInCurrency, roundToCurrency, buildStripeCurrencyWarning, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -92,18 +115,22 @@ export async function createManualInvoice(input: { orgId: string; siteId?: strin
   // Stamp the document currency at creation (spec §5): the explicit override
   // (used internally by contract generation, which copies the CONTRACT's stamp)
   // or the org's currency — never the partner's, and never a DB default.
-  let currencyCode = input.currencyCode;
-  if (!currencyCode) {
-    const [org] = await db.select({ currencyCode: organizations.currencyCode })
-      .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
-    if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
-    currencyCode = org.currencyCode;
-  }
-  const rows = await db.insert(invoices).values({
-    partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
-    notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null,
-    currencyCode, createdBy: actor.userId
-  }).returning();
+  // Creation barrier (#3778): the org default is read under a SHARE lock held
+  // to commit, so `changeOrgCurrency`'s FOR UPDATE either sees this draft in its
+  // in-lock summary or this insert re-reads the NEW default — a default-derived
+  // stamp can never commit unseen. An explicit `currencyCode` is a source copy
+  // (contract generation) and must NOT reread the org.
+  const rows = await db.transaction(async (tx) => {
+    let currencyCode = input.currencyCode;
+    if (!currencyCode) {
+      currencyCode = (await lockOrgStampingDefaults(tx, input.orgId)).currencyCode;
+    }
+    return tx.insert(invoices).values({
+      partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
+      notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null,
+      currencyCode, createdBy: actor.userId
+    }).returning();
+  });
   return rows[0]!;
 }
 
@@ -158,6 +185,21 @@ async function resolveInvoicePrice(tx: DbExecutor, catalogItemId: string, inv: {
   }
 }
 
+/**
+ * Wave-6 release gate (W6-G1-1): every hand-entered money value persisted on an
+ * invoice line must be representable in the INVOICE's stamped currency — never
+ * the org's current one, and never silently re-rounded (owner-fixed: no
+ * conversion, snapshots rule). Mirrors catalogService's assertRepresentable.
+ */
+function assertRepresentable(value: string, currencyCode: string): void {
+  if (!isRepresentableInCurrency(value, currencyCode)) {
+    throw new InvoiceServiceError(
+      `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
+      400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
+
 async function insertLineAndRecompute(
   tx: DbExecutor,
   invoiceId: string,
@@ -175,11 +217,15 @@ async function insertLineAndRecompute(
 export async function addManualLine(invoiceId: string, input: ManualLineInput, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const unitPrice = Number(input.unitPrice).toFixed(2);
+    const costBasis = input.costBasis != null ? Number(input.costBasis).toFixed(2) : null;
+    assertRepresentable(unitPrice, inv.currencyCode);
+    if (costBasis != null) assertRepresentable(costBasis, inv.currencyCode);
     const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice), inv.currencyCode);
     return insertLineAndRecompute(tx, invoiceId, inv.orgId, {
       sourceType: 'manual', sourceId: null, catalogItemId: null, parentLineId: null, ticketId: null,
-      name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice: Number(input.unitPrice).toFixed(2),
-      costBasis: input.costBasis != null ? Number(input.costBasis).toFixed(2) : null,
+      name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice,
+      costBasis,
       taxable: input.taxable, customerVisible: true, lineTotal, isUnapprovedTime: false
     });
   });
@@ -302,27 +348,45 @@ export async function addContractLine(
     taxable: boolean;        // used on non-catalog path
     catalogItemId?: string | null;
     sourceId?: string | null; // contract_line id
+    /** The owning CONTRACT id — durable lineage (#3778). REQUIRED: a
+     *  source_type='contract' line without it is a 500-worthy bug, never a
+     *  silent insert, because the ACTIVE-contract restamp keys on this column. */
+    contractId: string;
   },
   actor: InvoiceActor
 ): Promise<{ line: typeof invoiceLines.$inferSelect; pricedFrom: ContractLinePricedFrom }> {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
 
+    // Wave 6 (#3778): the contract id is not optional at the service layer.
+    if (!input.contractId) {
+      throw new InvoiceServiceError('contractId is required for a contract-sourced line', 500, 'INVALID_STATE');
+    }
+
+    // PRODUCER SERIALIZATION (#3778): lock the PARENT CONTRACT after the invoice
+    // lock and before validating/inserting, preserving the established
+    // `invoice -> contract` order. Without it, a concurrent ACTIVE-contract
+    // restamp could commit between this read and this insert, leaving an
+    // old-currency line on a live draft that eligibility never saw.
+    const [contractRow] = await tx.select({
+      id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode,
+    }).from(contracts).where(eq(contracts.id, input.contractId)).limit(1).for('update');
+    if (!contractRow) throw new InvoiceServiceError('Contract not found', 404, 'INVALID_STATE');
+    if (contractRow.orgId !== inv.orgId) {
+      throw new InvoiceServiceError('Contract belongs to a different organization', 400, 'INVALID_STATE');
+    }
+
     // B2 guard (spec §5): a contract-sourced line may only land on an invoice in
     // the SAME currency as its contract — no conversion, no silent restamp. This
     // is the source-vs-header validation for contract lines; time entries/parts
     // are asserted the same way on the locked rows in issueInvoice (wave 4, #3776).
-    if (input.sourceId) {
-      const [src] = await tx.select({ currencyCode: contracts.currencyCode })
-        .from(contractLines)
-        .innerJoin(contracts, eq(contracts.id, contractLines.contractId))
-        .where(eq(contractLines.id, input.sourceId)).limit(1);
-      if (src && src.currencyCode !== inv.currencyCode) {
-        throw new InvoiceServiceError(
-          `Contract is in ${src.currencyCode}; this invoice is in ${inv.currencyCode} — contract lines cannot cross currencies`,
-          400, 'CURRENCY_MISMATCH'
-        );
-      }
+    // Asserted against the LOCKED contract row (wave 6) rather than an unlocked
+    // contract_lines join, so the stamp cannot move underneath it.
+    if (contractRow.currencyCode !== inv.currencyCode) {
+      throw new InvoiceServiceError(
+        `Contract is in ${contractRow.currencyCode}; this invoice is in ${inv.currencyCode} — contract lines cannot cross currencies`,
+        400, 'CURRENCY_MISMATCH'
+      );
     }
 
     // Quantity is always engine-supplied (e.g. device count) — normalize but do not override.
@@ -356,6 +420,7 @@ export async function addContractLine(
         pricedFrom = resolved.source;
       } else {
         unitPrice = Number(input.unitPrice).toFixed(2);
+        assertRepresentable(unitPrice, inv.currencyCode);
         taxable = input.taxable;
         costBasis = null;
         pricedFrom = 'contract_snapshot';
@@ -363,6 +428,7 @@ export async function addContractLine(
     } else {
       // Non-catalog path: normalize like addManualLine/updateLine (Finding 2).
       unitPrice = Number(input.unitPrice).toFixed(2);
+      assertRepresentable(unitPrice, inv.currencyCode);
       taxable = input.taxable;
       pricedFrom = 'contract_snapshot';
       if (Number(quantity) < 0 || Number(unitPrice) < 0) {
@@ -371,7 +437,8 @@ export async function addContractLine(
     }
 
     const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
-      sourceType: 'contract', sourceId: input.sourceId ?? null, catalogItemId: input.catalogItemId ?? null,
+      sourceType: 'contract', sourceId: input.sourceId ?? null, sourceContractId: input.contractId,
+      catalogItemId: input.catalogItemId ?? null,
       parentLineId: null, ticketId: null, description: input.description, quantity,
       unitPrice, costBasis, taxable, customerVisible: true,
       lineTotal: computeLineTotal(quantity, unitPrice, inv.currencyCode), isUnapprovedTime: false
@@ -387,6 +454,7 @@ export async function updateLine(invoiceId: string, lineId: string, patch: { nam
     if (!existing) throw new InvoiceServiceError('Line not found', 404, 'LINE_NOT_FOUND');
     const quantity = patch.quantity != null ? String(patch.quantity) : existing.quantity;
     const unitPrice = patch.unitPrice != null ? Number(patch.unitPrice).toFixed(2) : existing.unitPrice;
+    if (patch.unitPrice != null) assertRepresentable(unitPrice, inv.currencyCode);
     await tx.update(invoiceLines).set({
       name: patch.name !== undefined ? patch.name : existing.name,
       description: patch.description !== undefined ? patch.description : existing.description, quantity, unitPrice,
@@ -754,6 +822,17 @@ export async function updatePartnerBillingSettings(
   return row;
 }
 
+/** Org billing-settings projection. `currencyCode` is included (#3778) so the
+ *  web form reads the org's currency back from the same response it PATCHes. */
+const orgBillingProjection = () => ({
+  id: organizations.id, taxId: organizations.taxId, taxExempt: organizations.taxExempt, taxRate: organizations.taxRate,
+  billingContact: organizations.billingContact,
+  billingAddressLine1: organizations.billingAddressLine1, billingAddressLine2: organizations.billingAddressLine2,
+  billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
+  billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
+  currencyCode: organizations.currencyCode,
+});
+
 export async function updateOrgBillingSettings(
   orgId: string,
   patch: {
@@ -762,10 +841,47 @@ export async function updateOrgBillingSettings(
     billingAddressLine1?: string | null; billingAddressLine2?: string | null;
     billingAddressCity?: string | null; billingAddressRegion?: string | null;
     billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
+    // Multi-currency wave 6 (#3778): the currency branch is delegated wholesale
+    // to orgCurrencyService (org row FOR UPDATE, optimistic precondition,
+    // explicit confirmation). See the currency-only rule below.
+    currencyCode?: string; expectedCurrentCurrencyCode?: string; confirmSnapshotRetention?: boolean;
   },
   actor: InvoiceActor
 ) {
   requireOrgAccess(actor, orgId);
+  // --- currency branch (#3778) -------------------------------------------
+  // A currency-carrying PATCH is deliberately currency-ONLY. The contact-merge
+  // path below opens its own transaction whose first statement is a plain
+  // `SELECT id`; combining it with the currency change would either put the org
+  // `FOR UPDATE` behind that read (breaking the wave-6 lock order, which
+  // requires the organizations lock to be the FIRST statement of its
+  // transaction) or split one request across two transactions with a partial
+  // success. The plan sanctions this fallback explicitly (Task 11, Step 5) and
+  // the wave-6 UI sends a currency-only payload, so nothing legitimate is lost.
+  if (patch.currencyCode !== undefined) {
+    const CURRENCY_KEYS = ['currencyCode', 'expectedCurrentCurrencyCode', 'confirmSnapshotRetention'];
+    const others = Object.entries(patch)
+      .filter(([k, v]) => v !== undefined && !CURRENCY_KEYS.includes(k))
+      .map(([k]) => k);
+    if (others.length > 0) {
+      throw new InvoiceServiceError(
+        `A currency change must be sent on its own (also received: ${others.join(', ')})`,
+        400, 'INVALID_STATE'
+      );
+    }
+    if (patch.expectedCurrentCurrencyCode === undefined) {
+      throw new InvoiceServiceError('expectedCurrentCurrencyCode is required when currencyCode is supplied', 400, 'INVALID_STATE');
+    }
+    const change = await changeOrgCurrency(orgId, {
+      currencyCode: patch.currencyCode,
+      expectedCurrentCurrencyCode: patch.expectedCurrentCurrencyCode,
+      confirmSnapshotRetention: patch.confirmSnapshotRetention
+    }, actor);
+    const [current] = await db.select(orgBillingProjection()).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    if (!current) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    return { ...current, currencyChange: change };
+  }
+
   const set: Record<string, unknown> = {};
   if (patch.taxId !== undefined) set.taxId = patch.taxId;
   if (patch.taxExempt !== undefined) set.taxExempt = patch.taxExempt;
@@ -786,13 +902,7 @@ export async function updateOrgBillingSettings(
   if (patch.billingAddressRegion !== undefined) set.billingAddressRegion = patch.billingAddressRegion;
   if (patch.billingAddressPostalCode !== undefined) set.billingAddressPostalCode = patch.billingAddressPostalCode;
   if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
-  const projection = {
-    id: organizations.id, taxId: organizations.taxId, taxExempt: organizations.taxExempt, taxRate: organizations.taxRate,
-    billingContact: organizations.billingContact,
-    billingAddressLine1: organizations.billingAddressLine1, billingAddressLine2: organizations.billingAddressLine2,
-    billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
-    billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
-  };
+  const projection = orgBillingProjection();
 
   // One transaction so the contact merge and the column update still land
   // together, as they did when this was a single statement.
@@ -919,15 +1029,16 @@ export async function assembleDraftFromOrg(
   // Create the draft FIRST so the gathered line totals are rounded in the
   // invoice row's actual currency (JPY drafts must not persist cent-fraction
   // line totals). On an empty gather the transient draft is deleted again.
-  const [org] = await db.select({ currencyCode: organizations.currencyCode })
-    .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
-  if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
   // Header currency: the org's current currency (spec §5), or an explicit
   // override so pre-change billables (snapshotted in the org's OLD currency)
   // stay invoiceable (spec §7). Never a conversion — rows in any other currency
-  // are returned under `blockedByCurrency`.
-  const currencyCode = input.currencyCode ?? org.currencyCode;
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  // are returned under `blockedByCurrency`. The default read takes the org
+  // SHARE barrier so the stamp cannot lose a race with changeOrgCurrency (#3778).
+  const [inv] = await db.transaction(async (tx) => {
+    const org = await lockOrgStampingDefaults(tx, input.orgId);
+    const currencyCode = input.currencyCode ?? org.currencyCode;
+    return tx.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  });
   const gathered = mergeAssembly(
     await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode),
     await gatherOrgParts(input.orgId, from, to, inv!.currencyCode)
@@ -945,12 +1056,13 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   requireSiteAccess(actor, null);
   // Draft first: gathered line totals must round in the invoice row's actual
   // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
-  const [org] = await db.select({ currencyCode: organizations.currencyCode })
-    .from(organizations).where(eq(organizations.id, tk.orgId)).limit(1);
-  if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
-  // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7).
-  const currencyCode = opts.currencyCode ?? org.currencyCode;
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7),
+  // read under the org SHARE barrier (#3778).
+  const [inv] = await db.transaction(async (tx) => {
+    const org = await lockOrgStampingDefaults(tx, tk.orgId);
+    const currencyCode = opts.currencyCode ?? org.currencyCode;
+    return tx.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  });
   const gathered = await gatherTicketBillables(ticketId, inv!.currencyCode);
   return finishAssembly(inv!, gathered, 'Nothing billable on this ticket', actor);
 }
@@ -1334,20 +1446,96 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
 // Void + reissue + overdue sweep + viewed (Task 3.8)
 // ---------------------------------------------------------------------------
 
+/**
+ * Void an issued invoice and optionally reissue it as a fresh draft.
+ *
+ * WAVE 6 (#3778) LOCK DISCIPLINE. Until wave 6 the invoice and its lines were
+ * read BEFORE the transaction opened, and the transaction then flipped the
+ * status and RELEASED the source rows off that unlocked snapshot — so a void
+ * could interleave with issueInvoice, with line mutation, or with source
+ * attachment/removal, and release rows that a concurrent issue had just claimed.
+ * The source release is the dangerous half and it happens with AND without
+ * reissue, so ALL authoritative reads now live inside one transaction and take
+ * the established chain in order:
+ *
+ *     invoices -> invoice_lines -> contracts -> contract_lines
+ *              -> time_entries -> ticket_parts
+ *
+ * HISTORICAL REISSUE EDGE. After an ACTIVE-contract restamp, cloning an old
+ * contract-sourced invoice would carry the HISTORICAL currency while issue
+ * validation demands the contract's live one — an invoice that can never be
+ * issued. `reissue: true` is therefore rejected with CURRENCY_MISMATCH when any
+ * referenced contract now carries a different currency; void WITHOUT reissue
+ * still works, and the operator creates an explicit old-currency correction
+ * draft. Sources are never detached, historical lines are never restamped, and
+ * issue validation is never bypassed (owner-fixed: no conversion, snapshots rule).
+ */
 export async function voidInvoice(invoiceId: string, reason: string, opts: { reissue?: boolean }, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireInvoiceAccess(actor, inv);
-  if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
-  if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
-
-  const lines = await db.select({ sourceType: invoiceLines.sourceType, sourceId: invoiceLines.sourceId }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
-  const timeIds = lines.filter((l) => l.sourceType === 'time_entry' && l.sourceId).map((l) => l.sourceId!) as string[];
-  const partIds = lines.filter((l) => l.sourceType === 'part' && l.sourceId).map((l) => l.sourceId!) as string[];
-
   // Void + (optional) reissue commit atomically in ONE system transaction: the
   // void/release and the fresh-draft clone must not be observable independently.
   let draftId: string | null = null;
+  let voidedOrgId = '';
+  let voidedPartnerId = '';
   await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    // 1. Invoice row FIRST, FOR UPDATE — status is re-validated on the LOCKED row.
+    const [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
+    if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    requireInvoiceAccess(actor, inv);
+    if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
+    if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
+    voidedOrgId = inv.orgId;
+    voidedPartnerId = inv.partnerId;
+
+    // 2. Lines FOR UPDATE (deterministic id order), so a concurrent line
+    //    mutation or source attach/detach cannot slip between read and release.
+    const srcLines = await db.select().from(invoiceLines)
+      .where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id).for('update');
+    const timeIds = [...new Set(srcLines.filter((l) => l.sourceType === 'time_entry' && l.sourceId).map((l) => l.sourceId!))].sort();
+    const partIds = [...new Set(srcLines.filter((l) => l.sourceType === 'part' && l.sourceId).map((l) => l.sourceId!))].sort();
+    const contractLineIds = [...new Set(srcLines.filter((l) => l.sourceType === 'contract' && l.sourceId).map((l) => l.sourceId!))].sort();
+
+    // 3. Contracts, then contract_lines (parents before children, repo order).
+    //    Durable lineage first (#3778); the contract_lines join is the legacy
+    //    fallback for rows written before the column existed.
+    const legacy = contractLineIds.length
+      ? await db.select({ contractId: contractLines.contractId })
+          .from(contractLines).where(inArray(contractLines.id, contractLineIds))
+      : [];
+    const contractIds = [...new Set([
+      ...srcLines.map((l) => l.sourceContractId).filter((x): x is string => !!x),
+      ...legacy.map((r) => r.contractId),
+    ])].sort();
+    const lockedContracts = contractIds.length
+      ? await db.select({ id: contracts.id, currencyCode: contracts.currencyCode })
+          .from(contracts).where(inArray(contracts.id, contractIds)).orderBy(contracts.id).for('update')
+      : [];
+    if (contractLineIds.length) {
+      await db.select({ id: contractLines.id }).from(contractLines)
+        .where(inArray(contractLines.id, contractLineIds)).orderBy(contractLines.id).for('update');
+    }
+
+    // 4. Source rows FOR UPDATE before they are released.
+    if (timeIds.length) {
+      await db.select({ id: timeEntries.id }).from(timeEntries)
+        .where(inArray(timeEntries.id, timeIds)).orderBy(timeEntries.id).for('update');
+    }
+    if (partIds.length) {
+      await db.select({ id: ticketParts.id }).from(ticketParts)
+        .where(inArray(ticketParts.id, partIds)).orderBy(ticketParts.id).for('update');
+    }
+
+    // 5. Historical-reissue guard, on the LOCKED contract rows.
+    if (opts.reissue) {
+      const drifted = lockedContracts.filter((c) => c.currencyCode !== inv.currencyCode);
+      if (drifted.length) {
+        const codes = [...new Set(drifted.map((c) => c.currencyCode))].join(', ');
+        throw new InvoiceServiceError(
+          `This invoice is in ${inv.currencyCode} but its contract(s) are now in ${codes} — reissue would create a draft that can never be issued. Void without reissue and create an explicit ${inv.currencyCode} correction draft instead`,
+          400, 'CURRENCY_MISMATCH'
+        );
+      }
+    }
+
     const now = new Date();
     await db.update(invoices).set({ status: 'void', voidedAt: now, voidReason: reason, updatedAt: now }).where(eq(invoices.id, invoiceId));
     // release source rows so they can be re-invoiced
@@ -1364,13 +1552,15 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
-    const srcLines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+    // Cloned from the rows LOCKED in step 2 — not re-read unlocked.
+    srcLines.sort((a, b) => a.sortOrder - b.sortOrder);
 
     // Two-pass clone to preserve bundle hierarchy: insert parents (parentLineId IS
     // NULL) first, map old line id → new line id, then insert children with their
     // parentLineId remapped to the cloned parent.
     const cloneValues = (l: typeof srcLines[number], parentLineId: string | null) => ({
       invoiceId: draft!.id, orgId: l.orgId, sourceType: l.sourceType, sourceId: l.sourceId, catalogItemId: l.catalogItemId,
+      sourceContractId: l.sourceContractId,
       parentLineId, ticketId: l.ticketId, name: l.name, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
       lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
@@ -1387,7 +1577,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     }
   }));
 
-  await emitInvoiceEvent({ type: 'invoice.voided', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
+  await emitInvoiceEvent({ type: 'invoice.voided', invoiceId, orgId: voidedOrgId, partnerId: voidedPartnerId, actorUserId: actor.userId });
 
   if (opts.reissue && draftId) {
     await recomputeInvoiceTotals(draftId);

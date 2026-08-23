@@ -23,6 +23,7 @@ import {
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
+import { readOrgStampingDefaultsMany } from '../../services/orgCurrencyCore';
 import { disconnectAgent } from '../agentWs';
 import { captureException } from '../../services/sentry';
 import {
@@ -30,6 +31,19 @@ import {
   TicketMoveCurrencyBlockedError,
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
+
+/**
+ * An organization that passed the pre-transaction existence check was gone at
+ * the in-transaction SHARE lock (#3778). Rolls the move back and maps to the
+ * same responses the pre-transaction checks return — a 404 for the target, a
+ * 500 for the source (a missing source org means device.org_id broke its FK).
+ */
+class OrgVanishedDuringMoveError extends Error {
+  constructor(public which: 'source' | 'target') {
+    super(`${which} organization not found at the in-transaction org lock`);
+    this.name = 'OrgVanishedDuringMoveError';
+  }
+}
 
 export const moveOrgRoutes = new Hono();
 
@@ -117,7 +131,9 @@ moveOrgRoutes.post(
         id: organizations.id,
         partnerId: organizations.partnerId,
         name: organizations.name,
-        currencyCode: organizations.currencyCode,
+        // NOTE (#3778): currency is NOT read here any more — the guard uses the
+        // values read under the in-transaction org SHARE lock below, so a
+        // concurrent changeOrgCurrency cannot slip between this check and the move.
       })
       .from(organizations)
       .where(sql`${organizations.id} IN (${sourceOrgId}::uuid, ${targetOrgId}::uuid)`);
@@ -165,6 +181,25 @@ moveOrgRoutes.post(
     let currencyGuard: MoveCurrencyGuardDetails | null = null;
     try {
       await db.transaction(async (tx) => {
+        // Creation barrier / cross-org move lock order (#3778): BOTH organizations
+        // FOR SHARE, ascending UUID, as the FIRST statement of this transaction —
+        // before any device/ticket row is touched. Held to commit, so the
+        // source/target currency pair the guard below compares cannot be
+        // restamped by a concurrent changeOrgCurrency mid-move.
+        const lockedOrgs = await readOrgStampingDefaultsMany(tx, [sourceOrgId, targetOrgId]);
+        // `readOrgStampingDefaultsMany` deliberately OMITS ids it cannot read,
+        // and the existence check above now runs OUTSIDE this transaction (that
+        // pre-tx SELECT no longer reads currency). An org deleted or made
+        // invisible between the two reads would turn a `!` assertion into a
+        // TypeError → generic 500 + a Sentry report; re-assert here so the
+        // route keeps its own 404/500 contract.
+        const lockedSource = lockedOrgs.get(sourceOrgId);
+        const lockedTarget = lockedOrgs.get(targetOrgId);
+        if (!lockedTarget) throw new OrgVanishedDuringMoveError('target');
+        if (!lockedSource) throw new OrgVanishedDuringMoveError('source');
+        const lockedSourceCurrency = lockedSource.currencyCode;
+        const lockedTargetCurrency = lockedTarget.currencyCode;
+
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.
         const [row] = await tx
@@ -235,8 +270,8 @@ moveOrgRoutes.post(
         ).map((r) => r.id);
         currencyGuard = await assertTicketMoveCurrencyCompatible(tx, {
           ticketIds,
-          sourceCurrency: sourceOrg.currencyCode,
-          targetCurrency: targetOrg.currencyCode,
+          sourceCurrency: lockedSourceCurrency,
+          targetCurrency: lockedTargetCurrency,
           targetOrgName: targetOrg.name,
           acceptCurrencyMismatch: acceptCurrencyMismatch === true,
         });
@@ -264,6 +299,14 @@ moveOrgRoutes.post(
       // failed-move audit.
       if (err instanceof TicketMoveCurrencyBlockedError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
+      }
+      // A row deleted under us is a lost race, not an exception: the
+      // transaction rolled back, so answer exactly as the pre-transaction
+      // existence checks would have — no Sentry, no failed-move audit.
+      if (err instanceof OrgVanishedDuringMoveError) {
+        return err.which === 'target'
+          ? c.json({ error: 'Target organization not found' }, 404)
+          : c.json({ error: 'Source organization not found' }, 500);
       }
       console.error(`[devices.moveOrg] failed for ${deviceId}:`, err);
       captureException(err, c);

@@ -24,6 +24,9 @@ const STATUS_LABELS: Record<string, string> = {
   declined: 'Declined',
   expired: 'Expired',
   converted: 'Accepted',
+  // Without this the `?? status` fallback renders the raw enum "superseded" to
+  // the customer. This status only became reachable when revisions shipped.
+  superseded: 'Replaced',
 };
 
 export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewProps) {
@@ -192,6 +195,21 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
           Download PDF
         </a>
       </div>
+
+      {/* A replaced proposal is read-only and its public link is dead. Say so
+          plainly, and link the replacement when the API supplied one — in-portal
+          by id, which the customer's own portal auth and the successor's
+          recipient list still gate. */}
+      {status === 'superseded' && (
+        <div className="rounded-md border border-muted-foreground/30 bg-muted/40 p-4 text-sm" data-testid="portal-quote-superseded">
+          <p>This proposal has been replaced by a newer version.</p>
+          {quote.supersededByQuoteId && (
+            <a className="underline" href={withBase(`/quotes/${quote.supersededByQuoteId}`)} data-testid="portal-quote-successor-link">
+              View the current proposal
+            </a>
+          )}
+        </div>
+      )}
 
       <DocumentPaper primaryColor={branding?.primaryColor} docTheme={presentation?.theme}>
         <DocumentHeader

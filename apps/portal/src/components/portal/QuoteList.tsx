@@ -20,6 +20,9 @@ const STATUS_LABELS: Record<string, string> = {
   declined: 'Declined',
   expired: 'Expired',
   converted: 'Accepted',
+  // Without this the `?? status` fallback renders the raw enum "superseded" to
+  // the customer. This status only became reachable when revisions shipped.
+  superseded: 'Replaced',
 };
 
 

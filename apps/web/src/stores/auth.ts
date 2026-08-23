@@ -10,6 +10,7 @@ import {
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
+import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import {
   applyAppearancePreferences,
@@ -148,6 +149,10 @@ export const useAuthStore = create<AuthState>()(
         // A partner switch in the same tab must never render the previous
         // partner's currency (lib/usePartnerCurrency caches per page).
         resetPartnerCurrencyCache();
+        // Reporting totals are converted into the VIEWER's partner reporting
+        // currency (lib/useApproximateTotal), so they must not outlive the
+        // session either.
+        resetApproximateTotalCache();
         set({
           user: null,
           tokens: null,

@@ -111,6 +111,53 @@ export function listContracts(query: ListContractsQuery = {}): Promise<Response>
   return fetchWithAuth(`/contracts${buildQuery(query)}`);
 }
 
+/**
+ * One row of GET /contracts/currency-mismatches — the read-only wave-6 (#3778)
+ * anomaly inventory of contracts whose stamped currency no longer matches their
+ * organization's. `activeChangeEligible` is the server's verdict from the SAME
+ * helper the restamp mutation gates on; it is advisory (the mutation re-checks
+ * under the contract's row lock) and there is deliberately NO bulk action.
+ */
+export type ContractCurrencyIneligibleReason =
+  | 'STATUS_NOT_ACTIVE'
+  | 'ORPHANED_CONTRACT_SOURCE'
+  | 'ORPHANED_BILLING_PERIOD'
+  | 'BROKEN_CONTRACT_LINEAGE'
+  | 'UNBILLED_MONETARY_ROWS';
+
+export interface ContractCurrencyMismatch {
+  contractId: string;
+  contractName: string;
+  orgId: string;
+  orgName: string;
+  status: ContractStatus;
+  contractCurrencyCode: string;
+  orgCurrencyCode: string;
+  nextBillingAt: string | null;
+  draftMonetaryInvoiceCount: number;
+  blockingDraftInvoiceIds: string[];
+  orphanedBillingPeriodCount: number;
+  activeChangeEligible: boolean;
+  ineligibleReason: ContractCurrencyIneligibleReason | null;
+}
+
+export interface ContractCurrencyMismatchReport {
+  items: ContractCurrencyMismatch[];
+  nextCursor: string | null;
+}
+
+export function listContractCurrencyMismatches(
+  query: { orgId?: string; status?: ContractStatus | ''; limit?: number; cursor?: string } = {},
+): Promise<Response> {
+  const params = new URLSearchParams();
+  if (query.orgId) params.set('orgId', query.orgId);
+  if (query.status) params.set('status', query.status);
+  if (query.limit != null) params.set('limit', String(query.limit));
+  if (query.cursor) params.set('cursor', query.cursor);
+  const qs = params.toString();
+  return fetchWithAuth(`/contracts/currency-mismatches${qs ? `?${qs}` : ''}`);
+}
+
 export function getContract(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}`);
 }
@@ -149,6 +196,35 @@ export function addContractLine(id: string, body: unknown): Promise<Response> {
 
 export function removeContractLine(id: string, lineId: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, { method: 'DELETE' });
+}
+
+/** Body of `POST /contracts/:id/currency`. The stamped currency is only ever
+ *  changed through this op (#3774); on an ACTIVE contract it is the wave-6
+ *  owner-approved escape hatch (#3778) and the server additionally requires
+ *  `contracts:manage`, `confirmActiveChange`, and eligibility re-checked under
+ *  the contract's row lock. `clearLines` and `reprice` are mutually exclusive. */
+export interface ChangeContractCurrencyBody {
+  currencyCode: string;
+  clearLines?: boolean;
+  reprice?: boolean;
+  confirmActiveChange?: boolean;
+}
+
+/** The `details` payload carried by a 409 from the change-currency op — the
+ *  exact rows that block the restamp, keyed by the error `code`. */
+export interface ContractCurrencyBlockerDetails {
+  draftInvoiceIds?: string[];
+  billingPeriodIds?: string[];
+  lineIds?: string[];
+  invoiceIds?: string[];
+}
+
+export function changeContractCurrency(id: string, body: ChangeContractCurrencyBody): Promise<Response> {
+  return fetchWithAuth(`/contracts/${id}/currency`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
 }
 
 export type ContractTransition = 'activate' | 'pause' | 'resume' | 'cancel';

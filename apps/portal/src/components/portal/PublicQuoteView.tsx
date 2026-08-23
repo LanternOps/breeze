@@ -10,6 +10,10 @@ interface PublicQuoteViewProps {
   token: string;
   initial: PublicQuoteDetail | null;
   error?: string | null;
+  /** Set when the API answered 410 QUOTE_SUPERSEDED: this proposal was replaced
+   *  by a newer revision and its link was revoked. Carries only the partner's
+   *  name — the server withholds everything else, including the successor's id. */
+  superseded?: { partnerName?: string | null } | null;
 }
 
 function shortDate(value: string | null | undefined): string {
@@ -19,11 +23,28 @@ function shortDate(value: string | null | undefined): string {
   return d.toLocaleDateString();
 }
 
-export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps) {
+export function PublicQuoteView({ token, initial, error, superseded }: PublicQuoteViewProps) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(initial?.quote.status ?? '');
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
+
+  // A replaced proposal is NOT a broken link, and telling the customer their
+  // link is "invalid or expired" would send them back to the MSP for a fix that
+  // is already in their inbox. Checked before the generic fallback for that
+  // reason. Deliberately renders no totals, no accept/decline, and no link to
+  // the successor — they reach it through the newer email, and the id is not
+  // ours to hand out here.
+  if (superseded) {
+    return (
+      <div data-testid="public-quote-superseded" role="status" className="mx-auto max-w-lg p-8 text-center">
+        <p className="text-sm">
+          This proposal has been replaced by an updated version — please use the link in the latest email
+          {superseded.partnerName ? `, or contact ${superseded.partnerName}` : ''}.
+        </p>
+      </div>
+    );
+  }
 
   if (error || !initial) {
     return (
@@ -60,7 +81,9 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
         ? 'Declined'
         : status === 'expired'
           ? 'Expired'
-          : undefined;
+          : status === 'superseded'
+            ? 'Replaced'
+            : undefined;
 
   const headerDates = [
     ...(quote.issueDate ? [{ label: 'Issued', value: shortDate(quote.issueDate) }] : []),

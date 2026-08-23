@@ -14,6 +14,7 @@ import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from './bulk/useBulkSelection';
 import { BulkActionBar } from './bulk/BulkActionBar';
 import { SortableTh } from './shared/SortableTh';
+import { ApproximateMoneyLine } from './shared/ApproximateMoneyLine';
 import { DataCard, CardField } from '../shared/ResponsiveTable';
 import AccessDenied from '../shared/AccessDenied';
 import {
@@ -406,7 +407,13 @@ export function InvoicesPage() {
       {/* Outstanding summary */}
       {!loading && !error && invoices.length > 0 && (
         <div className="flex flex-wrap gap-3" data-testid="invoices-outstanding-strip">
-          <StatCard label={t('invoicesPage.stats.outstanding')} value={outstandingDisplay} hint={t('invoicesPage.stats.open', { count: summary.openCount })} />
+          <StatCard
+            label={t('invoicesPage.stats.outstanding')}
+            value={outstandingDisplay}
+            hint={t('invoicesPage.stats.open', { count: summary.openCount })}
+            detail={<ApproximateMoneyLine byCurrency={summary.byCurrency} testId="invoices-outstanding-approx" />}
+            testId="invoices-outstanding-card"
+          />
           {summary.draftCount > 0 && (
             <StatCard
               label={t('invoicesPage.stats.drafts')}

@@ -152,6 +152,14 @@ export interface AuthContext {
    * Undefined for all normal (user/agent) contexts.
    */
   helperDeviceId?: string;
+
+  /**
+   * Owning partner of the Helper-authenticated device. This is deliberately
+   * separate from `partnerId`: Helper tokens remain organization-scoped and
+   * must never activate partner-wide RLS branches. Use this field only for
+   * resource-owned configuration lookups such as partner LLM BYOK.
+   */
+  helperDevicePartnerId?: string | null;
 }
 
 declare module 'hono' {

@@ -2693,7 +2693,7 @@ jobs:
         run: find staging -type f | sort
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -2751,7 +2751,7 @@ jobs:
           path: apps/api/dist
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -2810,7 +2810,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -2906,7 +2906,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -3002,7 +3002,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -3103,7 +3103,7 @@ jobs:
           path: apps/web/dist
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -3160,7 +3160,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4

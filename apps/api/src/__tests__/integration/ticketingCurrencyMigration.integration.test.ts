@@ -294,7 +294,7 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
     await flipOrgCurrency(f.orgId, 'GBP');
 
     // Billability-only edit after the flip: the rate is untouched, so is its currency.
-    await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, { defaultBillable: false }, 'GBP'));
+    await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, { defaultBillable: false }));
     expect(await readSettings(f.orgId)).toMatchObject({ defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: false });
 
     // The exact shape the editor sends on an SLA-only save: it RESENDS the
@@ -304,14 +304,14 @@ describe.runIf(RUN)('ticketing currency snapshot permanence (wave 4 #3776)', () 
       slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
       defaultHourlyRate: 80,
       defaultBillable: true,
-    }, 'GBP'));
+    }));
     expect(await readSettings(f.orgId)).toMatchObject({
       defaultHourlyRate: '80.00', rateCurrency: 'USD', defaultBillable: true,
       slaOverrides: { high: { responseMinutes: 30, resolutionMinutes: 240 } },
     });
 
     // A genuinely new number is new money entered under the CURRENT org currency.
-    await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, { defaultHourlyRate: 90 }, 'GBP'));
+    await withDbAccessContext(partnerCtx(f), () => upsertOrgTicketSettings(f.orgId, { defaultHourlyRate: 90 }));
     expect(await readSettings(f.orgId)).toMatchObject({ defaultHourlyRate: '90.00', rateCurrency: 'GBP' });
   });
 

@@ -103,6 +103,15 @@ export async function acceptQuote(
   ) {
     throw new QuoteServiceError('This link is invalid or has expired', 401, 'RESPONSE_CONSUMED');
   }
+  // A replaced quote is gone, not merely in a wrong state: 410 tells the
+  // customer (and the portal) that this specific document is permanently
+  // retired rather than temporarily unacceptable. Checked BEFORE the generic
+  // status guard so a superseded quote never reports as a plain 409.
+  // publicLinkRevokedAt remains a forward-compatibility guard for any future
+  // standalone link revoke that does not also change the quote status.
+  if (quote.status === 'superseded' || quote.publicLinkRevokedAt != null) {
+    throw new QuoteServiceError('This quote has been replaced by a newer version', 410, 'QUOTE_SUPERSEDED');
+  }
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot accept a quote in status ${quote.status}`, 409, 'INVALID_STATE');
   }

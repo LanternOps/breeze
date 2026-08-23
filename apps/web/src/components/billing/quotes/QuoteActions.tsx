@@ -3,7 +3,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { parseAddressList, MAX_RECIPIENTS } from '../shared/addressList';
 import { scheduleQuoteSend, cancelScheduledSend } from '../../../lib/api/quotes';
@@ -12,11 +12,12 @@ import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { fetchWithAuth } from '../../../stores/auth';
 import { getJwtClaims } from '../../../lib/authScope';
-import { cloneQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
+import { cloneQuote, reviseQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { useShowMargin } from '../billingUi';
+import { useReviseQuote, isRevisable } from './useReviseQuote';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type Quote, type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
@@ -211,7 +212,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
-  const { quote, lines } = detail;
+  const { quote, lines, revisionOf } = detail;
   const recipients = useMemo(() => detail.recipients ?? [], [detail.recipients]);
   const currency = quote.currencyCode;
 
@@ -390,7 +391,15 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }
   }, [quote.orgId]);
 
-  const openSend = useCallback(() => openComposer({ resend: false, prefillTo: [] }), [openComposer]);
+  // A revision prefills the addresses the ORIGINAL went to. The server already
+  // falls back to the parent's recipients when To is empty, so this is display
+  // honesty — showing the tech who is about to receive it — rather than
+  // correctness. Falls through to the billing-contact lookup when the parent
+  // has no recorded recipients.
+  const openSend = useCallback(
+    () => openComposer({ resend: false, prefillTo: revisionOf?.recipients ?? [] }),
+    [openComposer, revisionOf],
+  );
   const openResend = useCallback(() => {
     setMenuOpen(false);
     openComposer({ resend: true, prefillTo: recipients });
@@ -714,6 +723,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }
   }, [cloning, quote.id, cloneOrgId, cloneTitle, savePending, t]);
 
+  // Revise: create a linked draft that will REPLACE this quote when sent.
+  // Distinct from Clone, which starts an unrelated quote and leaves this one
+  // live. Shared with the declined banner's Revise via useReviseQuote so both
+  // entry points mean the same thing.
+  const { revise, revising } = useReviseQuote(quote.id, { onStart: () => setMenuOpen(false) });
+
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
   // sit in a row. The class fragments below are the only thing the variant changes.
@@ -812,6 +827,10 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
 
   const canSend = can('quotes', 'send') && isDraft;
   const canClone = can('quotes', 'write');
+  // Exactly the statuses the server will supersede (SUPERSEDABLE in
+  // services/quoteLifecycle.ts). A draft has nothing to replace; accepted and
+  // converted are settled; superseded is already retired.
+  const canRevise = can('quotes', 'write') && isRevisable(quote.status);
   const canDelete = can('quotes', 'write') && isDraft;
   // Resend and share-link share one gate (see quoteShareLinkAvailable above,
   // which mirrors assertLinkableQuote in services/quoteLifecycle.ts).
@@ -950,6 +969,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {copyingLink ? t('quotes.actions.copyingShareLink') : t('quotes.actions.copyShareLink')}
           </button>
         )}
+        {!header && canRevise && (
+          <button
+            type="button"
+            onClick={() => void revise()}
+            disabled={revising || savePending}
+            title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+            data-testid="quote-revise"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {revising ? t('quotes.actions.revising') : t('quotes.actions.reviseQuote')}
+          </button>
+        )}
         {!header && canClone && (
           <button
             type="button"
@@ -1019,6 +1050,20 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                     className="block w-full px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-50"
                   >
                     {copyingLink ? t('quotes.actions.copyingShareLink') : t('quotes.actions.copyShareLink')}
+                  </button>
+                )}
+                {canRevise && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    onClick={() => void revise()}
+                    disabled={revising || savePending}
+                    title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+                    data-testid="quote-revise"
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-50"
+                  >
+                    {revising ? t('quotes.actions.revising') : t('quotes.actions.reviseQuote')}
                   </button>
                 )}
                 {canClone && (
@@ -1111,6 +1156,15 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 amount: formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency),
               })}
         </p>
+        {/* A revision send is not an ordinary send: it retires the parent and
+            revokes the link the customer is currently holding. Nothing else in
+            this dialog says so, and it is not undoable. */}
+        {!resendMode && revisionOf && (
+          <p className="mt-2 flex items-start gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-revision-warning">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>{t('quotes.actions.sendConfirm.revisionWarning', { number: revisionOf.quoteNumber ?? '' })}</span>
+          </p>
+        )}
         {zeroTotal && (
           <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
             {t('quotes.actions.sendConfirm.zeroTotalWarning', { zero: formatMoney(0, quote.currencyCode) })}

@@ -236,6 +236,7 @@ import {
   cancelActionIntent,
   transitionIntent,
   waitForIntentDecision,
+  ActionIntentError,
   ActionIntentTierError,
   ActionIntentNotFoundError,
   ActionIntentAuthorizationError,
@@ -401,6 +402,32 @@ describe('createActionIntent — tier gating', () => {
 // ---------------------------------------------------------------------------
 // Digest stability
 // ---------------------------------------------------------------------------
+
+describe('createActionIntent — ai_agent principal fails closed (wave 3a inert guard)', () => {
+  // This one `if` is the entire reason PR 3a is safe to merge: the schema can
+  // now HOLD a requester-less agent intent, and the type-level exclusion in
+  // originPrincipal.test.ts was inverted to admit 'ai_agent' — so nothing but
+  // this guard keeps an agent principal out of a write path that stamps
+  // requestedByUserId unconditionally. If 3b's rebase drops or reorders it,
+  // this test is what goes red.
+  it('rejects with agent_origin_unsupported before touching the database', async () => {
+    const agentAuth = makeAuth({
+      principal: { kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' },
+    });
+
+    let caught: unknown;
+    try {
+      await createActionIntent(agentAuth, baseInput());
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ActionIntentError);
+    expect((caught as ActionIntentError).code).toBe('agent_origin_unsupported');
+    // Fails closed BEFORE any write: no intent row, no approval fan-out.
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+  });
+});
 
 describe('createActionIntent — digest stability', () => {
   it('records the ORIGIN principal kind on the intent, not a derivation of it', async () => {

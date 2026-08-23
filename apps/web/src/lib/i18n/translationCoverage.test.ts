@@ -33,7 +33,12 @@ const namespaceDuplicateBaselines = {
     // ISO 216 paper size code, identical in every catalog.
     // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
     // the same exemption the quote composer's Cc pair already carries.
-    'billing.json': 53,
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
+    // identically in pt-BR.
+    'billing.json': 55,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -92,7 +97,10 @@ const namespaceDuplicateBaselines = {
     // duplicate; its "/ea" was genuinely untranslated, not a literal.
     // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
     // the same exemption the quote composer's Cc pair already carries.
-    'billing.json': 42,
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 43,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -155,7 +163,10 @@ const namespaceDuplicateBaselines = {
     // ISO 216 paper size code, identical in every catalog.
     // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
     // the same exemption the quote composer's Cc pair already carries.
-    'billing.json': 54,
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 55,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -220,7 +231,10 @@ const namespaceDuplicateBaselines = {
     // ISO 216 paper size code, identical in every catalog.
     // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
     // the same exemption the quote composer's Cc pair already carries.
-    'billing.json': 54,
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 55,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -286,7 +300,12 @@ const namespaceDuplicateBaselines = {
     // ISO 216 paper size code, identical in every catalog.
     // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
     // the same exemption the quote composer's Cc pair already carries.
-    'billing.json': 40,
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
+    // identically in de-DE.
+    'billing.json': 42,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -337,7 +356,10 @@ const namespaceDuplicateBaselines = {
     // ISO 216 paper size code, identical in every catalog.
     // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
     // the same exemption the quote composer's Cc pair already carries.
-    'billing.json': 34,
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 35,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -384,7 +406,10 @@ const namespaceDuplicateBaselines = {
     // longer a duplicate: it was genuinely untranslated, not a literal.
     // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
     // the same exemption the quote composer's Cc pair already carries.
-    'billing.json': 19,
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 20,
     'common.json': 48,
     'devices.json': 77,
     'discovery.json': 9,

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   assembleFromOrgSchema, assembleFromTicketQuerySchema, manualLineSchema, recordPaymentSchema,
   partnerBillingSettingsSchema, orgBillingSettingsSchema,
-  createManualInvoiceSchema, updateInvoiceSchema, listInvoicesQuerySchema
+  orgCurrencyImpactQuerySchema, createManualInvoiceSchema, updateInvoiceSchema, listInvoicesQuerySchema
 } from './invoices';
 import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 
@@ -172,6 +172,105 @@ describe('orgBillingSettingsSchema — billing contact', () => {
 
   it('rejects an empty-string email (UI must send null, not "")', () => {
     expect(() => orgBillingSettingsSchema.parse({ billingContactEmail: '' })).toThrow();
+  });
+});
+
+describe('orgBillingSettingsSchema — guarded currency changes', () => {
+  it('continues to accept a tax-rate-only patch', () => {
+    const parsed = orgBillingSettingsSchema.parse({ taxRate: 0.085 });
+    expect(parsed.taxRate).toBe(0.085);
+  });
+
+  it('accepts guarded currency changes and normalizes both currency codes', () => {
+    const parsed = orgBillingSettingsSchema.parse({
+      currencyCode: 'eur',
+      expectedCurrentCurrencyCode: 'usd',
+      confirmSnapshotRetention: true,
+    });
+
+    expect(parsed.currencyCode).toBe('EUR');
+    expect(parsed.expectedCurrentCurrencyCode).toBe('USD');
+    expect(parsed.confirmSnapshotRetention).toBe(true);
+  });
+
+  it('requires expectedCurrentCurrencyCode when currencyCode is supplied', () => {
+    const result = orgBillingSettingsSchema.safeParse({ currencyCode: 'EUR' });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ['expectedCurrentCurrencyCode'] }),
+      ]));
+    }
+  });
+
+  it('accepts a same-currency no-op without confirmation', () => {
+    const parsed = orgBillingSettingsSchema.parse({
+      currencyCode: 'USD',
+      expectedCurrentCurrencyCode: 'USD',
+    });
+
+    expect(parsed.currencyCode).toBe('USD');
+    expect(parsed.expectedCurrentCurrencyCode).toBe('USD');
+    expect(parsed.confirmSnapshotRetention).toBeUndefined();
+  });
+
+  it('rejects an unsupported target currency', () => {
+    const result = orgBillingSettingsSchema.safeParse({
+      currencyCode: 'ZZZ',
+      expectedCurrentCurrencyCode: 'USD',
+      confirmSnapshotRetention: true,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ['currencyCode'], message: 'Unsupported currency code' }),
+      ]));
+    }
+  });
+
+  // .strict() is a behaviour change on an already-shipped PATCH body, so pin
+  // both halves: the real web payload still parses, and a mis-keyed flag
+  // (convert / restamp / revalue) is a 400 rather than a silent default.
+  it('still accepts the full payload the org billing settings form sends', () => {
+    const parsed = orgBillingSettingsSchema.parse({
+      taxId: 'DE123456789', taxExempt: false, taxRate: 0.19,
+      billingContactEmail: 'ap@example.com', billingContactName: 'Accounts Payable',
+      billingAddressLine1: 'Line 1', billingAddressLine2: null, billingAddressCity: 'Berlin',
+      billingAddressRegion: null, billingAddressPostalCode: '10115', billingAddressCountry: 'DE',
+    });
+    expect(parsed.billingAddressCountry).toBe('DE');
+  });
+
+  it('rejects an unknown key such as a conversion flag', () => {
+    for (const key of ['convert', 'restamp', 'revalue']) {
+      const result = orgBillingSettingsSchema.safeParse({
+        currencyCode: 'EUR', expectedCurrentCurrencyCode: 'USD', confirmSnapshotRetention: true,
+        [key]: true,
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
+  it('rejects currency preconditions without currencyCode', () => {
+    const result = orgBillingSettingsSchema.safeParse({ expectedCurrentCurrencyCode: 'USD' });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ['currencyCode'] }),
+      ]));
+    }
+  });
+});
+
+describe('orgCurrencyImpactQuerySchema', () => {
+  it('normalizes currencyCode and rejects unknown query keys', () => {
+    const parsed = orgCurrencyImpactQuerySchema.safeParse({ currencyCode: 'jpy' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.currencyCode).toBe('JPY');
+    expect(orgCurrencyImpactQuerySchema.safeParse({ currencyCode: 'JPY', convert: true }).success).toBe(false);
   });
 });
 

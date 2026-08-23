@@ -438,6 +438,59 @@ describe('catalogService (breeze_app, real DB)', () => {
     expect(rows).toHaveLength(2);
   });
 
+  runDb('setBundleComponents: a fractional allocation in a zero-decimal currency is refused, and the previous set survives', async () => {
+    const fx = await seedFixture();
+    const { bundle, comp1, comp2 } = await seedBundleAndComponents(fx);
+
+    // Baseline: a representable JPY allocation persists.
+    await withDbAccessContext(fx.ctxA, () =>
+      setBundleComponents(
+        bundle.id,
+        [{ componentItemId: comp1.id, quantity: 1, showOnInvoice: true, revenueAllocation: 100 }],
+        fx.actorA,
+        'JPY'
+      )
+    );
+
+    // Wave-6 review: an allocation is persisted money stamped with its own
+    // currency and is copied verbatim onto a same-currency invoice line, so a
+    // fractional yen must be a 400 — never a silent round.
+    await expect(
+      withDbAccessContext(fx.ctxA, () =>
+        setBundleComponents(
+          bundle.id,
+          [{ componentItemId: comp2.id, quantity: 1, showOnInvoice: true, revenueAllocation: 100.5 }],
+          fx.actorA,
+          'JPY'
+        )
+      )
+    ).rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+
+    // The rejection happens before the replace-set delete: the baseline stands.
+    const rows = await withSystemDbAccessContext(() =>
+      db.select().from(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, bundle.id))
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.componentItemId).toBe(comp1.id);
+    expect(rows[0]!.revenueAllocation).toBe('100.00');
+
+    // The same amount in a two-decimal currency is still accepted.
+    await withDbAccessContext(fx.ctxA, () =>
+      setBundleComponents(
+        bundle.id,
+        [{ componentItemId: comp2.id, quantity: 1, showOnInvoice: true, revenueAllocation: 100.5 }],
+        fx.actorA,
+        'EUR'
+      )
+    );
+    const eurRows = await withSystemDbAccessContext(() =>
+      db.select().from(catalogBundleComponents).where(eq(catalogBundleComponents.bundleItemId, bundle.id))
+    );
+    expect(eurRows).toHaveLength(1);
+    expect(eurRows[0]!.revenueAllocation).toBe('100.50');
+    expect(eurRows[0]!.allocationCurrency).toBe('EUR');
+  });
+
   runDb('setBundleComponents: failing sets map to the right code AND original components survive', async () => {
     const fx = await seedFixture();
     const { bundle, comp1, comp2, innerBundle } = await seedBundleAndComponents(fx);

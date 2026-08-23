@@ -156,6 +156,12 @@ export interface ApiResponse<T> {
   error?: string;
   /** Machine-readable error code from the API body (e.g. PORTAL_TICKETS_DISABLED). */
   code?: string;
+  /** The `data` payload carried BY AN ERROR body, kept separate from `data` so
+   *  presence of `data` still means "the request succeeded". Some errors are
+   *  renderable rather than fatal — a 410 QUOTE_SUPERSEDED carries the partner's
+   *  branding so a replaced proposal can show a branded notice instead of a bare
+   *  failure. */
+  errorData?: unknown;
   statusCode?: number;
   headers?: Headers;
 }
@@ -226,6 +232,7 @@ export async function apiRequest<T>(
       return {
         error: body?.error || 'That didn\'t go through. Nothing was lost — try again in a moment.',
         code: typeof body?.code === 'string' ? body.code : undefined,
+        errorData: body?.data,
         statusCode: response.status,
         headers: response.headers
       };
@@ -564,7 +571,12 @@ export interface QuoteBranding {
 }
 
 export interface QuoteDetail {
-  quote: QuoteHeader;
+  quote: QuoteHeader & {
+    /** Set when a NON-DRAFT revision has replaced this quote. The API withholds
+     *  draft successors on purpose — a customer must not learn a revision is
+     *  being prepared for them. */
+    supersededByQuoteId?: string | null;
+  };
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   /** Optional for API responses that predate the branding field. */

@@ -2399,5 +2399,8 @@
     "later": "Daha sonra göster",
     "learnMore": "Daha fazlasını öğrenin",
     "link": "Yenilikler"
+  },
+  "money": {
+    "approximateTotal": "≈ {{amount}} yaklaşık · {{rateDate}} tarihli kurlarla"
   }
 }

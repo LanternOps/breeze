@@ -323,7 +323,65 @@
     "tabs": {
       "contracts": "Sözleşmeler",
       "templates": "Şablonlar",
-      "documents": "Belgeler"
+      "documents": "Belgeler",
+      "currencyMismatches": "Para birimi uyuşmazlıkları"
+    },
+    "currencyMismatches": {
+      "title": "Para birimi uyuşmazlıkları",
+      "description": "Kuruluşunun artık faturalamadığı bir para biriminde kayıtlı sözleşmeler. İncelemek için bir sözleşme açın — burada toplu değişiklik yapılmaz.",
+      "loading": "Yükleniyor…",
+      "loadError": "Para birimi uyuşmazlığı raporu yüklenemedi.",
+      "loadMore": "Daha fazla yükle",
+      "emptyTitle": "Para birimi uyuşmazlığı yok",
+      "emptyBody": "Her sözleşme, kuruluşunun faturalama para biriminde kayıtlı.",
+      "eligible": "Yeniden kaydedilmeye hazır",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} taslak fatura",
+      "blockingDrafts_one": "{{count}} taslak fatura",
+      "columns": {
+        "contract": "Sözleşme",
+        "organization": "Kuruluş",
+        "status": "Durum",
+        "currencies": "Sözleşme → kuruluş",
+        "nextBilling": "Sonraki faturalama",
+        "eligibility": "Yeniden kayıt uygunluğu"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Etkin değil — yalnızca etkin sözleşmeler yeniden kaydedilebilir",
+        "ORPHANED_CONTRACT_SOURCE": "Sözleşme kaynaklı fatura satırları ilişkilendirilemiyor",
+        "ORPHANED_BILLING_PERIOD": "Bir faturalama döneminin erişilebilir faturası yok",
+        "BROKEN_CONTRACT_LINEAGE": "Fatura soy zinciri denetimi başarısız oldu",
+        "UNBILLED_MONETARY_ROWS": "Taslak faturalar bu sözleşmede faturalanan tutarları hâlâ tutuyor"
+      }
+    },
+    "currency": {
+      "actions": {
+        "change": "Para birimini değiştir"
+      },
+      "dialog": {
+        "title": "Sözleşme para birimini değiştir",
+        "description": "Bu sözleşme {{currency}} ile faturalanıyor. Yeniden damgalama yalnızca gelecekteki faturaları etkiler; düzenlenmiş faturalar ve geçmiş faturalama dönemleri asla değiştirilmez.",
+        "currencyLabel": "Yeni para birimi",
+        "modeLegend": "Sözleşme satırlarına ne olacak",
+        "modeClear": "Tüm sözleşme satırlarını kaldır",
+        "modeClearHint": "Satırlar silinir ve yeni para biriminde elle yeniden eklenir. Herhangi bir satır manuel olduğunda zorunludur.",
+        "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
+        "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "confirm": "Bunun aktif bir sözleşmeyi yeniden damgaladığını ve toplu olarak geri alınamayacağını anlıyorum.",
+        "submit": "Para birimini değiştir"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Önce bu taslak faturaları düzenleyin veya silin — hâlâ bu sözleşmeye ait tutarlar taşıyorlar:",
+        "ORPHANED_BILLING_PERIOD": "Bu faturalama dönemlerinin erişilebilir bir faturası yok. Yeniden damgalamadan önce çözün:",
+        "ORPHANED_CONTRACT_SOURCE": "Sözleşme kaynaklı bu fatura satırları bir sözleşmeye atfedilemiyor. Yeniden damgalamadan önce çözün:",
+        "BROKEN_CONTRACT_LINEAGE": "Bu faturalar için fatura soy zinciri denetimi başarısız oldu. Yeniden damgalamadan önce çözün:"
+      },
+      "toast": {
+        "changed": "Sözleşme para birimi {{currency}} olarak değiştirildi."
+      },
+      "errors": {
+        "change": "Sözleşme para birimi değiştirilemedi."
+      }
     },
     "templatesTab": {
       "title": "Sözleşme şablonları",
@@ -862,6 +920,11 @@
       "cloneError": "Alıntı kopyalanamadı.",
       "cloneQuote": "Klon alıntısı",
       "cloneSavingTitle": "Klonlamadan önce değişikliklerin kaydedilmesinin tamamlanmasını bekleyin.",
+      "reviseQuote": "Teklifi revize et",
+      "revising": "Revizyon oluşturuluyor…",
+      "reviseSuccess": "Revizyon oluşturuldu.",
+      "reviseError": "Revizyon oluşturulamadı.",
+      "reviseInProgress": "Zaten devam eden bir revizyon var — açılıyor.",
       "cloneSuccess": "Alıntı kopyalandı.",
       "cloning": "Klonlanıyor…",
       "deleteConfirm": {
@@ -897,7 +960,8 @@
         "toPlaceholder": "Alıcı ekle…",
         "tooManyRecipients": "En fazla {{max}} adresi kullanın.",
         "zeroTotalWarning": "Bu fiyat teklifinin toplamı {{zero}} — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
-        "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin."
+        "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin.",
+        "revisionWarning": "Bunu göndermek {{number}} teklifinin yerini alır ve müşterinin mevcut bağlantısını devre dışı bırakır."
       },
       "sendEmailWarning": {
         "noBillingContact": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — {{orgName}}'de fatura iletişim e-postası yok. Kuruluş ayarlarına bir tane ekleyin ve yeniden gönderin.",
@@ -1061,6 +1125,12 @@
         "reasonLabel": "Müşterinin notu:",
         "revise": "Çoğalt ve gözden geçir",
         "revising": "Çoğaltılıyor…"
+      },
+      "lineage": {
+        "supersededTitle": "Bu teklifin yerini alan",
+        "inProgressTitle": "Bu teklifin bir revizyonu hazırlanıyor — gönderildiğinde bu teklifin yerini alacak ve müşteri bağlantısını devre dışı bırakacak:",
+        "revisionOfTitle": "Şu teklifin revizyonu:",
+        "untitled": "daha yeni bir sürüm"
       }
     },
     "distributorLookup": {
@@ -1274,7 +1344,8 @@
         "preview": "Önizleme",
         "detail": "Ayrıntılar"
       },
-      "loading": "Teklif yükleniyor…"
+      "loading": "Teklif yükleniyor…",
+      "revisionBanner": "Bu, {{number}} teklifinin bir revizyonudur. Gönderildiğinde orijinalin yerini alır ve müşterinin mevcut bağlantısını devre dışı bırakır."
     }
   },
   "billingUi": {
@@ -1746,6 +1817,44 @@
       "emailPlaceholder": "faturalama@müşteri.örnek",
       "name": "Kişi adı",
       "title": "Faturalandırma iletişim kişisi"
+    },
+    "currency": {
+      "title": "Para birimi",
+      "description": "Bu organizasyon için yeni teklifler, faturalar, sözleşmeler, zaman kayıtları ve parçalar bu para birimiyle damgalanır. Hiçbir mevcut kayıt değiştirilmez.",
+      "label": "Faturalama para birimi",
+      "loading": "{{currency}} birimine geçişin neleri etkileyeceği kontrol ediliyor…",
+      "error": "Para birimi değişikliği özeti yüklenemedi.",
+      "panelTitle": "Faturalama para birimi {{currency}} olarak değiştirilsin mi?",
+      "none": "Bu organizasyonda başka bir para birimiyle damgalanmış hiçbir kayıt yok.",
+      "groupTitle": "{{currency}} ile damgalanmış",
+      "counts": {
+        "draftInvoices": "Taslak faturalar",
+        "draftQuotes": "Taslak teklifler",
+        "sentQuotes": "Gönderilen teklifler",
+        "viewedQuotes": "Görüntülenen teklifler",
+        "draftContracts": "Taslak sözleşmeler",
+        "activeContracts": "Etkin sözleşmeler",
+        "pausedContracts": "Duraklatılmış sözleşmeler",
+        "timeEntries": "Faturalanmamış zaman kayıtları",
+        "parts": "Faturalanmamış parçalar"
+      },
+      "timeDetail": "{{ready}} faturaya hazır, {{running}} devam eden, {{nonBillable}} faturalanamaz, {{missingRate}} ücretsiz",
+      "partsDetail": "{{ready}} faturaya hazır, {{nonBillable}} faturalanamaz",
+      "amounts": "İşçilik {{labor}} · Parçalar {{parts}}",
+      "warningsTitle": "Geçerliliğini yitirecek yapılandırma",
+      "warningRate": "Organizasyonun varsayılan saatlik ücreti {{currency}} cinsindendir ve yeni zaman kayıtlarına artık uygulanmayacak.",
+      "warningCategories": "Başka bir para birimindeki {{count}} talep kategorisi ücreti atlanacak.",
+      "warningOverrides": "Başka bir para birimindeki {{count}} organizasyon katalog fiyatı geçersiz kılması atlanacak.",
+      "recovery": "Yukarıdaki {{currency}} kalemlerini faturalamak için {{currency}} cinsinden bir taslak oluşturun.",
+      "rateLess": "{{count}} faturalanmamış zaman kaydında saat var ancak saatlik ücret yok. Bir ücret belirleyin — para birimi değişikliği bunları etkilemez.",
+      "retention": "Yalnızca gelecekteki belgeler, zaman kayıtları ve parçalar değişir. Hiçbir tutar dönüştürülmez; mevcut taslaklar, sözleşmeler ve faturalanmamış kalemler damgalandıkları para birimini korur.",
+      "advisory": "Bu sayılar bir önizlemedir, taahhüt değil — sonrasında oluşturulanlar dahil değildir.",
+      "stale": "Siz incelerken faturalama para birimi {{currency}} olarak değişti. Güncellenen özeti kontrol edip yeniden onaylayın.",
+      "confirm": "Para birimini değiştir",
+      "changing": "Değiştiriliyor…",
+      "cancel": "İptal",
+      "changeError": "Organizasyonun faturalama para birimi değiştirilemedi.",
+      "changeSuccess": "Organizasyonun faturalama para birimi güncellendi"
     },
     "loadError": "Faturalandırma ayarları yüklenemedi.",
     "loading": "Faturalandırma ayarları yükleniyor…",

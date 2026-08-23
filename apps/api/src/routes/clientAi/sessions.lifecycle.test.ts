@@ -60,6 +60,11 @@ vi.mock('../../db', () => ({
   db: { select: dbSelectMock, insert: dbInsertMock, update: dbUpdateMock },
   withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
 }));
+vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
+  resolveClientLlmConfig: vi.fn(() =>
+    Promise.resolve({ source: 'platform', apiKey: 'test-platform-key', model: 'claude-sonnet-4-6' })),
+}));
 vi.mock('../../services/streamingSessionManager', () => ({ streamingSessionManager: managerMock }));
 vi.mock('../../services/auditEvents', () => ({ writeAuditEvent: writeAuditEventMock }));
 vi.mock('../../services/clientAiUsage', () => ({
@@ -142,7 +147,7 @@ describe('POST /client-ai/sessions (create)', () => {
       userId: null,
       clientUserId: CLIENT_USER_ID,
       type: 'excel_client',
-      model: 'claude-sonnet-4-5-20250929',
+      model: 'claude-sonnet-4-6',
       systemPrompt: expect.stringContaining('spreadsheet assistant'),
     }));
     expect(recordClientUsageMock).toHaveBeenCalledWith(ORG_ID, CLIENT_USER_ID, { sessionCount: 1 });

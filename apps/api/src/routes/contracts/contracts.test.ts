@@ -14,7 +14,8 @@ vi.mock('../../services/contractService', () => ({
   resumeContract: vi.fn(),
   cancelContract: vi.fn(),
   generateDueInvoice: vi.fn(),
-  computeContractEstimate: vi.fn()
+  computeContractEstimate: vi.fn(),
+  changeContractCurrency: vi.fn()
 }));
 
 // Mock db context helpers used by /generate route.
@@ -26,14 +27,31 @@ vi.mock('../../db', () => ({
 // ContractServiceError lives in contractTypes; routes import the class from there.
 vi.mock('../../services/contractTypes', () => ({
   ContractServiceError: class ContractServiceError extends Error {
-    constructor(msg: string, public status = 400, public code?: string) { super(msg); }
-  }
+    constructor(
+      msg: string, public status = 400, public code?: string,
+      public details?: Record<string, unknown>
+    ) { super(msg); }
+  },
+  // actorCan is re-exported from contractTypes and used by the service, not the
+  // route — but the module is mocked wholesale, so it must still be present.
+  actorCan: (a: { permissions?: ReadonlySet<string> }, p: { resource: string; action: string }) =>
+    a.permissions?.has(`${p.resource}:${p.action}`) === true,
 }));
 
 // Mock auth middleware to inject a partner-scoped actor with contract perms.
+// Grants the request's resolved permissions carry. Mutated per-test so the
+// wave-6 (#3778) permission-evidence plumbing can be exercised end-to-end.
+const grantedPermissions: Array<{ resource: string; action: string }> = [
+  { resource: 'contracts', action: 'read' },
+  { resource: 'contracts', action: 'write' },
+  { resource: 'contracts', action: 'manage' },
+];
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
     c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', accessibleOrgIds: null });
+    // What requirePermission sets on a real request.
+    c.set('permissions', { permissions: grantedPermissions, partnerId: 'p1', orgId: null, roleId: 'r1', scope: 'partner' });
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
@@ -285,5 +303,68 @@ describe('contract generate route', () => {
       lines: [{ lineId: LINE_ID, lineType: 'per_device', quantity: 9, value: '450.00', live: true }],
     } });
     expect(svc.computeContractEstimate).toHaveBeenCalledWith(CONTRACT_ID, expect.objectContaining({ partnerId: 'p1' }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 6 (#3778): the currency route carries VERIFIED permission evidence into
+// the service, and surfaces the structured `details` the service attaches.
+// ---------------------------------------------------------------------------
+describe('POST /:id/currency — permission evidence + error details (#3778)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    grantedPermissions.length = 0;
+    grantedPermissions.push(
+      { resource: 'contracts', action: 'read' },
+      { resource: 'contracts', action: 'write' },
+      { resource: 'contracts', action: 'manage' },
+    );
+  });
+
+  async function post(body: unknown) {
+    return app().request(`/${CONTRACT_ID}/currency`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+  }
+
+  it('forwards confirmActiveChange and an actor carrying contracts:manage', async () => {
+    (svc.changeContractCurrency as any).mockResolvedValue({ id: CONTRACT_ID, currencyCode: 'EUR' });
+    const res = await post({ currencyCode: 'EUR', confirmActiveChange: true });
+    expect(res.status).toBe(200);
+
+    const [, input, actor] = (svc.changeContractCurrency as any).mock.calls[0];
+    expect(input).toMatchObject({ currencyCode: 'EUR', confirmActiveChange: true });
+    expect([...actor.permissions]).toContain('contracts:manage');
+  });
+
+  it('a contracts:write-only request reaches the service WITHOUT manage evidence, and its 403 maps through', async () => {
+    grantedPermissions.length = 0;
+    grantedPermissions.push({ resource: 'contracts', action: 'read' }, { resource: 'contracts', action: 'write' });
+    (svc.changeContractCurrency as any).mockRejectedValue(
+      new ContractServiceError('needs manage', 403, 'ACTIVE_CHANGE_FORBIDDEN'));
+
+    const res = await post({ currencyCode: 'EUR', confirmActiveChange: true });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'ACTIVE_CHANGE_FORBIDDEN' });
+
+    const actor = (svc.changeContractCurrency as any).mock.calls[0][2];
+    expect([...actor.permissions]).not.toContain('contracts:manage');
+  });
+
+  it('returns the structured details naming the blocking rows', async () => {
+    (svc.changeContractCurrency as any).mockRejectedValue(
+      new ContractServiceError('2 draft invoice(s)', 409, 'UNBILLED_MONETARY_ROWS', { draftInvoiceIds: ['a', 'b'] }));
+
+    const res = await post({ currencyCode: 'EUR', confirmActiveChange: true });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      code: 'UNBILLED_MONETARY_ROWS', details: { draftInvoiceIds: ['a', 'b'] },
+    });
+  });
+
+  it('rejects a mis-keyed field (strict schema) with a 400', async () => {
+    const res = await post({ currencyCode: 'EUR', convert: true });
+    expect(res.status).toBe(400);
+    expect(svc.changeContractCurrency).not.toHaveBeenCalled();
   });
 });

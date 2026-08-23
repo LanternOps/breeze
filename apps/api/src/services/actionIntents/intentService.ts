@@ -77,6 +77,13 @@ export interface CreateActionIntentInput {
   toolName: string;
   input: Record<string, unknown>;
   reason?: string;
+  /**
+   * Deliberately excludes 'ai_agent' until the requester-less create path
+   * lands (PR 3b) — belt-and-suspenders with the principal guard at the top
+   * of createActionIntent. Kept as an explicit literal union (not
+   * Exclude<ActionIntentSource, …>) so a future source value is opted into
+   * this public input on purpose, never inherited.
+   */
   source: 'chat' | 'mcp_api';
   requestingClientLabel?: string;
   /** MCP callers pass this explicitly; derived deterministically for chat. */
@@ -276,13 +283,16 @@ export async function createActionIntent(
   auth: AuthContext,
   input: CreateActionIntentInput,
 ): Promise<ActionIntentSnapshot> {
-  // Agent-originated intents are a wave-3 design (requester-less model: this
-  // function writes requestedByUserId unconditionally, approval_requests.user_id
-  // is NOT NULL, and isRequester gates read/decide). Until that lands, an agent
-  // reaching this path fails CLOSED rather than being recorded as whatever
-  // synthetic user its attribution record carries. 'ai_agent' is deliberately
-  // absent from action_intents_origin_principal_kind_chk, so the alternative
-  // is a runtime 23514 mid-transaction.
+  // Agent-originated intents are a wave-3b design (requester-less model:
+  // this function writes requestedByUserId unconditionally, supervised
+  // read/decide keys on requestedByUserId via isIntentRowLiveAuthorized in
+  // routes/approvals.ts, and cancel keys on it via isRequester below).
+  // 'ai_agent' is already a valid value in
+  // action_intents_origin_principal_kind_chk, but the requester-less write
+  // path, fan-out, decide, and release reconstruction for it aren't
+  // implemented yet — so an agent reaching this path fails CLOSED until PR
+  // 3b, rather than being recorded as whatever synthetic user its
+  // attribution record carries.
   if (auth.principal.kind === 'ai_agent') {
     throw new ActionIntentError(
       'AI agents cannot create action intents yet (agent-originated intents ship in wave 3)',

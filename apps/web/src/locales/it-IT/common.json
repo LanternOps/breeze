@@ -2399,5 +2399,8 @@
     "later": "Mostra più tardi",
     "learnMore": "Scopri di più",
     "link": "Novità"
+  },
+  "money": {
+    "approximateTotal": "≈ {{amount}} approssimativo · cambi al {{rateDate}}"
   }
 }

@@ -5,6 +5,7 @@ import {
 } from '../db/schema';
 import { emitCatalogEvent } from './catalogEvents';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { readOrgStampingDefaults, OrgCurrencyServiceError } from './orgCurrencyCore';
 import {
   deriveUnitPrice, resolvePriceFrom, isPriceGap, detectBundleProblems, computeBundleEconomicsFrom,
   type BundleHeadlineGap,
@@ -525,16 +526,35 @@ export async function setOrgPriceOverride(itemId: string, orgId: string, input: 
   const unitPrice = input.unitPrice.toFixed(2);
   assertPriceInRange(unitPrice);
   return db.transaction(async (tx) => {
-    const item = await lockOwnedItemOr404(itemId, partnerId, tx); // item lock FIRST
+    // Lock order (#3778): `organizations FOR SHARE` is the FIRST statement of
+    // this transaction, BEFORE the catalog item lock — this call site used to
+    // lock the item first and then read the org unlocked, which both inverted
+    // the wave-6 global order (organizations -> contracts/catalog_items) and let
+    // a concurrent changeOrgCurrency stamp an override with a stale currency.
+    // A cross-partner (or otherwise invisible) org must keep this service's own
+    // 403 ORG_DENIED contract — the barrier's neutral 404 would otherwise
+    // pre-empt the same-partner check below now that the org lock runs first.
+    // Narrow (#3778 finding 5): only a MISSING org becomes this service's 403.
+    // A blanket `.catch()` also swallowed 40001/40P01 — plausible precisely
+    // because this read now takes a row lock contending with changeOrgCurrency's
+    // FOR UPDATE — and reported a retriable failure as a permanent authorization
+    // error, while hiding genuine helper bugs.
+    const lockedOrg = await readOrgStampingDefaults(tx, orgId).catch((err: unknown) => {
+      if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+        throw new CatalogServiceError('Organization not found for this partner', 403, 'ORG_DENIED');
+      }
+      throw err;
+    });
+    const item = await lockOwnedItemOr404(itemId, partnerId, tx);
     // Overrides carry an explicit currency (default: the org's) + the
     // denormalized partner_id the composite same-partner FKs require. A
     // cross-partner org is refused here as 403 rather than surfacing as 23503.
-    const [org] = await tx.select({ partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
+    const [org] = await tx.select({ partnerId: organizations.partnerId })
       .from(organizations).where(eq(organizations.id, orgId)).limit(1);
     if (!org || org.partnerId !== item.partnerId) {
       throw new CatalogServiceError('Organization not found for this partner', 403, 'ORG_DENIED');
     }
-    const currencyCode = input.currencyCode ?? org.currencyCode;
+    const currencyCode = input.currencyCode ?? lockedOrg.currencyCode;
     assertRepresentable(unitPrice, currencyCode);
     const rows = await tx.insert(catalogItemOrgPricing)
       .values({ catalogItemId: itemId, orgId, partnerId: item.partnerId, currencyCode, unitPrice })
@@ -576,6 +596,15 @@ export async function setBundleComponents(
   const allocCurrency = allocationCurrency?.trim().toUpperCase() || null;
   if (!allocCurrency && components.some((c) => c.revenueAllocation != null)) {
     throw new CatalogServiceError('allocationCurrency is required when a component carries a revenueAllocation', 400, 'ALLOCATION_CURRENCY_REQUIRED');
+  }
+  // Wave-6 review: an allocation is persisted money carrying its own stamped
+  // currency (`allocation_currency`) and is copied verbatim onto a same-currency
+  // invoice line (invoiceService.addCatalogLine), so it must be representable in
+  // that currency — a fractional-yen allocation is a 400, never a silent round.
+  if (allocCurrency) {
+    for (const c of components) {
+      if (c.revenueAllocation != null) assertRepresentable(c.revenueAllocation.toFixed(2), allocCurrency);
+    }
   }
 
   const ids = components.map((c) => c.componentItemId);

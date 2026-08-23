@@ -13,8 +13,37 @@ import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
-import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
+import {
+  QuoteServiceError,
+  assertOrg,
+  assertSite,
+  assertQuoteAccess,
+  isSupersedable,
+  type QuoteActor,
+} from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   sanitizeRichTextHtml,
@@ -25,7 +54,7 @@ import {
   type RichTextSanitizeReport,
   type RichTextStripWarning,
 } from './richTextSanitize';
-import { quoteTableContentSchema, quoteCalloutContentSchema } from '@breeze/shared';
+import { quoteTableContentSchema, quoteCalloutContentSchema, isRepresentableInCurrency, minorUnitExponent } from '@breeze/shared';
 import type {
   CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery,
   QuoteTableContent, QuoteCalloutContent,
@@ -269,7 +298,12 @@ async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select
 
 /** Load a quote and assert it is owned/accessible AND still a draft (409 if not). */
 async function loadDraft(quoteId: string, actor: QuoteActor) {
-  const [q] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  // FOR UPDATE: block/line/content mutators that use loadDraft share this lock,
+  // serializing their draft edits against a concurrent send. writeQuoteImage is
+  // the current exception: it inserts only an unreferenced image row, which is
+  // safe today because that cannot change the rendered document. Any new content
+  // mutator must come through loadDraft before writing.
+  const [q] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
   if (q.status !== 'draft') throw new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT');
@@ -353,16 +387,12 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   // currency; the partner inheritance shipped for #3200 predates per-org
   // currency, B3). No DB-default backstop: a missed stamp must fail loudly
   // (23502 once wave 2 drops the column default), never mint a silent USD quote.
-  let currencyCode = input.currencyCode;
-  if (!currencyCode) {
-    const [org] = await db
-      .select({ currencyCode: organizations.currencyCode })
-      .from(organizations)
-      .where(eq(organizations.id, input.orgId))
-      .limit(1);
-    if (!org) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
-    currencyCode = org.currencyCode;
-  }
+  //
+  // Creation barrier (#3778): the default read happens under an org SHARE lock
+  // held until the INSERT commits (see readOrgStampingDefaults), so a
+  // concurrent changeOrgCurrency either counts this quote in its in-lock
+  // summary or this stamp is the NEW currency — never an old stamp committed
+  // unseen. An explicit `input.currencyCode` is a source copy: no org reread.
   // Number at creation (not at send): techs reference the number while drafting
   // and in the list. A deleted draft leaves a counter gap, which the numbering
   // contract explicitly tolerates (see allocateQuoteCounter). sendQuote keeps
@@ -370,20 +400,24 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   const year = new Date().getUTCFullYear();
   const counter = await allocateQuoteCounter(partnerId, year);
   const quoteNumber = formatQuoteNumber('Q', year, counter);
-  const [row] = await db.insert(quotes).values({
-    partnerId,
-    orgId: input.orgId,
-    siteId: input.siteId ?? null,
-    quoteNumber,
-    title: input.title?.trim() || null,
-    currencyCode,
-    taxRate,
-    expiryDate: input.expiryDate ?? null,
-    introNotes: input.introNotes ?? null,
-    terms: input.terms ?? null,
-    termsAndConditions: input.termsAndConditions ?? null,
-    createdBy: actor.userId,
-  }).returning();
+  const [row] = await db.transaction(async (tx) => {
+    const currencyCode = input.currencyCode
+      ?? (await lockOrgStampingDefaults(tx, input.orgId)).currencyCode;
+    return tx.insert(quotes).values({
+      partnerId,
+      orgId: input.orgId,
+      siteId: input.siteId ?? null,
+      quoteNumber,
+      title: input.title?.trim() || null,
+      currencyCode,
+      taxRate,
+      expiryDate: input.expiryDate ?? null,
+      introNotes: input.introNotes ?? null,
+      terms: input.terms ?? null,
+      termsAndConditions: input.termsAndConditions ?? null,
+      createdBy: actor.userId,
+    }).returning();
+  });
   return row!;
 }
 
@@ -549,6 +583,19 @@ async function cloneQuoteCore(
   }
 
   return db.transaction(async (tx) => {
+    if (orgChanged) {
+      // #3778: re-verify the same-currency guard under the org SHARE barrier,
+      // the FIRST statement of this transaction. The pre-transaction read above
+      // is a fast-fail: a changeOrgCurrency committing between the two would
+      // otherwise let a clone land on an org billing in another currency.
+      const locked = await lockOrgStampingDefaults(tx, targetOrgId);
+      if (locked.currencyCode !== source.currencyCode) {
+        throw new QuoteServiceError(
+          `target organization uses ${locked.currencyCode}; this quote is in ${source.currencyCode} — clone within the same currency or recreate the quote`,
+          400, 'CURRENCY_MISMATCH',
+        );
+      }
+    }
     const [cloned] = await tx.insert(quotes).values({
       id: quoteId,
       partnerId: source.partnerId,
@@ -707,15 +754,24 @@ async function resolveQuoteLineageRoot(
   return current;
 }
 
-const REVISABLE_STATUSES = new Set(['sent', 'viewed', 'declined', 'expired']);
-
 /**
- * Create a linked draft revision without touching the live parent. Superseding
- * the parent on send belongs to a later wave; see
- * docs/superpowers/plans/2026-08-17-quote-revisions.md.
+ * Create a linked draft revision without touching the live parent. The parent
+ * stays live until this revision is SENT — sendQuote flips it to 'superseded'
+ * atomically with the child's draft→sent claim.
  */
 export async function reviseQuote(id: string, actor: QuoteActor) {
-  const { quote: parent } = await getQuote(id, actor);
+  const { quote: parentRow } = await getQuote(id, actor);
+  // Lock the parent for the rest of this transaction and re-read its status.
+  // getQuote's snapshot is unlocked, so a customer accept committing between
+  // that read and the clone insert would otherwise let a revision draft attach
+  // to an ACCEPTED quote — precisely the state PARENT_CONVERTED exists to
+  // prevent, and one nothing downstream would flag. This row lock serializes
+  // the revision decision against acceptQuote and sendQuote's parent flip.
+  // Every gate below reads the LOCKED status, never the snapshot.
+  const [locked] = await db.select({ status: quotes.status }).from(quotes)
+    .where(eq(quotes.id, parentRow.id)).limit(1).for('update');
+  if (!locked) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  const parent = { ...parentRow, status: locked.status };
   if (parent.status === 'draft') {
     throw new QuoteServiceError('This quote is still a draft — edit it directly', 409, 'INVALID_STATE');
   }
@@ -738,7 +794,9 @@ export async function reviseQuote(id: string, actor: QuoteActor) {
       successor ? { successorQuoteId: successor.id } : undefined,
     );
   }
-  if (!REVISABLE_STATUSES.has(parent.status)) {
+  // The shared revisable set deliberately excludes accepted/converted because
+  // those settled outcomes already have an invoice or contract behind them.
+  if (!isSupersedable(parent.status)) {
     throw new QuoteServiceError(`Cannot revise a quote in status ${parent.status}`, 409, 'INVALID_STATE');
   }
   if (!parent.quoteNumber) {
@@ -1084,6 +1142,16 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
       .from(quoteBlocks)
       .where(and(eq(quoteBlocks.quoteId, id), eq(quoteBlocks.blockType, 'contract')));
     await db.transaction(async (tx) => {
+      // #3778: re-verify the same-currency guard under the org SHARE barrier as
+      // the FIRST statement of this transaction (the pre-transaction check above
+      // is a fast-fail only).
+      const lockedTarget = await lockOrgStampingDefaults(tx, targetOrgId);
+      if (lockedTarget.currencyCode !== q.currencyCode) {
+        throw new QuoteServiceError(
+          `target organization uses ${lockedTarget.currencyCode}; this quote is in ${q.currencyCode} — reassign within the same currency or recreate the quote`,
+          400, 'CURRENCY_MISMATCH',
+        );
+      }
       await assertContractBlocksValidForOrg(contractBlocks, { orgId: targetOrgId, partnerId: q.partnerId }, tx);
       await tx.update(quotes).set(set).where(eq(quotes.id, id));
       // Move the denormalized org_id on every child row in the same transaction.
@@ -1371,11 +1439,27 @@ async function resolveLineBlockId(quoteId: string, orgId: string, blockId: strin
   return block!.id;
 }
 
+/**
+ * Wave-6 release gate (W6-G2-1): hand-entered money on a quote line must be
+ * representable in the QUOTE's stamped currency (¥100.50 is refused, never
+ * silently rounded — owner-fixed: no conversion, snapshots rule).
+ */
+function assertRepresentable(value: string, currencyCode: string): void {
+  if (!isRepresentableInCurrency(value, currencyCode)) {
+    throw new QuoteServiceError(
+      `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
+      400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
+
 export async function addManualLine(quoteId: string, input: QuoteLineInput, actor: QuoteActor) {
   return db.transaction(async (tx) => {
     const q = await lockDraftQuote(tx, quoteId, actor);
     const quantity = String(input.quantity);
     const unitPrice = Number(input.unitPrice).toFixed(2);
+    assertRepresentable(unitPrice, q.currencyCode);
+    if (input.unitCost != null) assertRepresentable(Number(input.unitCost).toFixed(2), q.currencyCode);
     const blockId = await resolveLineBlockId(quoteId, q.orgId, input.blockId, tx);
     const sortOrder = await nextLineSortOrder(quoteId, tx);
     const [row] = await tx.insert(quoteLines).values({
@@ -1530,6 +1614,8 @@ export async function updateLine(
     if (!existing) throw new QuoteServiceError('Line not found', 404, 'LINE_NOT_FOUND');
     const quantity = input.quantity != null ? String(input.quantity) : existing.quantity;
     const unitPrice = input.unitPrice != null ? Number(input.unitPrice).toFixed(2) : existing.unitPrice;
+    if (input.unitPrice != null) assertRepresentable(unitPrice, q.currencyCode);
+    if (input.unitCost != null) assertRepresentable(Number(input.unitCost).toFixed(2), q.currencyCode);
     const set: Record<string, unknown> = {
       // name/description are independently patchable; undefined leaves them as-is,
       // an explicit null clears them (the refine on the route schema keeps ≥1 set).

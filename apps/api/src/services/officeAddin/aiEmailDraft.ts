@@ -1,10 +1,10 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+import { getAnthropicClientForPartner } from '../llm/llmConfigResolver';
 
 /**
  * AI email -> ticket draft (spec Task 19, Outlook tech add-in).
  *
- * Mirrors ../aiTicketDraft.ts's shape (direct `new Anthropic()`, 2-attempt
+ * Mirrors ../aiTicketDraft.ts's shape (resolved Anthropic client, 2-attempt
  * retry, zod-validated JSON-only output) but over a raw customer email
  * instead of a chat transcript.
  *
@@ -19,6 +19,7 @@ export interface EmailDraftInput {
   bodyText: string;
   threadContext?: string | null;
   model: string;
+  partnerId: string | null;
 }
 
 export interface EmailDraftResult {
@@ -83,7 +84,7 @@ export class EmailDraftFailedError extends Error {
 }
 
 export async function draftTicketFromEmail(input: EmailDraftInput): Promise<EmailDraftResult> {
-  const client = new Anthropic();
+  const { client } = await getAnthropicClientForPartner(input.partnerId);
   const userContent = buildUserContent(input);
   const attemptErrors: string[] = [];
   // Accumulated across attempts: a successful retry still reports (and the

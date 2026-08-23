@@ -171,6 +171,9 @@ export default defineConfig({
       // `src/__tests__/integration/**` glob, so the no-DB unit runner would
       // fail it on connect. Belongs to vitest.integration.config.ts.
       'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
+      // Real-DB suites owned by vitest.integration.config.ts (#3778).
+      'src/services/invoiceService.issue.integration.test.ts',
+      'src/services/invoicePdf.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

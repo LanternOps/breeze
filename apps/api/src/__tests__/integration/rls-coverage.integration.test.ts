@@ -90,6 +90,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'supported_currencies', // Global ISO-4217 allowlist (multi-currency spec §4). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read it), system-only writes. Mirrors winget_package_index.
+  'exchange_rates', // Global reporting-only FX reference data (multi-currency spec §8). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read rates to render an approximate total), system-only writes. Mirrors supported_currencies. Proven by exchangeRates.integration.test.ts.
   'winget_package_index', // Platform-global mirror of the public microsoft/winget-pkgs manifest tree (no tenant axis, no tenant data). Forced RLS with a permissive `USING (true)` SELECT policy — the /software/package-search route reads it from an ordinary org-scoped request context — plus a system-only FOR ALL policy so only the winget-index-sync worker can write.
   'partner_abuse_signals', // Operator abuse signals ABOUT partners. Forced RLS, system-only policy — partners must never see their own risk signals.
   'abuse_script_hosts', // Cross-partner download-host corpus for the script-content abuse detector. Carries partner_id but is deliberately operator-only (mirrors partner_abuse_signals). Forced RLS, system-only policy.
@@ -240,6 +241,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // auto-discovered as an ordinary shape-1 org-tenant table — not listed here.
   // Functional cross-partner forge proof: stripe-payments-rls.integration.test.ts.
   ['stripe_connect_accounts', 'partner_id'],
+  ['partner_llm_configs', 'partner_id'],
   // authenticator_policies: per-MSP approval-security policy (Shape 3). One row
   // per partner; policy gates on breeze_has_partner_access(partner_id) with a
   // system-scope OR branch. Functional forge: authenticatorRls.integration.test.ts.

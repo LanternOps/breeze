@@ -5,6 +5,7 @@ import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { formatMinutes } from '../../lib/timeFormat';
 import { formatMoney } from '../billing/shared/format';
+import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
 import { onTimerChanged } from '../../lib/timerActions';
 import { useHashState } from '@/lib/useHashState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -76,6 +77,19 @@ function mondayUtc(d: Date): string {
   const dow = (utc.getUTCDay() + 6) % 7; // Mon=0 … Sun=6
   utc.setUTCDate(utc.getUTCDate() - dow);
   return utc.toISOString().slice(0, 10);
+}
+
+/** The date the approximate line asks rates for. A timesheet is HISTORICAL, so
+ *  an old week must be converted at that week's rates, not today's — but never
+ *  at a future date, because the feed has no rows past today. Hence the earlier
+ *  of today (UTC) and the displayed week's end (Sunday). */
+function reportingDateForWeek(weekStart: string): string {
+  const [y, mo, d] = weekStart.split('-').map(Number);
+  const end = new Date(Date.UTC(y, mo - 1, d));
+  end.setUTCDate(end.getUTCDate() + 6);
+  const weekEnd = end.toISOString().slice(0, 10);
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  return weekEnd < todayUtc ? weekEnd : todayUtc;
 }
 
 function shiftWeek(weekStart: string, delta: number): string {
@@ -585,25 +599,34 @@ export default function TimesheetPage() {
       {sheet && (
         <div
           data-testid="timesheet-total"
-          className="flex items-center gap-4 rounded-lg border bg-muted/30 px-4 py-3 text-sm font-medium"
+          className="flex flex-col gap-1 rounded-lg border bg-muted/30 px-4 py-3 text-sm font-medium"
         >
-          <span>{t('longTail.time.TimesheetPage.total', { duration: formatMinutes(sheet.totals.totalMinutes) })}</span>
-          {sheet.totals.billableMinutes > 0 && (
-            <span className="text-muted-foreground">{t('longTail.time.TimesheetPage.billableTotal', { duration: formatMinutes(sheet.totals.billableMinutes) })}</span>
-          )}
-          {(sheet.totals.billableAmounts?.length ?? 0) > 0 && (
-            <span className="flex flex-wrap gap-1" data-testid="timesheet-billable-amounts">
-              {sheet.totals.billableAmounts.map((a) => (
-                <span
-                  key={a.currencyCode}
-                  className="rounded-full border bg-background px-2 py-0.5 text-xs tabular-nums"
-                  data-testid={`timesheet-billable-amount-${a.currencyCode}`}
-                >
-                  {formatMoney(a.amount, a.currencyCode)}
-                </span>
-              ))}
-            </span>
-          )}
+          <div className="flex items-center gap-4">
+            <span>{t('longTail.time.TimesheetPage.total', { duration: formatMinutes(sheet.totals.totalMinutes) })}</span>
+            {sheet.totals.billableMinutes > 0 && (
+              <span className="text-muted-foreground">{t('longTail.time.TimesheetPage.billableTotal', { duration: formatMinutes(sheet.totals.billableMinutes) })}</span>
+            )}
+            {(sheet.totals.billableAmounts?.length ?? 0) > 0 && (
+              <span className="flex flex-wrap gap-1" data-testid="timesheet-billable-amounts">
+                {sheet.totals.billableAmounts.map((a) => (
+                  <span
+                    key={a.currencyCode}
+                    className="rounded-full border bg-background px-2 py-0.5 text-xs tabular-nums"
+                    data-testid={`timesheet-billable-amount-${a.currencyCode}`}
+                  >
+                    {formatMoney(a.amount, a.currencyCode)}
+                  </span>
+                ))}
+              </span>
+            )}
+          </div>
+          {/* Reporting-only companion to the chips above; hides itself whenever
+              a leg is missing or stale (multi-currency spec §8). */}
+          <ApproximateMoneyLine
+            byCurrency={(sheet.totals.billableAmounts ?? []).map((a) => ({ code: a.currencyCode, amount: a.amount }))}
+            date={reportingDateForWeek(sheet.weekStart)}
+            testId="timesheet-total-approx"
+          />
         </div>
       )}
     </div>

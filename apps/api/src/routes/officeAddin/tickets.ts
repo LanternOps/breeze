@@ -4,7 +4,6 @@ import { db } from '../../db';
 import { partners, tickets } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
-import { resolveDefaultModel } from '../../services/aiAgent';
 import { recordUsage } from '../../services/aiCostTracker';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { applyDlp } from '../../services/clientAiDlp';
@@ -13,6 +12,7 @@ import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreadin
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
 import { createConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
 import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
+import { resolveLlmConfig } from '../../services/llm/llmConfigResolver';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
 import {
   addTicketComment,
@@ -280,7 +280,7 @@ async function partnerAiEnabled(partnerId: string): Promise<boolean> {
  * timeout / model error, and the DLP block's 422 is one of them too), and ANY
  * non-200 makes the pane fall back to a deterministic (non-AI) prefill.
  *
- * Check order is entitlement -> API key -> DLP -> model: the cheapest and most
+ * Check order is entitlement -> LLM config -> DLP -> model: the cheapest and most
  * authoritative "you may not do this at all" answer first, so an unentitled
  * partner never reaches DLP evaluation or the model.
  */
@@ -303,7 +303,11 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'ai_not_enabled' }, 403);
     }
 
-    if (!process.env.ANTHROPIC_API_KEY) {
+    const llmConfig = await resolveLlmConfig(auth.partnerId);
+    if (
+      llmConfig.source === 'unavailable'
+      || (llmConfig.source === 'platform' && !llmConfig.apiKey?.trim())
+    ) {
       return c.json({ error: 'ai_unavailable' }, 503);
     }
 
@@ -313,13 +317,14 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'dlp_blocked' }, 422);
     }
 
-    const model = resolveDefaultModel();
+    const model = llmConfig.model;
     try {
       const draft = await withTimeout(
         draftTicketFromEmail({
           subject: input.subject,
           bodyText: dlpResult.text ?? input.bodyText,
           model,
+          partnerId: auth.partnerId,
         }),
         DRAFT_TIMEOUT_MS
       );
