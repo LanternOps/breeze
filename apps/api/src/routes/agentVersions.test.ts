@@ -70,6 +70,7 @@ import {
   agentVersionRoutes,
   validateReleaseManifest,
   verifyEd25519ManifestSignature,
+  canonicalReleaseAssetName,
 } from "./agentVersions";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
@@ -2173,5 +2174,212 @@ describe("verifyEd25519ManifestSignature — empty-keyset opt-in (#643)", () => 
       { allowEmptyKeysetSoftPass: true },
     );
     expect(result).toBe(false);
+  });
+});
+
+// D1 (#3836): canonicalReleaseAssetName must reproduce EXACTLY the filenames
+// binarySync.ts's scanBinaryDir/parseBinaryFilename (agent/watchdog/backup),
+// USER_HELPER_TARGETS (user-helper), and the release pipeline's raw macOS
+// helper binary (release.yml, releaseAssetTrust.ts's DARWIN_BINARY_RE)
+// produce — every case below is cross-checked against those sources, not
+// invented independently.
+describe("canonicalReleaseAssetName (D1, #3836)", () => {
+  const cases: Array<[string, string, string, string | null]> = [
+    // agent — windows/linux/darwin, both arches. Also proves "macos" (the DB
+    // platform value) and "darwin" (the wire/manifest value some callers use)
+    // both resolve to the same on-disk name.
+    ["agent", "windows", "amd64", "breeze-agent-windows-amd64.exe"],
+    ["agent", "windows", "arm64", "breeze-agent-windows-arm64.exe"],
+    ["agent", "linux", "amd64", "breeze-agent-linux-amd64"],
+    ["agent", "linux", "arm64", "breeze-agent-linux-arm64"],
+    ["agent", "macos", "amd64", "breeze-agent-darwin-amd64"],
+    ["agent", "macos", "arm64", "breeze-agent-darwin-arm64"],
+    ["agent", "darwin", "amd64", "breeze-agent-darwin-amd64"],
+
+    // watchdog — same shape as agent (WATCHDOG_TARGETS = AGENT_TARGETS).
+    ["watchdog", "windows", "amd64", "breeze-watchdog-windows-amd64.exe"],
+    ["watchdog", "linux", "amd64", "breeze-watchdog-linux-amd64"],
+    ["watchdog", "linux", "arm64", "breeze-watchdog-linux-arm64"],
+    ["watchdog", "macos", "amd64", "breeze-watchdog-darwin-amd64"],
+    ["watchdog", "macos", "arm64", "breeze-watchdog-darwin-arm64"],
+
+    // backup — same shape as agent (BACKUP_TARGETS = AGENT_TARGETS).
+    ["backup", "windows", "amd64", "breeze-backup-windows-amd64.exe"],
+    ["backup", "linux", "amd64", "breeze-backup-linux-amd64"],
+    ["backup", "linux", "arm64", "breeze-backup-linux-arm64"],
+    ["backup", "macos", "amd64", "breeze-backup-darwin-amd64"],
+    ["backup", "macos", "arm64", "breeze-backup-darwin-arm64"],
+
+    // user-helper — Windows only (USER_HELPER_TARGETS).
+    ["user-helper", "windows", "amd64", "breeze-user-helper-windows-amd64.exe"],
+    ["user-helper", "windows", "arm64", "breeze-user-helper-windows-arm64.exe"],
+    ["user-helper", "macos", "amd64", null],
+    ["user-helper", "linux", "amd64", null],
+
+    // helper — the raw macOS desktop-helper Mach-O binary bundled into the
+    // agent .pkg (DARWIN_BINARY_RE in releaseAssetTrust.ts, release.yml). No
+    // per-arch Windows/Linux asset ships under this shape today; the Tauri
+    // "helper" app's own non-per-arch installer (breeze-helper-macos.dmg
+    // etc.) is a different shape this function does not claim.
+    ["helper", "macos", "amd64", "breeze-desktop-helper-darwin-amd64"],
+    ["helper", "macos", "arm64", "breeze-desktop-helper-darwin-arm64"],
+    ["helper", "windows", "amd64", null],
+    ["helper", "linux", "amd64", null],
+
+    // Unknown component/platform/arch — every unrecognized shape falls back
+    // to the caller's assetNameFromDownloadUrl, never fabricates a name.
+    ["viewer", "windows", "amd64", null],
+    ["not-a-real-component", "linux", "amd64", null],
+    ["agent", "solaris", "amd64", null],
+    ["agent", "linux", "mips", null],
+  ];
+
+  it.each(cases)(
+    "component=%s platform=%s arch=%s -> %s",
+    (component, platform, arch, expected) => {
+      expect(canonicalReleaseAssetName(component, platform, arch)).toBe(expected);
+    },
+  );
+});
+
+// D3 (#3836): the schema-v1 catch in validateReleaseManifest used to
+// collapse EVERY throw from verifyReleaseArtifactManifestAsset into
+// invalid_release_manifest_signature. These tests pin the split to typed
+// errors exported from releaseArtifactManifest.ts.
+describe("validateReleaseManifest — schema-v1 reason split (D3, #3836)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+  });
+
+  function makeSignedSchemaV1Manifest(
+    assets: Array<{
+      name: string;
+      sha256: string;
+      size: number;
+      platformTrust?: string;
+      edition?: string;
+    }>,
+    release = "v1.0.0",
+  ) {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+    const rawPublicKey = publicDer.subarray(publicDer.length - 32);
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release,
+      assets,
+    });
+    return {
+      manifest,
+      signature: sign(null, Buffer.from(manifest, "utf8"), privateKey).toString(
+        "base64",
+      ),
+      publicKey: rawPublicKey.toString("base64"),
+    };
+  }
+
+  it("returns release_manifest_asset_lookup_failed when the canonical asset is absent from a validly-signed manifest", async () => {
+    const signed = makeSignedSchemaV1Manifest([
+      {
+        name: "breeze-agent-windows-amd64.exe",
+        sha256: "a".repeat(64),
+        size: 10,
+        platformTrust: requiredPlatformTrustFor("breeze-agent-windows-amd64.exe") ?? undefined,
+      },
+    ]);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const result = await validateReleaseManifest({
+      manifest: signed.manifest,
+      signature: signed.signature,
+      version: "1.0.0",
+      platform: "linux",
+      arch: "amd64",
+      component: "agent",
+      // Deliberately irrelevant: D1 makes the canonical (component, platform,
+      // arch) shape win over the URL basename, so this URL is never consulted.
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum: "b".repeat(64),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "release_manifest_asset_lookup_failed",
+    });
+  });
+
+  it("returns release_asset_not_distributable when the asset entry fails the platform-trust policy check", async () => {
+    const assetName = "breeze-agent-windows-amd64.exe";
+    const checksum = "c".repeat(64);
+    const signed = makeSignedSchemaV1Manifest([
+      // Windows .exe requires "windows-authenticode-required"; "none" with no
+      // edition claim is refused by assertDistributableReleaseAsset.
+      { name: assetName, sha256: checksum, size: 10, platformTrust: "none" },
+    ]);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const result = await validateReleaseManifest({
+      manifest: signed.manifest,
+      signature: signed.signature,
+      version: "1.0.0",
+      platform: "windows",
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "release_asset_not_distributable",
+    });
+  });
+
+  it("#641 — a forged signature still returns invalid_release_manifest_signature even though the asset would otherwise fail lookup", async () => {
+    // The manifest is well-formed but does NOT include the asset a valid
+    // signature would need to cover — if signature verification were skipped
+    // or ran second, this would leak release_manifest_asset_lookup_failed to
+    // an attacker who never held the signing key. It must not: verify
+    // ReleaseArtifactManifestAsset checks the signature before ever
+    // attempting the lookup.
+    const attacker = generateKeyPairSync("ed25519");
+    const trusted = generateKeyPairSync("ed25519");
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release: "v1.0.0",
+      assets: [{ name: "breeze-agent-windows-amd64.exe", sha256: "a".repeat(64), size: 10 }],
+    });
+    const forgedSignature = sign(
+      null,
+      Buffer.from(manifest, "utf8"),
+      attacker.privateKey,
+    ).toString("base64");
+    const trustedPublicDer = trusted.publicKey.export({
+      format: "der",
+      type: "spki",
+    }) as Buffer;
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = trustedPublicDer
+      .subarray(trustedPublicDer.length - 32)
+      .toString("base64");
+
+    const result = await validateReleaseManifest({
+      manifest,
+      signature: forgedSignature,
+      version: "1.0.0",
+      platform: "linux", // resolves to breeze-agent-linux-amd64 — not in `assets` above
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum: "b".repeat(64),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "invalid_release_manifest_signature",
+    });
   });
 });

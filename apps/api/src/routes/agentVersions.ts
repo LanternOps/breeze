@@ -17,7 +17,11 @@ import { syncFromGitHub } from "../services/binarySync";
 import { getBinaryEdition } from "../services/binaryEdition";
 import { getGithubReleaseVersion } from "../services/binarySource";
 import { PERMISSIONS } from "../services/permissions";
-import { verifyReleaseArtifactManifestAsset } from "../services/releaseArtifactManifest";
+import {
+  verifyReleaseArtifactManifestAsset,
+  ReleaseAssetNotDistributableError,
+  ReleaseManifestAssetLookupError,
+} from "../services/releaseArtifactManifest";
 import { EDITION_HOSTED, EDITION_SELF_HOST } from "../services/releaseAssetTrust";
 import { getActivePublicKeys as getActiveDeploymentSigningPubKeys } from "../services/manifestSigning";
 
@@ -253,6 +257,71 @@ function assetNameFromDownloadUrl(downloadUrl: string): string | null {
   }
 }
 
+// D1 (issue #3836): canonical asset-name resolution for schema-v1
+// release-artifact manifests.
+//
+// validateReleaseManifest's schema-v1 branch used to derive the manifest
+// asset name to look up SOLELY from assetNameFromDownloadUrl(downloadUrl) —
+// the URL's last path segment. That is correct for a GitHub-sourced
+// downloadUrl (".../releases/download/v1.0.0/breeze-agent-linux-amd64") but
+// wrong for a BINARY_SOURCE=local row: registerFromOfficialManifest
+// (services/binarySync.ts) stores a server-relative downloadUrl
+// (".../api/v1/agents/download/{os}/{arch}" — see
+// buildServerRelativeAgentDownloadUrl above), whose last path segment is the
+// ARCH, not an asset name. Every local-mode row's schema-v1 lookup therefore
+// searched the manifest for e.g. "amd64", never found it, and the failure
+// collapsed into invalid_release_manifest_signature — a fleet-wide 409 on
+// every agent heartbeat for a correctly-signed row.
+//
+// This function reproduces EXACTLY the filenames binarySync.ts's
+// scanBinaryDir/parseBinaryFilename (agent/watchdog/backup),
+// USER_HELPER_TARGETS (user-helper), and the release pipeline's raw macOS
+// helper binary (release.yml / releaseAssetTrust.ts's DARWIN_BINARY_RE)
+// produce for every (component, platform, arch) triple this server can
+// register — see the cross-check list in the D1 unit tests. It is the
+// preferred source of truth; assetNameFromDownloadUrl(downloadUrl) remains
+// the fallback for any (component, platform) shape this function doesn't
+// recognize (including the GitHub-sourced case above), so behavior for
+// BINARY_SOURCE=github rows is unchanged.
+export function canonicalReleaseAssetName(
+  component: string,
+  platform: string,
+  architecture: string,
+): string | null {
+  // DB / manifest platform values use "macos"; on-disk/release asset
+  // filenames use Go's GOOS naming, "darwin".
+  const goos = platform === "macos" ? "darwin" : platform;
+  const isKnownArch = architecture === "amd64" || architecture === "arm64";
+  if (!isKnownArch) return null;
+
+  if (component === "agent" || component === "watchdog" || component === "backup") {
+    if (goos !== "windows" && goos !== "linux" && goos !== "darwin") return null;
+    const suffix = goos === "windows" ? ".exe" : "";
+    return `breeze-${component}-${goos}-${architecture}${suffix}`;
+  }
+
+  // breeze-user-helper (#816/#1878): Windows-only GUI-subsystem sibling of
+  // breeze-agent.
+  if (component === "user-helper") {
+    if (goos !== "windows") return null;
+    return `breeze-user-helper-windows-${architecture}.exe`;
+  }
+
+  // The raw macOS remote-desktop companion binary bundled into the agent
+  // .pkg installer (agent/installer/macos/build-pkg.sh, release.yml). No
+  // per-arch Windows/Linux equivalent ships as its own asset today — the
+  // Tauri "helper" app's own installer (breeze-helper-{macos.dmg,windows.msi,
+  // linux.AppImage} — see HELPER_FILENAMES in services/binarySource.ts) is a
+  // different, non-per-arch asset shape this function deliberately does not
+  // claim to resolve; that shape falls through to the URL-basename fallback.
+  if (component === "helper") {
+    if (goos !== "darwin") return null;
+    return `breeze-desktop-helper-darwin-${architecture}`;
+  }
+
+  return null;
+}
+
 // Server-origin discovery for handing agents a download URL that matches
 // their configured control-plane host. The agent's downloadFromURL enforces
 // host equality with its ServerURL to prevent leaking the bearer token to a
@@ -352,7 +421,15 @@ export async function validateReleaseManifest(args: {
   }
 
   if (parsed.schemaVersion === 1 && Array.isArray(parsed.assets)) {
-    const assetName = assetNameFromDownloadUrl(args.downloadUrl);
+    // D1 (#3836): canonical resolution wins when the (component, platform,
+    // arch) shape is known — the URL basename stays only as a fallback for
+    // shapes canonicalReleaseAssetName doesn't recognize (e.g. a genuine
+    // GitHub-sourced downloadUrl). See canonicalReleaseAssetName's own
+    // comment for why the URL-basename-only approach was wrong for
+    // BINARY_SOURCE=local rows.
+    const assetName =
+      canonicalReleaseAssetName(args.component, args.platform, args.arch) ??
+      assetNameFromDownloadUrl(args.downloadUrl);
     if (!assetName) {
       return { ok: false, reason: "release_manifest_metadata_mismatch" };
     }
@@ -373,7 +450,35 @@ export async function validateReleaseManifest(args: {
         return { ok: false, reason: "release_manifest_metadata_mismatch" };
       }
       return { ok: true };
-    } catch {
+    } catch (err) {
+      // D3 (#3836): verifyReleaseArtifactManifestAsset verifies the Ed25519
+      // signature FIRST, unconditionally, before it ever attempts an asset
+      // lookup or a distributability check (releaseArtifactManifest.ts) — so
+      // reaching either typed branch below already implies a signature that
+      // verified. That preserves the #641 anti-probing property: a reason
+      // more specific than "signature invalid" is only ever returned after a
+      // real signature check passed. Never leak `err.message` to the agent
+      // response body — log it server-side only.
+      if (err instanceof ReleaseAssetNotDistributableError) {
+        console.error(
+          "[agentVersions] Release asset not distributable:",
+          err.message,
+        );
+        return { ok: false, reason: "release_asset_not_distributable" };
+      }
+      if (err instanceof ReleaseManifestAssetLookupError) {
+        console.error(
+          "[agentVersions] Release manifest asset lookup failed:",
+          err.message,
+        );
+        return { ok: false, reason: "release_manifest_asset_lookup_failed" };
+      }
+      // Signature verification failure, or any unrecognized error shape —
+      // fail closed to the least-specific reason.
+      console.error(
+        "[agentVersions] Release manifest signature verification failed:",
+        err instanceof Error ? err.message : err,
+      );
       return { ok: false, reason: "invalid_release_manifest_signature" };
     }
   }
