@@ -16,13 +16,13 @@ export const partnerLlmConfigs = pgTable('partner_llm_configs', {
   partnerId: uuid('partner_id')
     .notNull()
     .references(() => partners.id, { onDelete: 'cascade' }),
-  provider: text('provider').notNull().default('anthropic'),
+  provider: text('provider', { enum: ['anthropic'] }).notNull().default('anthropic'),
   apiKeyEncrypted: text('api_key_encrypted').notNull(),
   keyLast4: text('key_last4').notNull(),
   keyFingerprint: text('key_fingerprint').notNull(),
   baseUrl: text('base_url'),
   defaultModel: text('default_model'),
-  status: text('status').notNull().default('active'),
+  status: text('status', { enum: ['active', 'error'] }).notNull().default('active'),
   configVersion: integer('config_version').notNull().default(1),
   lastError: text('last_error'),
   verifiedAt: timestamp('verified_at', { withTimezone: true }),

@@ -4,9 +4,17 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
 const CONFIG_ID = '22222222-2222-4222-8222-222222222222';
 
-const { anthropicOptions, captureExceptionMock, dbState, decryptMock, contextState } = vi.hoisted(() => ({
+const {
+  anthropicOptions,
+  captureExceptionMock,
+  captureMessageMock,
+  dbState,
+  decryptMock,
+  contextState,
+} = vi.hoisted(() => ({
   anthropicOptions: [] as Array<{ apiKey?: string }>,
   captureExceptionMock: vi.fn(),
+  captureMessageMock: vi.fn(),
   dbState: {
     selectResults: [] as unknown[][],
     updateResults: [] as unknown[][],
@@ -36,6 +44,7 @@ vi.mock('../partnerLlmConfig', () => ({
 
 vi.mock('../sentry', () => ({
   captureException: captureExceptionMock,
+  captureMessage: captureMessageMock,
 }));
 
 vi.mock('../../db', () => ({
@@ -80,7 +89,7 @@ import {
   resolveLlmConfig,
 } from './llmConfigResolver';
 import { SecretKeyMaterialError } from '../secretCrypto';
-import { captureException } from '../sentry';
+import { captureException, captureMessage } from '../sentry';
 
 const originalPlatformKey = process.env.ANTHROPIC_API_KEY;
 
@@ -116,6 +125,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   if (originalPlatformKey === undefined) delete process.env.ANTHROPIC_API_KEY;
   else process.env.ANTHROPIC_API_KEY = originalPlatformKey;
 });
@@ -128,6 +138,19 @@ describe('resolveLlmConfig', () => {
       model: 'claude-sonnet-4-6',
     });
     expect(contextState.systemCalls).toBe(0);
+  });
+
+  it('returns the platform config when the partner has no configuration row', async () => {
+    dbState.selectResults.push([]);
+
+    await expect(resolveLlmConfig(PARTNER_ID)).resolves.toEqual({
+      source: 'platform',
+      apiKey: 'platform-key',
+      model: 'claude-sonnet-4-6',
+    });
+    expect(contextState.outsideCalls).toBe(1);
+    expect(contextState.systemCalls).toBe(1);
+    expect(decryptMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -183,7 +206,7 @@ describe('resolveLlmConfig', () => {
     await expect(resolveLlmConfig(PARTNER_ID)).resolves.toEqual({
       source: 'unavailable',
       partnerId: PARTNER_ID,
-      reason: 'key_error',
+      reason: 'key_material',
     });
     expect(dbState.updateSets).toHaveLength(0);
     expect(captureException).toHaveBeenCalledWith(error, undefined, {
@@ -194,6 +217,27 @@ describe('resolveLlmConfig', () => {
       '[llmConfigResolver] partner config cannot be decrypted with this node key material',
       { partnerId: PARTNER_ID, error },
     );
+    consoleError.mockRestore();
+  });
+
+  it('throttles node key-material captures per partner for one hour', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    const partnerId = '44444444-4444-4444-8444-444444444444';
+    const error = new SecretKeyMaterialError('Unknown encrypted secret key ID');
+    dbState.selectResults.push([row()], [row()], [row()]);
+    decryptMock.mockImplementation(() => {
+      throw error;
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await resolveLlmConfig(partnerId);
+    await resolveLlmConfig(partnerId);
+    expect(captureException).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    await resolveLlmConfig(partnerId);
+    expect(captureException).toHaveBeenCalledTimes(2);
     consoleError.mockRestore();
   });
 
@@ -258,6 +302,16 @@ describe('markPartnerLlmError', () => {
 });
 
 describe('getAnthropicClientForPartner', () => {
+  it('constructs the Anthropic client with the partner key instead of the platform key', async () => {
+    dbState.selectResults.push([row()]);
+
+    const result = await getAnthropicClientForPartner(PARTNER_ID);
+
+    expect(result.resolved).toMatchObject({ source: 'partner', apiKey: 'partner-plaintext-key' });
+    expect(anthropicOptions).toEqual([{ apiKey: 'partner-plaintext-key' }]);
+    expect(anthropicOptions[0]?.apiKey).not.toBe('platform-key');
+  });
+
   it('throws LlmUnavailableError instead of constructing a client for unavailable config', async () => {
     dbState.selectResults.push([row({ status: 'error' })]);
 
@@ -266,20 +320,26 @@ describe('getAnthropicClientForPartner', () => {
   });
 
   it('reports a deployment configuration error when the platform key is blank', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
     process.env.ANTHROPIC_API_KEY = '   ';
 
     await expect(getAnthropicClientForPartner(null)).rejects.toMatchObject({
       name: 'LlmUnavailableError',
       message: 'AI is not configured on this deployment.',
     });
-    expect(captureException).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'LlmUnavailableError',
-        message: 'AI is not configured on this deployment.',
-      }),
+    await expect(getAnthropicClientForPartner(null)).rejects.toBeInstanceOf(LlmUnavailableError);
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(
+      'AI is not configured on this deployment.',
+      'warning',
       undefined,
       { service: 'llmConfigResolver' },
     );
+
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    await expect(getAnthropicClientForPartner(null)).rejects.toBeInstanceOf(LlmUnavailableError);
+    expect(captureMessage).toHaveBeenCalledTimes(2);
     expect(anthropicOptions).toHaveLength(0);
   });
 });

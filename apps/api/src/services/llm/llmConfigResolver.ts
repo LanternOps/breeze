@@ -5,7 +5,18 @@ import { partnerLlmConfigs } from '../../db/schema';
 import { resolveDefaultModel } from '../aiAgent';
 import { decryptPartnerLlmApiKey } from '../partnerLlmConfig';
 import { SecretKeyMaterialError } from '../secretCrypto';
-import { captureException } from '../sentry';
+import { captureException, captureMessage } from '../sentry';
+
+const SENTRY_CAPTURE_THROTTLE_MS = 60 * 60 * 1000;
+const sentryCaptureTimestamps = new Map<string, number>();
+
+function captureAtMostHourly(key: string, capture: () => void): void {
+  const now = Date.now();
+  const lastCapture = sentryCaptureTimestamps.get(key);
+  if (lastCapture !== undefined && now - lastCapture < SENTRY_CAPTURE_THROTTLE_MS) return;
+  sentryCaptureTimestamps.set(key, now);
+  capture();
+}
 
 export type ResolvedLlmConfig =
   | { source: 'platform'; apiKey: string | undefined; model: string }
@@ -17,7 +28,13 @@ export type ResolvedLlmConfig =
       configId: string;
       configVersion: number;
     }
-  | { source: 'unavailable'; partnerId: string; reason: 'key_error' };
+  | {
+      source: 'unavailable';
+      partnerId: string;
+      reason: 'key_error' | 'key_material';
+    };
+
+export type UsableLlmConfig = Exclude<ResolvedLlmConfig, { source: 'unavailable' }>;
 
 export class LlmUnavailableError extends Error {
   readonly status = 503;
@@ -68,14 +85,17 @@ export async function resolveLlmConfig(partnerId: string | null): Promise<Resolv
   try {
     apiKey = decryptPartnerLlmApiKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
   } catch (error) {
-    captureException(error, undefined, { service: 'llmConfigResolver', partnerId });
     if (error instanceof SecretKeyMaterialError) {
+      captureAtMostHourly(`key-material:${partnerId}`, () => {
+        captureException(error, undefined, { service: 'llmConfigResolver', partnerId });
+      });
       console.error(
         '[llmConfigResolver] partner config cannot be decrypted with this node key material',
         { partnerId, error },
       );
-      return { source: 'unavailable', partnerId, reason: 'key_error' };
+      return { source: 'unavailable', partnerId, reason: 'key_material' };
     }
+    captureException(error, undefined, { service: 'llmConfigResolver', partnerId });
     try {
       await markPartnerLlmError({
         configId: row.id,
@@ -103,26 +123,25 @@ export async function resolveLlmConfig(partnerId: string | null): Promise<Resolv
   };
 }
 
+export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
+
 /**
  * Marks normalized credential failures only when the exact config row id and
  * version still match. Callers must not invoke this for Anthropic 429, 5xx,
  * network, timeout, or other retryable failures.
  */
-export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
-
 export async function markPartnerLlmError(input: {
   configId: string;
   configVersion: number;
   reason: PartnerLlmErrorReason;
 }): Promise<boolean> {
-  const reason = input.reason.trim().slice(0, 160) || 'credential_error';
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [updated] = await db
         .update(partnerLlmConfigs)
         .set({
           status: 'error',
-          lastError: reason,
+          lastError: input.reason,
           updatedAt: new Date(),
         })
         .where(and(
@@ -137,7 +156,7 @@ export async function markPartnerLlmError(input: {
 
 export async function getAnthropicClientForPartner(partnerId: string | null): Promise<{
   client: Anthropic;
-  resolved: Exclude<ResolvedLlmConfig, { source: 'unavailable' }>;
+  resolved: UsableLlmConfig;
 }> {
   const resolved = await resolveLlmConfig(partnerId);
   if (resolved.source === 'unavailable') {
@@ -145,7 +164,14 @@ export async function getAnthropicClientForPartner(partnerId: string | null): Pr
   }
   if (!resolved.apiKey?.trim()) {
     const error = new LlmUnavailableError('AI is not configured on this deployment.');
-    captureException(error, undefined, { service: 'llmConfigResolver' });
+    captureAtMostHourly('blank-platform-key:platform', () => {
+      captureMessage(
+        'AI is not configured on this deployment.',
+        'warning',
+        undefined,
+        { service: 'llmConfigResolver' },
+      );
+    });
     throw error;
   }
   return {

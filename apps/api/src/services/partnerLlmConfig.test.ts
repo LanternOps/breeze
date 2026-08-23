@@ -1,5 +1,6 @@
 import { createHash, createHmac } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -28,6 +29,7 @@ const { anthropicState, captureExceptionMock, dbState } = vi.hoisted(() => {
       deleteResults: [] as unknown[][],
       insertedValues: [] as Array<Record<string, unknown>>,
       updateSets: [] as Array<Record<string, unknown>>,
+      updateWheres: [] as unknown[],
       deleteWheres: [] as unknown[],
     },
   };
@@ -77,9 +79,12 @@ vi.mock('../db', () => ({
       set: vi.fn((values: Record<string, unknown>) => {
         dbState.updateSets.push(values);
         return {
-          where: vi.fn(() => ({
-            returning: vi.fn(() => Promise.resolve(dbState.updateResults.shift() ?? [])),
-          })),
+          where: vi.fn((condition: unknown) => {
+            dbState.updateWheres.push(condition);
+            return {
+              returning: vi.fn(() => Promise.resolve(dbState.updateResults.shift() ?? [])),
+            };
+          }),
         };
       }),
     })),
@@ -131,6 +136,11 @@ function apiKeyAad(id: string): string {
   return columnAad(spec, id);
 }
 
+function compileSql(expression: unknown): { sql: string; params: unknown[] } {
+  const { sql, params } = new PgDialect().sqlToQuery(expression as never);
+  return { sql, params };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   anthropicState.constructorOptions.length = 0;
@@ -140,6 +150,7 @@ beforeEach(() => {
   dbState.deleteResults.length = 0;
   dbState.insertedValues.length = 0;
   dbState.updateSets.length = 0;
+  dbState.updateWheres.length = 0;
   dbState.deleteWheres.length = 0;
   anthropicState.create.mockResolvedValue({ content: [], usage: { input_tokens: 1, output_tokens: 1 } });
 });
@@ -273,6 +284,14 @@ describe('savePartnerLlmKey', () => {
     expect(decryptSecret(String(updates.apiKeyEncrypted), { aad: apiKeyAad(CONFIG_ID) })).toBe(API_KEY);
     expect(updates.status).toBe('active');
     expect(updates.lastError).toBeNull();
+    expect(compileSql(updates.configVersion)).toEqual({
+      sql: '"partner_llm_configs"."config_version" + 1',
+      params: [],
+    });
+    expect(compileSql(dbState.updateWheres[0])).toEqual({
+      sql: '("partner_llm_configs"."partner_id" = $1 and "partner_llm_configs"."id" = $2)',
+      params: [PARTNER_ID, CONFIG_ID],
+    });
     expect(result).toMatchObject({ model: 'claude-haiku-4-5', configVersion: 8 });
   });
 });
@@ -283,6 +302,27 @@ describe('updatePartnerLlmConfig', () => {
       updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-made-up-model' }),
     ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
     expect(dbState.updateSets).toHaveLength(0);
+  });
+
+  it('increments the config version with SQL when updating the default model', async () => {
+    dbState.updateResults.push([{ configVersion: 9 }]);
+
+    await expect(updatePartnerLlmConfig({
+      partnerId: PARTNER_ID,
+      defaultModel: 'claude-haiku-4-5',
+    })).resolves.toEqual({
+      defaultModel: 'claude-haiku-4-5',
+      configVersion: 9,
+    });
+
+    expect(compileSql(dbState.updateSets[0]?.configVersion)).toEqual({
+      sql: '"partner_llm_configs"."config_version" + 1',
+      params: [],
+    });
+    expect(compileSql(dbState.updateWheres[0])).toEqual({
+      sql: '"partner_llm_configs"."partner_id" = $1',
+      params: [PARTNER_ID],
+    });
   });
 });
 
@@ -312,5 +352,9 @@ describe('deletePartnerLlmConfig', () => {
     dbState.deleteResults.push([...deletedRows]);
 
     await expect(deletePartnerLlmConfig(PARTNER_ID)).resolves.toBe(expected);
+    expect(compileSql(dbState.deleteWheres[0])).toEqual({
+      sql: '"partner_llm_configs"."partner_id" = $1',
+      params: [PARTNER_ID],
+    });
   });
 });

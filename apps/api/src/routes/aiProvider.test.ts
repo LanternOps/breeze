@@ -64,6 +64,7 @@ vi.mock('../services/partnerLlmConfig', () => {
 });
 
 import { aiProviderRoutes } from './aiProvider';
+import { requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import {
@@ -84,7 +85,12 @@ function postKey(apiKey = 'sk-ant-api03-route-test-key-1234567890') {
 
 describe('AI provider routes', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    captureExceptionMock.mockClear();
+    vi.mocked(writeRouteAudit).mockClear();
+    vi.mocked(getPartnerLlmStatus).mockClear();
+    vi.mocked(savePartnerLlmKey).mockClear();
+    vi.mocked(updatePartnerLlmConfig).mockClear();
+    vi.mocked(deletePartnerLlmConfig).mockClear();
     authGates.permissionDenied = false;
     authGates.mfaDenied = false;
     authState.value = {
@@ -175,6 +181,34 @@ describe('AI provider routes', () => {
     expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
   });
 
+  it.each(handlerRequests)('%s stops at the billing permission gate before calling the service', async (_name, request) => {
+    authGates.permissionDenied = true;
+
+    const response = await request();
+
+    expect(response.status).toBe(403);
+    expect(getPartnerLlmStatus).not.toHaveBeenCalled();
+    expect(savePartnerLlmKey).not.toHaveBeenCalled();
+    expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
+    expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
+  });
+
+  it('registers every handler with the billing manage permission', async () => {
+    expect(requirePermission).toHaveBeenCalledTimes(4);
+    expect(requirePermission).toHaveBeenCalledWith('billing', 'manage');
+  });
+
+  it('GET / uses read-specific copy when full partner org access is missing', async () => {
+    authState.value.partnerOrgAccess = 'selected';
+
+    const response = await aiProviderRoutes.request('/', { method: 'GET' });
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain(
+      'Viewing the partner AI provider configuration requires full partner org access (orgAccess must be "all")',
+    );
+  });
+
   it('requires MFA for POST /key', async () => {
     authGates.mfaDenied = true;
 
@@ -233,9 +267,11 @@ describe('AI provider routes', () => {
   });
 
   it('POST /key saves and audits only last4 and configVersion', async () => {
-    const response = await postKey();
+    const submittedKey = 'sk-ant-api03-route-test-key-1234567890';
+    const response = await postKey(submittedKey);
 
     expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain(submittedKey);
     expect(savePartnerLlmKey).toHaveBeenCalledWith({
       partnerId: '22222222-2222-4222-8222-222222222222',
       apiKey: 'sk-ant-api03-route-test-key-1234567890',
@@ -266,6 +302,22 @@ describe('AI provider routes', () => {
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'ai_provider.updated',
     }));
+  });
+
+  it('PATCH / deliberately succeeds without requiring MFA because only key writes and removal are gated', async () => {
+    authGates.mfaDenied = true;
+
+    const response = await aiProviderRoutes.request('/', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ defaultModel: 'claude-haiku-4-5' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(updatePartnerLlmConfig).toHaveBeenCalledWith({
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      defaultModel: 'claude-haiku-4-5',
+    });
   });
 
   it('PATCH / captures mapped PartnerLlmError responses at 5xx', async () => {

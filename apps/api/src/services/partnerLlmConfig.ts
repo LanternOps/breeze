@@ -205,7 +205,7 @@ export async function getPartnerLlmStatus(partnerId: string): Promise<PartnerLlm
     provider: 'anthropic',
     keyLast4: row.keyLast4,
     defaultModel: row.defaultModel,
-    status: row.status === 'error' ? 'error' : 'active',
+    status: row.status,
     verifiedAt: row.verifiedAt,
     lastError: row.lastError,
   };

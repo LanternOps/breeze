@@ -36,7 +36,11 @@ aiProviderRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    if (!canManagePartnerWidePolicies(auth)) {
+      throw new HTTPException(403, {
+        message: 'Viewing the partner AI provider configuration requires full partner org access (orgAccess must be "all")',
+      });
+    }
     const status = await getPartnerLlmStatus(auth.partnerId);
     return c.json({
       configured: status.configured,
