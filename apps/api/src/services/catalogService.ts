@@ -5,7 +5,7 @@ import {
 } from '../db/schema';
 import { emitCatalogEvent } from './catalogEvents';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { readOrgStampingDefaults } from './orgCurrencyCore';
+import { readOrgStampingDefaults, OrgCurrencyServiceError } from './orgCurrencyCore';
 import {
   deriveUnitPrice, resolvePriceFrom, isPriceGap, detectBundleProblems, computeBundleEconomicsFrom,
   type BundleHeadlineGap,
@@ -534,8 +534,16 @@ export async function setOrgPriceOverride(itemId: string, orgId: string, input: 
     // A cross-partner (or otherwise invisible) org must keep this service's own
     // 403 ORG_DENIED contract — the barrier's neutral 404 would otherwise
     // pre-empt the same-partner check below now that the org lock runs first.
-    const lockedOrg = await readOrgStampingDefaults(tx, orgId).catch(() => {
-      throw new CatalogServiceError('Organization not found for this partner', 403, 'ORG_DENIED');
+    // Narrow (#3778 finding 5): only a MISSING org becomes this service's 403.
+    // A blanket `.catch()` also swallowed 40001/40P01 — plausible precisely
+    // because this read now takes a row lock contending with changeOrgCurrency's
+    // FOR UPDATE — and reported a retriable failure as a permanent authorization
+    // error, while hiding genuine helper bugs.
+    const lockedOrg = await readOrgStampingDefaults(tx, orgId).catch((err: unknown) => {
+      if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+        throw new CatalogServiceError('Organization not found for this partner', 403, 'ORG_DENIED');
+      }
+      throw err;
     });
     const item = await lockOwnedItemOr404(itemId, partnerId, tx);
     // Overrides carry an explicit currency (default: the org's) + the

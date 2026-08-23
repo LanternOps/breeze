@@ -6,6 +6,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // of catalogService; the data path is proven by catalogService.integration.test.ts.
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
+/** Queue a REJECTION for the next awaited chain — the transient-failure shape
+ *  (40001 serialization failure, 40P01 deadlock, dropped connection) that a
+ *  locking read can now raise. */
+function queueRejection(err: unknown) { results.push(err as never); }
 
 vi.mock('../db', () => {
   const makeChain = () => {
@@ -15,8 +19,9 @@ vi.mock('../db', () => {
       'delete', 'for', 'innerJoin', 'leftJoin', 'onConflictDoNothing', 'onConflictDoUpdate', '$dynamic', 'execute'
     ];
     for (const m of methods) chain[m] = vi.fn(() => chain);
-    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
+    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
       const rows = results.shift() ?? [];
+      if (rows instanceof Error) return Promise.reject(rows).then(resolve, reject);
       return Promise.resolve(rows).then(resolve);
     };
     return chain;
@@ -276,6 +281,24 @@ describe('setOrgPriceOverride', () => {
     await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor))
       .rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
     expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it('a transient failure on the org barrier is rethrown, not masked as 403 ORG_DENIED (#3778 finding 5)', async () => {
+    // The barrier's `.catch(() => ORG_DENIED)` used to swallow EVERY rejection:
+    // a 40001/40P01 raised by the new row lock (it contends with
+    // changeOrgCurrency's FOR UPDATE) was reported to the caller as a permanent
+    // authorization failure instead of a retriable error, and helper bugs hid.
+    const serialization = Object.assign(new Error('could not serialize access due to concurrent update'), { code: '40001' });
+    queueRejection(serialization);
+    await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor))
+      .rejects.toBe(serialization);
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it('a missing org on the barrier still maps to 403 ORG_DENIED', async () => {
+    queueResult([]); // org SHARE barrier finds no row
+    await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor))
+      .rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
   });
 
   it('explicit JPY 10.5 → PRICE_NOT_REPRESENTABLE', async () => {
