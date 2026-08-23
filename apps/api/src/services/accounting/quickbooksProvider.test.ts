@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createHmac } from 'crypto';
-import { quickbooksProvider, mapQboCustomer, mapQboAddress } from './quickbooksProvider';
+import { quickbooksProvider, mapQboCustomer, mapQboAddress, mapQboHomeCurrency } from './quickbooksProvider';
 import type { AccountingConnection } from './accountingConnectionService';
 
 function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnection {
@@ -146,5 +146,91 @@ describe('QuickbooksProvider OAuth + webhook', () => {
     const signature = createHmac('sha256', 'verifier-token').update(body).digest('base64');
     expect(quickbooksProvider.verifyWebhook(signature, body, 'verifier-token')).toBe(true);
     expect(quickbooksProvider.verifyWebhook(signature, body, 'wrong-token')).toBe(false);
+  });
+});
+
+describe('mapQboHomeCurrency', () => {
+  it('reads Preferences.CurrencyPrefs.HomeCurrency.value and normalizes it', () => {
+    expect(mapQboHomeCurrency({ Preferences: { CurrencyPrefs: { HomeCurrency: { value: ' cad ' } } } })).toBe('CAD');
+  });
+
+  it('returns null when any level is missing', () => {
+    expect(mapQboHomeCurrency({})).toBeNull();
+    expect(mapQboHomeCurrency({ Preferences: {} })).toBeNull();
+    expect(mapQboHomeCurrency({ Preferences: { CurrencyPrefs: {} } })).toBeNull();
+    expect(mapQboHomeCurrency({ Preferences: { CurrencyPrefs: { HomeCurrency: null } } })).toBeNull();
+    expect(mapQboHomeCurrency({ Preferences: { CurrencyPrefs: { HomeCurrency: { value: null } } } })).toBeNull();
+  });
+
+  it('returns null for a non three-letter value rather than persisting junk', () => {
+    expect(mapQboHomeCurrency({ Preferences: { CurrencyPrefs: { HomeCurrency: { value: 'DOLLARS' } } } })).toBeNull();
+    expect(mapQboHomeCurrency({ Preferences: { CurrencyPrefs: { HomeCurrency: { value: '' } } } })).toBeNull();
+  });
+
+  it('accepts a code OUTSIDE Breeze supported currencies — it is an external fact', () => {
+    expect(mapQboHomeCurrency({ Preferences: { CurrencyPrefs: { HomeCurrency: { value: 'BHD' } } } })).toBe('BHD');
+  });
+});
+
+describe('fetchHomeCurrency', () => {
+  const prefsBody = { Preferences: { CurrencyPrefs: { HomeCurrency: { value: 'CAD' } } } };
+
+  it('calls the sandbox preferences endpoint with minorversion 70 and a bearer token', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(prefsBody), { status: 200 }));
+
+    await expect(quickbooksProvider.fetchHomeCurrency(conn())).resolves.toBe('CAD');
+
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('sandbox-quickbooks.api.intuit.com');
+    expect(url).toContain('/v3/company/realm123/preferences');
+    expect(url).toContain('minorversion=70');
+    expect(url).not.toContain('companyinfo');
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok');
+    expect((init.headers as Record<string, string>).Accept).toBe('application/json');
+  });
+
+  it('uses the production host for a production connection', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(prefsBody), { status: 200 }));
+
+    await quickbooksProvider.fetchHomeCurrency(conn({ environment: 'production' }));
+
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('https://quickbooks.api.intuit.com');
+  });
+
+  it('returns null when QBO omits CurrencyPrefs', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ Preferences: {} }), { status: 200 }));
+
+    await expect(quickbooksProvider.fetchHomeCurrency(conn())).resolves.toBeNull();
+  });
+
+  it('throws a SANITIZED typed error on a non-2xx — status and operation only, never the QBO body', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ Fault: { Error: [{ Detail: 'realm 4620816365 customer Acme Ltd' }] } }), { status: 403 }),
+    );
+
+    // `.then(onFulfilled, onRejected)` rather than `.catch`: it narrows the type to
+    // the error (a bare `.catch` widens to `string | null | Error`) AND fails loudly
+    // if the call ever resolves instead of throwing.
+    const err = await quickbooksProvider.fetchHomeCurrency(conn()).then(
+      () => { throw new Error('expected fetchHomeCurrency to reject on a non-2xx'); },
+      (e: Error & { status?: number; operation?: string; body?: string }) => e,
+    );
+
+    expect(err.status).toBe(403);
+    expect(err.operation).toBe('fetchHomeCurrency');
+    // This error is handed to captureException by the OAuth callback, so it must
+    // carry no provider payload, no realm id and no token.
+    expect(err.body).toBeUndefined();
+    expect(JSON.stringify({ ...err, message: err.message })).not.toContain('Acme Ltd');
+    expect(err.message).not.toContain('realm123');
+    expect(err.message).not.toContain('tok');
+  });
+
+  it('rejects when the connection lacks a realmId or an access token', async () => {
+    await expect(quickbooksProvider.fetchHomeCurrency(conn({ realmId: null }))).rejects.toThrow(/realmId/);
+    await expect(quickbooksProvider.fetchHomeCurrency(conn({ accessToken: null }))).rejects.toThrow(/access token/);
   });
 });

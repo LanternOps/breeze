@@ -48,6 +48,32 @@ interface QboRawCustomer {
   ShipAddr?: QboRawAddress;
 }
 
+/**
+ * QBO Preferences response. `HomeCurrency` is a REFERENCE object, so the code
+ * lives at `.value` — and it comes from Preferences, never CompanyInfo
+ * (multi-currency §11).
+ */
+export interface QboRawPreferences {
+  Preferences?: {
+    CurrencyPrefs?: {
+      HomeCurrency?: { value?: string | null } | null;
+    } | null;
+  };
+}
+
+/**
+ * Normalizes the realm's home currency to an uppercase three-letter code.
+ * Deliberately NOT validated against Breeze's curated supported-currency list:
+ * a realm may legitimately run a currency Breeze cannot bill in, and that must
+ * stay connectable — the invoice-push guard blocks it later instead.
+ */
+export function mapQboHomeCurrency(raw: QboRawPreferences): string | null {
+  const value = raw.Preferences?.CurrencyPrefs?.HomeCurrency?.value;
+  if (typeof value !== 'string') return null;
+  const code = value.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(code) ? code : null;
+}
+
 export function mapQboAddress(raw: QboRawAddress | undefined): RemoteAddress | undefined {
   if (!raw) return undefined;
   const addr: RemoteAddress = {
@@ -153,8 +179,36 @@ export class QuickbooksProvider implements AccountingProvider {
     throw new Error('NotImplemented: Phase B');
   }
 
-  async fetchHomeCurrency(_conn: AccountingConnection): Promise<string | null> {
-    throw new Error('NotImplemented: fetchHomeCurrency');
+  // NOTE: like listRemoteCustomers, this assumes `conn.accessToken` is already
+  // valid and issues no DB queries. The fetch runs OUTSIDE any DB context so a
+  // QBO round-trip never holds a pooled connection (#1105 class).
+  async fetchHomeCurrency(conn: AccountingConnection): Promise<string | null> {
+    if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
+    if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
+
+    const url = `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/preferences?minorversion=${QBO_API_MINOR_VERSION}`;
+    const response = await runOutsideDbContext(() =>
+      fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${conn.accessToken}`,
+          Accept: 'application/json',
+        },
+      })
+    );
+
+    if (!response.ok) {
+      // DELIBERATELY sanitized, unlike listRemoteCustomers: this error is passed
+      // to captureException by the OAuth callback (multi-currency §11), and a QBO
+      // fault body can carry realm/company/customer detail. Status + operation are
+      // enough to triage; the body is never read, so it cannot leak.
+      const err = new Error(`QuickBooks preferences request failed with ${response.status}`);
+      (err as Error & { status?: number; operation?: string }).status = response.status;
+      (err as Error & { status?: number; operation?: string }).operation = 'fetchHomeCurrency';
+      throw err;
+    }
+
+    return mapQboHomeCurrency(await response.json() as QboRawPreferences);
   }
 
   async upsertCustomer(
