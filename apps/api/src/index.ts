@@ -222,6 +222,10 @@ import {
   shutdownStripeAccountCacheRefreshWorker,
 } from './jobs/stripeAccountCacheRefresh';
 import {
+  initializeExchangeRateSyncWorker,
+  shutdownExchangeRateSyncWorker,
+} from './jobs/exchangeRateSync';
+import {
   initializeOAuthRevocationRetryWorker,
   shutdownOAuthRevocationRetryWorker,
 } from './jobs/oauthRevocationRetryWorker';
@@ -1438,6 +1442,9 @@ async function initializeWorkers(): Promise<void> {
     // #3777 review F6: bootstrap/refresh the Stripe account currency cache for
     // connections that predate it (boot one-shot + daily sweep).
     ['stripeAccountCacheRefresh', initializeStripeAccountCacheRefreshWorker],
+    // Wave 7 (#3779): daily ECB reference-rate feed for reporting-only FX
+    // (boot one-shot + 17:15 UTC cron, after the ECB's ~16:00 CET publication).
+    ['exchangeRateSync', initializeExchangeRateSyncWorker],
     ['oauthRevocationRetryWorker', async () => { initializeOAuthRevocationRetryWorker(); }],
     // Wave 5 Task 3: durable/idempotent provider certificate revocation
     // (worker + 5-minute sweep for due retries and expired pending-activation
@@ -1674,6 +1681,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownStripeAccountCacheRefreshWorker,
+    shutdownExchangeRateSyncWorker,
     shutdownOAuthRevocationRetryWorker,
     shutdownMtlsCertificateRevocationWorker,
     shutdownAuthEmailWorker,

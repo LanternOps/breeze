@@ -74,7 +74,7 @@ export function buildEcbRatesUrl(baseUrl: string, quoteCodes: readonly string[])
 function toFixedScale(raw: string): string {
   const m = /^(-?)(\d+)(?:\.(\d*))?$/.exec(raw.trim());
   if (!m) throw new FrankfurterClientError(`Unparseable rate "${raw}"`, 'permanent');
-  const [, sign, whole, frac = ''] = m;
+  const [, sign, whole = '', frac = ''] = m;
   if (sign === '-') throw new FrankfurterClientError(`Negative rate "${raw}"`, 'permanent');
   if (frac.length > RATE_SCALE) throw new FrankfurterClientError(`Rate "${raw}" exceeds ${RATE_SCALE} decimals`, 'permanent');
   if (/^0+$/.test(whole) && /^0*$/.test(frac)) throw new FrankfurterClientError(`Non-positive rate "${raw}"`, 'permanent');
