@@ -241,6 +241,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // auto-discovered as an ordinary shape-1 org-tenant table — not listed here.
   // Functional cross-partner forge proof: stripe-payments-rls.integration.test.ts.
   ['stripe_connect_accounts', 'partner_id'],
+  ['partner_llm_configs', 'partner_id'],
   // authenticator_policies: per-MSP approval-security policy (Shape 3). One row
   // per partner; policy gates on breeze_has_partner_access(partner_id) with a
   // system-scope OR branch. Functional forge: authenticatorRls.integration.test.ts.
