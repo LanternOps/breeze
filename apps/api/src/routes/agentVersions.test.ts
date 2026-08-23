@@ -2586,6 +2586,53 @@ describe("validateReleaseManifest — key-ID-aware dispatch (Task 2, #3836)", ()
     expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
   });
 
+  it("REJECTS a deploy-* key ID when getActiveTrustKeyset (manifest_signing_keys lookup) fails outright", async () => {
+    // Fix round 1 review finding: the try/catch around getActiveTrustKeyset
+    // in verifyManifestSignatureForSigningKeyId's deploy-* branch had no
+    // test. A transient DB failure while resolving the ONE key a deploy-*
+    // signingKeyId names must fail closed, not silently fall through to a
+    // wider trust set.
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockRejectedValue(
+      new Error("connection refused"),
+    );
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("REJECTS a deploy-* key ID whose matched manifest_signing_keys row decodes to a non-32-byte key (corrupted row)", async () => {
+    // Optional coverage (fix round 1 review): the rawKey.length !== 32 guard
+    // in verifyEd25519SignatureAgainstSingleRawKey.
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: Buffer.from("too-short").toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
   it("keeps the legacy whole-set behavior unchanged for absent/unrecognized signingKeyId (no ID narrowing applies)", async () => {
     const trusted = generateKeyPairSync("ed25519");
     process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS = rawPub(trusted.publicKey).toString("base64");
