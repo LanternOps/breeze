@@ -126,6 +126,14 @@ export interface ActionIntentAuditInput {
   /** User who triggered the event (requester or decider); omit for system-driven events (e.g. the reaper). */
   actorId?: string;
   /**
+   * What KIND of actor drove this event. Omit for the existing paths: the audit
+   * layer already resolves `actorId ? 'user' : 'system'` (auditEvents.ts:68),
+   * and this PR must not disturb that. An agent proposal supplies 'ai_agent'
+   * explicitly — it has no user actor, but classifying it `system` would put it
+   * in the same bucket as the expiry reaper.
+   */
+  actorType?: 'user' | 'ai_agent';
+  /**
    * Extra audit context — ids, decider, assurance, error codes, counts. Must
    * NEVER carry raw tool argument contents, only the digest/summaries already
    * computed (spec §7: "Details carry ids, action name, digest, decider,
@@ -155,7 +163,7 @@ export function recordActionIntentEvent(input: ActionIntentAuditInput): void {
       ...input.details,
     },
     result: FAILURE_OUTCOMES.has(input.outcome) ? 'failure' : 'success',
-    actorType: input.actorId ? 'user' : 'system',
+    actorType: input.actorType,
     ...(input.actorId ? { actorId: input.actorId } : {}),
   });
   recordActionIntentMetric(input.source, input.actionName, input.outcome);

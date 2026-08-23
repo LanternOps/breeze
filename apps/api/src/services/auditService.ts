@@ -6,7 +6,7 @@ export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'sched
 
 export interface CreateAuditLogParams {
   orgId?: string | null;
-  actorType?: 'user' | 'api_key' | 'agent' | 'system';
+  actorType?: 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
   actorId: string;
   actorEmail?: string;
   action: string;
