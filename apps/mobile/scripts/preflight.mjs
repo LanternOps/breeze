@@ -2,11 +2,27 @@
 /**
  * Pre-archive check for release builds of the Breeze RMM mobile app.
  *
+ * ⚠️ THIS SCRIPT IS NOT A GATE. Nothing invokes it — there is no mobile build
+ * workflow, no Fastlane lane, no archive script — and the real release path is
+ * a human pressing Product → Archive in Xcode, which does not run it. That is
+ * not a hypothetical weakness: this file's DSN check was correct for 90 days
+ * while the breeze-mobile Sentry project recorded zero events, because nobody
+ * ever ran it. A check that a human has to remember is not a check.
+ *
+ * The DSN is therefore now enforced where it CANNOT be skipped:
+ * `app.config.js` → `src/config/sentryDsn.js`, evaluated by an expo-constants
+ * Xcode build phase on every single build. The DSN check below is kept as a
+ * fast local echo of that failure, but it is no longer what protects a release.
+ *
+ * What this script is still uniquely worth running for is the OTHER two checks
+ * — the API URL and the auth token — which have no equivalent build-time guard.
+ *
  * Everything this guards is a SILENT failure: the app boots fine, passes review,
  * and only misbehaves in ways nobody can see from a TestFlight install.
  *
  *   - No Sentry DSN  → zero crash/error telemetry, and the app's many
  *     `captureMessage` calls for otherwise-invisible failures go nowhere.
+ *     (Now also caught at build time; see above.)
  *   - localhost API  → every request fails on a real device.
  *
  * The Sentry auth token is the exception: a missing one is NOT silent, it fails

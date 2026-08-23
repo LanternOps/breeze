@@ -1,15 +1,35 @@
 // Initialize Sentry as early as possible — must run before any other imports
 // that might throw, so crashes during startup are still captured.
-// `enabled` guards on (a) DSN being set and (b) not running in dev, so shipping
-// without a configured DSN is a no-op.
+// `enabled` guards on (a) DSN being resolvable and (b) not running in dev, so a
+// dev build without a configured DSN is a no-op. A RELEASE build without one is
+// no longer possible: `app.config.js` refuses to produce a config for it (see
+// src/config/sentryDsn.js for why that location cannot be skipped).
 //
-// TODO(release): wire EAS Build + sentry-cli source-map upload before App
-// Store release. Without source maps, native/JS stack traces in Sentry will
-// reference minified bundle positions. See:
-// https://docs.sentry.io/platforms/react-native/sourcemaps/uploading/expo/
+// Source maps and dSYMs are uploaded by the `@sentry/react-native/expo` config
+// plugin, wired through the `organization` / `project` options in `app.json`.
+// It installs two Xcode build phases (JS source maps via `sentry-xcode.sh`,
+// native dSYMs via "Upload Debug Symbols to Sentry"), both of which need
+// SENTRY_AUTH_TOKEN in `.env.sentry-build-plugin` and both of which FAIL the
+// archive when it is missing. `metro.config.js` uses `getSentryExpoConfig` so
+// the bundle and its map carry matching debug IDs. See STORE_SUBMISSION.md.
 import * as Sentry from '@sentry/react-native';
+import Constants from 'expo-constants';
 
-const SENTRY_DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
+// Two delivery paths on purpose. `EXPO_PUBLIC_SENTRY_DSN` is inlined by the
+// Metro transform; `extra.sentryDsn` is written by `app.config.js`, which runs
+// in a different build phase (the expo-constants one) and is where the
+// release-build assertion lives. Reading both means the value the guard
+// verified is the value the app uses, even if the two phases saw different
+// environments.
+//
+// Both are type-checked rather than just truthiness-checked: Expo's config
+// serialisation rewrites a null/undefined `extra` value into `{}`, which is
+// truthy and would be passed straight to `Sentry.init` as a DSN.
+const asDsn = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+const SENTRY_DSN =
+  asDsn(process.env.EXPO_PUBLIC_SENTRY_DSN) ?? asDsn(Constants.expoConfig?.extra?.sentryDsn);
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -18,16 +38,20 @@ Sentry.init({
   enableNative: true,
 });
 
-// A release build with no DSN reports nothing, and does so silently — which is
-// how a TestFlight build ended up with zero telemetry while code all over the
-// app was dutifully calling `Sentry.captureMessage` for failures that are
-// invisible in the UI. There is no console to read in TestFlight, so the only
-// place this can be caught is at build time: `scripts/preflight.mjs` (pnpm
-// preflight) fails a DSN-less release build. This warning covers the dev loop.
-if (!SENTRY_DSN && __DEV__) {
+// Deliberately NOT gated on __DEV__. It used to be, which made it unreachable
+// in the only build where it mattered: a release build with no DSN reports
+// nothing and said nothing, which is how this app went 90 days without
+// recording a single Sentry event while code all over it dutifully called
+// `captureException` for failures that have no UI.
+//
+// A release build should now be unable to reach this line at all — app.config.js
+// fails the build first — so if it ever fires in TestFlight it means the DSN
+// reached the config phase but not the bundle, which is worth seeing in
+// Console.app / `xcrun devicectl` output rather than not seeing at all.
+if (!SENTRY_DSN) {
   console.warn(
     '[breeze] EXPO_PUBLIC_SENTRY_DSN is not set — crash and error reporting is disabled. ' +
-      'Fine for local dev; a release build without it ships blind. See .env.example.'
+      'Expected in local dev; in a release build this means telemetry is dead. See .env.example.'
   );
 }
 
