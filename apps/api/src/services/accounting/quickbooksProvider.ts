@@ -2,7 +2,13 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { runOutsideDbContext } from '../../db';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
 import type {
+  AccountingCustomerPayload,
+  AccountingEntityMapping,
+  AccountingInvoiceLineMapping,
+  AccountingInvoicePayload,
+  AccountingItemPayload,
   AccountingProvider,
+  AccountingVoidInvoicePayload,
   ChangeSet,
   ConnectionTokens,
   RemoteAddress,
@@ -147,19 +153,39 @@ export class QuickbooksProvider implements AccountingProvider {
     throw new Error('NotImplemented: Phase B');
   }
 
-  async upsertCustomer(..._args: unknown[]): Promise<RemoteRef> {
+  async fetchHomeCurrency(_conn: AccountingConnection): Promise<string | null> {
+    throw new Error('NotImplemented: fetchHomeCurrency');
+  }
+
+  async upsertCustomer(
+    _conn: AccountingConnection,
+    _customer: AccountingCustomerPayload,
+    _mapping: AccountingEntityMapping | null,
+  ): Promise<RemoteRef> {
     throw new Error('NotImplemented: Phase B');
   }
 
-  async upsertItem(..._args: unknown[]): Promise<RemoteRef> {
+  async upsertItem(
+    _conn: AccountingConnection,
+    _item: AccountingItemPayload,
+    _mapping: AccountingEntityMapping | null,
+  ): Promise<RemoteRef> {
     throw new Error('NotImplemented: Phase B');
   }
 
-  async pushInvoice(..._args: unknown[]): Promise<RemoteRef> {
+  async pushInvoice(
+    _conn: AccountingConnection,
+    _invoice: AccountingInvoicePayload,
+    _lineMappings: readonly AccountingInvoiceLineMapping[],
+  ): Promise<RemoteRef> {
     throw new Error('NotImplemented: Phase C');
   }
 
-  async voidInvoice(..._args: unknown[]): Promise<void> {
+  async voidInvoice(
+    _conn: AccountingConnection,
+    _invoice: AccountingVoidInvoicePayload,
+    _mapping: AccountingEntityMapping,
+  ): Promise<void> {
     throw new Error('NotImplemented: Phase C');
   }
 
