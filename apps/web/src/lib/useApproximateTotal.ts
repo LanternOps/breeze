@@ -86,7 +86,18 @@ export async function loadApproximateTotal(
       let result: ReportingTotalResponse | null = null;
       try {
         const params = new URLSearchParams({ groups: groupsParam, date });
-        const res = await fetchWithAuth(`/billing/reporting-totals?${params.toString()}`);
+        // `skipOrgIdInjection` is REQUIRED, not an optimization: fetchWithAuth
+        // appends `&orgId=<uuid>` whenever the org store has a selected org
+        // (stores/auth.ts), and `reportingTotalsQuerySchema` is `.strict()`, so
+        // the injected key would 400 every request a partner user with an org
+        // selected — or any organization-scoped user — makes. Because failure
+        // here is deliberately quiet, that 400 would show up as the line simply
+        // never rendering, with no signal. The endpoint has no org semantics to
+        // narrow: the figures are the caller's own `groups` and the target
+        // currency comes from the actor's partner, so opting out is exact.
+        // Fixed HERE rather than by relaxing `.strict()` — a money endpoint must
+        // keep rejecting mis-keyed params instead of silently defaulting.
+        const res = await fetchWithAuth(`/billing/reporting-totals?${params.toString()}`, { skipOrgIdInjection: true });
         if (res?.ok) {
           const body = (await res.json().catch(() => null)) as { data?: unknown } | null;
           result = validate(body?.data);

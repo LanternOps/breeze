@@ -7,6 +7,7 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 import { useApproximateTotal, resetApproximateTotalCache } from '../useApproximateTotal';
 import { approximateTotalCache } from '../approximateTotalCache';
 import type { ReportingTotalResponse } from '@/lib/reporting/approximateTotal';
+import { reportingTotalsQuerySchema } from '@breeze/shared';
 
 const jsonRes = (payload: unknown, status = 200) =>
   ({ ok: status < 400, status, json: async () => payload }) as Response;
@@ -229,5 +230,50 @@ describe('useApproximateTotal — failure semantics', () => {
     render(<Probe id="b" date="2026-08-21" />);
     expect(screen.getByTestId('b').textContent).toBe('unavailable:-:CAD');
     expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchWithAuth auto-injects `?orgId=<uuid>` whenever the org store has a
+// selected org (stores/auth.ts — `if (orgId && !options.skipOrgIdInjection &&
+// !url.includes('orgId='))`). `reportingTotalsQuerySchema` is `.strict()`, so
+// an injected key is a 400 `Unrecognized key: "orgId"` — and because failure
+// here is deliberately QUIET, the approximate line would simply never render
+// for a partner user with an org selected, or for any org-scoped user, with no
+// signal anywhere. The endpoint has no org semantics at all (the figures come
+// from the caller's own `groups`, the target from the actor's partner), so the
+// hook opts OUT of injection rather than the schema relaxing `.strict()`.
+// ---------------------------------------------------------------------------
+describe('useApproximateTotal — orgId injection (the request must survive an active org selection)', () => {
+  const SELECTED_ORG_ID = '11111111-2222-4333-8444-555555555555';
+
+  /** Exactly the rule stores/auth.ts applies before dispatching. */
+  function injectOrgId(rawUrl: string, options?: { skipOrgIdInjection?: boolean }): string {
+    if (options?.skipOrgIdInjection || rawUrl.includes('orgId=')) return rawUrl;
+    return `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}orgId=${SELECTED_ORG_ID}`;
+  }
+
+  it('opts out of injection so the strict query schema accepts the dispatched URL', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    render(<Probe date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+
+    const [rawUrl, options] = fetchWithAuth.mock.calls[0] as [string, { skipOrgIdInjection?: boolean } | undefined];
+    expect(options?.skipOrgIdInjection).toBe(true);
+
+    const dispatched = injectOrgId(rawUrl, options);
+    expect(dispatched).not.toContain('orgId=');
+
+    const query = Object.fromEntries(new URLSearchParams(dispatched.split('?')[1]));
+    expect(reportingTotalsQuerySchema.safeParse(query).success).toBe(true);
+  });
+
+  it('proves the trap is real: the same request WITH the injected orgId is rejected by the schema', () => {
+    const injected = injectOrgId('/billing/reporting-totals?groups=EUR:4100.00,USD:12300.00&date=2026-08-21');
+    expect(injected).toContain(`orgId=${SELECTED_ORG_ID}`);
+    const query = Object.fromEntries(new URLSearchParams(injected.split('?')[1]));
+    const parsed = reportingTotalsQuerySchema.safeParse(query);
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain('orgId');
   });
 });
