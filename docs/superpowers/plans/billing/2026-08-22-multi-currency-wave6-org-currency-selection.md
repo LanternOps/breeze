@@ -950,3 +950,45 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 - **Codex review disposition (2026-08-22).** Verified each finding against this worktree before applying. **Applied:** blocker 2 (durable `invoice_lines.source_contract_id` + migration + export-policy registration — the removal escape is real, `assertEditable` permits `active`), blocker 3 (`ContractActor.permissions` + `actorCan`; the actor genuinely carried no permission evidence), majors 4 (explicit global partial orders; two existing sites reordered — the old "strictly outermost" wording contradicted this plan's own Task 12 protocol), 5 (`upsertOrgTicketSettings` resolves the org currency inside its own locked transaction; the route's pre-transaction read was real), 6 (void/reissue reads move inside one transaction, both with and without reissue), 7 (the unexecutable "broken lineage" phrase replaced by five explicit SQL conditions with a cycle-safe ancestry walk), 8 (neutral `orgCurrencyCore.ts` to break the invoice↔org-currency import cycle; `lockContractRow` split because `generateDueInvoice` has no actor; `invoiceTypes.ts` added with the two new codes), 9 (the Stripe mock must return `defaultCurrency` — the warning is computed from the returned value, so the assertion was unreachable), 10 (monetary-column inventory replaces the `toFixed(2)` grep; `ticketConfigService.ts:660` writes `String(...)` and the validator permits `10.5`, so a JPY org could persist `100.50`), 11 (new Task 16 builds the contract currency action the report was linking to), 12 (a new COLUMN on `invoice_lines` does fire the export-policy contract), 13 (confirmation moved from the validator to the post-lock service check, resolving the Task 10/11 contradiction), 14 (anchors re-verified: integration `include` at :12 not :26, `invoiceService.ts:181` is unit price and `:182` cost basis, ticket fixture lives in `ticketService.ts:338`; Tasks 3-9 reassigned to `claude`).
 - **Codex review — REJECTED, with reasons.** (a) *Blocker 1, the "drive all seven slices through Playwright" half:* rejected. The owner's wave-6 brief specifies the gate as real-DB integration coverage under `apps/api/src/__tests__/integration/`, and a browser test cannot prove a zero-decimal persistence boundary, a Stripe minor-unit payload, or a two-client lock race — the properties this gate exists to prove. The *depth* criticisms inside that finding were accepted individually (nonzero tax, public acceptance route, quote PDF no longer optional), and the genuinely browser-shaped slices became Task 17. (b) *Blocker 1's "recurring billing invokes an exported worker helper rather than the scheduled workflow":* rejected on the code — `runContractBillingSweep` (`apps/api/src/jobs/contractWorker.ts:43`) **is** what the BullMQ processor calls; a guard assertion was added instead. (c) *Any reading that would restamp or convert historical rows to satisfy a lineage or eligibility check:* rejected as contradicting the owner-fixed decisions (no conversion, snapshots rule, no bulk restamp) — the plan blocks conservatively instead.
 - **Placeholders:** none. Every file path, line reference, signature and command above was read from this worktree at `5071ad167`. Line numbers are pre-change references — re-grep before editing if an earlier task in the plan has already moved them.
+
+---
+
+## Wave-6 release-gate results
+
+Run (Task 9, Step 1), branch `feature/3772-multi-currency/wave-3778`, worktree test stack pg `:5439` / redis `:6389`:
+
+```
+vitest run --config vitest.integration.config.ts \
+  src/__tests__/integration/multiCurrencyWave6{ManualInvoice,QuoteAcceptance,ContractBilling,TicketAssembly,VoidReissue,StripePayment,PdfRender}.integration.test.ts
+→ Test Files 4 failed | 3 passed (7)   Tests 6 failed | 23 passed (29)
+```
+
+| Slice | Result |
+|---|---|
+| G1 manual invoice (create → line → issue) | 1 finding |
+| G2 quote → send → acceptance → invoice | 1 finding |
+| G3 recurring contract billing run | 1 finding |
+| G4 ticket labor + part → assembly | 3 findings |
+| G5 void / reissue | **PASS** (1/1) |
+| G6 Stripe payment | **PASS** (3/3) |
+| G7 PDF render | **PASS** (5/5) |
+
+Every finding is the same defect class the plan predicted: a persisted money write that
+normalizes with a hard-coded 2-decimal `toFixed(2)` / `String(...)` and never validates the
+value against the **row's own stamped currency**, so a zero-decimal currency (JPY) accepts and
+persists a fractional minor unit. None is a wrong assertion; no gate assertion was weakened.
+
+| ID | Failing assertion | Production `file:line` | Intended fix |
+|---|---|---|---|
+| **W6-G1-1** | `multiCurrencyWave6ManualInvoice…:205` — `addManualLine(¥100.50)` must reject `PRICE_NOT_REPRESENTABLE` | `apps/api/src/services/invoiceService.ts:181` (unit price), `:182` (cost basis) | guard both against `inv.currencyCode` inside the locked tx; same guard on the sibling update path `updateLine` (`:389`) and the non-catalog `addContractLine` branch (`:358`, `:365`) |
+| **W6-G2-1** | `multiCurrencyWave6QuoteAcceptance…:445` — quote `addManualLine(¥100.50)` must reject `PRICE_NOT_REPRESENTABLE` | `apps/api/src/services/quoteService.ts:1378` (unit price), `:1397` (unit cost) | guard against `q.currencyCode` under `lockDraftQuote`; same guard on `updateLine` (`:1532`, `:1547`) |
+| **W6-G3-1** | `multiCurrencyWave6ContractBilling…:282` — non-catalog contract line at `100.50` on a JPY contract must throw `ContractServiceError` and persist 0 rows | `apps/api/src/services/contractService.ts:301-340` (non-catalog branch, `unitPrice = input.unitPrice` verbatim) | guard against `c.currencyCode` under `lockContract`; same guard in `createContractWithLinesDetailed` (`:645`) against `spec.currencyCode` |
+| **W6-G4-1** | `multiCurrencyWave6TicketAssembly…:414` — a JPY org default hourly rate of `100.50` must be rejected at write time (resolved `{ defaultHourlyRate: "100.50", rateCurrency: "JPY" }`) | `apps/api/src/services/ticketConfigService.ts:659` — `String(input.defaultHourlyRate)`, no exponent check at all | guard against the `orgCurrencyCode` the upsert already receives and stamps into `rate_currency` |
+| **W6-G4-2** | `multiCurrencyWave6TicketAssembly…:431` — a JPY time entry with `hourlyRate 100.50` must be rejected (persisted `hourly_rate "100.50"`, `currency_code "JPY"`) | `apps/api/src/services/timeEntryService.ts:88` (`toRate` = bare `.toFixed(2)`), used at `:352` create and `:588` update | guard against the entry's resolved snapshot currency (`link.currencyCode`, the partner currency for standalone money, or `entry.currencyCode` on update) |
+| **W6-G4-3** | `multiCurrencyWave6TicketAssembly…:452` — a JPY part priced `100.50` must be rejected (persisted `unit_price "100.50"`, `currency_code "JPY"`) | `apps/api/src/services/timeEntryService.ts:773-775` create, `:809-811` update | guard `unitPrice` and `costBasis` against `link.currencyCode` (create) / `part.currencyCode` (update) |
+
+**Inventory writers with no finding, verified by reading the code, not by grep:**
+
+- `apps/api/src/services/catalogService.ts:524` `setOrgPriceOverride` — already calls `assertRepresentable(unitPrice, currencyCode)` after resolving the org currency inside the locked tx. The pre-lock `.toFixed(2)` is a numeric-column normalize, not a rounding escape: `100.50` in JPY still reaches the guard and 400s. No change.
+- `apps/api/src/services/catalogService.ts:101-106` — the precedent guard itself. No change.
+- `apps/api/src/services/invoiceAssembly.ts:82-99` `timeEntryToLineSpec` / `ticketPartToLineSpec` — **not a money author**; it copies an already-stamped snapshot onto a draft line and rounds `lineTotal` with `computeLineTotal(…, currencyCode)`, which is already currency-aware. With W6-G4-2/3 fixed, no fractional-yen snapshot can be created for it to copy. Throwing here on a legacy row would abort an entire sweep for one bad row, and silently re-rounding is forbidden by the owner-fixed "no conversion" rule, so the guard stays at the write seam. No change.
