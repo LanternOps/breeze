@@ -14,14 +14,27 @@ import {
   verifyCfAccessJwt,
 } from '../../services/cfAccessJwt';
 import {
-  bindRefreshJtiToFamily,
-  createTokenPair,
-  getUserEpochs,
-  mintRefreshTokenFamily,
   revokeAllUserTokens,
   revokeRefreshTokenJti,
   verifyToken,
 } from '../../services';
+import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  finishAuthIssuance,
+} from '../../services/authBrowserTransition';
+import {
+  authBrowserTransitionsEnforced,
+  bindIssuedUserSession,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  type UserSessionIdentity,
+} from '../../services/userSession';
+import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionMetrics';
 import { createAuditLogAsync } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
 import { TenantInactiveError } from '../../services/tenantStatus';
@@ -34,8 +47,12 @@ import {
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   resolveRefreshToken,
-  setRefreshTokenCookie,
+  authClientUpgradeRequiredResponse,
+  installAuthorizedUserSessionCookies,
+  installLegacyUserSessionCookiesDuringTransition,
+  isAuthTransitionV1Request,
 } from './helpers';
+import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -63,6 +80,24 @@ function loginErrorRedirect(reason: string): Response {
 }
 
 export const cfAccessRedirectLoginRoutes = new Hono();
+
+function cfAccessIssuanceError(c: Parameters<typeof installAuthBindingReplacement>[0], error: unknown): Response | null {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    installAuthBindingReplacement(c, error.replacement);
+    return c.json({
+      error: 'Authentication binding refresh required',
+      reason: 'binding_refresh',
+    }, 428);
+  }
+  if (
+    error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError
+  ) {
+    return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+  }
+  return null;
+}
 
 /**
  * GET /api/v1/auth/cf-access-login
@@ -205,37 +240,53 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     (user.mfaEnabled && trustsMfa) ||
     (!user.mfaEnabled && !policy.required);
 
-  // Mint a fresh refresh-token family for this login so the rotation chain
-  // participates in OAuth 2.1 reuse-detection — same invariant as every
-  // other authenticated mint path (see services/refreshTokenFamily.ts and
-  // the /login handler).
-  const familyId = await mintRefreshTokenFamily(user.id);
-  const epochs = await getUserEpochs(user.id);
-  if (!epochs) throw new Error('user epochs unavailable at token mint');
+  const identity: UserSessionIdentity = {
+    userId: user.id,
+    email: user.email,
+    roleId: context.roleId,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+    scope: context.scope,
+    mfa: mfaSatisfied,
+  };
+  const binding = requestAuthBinding(c);
+  const guarded = binding.value.length > 0 || isAuthTransitionV1Request(c);
+  if (!guarded && authBrowserTransitionsEnforced()) {
+    return authClientUpgradeRequiredResponse(c);
+  }
 
-  const tokens = await createTokenPair(
-    {
-      sub: user.id,
-      email: user.email,
-      roleId: context.roleId,
-      orgId: context.orgId,
-      partnerId: context.partnerId,
-      scope: context.scope,
-      mfa: mfaSatisfied,
-      aep: epochs.authEpoch,
-      mep: epochs.mfaEpoch,
-    },
-    { refreshFam: familyId }
-  );
-
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
-
-  // System DB context required: no request auth context is established on this
-  // pre-auth path, so a bare UPDATE silently matches 0 rows under breeze_app RLS
-  // and last_login_at never moves (#1375).
-  await withSystemDbAccessContext(() =>
-    db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
-  );
+  if (guarded) {
+    let capability;
+    try {
+      capability = await beginAuthIssuance(binding);
+      const guardedCapability = capability;
+      const issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+        await tx
+          .update(users)
+          .set({ lastLoginAt: new Date() })
+          .where(eq(users.id, user.id));
+        return issueUserSession(identity, {
+          tx,
+          capability: guardedCapability,
+          expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+        });
+      });
+      await bindIssuedUserSession(issued);
+      installAuthorizedUserSessionCookies(c, issued);
+    } catch (error) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      const response = cfAccessIssuanceError(c, error);
+      if (response) return response;
+      throw error;
+    }
+  } else {
+    recordAuthTransitionLegacyIssuer('cf_access_redirect', 'web');
+    const issued = await issueUserSessionLegacyDuringTransition(identity);
+    await withSystemDbAccessContext(() =>
+      db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
+    );
+    installLegacyUserSessionCookiesDuringTransition(c, issued);
+  }
 
   createAuditLogAsync({
     orgId: context.orgId ?? undefined,
@@ -256,8 +307,6 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     userAgent: c.req.header('user-agent'),
     result: 'success',
   });
-
-  setRefreshTokenCookie(c, tokens.refreshToken);
 
   // Redirect to `next` (sanitized) with a `cf-access-login=success` marker
   // so the SPA's AuthOverlay knows to bootstrap from the refresh cookie

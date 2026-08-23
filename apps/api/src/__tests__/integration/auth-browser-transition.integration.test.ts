@@ -6,7 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { withSystemDbAccessContext } from '../../db';
 import {
   authBrowserTransitions,
+  partners,
   refreshTokenFamilies,
+  roles,
+  users,
   userPasskeys,
 } from '../../db/schema';
 import { authBindingRoutes } from '../../routes/auth/binding';
@@ -26,7 +29,9 @@ import {
   UserSessionEpochMismatchError,
   type UserSessionIdentity,
 } from '../../services/userSession';
-import { createPartner, createUser } from './db-utils';
+import { advanceUserEpochs } from '../../services/authLifecycle';
+import { createPartner as createRegistrationPartner } from '../../services/partnerCreate';
+import { createPartner as createFixturePartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -86,7 +91,7 @@ async function closeClient(client: Sql): Promise<void> {
 }
 
 async function fixture() {
-  const partner = await createPartner();
+  const partner = await createFixturePartner();
   const user = await createUser({
     partnerId: partner.id,
     withMembership: true,
@@ -105,6 +110,95 @@ async function fixture() {
 }
 
 describe('guarded auth browser transition races', () => {
+  runDb('allows at most one cross-binding registration account and session winner', async () => {
+    const suffix = randomUUID();
+    const email = `registration-race-${suffix}@example.test`;
+    const companyName = `Registration Race ${suffix}`;
+    await getTestDb().insert(roles).values({
+      partnerId: null,
+      scope: 'partner',
+      name: 'Partner Admin',
+      description: 'Registration concurrency fixture',
+      isSystem: true,
+    });
+    const capabilityA = await beginAuthIssuance({ kind: 'browser', value: await freshBrowserBinding() });
+    const capabilityB = await beginAuthIssuance({ kind: 'browser', value: await freshBrowserBinding() });
+    const bothArrived = deferred<void>();
+    const release = deferred<void>();
+    let arrivals = 0;
+
+    const finalize = (capability: typeof capabilityA) => finishAuthIssuance(capability, async (tx) => {
+      arrivals += 1;
+      if (arrivals === 2) bothArrived.resolve();
+      await release.promise;
+
+      const created = await createRegistrationPartner({
+        orgName: companyName,
+        adminEmail: email,
+        adminName: 'Registration Race Admin',
+        passwordHash: 'integration-test-password-hash',
+        origin: { mcp: false },
+        status: 'active',
+      }, { tx });
+      const [createdUser] = await tx
+        .select({
+          id: users.id,
+          email: users.email,
+          authEpoch: users.authEpoch,
+          mfaEpoch: users.mfaEpoch,
+        })
+        .from(users)
+        .where(eq(users.id, created.adminUserId))
+        .limit(1);
+      if (!createdUser) throw new Error('registration race winner user missing');
+      const epochs = await advanceUserEpochs(tx, createdUser.id, { auth: true });
+      const issued = await issueUserSession({
+        userId: createdUser.id,
+        email: createdUser.email,
+        roleId: created.adminRoleId,
+        orgId: created.orgId,
+        partnerId: created.partnerId,
+        scope: 'partner',
+        mfa: true,
+      }, {
+        tx,
+        capability,
+        expectedEpochs: { authEpoch: epochs.authEpoch, mfaEpoch: epochs.mfaEpoch },
+      });
+      return { created, issued };
+    });
+
+    const first = finalize(capabilityA);
+    const second = finalize(capabilityB);
+    await bothArrived.promise;
+    release.resolve();
+    const settled = await Promise.allSettled([first, second]);
+
+    if (settled.every((result) => result.status === 'rejected')) {
+      throw new Error(`both registration finalizations rejected: ${settled.map((result) =>
+        result.status === 'rejected'
+          ? `${result.reason instanceof Error ? result.reason.name : typeof result.reason}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+          : 'fulfilled').join(' | ')}`);
+    }
+    expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(settled.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const accountRows = await getTestDb()
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, email));
+    expect(accountRows).toHaveLength(1);
+    const tenantRows = await getTestDb()
+      .select({ id: partners.id })
+      .from(partners)
+      .where(eq(partners.billingEmail, email));
+    expect(tenantRows).toHaveLength(1);
+    const families = await getTestDb()
+      .select({ id: refreshTokenFamilies.familyId })
+      .from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.userId, accountRows[0]!.id));
+    expect(families).toHaveLength(1);
+  });
+
   runDb('allows exactly one concurrent refresh successor after both finalizations reach a barrier', async () => {
     const { user, identity } = await fixture();
     const presentedJti = randomUUID();
@@ -176,18 +270,32 @@ describe('guarded auth browser transition races', () => {
       });
       await issuedInside.promise;
 
-      const logout = logoutClient.begin(async (tx) => tx`
-        UPDATE auth_browser_transitions
-        SET state = 'logout_pending',
-            generation = generation + 1,
-            active_operation_id = NULL,
-            active_operation_expires_at = NULL,
-            logout_id = ${logoutId},
-            completion_nonce_digest = ${'a'.repeat(64)},
-            logout_expires_at = now() + interval '5 minutes',
-            updated_at = now()
-        WHERE id = ${capability.transitionId}
-      `);
+      const logout = logoutClient.begin(async (tx) => {
+        const [transition] = await tx<{ current_family_id: string | null }[]>`
+          SELECT current_family_id
+          FROM auth_browser_transitions
+          WHERE id = ${capability.transitionId}
+          FOR UPDATE
+        `;
+        await tx`
+          UPDATE auth_browser_transitions
+          SET state = 'logout_pending',
+              generation = generation + 1,
+              active_operation_id = NULL,
+              active_operation_expires_at = NULL,
+              logout_id = ${logoutId},
+              completion_nonce_digest = ${'a'.repeat(64)},
+              logout_expires_at = now() + interval '5 minutes',
+              updated_at = now()
+          WHERE id = ${capability.transitionId}
+        `;
+        await tx`
+        UPDATE refresh_token_families AS family
+        SET revoked_at = COALESCE(family.revoked_at, now()),
+            revoked_reason = COALESCE(family.revoked_reason, 'logout')
+        WHERE family.family_id = ${transition?.current_family_id ?? null}
+        `;
+      });
       await waitForBackendPidBlocked(logoutPid);
       releaseIssuance.resolve();
       const issued = await issuance;
@@ -203,6 +311,12 @@ describe('guarded auth browser transition races', () => {
         currentUserId: user.id,
         currentFamilyId: issued.familyId,
       });
+      const [family] = await getTestDb()
+        .select({ revokedAt: refreshTokenFamilies.revokedAt })
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, issued.familyId))
+        .limit(1);
+      expect(family?.revokedAt).toBeInstanceOf(Date);
     } finally {
       releaseIssuance.resolve();
       await closeClient(logoutClient);

@@ -6,16 +6,10 @@ import { describe, expect, it } from 'vitest';
 const SRC_DIR = join(import.meta.dirname, '..');
 
 const expectedCreateTokenPairFiles = new Set([
-  'routes/auth/cfAccessRedirectLogin.ts',
-  'routes/auth/invite.ts',
-  'routes/auth/verifyEmail.ts',
   'routes/sso.ts',
 ]);
 
 const expectedCookieWriterFiles = new Set([
-  'routes/auth/cfAccessRedirectLogin.ts',
-  'routes/auth/invite.ts',
-  'routes/auth/verifyEmail.ts',
   'routes/sso.ts',
 ]);
 
@@ -24,11 +18,23 @@ const expectedGuardedIssuerFiles = new Map([
   ['routes/auth/login.ts', 2],
   ['routes/auth/mfa.ts', 1],
   ['routes/auth/passkeys.ts', 1],
+  ['routes/auth/verifyEmail.ts', 2],
+  ['routes/auth/invite.ts', 1],
+  ['routes/auth/cfAccessRedirectLogin.ts', 1],
 ]);
 
-const expectedLegacyIssuerFiles = new Map(expectedGuardedIssuerFiles);
-const expectedGuardedCookieInstallerFiles = new Map(expectedGuardedIssuerFiles);
-const expectedLegacyCookieInstallerFiles = new Map(expectedGuardedIssuerFiles);
+const expectedSingleBoundaryFiles = new Map([
+  ['middleware/cfAccessLogin.ts', 1],
+  ['routes/auth/login.ts', 2],
+  ['routes/auth/mfa.ts', 1],
+  ['routes/auth/passkeys.ts', 1],
+  ['routes/auth/verifyEmail.ts', 1],
+  ['routes/auth/invite.ts', 1],
+  ['routes/auth/cfAccessRedirectLogin.ts', 1],
+]);
+const expectedLegacyIssuerFiles = new Map(expectedSingleBoundaryFiles);
+const expectedGuardedCookieInstallerFiles = new Map(expectedSingleBoundaryFiles);
+const expectedLegacyCookieInstallerFiles = new Map(expectedSingleBoundaryFiles);
 
 function productionTypeScriptFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -134,17 +140,17 @@ function buildInventories(): Readonly<{
 const frozenInventory = buildInventories();
 
 describe('frozen authentication issuer inventory', () => {
-  it('leaves exactly the four later-slice createTokenPair calls', () => {
+  it('leaves exactly the SSO later-slice createTokenPair call', () => {
     const calls = frozenInventory.createTokenPair;
     expect(new Set(calls.keys())).toEqual(expectedCreateTokenPairFiles);
-    expect([...calls.values()].reduce((sum, count) => sum + count, 0)).toBe(4);
+    expect([...calls.values()].reduce((sum, count) => sum + count, 0)).toBe(1);
     expect(calls.get('routes/sso.ts')).toBe(1);
   });
 
-  it('leaves exactly the four later-slice direct refresh-cookie writes', () => {
+  it('leaves exactly the SSO later-slice direct refresh-cookie write', () => {
     const calls = frozenInventory.setRefreshTokenCookie;
     expect(new Set(calls.keys())).toEqual(expectedCookieWriterFiles);
-    expect([...calls.values()].reduce((sum, count) => sum + count, 0)).toBe(4);
+    expect([...calls.values()].reduce((sum, count) => sum + count, 0)).toBe(1);
     expect(calls.get('routes/sso.ts')).toBe(1);
   });
 
@@ -208,6 +214,43 @@ describe('frozen authentication issuer inventory', () => {
       visit(ast);
     }
     expect(assertions).toEqual([]);
+  });
+
+  it('keeps every converted W07-C guarded issuer lexically inside finishAuthIssuance', () => {
+    const converted = [
+      'routes/auth/verifyEmail.ts',
+      'routes/auth/invite.ts',
+      'routes/auth/cfAccessRedirectLogin.ts',
+    ];
+    const outsideFinalization: string[] = [];
+    for (const rel of converted) {
+      const file = join(SRC_DIR, rel);
+      const ast = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+          && node.expression.text === 'issueUserSession') {
+          let current: ts.Node | undefined = node.parent;
+          let guarded = false;
+          while (current && !ts.isSourceFile(current)) {
+            if ((ts.isArrowFunction(current) || ts.isFunctionExpression(current))
+              && ts.isCallExpression(current.parent)
+              && ts.isIdentifier(current.parent.expression)
+              && current.parent.expression.text === 'finishAuthIssuance'
+              && current.parent.arguments.includes(current)) {
+              guarded = true;
+              break;
+            }
+            current = current.parent;
+          }
+          if (!guarded) {
+            outsideFinalization.push(`${rel}:${ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1}`);
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(ast);
+    }
+    expect(outsideFinalization).toEqual([]);
   });
 
   it.skip('has no process-local SSO exchange grant', () => {});

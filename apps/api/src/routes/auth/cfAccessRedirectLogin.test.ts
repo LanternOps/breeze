@@ -63,6 +63,7 @@ vi.mock('../../services/cfAccessJwt', async () => {
 
 const dbState = vi.hoisted(() => ({
   userRow: null as Record<string, unknown> | null,
+  lastLoginUpdated: false,
 }));
 
 vi.mock('../../db', () => {
@@ -77,20 +78,67 @@ vi.mock('../../db', () => {
     const from = vi.fn(() => ({ where, limit }));
     return { from };
   }
+  const db = {
+    select: vi.fn(() => makeChain(dbState.userRow)),
+    update: vi.fn(() => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn(async () => {
+          if (values.lastLoginAt) dbState.lastLoginUpdated = true;
+        }),
+      })),
+    })),
+  };
   return {
     withDbAccessContext: vi.fn(async (_c: unknown, fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
     runOutsideDbContext: vi.fn(async (fn: () => unknown) => fn()),
-    db: {
-      select: vi.fn(() => makeChain(dbState.userRow)),
-      update: vi.fn(() => ({
-        set: vi.fn(() => ({
-          where: vi.fn(() => Promise.resolve()),
-        })),
-      })),
-    },
+    db,
   };
 });
+
+const transitionState = vi.hoisted(() => {
+  class AuthBindingRotationRequiredError extends Error {
+    constructor(readonly replacement: { kind: 'browser'; value: string }) { super('rotation'); }
+  }
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  return {
+    AuthBindingRotationRequiredError,
+    AuthBindingUnavailableError,
+    AuthIssuanceCapabilityError,
+    AuthIssuanceConflictError,
+    beginError: null as Error | null,
+    finishError: null as Error | null,
+    enforcement: false,
+    bindingValue: '',
+    replacement: null as string | null,
+    cookieKind: null as 'guarded' | 'legacy' | null,
+    legacyMetrics: [] as string[],
+    events: [] as string[],
+  };
+});
+
+vi.mock('../../services/authBrowserTransition', () => ({
+  AuthBindingRotationRequiredError: transitionState.AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError: transitionState.AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError: transitionState.AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError: transitionState.AuthIssuanceConflictError,
+  beginAuthIssuance: vi.fn(async () => {
+    if (transitionState.beginError) throw transitionState.beginError;
+    transitionState.events.push('admit');
+    return { transitionId: 'transition-1', generation: 1, operationId: 'operation-1' };
+  }),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => {
+    if (transitionState.finishError) throw transitionState.finishError;
+    transitionState.events.push('finish-start');
+    const { db } = await import('../../db');
+    const result = await callback(db);
+    transitionState.events.push('finish-commit');
+    return result;
+  }),
+}));
 
 const servicesState = vi.hoisted(() => ({
   lastTokenPayload: null as Record<string, unknown> | null,
@@ -133,6 +181,45 @@ vi.mock('../../services', () => ({
   getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
 }));
 
+vi.mock('../../services/userSession', () => ({
+  authBrowserTransitionsEnforced: vi.fn(() => transitionState.enforcement),
+  issueUserSession: vi.fn(async (identity: Record<string, unknown>, options: Record<string, unknown>) => {
+    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa };
+    servicesState.lastTokenOptions = options;
+    servicesState.mintCalls.push(String(identity.userId));
+    transitionState.events.push('issue-guarded');
+    return {
+      accessToken: 'access-tok', refreshToken: 'refresh-tok', refreshJti: 'jti-new',
+      expiresInSeconds: 900, familyId: 'fam-1', transitionId: 'transition-1', generation: 1,
+    };
+  }),
+  issueUserSessionLegacyDuringTransition: vi.fn(async (identity: Record<string, unknown>) => {
+    servicesState.lastTokenPayload = { sub: identity.userId, mfa: identity.mfa };
+    servicesState.lastTokenOptions = { refreshFam: 'fam-1' };
+    servicesState.mintCalls.push(String(identity.userId));
+    servicesState.bindCalls.push({ jti: 'jti-new', familyId: 'fam-1' });
+    transitionState.events.push('issue-legacy');
+    return {
+      accessToken: 'access-tok', refreshToken: 'refresh-tok', refreshJti: 'jti-new',
+      expiresInSeconds: 900, familyId: 'fam-1',
+    };
+  }),
+  bindIssuedUserSession: vi.fn(async (issued: { refreshJti: string; familyId: string }) => {
+    servicesState.bindCalls.push({ jti: issued.refreshJti, familyId: issued.familyId });
+  }),
+}));
+
+vi.mock('../../services/authTransitionMetrics', () => ({
+  recordAuthTransitionLegacyIssuer: vi.fn((issuer: string) => transitionState.legacyMetrics.push(issuer)),
+}));
+
+vi.mock('./binding', () => ({
+  requestAuthBinding: vi.fn(() => ({ kind: 'browser', value: transitionState.bindingValue })),
+  installAuthBindingReplacement: vi.fn((_c: unknown, replacement: { value: string }) => {
+    transitionState.replacement = replacement.value;
+  }),
+}));
+
 const auditState = vi.hoisted(() => ({
   audits: [] as Array<Record<string, unknown>>,
   loginFailures: [] as Array<Record<string, unknown>>,
@@ -163,10 +250,16 @@ vi.mock('./helpers', async () => {
       orgId: null as string | null,
       scope: 'partner' as const,
     })),
-    setRefreshTokenCookie: vi.fn((c: unknown, refreshToken: string) => {
-      void c;
-      cookieState.set = refreshToken;
+    installAuthorizedUserSessionCookies: vi.fn((_c: unknown, issued: { refreshToken: string }) => {
+      cookieState.set = issued.refreshToken;
+      transitionState.cookieKind = 'guarded';
     }),
+    installLegacyUserSessionCookiesDuringTransition: vi.fn((_c: unknown, issued: { refreshToken: string }) => {
+      cookieState.set = issued.refreshToken;
+      transitionState.cookieKind = 'legacy';
+    }),
+    authClientUpgradeRequiredResponse: vi.fn((c: any) =>
+      c.json({ error: 'Authentication client upgrade required', reason: 'auth_client_upgrade_required' }, 426)),
     clearRefreshTokenCookie: vi.fn((c: unknown) => {
       void c;
       cookieState.set = null;
@@ -213,6 +306,7 @@ describe('GET /cf-access-login', () => {
     policyState.required = false;
     verifyState.next = undefined;
     dbState.userRow = null;
+    dbState.lastLoginUpdated = false;
     auditState.audits = [];
     auditState.loginFailures = [];
     cookieState.set = null;
@@ -224,6 +318,14 @@ describe('GET /cf-access-login', () => {
     servicesState.bindCalls = [];
     servicesState.revokeAllCalls = [];
     servicesState.revokeJtiCalls = [];
+    transitionState.finishError = null;
+    transitionState.beginError = null;
+    transitionState.enforcement = false;
+    transitionState.bindingValue = '';
+    transitionState.replacement = null;
+    transitionState.cookieKind = null;
+    transitionState.legacyMetrics = [];
+    transitionState.events = [];
     delete process.env.DASHBOARD_URL;
     delete process.env.PUBLIC_APP_URL;
   });
@@ -325,6 +427,123 @@ describe('GET /cf-access-login', () => {
     dbState.userRow = { ...activeUser, mfaEnabled: true, mfaSecret: null, mfaMethod: 'passkey' };
     const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
     expect(res.headers.get('Location')).toContain('reason=mfa-required');
+  });
+
+  it('leaves last-login, family, cookie, and success audit unchanged when logout wins guarded finalization', async () => {
+    envState.enabled = true;
+    transitionState.bindingValue = 'a'.repeat(64);
+    transitionState.finishError = new transitionState.AuthIssuanceCapabilityError();
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience,
+        iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, authEpoch: 3, mfaEpoch: 2 };
+
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+    expect(res.status).toBe(409);
+    expect(dbState.lastLoginUpdated).toBe(false);
+    expect(servicesState.mintCalls).toEqual([]);
+    expect(cookieState.set).toBeNull();
+    expect(auditState.audits).toEqual([]);
+  });
+
+  it('uses guarded issuance for a valid binding cookie even without a transition header', async () => {
+    envState.enabled = true;
+    transitionState.bindingValue = 'a'.repeat(64);
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience,
+        iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, authEpoch: 3, mfaEpoch: 2 };
+
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+    expect(res.status).toBe(302);
+    expect(transitionState.cookieKind).toBe('guarded');
+    expect(dbState.lastLoginUpdated).toBe(true);
+    expect(transitionState.events).toContain('finish-commit');
+    expect(transitionState.legacyMetrics).toEqual([]);
+  });
+
+  it('uses the frozen legacy seam for a missing binding only while enforcement is false', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience,
+        iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, authEpoch: 3, mfaEpoch: 2 };
+
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+    expect(res.status).toBe(302);
+    expect(transitionState.cookieKind).toBe('legacy');
+    expect(transitionState.legacyMetrics).toEqual(['cf_access_redirect']);
+  });
+
+  it('rejects a missing binding before authority effects when enforcement is true', async () => {
+    envState.enabled = true;
+    transitionState.enforcement = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience,
+        iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, authEpoch: 3, mfaEpoch: 2 };
+
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+    expect(res.status).toBe(426);
+    expect(dbState.lastLoginUpdated).toBe(false);
+    expect(servicesState.mintCalls).toEqual([]);
+    expect(cookieState.set).toBeNull();
+  });
+
+  it('maps an invalid presented binding to the exact 428 replacement response', async () => {
+    envState.enabled = true;
+    transitionState.bindingValue = 'invalid-binding';
+    transitionState.finishError = new transitionState.AuthBindingRotationRequiredError({
+      kind: 'browser', value: 'b'.repeat(64),
+    });
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience,
+        iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, authEpoch: 3, mfaEpoch: 2 };
+
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+    expect(res.status).toBe(428);
+    expect(await res.json()).toEqual({
+      error: 'Authentication binding refresh required', reason: 'binding_refresh',
+    });
+    expect(transitionState.replacement).toBe('b'.repeat(64));
+  });
+
+  it('bootstraps a transition-v1 redirect with a missing binding instead of using legacy issuance', async () => {
+    envState.enabled = true;
+    transitionState.beginError = new transitionState.AuthBindingRotationRequiredError({
+      kind: 'browser', value: 'c'.repeat(64),
+    });
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience,
+        iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, authEpoch: 3, mfaEpoch: 2 };
+
+    const res = await callGet('/cf-access-login', {
+      'Cf-Access-Jwt-Assertion': 'tok',
+      'x-breeze-auth-transition': 'v1',
+    });
+
+    expect(res.status).toBe(428);
+    expect(transitionState.replacement).toBe('c'.repeat(64));
+    expect(transitionState.legacyMetrics).toEqual([]);
   });
 
   it('mints a session and redirects to / with cf-access-login=success on success', async () => {

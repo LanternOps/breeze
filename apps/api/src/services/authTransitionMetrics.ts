@@ -5,7 +5,10 @@ export type AuthTransitionLegacyIssuer =
   | 'sms'
   | 'recovery'
   | 'passkey'
-  | 'refresh';
+  | 'refresh'
+  | 'registration'
+  | 'invite'
+  | 'cf_access_redirect';
 
 export type AuthTransitionClientClass = 'web' | 'native';
 

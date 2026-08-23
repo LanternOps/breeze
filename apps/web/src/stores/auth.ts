@@ -1616,7 +1616,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   redirectUrl?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/verify-email'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/verify-email'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1805,7 +1805,7 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/accept-invite'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/accept-invite'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',

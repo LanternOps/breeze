@@ -8,6 +8,7 @@ import {
   apiPreviewInvite,
   apiRegisterPartner,
   apiResetPassword,
+  apiVerifyEmail,
   apiVerifyMFA,
   apiVerifyPasskeyMFA,
   AuthSessionExpiredError,
@@ -971,6 +972,24 @@ describe('auth API helpers', () => {
       ],
       issuerPath: '/api/v1/auth/mfa/verify',
     },
+    {
+      name: 'email verification finalization',
+      invoke: () => apiVerifyEmail('verify-token'),
+      responses: [
+        makeResponse({ reason: 'binding_refresh' }, false, 428),
+        makeResponse({ verified: true, user: baseUser, tokens: baseTokens }),
+      ],
+      issuerPath: '/api/v1/auth/verify-email',
+    },
+    {
+      name: 'invite acceptance',
+      invoke: () => apiAcceptInvite('invite-token', 'strong-password'),
+      responses: [
+        makeResponse({ reason: 'binding_refresh' }, false, 428),
+        makeResponse({ user: baseUser, tokens: baseTokens }),
+      ],
+      issuerPath: '/api/v1/auth/accept-invite',
+    },
   ])('retries $name exactly once on 428 and advertises transition-v1', async ({ invoke, responses, issuerPath }) => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(responses[0])
@@ -985,6 +1004,7 @@ describe('auth API helpers', () => {
       expect(url).toBe(issuerPath);
       expect(new Headers(init.headers).get('x-breeze-auth-transition')).toBe('v1');
     }
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(fetchMock.mock.calls[0]?.[1]?.body);
   });
 
   it('retries only passkey verification on 428, not challenge options', async () => {
