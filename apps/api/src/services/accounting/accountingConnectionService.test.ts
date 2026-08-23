@@ -100,4 +100,130 @@ describe('accountingConnectionService', () => {
     expect(captured.updateSet.accessTokenEncrypted).toBeDefined();
     expect(decryptSecret(captured.updateSet.accessTokenEncrypted)).toBe('at');
   }, 20_000);
+
+  function makeCasDb(row: Record<string, unknown> | null, updatedRows: Array<{ id: string }> = [{ id: 'x' }]) {
+    const setSpy = vi.fn(() => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => updatedRows) })),
+    }));
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(() => ({ for: vi.fn(async () => (row ? [row] : [])) })),
+          })),
+        })),
+      })),
+      insert: vi.fn(),
+      update: vi.fn(() => ({ set: setSpy })),
+      delete: vi.fn(),
+    } as any;
+    const db = { ...tx, transaction: vi.fn(async (fn: any) => fn(tx)) } as any;
+    return { db, tx, setSpy };
+  }
+
+  async function casRow(realmId: string | null, updatedAt: Date) {
+    const { encryptSecret } = await import('../secretCrypto');
+    return {
+      id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      partnerId: '11111111-1111-1111-1111-111111111111',
+      realmIdEncrypted: realmId === null ? null : encryptSecret(realmId),
+      updatedAt,
+      homeCurrency: null,
+    };
+  }
+
+  it('updateHomeCurrency normalizes the code and writes under the row lock', async () => {
+    const at = new Date('2026-09-04T00:00:00Z');
+    const { db, tx, setSpy } = makeCasDb(await casRow('realm-A', at));
+    const { updateHomeCurrency } = await import('./accountingConnectionService');
+
+    await updateHomeCurrency(
+      db,
+      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      '11111111-1111-1111-1111-111111111111',
+      { updatedAt: at, realmId: 'realm-A' },
+      ' cad ',
+    );
+
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(tx.select).toHaveBeenCalledTimes(1); // the FOR UPDATE lock read
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ homeCurrency: 'CAD' }));
+  });
+
+  it('updateHomeCurrency accepts a code Breeze cannot bill in (external fact)', async () => {
+    const at = new Date('2026-09-04T00:00:00Z');
+    const { db, setSpy } = makeCasDb(await casRow('realm-A', at));
+    const { updateHomeCurrency } = await import('./accountingConnectionService');
+
+    await updateHomeCurrency(db, 'c1', 'p1', { updatedAt: at, realmId: 'realm-A' }, 'BHD');
+
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ homeCurrency: 'BHD' }));
+  });
+
+  it('updateHomeCurrency rejects a malformed external value without touching the db', async () => {
+    const { db } = makeCasDb(await casRow('realm-A', new Date()));
+    const { updateHomeCurrency } = await import('./accountingConnectionService');
+
+    await expect(updateHomeCurrency(db, 'c1', 'p1', { updatedAt: new Date(), realmId: 'realm-A' }, 'DOLLARS'))
+      .rejects.toThrow(/home currency/i);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('updateHomeCurrency ABORTS when the row now belongs to a different realm — even at an IDENTICAL updatedAt', async () => {
+    // The realm-generation race: two reconnects inside the same millisecond carry
+    // the same application-stamped updatedAt, so a timestamp-only predicate would
+    // let realm A's slow Preferences response overwrite realm B's currency.
+    const sameMs = new Date('2026-09-04T00:00:00.000Z');
+    const { db, setSpy } = makeCasDb(await casRow('realm-B', sameMs));
+    const { updateHomeCurrency } = await import('./accountingConnectionService');
+
+    await expect(updateHomeCurrency(db, 'c1', 'p1', { updatedAt: sameMs, realmId: 'realm-A' }, 'USD'))
+      .rejects.toThrow(/different realm/i);
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it('updateHomeCurrency throws on a stale updatedAt (same realm, reconnected since)', async () => {
+    const { db, setSpy } = makeCasDb(await casRow('realm-A', new Date('2026-09-04T00:00:05Z')));
+    const { updateHomeCurrency } = await import('./accountingConnectionService');
+
+    await expect(updateHomeCurrency(db, 'c1', 'p1', { updatedAt: new Date('2026-09-04T00:00:00Z'), realmId: 'realm-A' }, 'USD'))
+      .rejects.toThrow(/matched no accounting_connections row/);
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it('tags the two lost-CAS aborts with a distinct code, and leaves a zero-row read untagged', async () => {
+    // A lost compare-and-set is an EXPECTED race (double connect, concurrent
+    // reconnect), so the caller must be able to tell it apart from a genuine
+    // failure by code — never by matching on message text. A zero-row read is
+    // ambiguous (deleted underneath OR a wrong RLS context), so it stays
+    // untagged and keeps error-level reporting.
+    const sameMs = new Date('2026-09-04T00:00:00.000Z');
+    const mod = await import('./accountingConnectionService');
+    const { updateHomeCurrency, isHomeCurrencyCasAbort } = mod;
+
+    const wrongRealm = await updateHomeCurrency(
+      makeCasDb(await casRow('realm-B', sameMs)).db, 'c1', 'p1', { updatedAt: sameMs, realmId: 'realm-A' }, 'USD',
+    ).catch((err: unknown) => err);
+    expect(isHomeCurrencyCasAbort(wrongRealm)).toBe(true);
+    expect((wrongRealm as { code: string }).code).toBe('ACCOUNTING_HOME_CURRENCY_CAS_ABORT');
+
+    const staleGeneration = await updateHomeCurrency(
+      makeCasDb(await casRow('realm-A', new Date('2026-09-04T00:00:05Z'))).db,
+      'c1', 'p1', { updatedAt: sameMs, realmId: 'realm-A' }, 'USD',
+    ).catch((err: unknown) => err);
+    expect(isHomeCurrencyCasAbort(staleGeneration)).toBe(true);
+
+    const missingRow = await updateHomeCurrency(
+      makeCasDb(null).db, 'c1', 'p1', { updatedAt: sameMs, realmId: 'realm-A' }, 'USD',
+    ).catch((err: unknown) => err);
+    expect(isHomeCurrencyCasAbort(missingRow)).toBe(false);
+  });
+
+  it('updateHomeCurrency throws when the lock read returns nothing (deleted row or wrong RLS context)', async () => {
+    const { db } = makeCasDb(null);
+    const { updateHomeCurrency } = await import('./accountingConnectionService');
+
+    await expect(updateHomeCurrency(db, 'c1', 'p1', { updatedAt: new Date(), realmId: 'realm-A' }, 'USD'))
+      .rejects.toThrow(/matched no accounting_connections row/);
+  });
 });
