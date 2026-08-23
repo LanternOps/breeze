@@ -1,6 +1,7 @@
 import {
   bigserial,
   char,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -15,6 +16,7 @@ import { AI_APPROVAL_SCOPES, type AiApprovalScope, type AssuranceLevel } from '@
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { apiKeys } from './apiKeys';
+import { aiAgentRuns } from './aiAgents';
 
 // Action intents & durable approval layer (spec
 // docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md).
@@ -104,15 +106,39 @@ export const actionIntents = pgTable(
     orgId: uuid('org_id').notNull().references(() => organizations.id),
     partnerId: uuid('partner_id').references(() => partners.id),
 
-    // Identity / attribution. Exactly one of requestedByUserId /
-    // requestingApiKeyId is set — enforced by action_intents_one_actor_chk
-    // (migration only; not modeled here, mirrors elevations.ts precedent).
+    // Identity / attribution. Exactly ONE of requestedByUserId /
+    // requestingApiKeyId / requestingAgentRunId is set — enforced by
+    // action_intents_one_actor_chk (migration only; not modeled here, mirrors
+    // elevations.ts precedent).
     requestedByUserId: uuid('requested_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
     requestingApiKeyId: uuid('requesting_api_key_id').references(() => apiKeys.id, {
       onDelete: 'set null',
     }),
+    /**
+     * The ai_agent_runs row that produced this intent (wave 3, #3824). Set iff
+     * origin_principal_kind = 'ai_agent' — paired by
+     * action_intents_agent_origin_chk, and `source` is paired to both by
+     * action_intents_agent_source_chk.
+     *
+     * This is the requester's replacement, not a breadcrumb: release
+     * revalidation reconstructs the agent AuthContext from this run's immutable
+     * policy_snapshot and re-checks it against the agent's CURRENT effective
+     * policy, so a flipped kill switch or a tightened allowlist vetoes an
+     * already-approved proposal.
+     *
+     * FK declared as a COMPOSITE (requesting_agent_run_id, org_id) →
+     * ai_agent_runs(id, org_id) in the table-options block below. No
+     * single-column .references() here — the composite FK is the only DB-level
+     * tie, and it is what stops an intent in one org from being attributed to
+     * an agent run in another (mirrors elevation_audit, elevations.ts:197).
+     *
+     * ON DELETE RESTRICT — agents and their runs are never hard-deleted
+     * (spec §2) and attribution must survive. Immutable, covered by
+     * action_intents_immutable_trg.
+     */
+    requestingAgentRunId: uuid('requesting_agent_run_id'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
@@ -229,6 +255,17 @@ export const actionIntents = pgTable(
     // below / elevations.ts's elevation_requests_org_pending_idx et al). The
     // matching partial predicate is passed to onConflictDoNothing's `where`
     // in intentService.ts's createActionIntent — see the comment there.
+
+    // Composite FK: (requesting_agent_run_id, org_id) → ai_agent_runs(id, org_id).
+    // Structural guarantee that an agent proposal can never be filed under a
+    // different tenant than the run that produced it — RLS on action_intents
+    // checks only action_intents.org_id and would not catch it.
+    // ON DELETE RESTRICT: runs are never hard-deleted; attribution survives.
+    requestingAgentRunOrgFk: foreignKey({
+      columns: [table.requestingAgentRunId, table.orgId],
+      foreignColumns: [aiAgentRuns.id, aiAgentRuns.orgId],
+      name: 'action_intents_requesting_agent_run_id_org_id_fkey',
+    }).onDelete('restrict'),
   }),
 );
 
