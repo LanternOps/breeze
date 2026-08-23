@@ -78,7 +78,10 @@ function toFixedScale(raw: string): string {
   if (sign === '-') throw new FrankfurterClientError(`Negative rate "${raw}"`, 'permanent');
   if (frac.length > RATE_SCALE) throw new FrankfurterClientError(`Rate "${raw}" exceeds ${RATE_SCALE} decimals`, 'permanent');
   if (/^0+$/.test(whole) && /^0*$/.test(frac)) throw new FrankfurterClientError(`Non-positive rate "${raw}"`, 'permanent');
-  return `${Number(whole)}.${frac.padEnd(RATE_SCALE, '0')}`;
+  // Strip leading zeros TEXTUALLY. `Number(whole)` would round a long integer
+  // part and can render it in exponent notation — the one float step this
+  // deliberately float-free normalizer must not take.
+  return `${whole.replace(/^0+(?=\d)/, '')}.${frac.padEnd(RATE_SCALE, '0')}`;
 }
 
 /** One flat v2 row: `{ date, base, quote, rate }`. Every field is validated —

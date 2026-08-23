@@ -56,6 +56,13 @@ describe('fetchLatestEcbRates', () => {
     expect(result.rates).toEqual([{ rateDate: '2026-08-21', baseCode: 'EUR', quoteCode: 'USD', rate: '1.16990000' }]);
   });
 
+  it('normalizes a padded whole part textually, without a float step', async () => {
+    const fetchImpl = (async () =>
+      jsonResponse([{ date: '2026-08-21', base: 'EUR', quote: 'USD', rate: '0001.1699' }])) as unknown as typeof fetch;
+    const result = await fetchLatestEcbRates(['USD'], { fetchImpl });
+    expect(result.rates[0]!.rate).toBe('1.16990000');
+  });
+
   it('ignores rows for currencies that were not requested', async () => {
     const fetchImpl = (async () =>
       jsonResponse([
