@@ -18,6 +18,8 @@ import {
   isAuthTransitionV1Request,
   authClientUpgradeRequiredResponse,
   clearRefreshTokenCookie,
+  validateCookieCsrfRequest,
+  validateStrictCookieCsrfRequest,
   _resetAuthCookieWarnStateForTests,
   type PendingMfaRecord,
 } from './helpers';
@@ -40,6 +42,67 @@ function makeContext(headers: Record<string, string | undefined>, remoteAddress?
       : {}),
   } as RequestLike;
 }
+
+function makeCsrfContext(headers: Record<string, string>): Context {
+  const normalized = Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+  return {
+    req: { header: (name: string) => normalized[name.toLowerCase()] },
+  } as unknown as Context;
+}
+
+describe('terminal strict cookie CSRF boundary', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalOrigins = process.env.CORS_ALLOWED_ORIGINS;
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    process.env.CORS_ALLOWED_ORIGINS = 'https://breeze.example.com';
+  });
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    if (originalOrigins === undefined) delete process.env.CORS_ALLOWED_ORIGINS;
+    else process.env.CORS_ALLOWED_ORIGINS = originalOrigins;
+  });
+
+  it('keeps the non-browser sentinel compatibility behavior non-terminal only', () => {
+    const c = makeCsrfContext({ 'x-breeze-csrf': '1' });
+    expect(validateCookieCsrfRequest(c)).toBeNull();
+    expect(validateStrictCookieCsrfRequest(c)).not.toBeNull();
+  });
+
+  it('rejects sentinel cookie/header equality despite valid Origin and fetch-site', () => {
+    const c = makeCsrfContext({
+      cookie: 'breeze_csrf_token=1',
+      'x-breeze-csrf': '1',
+      origin: 'https://breeze.example.com',
+      'sec-fetch-site': 'same-origin',
+    });
+    expect(validateStrictCookieCsrfRequest(c)).toBe('Invalid CSRF token');
+  });
+
+  it.each([
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'different', origin: 'https://breeze.example.com', 'sec-fetch-site': 'same-origin' }, 'Invalid CSRF token'],
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', 'sec-fetch-site': 'same-origin' }, 'Missing request origin'],
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://evil.example', 'sec-fetch-site': 'same-origin' }, 'Invalid request origin'],
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://breeze.example.com', 'sec-fetch-site': 'cross-site' }, 'Cross-site request blocked'],
+  ])('rejects malformed strict terminal request %#', (headers, expected) => {
+    expect(validateStrictCookieCsrfRequest(makeCsrfContext(headers))).toBe(expected);
+  });
+
+  it('accepts only matching non-sentinel tokens from an allowed browser origin', () => {
+    const c = makeCsrfContext({
+      cookie: 'breeze_csrf_token=csrf',
+      'x-breeze-csrf': 'csrf',
+      origin: 'https://breeze.example.com',
+      'sec-fetch-site': 'same-site',
+    });
+    expect(validateStrictCookieCsrfRequest(c)).toBeNull();
+  });
+});
 
 describe('getAllowedOrigins (G5 — dev-origin gating)', () => {
   const originalNodeEnv = process.env.NODE_ENV;

@@ -9,6 +9,7 @@ import {
   isValidReleaseSourceRepository,
 } from '../services/releaseSource';
 import {
+  canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
   parseEventPermissionEpochMode,
@@ -1562,7 +1563,7 @@ const envSchema = envObjectSchema
             'CF_ACCESS_TRUST_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set.',
         });
       } else {
-        const teamDomain = (data.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+        const teamDomain = data.CF_ACCESS_TEAM_DOMAIN ?? '';
         if (!teamDomain) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -1570,12 +1571,12 @@ const envSchema = envObjectSchema
             message:
               'CF_ACCESS_TEAM_DOMAIN is required when CF_ACCESS_TRUST_ENABLED is true (e.g. example.cloudflareaccess.com, no scheme).',
           });
-        } else if (teamDomain.includes('://')) {
+        } else if (!canonicalCfAccessTeamDomain(teamDomain)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['CF_ACCESS_TEAM_DOMAIN'],
             message:
-              'CF_ACCESS_TEAM_DOMAIN must not include a scheme. Use the bare hostname (e.g. example.cloudflareaccess.com).',
+              'CF_ACCESS_TEAM_DOMAIN must be the canonical lowercase bare Cloudflare team hostname (e.g. example.cloudflareaccess.com), with no credentials, port, path, query, or fragment.',
           });
         }
         const aud = (data.CF_ACCESS_AUD ?? '').trim();

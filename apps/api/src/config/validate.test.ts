@@ -91,6 +91,38 @@ describe('validateConfig', () => {
   });
 
   it.each([
+    'trusted.cloudflareaccess.com@evil.example',
+    'trusted.cloudflareaccess.com:443',
+    'trusted.cloudflareaccess.com/path',
+    'trusted.cloudflareaccess.com?next=evil',
+    'trusted.cloudflareaccess.com#fragment',
+    'trusted.cloudflareaccess.com.evil.example',
+    'evil.example',
+    'TRUSTED.cloudflareaccess.com',
+    'trusted.cloudflareaccess.com.',
+  ])('rejects non-canonical or untrusted CF Access team domain %s', (teamDomain) => {
+    withEnv({
+      ...validEnv,
+      CF_ACCESS_TRUST_ENABLED: 'true',
+      CF_ACCESS_TEAM_DOMAIN: teamDomain,
+      CF_ACCESS_AUD: 'aud-app-1234567890abcdef',
+    }, () => {
+      expect(() => validateConfig()).toThrow(/CF_ACCESS_TEAM_DOMAIN/);
+    });
+  });
+
+  it('accepts a canonical lowercase Cloudflare Access team hostname', () => {
+    withEnv({
+      ...validEnv,
+      CF_ACCESS_TRUST_ENABLED: 'true',
+      CF_ACCESS_TEAM_DOMAIN: 'trusted-team.cloudflareaccess.com',
+      CF_ACCESS_AUD: 'aud-app-1234567890abcdef',
+    }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each([
     ['AUTH_BROWSER_TRANSITIONS_ENFORCED', 'enabled'],
     ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', 'enabled'],
   ])('rejects an invalid boolean rollout value for %s', (key, value) => {

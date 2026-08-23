@@ -8,6 +8,7 @@ import {
   cfAccessTrustEnabled,
   cfAccessTrustsMfa,
   authBrowserTerminalPreparationEnabled,
+  canonicalCfAccessTeamDomain,
 } from '../../config/env';
 import {
   CfAccessInvalidTokenError,
@@ -35,7 +36,7 @@ import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionM
 import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
-import { CSRF_COOKIE_NAME, ENABLE_2FA } from './schemas';
+import { ENABLE_2FA } from './schemas';
 import {
   auditUserLoginFailure,
   clearRefreshTokenCookie,
@@ -47,8 +48,7 @@ import {
   installAuthorizedUserSessionCookies,
   installLegacyUserSessionCookiesDuringTransition,
   isAuthTransitionV1Request,
-  getCookieValue,
-  validateCookieCsrfRequest,
+  validateStrictCookieCsrfRequest,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import {
@@ -394,11 +394,8 @@ cfAccessRedirectLoginRoutes.post('/cf-access-logout/prepare', authMiddleware, as
     return c.json({ error: 'Terminal logout preparation is disabled' }, 503);
   }
 
-  const csrfError = validateCookieCsrfRequest(c);
-  const csrfCookie = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
-  if (csrfError || !csrfCookie || !c.req.header('origin')) {
-    return c.json({ error: csrfError ?? 'Missing CSRF cookie or request origin' }, 403);
-  }
+  const csrfError = validateStrictCookieCsrfRequest(c);
+  if (csrfError) return c.json({ error: csrfError }, 403);
 
   const auth = c.get('auth');
   const token = auth.token;
@@ -434,11 +431,16 @@ cfAccessRedirectLoginRoutes.post('/cf-access-logout/prepare', authMiddleware, as
     };
     const ticket = issueTerminalLogoutTicket(claims);
     clearRefreshTokenCookie(c);
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
     return c.json({
       navigationUrl: `/api/v1/auth/cf-access-logout?ticket=${encodeURIComponent(ticket)}`,
     });
-  } catch (error) {
-    console.error('[cf-access-logout] Durable terminal preparation failed:', error);
+  } catch {
+    console.error(
+      '[cf-access-logout] Durable terminal preparation failed',
+      { name: 'TerminalLogoutError', reason: 'durable_preparation_failed' },
+    );
     return c.json({ error: 'Terminal logout preparation unavailable' }, 503);
   }
 });
@@ -453,14 +455,17 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
     if (!await isCfTerminalLogoutPending(input.correlation)) {
       return terminalTicketError('Invalid or expired terminal logout ticket', 400);
     }
-  } catch (error) {
-    console.error('[cf-access-logout] Pending ticket check failed:', error);
+  } catch {
+    console.error(
+      '[cf-access-logout] Pending ticket check failed',
+      { name: 'TerminalLogoutError', reason: 'pending_check_failed' },
+    );
     return terminalTicketError('Terminal logout temporarily unavailable', 503);
   }
   if (!cfAccessTrustEnabled()) {
     return terminalTicketError('Cloudflare Access logout is disabled', 503);
   }
-  const teamDomain = cfAccessTeamDomain();
+  const teamDomain = canonicalCfAccessTeamDomain(cfAccessTeamDomain());
   const origin = configuredPublicOrigin();
   if (!teamDomain || !origin) {
     return terminalTicketError('Cloudflare Access logout is misconfigured', 503);
@@ -486,8 +491,11 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout/complete', async (c) => {
       ...input.correlation,
       signingKeyId: input.verified.signingKeyId,
     });
-  } catch (error) {
-    console.error('[cf-access-logout] Ticket completion failed:', error);
+  } catch {
+    console.error(
+      '[cf-access-logout] Ticket completion failed',
+      { name: 'TerminalLogoutError', reason: 'completion_failed' },
+    );
     return terminalTicketError('Terminal logout temporarily unavailable', 503);
   }
   if (result.kind === 'invalid') {

@@ -1066,6 +1066,28 @@ describe('auth API helpers', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
   });
 
+  it('apiLogout remains partial when no authenticated access token is available', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiLogout()).resolves.toMatchObject({ kind: 'partial' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
+  it.each([
+    ['empty body contract', {}],
+    ['negative body contract', { success: false }],
+    ['non-exact body contract', { success: true, extra: true }],
+  ])('apiLogout remains partial for HTTP-ok %s', async (_name, body) => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse(body)));
+
+    await expect(apiLogout()).resolves.toMatchObject({ kind: 'partial' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
   it('accepts only the exact same-origin ticketed Cloudflare navigation URL', () => {
     const origin = window.location.origin;
     expect(validateCfTerminalNavigationUrl('/api/v1/auth/cf-access-logout?ticket=signed.ticket'))

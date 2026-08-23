@@ -8,7 +8,8 @@ const envState = vi.hoisted(() => ({
   trustsMfa: false,
 }));
 
-vi.mock('../../config/env', () => ({
+vi.mock('../../config/env', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../config/env')>()),
   cfAccessTrustEnabled: () => envState.enabled,
   cfAccessTeamDomain: () => envState.teamDomain,
   cfAccessAud: () => envState.audience,
@@ -412,6 +413,7 @@ describe('GET /cf-access-login', () => {
     transitionState.events = [];
     delete process.env.DASHBOARD_URL;
     delete process.env.PUBLIC_APP_URL;
+    process.env.CORS_ALLOWED_ORIGINS = 'https://breeze.example.com';
   });
 
   it('redirects to /login with error=disabled when trust is off', async () => {
@@ -809,6 +811,22 @@ describe('GET /cf-access-login', () => {
       expect(terminalLogoutState.prepareCalls).toEqual([]);
     });
 
+    it('rejects sentinel cookie/header equality even with valid Origin and fetch-site', async () => {
+      envState.terminalPreparation = true;
+      const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout/prepare', {
+        method: 'POST',
+        headers: {
+          cookie: 'breeze_csrf_token=1; breeze_refresh_token=refresh-token',
+          'x-breeze-csrf': '1',
+          origin: 'https://breeze.example.com',
+          'sec-fetch-site': 'same-origin',
+        },
+      });
+
+      expect(res.status).toBe(403);
+      expect(terminalLogoutState.prepareCalls).toEqual([]);
+    });
+
     it('prepares durable logout, clears only refresh authority, and returns a signed navigation URL', async () => {
       envState.terminalPreparation = true;
       transitionState.bindingValue = 'c1-binding';
@@ -819,6 +837,8 @@ describe('GET /cf-access-login', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      expect(res.headers.get('Referrer-Policy')).toBe('no-referrer');
       await expect(res.json()).resolves.toEqual({
         navigationUrl: '/api/v1/auth/cf-access-logout?ticket=signed.ticket.value',
       });
@@ -844,6 +864,31 @@ describe('GET /cf-access-login', () => {
       expect(res.status).toBe(503);
       await expect(res.json()).resolves.not.toHaveProperty('navigationUrl');
       expect(cookieState.cleared).toBe(false);
+      errSpy.mockRestore();
+    });
+
+    it('never logs binding, token, nonce, or ticket material from terminal failures', async () => {
+      envState.terminalPreparation = true;
+      transitionState.bindingValue = 'c1-binding';
+      const secret = 'secret-binding-token-nonce-ticket';
+      terminalLogoutState.prepareError = Object.assign(new Error(`failure ${secret}`), {
+        name: `Leaky${secret}`,
+        replacement: { kind: 'browser', value: secret },
+        nonce: secret,
+        ticket: secret,
+      });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout/prepare', {
+        method: 'POST', headers: csrfHeaders,
+      });
+
+      expect(res.status).toBe(503);
+      expect(JSON.stringify(errSpy.mock.calls)).not.toContain(secret);
+      expect(errSpy).toHaveBeenLastCalledWith(
+        '[cf-access-logout] Durable terminal preparation failed',
+        { name: 'TerminalLogoutError', reason: 'durable_preparation_failed' },
+      );
       errSpy.mockRestore();
     });
 
@@ -884,6 +929,29 @@ describe('GET /cf-access-login', () => {
       const completion = decodeURIComponent(inner.split('returnTo=')[1] ?? '');
       expect(completion).toBe(
         'https://breeze.example.com/api/v1/auth/cf-access-logout/complete?ticket=signed.ticket.value');
+    });
+
+    it.each([
+      'trusted.cloudflareaccess.com@evil.example',
+      'trusted.cloudflareaccess.com:443',
+      'trusted.cloudflareaccess.com/path',
+      'trusted.cloudflareaccess.com?next=evil',
+      'trusted.cloudflareaccess.com#fragment',
+      'trusted.cloudflareaccess.com.evil.example',
+      'evil.example',
+      'TRUSTED.cloudflareaccess.com',
+      'trusted.cloudflareaccess.com.',
+    ])('revalidates and rejects unsafe team domain %s before ticket-bearing navigation', async (teamDomain) => {
+      envState.enabled = true;
+      envState.teamDomain = teamDomain;
+      process.env.DASHBOARD_URL = 'https://breeze.example.com';
+
+      const res = await cfAccessRedirectLoginRoutes.request(
+        'http://api.example/cf-access-logout?ticket=signed.ticket.value', { method: 'GET' });
+
+      expect(res.status).toBe(503);
+      expect(res.headers.get('Location')).toBeNull();
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
     });
 
     it.each(['completed', 'replayed'] as const)(
@@ -939,6 +1007,32 @@ describe('GET /cf-access-login', () => {
       expect(completion.headers.get('Referrer-Policy')).toBe('no-referrer');
       expect(cookieState.cleared).toBe(false);
       expect(transitionState.replacement).toBeNull();
+      errSpy.mockRestore();
+    });
+
+    it('sanitizes pending-check and completion failures before logging', async () => {
+      envState.enabled = true;
+      process.env.DASHBOARD_URL = 'https://breeze.example.com';
+      const secret = 'secret-binding-token-nonce-ticket';
+      const leaky = Object.assign(new Error(secret), {
+        replacement: { kind: 'browser', value: secret }, nonce: secret, ticket: secret,
+      });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      terminalLogoutState.pendingError = leaky;
+      await cfAccessRedirectLoginRoutes.request(
+        'http://api.example/cf-access-logout?ticket=signed.ticket.value', { method: 'GET' });
+      terminalLogoutState.pendingError = null;
+      terminalLogoutState.completionError = leaky;
+      await cfAccessRedirectLoginRoutes.request(
+        'http://api.example/cf-access-logout/complete?ticket=signed.ticket.value', { method: 'GET' });
+
+      expect(JSON.stringify(errSpy.mock.calls)).not.toContain(secret);
+      expect(errSpy.mock.calls).toEqual([
+        ['[cf-access-logout] Pending ticket check failed',
+          { name: 'TerminalLogoutError', reason: 'pending_check_failed' }],
+        ['[cf-access-logout] Ticket completion failed',
+          { name: 'TerminalLogoutError', reason: 'completion_failed' }],
+      ]);
       errSpy.mockRestore();
     });
   });

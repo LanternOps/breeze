@@ -55,7 +55,7 @@ import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { rateLimitIpKey } from '../../services/clientIp';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { nanoid } from 'nanoid';
-import { CSRF_COOKIE_NAME, ENABLE_2FA, loginSchema } from './schemas';
+import { ENABLE_2FA, loginSchema } from './schemas';
 import {
   getClientIP,
   getClientRateLimitKey,
@@ -78,7 +78,7 @@ import {
   mintLoginRegisterGrant,
   isAuthTransitionV1Request,
   authClientUpgradeRequiredResponse,
-  getCookieValue,
+  validateStrictCookieCsrfRequest,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
@@ -752,11 +752,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 // Logout
 loginRoutes.post('/logout', authMiddleware, async (c) => {
   const auth = c.get('auth');
-  const csrfError = validateCookieCsrfRequest(c);
-  const csrfCookie = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
-  if (csrfError || !csrfCookie || !c.req.header('origin')) {
-    return c.json({ error: csrfError ?? 'Missing CSRF cookie or request origin' }, 403);
-  }
+  const csrfError = validateStrictCookieCsrfRequest(c);
+  if (csrfError) return c.json({ error: csrfError }, 403);
 
   const token = auth.token;
   if (
@@ -783,8 +780,11 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     });
     installAuthBindingReplacement(c, result.replacement);
     durableOk = true;
-  } catch (error) {
-    console.error('[auth] Durable terminal logout failed:', error);
+  } catch {
+    console.error(
+      '[auth] Durable terminal logout failed',
+      { name: 'TerminalLogoutError', reason: 'durable_revocation_failed' },
+    );
   }
 
   // Always clear the local cookie — even on durable failure the client should

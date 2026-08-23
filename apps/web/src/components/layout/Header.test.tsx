@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const authState = vi.hoisted(() => ({
   apiLogout: vi.fn(),
   apiPrepare: vi.fn(),
   localLogout: vi.fn(),
+  accessToken: 'access-old' as string | null,
 }));
 vi.mock('../../stores/auth', () => {
   const useAuthStore = Object.assign(
@@ -12,7 +13,12 @@ vi.mock('../../stores/auth', () => {
       user: { id: 'user-1', name: 'User One', email: 'user@example.com', mfaEnabled: false },
       isAuthenticated: true,
     }),
-    { getState: () => ({ logout: authState.localLogout, tokens: { accessToken: 'access-old' } }) },
+    {
+      getState: () => ({
+        logout: authState.localLogout,
+        tokens: authState.accessToken ? { accessToken: authState.accessToken } : null,
+      }),
+    },
   );
   return {
     useAuthStore,
@@ -65,6 +71,7 @@ describe('Header terminal logout UX', () => {
     authState.apiPrepare.mockReset();
     authState.localLogout.mockReset();
     navigationState.navigate.mockReset();
+    authState.accessToken = 'access-old';
     featureState.cfEnabled = false;
     assign = vi.fn();
     originalLocation = window.location;
@@ -82,20 +89,23 @@ describe('Header terminal logout UX', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
     Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
   });
 
-  async function signOut() {
-    render(<Header />);
+  function signOut() {
+    const rendered = render(<Header />);
     fireEvent.click(screen.getByLabelText('layout.header.accountMenu'));
     fireEvent.click(screen.getByText('layout.header.signOut'));
+    return rendered;
   }
 
   it('never navigates to a ticketless GET when Cloudflare preparation fails and offers retry', async () => {
     featureState.cfEnabled = true;
     authState.apiPrepare.mockResolvedValue({ kind: 'partial', message: 'Durable preparation failed.' });
 
-    await signOut();
+    signOut();
 
     expect(await screen.findByTestId('logout-failure')).toHaveTextContent('Durable preparation failed.');
     expect(assign).not.toHaveBeenCalled();
@@ -111,7 +121,7 @@ describe('Header terminal logout UX', () => {
       navigationUrl: '/api/v1/auth/cf-access-logout?ticket=signed.ticket',
     });
 
-    await signOut();
+    signOut();
 
     await waitFor(() => expect(assign).toHaveBeenCalledWith(
       '/api/v1/auth/cf-access-logout?ticket=signed.ticket',
@@ -122,9 +132,86 @@ describe('Header terminal logout UX', () => {
   it('surfaces ordinary durable failure as partial sign-out instead of claiming completion', async () => {
     authState.apiLogout.mockResolvedValue({ kind: 'partial', message: 'Server sign-out is incomplete.' });
 
-    await signOut();
+    signOut();
 
     expect(await screen.findByTestId('logout-failure')).toHaveTextContent('Server sign-out is incomplete.');
     expect(navigationState.navigate).not.toHaveBeenCalled();
+  });
+
+  it('expires the component-local bearer and routes retry to safe reauthentication', async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    featureState.cfEnabled = true;
+    authState.apiPrepare.mockImplementation(async () => {
+      authState.accessToken = null;
+      return { kind: 'partial', message: 'Durable preparation failed.' };
+    });
+
+    signOut();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId('logout-failure')).toBeInTheDocument();
+    expect(setTimeoutSpy.mock.calls.filter(([, delay]) => delay === 30_000)).toHaveLength(1);
+
+    act(() => { vi.advanceTimersByTime(30_000); });
+    fireEvent.click(screen.getByTestId('logout-retry'));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(authState.apiPrepare).toHaveBeenCalledTimes(1);
+    expect(navigationState.navigate).toHaveBeenCalledWith('/login', { replace: true });
+  });
+
+  it('allows at most two terminal attempts before routing to safe reauthentication', async () => {
+    featureState.cfEnabled = true;
+    authState.apiPrepare.mockImplementation(async () => {
+      authState.accessToken = null;
+      return { kind: 'partial', message: 'Durable preparation failed.' };
+    });
+
+    signOut();
+    fireEvent.click(await screen.findByTestId('logout-retry'));
+
+    await waitFor(() => expect(navigationState.navigate).toHaveBeenCalledWith(
+      '/login', { replace: true },
+    ));
+    expect(authState.apiPrepare).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the bearer deadline immediately after terminal preparation succeeds', async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    featureState.cfEnabled = true;
+    authState.apiPrepare.mockResolvedValue({
+      kind: 'ready',
+      navigationUrl: '/api/v1/auth/cf-access-logout?ticket=signed.ticket',
+    });
+
+    signOut();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(assign).toHaveBeenCalled();
+    const deadlineCall = setTimeoutSpy.mock.calls.findIndex(([, delay]) => delay === 30_000);
+    expect(deadlineCall).toBeGreaterThanOrEqual(0);
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(setTimeoutSpy.mock.results[deadlineCall]?.value);
+  });
+
+  it('clears the component-local bearer deadline when Header unmounts', async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    authState.apiLogout.mockImplementation(async () => {
+      authState.accessToken = null;
+      return { kind: 'partial', message: 'Server sign-out is incomplete.' };
+    });
+
+    const rendered = signOut();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId('logout-failure')).toBeInTheDocument();
+    const deadlineCall = setTimeoutSpy.mock.calls.findIndex(([, delay]) => delay === 30_000);
+    expect(deadlineCall).toBeGreaterThanOrEqual(0);
+
+    rendered.unmount();
+
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(setTimeoutSpy.mock.results[deadlineCall]?.value);
   });
 });

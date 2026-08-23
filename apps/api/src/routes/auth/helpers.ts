@@ -1023,6 +1023,31 @@ export function validateCookieCsrfRequest(c: Context): string | null {
   return null;
 }
 
+/** Terminal browser mutations never accept the legacy non-browser sentinel. */
+export function validateStrictCookieCsrfRequest(c: Context): string | null {
+  const csrfHeader = c.req.header(CSRF_HEADER_NAME)?.trim();
+  if (!csrfHeader) return 'Missing CSRF header';
+
+  const csrfCookie = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
+  if (!csrfCookie) return 'Missing CSRF cookie';
+  if (csrfHeader === '1' || csrfCookie === '1' || !safeCompareTokens(csrfHeader, csrfCookie)) {
+    return 'Invalid CSRF token';
+  }
+
+  const origin = c.req.header('origin');
+  if (!origin) return 'Missing request origin';
+  if (!isAllowedOrigin(origin)) return 'Invalid request origin';
+
+  const fetchSite = c.req.header('sec-fetch-site');
+  if (fetchSite) {
+    const normalized = fetchSite.toLowerCase();
+    if (normalized !== 'same-origin' && normalized !== 'same-site') {
+      return 'Cross-site request blocked';
+    }
+  }
+  return null;
+}
+
 function safeCompareTokens(headerToken: string, cookieToken: string): boolean {
   const headerBuffer = Buffer.from(headerToken, 'utf8');
   const cookieBuffer = Buffer.from(cookieToken, 'utf8');

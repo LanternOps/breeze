@@ -1515,7 +1515,10 @@ export function validateCfTerminalNavigationUrl(raw: unknown): string | null {
 export async function apiLogout(retainedAccessToken?: string): Promise<LogoutOutcome> {
   const { tokens } = useAuthStore.getState();
   const accessToken = retainedAccessToken ?? tokens?.accessToken;
-  let outcome: LogoutOutcome = { kind: 'complete' };
+  let outcome: LogoutOutcome = {
+    kind: 'partial',
+    message: 'Your local session was cleared, but durable server sign-out could not be confirmed.',
+  };
 
   if (accessToken) {
     const controller = new AbortController();
@@ -1527,21 +1530,23 @@ export async function apiLogout(retainedAccessToken?: string): Promise<LogoutOut
         credentials: 'include',
         signal: controller.signal
       });
-      if (!response.ok) {
-        outcome = {
-          kind: 'partial',
-          message: 'Your local session was cleared, but durable server sign-out could not be confirmed.',
-        };
+      if (response.ok) {
+        const body: unknown = await response.json();
+        if (
+          typeof body === 'object'
+          && body !== null
+          && !Array.isArray(body)
+          && Object.keys(body).length === 1
+          && (body as { success?: unknown }).success === true
+        ) {
+          outcome = { kind: 'complete' };
+        }
       }
     } catch (err) {
       // Network error, offline, or the 8s abort fired. Ignored on purpose —
       // the refresh-token family may survive server-side, but the client must
       // still evict. Logged so a systematically failing revoke is diagnosable.
       console.warn('[apiLogout] logout request failed; evicting client session anyway', err);
-      outcome = {
-        kind: 'partial',
-        message: 'Your local session was cleared, but durable server sign-out could not be confirmed.',
-      };
     } finally {
       clearTimeout(timeout);
     }

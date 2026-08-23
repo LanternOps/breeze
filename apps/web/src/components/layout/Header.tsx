@@ -57,6 +57,15 @@ import { useTranslation } from 'react-i18next';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 
+const LOGOUT_BEARER_DEADLINE_MS = 30_000;
+const LOGOUT_MAX_ATTEMPTS = 2;
+
+interface LogoutBearerLease {
+  token: string;
+  expiresAt: number;
+  attempts: number;
+}
+
 export default function Header() {
   const { t } = useTranslation('common');
   const [mounted, setMounted] = useState(false);
@@ -79,7 +88,9 @@ export default function Header() {
   const themePanelRef = useRef<HTMLDivElement>(null);
   const userTriggerRef = useRef<HTMLButtonElement>(null);
   const userPanelRef = useRef<HTMLDivElement>(null);
-  const logoutAccessTokenRef = useRef<string | null>(null);
+  const logoutBearerRef = useRef<LogoutBearerLease | null>(null);
+  const logoutBearerDeadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const logoutFlowStartedRef = useRef(false);
 
   const { user, isAuthenticated } = useAuthStore();
   // Resolve the avatar through fetchWithAuth so internal /api/v1/users/<id>/avatar
@@ -100,6 +111,16 @@ export default function Header() {
 
   useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeDensity(setDensity), []);
+
+  const clearLogoutBearer = () => {
+    logoutBearerRef.current = null;
+    if (logoutBearerDeadlineRef.current !== null) {
+      clearTimeout(logoutBearerDeadlineRef.current);
+      logoutBearerDeadlineRef.current = null;
+    }
+  };
+
+  useEffect(() => () => clearLogoutBearer(), []);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -227,7 +248,45 @@ export default function Header() {
   const handleSignOut = async () => {
     setIsLoggingOut(true);
     setLogoutFailure(null);
-    logoutAccessTokenRef.current ??= useAuthStore.getState().tokens?.accessToken ?? null;
+    let bearer = logoutBearerRef.current;
+    if (
+      bearer
+      && (Date.now() >= bearer.expiresAt || bearer.attempts >= LOGOUT_MAX_ATTEMPTS)
+    ) {
+      clearLogoutBearer();
+      bearer = null;
+    }
+    if (!bearer) {
+      if (logoutFlowStartedRef.current) {
+        setIsLoggingOut(false);
+        await navigateTo('/login', { replace: true });
+        return;
+      }
+      logoutFlowStartedRef.current = true;
+      const accessToken = useAuthStore.getState().tokens?.accessToken;
+      if (!accessToken) {
+        setIsLoggingOut(false);
+        await navigateTo('/login', { replace: true });
+        return;
+      }
+      bearer = {
+        token: accessToken,
+        expiresAt: Date.now() + LOGOUT_BEARER_DEADLINE_MS,
+        attempts: 0,
+      };
+      logoutBearerRef.current = bearer;
+      logoutBearerDeadlineRef.current = setTimeout(() => {
+        logoutBearerRef.current = null;
+        logoutBearerDeadlineRef.current = null;
+      }, LOGOUT_BEARER_DEADLINE_MS);
+    }
+    bearer.attempts += 1;
+
+    const routeToSafeReauthentication = async () => {
+      clearLogoutBearer();
+      setIsLoggingOut(false);
+      await navigateTo('/login', { replace: true });
+    };
 
     // When CF Access trust is in front of Breeze, a normal SPA-side logout
     // only clears the Breeze session — CF Access still holds a session for
@@ -236,29 +295,41 @@ export default function Header() {
     // endpoint, which clears the Breeze refresh cookie and bounces the
     // browser through CF Access's own logout endpoint with returnTo set
     // to /login?signedOut=1.
-    const cfAccessEnabled = useFeaturesStore.getState().cfAccessLogin.enabled;
-    if (cfAccessEnabled) {
-      const outcome = await apiPrepareCfTerminalLogout(logoutAccessTokenRef.current ?? undefined);
-      if (outcome.kind === 'ready') {
-        logoutAccessTokenRef.current = null;
-        window.location.assign(outcome.navigationUrl);
+    try {
+      const cfAccessEnabled = useFeaturesStore.getState().cfAccessLogin.enabled;
+      if (cfAccessEnabled) {
+        const outcome = await apiPrepareCfTerminalLogout(bearer.token);
+        if (outcome.kind === 'ready') {
+          clearLogoutBearer();
+          window.location.assign(outcome.navigationUrl);
+          return;
+        }
+        if (bearer.attempts >= LOGOUT_MAX_ATTEMPTS) {
+          await routeToSafeReauthentication();
+          return;
+        }
+        setLogoutFailure({ message: outcome.message });
+        setIsLoggingOut(false);
         return;
       }
-      setLogoutFailure({ message: outcome.message });
-      setIsLoggingOut(false);
-      return;
-    }
 
-    try {
-      const outcome = await apiLogout(logoutAccessTokenRef.current ?? undefined);
+      const outcome = await apiLogout(bearer.token);
       if (outcome.kind === 'complete') {
-        logoutAccessTokenRef.current = null;
+        clearLogoutBearer();
         await navigateTo('/login', { replace: true });
         return;
       }
+      if (bearer.attempts >= LOGOUT_MAX_ATTEMPTS) {
+        await routeToSafeReauthentication();
+        return;
+      }
       setLogoutFailure({ message: outcome.message });
-    } catch (error) {
-      console.error('[logout] Unexpected terminal logout failure', error);
+    } catch {
+      console.error('[logout] Unexpected terminal logout failure');
+      if (bearer.attempts >= LOGOUT_MAX_ATTEMPTS) {
+        await routeToSafeReauthentication();
+        return;
+      }
       setLogoutFailure({
         message: 'Your local session was cleared, but server sign-out could not be confirmed.',
       });

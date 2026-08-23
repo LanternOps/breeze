@@ -320,6 +320,23 @@ export async function withTerminalLogoutTransition<T>(
     const locked = await lockTransitionForResolution(tx, resolution);
     if (!locked) throw new AuthBindingUnavailableError('missing');
     const { transition, matchedKey } = locked;
+    if (transition.state !== 'active') throw new AuthIssuanceCapabilityError();
+    const invalidated = await tx
+      .update(authBrowserTransitions)
+      .set({
+        activeOperationId: null,
+        activeOperationExpiresAt: null,
+        updatedAt: sql`now()`,
+      })
+      .where(and(
+        eq(authBrowserTransitions.id, transition.id),
+        eq(authBrowserTransitions.generation, transition.generation),
+        eq(authBrowserTransitions.state, 'active'),
+      ))
+      .returning({ id: authBrowserTransitions.id });
+    if (invalidated.length !== 1) throw new AuthIssuanceCapabilityError();
+    transition.activeOperationId = null;
+    transition.activeOperationExpiresAt = null;
     const publicTransition: TerminalLogoutTransitionLock = Object.freeze({
       id: transition.id,
       generation: transition.generation,

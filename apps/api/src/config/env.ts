@@ -392,8 +392,32 @@ export const DELEGANT_PRINCIPAL_KID = process.env.DELEGANT_PRINCIPAL_KID ?? '';
 export function cfAccessTrustEnabled(): boolean {
   return envFlag('CF_ACCESS_TRUST_ENABLED');
 }
+
+const CF_ACCESS_TEAM_DOMAIN_PATTERN =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudflareaccess\.com$/;
+
+/** Accept only the canonical bare hostname Cloudflare assigns to one team. */
+export function canonicalCfAccessTeamDomain(raw: string): string | null {
+  if (!raw || raw !== raw.trim() || !CF_ACCESS_TEAM_DOMAIN_PATTERN.test(raw)) return null;
+  try {
+    const parsed = new URL(`https://${raw}`);
+    if (
+      parsed.username
+      || parsed.password
+      || parsed.port
+      || parsed.pathname !== '/'
+      || parsed.search
+      || parsed.hash
+      || parsed.hostname !== raw
+    ) return null;
+    return parsed.hostname;
+  } catch {
+    return null;
+  }
+}
+
 export function cfAccessTeamDomain(): string {
-  return (process.env.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+  return canonicalCfAccessTeamDomain(process.env.CF_ACCESS_TEAM_DOMAIN ?? '') ?? '';
 }
 export function cfAccessAud(): string {
   return (process.env.CF_ACCESS_AUD ?? '').trim();

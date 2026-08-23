@@ -99,6 +99,45 @@ async function closeClient(client: Sql): Promise<void> {
   await client.end({ timeout: 1 });
 }
 
+async function installTerminalRetireFailpoint(
+  client: Sql,
+  transitionId: string,
+): Promise<() => Promise<void>> {
+  const suffix = randomUUID().replaceAll('-', '');
+  const functionName = `terminal_logout_failpoint_${suffix}`;
+  const triggerName = `terminal_logout_failpoint_${suffix}`;
+
+  await client.unsafe(`
+    CREATE FUNCTION public.${functionName}() RETURNS trigger
+    LANGUAGE plpgsql AS $failpoint$
+    BEGIN
+      RAISE EXCEPTION 'injected terminal transition failure';
+    END
+    $failpoint$
+  `);
+  try {
+    await client.unsafe(`
+      CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE ON auth_browser_transitions
+      FOR EACH ROW
+      WHEN (
+        OLD.id = '${transitionId}'::uuid
+        AND OLD.state = 'active'
+        AND NEW.state = 'retired'
+      )
+      EXECUTE FUNCTION public.${functionName}()
+    `);
+  } catch (error) {
+    await client.unsafe(`DROP FUNCTION IF EXISTS public.${functionName}()`);
+    throw error;
+  }
+
+  return async () => {
+    await client.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON auth_browser_transitions`);
+    await client.unsafe(`DROP FUNCTION IF EXISTS public.${functionName}()`);
+  };
+}
+
 async function fixture() {
   const partner = await createFixturePartner();
   const user = await createUser({
@@ -151,6 +190,65 @@ describe('guarded auth browser transition races', () => {
     expect(liveUser?.authEpoch).toBe(user.authEpoch + 1);
     expect(result.replacement.kind).toBe('browser');
     expect(result.replacement.value).not.toBe(binding);
+  });
+
+  runDb('rolls back epochs, families, operation invalidation, and transition after a post-revocation failure', async () => {
+    const { user, identity } = await fixture();
+    const binding = await freshBrowserBinding();
+    const issuance = await beginAuthIssuance({ kind: 'browser', value: binding });
+    const issued = await finishAuthIssuance(issuance, (tx) => issueUserSession(identity, {
+      tx,
+      capability: issuance,
+      expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+    }));
+    const activeOperation = await beginAuthIssuance({ kind: 'browser', value: binding });
+    const failpointClient = postgres(DATABASE_URL, { max: 1, onnotice: () => undefined });
+    let removeFailpoint: () => Promise<void> = async () => undefined;
+
+    try {
+      removeFailpoint = await installTerminalRetireFailpoint(
+        failpointClient,
+        issuance.transitionId,
+      );
+      let failure: unknown;
+      try {
+        await performOrdinaryTerminalLogout({
+          binding: { kind: 'browser', value: binding },
+          access: {
+            userId: user.id,
+            authEpoch: user.authEpoch,
+            mfaEpoch: user.mfaEpoch,
+            familyId: issued.familyId,
+          },
+          refreshToken: null,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).cause).toBeInstanceOf(Error);
+      expect(((failure as Error).cause as Error).message)
+        .toContain('injected terminal transition failure');
+
+      const [transition] = await getTestDb().select().from(authBrowserTransitions)
+        .where(eq(authBrowserTransitions.id, issuance.transitionId)).limit(1);
+      const [family] = await getTestDb().select().from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, issued.familyId)).limit(1);
+      const [liveUser] = await getTestDb().select({
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch,
+      }).from(users).where(eq(users.id, user.id)).limit(1);
+      expect(liveUser).toEqual({ authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch });
+      expect(family?.revokedAt).toBeNull();
+      expect(transition).toMatchObject({
+        state: 'active',
+        generation: activeOperation.generation,
+        activeOperationId: activeOperation.operationId,
+      });
+    } finally {
+      await removeFailpoint();
+      await closeClient(failpointClient);
+    }
   });
 
   runDb('a delayed C1 response after logout is inert and deterministically recovers C2', async () => {

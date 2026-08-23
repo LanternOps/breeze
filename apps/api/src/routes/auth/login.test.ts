@@ -1321,12 +1321,19 @@ describe('POST /logout', () => {
     terminalLogoutState.error = null;
     terminalLogoutState.calls = [];
     vi.mocked(resolveRefreshToken).mockReturnValue(null);
-    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
   });
 
   it('requires strict cookie/header CSRF before invoking terminal logout', async () => {
-    vi.mocked(validateCookieCsrfRequest).mockReturnValue('Missing CSRF cookie');
-    const res = await postLogout();
+    const res = await postLogout({ cookie: '', 'x-breeze-csrf': '' });
+    expect(res.status).toBe(403);
+    expect(terminalLogoutState.calls).toEqual([]);
+  });
+
+  it('rejects sentinel cookie/header equality despite valid Origin and fetch-site', async () => {
+    const res = await postLogout({
+      cookie: 'breeze_csrf_token=1; breeze_auth_binding=c1',
+      'x-breeze-csrf': '1',
+    });
     expect(res.status).toBe(403);
     expect(terminalLogoutState.calls).toEqual([]);
   });
@@ -1344,12 +1351,22 @@ describe('POST /logout', () => {
   });
 
   it('returns 500 without claiming durable completion when PostgreSQL rolls back', async () => {
-    terminalLogoutState.error = new Error('connection lost');
+    const secret = 'secret-binding-token-nonce-ticket';
+    terminalLogoutState.error = Object.assign(new Error(`connection lost ${secret}`), {
+      replacement: { kind: 'browser', value: secret }, nonce: secret, ticket: secret,
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postLogout();
     const body = await res.json();
     expect(res.status).toBe(500);
     expect(body).toEqual({ error: 'Logout could not be fully completed. Please try again.' });
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain(secret);
+    expect(errSpy).toHaveBeenCalledWith(
+      '[auth] Durable terminal logout failed',
+      { name: 'TerminalLogoutError', reason: 'durable_revocation_failed' },
+    );
+    errSpy.mockRestore();
   });
 });
 

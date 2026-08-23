@@ -50,6 +50,8 @@ const harness = vi.hoisted(() => {
     now: new Date('2026-07-12T20:00:00.000Z'),
     authorityWrites: [] as string[],
     transactionEvents: [] as string[],
+    terminalOrderEvents: [] as string[],
+    captureTerminalOrder: false,
     transactionCalls: 0,
     failTransactionAt: null as number | null,
     nextId: 1,
@@ -168,6 +170,7 @@ function makeTransaction() {
             return query;
           },
           for() {
+            if (harness.captureTerminalOrder) harness.terminalOrderEvents.push('transition-lock');
             return query;
           },
           async limit(count = 1) {
@@ -181,7 +184,14 @@ function makeTransaction() {
       },
     })),
     update: vi.fn(() => ({
-      set: (values: Partial<TransitionRow>) => ({
+      set: (values: Partial<TransitionRow>) => {
+        if (
+          harness.captureTerminalOrder
+          && values.activeOperationId === null
+          && values.activeOperationExpiresAt === null
+          && values.state === undefined
+        ) harness.terminalOrderEvents.push('invalidate-operation');
+        return {
         where: (predicate: Predicate) => ({
           returning: async (fields: Record<string, unknown>) => {
             const rows = [...harness.rows.values()].filter((candidate) =>
@@ -195,7 +205,8 @@ function makeTransaction() {
             return rows.map((row) => projectRow(row, fields));
           },
         }),
-      }),
+      };
+      },
     })),
     delete: vi.fn(() => ({
       where: (predicate: Predicate) => ({
@@ -269,6 +280,7 @@ import {
   completeTerminalLogout,
   isTerminalLogoutPending,
   finishAuthIssuance,
+  withTerminalLogoutTransition,
   selectAuthBindingSource,
   resolveAuthBinding,
   rotateExpiredBinding,
@@ -347,6 +359,8 @@ beforeEach(() => {
   harness.now = new Date('2026-07-12T20:00:00.000Z');
   harness.authorityWrites.length = 0;
   harness.transactionEvents.length = 0;
+  harness.terminalOrderEvents.length = 0;
+  harness.captureTerminalOrder = false;
   harness.transactionCalls = 0;
   harness.failTransactionAt = null;
   harness.nextId = 1;
@@ -971,6 +985,29 @@ describe('stored transition issuance admission', () => {
     )).rejects.toBeInstanceOf(AuthIssuanceConflictError);
     expect(harness.rows.get(transition.id)?.activeOperationId)
       .toBe(first.capability.operationId);
+  });
+});
+
+describe('terminal logout transition admission', () => {
+  it('locks C1 and invalidates its active operation before sorted subject locks', async () => {
+    const transition = seedTransition(browser(), {
+      activeOperationId: '20000000-0000-4000-8000-000000000077',
+      activeOperationExpiresAt: new Date(harness.now.getTime() + 60_000),
+    });
+    harness.captureTerminalOrder = true;
+
+    await withTerminalLogoutTransition(browser(), async () => {
+      harness.terminalOrderEvents.push('users:user-a,user-b');
+      expect(harness.rows.get(transition.id)?.activeOperationId).toBeNull();
+      harness.terminalOrderEvents.push('families:family-a,family-b');
+    });
+
+    expect(harness.terminalOrderEvents.slice(0, 4)).toEqual([
+      'transition-lock',
+      'invalidate-operation',
+      'users:user-a,user-b',
+      'families:family-a,family-b',
+    ]);
   });
 });
 
