@@ -128,6 +128,39 @@
       "hybridPlan": "Hybridplan"
     }
   },
+  "partnerAiProvider": {
+    "title": "KI-Anbieter",
+    "subtitle": "Breeze-KI mit Ihrem eigenen Anthropic-API-Schlüssel statt mit dem Plattform-Schlüssel ausführen.",
+    "platformKey": "Plattform-Schlüssel",
+    "platformKeyDescription": "KI-Funktionen nutzen den Anthropic-Schlüssel von Breeze und werden als Breeze-KI-Guthaben abgerechnet.",
+    "yourKey": "Ihr Schlüssel •••• {{last4}}",
+    "verifiedAt": "Verifiziert am {{date}}",
+    "notVerifiedYet": "Noch nicht verifiziert",
+    "defaultModelValue": "Standardmodell: {{model}}",
+    "platformDefault": "Plattform-Standard",
+    "keyErrorTitle": "Ihr Anthropic-Schlüssel funktioniert nicht",
+    "reconnectHint": "KI-Funktionen sind für Ihre Organisationen nicht verfügbar, bis Sie unten einen funktionierenden Schlüssel speichern.",
+    "connectKeyTitle": "Ihren Anthropic-Schlüssel verbinden",
+    "replaceKeyTitle": "Ihren Anthropic-Schlüssel ersetzen",
+    "keyLabel": "Anthropic-API-Schlüssel",
+    "writeOnlyHint": "Der Schlüssel wird beim Speichern verifiziert und danach nie wieder angezeigt.",
+    "saveKey": "Schlüssel speichern",
+    "keySaved": "Anthropic-Schlüssel gespeichert und verifiziert.",
+    "keySaveFailed": "Der Anthropic-Schlüssel konnte nicht gespeichert werden.",
+    "defaultModelLabel": "Standardmodell",
+    "defaultModelHint": "Wird für neue KI-Sitzungen in allen Ihren Organisationen verwendet.",
+    "modelUpdated": "Standardmodell aktualisiert.",
+    "modelUpdateFailed": "Das Standardmodell konnte nicht aktualisiert werden.",
+    "disconnectTitle": "Zurück zum Plattform-Schlüssel wechseln",
+    "disconnectDescription": "Entfernt Ihren Anthropic-Schlüssel. Die KI-Nutzung wird wieder als Breeze-KI-Guthaben abgerechnet.",
+    "disconnect": "Trennen",
+    "disconnectConfirm": "Ihren Anthropic-Schlüssel trennen? KI-Funktionen wechseln zurück zum Plattform-Schlüssel und zu Breeze-KI-Guthaben.",
+    "disconnected": "Anthropic-Schlüssel entfernt. KI-Funktionen nutzen jetzt den Plattform-Schlüssel.",
+    "disconnectFailed": "Der Anthropic-Schlüssel konnte nicht getrennt werden.",
+    "permissionDenied": "Zum Verwalten des KI-Anbieters sind Abrechnungsberechtigungen und Zugriff auf alle Organisationen erforderlich.",
+    "loadFailed": "Die Konfiguration des KI-Anbieters konnte nicht geladen werden.",
+    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet derzeit den Plattform-Schlüssel."
+  },
   "partnerDefaults": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
     "updatePolicy": "Agent-Update-Richtlinie",
@@ -416,6 +449,10 @@
       "aiBudgets": {
         "label": "KI-Budgets",
         "description": "KI-Ausgabenlimits"
+      },
+      "aiProvider": {
+        "label": "KI-Anbieter",
+        "description": "Eigenen Anthropic-Schlüssel verwenden"
       },
       "branding": {
         "label": "Branding",
@@ -1271,7 +1308,8 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI schlägt einen mehrstufigen Plan vor. Der Benutzer genehmigt den gesamten Plan auf einmal und die Schritte werden dann automatisch ausgeführt.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tools der Stufe 2 werden automatisch mit Audit-Protokollierung ausgeführt. Werkzeuge der Stufe 3 sind weiterhin genehmigungspflichtig.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Wie ein Aktionsplan, plus Live-Screenshots zwischen den Schritten und eine dauerhafte Stopp-Schaltfläche.",
-    "untitled": "Ohne Titel"
+    "untitled": "Ohne Titel",
+    "billedToPartnerKey": "Die KI-Nutzung wird über den eigenen Anthropic-Schlüssel Ihrer Organisation abgerechnet"
   },
   "aiAgentsPage": {
     "title": "KI-Agenten",

@@ -134,6 +134,7 @@ export default defineConfig({
               label: 'AI & Intelligence',
               items: [
                 { slug: 'features/ai' },
+                { slug: 'features/bring-your-own-llm-key' },
                 { slug: 'features/ml-insights' },
                 { slug: 'features/fleet-hygiene' },
                 { slug: 'features/ai-computer-control' },

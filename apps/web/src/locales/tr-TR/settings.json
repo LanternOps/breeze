@@ -128,6 +128,39 @@
       "hybridPlan": "Hibrit Plan"
     }
   },
+  "partnerAiProvider": {
+    "title": "Yapay Zeka Sağlayıcısı",
+    "subtitle": "Breeze yapay zekasını platform anahtarı yerine kendi Anthropic API anahtarınızla çalıştırın.",
+    "platformKey": "Platform anahtarı",
+    "platformKeyDescription": "Yapay zeka özellikleri Breeze'in Anthropic anahtarını kullanır ve Breeze yapay zeka kredisi olarak faturalandırılır.",
+    "yourKey": "Anahtarınız •••• {{last4}}",
+    "verifiedAt": "{{date}} tarihinde doğrulandı",
+    "notVerifiedYet": "Henüz doğrulanmadı",
+    "defaultModelValue": "Varsayılan model: {{model}}",
+    "platformDefault": "Platform varsayılanı",
+    "keyErrorTitle": "Anthropic anahtarınız çalışmıyor",
+    "reconnectHint": "Aşağıya çalışan bir anahtar kaydedene kadar yapay zeka özellikleri kuruluşlarınız için kullanılamaz.",
+    "connectKeyTitle": "Anthropic anahtarınızı bağlayın",
+    "replaceKeyTitle": "Anthropic anahtarınızı değiştirin",
+    "keyLabel": "Anthropic API anahtarı",
+    "writeOnlyHint": "Anahtar kaydedilirken doğrulanır ve bir daha asla gösterilmez.",
+    "saveKey": "Anahtarı kaydet",
+    "keySaved": "Anthropic anahtarı kaydedildi ve doğrulandı.",
+    "keySaveFailed": "Anthropic anahtarı kaydedilemedi.",
+    "defaultModelLabel": "Varsayılan model",
+    "defaultModelHint": "Tüm kuruluşlarınızdaki yeni yapay zeka oturumlarında kullanılır.",
+    "modelUpdated": "Varsayılan model güncellendi.",
+    "modelUpdateFailed": "Varsayılan model güncellenemedi.",
+    "disconnectTitle": "Platform anahtarına geri dön",
+    "disconnectDescription": "Anthropic anahtarınızı kaldırır. Yapay zeka kullanımı yeniden Breeze yapay zeka kredisi olarak faturalandırılır.",
+    "disconnect": "Bağlantıyı kes",
+    "disconnectConfirm": "Anthropic anahtarınızın bağlantısı kesilsin mi? Yapay zeka özellikleri platform anahtarına ve Breeze yapay zeka kredilerine geri döner.",
+    "disconnected": "Anthropic anahtarı kaldırıldı. Yapay zeka özellikleri artık platform anahtarını kullanıyor.",
+    "disconnectFailed": "Anthropic anahtarının bağlantısı kesilemedi.",
+    "permissionDenied": "Yapay zeka sağlayıcısını yönetmek için faturalama izinleri ve tüm kuruluşlara erişim gerekir.",
+    "loadFailed": "Yapay zeka sağlayıcısı yapılandırması yüklenemedi.",
+    "workspaceDisclosure": "Workspace içerik zenginleştirme şu anda platform anahtarını kullanıyor."
+  },
   "partnerDefaults": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
     "updatePolicy": "Temsilci Güncelleme Politikası",
@@ -416,6 +449,10 @@
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
         "description": "AI harcama sınırları"
+      },
+      "aiProvider": {
+        "label": "Yapay Zeka Sağlayıcısı",
+        "description": "Kendi Anthropic anahtarınızı kullanın"
       },
       "branding": {
         "label": "Markalama",
@@ -1271,7 +1308,8 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI, çok adımlı bir plan önerir. Kullanıcı tüm planı bir kerede onaylar ve ardından otomatik yürütme adımlarını atar.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 araçları, denetim günlüğüyle otomatik olarak yürütülür. 3. Katman araçlarının hâlâ onaylanması gerekiyor.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Eylem Planını beğenin, artı adımlar arasında canlı ekran görüntüleri ve kalıcı Durdur düğmesi.",
-    "untitled": "Başlıksız"
+    "untitled": "Başlıksız",
+    "billedToPartnerKey": "Yapay zeka kullanımı kuruluşunuzun kendi Anthropic anahtarına faturalandırılır"
   },
   "aiAgentsPage": {
     "title": "Yapay Zeka Aracıları",
