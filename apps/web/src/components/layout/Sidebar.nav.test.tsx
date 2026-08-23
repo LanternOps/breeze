@@ -144,6 +144,19 @@ describe('sidebar i18n seed', () => {
     expect(await screen.findByText('Dashboard')).toBeInTheDocument();
   });
 
+  it('shows the row-derived pending approval count on the approvals link', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) =>
+      (url === '/approvals/pending/count'
+        ? { ok: true, status: 200, json: async () => ({ count: 3 }) }
+        : { ok: false, status: 404, json: async () => ({}) }) as Response,
+    );
+
+    render(<Sidebar currentPath="/" />);
+
+    const badge = await screen.findByLabelText('3 pending approvals');
+    expect(badge.closest('a')).toHaveAttribute('href', '/approvals');
+  });
+
   it('gives every top-level item a key that resolves in both locales', () => {
     for (const item of topLevelNav) {
       expect(item.labelKey, `missing labelKey for ${item.name}`).toBeTruthy();

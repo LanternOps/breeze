@@ -101,6 +101,16 @@ describe('decideIntentApproval', () => {
     expect(body).toEqual({});
     expect(body).not.toHaveProperty('proof');
   });
+
+  it('deny: includes the optional trimmed reason', async () => {
+    await decideIntentApproval('ap-1', 'deny', '  Unexpected customer impact  ');
+
+    await invokeCapturedRequest();
+    const [, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      reason: 'Unexpected customer impact',
+    });
+  });
 });
 
 describe('decideIntentApproval server rejections', () => {
