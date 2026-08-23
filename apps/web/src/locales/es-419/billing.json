@@ -920,6 +920,11 @@
       "cloneError": "No se pudo clonar la cotización.",
       "cloneQuote": "Clonar cotización",
       "cloneSavingTitle": "Espere a que se guarden los cambios antes de clonar.",
+      "reviseQuote": "Revisar cotización",
+      "revising": "Creando revisión…",
+      "reviseSuccess": "Revisión creada.",
+      "reviseError": "No se pudo crear una revisión.",
+      "reviseInProgress": "Ya hay una revisión en curso: se abrirá.",
       "cloneSuccess": "Cotización clonada.",
       "cloning": "Clonando…",
       "deleteConfirm": {
@@ -955,7 +960,8 @@
         "toPlaceholder": "Agregar destinatario…",
         "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
         "zeroTotalWarning": "Esta cotización totaliza {{zero}} — verifica que sus ítems tengan precio antes de enviar.",
-        "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>."
+        "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>.",
+        "revisionWarning": "Al enviarla se reemplazará {{number}} y se desactivará el enlace que el cliente ya tiene."
       },
       "sendEmailWarning": {
         "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización y vuelva a enviar.",
@@ -1119,6 +1125,12 @@
         "reasonLabel": "Nota del cliente:",
         "revise": "Duplicar y revisar",
         "revising": "Duplicando…"
+      },
+      "lineage": {
+        "supersededTitle": "Esta cotización fue reemplazada por",
+        "inProgressTitle": "Se está preparando una revisión de esta cotización: al enviarla se reemplazará esta cotización y se desactivará el enlace del cliente:",
+        "revisionOfTitle": "Revisión de",
+        "untitled": "una versión más reciente"
       }
     },
     "distributorLookup": {
@@ -1332,7 +1344,8 @@
         "preview": "Vista previa",
         "detail": "Detalles"
       },
-      "loading": "Cargando cotización…"
+      "loading": "Cargando cotización…",
+      "revisionBanner": "Esta es una revisión de {{number}}. Al enviarla se reemplazará el original y se desactivará el enlace que el cliente ya tiene."
     }
   },
   "billingUi": {

@@ -920,6 +920,11 @@
       "cloneError": "Impossibile clonare il preventivo.",
       "cloneQuote": "Clona preventivo",
       "cloneSavingTitle": "Attendi il salvataggio delle modifiche prima di clonare.",
+      "reviseQuote": "Rivedi preventivo",
+      "revising": "Creazione revisione…",
+      "reviseSuccess": "Revisione creata.",
+      "reviseError": "Impossibile creare una revisione.",
+      "reviseInProgress": "Una revisione è già in corso: verrà aperta.",
       "cloneSuccess": "Preventivo clonato.",
       "cloning": "Clonazione…",
       "deleteConfirm": {
@@ -955,7 +960,8 @@
         "toPlaceholder": "Aggiungi destinatario…",
         "tooManyRecipients": "Usa al massimo {{max}} indirizzi.",
         "zeroTotalWarning": "Il totale di questo preventivo è {{zero}}: verifica che gli elementi abbiano un prezzo prima dell'invio.",
-        "noBillingContactHint": "Nessun contatto di fatturazione è salvato per questa organizzazione — inserisci un'email oppure aggiungine uno nelle <orgLink>impostazioni dell'organizzazione</orgLink>."
+        "noBillingContactHint": "Nessun contatto di fatturazione è salvato per questa organizzazione — inserisci un'email oppure aggiungine uno nelle <orgLink>impostazioni dell'organizzazione</orgLink>.",
+        "revisionWarning": "L’invio sostituisce {{number}} e disattiva il link che il cliente possiede già."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta contrassegnata come Inviata, ma nessuna email è stata consegnata: {{orgName}} non ha un'email di contatto per la fatturazione. Aggiungine una nelle impostazioni dell'organizzazione, poi invia di nuovo.",
@@ -1119,6 +1125,12 @@
         "reasonLabel": "Nota del cliente:",
         "revise": "Duplica e rivedi",
         "revising": "Duplicazione…"
+      },
+      "lineage": {
+        "supersededTitle": "Questo preventivo è stato sostituito da",
+        "inProgressTitle": "È in preparazione una revisione di questo preventivo: inviarla sostituirà questo preventivo e disattiverà il link del cliente:",
+        "revisionOfTitle": "Revisione di",
+        "untitled": "una versione più recente"
       }
     },
     "distributorLookup": {
@@ -1332,7 +1344,8 @@
         "preview": "Anteprima",
         "detail": "Dettaglio"
       },
-      "loading": "Caricamento del preventivo…"
+      "loading": "Caricamento del preventivo…",
+      "revisionBanner": "Questa è una revisione di {{number}}. Inviarla sostituirà l’originale e disattiverà il link che il cliente possiede già."
     }
   },
   "billingUi": {

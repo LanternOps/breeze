@@ -76,6 +76,12 @@ export interface ContractBlockAuthoring {
 /** A row from `GET /quotes` / the `quote` field of `GET /quotes/:id`. */
 export interface Quote {
   id: string;
+  /** Lineage: the quote this one revises, and its position in the chain.
+   *  Optional so existing fixtures and older cached payloads stay assignable;
+   *  absent/null both mean "not a revision". `revisionNumber` is 1 for an
+   *  original. */
+  revisionOfQuoteId?: string | null;
+  revisionNumber?: number;
   quoteNumber: string | null;
   /** Tech-authored display title; optional so long-standing test fixtures and
    *  older cached payloads without the column stay assignable. */
@@ -317,6 +323,17 @@ export interface QuoteDetail {
    *  tracking). Optional: older payloads and list fixtures don't carry it, and
    *  a quote nobody has ordered against yet gets an empty array. */
   orders?: QuoteOrder[];
+  /** The quote this one revises. Carries the parent's recipients so the send
+   *  composer can prefill the addresses the original actually went to — the
+   *  server falls back to them anyway when To is empty, so this is display
+   *  honesty rather than correctness. null when this quote is not a revision,
+   *  or when the parent is outside the viewer's site scope. */
+  revisionOf?: { id: string; quoteNumber: string | null; recipients: string[] } | null;
+  /** The revision that replaces this quote, if one exists. A `draft` successor
+   *  means a revision is in progress; a non-draft one means this quote has been
+   *  (or is about to be) superseded. null when none, or when the successor is
+   *  outside the viewer's site scope. */
+  successor?: { id: string; quoteNumber: string | null; status: QuoteStatus } | null;
   /** Whether the quote's partner has a connected Stripe account (gates the
    *  send composer's deposit-can't-be-paid warning). `null` = the server could
    *  not look it up (show neither note); omitted on older payloads/fixtures,
