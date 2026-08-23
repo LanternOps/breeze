@@ -6,6 +6,7 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 
 import { useApproximateTotal, resetApproximateTotalCache } from '../useApproximateTotal';
 import { approximateTotalCache } from '../approximateTotalCache';
+import { partnerCurrencyCache, resetPartnerCurrencyCache } from '../partnerCurrencyCache';
 import type { ReportingTotalResponse } from '@/lib/reporting/approximateTotal';
 import { reportingTotalsQuerySchema } from '@breeze/shared';
 
@@ -275,5 +276,71 @@ describe('useApproximateTotal — orgId injection (the request must survive an a
     const parsed = reportingTotalsQuerySchema.safeParse(query);
     expect(parsed.success).toBe(false);
     expect(JSON.stringify(parsed.error?.issues)).toContain('orgId');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Every cached entry is a total denominated in the SERVER-derived partner
+// reporting currency, but the key is only `${date}|${groups}` — so an admin who
+// changes the partner reporting currency in the same tab would keep reading
+// figures (and formatting) in the OLD currency until logout. The key is bound
+// to the partner-currency cache's generation, so whatever invalidates that
+// cache invalidates these totals too.
+// ---------------------------------------------------------------------------
+describe('useApproximateTotal — a partner reporting-currency change invalidates cached totals', () => {
+  it('refetches after resetPartnerCurrencyCache() instead of serving the old-currency total', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    const first = render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+    first.unmount();
+    expect(approximateTotalCache.values.size).toBe(1);
+
+    // What the admin's "save partner billing settings" does.
+    resetPartnerCurrencyCache();
+
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: { ...AVAILABLE, targetCurrencyCode: 'EUR', total: '17000.00' } }));
+    render(<Probe id="b" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('available:17000.00:EUR'));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops the old-currency entries rather than leaving them unreachable in the map', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    const first = render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+    first.unmount();
+
+    resetPartnerCurrencyCache();
+    render(<Probe id="b" date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
+    // One entry — the new-currency answer — not the old one alongside it.
+    expect(approximateTotalCache.values.size).toBe(1);
+  });
+
+  it('a request in flight across the change cannot commit its old-currency answer', async () => {
+    let resolve: (r: Response) => void = () => {};
+    fetchWithAuth.mockReturnValueOnce(new Promise<Response>((r) => { resolve = r; }));
+    render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+
+    resetPartnerCurrencyCache();
+    // The next key computation observes the new partner-currency generation.
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ data: { ...AVAILABLE, targetCurrencyCode: 'EUR', total: '17000.00' } }));
+    render(<Probe id="b" date="2026-08-21" />);
+    resolve(jsonRes({ data: AVAILABLE }));
+
+    await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('available:17000.00:EUR'));
+    expect([...approximateTotalCache.values.values()].map((v) => v.targetCurrencyCode)).toEqual(['EUR']);
+  });
+
+  it('a stable partner-currency generation still de-duplicates (no extra request per mount)', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+    // Resolving the partner currency itself is NOT a change of currency.
+    partnerCurrencyCache.value = 'CAD';
+    render(<Probe id="b" date="2026-08-21" />);
+    expect(screen.getByTestId('b').textContent).toBe('available:22940.00:CAD');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
   });
 });

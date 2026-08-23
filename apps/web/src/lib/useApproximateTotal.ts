@@ -19,7 +19,7 @@
 import { useEffect, useState } from 'react';
 
 import { fetchWithAuth } from '../stores/auth';
-import { approximateTotalCache, resetApproximateTotalCache } from './approximateTotalCache';
+import { approximateTotalCache, approximateTotalCacheKey, resetApproximateTotalCache } from './approximateTotalCache';
 import { buildGroupsParam, type ReportingTotalResponse } from './reporting/approximateTotal';
 
 export { resetApproximateTotalCache };
@@ -75,7 +75,9 @@ export async function loadApproximateTotal(
   groupsParam: string,
   date: string,
 ): Promise<ReportingTotalResponse | null> {
-  const key = `${date}|${groupsParam}`;
+  // Keyed through the cache module so a partner reporting-currency change
+  // drops entries denominated in the previous currency (see its comment).
+  const key = approximateTotalCacheKey(date, groupsParam);
   const cached = approximateTotalCache.values.get(key);
   if (cached) return cached;
 
@@ -133,7 +135,7 @@ export function useApproximateTotal(
 ): ApproximateTotalState {
   const groupsParam = buildGroupsParam(byCurrency);
   const requestDate = date ?? todayUtc();
-  const key = groupsParam ? `${requestDate}|${groupsParam}` : '';
+  const key = groupsParam ? approximateTotalCacheKey(requestDate, groupsParam) : '';
 
   const [state, setState] = useState<ApproximateTotalState>(() => {
     const cached = key ? approximateTotalCache.values.get(key) : undefined;
