@@ -92,8 +92,9 @@ describe('recordActionIntentEvent', () => {
     // actorType is passed straight through (undefined here, since the caller
     // didn't supply one) — auditEvents.ts's own fallback
     // (`actorType ?? (actorId ? 'user' : 'system')`) is what resolves this to
-    // 'user' at persistence time, not this layer. See the dedicated
-    // recordActionIntentEvent > actorType describe block below.
+    // 'user' at persistence time, not this layer. That fallback formula is
+    // pinned unmocked in auditEvents.test.ts ("actorType resolution"); the
+    // pass-through cases live further down in this file.
     expect(event.actorType).toBeUndefined();
     expect(event.actorId).toBe('user-1');
     expect(event.details).toEqual({

@@ -20,12 +20,15 @@
  * `actionIntentsImmutabilityTrigger.integration.test.ts`).
  */
 import './setup';
+import { getTestDb } from './setup';
 
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { actionIntents, aiAgents, aiAgentRuns } from '../../db/schema';
+import { actionIntents, aiAgents, aiAgentRuns, auditLogs } from '../../db/schema';
 import type { NewActionIntent } from '../../db/schema/actionIntents';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
@@ -290,5 +293,105 @@ describe('agent-originated action_intents constraints', () => {
     const causeMessage = cause instanceof Error ? cause.message : undefined;
     const topMessage = caught instanceof Error ? caught.message : String(caught);
     expect(causeMessage ?? topMessage).toMatch(/action_intents content is immutable/);
+  });
+
+  it('rejects source ai_agent on a HUMAN-origin intent (agent_source_chk, reverse direction, 23514)', async () => {
+    // The forward direction (agent origin + source 'chat') is covered above.
+    // This row passes one_actor_chk (exactly one actor: the user) and
+    // agent_origin_chk (kind!='ai_agent' AND run NULL → false = false), so
+    // the ONLY constraint that can reject it is the source↔kind biconditional
+    // — a future rewrite of agent_source_chk into a one-way implication would
+    // turn this test red.
+    await expectSqlState(
+      () =>
+        insertIntent({
+          requestedByUserId: userId,
+          requestingApiKeyId: null,
+          requestingAgentRunId: null,
+          originPrincipalKind: 'user_session',
+          originPrincipalId: null,
+          source: 'ai_agent',
+        }),
+      '23514',
+    );
+  });
+
+  it('audit_logs accepts actor_type ai_agent against the live enum (2026-09-05-b)', async () => {
+    // Nothing else exercises the ALTER TYPE migration end-to-end: the audit
+    // unit tests mock persistence, and db:check-drift does not compare the
+    // Drizzle actorTypeEnum to the database. If the enum value were missing
+    // or misspelled, the failure mode in production is a 22P02 inside a
+    // fire-and-forget async audit write — every agent audit row silently
+    // dropped. This insert-and-read-back through the real Drizzle model is
+    // the proof the value exists.
+    const [row] = await withSystemDbAccessContext(() =>
+      db
+        .insert(auditLogs)
+        .values({
+          orgId,
+          actorType: 'ai_agent',
+          actorId: agentId,
+          action: 'action_intent.created',
+          resourceType: 'action_intent',
+          result: 'success',
+          details: { agentId, agentRunId: runId },
+          initiatedBy: 'ai',
+        })
+        .returning({ id: auditLogs.id, actorType: auditLogs.actorType }),
+    );
+    expect(row!.actorType).toBe('ai_agent');
+  });
+
+  it('re-applying 2026-09-05-a onto a migrated database is a no-op that preserves live rows', async () => {
+    // A mid-file failure rolls back autoMigrate's per-file transaction and
+    // the WHOLE file re-runs on next boot, so idempotent re-application is a
+    // real production path — and this file documents its own re-run hazard
+    // (the dependent composite FK must drop before the backing UNIQUE on
+    // every run, not only the first). Mirrors
+    // refreshTokenStorageHardeningMigration.integration.test.ts.
+    const intentId = await insertIntent({
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: runId,
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: agentId,
+      source: 'ai_agent',
+    });
+
+    // getTestDb() is the superuser client — the same shape the
+    // refreshTokenStorageHardeningMigration replay test uses for DDL.
+    const migrationSql = readFileSync(
+      join(__dirname, '../../../migrations/2026-09-05-a-agent-originated-intents.sql'),
+      'utf8',
+    );
+    await getTestDb().execute(sql.raw(migrationSql));
+    // The enum-widening sibling is a single ADD VALUE IF NOT EXISTS — cheap
+    // to prove idempotent in the same pass.
+    const enumMigrationSql = readFileSync(
+      join(__dirname, '../../../migrations/2026-09-05-b-audit-actor-type-ai-agent.sql'),
+      'utf8',
+    );
+    await getTestDb().execute(sql.raw(enumMigrationSql));
+
+    // The re-added composite FK validated existing rows; the pre-existing
+    // agent intent must have survived, and the constraints must still fire.
+    const [intact] = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: actionIntents.id, runId: actionIntents.requestingAgentRunId })
+        .from(actionIntents)
+        .where(eq(actionIntents.id, intentId)),
+    );
+    expect(intact?.runId).toBe(runId);
+    await expectSqlState(
+      () =>
+        insertIntent({
+          requestedByUserId: null,
+          requestingApiKeyId: null,
+          requestingAgentRunId: null,
+          originPrincipalKind: 'unknown',
+          source: 'chat',
+        }),
+      '23514',
+    );
   });
 });

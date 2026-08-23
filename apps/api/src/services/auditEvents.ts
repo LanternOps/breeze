@@ -5,7 +5,9 @@ import { sanitizeAuditPayload } from './auditPayloadSanitizer';
 export const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-type AuditActorType = 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
+// Aliased to the shared ActorType so this file cannot drift from the DB enum
+// and the shared validators — parity pinned by db/schema/audit.enums.test.ts.
+type AuditActorType = import('@breeze/shared').ActorType;
 type AuditResult = 'success' | 'failure' | 'denied';
 
 export type RequestLike = {

@@ -125,10 +125,12 @@ export const actionIntents = pgTable(
      * action_intents_agent_source_chk.
      *
      * This is the requester's replacement, not a breadcrumb: release
-     * revalidation reconstructs the agent AuthContext from this run's immutable
-     * policy_snapshot and re-checks it against the agent's CURRENT effective
-     * policy, so a flipped kill switch or a tightened allowlist vetoes an
-     * already-approved proposal.
+     * revalidation (PR 3b) will reconstruct the agent AuthContext from this
+     * run's immutable policy_snapshot and re-check it against the agent's
+     * CURRENT effective policy, so a flipped kill switch or a tightened
+     * allowlist vetoes an already-approved proposal. Until then
+     * buildAuthContextForIntent (actorContext.ts) fails closed on any intent
+     * that carries this column.
      *
      * FK declared as a COMPOSITE (requesting_agent_run_id, org_id) →
      * ai_agent_runs(id, org_id) in the table-options block below. No
@@ -137,8 +139,9 @@ export const actionIntents = pgTable(
      * an agent run in another (mirrors elevation_audit, elevations.ts:197).
      *
      * ON DELETE RESTRICT — agents and their runs are never hard-deleted
-     * (spec §2) and attribution must survive. Immutable, covered by
-     * action_intents_immutable_trg.
+     * (ai-agents spec, 2026-08-22-ai-agents-program-and-wave1-design.md §2 —
+     * NOT this file's action-intents spec) and attribution must survive.
+     * Immutable, covered by action_intents_immutable_trg.
      */
     requestingAgentRunId: uuid('requesting_agent_run_id'),
     source: text('source').notNull().$type<ActionIntentSource>(),
@@ -263,6 +266,15 @@ export const actionIntents = pgTable(
     // different tenant than the run that produced it — RLS on action_intents
     // checks only action_intents.org_id and would not catch it.
     // ON DELETE RESTRICT: runs are never hard-deleted; attribution survives.
+    //
+    // COUPLING (wave 3b resolves it): ai_agent_runs is currently in
+    // CORE_DEVICE_ORG_DENORMALIZED_TABLES (routes/devices/core.ts), so a
+    // device move-org rewrites the run's org_id — which this FK (ON UPDATE
+    // NO ACTION) turns into a 23503 the moment an agent intent exists.
+    // Unreachable while createActionIntent rejects the ai_agent principal;
+    // PR 3b removes ai_agent_runs from the re-stamp list (owner decision
+    // 2026-08-23: agent history stays with the source org) BEFORE lifting
+    // that guard. If 3b is reordered or dropped, this note is the tripwire.
     requestingAgentRunOrgFk: foreignKey({
       columns: [table.requestingAgentRunId, table.orgId],
       foreignColumns: [aiAgentRuns.id, aiAgentRuns.orgId],

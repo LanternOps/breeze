@@ -33,13 +33,23 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   // The migration's action_intents_one_actor_chk CHECK guarantees exactly
   // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId is set.
   // An agent-originated intent (requestingAgentRunId set) falling through to
-  // here is EXPECTED, not corruption: createActionIntent fails closed on
-  // 'ai_agent' origin until the next PR wires up the requester-less release
-  // path, so no code today produces an intent this function can rebuild an
-  // AuthContext for. Fail closed the same as any other actor_invalid case
-  // rather than throwing out of a background worker.
+  // here is EXPECTED, not corruption: createActionIntent fails closed on the
+  // 'ai_agent' principal, so no code today produces an agent-originated
+  // intent — and if one ever reaches this function ahead of PR 3b's
+  // requester-less release path, failing closed here is the designed
+  // behavior. Fail closed the same as any other actor_invalid case rather
+  // than throwing out of a background worker — but log the two states
+  // distinguishably: a run-attributed intent is well-formed and merely
+  // unsupported, while an all-NULL actor row would be a data-integrity
+  // violation the CHECK should have made impossible.
+  if (intent.requestingAgentRunId) {
+    console.error(
+      `[actorContext] intent ${intent.id} is agent-originated (run ${intent.requestingAgentRunId}); requester-less release reconstruction is not implemented until PR 3b — failing closed`,
+    );
+    return null;
+  }
   console.error(
-    `[actorContext] intent ${intent.id} has neither requestedByUserId nor requestingApiKeyId set`,
+    `[actorContext] intent ${intent.id} has no actor column set (requestedByUserId/requestingApiKeyId/requestingAgentRunId all NULL) — data-integrity violation`,
   );
   return null;
 }
@@ -69,8 +79,21 @@ function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
       return { kind: 'helper' };
     case 'system':
       return { kind: 'system', reason: 'intent-origin-system' };
-    default:
+    case 'ai_agent':
+      // Recorded but NOT buildable here yet: the ai_agent principal requires
+      // agentId + runId resolved from requesting_agent_run_id, which is PR
+      // 3b's release-reconstruction work. Mapping to `unknown` keeps this
+      // fail-closed (`unknown` is trusted by nothing) instead of minting a
+      // half-formed agent principal.
       return { kind: 'unknown' };
+    default: {
+      // Compile-time exhaustiveness: when the origin-kind union widens again,
+      // this assignment errors instead of silently downgrading the new kind
+      // to `unknown` — exactly the drift the doc comment above warns about.
+      const _exhaustive: 'unknown' = intent.originPrincipalKind;
+      void _exhaustive;
+      return { kind: 'unknown' };
+    }
   }
 }
 

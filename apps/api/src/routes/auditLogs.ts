@@ -187,9 +187,10 @@ export function resolveActorName(row: DbRow, details?: Record<string, unknown> |
 
   if (row.log.actorType === 'ai_agent') {
     // AI-agent-originated actions (wave 3, #3824): a distinct principal from
-    // actorType 'agent' (the Go device agent). recordActionIntentEvent
-    // (services/actionIntents/metrics.ts) puts the acting agent's id in
-    // details.agentId when known.
+    // actorType 'agent' (the Go device agent). Agent-event callers of
+    // recordActionIntentEvent (services/actionIntents/metrics.ts) supply the
+    // acting agent's id as details.agentId — wired in PR 3b; until then real
+    // ai_agent rows render the generic label below.
     const agentId = typeof details?.agentId === 'string' ? details.agentId : null;
     return agentId ? `AI Agent ${agentId.slice(0, 8)}` : 'AI Agent';
   }

@@ -78,8 +78,9 @@ describe('action_intents origin principal', () => {
 
   it('admits ai_agent as an intent source', () => {
     // An agent proposal must be distinguishable from a human chat turn at the
-    // source level, not only via origin_principal_kind — expiry, metrics and
-    // the approvals inbox all branch on `source`.
+    // source level, not only via origin_principal_kind — expiry
+    // (computeExpiresAt) and metrics branch on `source` today, and PR 3b's
+    // notification gate will too.
     const agentSource: ActionIntentSource = 'ai_agent';
     expect(actionIntentSourceEnum).toContain(agentSource);
   });
