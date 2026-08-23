@@ -323,6 +323,10 @@ services:
       # Mapped so it can be set deliberately in an incident rather than being
       # inert; leave it unset in normal operation.
       BREEZE_ALLOW_UNAUTH_REDIS: ${BREEZE_ALLOW_UNAUTH_REDIS:-}
+      # Reporting-only FX (#3779): daily ECB feed kill switch + mirror override.
+      # Empty === unset for both readers, so unset keeps the code defaults.
+      EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}
+      FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro

@@ -6,6 +6,7 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
 import { formatMinutes } from '../../lib/timeFormat';
 import { formatMoney } from '../billing/shared/format';
+import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
 
 /** Mirrors the API's `CurrencyAmount` — money is reported per currency, never summed across. */
 interface CurrencyAmount {
@@ -41,6 +42,12 @@ function CurrencyAmounts({ amounts, testIdPrefix, empty }: { amounts: CurrencyAm
       ))}
     </span>
   );
+}
+
+/** `CurrencyAmount` (API shape) → the `{ code, amount }` shape every reporting
+ *  helper consumes. Mapped explicitly rather than widening either type. */
+function toReportingGroups(amounts: CurrencyAmount[]): { code: string; amount: string }[] {
+  return amounts.map((a) => ({ code: a.currencyCode, amount: a.amount }));
 }
 
 export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
@@ -149,11 +156,17 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               <CurrencyAmounts amounts={summary.time.billableAmounts ?? []} testIdPrefix="ticket-billing-amount" empty={t('ticketTimeBilling.noAmount')} />
             </dd>
           </div>
+          <div className="flex justify-end">
+            <ApproximateMoneyLine byCurrency={toReportingGroups(summary.time.billableAmounts ?? [])} testId="ticket-labor-approx" />
+          </div>
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.partsCount', { count: summary.parts.partsCount })}</dt>
             <dd data-testid="ticket-billing-parts-total">
               <CurrencyAmounts amounts={summary.parts.billableTotals ?? []} testIdPrefix="ticket-billing-parts-total" empty={t('ticketTimeBilling.noAmount')} />
             </dd>
+          </div>
+          <div className="flex justify-end">
+            <ApproximateMoneyLine byCurrency={toReportingGroups(summary.parts.billableTotals ?? [])} testId="ticket-parts-approx" />
           </div>
         </dl>
       )}

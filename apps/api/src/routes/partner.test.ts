@@ -55,7 +55,17 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
+// Multi-currency wave 7 (#3779): the dashboard's per-currency MRR comes from
+// contractService. This file mocks `../db` wholesale, so mock the service
+// rather than extending the db.select mock queue with its two reads.
+vi.mock('../services/contractService', () => ({
+  summarizeActiveContractMrrByOrg: vi.fn(async () => new Map([
+    ['org-123', [{ currencyCode: 'EUR', amount: '410.00' }, { currencyCode: 'USD', amount: '1230.00' }]],
+  ])),
+}));
+
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { summarizeActiveContractMrrByOrg } from '../services/contractService';
 import { partnerRoutes } from './partner';
 
 describe('partner routes', () => {
@@ -228,5 +238,40 @@ describe('partner routes', () => {
     expect(body.data[0].name).toBe('Acme Co');
     expect(body.data[0].deviceCount).toBe(1);
     expect(body.data[0].devices[0].name).toBe('host-1');
+    // Wave 7 (#3779): real per-currency MRR, plus the deprecated always-zero
+    // `mrr` kept for one release so an already-loaded bundle keeps rendering.
+    expect(body.data[0].mrrByCurrency).toEqual([
+      { currencyCode: 'EUR', amount: '410.00' },
+      { currencyCode: 'USD', amount: '1230.00' },
+    ]);
+    expect(body.data[0].mrr).toBe(0);
+    expect(vi.mocked(summarizeActiveContractMrrByOrg)).toHaveBeenCalledWith(['org-123']);
+  });
+
+  it('gives an org with no active contracts an empty mrrByCurrency, never a zero in an assumed currency', async () => {
+    vi.mocked(summarizeActiveContractMrrByOrg).mockResolvedValueOnce(new Map());
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              { id: 'org-123', name: 'Acme Co', status: 'active' }
+            ])
+          })
+        })
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+      } as never);
+
+    const res = await app.request('/partner/dashboard', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].mrrByCurrency).toEqual([]);
+    expect(body.data[0].mrr).toBe(0);
   });
 });
