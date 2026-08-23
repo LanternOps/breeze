@@ -19,6 +19,7 @@ const {
   fetchMock,
   upsertMock,
   captureExceptionMock,
+  captureMessageMock,
   capturedWorkerProcessor,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
@@ -29,6 +30,7 @@ const {
   fetchMock: vi.fn(),
   upsertMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  captureMessageMock: vi.fn(),
   capturedWorkerProcessor: { current: null as null | ((job: unknown) => Promise<unknown>) },
 }));
 
@@ -68,6 +70,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
+  captureMessage: (...args: unknown[]) => captureMessageMock(...(args as [])),
 }));
 
 vi.mock('../services/frankfurterClient', async (importOriginal) => {
@@ -95,11 +98,19 @@ import {
 
 const ORIGINAL_FLAG = process.env.EXCHANGE_RATE_SYNC_ENABLED;
 
-function fetchResult(overrides: Partial<{ rates: unknown[]; requestedQuoteCodes: string[]; unavailableQuoteCodes: string[] }> = {}) {
+function fetchResult(
+  overrides: Partial<{
+    rates: unknown[];
+    requestedQuoteCodes: string[];
+    unavailableQuoteCodes: string[];
+    rejected: Array<{ quoteCode: string | null; reason: string }>;
+  }> = {},
+) {
   return {
     rates: [],
     requestedQuoteCodes: [],
     unavailableQuoteCodes: [],
+    rejected: [],
     ...overrides,
   };
 }
@@ -150,7 +161,7 @@ describe('exchangeRateSync worker', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const stats = await syncEcbExchangeRates();
-        expect(stats).toEqual({ requested: 3, received: 2, stored: 1, manualProtected: 1, unavailable: ['ZZZ'] });
+        expect(stats).toEqual({ requested: 3, received: 2, stored: 1, manualProtected: 1, unavailable: ['ZZZ'], rejected: 0 });
       } finally {
         warnSpy.mockRestore();
       }
@@ -175,6 +186,32 @@ describe('exchangeRateSync worker', () => {
       }
       const forwarded = upsertMock.mock.calls[0]![0] as unknown[];
       expect(forwarded).toEqual([]);
+    });
+
+    it('stores the surviving rows and REPORTS rejected ones instead of failing the batch', async () => {
+      fetchMock.mockResolvedValue(
+        fetchResult({
+          rates: [{ rateDate: '2026-08-23', baseCode: 'EUR', quoteCode: 'USD', rate: '1.08000000' }],
+          requestedQuoteCodes: ['CHF', 'USD'],
+          unavailableQuoteCodes: ['CHF'],
+          rejected: [{ quoteCode: 'CHF', reason: 'Rate "0.123456789" exceeds 8 decimals' }],
+        }),
+      );
+      upsertMock.mockResolvedValue({ submitted: 1, stored: 1, manualProtected: 0 });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const stats = await syncEcbExchangeRates();
+        expect(stats).toMatchObject({ received: 1, stored: 1, rejected: 1, unavailable: ['CHF'] });
+      } finally {
+        warnSpy.mockRestore();
+      }
+      // The good currency still got its update for the day.
+      const forwarded = upsertMock.mock.calls[0]![0] as Array<{ quoteCode: string }>;
+      expect(forwarded.map((r) => r.quoteCode)).toEqual(['USD']);
+      // ...and the bad row is visible, not swallowed.
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
+      expect(String(captureMessageMock.mock.calls[0]![0])).toContain('rejected 1');
+      expect(captureMessageMock.mock.calls[0]![1]).toBe('warning');
     });
 
     it('rethrows a transient FrankfurterClientError AS-IS so BullMQ retries', async () => {

@@ -36,7 +36,7 @@
 
 import { Queue, Worker, UnrecoverableError, type Job } from 'bullmq';
 import { CURRENCY_CODES } from '@breeze/shared';
-import { captureException } from '../services/sentry';
+import { captureException, captureMessage } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import {
   ECB_REPORTING_BASE_CODE,
@@ -67,6 +67,10 @@ export interface ExchangeRateSyncStats {
   stored: number;
   manualProtected: number;
   unavailable: string[];
+  /** Rows the provider returned that failed validation. Reported, never fatal:
+   *  one unknown currency or one over-precision rate must not cost every other
+   *  currency its update for the day. */
+  rejected: number;
 }
 
 export async function syncEcbExchangeRates(): Promise<ExchangeRateSyncStats> {
@@ -80,12 +84,30 @@ export async function syncEcbExchangeRates(): Promise<ExchangeRateSyncStats> {
     console.warn(`[ExchangeRateSync] No ECB coverage for: ${fetched.unavailableQuoteCodes.join(', ')}`);
   }
 
+  if (fetched.rejected.length > 0) {
+    // Partial-batch degradation: the good rows are already stored above. This
+    // is a WARNING with the count and reasons, not a failure — but it must be
+    // visible, because a provider that starts emitting rows we cannot read is
+    // how a pair goes quietly stale until the 7-day ceiling blanks it.
+    const detail = fetched.rejected
+      .map((r) => `${r.quoteCode ?? '?'}: ${r.reason}`)
+      .join('; ');
+    console.warn(`[ExchangeRateSync] Rejected ${fetched.rejected.length} unusable row(s) — ${detail}`);
+    captureMessage(
+      `[ExchangeRateSync] rejected ${fetched.rejected.length} unusable provider row(s)`,
+      'warning',
+      { rejected: fetched.rejected },
+      { job: 'exchange-rate-sync' },
+    );
+  }
+
   return {
     requested: fetched.requestedQuoteCodes.length,
     received: fetched.rates.length,
     stored: result.stored,
     manualProtected: result.manualProtected,
     unavailable: fetched.unavailableQuoteCodes,
+    rejected: fetched.rejected.length,
   };
 }
 
@@ -114,7 +136,7 @@ export function createExchangeRateSyncWorker(): Worker {
         console.log(
           `[ExchangeRateSync] ${stats.stored}/${stats.received} rate(s) stored ` +
             `(requested=${stats.requested} manualProtected=${stats.manualProtected} ` +
-            `unavailable=${stats.unavailable.length}) in ${durationMs}ms`,
+            `unavailable=${stats.unavailable.length} rejected=${stats.rejected}) in ${durationMs}ms`,
         );
         return { ...stats, durationMs };
       } catch (err) {
