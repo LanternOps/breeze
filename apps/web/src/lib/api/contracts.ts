@@ -198,6 +198,35 @@ export function removeContractLine(id: string, lineId: string): Promise<Response
   return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, { method: 'DELETE' });
 }
 
+/** Body of `POST /contracts/:id/currency`. The stamped currency is only ever
+ *  changed through this op (#3774); on an ACTIVE contract it is the wave-6
+ *  owner-approved escape hatch (#3778) and the server additionally requires
+ *  `contracts:manage`, `confirmActiveChange`, and eligibility re-checked under
+ *  the contract's row lock. `clearLines` and `reprice` are mutually exclusive. */
+export interface ChangeContractCurrencyBody {
+  currencyCode: string;
+  clearLines?: boolean;
+  reprice?: boolean;
+  confirmActiveChange?: boolean;
+}
+
+/** The `details` payload carried by a 409 from the change-currency op — the
+ *  exact rows that block the restamp, keyed by the error `code`. */
+export interface ContractCurrencyBlockerDetails {
+  draftInvoiceIds?: string[];
+  billingPeriodIds?: string[];
+  lineIds?: string[];
+  invoiceIds?: string[];
+}
+
+export function changeContractCurrency(id: string, body: ChangeContractCurrencyBody): Promise<Response> {
+  return fetchWithAuth(`/contracts/${id}/currency`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
 export type ContractTransition = 'activate' | 'pause' | 'resume' | 'cancel';
 
 export function contractTransition(id: string, verb: ContractTransition): Promise<Response> {

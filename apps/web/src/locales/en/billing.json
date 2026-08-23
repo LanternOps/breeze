@@ -354,6 +354,35 @@
         "UNBILLED_MONETARY_ROWS": "Draft invoices still hold money billed under this contract"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Change currency"
+      },
+      "dialog": {
+        "title": "Change contract currency",
+        "description": "This contract bills in {{currency}}. Restamping affects future invoices only — invoices already issued and past billing periods are never changed.",
+        "currencyLabel": "New currency",
+        "modeLegend": "What happens to the contract lines",
+        "modeClear": "Remove all contract lines",
+        "modeClearHint": "Lines are deleted and re-added by hand in the new currency. Required when any line is manual.",
+        "modeReprice": "Reprice catalog lines",
+        "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "confirm": "I understand this restamps an active contract and cannot be undone in bulk.",
+        "submit": "Change currency"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Issue or delete these draft invoices first — they still carry amounts from this contract:",
+        "ORPHANED_BILLING_PERIOD": "These billing periods have no reachable invoice. Resolve them before restamping:",
+        "ORPHANED_CONTRACT_SOURCE": "These contract-sourced invoice lines cannot be attributed to a contract. Resolve them before restamping:",
+        "BROKEN_CONTRACT_LINEAGE": "The invoice lineage check failed for these invoices. Resolve them before restamping:"
+      },
+      "toast": {
+        "changed": "Contract currency changed to {{currency}}."
+      },
+      "errors": {
+        "change": "Could not change the contract currency."
+      }
+    },
     "templatesTab": {
       "title": "Contract templates",
       "description": "Reusable contract documents you can attach to accepted quotes.",

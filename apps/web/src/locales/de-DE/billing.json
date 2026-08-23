@@ -354,6 +354,35 @@
         "UNBILLED_MONETARY_ROWS": "Rechnungsentwürfe enthalten noch Beträge aus diesem Vertrag"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Währung ändern"
+      },
+      "dialog": {
+        "title": "Vertragswährung ändern",
+        "description": "Dieser Vertrag wird in {{currency}} abgerechnet. Die Neustempelung betrifft nur künftige Rechnungen — bereits ausgestellte Rechnungen und vergangene Abrechnungszeiträume werden nie geändert.",
+        "currencyLabel": "Neue Währung",
+        "modeLegend": "Was mit den Vertragspositionen geschieht",
+        "modeClear": "Alle Vertragspositionen entfernen",
+        "modeClearHint": "Die Positionen werden gelöscht und in der neuen Währung von Hand neu erfasst. Erforderlich, sobald eine Position manuell ist.",
+        "modeReprice": "Katalogpositionen neu bepreisen",
+        "modeRepriceHint": "Jede Katalogposition wird aus der Preisliste der neuen Währung aufgelöst. Nur möglich, wenn alle Positionen aus dem Katalog stammen.",
+        "confirm": "Mir ist bewusst, dass dies einen aktiven Vertrag neu stempelt und nicht in großem Umfang rückgängig gemacht werden kann.",
+        "submit": "Währung ändern"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Stellen Sie diese Rechnungsentwürfe zuerst aus oder löschen Sie sie — sie enthalten noch Beträge aus diesem Vertrag:",
+        "ORPHANED_BILLING_PERIOD": "Diese Abrechnungszeiträume haben keine erreichbare Rechnung. Klären Sie sie vor der Neustempelung:",
+        "ORPHANED_CONTRACT_SOURCE": "Diese aus Verträgen stammenden Rechnungspositionen lassen sich keinem Vertrag zuordnen. Klären Sie sie vor der Neustempelung:",
+        "BROKEN_CONTRACT_LINEAGE": "Die Prüfung der Rechnungsherkunft ist für diese Rechnungen fehlgeschlagen. Klären Sie sie vor der Neustempelung:"
+      },
+      "toast": {
+        "changed": "Vertragswährung auf {{currency}} geändert."
+      },
+      "errors": {
+        "change": "Die Vertragswährung konnte nicht geändert werden."
+      }
+    },
     "templatesTab": {
       "title": "Vertragsvorlagen",
       "description": "Wiederverwendbare Vertragsdokumente, die Sie an angenommene Angebote anhängen können.",

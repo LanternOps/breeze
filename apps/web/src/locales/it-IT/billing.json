@@ -354,6 +354,35 @@
         "UNBILLED_MONETARY_ROWS": "Le fatture in bozza contengono ancora importi di questo contratto"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Cambia valuta"
+      },
+      "dialog": {
+        "title": "Cambia la valuta del contratto",
+        "description": "Questo contratto viene fatturato in {{currency}}. La rimarcatura riguarda solo le fatture future: le fatture già emesse e i periodi di fatturazione passati non vengono mai modificati.",
+        "currencyLabel": "Nuova valuta",
+        "modeLegend": "Cosa accade alle righe del contratto",
+        "modeClear": "Rimuovi tutte le righe del contratto",
+        "modeClearHint": "Le righe vengono eliminate e reinserite a mano nella nuova valuta. Obbligatorio quando una riga è manuale.",
+        "modeReprice": "Riprezza le righe di catalogo",
+        "modeRepriceHint": "Ogni riga di catalogo viene risolta dal listino della nuova valuta. Possibile solo se tutte le righe provengono dal catalogo.",
+        "confirm": "Comprendo che questa operazione rimarca un contratto attivo e non può essere annullata in blocco.",
+        "submit": "Cambia valuta"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Emetti o elimina prima queste bozze di fattura: contengono ancora importi di questo contratto:",
+        "ORPHANED_BILLING_PERIOD": "Questi periodi di fatturazione non hanno una fattura raggiungibile. Risolvili prima di rimarcare:",
+        "ORPHANED_CONTRACT_SOURCE": "Queste righe di fattura di origine contrattuale non sono attribuibili a un contratto. Risolvile prima di rimarcare:",
+        "BROKEN_CONTRACT_LINEAGE": "Il controllo della discendenza è fallito per queste fatture. Risolvile prima di rimarcare:"
+      },
+      "toast": {
+        "changed": "Valuta del contratto cambiata in {{currency}}."
+      },
+      "errors": {
+        "change": "Impossibile cambiare la valuta del contratto."
+      }
+    },
     "templatesTab": {
       "title": "Template di contratto",
       "description": "Documenti di contratto riutilizzabili che puoi allegare ai preventivi accettati.",

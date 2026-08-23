@@ -354,6 +354,35 @@
         "UNBILLED_MONETARY_ROWS": "Taslak faturalar bu sözleşmede faturalanan tutarları hâlâ tutuyor"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Para birimini değiştir"
+      },
+      "dialog": {
+        "title": "Sözleşme para birimini değiştir",
+        "description": "Bu sözleşme {{currency}} ile faturalanıyor. Yeniden damgalama yalnızca gelecekteki faturaları etkiler; düzenlenmiş faturalar ve geçmiş faturalama dönemleri asla değiştirilmez.",
+        "currencyLabel": "Yeni para birimi",
+        "modeLegend": "Sözleşme satırlarına ne olacak",
+        "modeClear": "Tüm sözleşme satırlarını kaldır",
+        "modeClearHint": "Satırlar silinir ve yeni para biriminde elle yeniden eklenir. Herhangi bir satır manuel olduğunda zorunludur.",
+        "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
+        "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "confirm": "Bunun aktif bir sözleşmeyi yeniden damgaladığını ve toplu olarak geri alınamayacağını anlıyorum.",
+        "submit": "Para birimini değiştir"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Önce bu taslak faturaları düzenleyin veya silin — hâlâ bu sözleşmeye ait tutarlar taşıyorlar:",
+        "ORPHANED_BILLING_PERIOD": "Bu faturalama dönemlerinin erişilebilir bir faturası yok. Yeniden damgalamadan önce çözün:",
+        "ORPHANED_CONTRACT_SOURCE": "Sözleşme kaynaklı bu fatura satırları bir sözleşmeye atfedilemiyor. Yeniden damgalamadan önce çözün:",
+        "BROKEN_CONTRACT_LINEAGE": "Bu faturalar için fatura soy zinciri denetimi başarısız oldu. Yeniden damgalamadan önce çözün:"
+      },
+      "toast": {
+        "changed": "Sözleşme para birimi {{currency}} olarak değiştirildi."
+      },
+      "errors": {
+        "change": "Sözleşme para birimi değiştirilemedi."
+      }
+    },
     "templatesTab": {
       "title": "Sözleşme şablonları",
       "description": "Kabul edilen fiyat tekliflerine ekleyebileceğiniz yeniden kullanılabilir sözleşme belgeleri.",

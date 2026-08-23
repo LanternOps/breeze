@@ -354,6 +354,35 @@
         "UNBILLED_MONETARY_ROWS": "Des factures en brouillon contiennent encore des montants de ce contrat"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Changer de devise"
+      },
+      "dialog": {
+        "title": "Changer la devise du contrat",
+        "description": "Ce contrat est facturé en {{currency}}. Le nouveau libellé n'affecte que les factures à venir — les factures déjà émises et les périodes de facturation passées ne sont jamais modifiées.",
+        "currencyLabel": "Nouvelle devise",
+        "modeLegend": "Ce qu'il advient des lignes du contrat",
+        "modeClear": "Supprimer toutes les lignes du contrat",
+        "modeClearHint": "Les lignes sont supprimées puis ressaisies à la main dans la nouvelle devise. Obligatoire dès qu'une ligne est manuelle.",
+        "modeReprice": "Retarifer les lignes du catalogue",
+        "modeRepriceHint": "Chaque ligne du catalogue est résolue depuis la grille tarifaire de la nouvelle devise. Possible uniquement si toutes les lignes proviennent du catalogue.",
+        "confirm": "Je comprends que cette opération re-libelle un contrat actif et ne peut pas être annulée en masse.",
+        "submit": "Changer de devise"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Émettez ou supprimez d'abord ces factures en brouillon — elles contiennent encore des montants de ce contrat :",
+        "ORPHANED_BILLING_PERIOD": "Ces périodes de facturation n'ont aucune facture accessible. Traitez-les avant de re-libeller :",
+        "ORPHANED_CONTRACT_SOURCE": "Ces lignes de facture issues de contrats ne peuvent être rattachées à aucun contrat. Traitez-les avant de re-libeller :",
+        "BROKEN_CONTRACT_LINEAGE": "La vérification de la filiation a échoué pour ces factures. Traitez-les avant de re-libeller :"
+      },
+      "toast": {
+        "changed": "Devise du contrat changée en {{currency}}."
+      },
+      "errors": {
+        "change": "Impossible de changer la devise du contrat."
+      }
+    },
     "templatesTab": {
       "title": "Modèles de contrat",
       "description": "Documents de contrat réutilisables à joindre aux devis acceptés.",

@@ -354,6 +354,35 @@
         "UNBILLED_MONETARY_ROWS": "Faturas em rascunho ainda retêm valores faturados neste contrato"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Alterar moeda"
+      },
+      "dialog": {
+        "title": "Alterar a moeda do contrato",
+        "description": "Este contrato é faturado em {{currency}}. A nova marcação afeta apenas faturas futuras — faturas já emitidas e períodos de faturamento anteriores nunca são alterados.",
+        "currencyLabel": "Nova moeda",
+        "modeLegend": "O que acontece com as linhas do contrato",
+        "modeClear": "Remover todas as linhas do contrato",
+        "modeClearHint": "As linhas são excluídas e recriadas manualmente na nova moeda. Obrigatório quando alguma linha é manual.",
+        "modeReprice": "Reprecificar as linhas de catálogo",
+        "modeRepriceHint": "Cada linha de catálogo é resolvida pela tabela de preços da nova moeda. Só é possível quando todas as linhas vêm do catálogo.",
+        "confirm": "Entendo que isto remarca um contrato ativo e não pode ser desfeito em massa.",
+        "submit": "Alterar moeda"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Emita ou exclua primeiro estes rascunhos de fatura — eles ainda carregam valores deste contrato:",
+        "ORPHANED_BILLING_PERIOD": "Estes períodos de faturamento não têm fatura acessível. Resolva-os antes de remarcar:",
+        "ORPHANED_CONTRACT_SOURCE": "Estas linhas de fatura originadas de contrato não podem ser atribuídas a um contrato. Resolva-as antes de remarcar:",
+        "BROKEN_CONTRACT_LINEAGE": "A verificação de linhagem falhou para estas faturas. Resolva-as antes de remarcar:"
+      },
+      "toast": {
+        "changed": "Moeda do contrato alterada para {{currency}}."
+      },
+      "errors": {
+        "change": "Não foi possível alterar a moeda do contrato."
+      }
+    },
     "templatesTab": {
       "title": "Modelos de contrato",
       "description": "Documentos de contrato reutilizáveis que você pode anexar a orçamentos aceitos.",
