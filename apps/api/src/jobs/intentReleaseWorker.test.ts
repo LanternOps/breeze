@@ -5,12 +5,16 @@ import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/can
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
 
+  const notifyMock = {
+    createNotification: vi.fn(async (_input: Record<string, unknown>) => 'notif-1' as string | null),
+  };
   return {
+    notifyMock,
     schema: { actionIntentsTbl, approvalRequestsTbl },
     dbState: {
       selectActionIntentsResults: [] as unknown[][],
@@ -196,7 +200,7 @@ vi.mock('drizzle-orm', () => ({
 // The outcome notification is a collaborator, stubbed so these tests stay a
 // unit test of the release/dispatch logic.
 vi.mock('../services/userNotifications', () => ({
-  createNotification: vi.fn(async () => 'notif-1'),
+  createNotification: notifyMock.createNotification,
 }));
 
 // bullmq is a real dependency we don't want to spin up — mock Worker/Job to
@@ -281,6 +285,15 @@ const fakeAuth = {
   accessibleOrgIds: ['org-1'],
   orgCondition: () => undefined,
   canAccessOrg: () => true,
+};
+
+const FOUR_EYES_INTENT = {
+  id: 'intent-1',
+  orgId: 'org-1',
+  requestedByUserId: 'requester-1',
+  targetSummary: 'run_script(deviceId=d-1)',
+  status: 'executing',
+  approvalScope: 'four_eyes',
 };
 
 function resetDbState() {
@@ -1310,6 +1323,111 @@ describe('processIntentReleaseJob', () => {
 
     expect(result).toEqual({ released: false });
     expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+  });
+
+  it('THE LIE GUARD: an intent that did NOT run is never reported as running', async () => {
+    // releaseApprovedIntent returns void and has ~12 early-return paths that
+    // mean it did not execute — revalidation stopped it, the release_by
+    // deadline passed, it lost the approved->executing CAS, the tool threw.
+    // Deriving the copy from the EVENT TYPE told the requester "was approved
+    // and is now running" in every one of those cases, which for an intent
+    // failed closed because the approver's permission was revoked is an
+    // outright false statement about a privileged action.
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'failed' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string; title: string };
+    expect(arg.message).not.toContain('is now running');
+    expect(arg.title).toBe('Action failed');
+  });
+
+  it('scopes the dedupe key to the STATUS so a later truth can still land', async () => {
+    // A per-intent key meant that once a premature "is now running" had been
+    // written, the corrected notification deduped to null and the person was
+    // never told.
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { dedupeKey: string };
+    expect(arg.dedupeKey).toBe('intent-outcome:intent-1:expired');
+  });
+
+  it('notifies the requester on intent_rejected without releasing anything', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    expect(result).toEqual({ released: false });
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'requester-1',
+        type: 'approval',
+        link: '/approvals',
+        dedupeKey: 'intent-outcome:intent-1:rejected',
+      }),
+    );
+  });
+
+  it('notifies the requester on intent_expired without releasing anything', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
+
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+    expect(result).toEqual({ released: false });
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(notifyMock.createNotification).toHaveBeenCalled();
+  });
+
+  it('stays silent for a SUPERVISED intent — the requester watched it in chat', async () => {
+    // Otherwise every abandoned 5-minute chat intent rings the bell, which is
+    // the highest-volume producer of this type and trains people to ignore it.
+    dbState.selectActionIntentsResults.push([
+      { ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised' },
+    ]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when there is no human requester (API-key sourced)', async () => {
+    dbState.selectActionIntentsResults.push([
+      { ...FOUR_EYES_INTENT, status: 'rejected', requestedByUserId: null },
+    ]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+    expect(sentryMock.captureException).not.toHaveBeenCalled();
+  });
+
+  it('reports a MISSING intent to Sentry rather than returning silently', async () => {
+    // Outboxed then deleted is an anomaly, not an expected case — it must not
+    // share the silent path with the legitimate API-key one.
+    dbState.selectActionIntentsResults.push([]);
+
+    await processIntentReleaseJob({ intentId: 'intent-gone', eventType: 'intent_rejected' });
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+    expect(sentryMock.captureException).toHaveBeenCalled();
+  });
+
+  it('a failed outcome notification never undoes a committed release', async () => {
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
+    notifyMock.createNotification.mockRejectedValueOnce(new Error('notify boom'));
+
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
+
+    // Still released: throwing here would retry the job and re-drive the
+    // release, which has already committed.
+    expect(result).toEqual({ released: true });
+    expect(sentryMock.captureException).toHaveBeenCalled();
   });
 
   it('dispatches intent_approved to releaseApprovedIntent', async () => {

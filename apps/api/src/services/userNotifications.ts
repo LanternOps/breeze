@@ -1,7 +1,7 @@
-import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { userNotifications } from '../db/schema';
 import { getEventBus } from './eventBus';
+import { captureException } from './sentry';
 
 type NotificationType = typeof userNotifications.$inferInsert['type'];
 type NotificationPriority = typeof userNotifications.$inferInsert['priority'];
@@ -68,71 +68,50 @@ export async function createNotification(
       metadata: input.metadata ?? null,
       dedupeKey: input.dedupeKey ?? null,
     })
-    // The partial unique index is on (user_id, dedupe_key) WHERE dedupe_key IS
-    // NOT NULL, so a null key never collides and every redelivery with a key is
-    // a no-op rather than a duplicate row in someone's bell.
-    .onConflictDoNothing()
+    // TARGETED at the dedupe index specifically. An untargeted
+    // onConflictDoNothing would silently swallow a conflict on ANY unique index
+    // this table gains later, turning a future constraint violation into
+    // notifications that vanish with no log at all.
+    .onConflictDoNothing({ target: [userNotifications.userId, userNotifications.dedupeKey] })
     .returning({ id: userNotifications.id });
 
   const created = rows[0]?.id ?? null;
   if (!created) return null;
 
-  // Best-effort live nudge. The row is already committed and the bell polls
-  // every 30s, so a failure here costs latency, not the notification — but it
-  // must never fail the caller, which is usually mid-way through something more
-  // important (creating an intent, dispatching an alert).
+  // Best-effort live nudge, deliberately NOT awaited.
   //
-  // The payload is deliberately CONTENT-FREE: the WS transport fans out per
-  // ORG, so the id is all that crosses it and the client refetches through
-  // RLS-protected routes. A filter bug therefore leaks an opaque uuid, not
-  // somebody's approval request.
-  try {
-    await getEventBus().publishUserEvent(
+  // The event bus publishes on getRedisConnection(), which is configured
+  // `maxRetriesPerRequest: null` for BullMQ's sake (services/redis.ts:206). With
+  // ioredis's default offline queue, a publish during a Redis outage NEVER
+  // RESOLVES AND NEVER REJECTS — it sits queued until reconnect. Awaiting it
+  // therefore could not be made safe by a try/catch: the four-eyes fan-out loop
+  // awaits this once per approver, so a single stalled publish would block every
+  // remaining approver AND the push dispatch behind it — defeating the entire
+  // point of writing the in-app row first — and would hang the caller's request.
+  //
+  // The row is already committed and the bell polls every 30s, so the nudge is
+  // pure latency. Fire it, guard the rejection path, and move on.
+  //
+  // The payload is CONTENT-FREE: the WS transport fans out per ORG, so the id is
+  // all that crosses it and the client refetches through RLS-protected routes. A
+  // filter bug therefore leaks an opaque uuid, not somebody's approval request.
+  void getEventBus()
+    .publishUserEvent(
       'notification.created',
       input.orgId,
       input.userId,
       { notificationId: created },
       'user-notifications',
-    );
-  } catch (err) {
-    console.error(
-      `[userNotifications] live notify failed for notification ${created} (user=${input.userId} org=${input.orgId}); ` +
-        'the row is committed and will appear on the next poll:',
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  return created;
-}
-
-/**
- * Bulk variant for fan-out (e.g. every four-eyes approver on one intent).
- * Each row is independent: one duplicate key or one failed live nudge must not
- * cost the others their notification.
- */
-export async function createNotifications(
-  inputs: CreateNotificationInput[],
-): Promise<string[]> {
-  const created: string[] = [];
-  for (const input of inputs) {
-    try {
-      const id = await createNotification(input);
-      if (id) created.push(id);
-    } catch (err) {
+    )
+    .catch((err: unknown) => {
+      captureException(err instanceof Error ? err : new Error(String(err)));
       console.error(
-        `[userNotifications] failed to notify user ${input.userId} (org=${input.orgId}, type=${input.type}):`,
+        `[userNotifications] live notify failed for notification ${created} ` +
+          `(user=${input.userId} org=${input.orgId}); the row is committed and ` +
+          'will appear on the next poll:',
         err instanceof Error ? err.message : err,
       );
-    }
-  }
-  return created;
-}
+    });
 
-/** Count unread notifications for one user. Used by the sidebar badge. */
-export async function countUnread(userId: string): Promise<number> {
-  const rows = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(userNotifications)
-    .where(sql`${userNotifications.userId} = ${userId} AND ${userNotifications.read} = false`);
-  return rows[0]?.count ?? 0;
+  return created;
 }

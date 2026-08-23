@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
+import { captureException } from '../sentry';
 import {
   actionIntents,
   intentOutbox,
@@ -682,8 +683,15 @@ export async function createActionIntent(
             dedupeKey: `intent-approval:${creation.intent.id}`,
           }));
       } catch (err) {
+        // Sentry, not just console.error. This is the highest-stakes swallow in
+        // the wave: it is the ONLY channel a phoneless approver has, and the
+        // wave exists because the equivalent push failure was console.error-only
+        // and nobody found out for months. Every neighbouring file in this
+        // subsystem pairs the log with captureException; this one must too.
+        captureException(err instanceof Error ? err : new Error(String(err)));
         console.error(
-          `[intentService] in-app approval notification failed (approval=${approvalId} user=${userId})`,
+          `[intentService] in-app approval notification failed ` +
+            `(intent=${creation.intent.id} approval=${approvalId} user=${userId})`,
           err,
         );
       }

@@ -4,6 +4,7 @@ const state = vi.hoisted(() => ({
   insertedValues: null as Record<string, unknown> | null,
   returnedRows: [] as Array<{ id: string }>,
   conflictHandled: false,
+  conflictTarget: null as unknown,
   publishUserEvent: vi.fn(),
 }));
 
@@ -12,7 +13,12 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  userNotifications: { id: 'userNotifications.id', userId: 'u', read: 'r' },
+  userNotifications: {
+    id: 'userNotifications.id',
+    userId: 'userNotifications.userId',
+    dedupeKey: 'userNotifications.dedupeKey',
+    read: 'userNotifications.read',
+  },
 }));
 
 vi.mock('../db', () => ({
@@ -21,8 +27,9 @@ vi.mock('../db', () => ({
       values: vi.fn((values: Record<string, unknown>) => {
         state.insertedValues = values;
         return {
-          onConflictDoNothing: vi.fn(() => {
+          onConflictDoNothing: vi.fn((opts?: { target?: unknown[] }) => {
             state.conflictHandled = true;
+            state.conflictTarget = opts?.target ?? null;
             return { returning: vi.fn(async () => state.returnedRows) };
           }),
         };
@@ -35,7 +42,7 @@ vi.mock('./eventBus', () => ({
   getEventBus: () => ({ publishUserEvent: state.publishUserEvent }),
 }));
 
-import { createNotification, createNotifications } from './userNotifications';
+import { createNotification } from './userNotifications';
 
 const BASE = {
   userId: 'user-1',
@@ -49,6 +56,7 @@ beforeEach(() => {
   state.insertedValues = null;
   state.returnedRows = [{ id: 'n-1' }];
   state.conflictHandled = false;
+  state.conflictTarget = null;
   state.publishUserEvent.mockResolvedValue('evt-1');
 });
 
@@ -91,14 +99,26 @@ describe('createNotification', () => {
     expect(serialized).not.toContain('alice@example.com');
   });
 
-  it('always uses onConflictDoNothing so a redelivered key is a no-op', async () => {
+  it('targets the dedupe index specifically, not any conflict', async () => {
+    // An UNTARGETED onConflictDoNothing would silently swallow a conflict on any
+    // unique index the table gains later — notifications vanishing with no log.
+    // Asserting merely that "a conflict method was called" was vacuous: the mock
+    // only exposes returning() through it, so it could not have been false.
     await createNotification({ ...BASE, dedupeKey: 'k1' });
-    expect(state.conflictHandled).toBe(true);
+
+    expect(state.conflictTarget).toEqual([
+      'userNotifications.userId',
+      'userNotifications.dedupeKey',
+    ]);
   });
 
-  it('returns null and publishes nothing when the dedupe key already existed', async () => {
+  it('returns null and publishes nothing when the insert produced no row', async () => {
     state.returnedRows = [];
 
+    // NB: this exercises the null-guard, not deduplication itself — the empty
+    // result is set by hand here. That ON CONFLICT actually suppresses a real
+    // duplicate on the partial index is proven against Postgres in
+    // userNotificationsRls.integration.test.ts.
     const id = await createNotification({ ...BASE, dedupeKey: 'k1' });
 
     expect(id).toBeNull();
@@ -115,6 +135,23 @@ describe('createNotification', () => {
     await expect(createNotification(BASE)).resolves.toBe('n-1');
   });
 
+  it('DOES NOT AWAIT the nudge — a stalled Redis must not block the caller', async () => {
+    // The bus publishes on the maxRetriesPerRequest:null connection, whose
+    // offline queue means a publish during an outage never resolves AND never
+    // rejects. Awaiting it would hang the four-eyes fan-out loop on the first
+    // approver, taking the push dispatch behind it down too, and would hold the
+    // caller's Postgres transaction open across the stall (the #1105 pattern).
+    let settle: (() => void) | undefined;
+    state.publishUserEvent.mockReturnValue(new Promise<string>((resolve) => {
+      settle = () => resolve('evt');
+    }));
+
+    // Resolves without the publish ever settling.
+    await expect(createNotification(BASE)).resolves.toBe('n-1');
+    expect(state.publishUserEvent).toHaveBeenCalled();
+    settle?.();
+  });
+
   it('defaults priority to normal and nullifies absent optional fields', async () => {
     await createNotification(BASE);
 
@@ -125,36 +162,5 @@ describe('createNotification', () => {
       metadata: null,
       dedupeKey: null,
     });
-  });
-});
-
-describe('createNotifications — fan-out', () => {
-  it('one failure does not cost the other recipients their notification', async () => {
-    // A four-eyes fan-out notifies every approver. If approver 2's insert
-    // throws, approvers 1 and 3 must still be told.
-    let call = 0;
-    state.publishUserEvent.mockImplementation(async () => {
-      call += 1;
-      if (call === 2) throw new Error('boom');
-      return 'evt';
-    });
-
-    const ids = await createNotifications([
-      { ...BASE, userId: 'u1' },
-      { ...BASE, userId: 'u2' },
-      { ...BASE, userId: 'u3' },
-    ]);
-
-    // publishUserEvent failures are swallowed inside createNotification, so all
-    // three rows land regardless.
-    expect(ids).toHaveLength(3);
-  });
-
-  it('skips duplicates without treating them as failures', async () => {
-    state.returnedRows = [];
-
-    const ids = await createNotifications([{ ...BASE, userId: 'u1', dedupeKey: 'dup' }]);
-
-    expect(ids).toEqual([]);
   });
 });

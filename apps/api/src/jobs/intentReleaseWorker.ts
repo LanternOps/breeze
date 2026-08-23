@@ -640,29 +640,66 @@ async function notifyRequesterOfOutcome(
         requestedByUserId: actionIntents.requestedByUserId,
         targetSummary: actionIntents.targetSummary,
         status: actionIntents.status,
+        approvalScope: actionIntents.approvalScope,
       })
       .from(actionIntents)
       .where(eq(actionIntents.id, intentId))
       .limit(1));
 
-  if (!intent?.requestedByUserId || !intent.orgId) return;
+  if (!intent) {
+    // Outboxed and then deleted: a genuine anomaly, not an expected case.
+    captureException(new Error(`intent ${intentId} not found for outcome notification`));
+    return;
+  }
+  // Expected and silent: MCP / API-key-sourced intents have no human requester
+  // (requestingApiKeyId is set instead), so there is nobody to notify.
+  // org_id is NOT NULL in the schema, so it is deliberately not checked here.
+  if (!intent.requestedByUserId) return;
 
-  // Copy is about AUTHORIZATION, never about the action succeeding. Approval
-  // releases execution; it does not complete it, and the tool may still fail.
-  const copy = {
-    intent_approved: {
-      title: 'Approval granted',
-      message: `${intent.targetSummary} was approved and is now running.`,
-    },
-    intent_rejected: {
-      title: 'Approval denied',
-      message: `${intent.targetSummary} was denied and will not run.`,
-    },
-    intent_expired: {
-      title: 'Approval expired',
-      message: `${intent.targetSummary} expired before it was decided and will not run.`,
-    },
-  }[eventType];
+  // A SUPERVISED intent's requester is also its only approver, and they were
+  // watching the chat stream that created it — the inline timeout already told
+  // them. Notifying here would put a bell row on every abandoned 5-minute chat
+  // intent, which is easily the highest-volume producer of this new type, and
+  // would train people to ignore the bell. Only four-eyes has a requester who
+  // genuinely could not see the outcome. Mirrors the same scope gate the push
+  // path uses at intentService.ts.
+  if (intent.approvalScope !== 'four_eyes') return;
+
+  // Copy comes from the intent's CURRENT status, not from the event type.
+  //
+  // This is the whole reason the status column is selected. `releaseApprovedIntent`
+  // returns void and has around a dozen early-return paths that mean it did NOT
+  // run — revalidation stopped it, the release_by deadline had passed, it lost
+  // the approved->executing CAS, the tool threw. Deriving the copy from
+  // `eventType` told the requester "was approved and is now running" in every
+  // one of those cases. For an intent that was failed closed because the
+  // approver's permission had been revoked, that is an outright false statement
+  // about a privileged action.
+  //
+  // Outbox delivery is also at-least-once and can land minutes late, by which
+  // time an approved intent may well have completed, failed or expired.
+  const summary = intent.targetSummary;
+  const copy = ((): { title: string; message: string } => {
+    switch (intent.status) {
+      case 'approved':
+      case 'executing':
+        return { title: 'Approval granted', message: `${summary} was approved and is now running.` };
+      case 'completed':
+        return { title: 'Approval granted', message: `${summary} was approved and has finished.` };
+      case 'failed':
+        // Approved but did not run. The distinction matters most here.
+        return { title: 'Action failed', message: `${summary} was approved but could not run.` };
+      case 'rejected':
+        return { title: 'Approval denied', message: `${summary} was denied and will not run.` };
+      case 'cancelled':
+        return { title: 'Request cancelled', message: `${summary} was cancelled and will not run.` };
+      case 'expired':
+        return { title: 'Approval expired', message: `${summary} expired before it was decided and will not run.` };
+      default:
+        // pending_approval, or a status added later: say only what is certain.
+        return { title: 'Approval update', message: `${summary} changed state.` };
+    }
+  })();
 
   await withSystemDbAccessContext(() =>
     createNotification({
@@ -672,9 +709,11 @@ async function notifyRequesterOfOutcome(
       title: copy.title,
       message: copy.message,
       link: '/approvals',
-      metadata: { intentId: intent.id, outcome: eventType },
-      // One outcome notification per intent, whatever the redelivery count.
-      dedupeKey: `intent-outcome:${intent.id}`,
+      metadata: { intentId: intent.id, outcome: eventType, status: intent.status },
+      // Scoped to the STATUS, not just the intent. A per-intent key meant that
+      // once a premature "is now running" had been written, the later truthful
+      // notification deduped to null and the person was never corrected.
+      dedupeKey: `intent-outcome:${intent.id}:${intent.status}`,
     }));
 }
 
