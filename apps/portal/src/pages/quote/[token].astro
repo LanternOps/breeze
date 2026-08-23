@@ -12,8 +12,14 @@ const response = await portalApi.getPublicQuote(token!, buildServerApiConfig(Ast
 // PublicQuoteView's own "invalid or expired" fallback (no specific error text
 // for the generic 401, which would otherwise read "Session expired").
 const initial = response.data?.data ?? null;
-const error = response.statusCode === 401 ? undefined : response.error;
-const partnerName = initial?.branding?.partnerName;
+// A replaced proposal answers 410 QUOTE_SUPERSEDED and carries only the
+// partner's branding — enough to say who to contact, nothing that would leak
+// the withdrawn pricing or the successor's link.
+const supersededBranding = response.statusCode === 410 && response.code === 'QUOTE_SUPERSEDED'
+  ? ((response.errorData as { branding?: { partnerName?: string } } | undefined)?.branding ?? {})
+  : null;
+const error = response.statusCode === 401 || supersededBranding ? undefined : response.error;
+const partnerName = initial?.branding?.partnerName ?? supersededBranding?.partnerName;
 const title = partnerName ? `Proposal from ${partnerName}` : 'Proposal';
 ---
 
@@ -24,5 +30,5 @@ const title = partnerName ? `Proposal from ${partnerName}` : 'Proposal';
   supportPhone={initial?.branding?.supportPhone}
   partnerName={partnerName}
 >
-  <PublicQuoteView token={token!} initial={initial} error={error} client:load />
+  <PublicQuoteView token={token!} initial={initial} error={error} superseded={supersededBranding} client:load />
 </PublicDocumentLayout>
