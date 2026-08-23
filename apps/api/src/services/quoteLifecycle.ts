@@ -842,14 +842,16 @@ export async function markQuoteViewed(quoteId: string, orgId: string): Promise<v
     // supersede can commit between that read and this write — an unguarded
     // `WHERE id = ?` would then resurrect a retired quote to 'viewed' or stamp
     // a superseded row. Matching zero rows is the correct outcome here, not an
-    // error: someone settled the quote first, and this is a cosmetic stamp.
-    await db.update(quotes).set(set).where(and(
+    // error: someone settled the quote first, and this is a cosmetic stamp, so
+    // the caller still succeeds. The event cannot lose with the write, though:
+    // emitting it without a committed stamp would describe a view that did not happen.
+    const viewed = await db.update(quotes).set(set).where(and(
       eq(quotes.id, quoteId),
       q.status === 'sent' ? eq(quotes.status, 'sent') : ne(quotes.status, 'superseded'),
-    ));
+    )).returning({ id: quotes.id });
     // First view only (invoice.viewed parity): the sales-timing signal a future
     // notification worker cares about. Fire-and-forget — never fails the view.
-    if (!q.firstViewedAt) await emitQuoteEvent({ type: 'quote.viewed', quoteId, orgId: q.orgId, partnerId: q.partnerId });
+    if (viewed.length > 0 && !q.firstViewedAt) await emitQuoteEvent({ type: 'quote.viewed', quoteId, orgId: q.orgId, partnerId: q.partnerId });
   }));
 }
 

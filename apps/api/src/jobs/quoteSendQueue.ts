@@ -163,6 +163,13 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
   // the real-DB integration suite: an in-transaction catch-and-stamp was
   // undone by its own rethrow, so the failure banner could never appear).
   let sendError: unknown;
+  let supersedeAudit: {
+    orgId: string;
+    parentQuoteId: string;
+    previousStatus: string;
+    revisionNumber: number;
+    emailed: boolean;
+  } | undefined;
   const failed = await withSystemDbAccessContext(async () => {
     // Atomic claim: fire only if this job is still the row's registered
     // schedule, and take that registration out from under any concurrent
@@ -182,28 +189,14 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
     // out — the delayed path has no request to return `emailed:false` to.
     // (Success needs no write: the flip already cleared the marker.)
     const result = await sendQuote(quoteId, actor, emailOpts);
-    // Mirror the direct-send route's supersede audit: a scheduled send retires
-    // the parent just as permanently, and that must be traceable regardless of
-    // which path issued it. Wrapped because an audit failure must never fail a
-    // send that has already committed and emailed.
     if (result.superseded) {
-      try {
-        await writeAuditEvent(requestLikeFromSnapshot({}), {
-          orgId: result.quote.orgId,
-          action: 'quote.superseded',
-          resourceType: 'quote',
-          resourceId: result.superseded.parentQuoteId,
-          result: 'success',
-          details: {
-            supersededByQuoteId: quoteId,
-            previousStatus: result.superseded.previousStatus,
-            revisionNumber: result.quote.revisionNumber,
-            emailed: result.emailed,
-          },
-        });
-      } catch (auditErr) {
-        console.error('[quotes] failed to audit supersede for quote', quoteId, auditErr);
-      }
+      supersedeAudit = {
+        orgId: result.quote.orgId,
+        parentQuoteId: result.superseded.parentQuoteId,
+        previousStatus: result.superseded.previousStatus,
+        revisionNumber: result.quote.revisionNumber,
+        emailed: result.emailed,
+      };
     }
     if (!result.emailed) {
       await db.update(quotes)
@@ -215,6 +208,23 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
     sendError = err;
     return true;
   });
+  // Emit only after the transaction commits, so a rolled-back send can never
+  // leave a success audit behind. Audit persistence has its own internal retry queue.
+  if (!failed && supersedeAudit) {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: supersedeAudit.orgId,
+      action: 'quote.superseded',
+      resourceType: 'quote',
+      resourceId: supersedeAudit.parentQuoteId,
+      result: 'success',
+      details: {
+        supersededByQuoteId: quoteId,
+        previousStatus: supersedeAudit.previousStatus,
+        revisionNumber: supersedeAudit.revisionNumber,
+        emailed: supersedeAudit.emailed,
+      },
+    });
+  }
   if (!failed) return;
   // Fire-time rejection: the transaction above rolled back (including the
   // claim, so the row still carries this job's id), and the quote stays a

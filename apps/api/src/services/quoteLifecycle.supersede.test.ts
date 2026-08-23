@@ -10,8 +10,8 @@ const setCalls: Array<Record<string, unknown>> = [];
 const insertValueCalls: unknown[] = [];
 /** Every `.where(...)` argument, in call order, for predicate assertions. */
 const whereCalls: unknown[] = [];
-/** How many times `.for('update')` was requested, and with what. */
-const forCalls: unknown[] = [];
+/** Every `.for(...)` mode and the number of preceding `.where(...)` calls. */
+const forCalls: Array<{ mode: unknown; afterWhereIndex: number }> = [];
 
 vi.mock('../db', () => {
   const makeChain = () => {
@@ -19,7 +19,10 @@ vi.mock('../db', () => {
     const methods = ['select', 'from', 'limit', 'orderBy', 'returning', 'update', 'delete', 'innerJoin', 'execute', 'transaction'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     chain.where = vi.fn((predicate: unknown) => { whereCalls.push(predicate); return chain; });
-    chain.for = vi.fn((mode: unknown) => { forCalls.push(mode); return chain; });
+    chain.for = vi.fn((mode: unknown) => {
+      forCalls.push({ mode, afterWhereIndex: whereCalls.length });
+      return chain;
+    });
     chain.set = vi.fn((payload: Record<string, unknown>) => { setCalls.push(payload); return chain; });
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
@@ -180,8 +183,20 @@ describe('sendQuote — revision supersede', () => {
     expect(flip).toBeDefined();
     expect(flip!.publicLinkRevokedAt).toBeInstanceOf(Date);
 
-    // The parent must be locked FOR UPDATE before it is flipped.
-    expect(forCalls).toContain('update');
+    const parentWhereIndex = whereCalls.reduce<number>((matchedIndex, predicate, index) => {
+      const bindings = collectBoundParams(predicate);
+      return bindings.length === 1
+        && bindings.some((binding) => binding.column === 'id' && binding.value === 'q1')
+        ? index
+        : matchedIndex;
+    }, -1);
+    // Guard the locator itself: if the parent predicate were never found,
+    // parentWhereIndex would be -1 and the assertion below would silently
+    // degrade into "some .for() ran before any .where()".
+    expect(parentWhereIndex).toBeGreaterThanOrEqual(0);
+    // Bind the lock to the parent's own query so the child claim's
+    // `.for('update')` cannot satisfy this assertion.
+    expect(forCalls).toContainEqual({ mode: 'update', afterWhereIndex: parentWhereIndex + 1 });
   });
 
   it('predicate-guards the parent flip with the supersedable set, not a bare id', async () => {
