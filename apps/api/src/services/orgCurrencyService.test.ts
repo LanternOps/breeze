@@ -5,13 +5,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // this service's contract: `organizations FOR UPDATE` must be its first query.
 const results: unknown[][] = [];
 const log: string[] = [];
+/** Field names of every `select({...})` projection, in call order — the shape
+ *  proof for "the preflight never materialises billable ROWS" (review 4). */
+const selectProjections: string[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
 
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
     const methods = ['select', 'from', 'where', 'limit', 'for', 'update', 'set', 'insert', 'values', 'returning', 'groupBy', 'orderBy', 'innerJoin', 'leftJoin'];
-    for (const m of methods) chain[m] = vi.fn((...args: unknown[]) => { log.push(m === 'for' ? `for(${String(args[0])})` : m); return chain; });
+    for (const m of methods) chain[m] = vi.fn((...args: unknown[]) => {
+      log.push(m === 'for' ? `for(${String(args[0])})` : m);
+      if (m === 'select') selectProjections.push(Object.keys((args[0] ?? {}) as Record<string, unknown>));
+      return chain;
+    });
     chain.transaction = vi.fn(async (run: (tx: unknown) => unknown) => { log.push('transaction'); return run(chain); });
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
       Promise.resolve(results.shift() ?? []).then(resolve);
@@ -29,7 +36,8 @@ type Chain = { update: { mock: { calls: unknown[][] } }; set: { mock: { calls: u
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
 /** The ten reads `getOrgCurrencyImpact` performs, in order. Callers override the
- *  interesting ones; everything else resolves empty. */
+ *  interesting ones; everything else resolves empty. Billable rows arrive
+ *  PRE-AGGREGATED (one row per currency), never one row per time entry/part. */
 function queueImpact(over: {
   org?: unknown[]; invoices?: unknown[]; quotes?: unknown[]; contracts?: unknown[];
   time?: unknown[]; missingRate?: unknown[]; parts?: unknown[];
@@ -47,11 +55,12 @@ function queueImpact(over: {
   queueResult(over.overrides ?? [{ n: 0 }]);
 }
 
-beforeEach(() => { results.length = 0; log.length = 0; vi.clearAllMocks(); });
+beforeEach(() => { results.length = 0; log.length = 0; selectProjections.length = 0; vi.clearAllMocks(); });
 
 describe('changeOrgCurrency (#3778)', () => {
   it('takes the organizations FOR UPDATE lock as the transaction FIRST query', async () => {
     queueResult([{ id: 'org1', currencyCode: 'EUR' }]); // the locked row
+    queueResult([]); // the UPDATE
     queueImpact();
     await changeOrgCurrency('org1', { currencyCode: 'GBP', expectedCurrentCurrencyCode: 'EUR', confirmSnapshotRetention: true }, actor);
     const firstFor = log.indexOf('for(update)');
@@ -63,8 +72,34 @@ describe('changeOrgCurrency (#3778)', () => {
     expect(log.filter((e) => e.startsWith('for('))).toEqual(['for(update)']);
   });
 
+  it('computes the advisory impact OUTSIDE the lock — the locked section is the lock plus the UPDATE only', async () => {
+    queueResult([{ id: 'org1', currencyCode: 'EUR' }]);
+    queueResult([]); // the UPDATE
+    queueImpact();
+    await changeOrgCurrency('org1', { currencyCode: 'GBP', expectedCurrentCurrencyCode: 'EUR', confirmSnapshotRetention: true }, actor);
+    // Everything between opening the transaction and the UPDATE: the lock read
+    // and nothing else. The impact scan must not hold `organizations FOR UPDATE`,
+    // which every default-derived writer's FOR SHARE barrier blocks on.
+    const start = log.indexOf('transaction');
+    const upd = log.indexOf('update');
+    expect(upd).toBeGreaterThan(-1);
+    expect(log.slice(start, upd)).toEqual(['transaction', 'select', 'from', 'where', 'limit', 'for(update)']);
+  });
+
+  it('still reports a fresh impact on the 409 stale precondition, computed after the lock is released', async () => {
+    queueResult([{ id: 'org1', currencyCode: 'GBP' }]);
+    queueImpact({ org: [{ id: 'org1', partnerId: 'p1', currencyCode: 'GBP' }] });
+    await expect(
+      changeOrgCurrency('org1', { currencyCode: 'USD', expectedCurrentCurrencyCode: 'EUR', confirmSnapshotRetention: true }, actor)
+    ).rejects.toMatchObject({ code: 'ORG_CURRENCY_CHANGED', status: 409 });
+    const start = log.indexOf('transaction');
+    // No impact read happened before the lock read finished the transaction.
+    expect(log.slice(start, start + 6)).toEqual(['transaction', 'select', 'from', 'where', 'limit', 'for(update)']);
+  });
+
   it('writes the new currency and reports the previous one', async () => {
     queueResult([{ id: 'org1', currencyCode: 'EUR' }]);
+    queueResult([]); // the UPDATE
     queueImpact();
     const out = await changeOrgCurrency('org1', { currencyCode: 'GBP', expectedCurrentCurrencyCode: 'EUR', confirmSnapshotRetention: true }, actor);
     expect(out).toMatchObject({ orgId: 'org1', previousCurrencyCode: 'EUR', currencyCode: 'GBP' });
@@ -124,10 +159,10 @@ describe('getOrgCurrencyImpact (#3778)', () => {
       quotes: [{ currencyCode: 'EUR', status: 'sent', n: 3 }],
       contracts: [{ currencyCode: 'EUR', status: 'active', n: 1 }],
       time: [
-        { currencyCode: 'EUR', hourlyRate: '100.00', durationMinutes: 90, isBillable: true, endedAt: new Date() },
-        { currencyCode: 'USD', hourlyRate: '50.00', durationMinutes: 60, isBillable: false, endedAt: null },
+        { currencyCode: 'EUR', monetary: 1, running: 0, nonBillable: 0, ready: 1, labor2: '150.00', labor0: '150' },
+        { currencyCode: 'USD', monetary: 1, running: 1, nonBillable: 1, ready: 0, labor2: '50.00', labor0: '50' },
       ],
-      parts: [{ currencyCode: 'USD', quantity: '2.00', unitPrice: '10.00', isBillable: true }],
+      parts: [{ currencyCode: 'USD', monetary: 1, ready: 1, nonBillable: 0, amount2: '20.00', amount0: '20' }],
     });
     const impact = await getOrgCurrencyImpact('org1', 'GBP', actor);
 
@@ -152,7 +187,7 @@ describe('getOrgCurrencyImpact (#3778)', () => {
   it('rounds JPY labor at the ZERO-decimal minor unit (20 min x 1000 = 330, never 333)', async () => {
     queueImpact({
       org: [{ id: 'org1', partnerId: 'p1', currencyCode: 'JPY' }],
-      time: [{ currencyCode: 'JPY', hourlyRate: '1000.00', durationMinutes: 20, isBillable: true, endedAt: new Date() }],
+      time: [{ currencyCode: 'JPY', monetary: 1, running: 0, nonBillable: 0, ready: 1, labor2: '333.33', labor0: '330' }],
     });
     const impact = await getOrgCurrencyImpact('org1', 'USD', actor);
     expect(impact.impactsByCurrency[0]!.billables.laborAmount).toBe('330.00');
@@ -176,6 +211,28 @@ describe('getOrgCurrencyImpact (#3778)', () => {
     queueImpact({ rateSettings: [{ defaultHourlyRate: '85.50', rateCurrency: 'GBP' }] });
     const impact = await getOrgCurrencyImpact('org1', 'GBP', actor);
     expect(impact.configurationWarnings.orgDefaultRate).toEqual({ configured: true, rateCurrency: 'GBP', willStopApplying: false });
+  });
+
+  it('never materialises billable ROWS — every billable read is a per-currency aggregate', async () => {
+    queueImpact();
+    await getOrgCurrencyImpact('org1', 'GBP', actor);
+    // Per-row billable columns must never appear in a projection: a few hundred
+    // thousand unbilled entries would otherwise be pulled into JS to be summed.
+    const perRowColumns = ['hourlyRate', 'durationMinutes', 'endedAt', 'isBillable', 'quantity', 'unitPrice'];
+    const offenders = selectProjections.filter((keys) => keys.some((k) => perRowColumns.includes(k)));
+    expect(offenders).toEqual([]);
+    // …and the sums genuinely come back aggregated, per currency.
+    expect(selectProjections.some((keys) => keys.includes('labor2') && keys.includes('labor0'))).toBe(true);
+    expect(selectProjections.some((keys) => keys.includes('amount2') && keys.includes('amount0'))).toBe(true);
+  });
+
+  it('picks the ZERO-decimal sum for a zero-decimal currency (JPY labor is not a 2dp sum)', async () => {
+    queueImpact({
+      org: [{ id: 'org1', partnerId: 'p1', currencyCode: 'JPY' }],
+      time: [{ currencyCode: 'JPY', monetary: 2, running: 0, nonBillable: 0, ready: 2, labor2: '666.66', labor0: '660' }],
+    });
+    const impact = await getOrgCurrencyImpact('org1', 'USD', actor);
+    expect(impact.impactsByCurrency[0]!.billables.laborAmount).toBe('660.00');
   });
 
   it('throws ORG_DENIED (403) for a cross-org actor', async () => {

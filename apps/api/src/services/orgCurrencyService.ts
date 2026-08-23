@@ -35,7 +35,7 @@ import { UNKNOWN_CURRENCY_KEY } from './invoiceAssembly';
 import {
   OrgCurrencyServiceError, requireOrgAccessById, type DbExecutor
 } from './orgCurrencyCore';
-import { fromMinorUnits, multiplyToCurrency, toMinorUnits } from '@breeze/shared';
+import { minorUnitExponent, roundToCurrency } from '@breeze/shared';
 
 /** Per-currency slice of the preflight. `currencyCode` is always the ROW's own
  *  stamp — amounts are NEVER summed across currencies. */
@@ -104,12 +104,26 @@ function emptyGroup(currencyCode: string): OrgCurrencyImpactGroup {
   };
 }
 
-/** Labor rule, identical to `invoiceAssembly.timeEntryToLineSpec`: hours rounded
- *  to 2dp FIRST (the numeric(10,2) quantity schema), then one currency-aware
- *  multiply. 20 min x 1,000 JPY = 0.33 x 1000 = 330, never 333. */
-function laborAmountFor(durationMinutes: number | null, hourlyRate: string, currency: string): string {
-  const hours = ((durationMinutes ?? 0) / 60).toFixed(2);
-  return multiplyToCurrency(hours, hourlyRate, currency);
+/** The labor rule of `invoiceAssembly.timeEntryToLineSpec`, expressed in SQL so
+ *  the preflight never pulls a row into JS (review 4): hours rounded to 2dp
+ *  FIRST (the numeric(10,2) quantity schema), then ONE half-up round at the
+ *  currency's minor unit — 20 min x 1,000 JPY = 0.33 x 1000 = 330, never 333.
+ *  `exp` is the minor-unit exponent; both variants are summed in the same pass
+ *  and the caller picks the one matching each group's currency, which keeps the
+ *  whole preflight to a single aggregate query per source table. */
+function laborSumSql(exp: 0 | 2) {
+  return sql<string>`coalesce(sum(round(round(coalesce(${timeEntries.durationMinutes}, 0) / 60.0, 2) * ${timeEntries.hourlyRate}, ${exp})), 0)`;
+}
+
+function partSumSql(exp: 0 | 2) {
+  return sql<string>`coalesce(sum(round(${ticketParts.quantity} * ${ticketParts.unitPrice}, ${exp})), 0)`;
+}
+
+/** Pick the aggregate computed at this currency's minor unit and format it as
+ *  the fixed-2 string every monetary field in this payload uses. The sum is a
+ *  sum of already-rounded per-row amounts, so this only formats. */
+function amountFor(sum2: string, sum0: string, currency: string): string {
+  return roundToCurrency(minorUnitExponent(currency) === 0 ? sum0 : sum2, currency);
 }
 
 /**
@@ -182,13 +196,20 @@ export async function getOrgCurrencyImpact(
 
   // --- billables -----------------------------------------------------------
   // Monetary time: deliberately ignores `is_billable` (it can be switched on
-  // later, and the snapshot is already stranded either way). Amounts are summed
-  // in MINOR UNITS within one currency group only — never across groups.
+  // later, and the snapshot is already stranded either way). Counts AND sums are
+  // computed by Postgres, one row per currency — never one row per entry
+  // (review 4). `hourly_rate IS NOT NULL` plus `org_id = :orgId` means
+  // `currency_code` cannot be NULL here (the time_entries CHECK allows a NULL
+  // stamp only on an unrated, org-less row), so this query never invents a group.
   const timeRows = await dbc
     .select({
-      currencyCode: timeEntries.currencyCode, hourlyRate: timeEntries.hourlyRate,
-      durationMinutes: timeEntries.durationMinutes, isBillable: timeEntries.isBillable,
-      endedAt: timeEntries.endedAt
+      currencyCode: timeEntries.currencyCode,
+      monetary: count(),
+      running: sql<string>`count(*) filter (where ${timeEntries.endedAt} is null)`,
+      nonBillable: sql<string>`count(*) filter (where ${timeEntries.isBillable} = false)`,
+      ready: sql<string>`count(*) filter (where ${timeEntries.isBillable} = true and ${timeEntries.endedAt} is not null)`,
+      labor2: laborSumSql(2),
+      labor0: laborSumSql(0)
     })
     .from(timeEntries)
     .where(and(
@@ -196,19 +217,17 @@ export async function getOrgCurrencyImpact(
       eq(timeEntries.billingStatus, 'not_billed'),
       isNotNull(timeEntries.hourlyRate),
       ne(timeEntries.currencyCode, target)
-    ));
-  const laborMinor = new Map<string, number>();
+    ))
+    .groupBy(timeEntries.currencyCode);
   for (const r of timeRows) {
     const key = r.currencyCode ?? UNKNOWN_CURRENCY_KEY;
     const b = group(r.currencyCode).billables;
-    b.monetaryTimeSnapshots += 1;
-    if (r.endedAt === null) b.runningTimeEntries += 1;
-    if (!r.isBillable) b.currentlyNonBillableTimeEntries += 1;
-    if (r.isBillable && r.endedAt !== null) b.readyTimeEntries += 1;
-    const amount = laborAmountFor(r.durationMinutes, r.hourlyRate ?? '0', key);
-    laborMinor.set(key, (laborMinor.get(key) ?? 0) + toMinorUnits(amount, key));
+    b.monetaryTimeSnapshots = Number(r.monetary);
+    b.runningTimeEntries = Number(r.running);
+    b.currentlyNonBillableTimeEntries = Number(r.nonBillable);
+    b.readyTimeEntries = Number(r.ready);
+    b.laborAmount = amountFor(r.labor2, r.labor0, key);
   }
-  for (const [key, minor] of laborMinor) group(key).billables.laborAmount = fromMinorUnits(minor, key);
 
   // Missing-rate time: hours but no amount. Match-or-skip found no rate in the
   // org's currency, so assembly treats it as a gap (never a zero line). Reported
@@ -225,28 +244,32 @@ export async function getOrgCurrencyImpact(
     .groupBy(timeEntries.currencyCode);
   for (const r of missingRateRows) group(r.currencyCode).billables.missingRateTimeEntries = Number(r.n);
 
-  // Parts: `unit_price` is NOT NULL, so every unbilled part is monetary.
+  // Parts: `unit_price` and `currency_code` are both NOT NULL, so every unbilled
+  // part is monetary and stamped. Aggregated in SQL for the same reason as time.
   const partRows = await dbc
     .select({
-      currencyCode: ticketParts.currencyCode, quantity: ticketParts.quantity,
-      unitPrice: ticketParts.unitPrice, isBillable: ticketParts.isBillable
+      currencyCode: ticketParts.currencyCode,
+      monetary: count(),
+      ready: sql<string>`count(*) filter (where ${ticketParts.isBillable} = true)`,
+      nonBillable: sql<string>`count(*) filter (where ${ticketParts.isBillable} = false)`,
+      amount2: partSumSql(2),
+      amount0: partSumSql(0)
     })
     .from(ticketParts)
     .where(and(
       eq(ticketParts.orgId, orgId),
       eq(ticketParts.billingStatus, 'not_billed'),
       ne(ticketParts.currencyCode, target)
-    ));
-  const partMinor = new Map<string, number>();
+    ))
+    .groupBy(ticketParts.currencyCode);
   for (const r of partRows) {
     const key = r.currencyCode ?? UNKNOWN_CURRENCY_KEY;
     const b = group(r.currencyCode).billables;
-    b.monetaryPartSnapshots += 1;
-    if (r.isBillable) b.readyParts += 1; else b.currentlyNonBillableParts += 1;
-    const amount = multiplyToCurrency(r.quantity, r.unitPrice, key);
-    partMinor.set(key, (partMinor.get(key) ?? 0) + toMinorUnits(amount, key));
+    b.monetaryPartSnapshots = Number(r.monetary);
+    b.readyParts = Number(r.ready);
+    b.currentlyNonBillableParts = Number(r.nonBillable);
+    b.partAmount = amountFor(r.amount2, r.amount0, key);
   }
-  for (const [key, minor] of partMinor) group(key).billables.partAmount = fromMinorUnits(minor, key);
 
   // --- configuration warnings ---------------------------------------------
   // Match-or-skip (timeEntryService.resolveDefaultRate): a default rate applies
@@ -301,7 +324,24 @@ export async function getOrgCurrencyImpact(
  *   6. a REAL change requires `confirmSnapshotRetention === true` (400) — the
  *      validator cannot know this, only the locked row can (see the wave-6 plan,
  *      minor 13);
- *   7. recompute the impact INSIDE the transaction, then UPDATE.
+ *   7. UPDATE, commit, and only THEN compute the advisory impact.
+ *
+ * Why the impact is computed AFTER the lock is released (review 4): every
+ * default-derived writer in the org (invoice, quote, contract, time entry,
+ * ticket part, rate and override upserts) takes `organizations FOR SHARE` as
+ * its first statement, which conflicts with this FOR UPDATE. Anything this
+ * transaction does while holding the lock therefore stalls ALL billing writes
+ * for the org. The summary is explicitly ADVISORY — it is never a blocker and
+ * never a promise — so it has no business inside the critical section.
+ *
+ * Exactness is not lost by moving it out. The summary reports rows stamped in a
+ * currency OTHER than the target: a row that commits after the change reads the
+ * NEW currency through the SHARE barrier, so it is stamped in the target and is
+ * correctly absent; a row that committed before the change kept the old stamp
+ * and is still counted. What the post-commit summary describes is the state
+ * AFTER the change, so `currentCurrencyCode` is the new code and
+ * `changeRequired` is false — the groups, which are what the operator acts on,
+ * are unchanged.
  */
 export async function changeOrgCurrency(
   orgId: string,
@@ -310,7 +350,9 @@ export async function changeOrgCurrency(
 ): Promise<ChangeOrgCurrencyResult> {
   requireOrg(actor, orgId); // fast-fail only; re-checked under the lock below
 
-  return db.transaction(async (tx) => {
+  // The locked section: lock, check, write. No scan, no aggregate, no read of
+  // any billable table.
+  const outcome = await db.transaction(async (tx) => {
     const [locked] = await tx
       .select({ id: organizations.id, currencyCode: organizations.currencyCode })
       .from(organizations).where(eq(organizations.id, orgId)).limit(1).for('update');
@@ -318,18 +360,13 @@ export async function changeOrgCurrency(
     requireOrg(actor, locked.id);
 
     if (locked.currencyCode !== input.expectedCurrentCurrencyCode) {
-      const impact = await getOrgCurrencyImpact(orgId, input.currencyCode, actor, tx);
-      throw new InvoiceServiceError(
-        'The organization currency changed since this summary was taken', 409, 'ORG_CURRENCY_CHANGED',
-        { currentCurrencyCode: locked.currencyCode, expectedCurrentCurrencyCode: input.expectedCurrentCurrencyCode, impact }
-      );
+      return { kind: 'stale' as const, currentCurrencyCode: locked.currencyCode };
     }
 
     // Idempotent no-op: a same-currency PATCH writes nothing and needs no
     // confirmation (there is no snapshot to retain).
     if (locked.currencyCode === input.currencyCode) {
-      const impact = await getOrgCurrencyImpact(orgId, input.currencyCode, actor, tx);
-      return { orgId, previousCurrencyCode: locked.currencyCode, currencyCode: locked.currencyCode, impact };
+      return { kind: 'noop' as const, currentCurrencyCode: locked.currencyCode };
     }
 
     if (input.confirmSnapshotRetention !== true) {
@@ -338,16 +375,29 @@ export async function changeOrgCurrency(
       );
     }
 
-    const impact = await getOrgCurrencyImpact(orgId, input.currencyCode, actor, tx);
     await tx.update(organizations)
       .set({ currencyCode: input.currencyCode, updatedAt: new Date() })
       .where(eq(organizations.id, orgId));
-
-    return {
-      orgId,
-      previousCurrencyCode: locked.currencyCode,
-      currencyCode: input.currencyCode,
-      impact
-    };
+    return { kind: 'changed' as const, currentCurrencyCode: locked.currencyCode };
   });
+
+  const impact = await getOrgCurrencyImpact(orgId, input.currencyCode, actor);
+
+  if (outcome.kind === 'stale') {
+    throw new InvoiceServiceError(
+      'The organization currency changed since this summary was taken', 409, 'ORG_CURRENCY_CHANGED',
+      {
+        currentCurrencyCode: outcome.currentCurrencyCode,
+        expectedCurrentCurrencyCode: input.expectedCurrentCurrencyCode,
+        impact
+      }
+    );
+  }
+
+  return {
+    orgId,
+    previousCurrencyCode: outcome.currentCurrencyCode,
+    currencyCode: outcome.kind === 'noop' ? outcome.currentCurrencyCode : input.currencyCode,
+    impact
+  };
 }
