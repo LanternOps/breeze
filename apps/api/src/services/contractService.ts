@@ -314,12 +314,26 @@ export async function inspectContractCurrencyEligibility(
 
   // (3) Direct contract-source lines sitting on ANY draft invoice — the escape
   // codex found: the contract_lines row can be deleted, this column cannot.
+  // The second branch is defence in depth (wave-6 review round): a line whose
+  // durable lineage is NULL but whose polymorphic source_id still resolves to a
+  // LIVE contract_lines row of THIS contract is attributable, and must block the
+  // restamp too. Without it such a line falls through (4) as well, because (4)
+  // only fires when the source_id resolves to nothing.
   const directDrafts = await tx.execute<{ id: string }>(sql`
     SELECT DISTINCT i.id AS id
       FROM invoice_lines il
       JOIN invoices i ON i.id = il.invoice_id
-     WHERE il.source_contract_id = ${contractId}
-       AND i.status = 'draft'
+     WHERE i.status = 'draft'
+       AND (
+         il.source_contract_id = ${contractId}
+         OR (
+           il.source_contract_id IS NULL
+           AND EXISTS (
+             SELECT 1 FROM contract_lines cl
+              WHERE cl.id = il.source_id AND cl.contract_id = ${contractId}
+           )
+         )
+       )
   `);
 
   // (4) Conservative ORG-WIDE blocker: a source_type='contract' line the service

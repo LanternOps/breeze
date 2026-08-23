@@ -268,6 +268,34 @@ describe.runIf(RUN)('ACTIVE-contract currency restamp (#3778, Task 14)', () => {
     expect(await contractCurrency(contractId)).toBe('USD');
   });
 
+  it('(3c) a NULL-lineage draft line whose source_id still resolves to a LIVE line of this contract blocks too', async () => {
+    const f = await seedGateOrg('EUR');
+    const { contractId, lineId } = await seedActiveContract(f, 'USD');
+
+    // Wave-6 review round: a pre-migration row (durable lineage NULL) whose
+    // polymorphic source_id STILL points at a live contract_lines row of this
+    // contract is attributable, so it must block. Blocker (4) cannot catch it —
+    // (4) fires only when the source_id resolves to nothing.
+    const draftId = await withSystemDbAccessContext(async () => {
+      const inv = await createManualInvoice({ orgId: f.orgId, currencyCode: 'USD' }, invActor(f));
+      await db.insert(invoiceLines).values({
+        invoiceId: inv.id, orgId: f.orgId, sourceType: 'contract',
+        sourceId: lineId, sourceContractId: null,
+        description: 'Pre-migration contract line', quantity: '1', unitPrice: '250.00',
+        taxable: false, customerVisible: true, lineTotal: '250.00',
+      });
+      return inv.id;
+    });
+
+    await expect(withSystemDbAccessContext(() => changeContractCurrency(
+      contractId, { currencyCode: 'EUR', clearLines: true, confirmActiveChange: true }, manageActor(f),
+    ))).rejects.toMatchObject({
+      code: 'UNBILLED_MONETARY_ROWS', status: 409, details: { draftInvoiceIds: [draftId] },
+    });
+
+    expect(await contractCurrency(contractId)).toBe('USD');
+  });
+
   // -------------------------------------------------------------------------
   // Blocker (4): legacy / unattributable contract-source lines
   // -------------------------------------------------------------------------

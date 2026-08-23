@@ -465,6 +465,11 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   if (!input.ticketId && defaultRate != null) {
     currencyCode = await getPartnerCurrency(partnerId);
   }
+  // Wave-6 review: startTimer persists a resolved DEFAULT rate, so it is a money
+  // write seam exactly like createTimeEntry — validate it against the snapshot
+  // currency the row is about to carry. A legacy fractional default in a
+  // zero-decimal currency is a 400 here, never a silently rounded time entry.
+  assertRepresentable(defaultRate, currencyCode);
 
   const attempt = async () => {
     // D3: auto-stop the previous timer, then start the new one. The partial

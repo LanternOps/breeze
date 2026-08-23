@@ -531,7 +531,12 @@ export async function setOrgPriceOverride(itemId: string, orgId: string, input: 
     // lock the item first and then read the org unlocked, which both inverted
     // the wave-6 global order (organizations -> contracts/catalog_items) and let
     // a concurrent changeOrgCurrency stamp an override with a stale currency.
-    const lockedOrg = await readOrgStampingDefaults(tx, orgId);
+    // A cross-partner (or otherwise invisible) org must keep this service's own
+    // 403 ORG_DENIED contract — the barrier's neutral 404 would otherwise
+    // pre-empt the same-partner check below now that the org lock runs first.
+    const lockedOrg = await readOrgStampingDefaults(tx, orgId).catch(() => {
+      throw new CatalogServiceError('Organization not found for this partner', 403, 'ORG_DENIED');
+    });
     const item = await lockOwnedItemOr404(itemId, partnerId, tx);
     // Overrides carry an explicit currency (default: the org's) + the
     // denormalized partner_id the composite same-partner FKs require. A
@@ -583,6 +588,15 @@ export async function setBundleComponents(
   const allocCurrency = allocationCurrency?.trim().toUpperCase() || null;
   if (!allocCurrency && components.some((c) => c.revenueAllocation != null)) {
     throw new CatalogServiceError('allocationCurrency is required when a component carries a revenueAllocation', 400, 'ALLOCATION_CURRENCY_REQUIRED');
+  }
+  // Wave-6 review: an allocation is persisted money carrying its own stamped
+  // currency (`allocation_currency`) and is copied verbatim onto a same-currency
+  // invoice line (invoiceService.addCatalogLine), so it must be representable in
+  // that currency — a fractional-yen allocation is a 400, never a silent round.
+  if (allocCurrency) {
+    for (const c of components) {
+      if (c.revenueAllocation != null) assertRepresentable(c.revenueAllocation.toFixed(2), allocCurrency);
+    }
   }
 
   const ids = components.map((c) => c.componentItemId);

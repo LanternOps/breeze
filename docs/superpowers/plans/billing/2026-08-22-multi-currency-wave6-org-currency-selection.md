@@ -995,9 +995,9 @@ persists a fractional minor unit. None is a wrong assertion; no gate assertion w
 
 ### Disposition (Task 9, Steps 3-7)
 
-All six findings **FIXED** in one commit (see the Task 9 fix commit on
-`feature/3772-multi-currency/wave-3778`; ledger commit `c68509463` precedes it). Nothing deferred,
-no issue filed, no gate assertion weakened or skipped.
+All six findings **FIXED** in one commit — `a6b4ff9df188ccff728c4ad7bf6eeaee20fc0c58` on
+`feature/3772-multi-currency/wave-3778` (ledger commit `c68509463` precedes it, as the plan
+requires). Nothing deferred, no issue filed, no gate assertion weakened or skipped.
 
 | ID | Status | Fix |
 |---|---|---|
@@ -1036,3 +1036,30 @@ asserted separately.
 | Step 6 pre-existing suites (`changeCurrency`, `contractCurrency`, `assemblyBlockedByCurrency`, `documentLocaleStamping`, `invoiceService.issue`, `invoicePdf`) | **6 files / 47 tests, all pass** |
 
 **GATE EXIT: GREEN.** Tasks 10+ (deliverables B and C) are unblocked.
+
+
+---
+
+## Task 18 — final verification round (2026-08-22)
+
+**Independent review (Step 7, codex `gpt-5.6-sol`, read-only, high).** Four findings; three
+accepted and fixed in the Task 18 commit, one rejected on the code.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| **W6-R2-1** | `contractService.ts` blocker (3) keyed only on `source_contract_id`: a NULL-lineage draft line whose polymorphic `source_id` still resolves to a **live** `contract_lines` row of this contract escapes both (3) and (4) — (4) fires only when the `source_id` resolves to nothing. | **FIXED** — blocker (3) gained an attributable-by-`source_id` branch. Proven by the new `(3c)` case in `activeContractCurrencyChange.integration.test.ts`, which fails when the branch is removed. |
+| **W6-R2-2** | `timeEntryService.startTimer` persists the resolved default rate with no representability check — the one money write seam the wave-6 fix pass missed. | **FIXED** — `assertRepresentable(defaultRate, currencyCode)` before the insert; unit cases `(c3)`/`(c4)`, non-vacuity proven by removing the guard. |
+| **W6-R2-3** | `catalogService.setBundleComponents` stamps `revenue_allocation` + `allocation_currency` unvalidated, and `invoiceService.addCatalogLine` copies a same-currency allocation onto an invoice line — a fractional-yen allocation persists and travels. | **FIXED** — guarded at the write seam (the copy stays a copy, per the wave's "guard at authorship, never re-round a snapshot" rule). Real-DB case in `catalogService.integration.test.ts`. |
+| **W6-R2-4** (minor) | `resolveAndLockTicketLink` takes the second org `FOR SHARE` *after* the ticket lock when the ticket moved between resolve and lock. | **REJECTED, with reason** — it cannot cycle: every other org-lock holder takes `FOR SHARE` (mutually compatible) and the only `FOR UPDATE` holder, `changeOrgCurrency`, is a single-row transaction that locks nothing else. The code carries this argument inline; re-ordering would mean locking an org that may not be the one the row lands in. |
+
+**Two reds found by Task 18's own full-suite sweep** (neither was covered by Task 9's Step-6 set):
+
+- `invoiceService.orgBillingProjection` was a **module-level** Drizzle projection (Task 11), which broke `portal.test.ts` / `portal.compat.test.ts` at import time ("No `organizations` export is defined on the `../db/schema` mock"). Made lazy (`() => ({ … })`) — no behaviour change.
+- `invoiceCurrencyStamping.integration.test.ts`'s JPY case authored a **fractional-yen unit price** (`3 × 333.33`), which the wave-6 write-seam guard now correctly refuses. The case was rewritten to keep the property it exists to prove — the total rounds in the **header** currency, not the partner's — using a representable price and a fractional quantity (`3.5 × 333 → 1166`), plus an explicit assertion that the old fractional price is now a `PRICE_NOT_REPRESENTABLE` 400.
+- `catalogService.setOrgPriceOverride` returned the barrier's neutral 404 for a cross-partner org, pre-empting its own `403 ORG_DENIED` contract (a consequence of Task 12 moving the org lock first). The barrier call now translates the miss back into `ORG_DENIED`.
+
+**Known local-environment reds, not code defects:** the four co-located `*.integration.test.ts`
+suites that the *unit* runner also matches (`contractRenewal`, `contractWorker.renewal`) fail
+locally with `ECONNREFUSED :5432` — they are real-DB suites and pass under the integration runner;
+and the web suite's `localStorage`-undefined failures reproduce identically on an unrelated branch
+in another worktree (jsdom/environment, not this wave).

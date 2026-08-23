@@ -803,14 +803,14 @@ export async function updatePartnerBillingSettings(
 
 /** Org billing-settings projection. `currencyCode` is included (#3778) so the
  *  web form reads the org's currency back from the same response it PATCHes. */
-const orgBillingProjection = {
+const orgBillingProjection = () => ({
   id: organizations.id, taxId: organizations.taxId, taxExempt: organizations.taxExempt, taxRate: organizations.taxRate,
   billingContact: organizations.billingContact,
   billingAddressLine1: organizations.billingAddressLine1, billingAddressLine2: organizations.billingAddressLine2,
   billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
   billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
   currencyCode: organizations.currencyCode,
-};
+});
 
 export async function updateOrgBillingSettings(
   orgId: string,
@@ -856,7 +856,7 @@ export async function updateOrgBillingSettings(
       expectedCurrentCurrencyCode: patch.expectedCurrentCurrencyCode,
       confirmSnapshotRetention: patch.confirmSnapshotRetention
     }, actor);
-    const [current] = await db.select(orgBillingProjection).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    const [current] = await db.select(orgBillingProjection()).from(organizations).where(eq(organizations.id, orgId)).limit(1);
     if (!current) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
     return { ...current, currencyChange: change };
   }
@@ -881,7 +881,7 @@ export async function updateOrgBillingSettings(
   if (patch.billingAddressRegion !== undefined) set.billingAddressRegion = patch.billingAddressRegion;
   if (patch.billingAddressPostalCode !== undefined) set.billingAddressPostalCode = patch.billingAddressPostalCode;
   if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
-  const projection = orgBillingProjection;
+  const projection = orgBillingProjection();
 
   // One transaction so the contact merge and the column update still land
   // together, as they did when this was a single statement.

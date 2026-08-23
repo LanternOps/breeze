@@ -1384,6 +1384,27 @@ describe('currency snapshots (wave 4 / Task 7)', () => {
     expect(dbMocks.forUpdateCalls).toBe(2); // org FOR SHARE barrier, then ticket FOR UPDATE (#3778)
   });
 
+  it('(c3) startTimer refuses a fractional default rate in a zero-decimal currency (wave-6 review)', async () => {
+    // Category default 125.50 stamped JPY: the ordinary create path already
+    // rejects this, startTimer must not be the way around it.
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'JPY' }]);
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: '125.50', rateCurrency: 'JPY' }]);
+    dbMocks.selectResults.push([{ currencyCode: 'JPY' }]); // org SHARE barrier
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // lock row
+    await expect(startTimer({ ticketId: 't-1' }, ACTOR))
+      .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('(c4) startTimer still accepts a two-decimal default in a two-decimal currency', async () => {
+    queueLink('EUR');
+    dbMocks.insertResult = [{ id: 'te-3b', ticketId: 't-1', isBillable: true }];
+    await startTimer({ ticketId: 't-1' }, ACTOR);
+    expect(dbMocks.insertedValues[0]!.hourlyRate).toBe('125.00');
+    expect(dbMocks.insertedValues[0]!.currencyCode).toBe('EUR');
+  });
+
   it('(c2) re-resolves under the lock when the ticket moved between resolve and lock', async () => {
     queueLink('USD', 'o-2'); // first resolution says o-1/USD, lock row says o-2
     dbMocks.selectResults.push([{ currencyCode: 'EUR' }]); // org SHARE barrier on the NEW org (#3778)
