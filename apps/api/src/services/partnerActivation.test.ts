@@ -7,6 +7,7 @@ vi.mock('./authLifecycle', () => ({
     emailEpoch: 1,
     passwordResetEpoch: 1,
   })),
+  lockActiveRefreshFamiliesForUsers: vi.fn(async () => undefined),
   revokeAllRefreshFamilies: vi.fn(async () => undefined),
 }));
 
@@ -16,13 +17,16 @@ import {
   activatePendingPartnerAndInvalidateSessions,
   billingStatusContradictsPayment,
 } from './partnerActivation';
-import { advanceUserEpochs, revokeAllRefreshFamilies } from './authLifecycle';
+import {
+  advanceUserEpochs,
+  lockActiveRefreshFamiliesForUsers,
+  revokeAllRefreshFamilies,
+} from './authLifecycle';
 import {
   organizationUsers,
   organizations,
   partners,
   partnerUsers,
-  refreshTokenFamilies,
   users,
 } from '../db/schema';
 
@@ -231,18 +235,16 @@ describe('activatePartnerRow', () => {
     const tx = {
       select: vi.fn().mockReturnValue({
         from: vi.fn((table: unknown) => {
-          if (table === users || table === refreshTokenFamilies) {
+          if (table === users) {
             return {
               where: vi.fn().mockReturnValue({
                 orderBy: vi.fn().mockReturnValue({
                   for: vi.fn(async () => {
-                    events.push(table === users ? 'lock:users' : 'lock:families');
-                    return table === users
-                      ? [
-                          { id: 'user-1', authEpoch: 3, mfaEpoch: 2 },
-                          { id: 'user-2', authEpoch: 6, mfaEpoch: 3 },
-                        ]
-                      : [];
+                    events.push('lock:users');
+                    return [
+                      { id: 'user-1', authEpoch: 3, mfaEpoch: 2 },
+                      { id: 'user-2', authEpoch: 6, mfaEpoch: 3 },
+                    ];
                   }),
                 }),
               }),
@@ -262,6 +264,9 @@ describe('activatePartnerRow', () => {
         };
       }),
     } as any;
+    vi.mocked(lockActiveRefreshFamiliesForUsers).mockImplementationOnce(async () => {
+      events.push('lock:families');
+    });
 
     const result = await activatePendingPartnerAndInvalidateSessions(tx, 'p-1');
 
@@ -275,6 +280,7 @@ describe('activatePartnerRow', () => {
     });
     expect(advanceUserEpochs).toHaveBeenNthCalledWith(1, tx, 'user-1', { auth: true });
     expect(advanceUserEpochs).toHaveBeenNthCalledWith(2, tx, 'user-2', { auth: true });
+    expect(lockActiveRefreshFamiliesForUsers).toHaveBeenCalledWith(tx, ['user-1', 'user-2']);
     expect(revokeAllRefreshFamilies).toHaveBeenNthCalledWith(1, tx, 'user-1', 'partner-activated');
     expect(revokeAllRefreshFamilies).toHaveBeenNthCalledWith(2, tx, 'user-2', 'partner-activated');
   });

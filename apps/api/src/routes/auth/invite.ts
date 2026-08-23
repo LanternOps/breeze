@@ -26,7 +26,11 @@ import {
   issueUserSessionLegacyDuringTransition,
   type UserSessionIdentity,
 } from '../../services/userSession';
-import { advanceUserEpochs, revokeAllRefreshFamilies } from '../../services/authLifecycle';
+import {
+  advanceUserEpochs,
+  lockActiveRefreshFamiliesForUsers,
+  revokeAllRefreshFamilies,
+} from '../../services/authLifecycle';
 import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionMetrics';
 import { acceptInviteSchema, invitePreviewSchema } from './schemas';
 import {
@@ -212,6 +216,7 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
           .returning({ id: users.id });
         if (activated.length !== 1) throw new Error('Invite is no longer available');
         await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true });
+        await lockActiveRefreshFamiliesForUsers(tx, [userId]);
         await revokeAllRefreshFamilies(tx, userId, 'invite_accepted');
       }));
 
@@ -277,6 +282,7 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
       if (activated.length !== 1) throw new AuthIssuanceCapabilityError();
 
       const epochs = await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true });
+      await lockActiveRefreshFamiliesForUsers(tx, [userId]);
       await revokeAllRefreshFamilies(tx, userId, 'invite_accepted');
       return issueUserSession(identity, {
         tx,

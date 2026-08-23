@@ -184,7 +184,11 @@ vi.mock('../../services/authLifecycle', () => ({
       passwordResetEpoch: 1,
     };
   }),
+  lockActiveRefreshFamiliesForUsers: vi.fn(async () => {
+    transitionState.events.push('lock:families');
+  }),
   revokeAllRefreshFamilies: vi.fn(async () => {
+    transitionState.events.push('revoke:families');
     routeState.oldFamilyRevoked = true;
   }),
 }));
@@ -281,6 +285,15 @@ describe('POST /accept-invite guarded issuance', () => {
     expect(routeState.cookieKind).toBe('guarded');
     expect(routeState.redis.has(tokenKey)).toBe(false);
     expect(routeState.redis.has(userKey)).toBe(false);
+    expect(transitionState.events).toEqual(expect.arrayContaining([
+      'finish-start', 'lock:families', 'revoke:families', 'issue-guarded', 'finish-commit',
+    ]));
+    expect(transitionState.events.indexOf('lock:families')).toBeLessThan(
+      transitionState.events.indexOf('revoke:families'),
+    );
+    expect(transitionState.events.indexOf('revoke:families')).toBeLessThan(
+      transitionState.events.indexOf('issue-guarded'),
+    );
     expect(transitionState.events.indexOf('finish-commit')).toBeLessThan(
       transitionState.events.findIndex((event) => event.startsWith('redis-del:')),
     );

@@ -26,6 +26,10 @@ const transitionState = vi.hoisted(() => {
     enforcement: false,
     cookieKind: null as 'guarded' | 'legacy' | null,
     familyCount: 0,
+    issuedFamilies: [] as string[],
+    revokedFamilies: [] as string[],
+    installedFamilyId: null as string | null,
+    activationObservedFamilyCount: null as number | null,
     events: [] as string[],
   };
 });
@@ -95,16 +99,22 @@ vi.mock('../../services/userSession', () => ({
   authBrowserTransitionsEnforced: vi.fn(() => transitionState.enforcement),
   issueUserSession: vi.fn(async () => {
     transitionState.familyCount += 1;
+    const familyId = `guarded-family-${transitionState.familyCount}`;
+    transitionState.issuedFamilies.push(familyId);
+    transitionState.events.push(`issue:${familyId}`);
     return {
       accessToken: 'guarded-access', refreshToken: 'guarded-refresh', refreshJti: 'guarded-jti',
-      expiresInSeconds: 900, familyId: 'guarded-family', transitionId: 'transition-1', generation: 1,
+      expiresInSeconds: 900, familyId, transitionId: 'transition-1', generation: 1,
     };
   }),
   issueUserSessionLegacyDuringTransition: vi.fn(async () => {
     transitionState.familyCount += 1;
+    const familyId = `legacy-family-${transitionState.familyCount}`;
+    transitionState.issuedFamilies.push(familyId);
+    transitionState.events.push(`issue:${familyId}`);
     return {
       accessToken: 'legacy-access', refreshToken: 'legacy-refresh', refreshJti: 'legacy-jti',
-      expiresInSeconds: 900, familyId: 'legacy-family',
+      expiresInSeconds: 900, familyId,
     };
   }),
   bindIssuedUserSession: vi.fn(async () => undefined),
@@ -115,7 +125,10 @@ vi.mock('../../services/authTransitionMetrics', () => ({
 }));
 
 vi.mock('./binding', () => ({
-  requestAuthBinding: vi.fn(() => ({ kind: 'browser', value: 'a'.repeat(64) })),
+  requestAuthBinding: vi.fn((c: { req: { header: (name: string) => string | undefined } }) => ({
+    kind: 'browser',
+    value: c.req.header('x-test-auth-binding') ?? 'a'.repeat(64),
+  })),
   installAuthBindingReplacement: vi.fn(),
 }));
 
@@ -171,6 +184,25 @@ vi.mock('../../services/authLifecycle', () => ({
   advanceUserEpochs: vi.fn(async () => ({
     authEpoch: 1, mfaEpoch: 1, emailEpoch: 0, passwordResetEpoch: 0,
   })),
+  lockActiveRefreshFamiliesForUsers: vi.fn(async () => {
+    transitionState.events.push('lock:families');
+  }),
+  revokeAllRefreshFamilies: vi.fn(async () => {
+    transitionState.events.push('revoke:families');
+    transitionState.revokedFamilies.push(...transitionState.issuedFamilies);
+  }),
+}));
+
+vi.mock('../../services/partnerActivation', () => ({
+  activatePendingPartnerAndInvalidateSessions: vi.fn(async () => {
+    transitionState.activationObservedFamilyCount = transitionState.familyCount;
+    transitionState.events.push('activate:partner');
+    transitionState.revokedFamilies.push(...transitionState.issuedFamilies);
+    return {
+      activated: true,
+      epochs: [{ userId: 'u-1', authEpoch: 2, mfaEpoch: 1 }],
+    };
+  }),
 }));
 
 vi.mock('../../services/emailVerification', () => ({
@@ -201,8 +233,14 @@ vi.mock('./helpers', async () => {
       c.req.header('x-breeze-auth-transition') === 'v1'),
     authClientUpgradeRequiredResponse: vi.fn((c: any) =>
       c.json({ error: 'Authentication client upgrade required', reason: 'auth_client_upgrade_required' }, 426)),
-    installAuthorizedUserSessionCookies: vi.fn(() => { transitionState.cookieKind = 'guarded'; }),
-    installLegacyUserSessionCookiesDuringTransition: vi.fn(() => { transitionState.cookieKind = 'legacy'; }),
+    installAuthorizedUserSessionCookies: vi.fn((_c: unknown, issued: { familyId: string }) => {
+      transitionState.cookieKind = 'guarded';
+      transitionState.installedFamilyId = issued.familyId;
+    }),
+    installLegacyUserSessionCookiesDuringTransition: vi.fn((_c: unknown, issued: { familyId: string }) => {
+      transitionState.cookieKind = 'legacy';
+      transitionState.installedFamilyId = issued.familyId;
+    }),
   };
 });
 
@@ -217,11 +255,17 @@ import {
 import { consumePendingRegistration, peekPendingRegistration } from '../../services/pendingRegistration';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
+import { beginAuthIssuance } from '../../services/authBrowserTransition';
+import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import { writeAuthAudit } from './helpers';
 import { getEmailService } from '../../services/email';
 
 function updateChain() {
-  return { set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) };
+  const terminal = Promise.resolve(undefined) as Promise<undefined> & {
+    returning: () => Promise<Array<{ id: string }>>;
+  };
+  terminal.returning = vi.fn(async () => [{ id: 'p-1' }]);
+  return { set: vi.fn().mockReturnValue({ where: vi.fn(() => terminal) }) };
 }
 
 const PENDING_RECORD = {
@@ -300,6 +344,10 @@ describe('POST /verify-email', () => {
     transitionState.enforcement = false;
     transitionState.cookieKind = null;
     transitionState.familyCount = 0;
+    transitionState.issuedFamilies = [];
+    transitionState.revokedFamilies = [];
+    transitionState.installedFamilyId = null;
+    transitionState.activationObservedFamilyCount = null;
     transitionState.events = [];
   });
 
@@ -491,11 +539,22 @@ describe('POST /verify-email', () => {
 describe('POST /verify-email — SR2-21 pending-registration finalization (step 2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as never);
     vi.mocked(getRedis).mockReturnValue({} as never);
     vi.mocked(createPartner).mockResolvedValue({
       partnerId: 'p-1', orgId: 'o-1', adminUserId: 'u-1', adminRoleId: 'r-1', siteId: 's-1', mcpOrigin: false,
     } as never);
+    transitionState.finishError = null;
+    transitionState.enforcement = false;
+    transitionState.cookieKind = null;
+    transitionState.familyCount = 0;
+    transitionState.issuedFamilies = [];
+    transitionState.revokedFamilies = [];
+    transitionState.installedFamilyId = null;
+    transitionState.activationObservedFamilyCount = null;
+    transitionState.events = [];
   });
 
   it('a pending-registration token creates the partner with the STEP-1 attribution, not the click IP', async () => {
@@ -537,6 +596,109 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     expect(vi.mocked(createPartner)).not.toHaveBeenCalled();
   });
 
+  it('maps a cross-binding loser with a postgres.js slug constraint_name to sign_in without second authority', async () => {
+    vi.mocked(peekPendingRegistration)
+      .mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' })
+      .mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+    primeFinalizeSelects([]);
+    const winnerResponse = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+      'x-test-auth-binding': 'a'.repeat(64),
+    });
+    expect(winnerResponse.status).toBe(200);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as never)
+      .mockReturnValueOnce(selectChain([{ id: 'u-1' }]) as never);
+    vi.mocked(createPartner).mockRejectedValueOnce({
+      cause: {
+        code: '23505',
+        constraint_name: 'partners_slug_unique',
+      },
+    });
+    const loserResponse = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+      'x-test-auth-binding': 'b'.repeat(64),
+    });
+
+    expect(loserResponse.status).toBe(200);
+    expect(await loserResponse.json()).toEqual({ verified: false, status: 'sign_in' });
+    expect(transitionState.familyCount).toBe(1);
+    expect(transitionState.issuedFamilies).toEqual(['guarded-family-1']);
+    expect(beginAuthIssuance).toHaveBeenCalledWith({ kind: 'browser', value: 'a'.repeat(64) });
+    expect(beginAuthIssuance).toHaveBeenCalledWith({ kind: 'browser', value: 'b'.repeat(64) });
+  });
+
+  it('maps a 23505 with no durable email winner to a retryable conflict and leaves Redis untouched', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as never)
+      .mockReturnValueOnce(selectChain([]) as never);
+    vi.mocked(createPartner).mockRejectedValueOnce({
+      code: '23505',
+      constraint_name: 'partners_slug_unique',
+    });
+
+    const response = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Authentication temporarily unavailable' });
+    expect(consumePendingRegistration).not.toHaveBeenCalled();
+    expect(transitionState.familyCount).toBe(0);
+  });
+
+  it('activates and invalidates before the legacy seam so no pre-activation family is installed', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+    primeFinalizeSelects([]);
+    vi.mocked(dispatchHook).mockResolvedValueOnce({ status: 'active' } as never);
+
+    const response = await postJson('/verify-email', { token: 'raw' });
+
+    expect(response.status).toBe(200);
+    expect(transitionState.activationObservedFamilyCount).toBe(0);
+    expect(transitionState.events.indexOf('activate:partner')).toBeLessThan(
+      transitionState.events.indexOf('issue:legacy-family-1'),
+    );
+    expect(transitionState.issuedFamilies).toEqual(['legacy-family-1']);
+    expect(transitionState.installedFamilyId).toBe('legacy-family-1');
+  });
+
+  it('revokes the initial guarded family and installs only its replacement after hook activation', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+    primeFinalizeSelects([]);
+    vi.mocked(dispatchHook).mockResolvedValueOnce({ status: 'active' } as never);
+
+    const response = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+    });
+
+    expect(response.status).toBe(200);
+    expect(transitionState.activationObservedFamilyCount).toBe(1);
+    expect(transitionState.issuedFamilies).toEqual(['guarded-family-1', 'guarded-family-2']);
+    expect(transitionState.revokedFamilies).toContain('guarded-family-1');
+    expect(transitionState.revokedFamilies).not.toContain('guarded-family-2');
+    expect(transitionState.installedFamilyId).toBe('guarded-family-2');
+    expect(transitionState.cookieKind).toBe('guarded');
+  });
+
+  it('locks active families in sorted order before non-activation guarded revocation', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+    primeFinalizeSelects([]);
+    vi.mocked(dispatchHook).mockResolvedValueOnce({ status: 'suspended' } as never);
+
+    const response = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+    });
+
+    expect(response.status).toBe(200);
+    expect(transitionState.events.indexOf('lock:families')).toBeGreaterThan(-1);
+    expect(transitionState.events.indexOf('lock:families')).toBeLessThan(
+      transitionState.events.indexOf('revoke:families'),
+    );
+  });
+
   // Regression cover for the #542 (2026-05-01) fallout: the banner write used to
   // be nested inside `hookStatus !== rowStatus`, so once hosted partners were
   // created `pending` — matching what breeze-billing's hook returns — the
@@ -567,7 +729,7 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
       expect((await res.json()).partner.status).toBe('pending');
     });
 
-    it('applies both the banner and the status when the hook overrides status', async () => {
+    it('activates transactionally and persists the banner separately when the hook overrides status', async () => {
       vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
       const set = primeFinalizeSelectsWithSetSpy([]);
       vi.mocked(dispatchHook).mockResolvedValueOnce({ ...HOSTED_HOOK, status: 'active' } as never);
@@ -577,7 +739,8 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
 
       const settingsWrite = findSettingsWrite(set);
       expect(settingsWrite).toBeDefined();
-      expect(settingsWrite!.status).toBe('active');
+      expect(settingsWrite).not.toHaveProperty('status');
+      expect(activatePendingPartnerAndInvalidateSessions).toHaveBeenCalledOnce();
       // effectiveStatus must reach the client, not the pre-hook row status.
       expect((await res.json()).partner.status).toBe('active');
     });
@@ -651,7 +814,7 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
       expect(set.mock.calls.length).toBeGreaterThan(0);
     });
 
-    it('still returns 200 with the pre-hook status when the banner UPDATE throws', async () => {
+    it('still returns 200 with the committed activation when the later banner UPDATE throws', async () => {
       vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
       vi.mocked(db.select)
         .mockReturnValueOnce(selectChain([]) as never)
@@ -672,8 +835,9 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
 
       const res = await postJson('/verify-email', { token: 'raw' });
       expect(res.status).toBe(200);
-      // The write failed, so effectiveStatus must NOT advance to 'active'.
-      expect((await res.json()).partner.status).toBe('pending');
+      // Activation committed in its own transaction before the best-effort
+      // banner write, so a banner failure cannot roll status back to pending.
+      expect((await res.json()).partner.status).toBe('active');
     });
   });
 });

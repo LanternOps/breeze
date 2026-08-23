@@ -1,15 +1,15 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { db } from '../db';
 import {
   organizationUsers,
   organizations,
   partners,
   partnerUsers,
-  refreshTokenFamilies,
   users,
 } from '../db/schema';
 import {
   advanceUserEpochs,
+  lockActiveRefreshFamiliesForUsers,
   revokeAllRefreshFamilies,
   type Tx as AuthLifecycleTransaction,
 } from './authLifecycle';
@@ -193,9 +193,10 @@ export interface PartnerActivationEpochSnapshot {
 
 /**
  * Activate a pending tenant without allowing a session minted against its
- * inactive state to become live after the status flip. The caller already
- * owns the browser-transition lock; this helper follows the remaining global
- * order: users, refresh families, then the route-specific partner row.
+ * inactive state to become live after the status flip. Guarded callers already
+ * own the browser-transition lock; legacy callers begin at the user locks.
+ * The helper follows the remaining global order: users, refresh families,
+ * then the route-specific partner row.
  */
 export async function activatePendingPartnerAndInvalidateSessions(
   tx: AuthLifecycleTransaction,
@@ -236,15 +237,7 @@ export async function activatePendingPartnerAndInvalidateSessions(
       throw new Error('Failed to lock every partner user for activation');
     }
 
-    await tx
-      .select({ familyId: refreshTokenFamilies.familyId })
-      .from(refreshTokenFamilies)
-      .where(and(
-        inArray(refreshTokenFamilies.userId, userIds),
-        isNull(refreshTokenFamilies.revokedAt),
-      ))
-      .orderBy(refreshTokenFamilies.familyId)
-      .for('update');
+    await lockActiveRefreshFamiliesForUsers(tx, userIds);
   }
 
   if (!(await activatePartnerRow(tx, partnerId, now))) {
