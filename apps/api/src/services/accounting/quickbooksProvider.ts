@@ -24,6 +24,19 @@ const QBO_SCOPE = 'com.intuit.quickbooks.accounting';
 const QBO_API_MINOR_VERSION = '70';
 const QBO_CUSTOMER_PAGE_SIZE = 1000; // QBO hard cap per query page
 
+/**
+ * Abort budget for the OPTIONAL home-currency capture. It is awaited inline in
+ * the OAuth callback, before the state cookie is cleared and the browser is
+ * redirected, so undici's ~300s headers timeout would park the connecting user
+ * on a blank /callback for five minutes over a capture that is non-fatal by
+ * design. It stays inline rather than fire-and-forget so the compare-and-set
+ * still runs against the generation the callback just wrote (a queued job would
+ * have to re-derive it), which means the budget has to be short enough that a
+ * hung Intuit is invisible: a few seconds beyond a normal Preferences round-trip
+ * (sub-second) and well inside a user's patience for a redirect.
+ */
+export const QBO_PREFERENCES_TIMEOUT_MS = 8_000;
+
 function qboApiBase(environment: 'sandbox' | 'production'): string {
   return environment === 'production'
     ? 'https://quickbooks.api.intuit.com'
@@ -54,9 +67,13 @@ interface QboRawCustomer {
  * fault body — or a proxy's HTML error page — can carry realm/company/customer
  * detail, so only the status and the operation ever travel.
  */
-function preferencesError(status: number, reason: string): Error & { status?: number; operation: string } {
-  const err = new Error(`QuickBooks preferences request ${reason} (status ${status})`) as Error & { status?: number; operation: string };
-  err.status = status;
+function preferencesError(status: number | null, reason: string): Error & { status?: number; operation: string } {
+  const err = new Error(
+    status === null
+      ? `QuickBooks preferences request ${reason}`
+      : `QuickBooks preferences request ${reason} (status ${status})`,
+  ) as Error & { status?: number; operation: string };
+  if (status !== null) err.status = status;
   err.operation = 'fetchHomeCurrency';
   return err;
 }
@@ -200,15 +217,28 @@ export class QuickbooksProvider implements AccountingProvider {
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
 
     const url = `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/preferences?minorversion=${QBO_API_MINOR_VERSION}`;
-    const response = await runOutsideDbContext(() =>
-      fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${conn.accessToken}`,
-          Accept: 'application/json',
-        },
-      })
+    // An explicit controller rather than AbortSignal.timeout so the timer is
+    // cleared on the normal path and the abort reason is a sanitized error.
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(preferencesError(null, 'timed out')),
+      QBO_PREFERENCES_TIMEOUT_MS,
     );
+    let response: Response;
+    try {
+      response = await runOutsideDbContext(() =>
+        fetch(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${conn.accessToken}`,
+            Accept: 'application/json',
+          },
+          signal: controller.signal,
+        })
+      );
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       // Sanitized, unlike listRemoteCustomers. The body is never read — but it

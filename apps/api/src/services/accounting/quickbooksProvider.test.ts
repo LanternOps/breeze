@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createHmac } from 'crypto';
-import { quickbooksProvider, mapQboCustomer, mapQboAddress, mapQboHomeCurrency } from './quickbooksProvider';
+import { quickbooksProvider, mapQboCustomer, mapQboAddress, mapQboHomeCurrency, QBO_PREFERENCES_TIMEOUT_MS } from './quickbooksProvider';
 import type { AccountingConnection } from './accountingConnectionService';
 
 function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnection {
@@ -269,4 +269,34 @@ describe('fetchHomeCurrency', () => {
     expect(response.bodyUsed).toBe(true);
   });
 
+  it('passes an abort signal so a hung Intuit cannot stall the OAuth callback', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(prefsBody), { status: 200 }));
+
+    await quickbooksProvider.fetchHomeCurrency(conn());
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('aborts the preferences request well inside undici\'s ~300s headers timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) =>
+        new Promise((_resolve, reject) => {
+          (init as RequestInit).signal!.addEventListener('abort', () =>
+            reject((init as RequestInit).signal!.reason));
+        }),
+      );
+
+      const pending = quickbooksProvider.fetchHomeCurrency(conn());
+      const assertion = expect(pending).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(QBO_PREFERENCES_TIMEOUT_MS + 1);
+      await assertion;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(QBO_PREFERENCES_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
