@@ -1029,32 +1029,34 @@ describe('agent-originated action_intents constraints', () => {
 });
 ```
 
-- [ ] **Step 2: Verify it fails against the pre-wave-3 snapshot**
+- [ ] **Step 2: Prove the assertions are not vacuous**
 
-Task 2's migration is already applied to `breeze` by the time this task runs, so
-pointing the test at `breeze` cannot show a red. A frozen pre-wave-3 snapshot
-database, `breeze_base`, exists on the same server for exactly this check — same
-556 migrations, none of wave 3's.
+This is the step that decides whether the suite is worth anything, and it
+matters more here than the usual red-then-green dance.
 
-```bash
-DATABASE_URL="postgresql://breeze_test:breeze_test@localhost:5433/breeze_test_base" \
-DATABASE_URL_APP="postgresql://breeze_app:breeze_test@localhost:5433/breeze_test_base" \
-pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
-  src/__tests__/integration/agentIntentConstraints.integration.test.ts
-```
+**`.rejects.toMatchObject({ code })` does not work in this repo.** Drizzle wraps
+driver errors, so SQLSTATE lives on `.cause.code`, not top-level. Written the
+naive way, the assertion compares `undefined` to `undefined` and passes while
+proving nothing — a documented failure mode in this codebase. Use an
+`expectSqlState` helper that reads `.cause.code`, matching the pattern in
+`src/__tests__/integration/aiAgentRuns.integration.test.ts`.
 
-Expected: the *accept* case ("accepts an intent with a run and no human actor")
-fails — `column "requesting_agent_run_id" of relation "action_intents" does not
-exist`. That is the red that proves the test is load-bearing.
+Then demonstrate the helper actually observes the code it is given: temporarily
+flip one expected SQLSTATE to `'99999'`, confirm the test **fails** and the
+output names the real code it received, then revert and confirm `git status` is
+clean. Paste that failure into the report. A helper that cannot fail is not a test.
 
-Confirm the suite actually **ran** — a `runIf` guard skipping silently reads as
-green (see the integration-placement trap in CLAUDE.md). `Test Files 1 passed`
-with `Tests 0 passed` means it skipped; that is a failure, not a pass.
+**Also confirm each negative test fails for the constraint it names.** Several of
+these constraints can be tripped by the same malformed row — a case that claims
+to prove `action_intents_agent_origin_chk` may in fact be tripping
+`action_intents_one_actor_chk`. Assert on the constraint name in the error where
+the codes alone are ambiguous.
 
-Do **not** migrate `breeze_test_base` or leave data in it — it is the clean red
-baseline. Note `globalSetup` applies migrations to whatever `DATABASE_URL` names,
-so pointing a normal run at it would destroy the baseline; only ever use it for
-this one red check, and rebuild it if the ledger changes.
+> **Do not use `breeze_test_base` for a red check via vitest.** `globalSetup`
+> applies migrations to whatever `DATABASE_URL` names, so pointing a normal run
+> at the baseline **migrates it and destroys the baseline it is meant to be**.
+> That was a defect in an earlier draft of this plan; it cost a rebuild. The
+> non-vacuity proof above is the real evidence, and it needs no second database.
 
 - [ ] **Step 3: Run against the migrated database**
 
@@ -1064,6 +1066,20 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 ```
 
 Expected: 9 passed.
+
+Confirm the suite actually **ran** — a `runIf` guard skipping silently reads as
+green (see the integration-placement trap in CLAUDE.md). `Test Files 1 passed`
+with `Tests 0 passed` means it skipped; that is a failure, not a pass. Report the
+real count.
+
+**Then run the immutability suite too.** Task 2's migration added
+`requesting_agent_run_id` to the trigger deny-list, and
+`src/__tests__/integration/actionIntentsImmutabilityTrigger.integration.test.ts`
+self-checks that every deny-listed column has a behavioural case — so it goes red
+until you add one. Its new case must fail with the trigger's
+`action_intents content is immutable` exception, not a CHECK or FK violation,
+which means the row it updates to has to be fully valid otherwise: agent-originated,
+pointing at a **second same-org** `ai_agent_runs` row.
 
 - [ ] **Step 4: Run the full RLS + integration contract set**
 
