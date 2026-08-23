@@ -260,7 +260,7 @@ describe('AccountingProvider is fully typed (B8, multi-currency §11)', () => {
   });
 });
 ```
-- [ ] **Step 2: Run it and watch it fail.** `pnpm --filter @breeze/api exec vitest run --typecheck src/services/accounting/types.test.ts` → fails (the DTOs do not exist and the methods are varargs).
+- [ ] **Step 2: Run it and watch it fail.** `NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p apps/api/tsconfig.json` → fails (the DTOs do not exist and the methods are varargs). Note: `vitest run --typecheck` does NOT collect `*.test.ts` (its default include is `**/*.test-d.ts`), so `tsc` — which CI runs as the `typecheck` job — is what actually enforces this file.
 - [ ] **Step 3: Add the DTOs.** In `apps/api/src/services/accounting/types.ts`, insert immediately after the `RemoteRef` interface (currently ending at `:41`):
 ```ts
 /** A previously-synced remote entity, for update-vs-create decisions. */
@@ -447,7 +447,7 @@ and replace the four stub bodies at `:150-164` with typed parameter lists (the t
 ```
 - [ ] **Step 7: Run the type test and the accounting unit suites.**
 ```bash
-pnpm --filter @breeze/api exec vitest run --typecheck src/services/accounting/types.test.ts
+NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p apps/api/tsconfig.json  # types.test.ts is enforced by tsc (CI typecheck job), NOT by vitest --typecheck
 pnpm --filter @breeze/api exec vitest run \
   src/services/accounting/providerRegistry.test.ts \
   src/services/accounting/quickbooksProvider.test.ts \
@@ -1436,7 +1436,7 @@ pnpm --filter @breeze/api exec vitest run \
   src/routes/accounting/index.test.ts \
   src/routes/accounting/customers.test.ts \
   src/services/stripeCheckoutCallSites.test.ts
-pnpm --filter @breeze/api exec vitest run --typecheck src/services/accounting/types.test.ts
+NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p apps/api/tsconfig.json  # types.test.ts is enforced by tsc (CI typecheck job), NOT by vitest --typecheck
 ```
 - [ ] **Step 3: The §10 Stripe baseline, unchanged.**
 ```bash
