@@ -42,7 +42,16 @@ vi.mock('./exchangeRateService', () => ({
 }));
 
 /** Terminal rows for the single `partners` read in resolvePartnerReportingCurrency. */
-const { state: dbState } = vi.hoisted(() => ({ state: { partnerRows: [] as unknown[], selectWheres: [] as unknown[] } }));
+const { state: dbState } = vi.hoisted(() => ({
+  state: {
+    partnerRows: [] as unknown[],
+    selectWheres: [] as unknown[],
+    /** Context depth captured AT the moment `db.select()` ran, per read. */
+    selectContexts: [] as { system: boolean; outsideRequestContext: boolean }[],
+    systemDepth: 0,
+    outsideDepth: 0,
+  },
+}));
 
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
@@ -53,7 +62,26 @@ vi.mock('../db', () => {
     });
   }
   (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => resolve(dbState.partnerRows);
-  return { db: { select: vi.fn(() => chain) } };
+  return {
+    db: {
+      select: vi.fn(() => {
+        dbState.selectContexts.push({
+          system: dbState.systemDepth > 0,
+          outsideRequestContext: dbState.outsideDepth > 0,
+        });
+        return chain;
+      }),
+    },
+    // Faithful enough for the property under test: which context a read runs in.
+    runOutsideDbContext: <T,>(fn: () => T): T => {
+      dbState.outsideDepth += 1;
+      try { return fn(); } finally { dbState.outsideDepth -= 1; }
+    },
+    withSystemDbAccessContext: async <T,>(fn: () => Promise<T>): Promise<T> => {
+      dbState.systemDepth += 1;
+      try { return await fn(); } finally { dbState.systemDepth -= 1; }
+    },
+  };
 });
 
 import {
@@ -282,6 +310,20 @@ describe('parseGroupsParam', () => {
 });
 
 describe('resolvePartnerReportingCurrency', () => {
+  beforeEach(() => { dbState.selectContexts.length = 0; });
+
+  // `partners` RLS is breeze_has_partner_access(id), and an organization-scoped
+  // token carries an EMPTY accessible-partner list — so this read must not run
+  // in the ambient request context, or it returns zero rows for exactly the
+  // viewer the server-side fallback exists to serve (a 409 for a partner that
+  // has a currency configured). Proven end to end against real Postgres in
+  // __tests__/integration/reportingTotalsPartnerCurrencyScope.integration.test.ts.
+  it('reads partners in a system context entered OUTSIDE the request context', async () => {
+    dbState.partnerRows = [{ currencyCode: 'CAD' }];
+    await resolvePartnerReportingCurrency('p1');
+    expect(dbState.selectContexts).toEqual([{ system: true, outsideRequestContext: true }]);
+  });
+
   it('returns the partner currency code', async () => {
     dbState.partnerRows = [{ currencyCode: 'CAD' }];
     await expect(resolvePartnerReportingCurrency('p1')).resolves.toBe('CAD');

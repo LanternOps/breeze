@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { isKnownCurrency, minorUnitExponent } from '@breeze/shared';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
 import {
   DEFAULT_MAX_STALENESS_DAYS,
@@ -134,11 +134,29 @@ export function parseGroupsParam(raw: string): ReportingMoneyGroup[] {
  * caller turns that into an explicit 409.
  */
 export async function resolvePartnerReportingCurrency(partnerId: string): Promise<string | null> {
-  const rows = await db
-    .select({ currencyCode: partners.currencyCode })
-    .from(partners)
-    .where(eq(partners.id, partnerId))
-    .limit(1);
+  // SYSTEM context, deliberately. `partners` RLS is `breeze_has_partner_access(id)`,
+  // which reads `breeze.accessible_partner_ids`, and `computeAccessiblePartnerIds`
+  // returns `[]` for `scope === 'organization'` (middleware/auth.ts) — org users
+  // do not see the partners table at all. Read in the ambient request context this
+  // SELECT therefore returns ZERO rows for precisely the caller this fallback
+  // exists to serve, so the endpoint answered 409 NO_REPORTING_CURRENCY for a
+  // partner that has a currency configured, and the approximate line never
+  // rendered for any organization-scoped viewer.
+  //
+  // The widening is as narrow as it can be: ONE row, ONE column, by primary key,
+  // for the caller's OWN partner id taken from the verified token — never a
+  // caller-supplied id, so it cannot be steered at another tenant. The value is
+  // not tenant-sensitive to that partner's own orgs either: it is the reporting
+  // currency their documents already display. `runOutsideDbContext` first, so the
+  // system GUCs open a genuinely fresh context instead of nesting inside (and
+  // outliving) the request transaction (#1105).
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(async () =>
+    db
+      .select({ currencyCode: partners.currencyCode })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1),
+  ));
   const code = rows[0]?.currencyCode?.trim().toUpperCase();
   return code && isKnownCurrency(code) ? code : null;
 }
