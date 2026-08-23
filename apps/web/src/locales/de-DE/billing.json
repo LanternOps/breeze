@@ -960,7 +960,8 @@
         "toPlaceholder": "Empfänger hinzufügen…",
         "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
         "zeroTotalWarning": "Dieses Angebot beträgt {{zero}} — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
-        "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>."
+        "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>.",
+        "revisionWarning": "Durch das Senden wird {{number}} ersetzt und der bereits vorhandene Kundenlink deaktiviert."
       },
       "sendEmailWarning": {
         "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu und senden Sie dann erneut.",
@@ -1343,7 +1344,8 @@
         "preview": "Vorschau",
         "detail": "Detailansicht"
       },
-      "loading": "Angebot wird geladen…"
+      "loading": "Angebot wird geladen…",
+      "revisionBanner": "Dies ist eine Überarbeitung von {{number}}. Beim Senden wird das Original ersetzt und der bereits vorhandene Kundenlink deaktiviert."
     }
   },
   "billingUi": {

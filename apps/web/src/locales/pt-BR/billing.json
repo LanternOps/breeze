@@ -960,7 +960,8 @@
         "toPlaceholder": "Adicionar destinatário…",
         "tooManyRecipients": "Use no máximo {{max}} endereços.",
         "zeroTotalWarning": "Este orçamento totaliza {{zero}} — verifique se os itens têm preço antes de enviar.",
-        "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>."
+        "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>.",
+        "revisionWarning": "Enviar substitui {{number}} e desativa o link que o cliente já possui."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização e envie novamente.",
@@ -1333,7 +1334,8 @@
         "preview": "Visualização",
         "detail": "Detalhes"
       },
-      "loading": "Carregando orçamento…"
+      "loading": "Carregando orçamento…",
+      "revisionBanner": "Esta é uma revisão de {{number}}. Enviá-la substituirá o original e desativará o link que o cliente já possui."
     },
     "status": {
       "draft": "Rascunho",

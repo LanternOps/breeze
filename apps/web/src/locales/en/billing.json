@@ -960,7 +960,8 @@
         "toPlaceholder": "Add recipient…",
         "tooManyRecipients": "Use at most {{max}} addresses.",
         "zeroTotalWarning": "This quote totals {{zero}} — check that its items are priced before sending.",
-        "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>."
+        "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>.",
+        "revisionWarning": "Sending this replaces {{number}} and disables the link the customer already has."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, then resend.",
@@ -1343,7 +1344,8 @@
         "preview": "Preview",
         "detail": "Details"
       },
-      "loading": "Loading quote…"
+      "loading": "Loading quote…",
+      "revisionBanner": "This is a revision of {{number}}. Sending it will replace the original and disable the link the customer already has."
     }
   },
   "billingUi": {

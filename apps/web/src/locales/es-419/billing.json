@@ -960,7 +960,8 @@
         "toPlaceholder": "Agregar destinatario…",
         "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
         "zeroTotalWarning": "Esta cotización totaliza {{zero}} — verifica que sus ítems tengan precio antes de enviar.",
-        "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>."
+        "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>.",
+        "revisionWarning": "Al enviarla se reemplazará {{number}} y se desactivará el enlace que el cliente ya tiene."
       },
       "sendEmailWarning": {
         "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización y vuelva a enviar.",
@@ -1343,7 +1344,8 @@
         "preview": "Vista previa",
         "detail": "Detalles"
       },
-      "loading": "Cargando cotización…"
+      "loading": "Cargando cotización…",
+      "revisionBanner": "Esta es una revisión de {{number}}. Al enviarla se reemplazará el original y se desactivará el enlace que el cliente ya tiene."
     }
   },
   "billingUi": {

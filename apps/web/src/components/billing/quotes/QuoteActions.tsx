@@ -212,7 +212,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
-  const { quote, lines } = detail;
+  const { quote, lines, revisionOf } = detail;
   const recipients = useMemo(() => detail.recipients ?? [], [detail.recipients]);
   const currency = quote.currencyCode;
 
@@ -391,7 +391,15 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }
   }, [quote.orgId]);
 
-  const openSend = useCallback(() => openComposer({ resend: false, prefillTo: [] }), [openComposer]);
+  // A revision prefills the addresses the ORIGINAL went to. The server already
+  // falls back to the parent's recipients when To is empty, so this is display
+  // honesty — showing the tech who is about to receive it — rather than
+  // correctness. Falls through to the billing-contact lookup when the parent
+  // has no recorded recipients.
+  const openSend = useCallback(
+    () => openComposer({ resend: false, prefillTo: revisionOf?.recipients ?? [] }),
+    [openComposer, revisionOf],
+  );
   const openResend = useCallback(() => {
     setMenuOpen(false);
     openComposer({ resend: true, prefillTo: recipients });
@@ -1148,6 +1156,15 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 amount: formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency),
               })}
         </p>
+        {/* A revision send is not an ordinary send: it retires the parent and
+            revokes the link the customer is currently holding. Nothing else in
+            this dialog says so, and it is not undoable. */}
+        {!resendMode && revisionOf && (
+          <p className="mt-2 flex items-start gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-revision-warning">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>{t('quotes.actions.sendConfirm.revisionWarning', { number: revisionOf.quoteNumber ?? '' })}</span>
+          </p>
+        )}
         {zeroTotal && (
           <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
             {t('quotes.actions.sendConfirm.zeroTotalWarning', { zero: formatMoney(0, quote.currencyCode) })}

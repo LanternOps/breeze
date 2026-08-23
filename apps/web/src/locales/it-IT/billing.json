@@ -960,7 +960,8 @@
         "toPlaceholder": "Aggiungi destinatario…",
         "tooManyRecipients": "Usa al massimo {{max}} indirizzi.",
         "zeroTotalWarning": "Il totale di questo preventivo è {{zero}}: verifica che gli elementi abbiano un prezzo prima dell'invio.",
-        "noBillingContactHint": "Nessun contatto di fatturazione è salvato per questa organizzazione — inserisci un'email oppure aggiungine uno nelle <orgLink>impostazioni dell'organizzazione</orgLink>."
+        "noBillingContactHint": "Nessun contatto di fatturazione è salvato per questa organizzazione — inserisci un'email oppure aggiungine uno nelle <orgLink>impostazioni dell'organizzazione</orgLink>.",
+        "revisionWarning": "L’invio sostituisce {{number}} e disattiva il link che il cliente possiede già."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta contrassegnata come Inviata, ma nessuna email è stata consegnata: {{orgName}} non ha un'email di contatto per la fatturazione. Aggiungine una nelle impostazioni dell'organizzazione, poi invia di nuovo.",
@@ -1343,7 +1344,8 @@
         "preview": "Anteprima",
         "detail": "Dettaglio"
       },
-      "loading": "Caricamento del preventivo…"
+      "loading": "Caricamento del preventivo…",
+      "revisionBanner": "Questa è una revisione di {{number}}. Inviarla sostituirà l’originale e disattiverà il link che il cliente possiede già."
     }
   },
   "billingUi": {

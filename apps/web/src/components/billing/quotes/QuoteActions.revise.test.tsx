@@ -19,7 +19,16 @@ vi.mock('../../../stores/orgStore', () => ({
   useOrgStore: (sel: (s: { organizations: unknown[] }) => unknown) => sel({ organizations: mocks.organizations }),
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: mocks.navigateTo }));
-vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// The send composer fires background support fetches (billing contact,
+// signature) that reach useAuthStore. Without it here those land as Vitest
+// "unhandled errors" after the test finishes — green, but flagged as capable of
+// producing false positives.
+vi.mock('../../../stores/auth', () => ({
+  fetchWithAuth: vi.fn().mockResolvedValue(
+    { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
+  ),
+  useAuthStore: Object.assign(() => null, { getState: () => ({ tokens: null }) }),
+}));
 vi.mock('../../../lib/api/quotes', () => ({
   reviseQuote: mocks.reviseQuote,
   cloneQuote: vi.fn(),
@@ -47,8 +56,16 @@ const detailWith = (over: Partial<QuoteDetailData['quote']> = {}, rest: Partial<
     createdBy: null, createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-02T00:00:00Z',
     ...over,
   },
-  blocks: [],
-  lines: [],
+  // A quote with no customer-visible line is "empty" and Send stays disabled,
+  // so the composer tests need one real line.
+  blocks: [{ id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' }],
+  lines: [{
+    id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual',
+    catalogItemId: null, parentLineId: null, unitCost: null, sku: null, partNumber: null,
+    name: 'Support', description: null, quantity: '1.00', unitPrice: '100.00', taxable: false,
+    customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null,
+    billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+  }],
   ...rest,
 });
 
@@ -139,5 +156,44 @@ describe('QuoteActions — Revise', () => {
     // /billing/quotes/undefined.
     await waitFor(() => expect(mocks.runAction).toHaveBeenCalled());
     expect(mocks.navigateTo).not.toHaveBeenCalled();
+  });
+});
+
+describe('QuoteActions — sending a revision', () => {
+  beforeEach(() => {
+    mocks.can.mockImplementation((_r: string, action: string) => action === 'read' || action === 'write' || action === 'send');
+  });
+
+  const revisionDraft = () => detailWith(
+    { status: 'draft', revisionOfQuoteId: 'q-0', revisionNumber: 2 },
+    { revisionOf: { id: 'q-0', quoteNumber: 'Q-2026-000001', recipients: ['buyer@customer.test'] } },
+  );
+
+  // The consequence of this send — the original is retired and the customer's
+  // existing link stops working — appears nowhere else in the dialog, and it
+  // cannot be undone once the send commits.
+  it('warns in the send composer that the original will be replaced', async () => {
+    render(<QuoteActions detail={revisionDraft()} variant="header" />);
+    fireEvent.click(screen.getByTestId('quote-send'));
+
+    await waitFor(() => expect(screen.getByTestId('quote-send-revision-warning')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-send-revision-warning')).toHaveTextContent('Q-2026-000001');
+  });
+
+  it('does not warn when the draft is not a revision', async () => {
+    render(<QuoteActions detail={detailWith({ status: 'draft' })} variant="header" />);
+    fireEvent.click(screen.getByTestId('quote-send'));
+
+    await waitFor(() => expect(screen.getByTestId('quote-send-to')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-send-revision-warning')).not.toBeInTheDocument();
+  });
+
+  // Display honesty: the server falls back to the parent's recipients anyway,
+  // so an empty To would misrepresent who is about to receive this.
+  it('prefills To with the addresses the original went to', async () => {
+    render(<QuoteActions detail={revisionDraft()} variant="header" />);
+    fireEvent.click(screen.getByTestId('quote-send'));
+
+    await waitFor(() => expect(screen.getByTestId('quote-send-to')).toHaveValue('buyer@customer.test'));
   });
 });

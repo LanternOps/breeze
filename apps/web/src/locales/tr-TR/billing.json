@@ -960,7 +960,8 @@
         "toPlaceholder": "Alıcı ekle…",
         "tooManyRecipients": "En fazla {{max}} adresi kullanın.",
         "zeroTotalWarning": "Bu fiyat teklifinin toplamı {{zero}} — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
-        "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin."
+        "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin.",
+        "revisionWarning": "Bunu göndermek {{number}} teklifinin yerini alır ve müşterinin mevcut bağlantısını devre dışı bırakır."
       },
       "sendEmailWarning": {
         "noBillingContact": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — {{orgName}}'de fatura iletişim e-postası yok. Kuruluş ayarlarına bir tane ekleyin ve yeniden gönderin.",
@@ -1343,7 +1344,8 @@
         "preview": "Önizleme",
         "detail": "Ayrıntılar"
       },
-      "loading": "Teklif yükleniyor…"
+      "loading": "Teklif yükleniyor…",
+      "revisionBanner": "Bu, {{number}} teklifinin bir revizyonudur. Gönderildiğinde orijinalin yerini alır ve müşterinin mevcut bağlantısını devre dışı bırakır."
     }
   },
   "billingUi": {

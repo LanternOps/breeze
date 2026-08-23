@@ -88,3 +88,59 @@ describe('QuoteWorkspace tabs', () => {
     expect(screen.getByTestId('quote-workspace-status')).toHaveTextContent('Accepted');
   });
 });
+
+
+describe('QuoteWorkspace — revision banner', () => {
+  // A revision draft is indistinguishable from any other draft in the editor,
+  // and drafts open on the Editor tab — so the consequence of sending (the
+  // original is retired, the customer's existing link dies) would otherwise
+  // first appear in the send dialog.
+  const revisionDraft = {
+    ...sentQuote,
+    quote: { ...sentQuote.quote, status: 'draft', revisionOfQuoteId: 'q-0', revisionNumber: 2 },
+    revisionOf: { id: 'q-0', quoteNumber: 'Q-2026-0001', recipients: [] as string[] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+  });
+
+  it('warns on a revision draft, naming the quote it will replace', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/quotes/q-1') return json({ data: revisionDraft });
+      // A draft mounts the Editor tab, whose catalog/distributor probes call
+      // .filter() on data — an object fallback surfaces as an unhandled
+      // rejection that Vitest flags as a false-positive risk.
+      return json({ data: [] });
+    });
+    render(<QuoteWorkspace id="q-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('quote-workspace-revision-banner')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-workspace-revision-banner')).toHaveTextContent('Q-2026-0001');
+  });
+
+  it('does not warn once the revision has been sent — the replacement already happened', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/quotes/q-1') {
+        return json({ data: { ...revisionDraft, quote: { ...revisionDraft.quote, status: 'sent' } } });
+      }
+      return json({ data: [] });
+    });
+    render(<QuoteWorkspace id="q-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-workspace-revision-banner')).not.toBeInTheDocument();
+  });
+
+  it('does not warn on an ordinary draft', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/quotes/q-1') return json({ data: sentQuote });
+      return json({ data: {} });
+    });
+    render(<QuoteWorkspace id="q-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-workspace-revision-banner')).not.toBeInTheDocument();
+  });
+});
