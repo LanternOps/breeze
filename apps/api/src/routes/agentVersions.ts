@@ -21,6 +21,7 @@ import {
   verifyReleaseArtifactManifestAsset,
   ReleaseAssetNotDistributableError,
   ReleaseManifestAssetLookupError,
+  ReleaseManifestSignatureError,
 } from "../services/releaseArtifactManifest";
 import { EDITION_HOSTED, EDITION_SELF_HOST } from "../services/releaseAssetTrust";
 import { getActivePublicKeys as getActiveDeploymentSigningPubKeys } from "../services/manifestSigning";
@@ -274,15 +275,15 @@ function assetNameFromDownloadUrl(downloadUrl: string): string | null {
 // every agent heartbeat for a correctly-signed row.
 //
 // This function reproduces EXACTLY the filenames binarySync.ts's
-// scanBinaryDir/parseBinaryFilename (agent/watchdog/backup),
-// USER_HELPER_TARGETS (user-helper), and the release pipeline's raw macOS
-// helper binary (release.yml / releaseAssetTrust.ts's DARWIN_BINARY_RE)
-// produce for every (component, platform, arch) triple this server can
-// register — see the cross-check list in the D1 unit tests. It is the
-// preferred source of truth; assetNameFromDownloadUrl(downloadUrl) remains
-// the fallback for any (component, platform) shape this function doesn't
-// recognize (including the GitHub-sourced case above), so behavior for
-// BINARY_SOURCE=github rows is unchanged.
+// scanBinaryDir/parseBinaryFilename (agent/watchdog/backup) and
+// USER_HELPER_TARGETS (user-helper) produce for every (component, platform,
+// arch) triple this server can register locally — see the cross-check list
+// in the D1 unit tests. It is the preferred source of truth for those
+// shapes; assetNameFromDownloadUrl(downloadUrl) remains the fallback for
+// every other (component, platform) combination, INCLUDING component=
+// "helper" (see that branch below for why it always falls through) and the
+// GitHub-sourced case, so behavior for BINARY_SOURCE=github rows is
+// unchanged.
 export function canonicalReleaseAssetName(
   component: string,
   platform: string,
@@ -307,18 +308,21 @@ export function canonicalReleaseAssetName(
     return `breeze-user-helper-windows-${architecture}.exe`;
   }
 
-  // The raw macOS remote-desktop companion binary bundled into the agent
-  // .pkg installer (agent/installer/macos/build-pkg.sh, release.yml). No
-  // per-arch Windows/Linux equivalent ships as its own asset today — the
-  // Tauri "helper" app's own installer (breeze-helper-{macos.dmg,windows.msi,
-  // linux.AppImage} — see HELPER_FILENAMES in services/binarySource.ts) is a
-  // different, non-per-arch asset shape this function deliberately does not
-  // claim to resolve; that shape falls through to the URL-basename fallback.
-  if (component === "helper") {
-    if (goos !== "darwin") return null;
-    return `breeze-desktop-helper-darwin-${architecture}`;
-  }
-
+  // component="helper" (the Tauri Helper app) has NO canonical raw-binary
+  // name here: its real registration is HELPER_TARGETS
+  // (services/binarySync.ts, ~line 59) — windows -> breeze-helper-windows.msi,
+  // darwin (amd64 AND arm64, same file) -> breeze-helper-macos.dmg, linux ->
+  // breeze-helper-linux.AppImage. That shape is per-OS, not per-arch, and
+  // isn't derivable from (component, platform, arch) alone (darwin/amd64 and
+  // darwin/arm64 both resolve to the SAME asset name). An earlier version of
+  // this function returned "breeze-desktop-helper-darwin-<arch>" for
+  // component="helper" — that is a DIFFERENT artifact (the raw Mach-O binary
+  // bundled inside the agent .pkg, never its own agentVersions row) and,
+  // being non-null, wrongly WON over the correct URL-basename fallback for
+  // real BINARY_SOURCE=github helper rows, which would have 409'd them.
+  // Falling through to the final `return null` below lets
+  // assetNameFromDownloadUrl(downloadUrl) resolve "helper" instead, which is
+  // correct for every helper row that exists today.
   return null;
 }
 
@@ -473,10 +477,17 @@ export async function validateReleaseManifest(args: {
         );
         return { ok: false, reason: "release_manifest_asset_lookup_failed" };
       }
-      // Signature verification failure, or any unrecognized error shape —
-      // fail closed to the least-specific reason.
+      if (err instanceof ReleaseManifestSignatureError) {
+        console.error(
+          "[agentVersions] Release manifest signature verification failed:",
+          err.message,
+        );
+        return { ok: false, reason: "invalid_release_manifest_signature" };
+      }
+      // Any unrecognized error shape — fail closed to the least-specific
+      // reason rather than assume it's safe to be more specific.
       console.error(
-        "[agentVersions] Release manifest signature verification failed:",
+        "[agentVersions] Unrecognized error verifying release manifest asset, failing closed:",
         err instanceof Error ? err.message : err,
       );
       return { ok: false, reason: "invalid_release_manifest_signature" };

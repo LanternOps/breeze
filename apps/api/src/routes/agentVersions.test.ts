@@ -2178,11 +2178,17 @@ describe("verifyEd25519ManifestSignature — empty-keyset opt-in (#643)", () => 
 });
 
 // D1 (#3836): canonicalReleaseAssetName must reproduce EXACTLY the filenames
-// binarySync.ts's scanBinaryDir/parseBinaryFilename (agent/watchdog/backup),
-// USER_HELPER_TARGETS (user-helper), and the release pipeline's raw macOS
-// helper binary (release.yml, releaseAssetTrust.ts's DARWIN_BINARY_RE)
-// produce — every case below is cross-checked against those sources, not
-// invented independently.
+// binarySync.ts's scanBinaryDir/parseBinaryFilename (agent/watchdog/backup)
+// and USER_HELPER_TARGETS (user-helper) produce — every case below is
+// cross-checked against those sources, not invented independently.
+// component="helper" is deliberately always null: its real registration is
+// HELPER_TARGETS (binarySync.ts ~line 59), a per-OS (not per-arch) asset
+// name (windows -> breeze-helper-windows.msi, darwin (both arches, same
+// file) -> breeze-helper-macos.dmg, linux -> breeze-helper-linux.AppImage) —
+// see the controller-review regression test below for why an earlier
+// version of this function (returning "breeze-desktop-helper-darwin-<arch>"
+// for helper/macos) was WRONG and would have 409'd real
+// BINARY_SOURCE=github helper rows.
 describe("canonicalReleaseAssetName (D1, #3836)", () => {
   const cases: Array<[string, string, string, string | null]> = [
     // agent — windows/linux/darwin, both arches. Also proves "macos" (the DB
@@ -2216,13 +2222,12 @@ describe("canonicalReleaseAssetName (D1, #3836)", () => {
     ["user-helper", "macos", "amd64", null],
     ["user-helper", "linux", "amd64", null],
 
-    // helper — the raw macOS desktop-helper Mach-O binary bundled into the
-    // agent .pkg (DARWIN_BINARY_RE in releaseAssetTrust.ts, release.yml). No
-    // per-arch Windows/Linux asset ships under this shape today; the Tauri
-    // "helper" app's own non-per-arch installer (breeze-helper-macos.dmg
-    // etc.) is a different shape this function does not claim.
-    ["helper", "macos", "amd64", "breeze-desktop-helper-darwin-amd64"],
-    ["helper", "macos", "arm64", "breeze-desktop-helper-darwin-arm64"],
+    // helper — always null (see the describe-block comment above): the real
+    // asset name (breeze-helper-macos.dmg / -windows.msi / -linux.AppImage)
+    // is per-OS, not per-arch, so it must resolve via the URL-basename
+    // fallback instead.
+    ["helper", "macos", "amd64", null],
+    ["helper", "macos", "arm64", null],
     ["helper", "windows", "amd64", null],
     ["helper", "linux", "amd64", null],
 

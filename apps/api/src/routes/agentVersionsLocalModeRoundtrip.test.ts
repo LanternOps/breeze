@@ -80,7 +80,7 @@ vi.mock("node:fs", () => ({
   },
 }));
 
-import { syncBinaries } from "../services/binarySync";
+import { syncBinaries, syncFromGitHub } from "../services/binarySync";
 import { validateReleaseManifest } from "./agentVersions";
 import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
 
@@ -180,6 +180,154 @@ describe("D1 — local-mode registration roundtrip survives validateReleaseManif
     // production bug depends on — the last path segment is the ARCH, not an
     // asset name.
     expect(row.downloadUrl).toMatch(/\/api\/v1\/agents\/download\/windows\/amd64$/);
+
+    const result = await validateReleaseManifest({
+      manifest: row.releaseManifest,
+      signature: row.manifestSignature,
+      version: row.version,
+      platform: row.platform,
+      arch: row.architecture,
+      component: row.component,
+      downloadUrl: row.downloadUrl,
+      checksum: row.checksum,
+      fileSize: row.fileSize,
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+});
+
+// Fix-round-1 controller correction (#3836): an earlier version of
+// canonicalReleaseAssetName returned a non-null (WRONG) name for
+// component="helper"/platform="macos", which would have WON over the
+// correct URL-basename fallback and 409'd every real, currently-working
+// BINARY_SOURCE=github helper row. This suite exercises the REAL
+// syncFromGitHub helper registration path (HELPER_TARGETS,
+// services/binarySync.ts ~line 59) exactly the way it registers a helper row
+// in production, then feeds that row into the REAL validateReleaseManifest —
+// pinning that GitHub-mode helper rows keep working byte-for-byte.
+describe("D1 fix-round-1 — GitHub-mode helper registration stays byte-for-byte unchanged (#3836)", () => {
+  const originalEnv = process.env;
+
+  function makeSignedReleaseArtifactManifestFor(
+    assetName: string,
+    buffer: Buffer,
+    release = "v1.2.3",
+  ) {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+    const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+    const checksum = createHash("sha256").update(buffer).digest("hex");
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release,
+      assets: [
+        {
+          name: assetName,
+          sha256: checksum,
+          size: buffer.length,
+          platformTrust:
+            requiredPlatformTrustFor(assetName) ?? "release-workflow-produced",
+        },
+      ],
+    });
+    const signature = sign(null, Buffer.from(manifest, "utf8"), privateKey).toString(
+      "base64",
+    );
+    return { manifest, signature, publicKey: rawPublicKey, release };
+  }
+
+  function stubGitHubReleaseFetchForHelper(
+    signed: { manifest: string; signature: string; release: string },
+    assetName: string,
+    assetBuffer: Buffer,
+  ) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: signed.release,
+              body: "release notes",
+              assets: [
+                {
+                  name: assetName,
+                  browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/${assetName}`,
+                  size: assetBuffer.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/release-artifact-manifest.json`,
+                  size: signed.manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/release-artifact-manifest.json.ed25519`,
+                  size: signed.signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/release-artifact-manifest.json")) {
+          return new Response(signed.manifest);
+        }
+        if (url.endsWith("/release-artifact-manifest.json.ed25519")) {
+          return new Response(signed.signature);
+        }
+        return new Response("not found", { status: 404 });
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    process.env.BINARY_SOURCE = "github";
+    delete process.env.BINARY_GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPO;
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  it("registers a macOS helper row (breeze-helper-macos.dmg) via syncFromGitHub that validateReleaseManifest accepts", async () => {
+    const assetName = "breeze-helper-macos.dmg";
+    const assetBuffer = Buffer.from("helper dmg bytes");
+    const signed = makeSignedReleaseArtifactManifestFor(assetName, assetBuffer);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    stubGitHubReleaseFetchForHelper(signed, assetName, assetBuffer);
+
+    await syncFromGitHub();
+
+    const helperInsert = (dbMocks.insertValues.mock.calls as unknown[][]).find(
+      (call) => (call[0] as { component: string }).component === "helper",
+    );
+    expect(helperInsert).toBeDefined();
+    const row = helperInsert![0] as {
+      version: string;
+      component: string;
+      platform: string;
+      architecture: string;
+      downloadUrl: string;
+      checksum: string;
+      fileSize: bigint;
+      releaseManifest: string;
+      manifestSignature: string;
+    };
+
+    // Confirms this row really does carry the GitHub-sourced shape the
+    // regression is about: the URL basename IS the real asset name, unlike
+    // the local-mode row in the suite above.
+    expect(row.downloadUrl).toBe(
+      `https://github.com/LanternOps/breeze/releases/download/${signed.release}/${assetName}`,
+    );
 
     const result = await validateReleaseManifest({
       manifest: row.releaseManifest,
