@@ -58,8 +58,12 @@ const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 describe('changeContractCurrency (draft currency immutability, #3774)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
+  // 'active' moved to the wave-6 escape-hatch suite below (#3778): an ACTIVE
+  // contract is now gated on contracts:manage + confirmActiveChange +
+  // eligibility, not on a blanket NOT_A_DRAFT. Every OTHER non-draft status
+  // keeps the wave-2 rejection byte-for-byte, which is what this asserts.
   it('rejects a non-draft contract with NOT_A_DRAFT (409)', async () => {
-    queueResult([{ id: 'c1', status: 'active', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'c1', status: 'paused', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
     await expect(
       svc.changeContractCurrency('c1', { currencyCode: 'EUR', clearLines: false }, actor)
     ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
@@ -336,5 +340,182 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     queueResult([{ ...contract, nextBillingAt: '2026-08-01' }]);
     const res = await svc.generateDueInvoice('c1', asOf);
     expect(res).toMatchObject({ generated: false, skipped: 'not_due', priceBookGaps: [] });
+  });
+});
+
+// Wave-6 release gate (W6-G3-1): a contract line is the template every future
+// generated invoice snapshots from, so a hand-entered non-catalog price must be
+// representable in the CONTRACT's stamped currency before it can propagate.
+describe('contractService currency representability guard (W6-G3-1)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draft = (currencyCode: string) => ({ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode });
+
+  it('addContractLineToContract rejects a fractional minor unit on a JPY contract (PRICE_NOT_REPRESENTABLE 400)', async () => {
+    queueResult([draft('JPY')]); // lockContract
+    await expect(
+      svc.addContractLineToContract('c1', { lineType: 'flat', description: 'x', unitPrice: '100.50', taxable: false } as never, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(0);
+  });
+
+  it('addContractLineToContract accepts a whole-unit JPY price', async () => {
+    queueResult([draft('JPY')]);
+    queueResult([{ id: 'l1', unitPrice: '100.00' }]); // insert returning
+    await expect(
+      svc.addContractLineToContract('c1', { lineType: 'flat', description: 'x', unitPrice: '100.00', taxable: false } as never, actor)
+    ).resolves.toMatchObject({ id: 'l1' });
+  });
+
+  it('addContractLineToContract leaves a 2-decimal currency unchanged — 100.50 EUR is accepted', async () => {
+    queueResult([draft('EUR')]);
+    queueResult([{ id: 'l1', unitPrice: '100.50' }]);
+    await expect(
+      svc.addContractLineToContract('c1', { lineType: 'flat', description: 'x', unitPrice: '100.50', taxable: false } as never, actor)
+    ).resolves.toMatchObject({ id: 'l1' });
+  });
+
+  it('createContractWithLinesDetailed applies the same guard — the quote→contract path is not a way around it', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY', status: 'draft' }]); // contract insert returning
+    await expect(
+      svc.createContractWithLinesDetailed({
+        partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
+        startDate: '2026-01-01', currencyCode: 'JPY',
+        lines: [{ lineType: 'flat', description: 'x', unitPrice: '100.50', taxable: false }],
+      } as never)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-currency wave 6 (#3778), Task 14 — the owner-approved ACTIVE-contract
+// currency restamp. Pre-wave-2 ACTIVE contracts stamped 'USD' under a non-USD
+// org would otherwise bill USD forever: wave 2 removed issueInvoice's
+// partner-currency overwrite and changeContractCurrency is draft-only, while
+// generateDueInvoice faithfully propagates the stale stamp.
+// ---------------------------------------------------------------------------
+describe('changeContractCurrency — ACTIVE escape hatch (#3778)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  /** An actor carrying VERIFIED contracts:manage evidence (route-populated). */
+  const manageActor = { ...actor, permissions: new Set(['contracts:read', 'contracts:write', 'contracts:manage']) };
+  /** contracts:write only — exactly what the route's own middleware grants. */
+  const writeOnlyActor = { ...actor, permissions: new Set(['contracts:read', 'contracts:write']) };
+
+  const activeContract = { id: 'c1', status: 'active', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' };
+
+  /** Queue the five reads inspectContractCurrencyEligibility performs. */
+  function queueEligibility(over: {
+    reachable?: unknown[]; direct?: unknown[]; orphanSources?: unknown[]; periods?: unknown[];
+  } = {}) {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1' }]); // contract re-read inside inspect
+    queueResult(over.reachable ?? []);      // period invoices + reissue descendants
+    queueResult(over.direct ?? []);         // draft invoices holding source_contract_id lines
+    queueResult(over.orphanSources ?? []);  // org-wide unattributable contract-source lines
+    queueResult(over.periods ?? []);        // per-period lineage proof
+  }
+
+  it('denies an actor without contracts:manage (ACTIVE_CHANGE_FORBIDDEN 403)', async () => {
+    queueResult([activeContract]);
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, writeOnlyActor)
+    ).rejects.toMatchObject({ code: 'ACTIVE_CHANGE_FORBIDDEN', status: 403 });
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
+
+  it('denies an actor carrying NO permission evidence at all (fail-closed by construction)', async () => {
+    queueResult([activeContract]);
+    // System/background callers (contractWorker, generateDueInvoice) look exactly
+    // like this — they can never reach the ACTIVE branch.
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, actor)
+    ).rejects.toMatchObject({ code: 'ACTIVE_CHANGE_FORBIDDEN', status: 403 });
+  });
+
+  it('requires confirmActiveChange (ACTIVE_CHANGE_CONFIRMATION_REQUIRED 400)', async () => {
+    queueResult([activeContract]);
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR' }, manageActor)
+    ).rejects.toMatchObject({ code: 'ACTIVE_CHANGE_CONFIRMATION_REQUIRED', status: 400 });
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
+
+  it('runs the eligibility inspect AFTER the contract FOR UPDATE, never before it', async () => {
+    queueResult([activeContract]);
+    queueEligibility();
+    queueResult([]);                       // no contract lines
+    queueResult([{ ...activeContract, currencyCode: 'EUR' }]); // update returning
+
+    await svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, manageActor);
+
+    const chain = db as unknown as { for: { mock: { calls: unknown[][]; invocationCallOrder: number[] } };
+                                     execute: { mock: { invocationCallOrder: number[] } } };
+    expect(chain.for.mock.calls[0]).toEqual(['update']);
+    // The eligibility SQL (tx.execute) must be strictly after the row lock.
+    expect(chain.execute.mock.invocationCallOrder[0]).toBeGreaterThan(chain.for.mock.invocationCallOrder[0]!);
+  });
+
+  it('restamps an eligible line-less ACTIVE contract, touching only currency_code + updated_at', async () => {
+    queueResult([activeContract]);
+    queueEligibility();
+    queueResult([]);
+    queueResult([{ ...activeContract, currencyCode: 'EUR' }]);
+
+    const updated = await svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, manageActor);
+    expect(updated).toMatchObject({ currencyCode: 'EUR' });
+    const patch = (db as unknown as Chain).set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(Object.keys(patch).sort()).toEqual(['currencyCode', 'updatedAt']);
+  });
+
+  it('rejects with UNBILLED_MONETARY_ROWS carrying the draft invoice ids', async () => {
+    queueResult([activeContract]);
+    queueEligibility({ reachable: [{ id: 'inv-draft', status: 'draft' }] });
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, manageActor)
+    ).rejects.toMatchObject({
+      code: 'UNBILLED_MONETARY_ROWS', status: 409, details: { draftInvoiceIds: ['inv-draft'] },
+    });
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
+
+  it('rejects with ORPHANED_CONTRACT_SOURCE when an unattributable contract line exists in the org', async () => {
+    queueResult([activeContract]);
+    queueEligibility({ orphanSources: [{ id: 'line-orphan' }] });
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, manageActor)
+    ).rejects.toMatchObject({
+      code: 'ORPHANED_CONTRACT_SOURCE', status: 409, details: { lineIds: ['line-orphan'] },
+    });
+  });
+
+  it('rejects with ORPHANED_BILLING_PERIOD when a period row points at nothing', async () => {
+    queueResult([activeContract]);
+    queueEligibility({ periods: [{ period_id: 'cbp1', invoice_id: null, invoice_exists: false, same_tenant: false, attributable: false, ancestry_ok: false }] });
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, manageActor)
+    ).rejects.toMatchObject({
+      code: 'ORPHANED_BILLING_PERIOD', status: 409, details: { billingPeriodIds: ['cbp1'] },
+    });
+  });
+
+  it('rejects with BROKEN_CONTRACT_LINEAGE when a period invoice fails the tenancy/attribution/ancestry proof', async () => {
+    queueResult([activeContract]);
+    queueEligibility({ periods: [{ period_id: 'cbp1', invoice_id: 'inv-x', invoice_exists: true, same_tenant: false, attributable: true, ancestry_ok: true }] });
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, manageActor)
+    ).rejects.toMatchObject({
+      code: 'BROKEN_CONTRACT_LINEAGE', status: 409, details: { invoiceIds: ['inv-x'] },
+    });
+  });
+
+  it('leaves every non-active, non-draft status on the unchanged NOT_A_DRAFT rejection', async () => {
+    for (const status of ['paused', 'cancelled', 'expired']) {
+      results.length = 0; vi.clearAllMocks();
+      queueResult([{ ...activeContract, status }]);
+      await expect(
+        svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, manageActor)
+      ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
+    }
   });
 });

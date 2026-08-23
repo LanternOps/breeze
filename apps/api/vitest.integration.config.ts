@@ -245,6 +245,13 @@ export default defineConfig({
       // aborting boot for any deployment that had ever enabled the built-in.
       // This runs the real query against real Postgres.
       'src/extensions/builtinTableProbe.integration.test.ts',
+      // Wave 6 (#3778): these two co-located real-DB suites matched the UNIT
+      // runner's src/**/*.test.ts glob but were gated on `describe.runIf(!!DATABASE_URL)`,
+      // which the unit runner never sets — so they ran in NO CI job. They cover
+      // source release, double-billing, bundle hierarchy on reissue, PDF artifact
+      // persistence and the draft-preview-doesn't-persist rule.
+      'src/services/invoiceService.issue.integration.test.ts',
+      'src/services/invoicePdf.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

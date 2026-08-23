@@ -323,7 +323,65 @@
     "tabs": {
       "contracts": "Contratti",
       "templates": "Template",
-      "documents": "Documenti"
+      "documents": "Documenti",
+      "currencyMismatches": "Discrepanze di valuta"
+    },
+    "currencyMismatches": {
+      "title": "Discrepanze di valuta",
+      "description": "Contratti ancora registrati in una valuta che la loro organizzazione non fattura più. Apri un contratto per esaminarlo: qui non viene modificato nulla in blocco.",
+      "loading": "Caricamento…",
+      "loadError": "Impossibile caricare il report delle discrepanze di valuta.",
+      "loadMore": "Carica altro",
+      "emptyTitle": "Nessuna discrepanza di valuta",
+      "emptyBody": "Ogni contratto è registrato nella valuta di fatturazione della sua organizzazione.",
+      "eligible": "Pronto per la ri-registrazione",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} fatture in bozza",
+      "blockingDrafts_one": "{{count}} fattura in bozza",
+      "columns": {
+        "contract": "Contratto",
+        "organization": "Organizzazione",
+        "status": "Stato",
+        "currencies": "Contratto → organizzazione",
+        "nextBilling": "Prossima fatturazione",
+        "eligibility": "Idoneità alla ri-registrazione"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Non attivo: solo i contratti attivi possono essere ri-registrati",
+        "ORPHANED_CONTRACT_SOURCE": "Le righe fattura originate da contratti non possono essere attribuite",
+        "ORPHANED_BILLING_PERIOD": "Un periodo di fatturazione non ha una fattura raggiungibile",
+        "BROKEN_CONTRACT_LINEAGE": "Il controllo della provenienza della fattura non è riuscito",
+        "UNBILLED_MONETARY_ROWS": "Le fatture in bozza contengono ancora importi di questo contratto"
+      }
+    },
+    "currency": {
+      "actions": {
+        "change": "Cambia valuta"
+      },
+      "dialog": {
+        "title": "Cambia la valuta del contratto",
+        "description": "Questo contratto viene fatturato in {{currency}}. La rimarcatura riguarda solo le fatture future: le fatture già emesse e i periodi di fatturazione passati non vengono mai modificati.",
+        "currencyLabel": "Nuova valuta",
+        "modeLegend": "Cosa accade alle righe del contratto",
+        "modeClear": "Rimuovi tutte le righe del contratto",
+        "modeClearHint": "Le righe vengono eliminate e reinserite a mano nella nuova valuta. Obbligatorio quando una riga è manuale.",
+        "modeReprice": "Riprezza le righe di catalogo",
+        "modeRepriceHint": "Ogni riga di catalogo viene risolta dal listino della nuova valuta. Possibile solo se tutte le righe provengono dal catalogo.",
+        "confirm": "Comprendo che questa operazione rimarca un contratto attivo e non può essere annullata in blocco.",
+        "submit": "Cambia valuta"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Emetti o elimina prima queste bozze di fattura: contengono ancora importi di questo contratto:",
+        "ORPHANED_BILLING_PERIOD": "Questi periodi di fatturazione non hanno una fattura raggiungibile. Risolvili prima di rimarcare:",
+        "ORPHANED_CONTRACT_SOURCE": "Queste righe di fattura di origine contrattuale non sono attribuibili a un contratto. Risolvile prima di rimarcare:",
+        "BROKEN_CONTRACT_LINEAGE": "Il controllo della discendenza è fallito per queste fatture. Risolvile prima di rimarcare:"
+      },
+      "toast": {
+        "changed": "Valuta del contratto cambiata in {{currency}}."
+      },
+      "errors": {
+        "change": "Impossibile cambiare la valuta del contratto."
+      }
     },
     "templatesTab": {
       "title": "Template di contratto",
@@ -1746,6 +1804,44 @@
       "emailPlaceholder": "billing@customer.example",
       "name": "Nome contatto",
       "title": "Contatto di fatturazione"
+    },
+    "currency": {
+      "title": "Valuta",
+      "description": "I nuovi preventivi, fatture, contratti, voci di tempo e ricambi di questa organizzazione vengono marcati con questa valuta. Nulla di già esistente viene modificato.",
+      "label": "Valuta di fatturazione",
+      "loading": "Verifica di cosa comporterebbe il passaggio a {{currency}}…",
+      "error": "Impossibile caricare il riepilogo del cambio valuta.",
+      "panelTitle": "Cambiare la valuta di fatturazione in {{currency}}?",
+      "none": "Nulla in questa organizzazione è marcato in un'altra valuta.",
+      "groupTitle": "Marcato in {{currency}}",
+      "counts": {
+        "draftInvoices": "Fatture in bozza",
+        "draftQuotes": "Preventivi in bozza",
+        "sentQuotes": "Preventivi inviati",
+        "viewedQuotes": "Preventivi visualizzati",
+        "draftContracts": "Contratti in bozza",
+        "activeContracts": "Contratti attivi",
+        "pausedContracts": "Contratti in pausa",
+        "timeEntries": "Voci di tempo non fatturate",
+        "parts": "Ricambi non fatturati"
+      },
+      "timeDetail": "{{ready}} pronte da fatturare, {{running}} in corso, {{nonBillable}} non fatturabili, {{missingRate}} senza tariffa",
+      "partsDetail": "{{ready}} pronti da fatturare, {{nonBillable}} non fatturabili",
+      "amounts": "Manodopera {{labor}} · Ricambi {{parts}}",
+      "warningsTitle": "Configurazioni che smetteranno di applicarsi",
+      "warningRate": "La tariffa oraria predefinita dell'organizzazione è in {{currency}} e non si applicherà più alle nuove voci di tempo.",
+      "warningCategories": "{{count}} tariffe di categoria ticket in un'altra valuta verranno ignorate.",
+      "warningOverrides": "{{count}} override di prezzo a catalogo dell'organizzazione in un'altra valuta verranno ignorati.",
+      "recovery": "Per fatturare gli elementi in {{currency}} qui sopra, componi una bozza in {{currency}}.",
+      "rateLess": "{{count}} voci di tempo non fatturate hanno ore ma nessuna tariffa oraria. Imposta una tariffa: un cambio di valuta non le riguarda.",
+      "retention": "Cambiano solo documenti, voci di tempo e ricambi futuri. Nessun importo viene mai convertito e bozze, contratti ed elementi non fatturati esistenti mantengono la valuta con cui sono stati marcati.",
+      "advisory": "Questi conteggi sono un'anteprima, non una promessa: non includono nulla di creato successivamente.",
+      "stale": "La valuta di fatturazione è passata a {{currency}} durante la revisione. Controlla il riepilogo aggiornato e conferma di nuovo.",
+      "confirm": "Cambia valuta",
+      "changing": "Modifica in corso…",
+      "cancel": "Annulla",
+      "changeError": "Impossibile cambiare la valuta di fatturazione dell'organizzazione.",
+      "changeSuccess": "Valuta di fatturazione dell'organizzazione aggiornata"
     },
     "loadError": "Impossibile caricare le impostazioni di fatturazione.",
     "loading": "Caricamento impostazioni di fatturazione…",

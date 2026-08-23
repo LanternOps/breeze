@@ -19,10 +19,8 @@ const { dbMocks } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  db: {
+vi.mock('../db', () => {
+  const dbObj: any = {
     select: vi.fn(() => ({
       from: vi.fn(() => {
         const result = () => dbMocks.selectResults.shift() ?? [];
@@ -36,8 +34,14 @@ vi.mock('../db', () => ({
               // …and also exposes .limit().offset() for the paginated queue read.
               { limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve(r)) })) },
             );
+            // .limit() is awaitable AND exposes .for('share'/'update') — the org
+            // SHARE barrier (readOrgStampingDefaults, #3778) terminates on .for().
+            const limitResult: any = Object.assign(
+              Promise.resolve(r),
+              { for: vi.fn(() => Promise.resolve(r)) },
+            );
             return {
-              limit: vi.fn(() => Promise.resolve(r)),
+              limit: vi.fn(() => limitResult),
               orderBy: vi.fn(() => orderByResult),
               then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
                 Promise.resolve(r).then(res, rej),
@@ -91,8 +95,16 @@ vi.mock('../db', () => ({
         return { where: vi.fn(where) };
       }),
     })),
-  },
-}));
+  };
+  // db.transaction hands the SAME mock back, so a service that opens its own
+  // transaction (upsertOrgTicketSettings, #3778) exercises the identical queue.
+  dbObj.transaction = vi.fn((fn: (tx: unknown) => unknown) => fn(dbObj));
+  return {
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    db: dbObj,
+  };
+});
 
 // Mock the drizzle-orm comparison operators so .where() predicates are plain,
 // introspectable JSON sentinels. The schema mock below uses string column names
@@ -544,11 +556,12 @@ describe('upsertOrgTicketSettings', () => {
       defaultBillable: true,
       rateCurrency: 'EUR',
     }];
+    dbMocks.selectResults.push([{ currencyCode: 'EUR' }]); // org SHARE barrier read
     const res = await upsertOrgTicketSettings(ORG, {
       slaOverrides: { high: { responseMinutes: 30 } },
       defaultHourlyRate: 125.5,
       defaultBillable: true,
-    }, 'EUR');
+    });
     const vals = dbMocks.insertedValues[0]!;
     expect(vals.slaOverrides).toEqual({ high: { responseMinutes: 30 } });
     expect(vals.defaultHourlyRate).toBe('125.5');
@@ -577,17 +590,44 @@ describe('upsertOrgTicketSettings', () => {
       defaultBillable: true,
       rateCurrency: 'EUR',
     }];
-    await upsertOrgTicketSettings(ORG, { defaultBillable: true }, 'EUR');
+    dbMocks.selectResults.push([{ currencyCode: 'EUR' }]);
+    await upsertOrgTicketSettings(ORG, { defaultBillable: true });
     expect(dbMocks.insertedValues[0]!.rateCurrency).toBe('EUR');
     expect(dbMocks.conflictArgs[0]!.set).not.toHaveProperty('rateCurrency');
   });
 
   it('passes null through for an explicitly cleared rate', async () => {
     dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: null, defaultBillable: null, rateCurrency: 'USD' }];
-    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: null }, 'USD');
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: null });
     expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBeNull();
     // slaOverrides not provided => not in values
     expect(dbMocks.insertedValues[0]!).not.toHaveProperty('slaOverrides');
+  });
+
+  // Wave-6 release gate (W6-G4-1): the rate is stamped with `orgCurrencyCode`,
+  // so it must be representable in it. The shared validator's multipleOf(0.01)
+  // is only the outer bound — the currency exponent is knowable only here.
+  it('rejects a fractional rate under a zero-decimal org currency (RATE_NOT_REPRESENTABLE 400)', async () => {
+    dbMocks.selectResults.push([{ currencyCode: 'JPY' }]);
+    await expect(upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100.5 }))
+      .rejects.toMatchObject({ code: 'RATE_NOT_REPRESENTABLE', status: 400 });
+    expect(dbMocks.insertedValues.length).toBe(0);
+  });
+
+  it('accepts a whole-unit rate under a zero-decimal org currency', async () => {
+    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: '100.00', defaultBillable: null, rateCurrency: 'JPY' }];
+    dbMocks.selectResults.push([{ currencyCode: 'JPY' }]);
+    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100 });
+    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBe('100');
+    expect(dbMocks.insertedValues[0]!.rateCurrency).toBe('JPY');
+  });
+
+  it('leaves a 2-decimal currency unchanged — 100.50 USD is accepted', async () => {
+    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: '100.50', defaultBillable: null, rateCurrency: 'USD' }];
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100.5 });
+    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBe('100.5');
   });
 });
 

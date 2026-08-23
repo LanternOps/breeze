@@ -370,6 +370,12 @@ export interface SetupTestEnvironmentOptions {
   // optional fields.
   userOptions?: Partial<Omit<CreateUserOptions, 'partnerId' | 'orgId'>>;
   partnerOptions?: CreatePartnerOptions;
+  /**
+   * Overrides for the organization created by setupTestEnvironment — notably
+   * `currencyCode`, so an HTTP-level test can seed a non-USD org without a
+   * post-hoc `UPDATE organizations SET currency_code` (multi-currency #3778).
+   */
+  organizationOptions?: Partial<Omit<CreateOrganizationOptions, 'partnerId'>>;
   scope?: 'system' | 'partner' | 'organization';
   /**
    * Permissions granted to the created role. Defaults to a `*`/`*` wildcard
@@ -401,7 +407,10 @@ export async function setupTestEnvironment(
   // partner-scope tests create an MSP staff user (partner_id set, org_id
   // null); org-scope tests create a customer-org user (both set).
   const partner = await createPartner(options.partnerOptions);
-  const organization = await createOrganization({ partnerId: partner.id });
+  const organization = await createOrganization({
+    partnerId: partner.id,
+    ...options.organizationOptions,
+  });
   const site = await createSite({ orgId: organization.id });
   const user = await createUser({
     partnerId: partner.id,
