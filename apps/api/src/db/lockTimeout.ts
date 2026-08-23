@@ -1,6 +1,72 @@
 import { sql } from 'drizzle-orm';
 
 /**
+ * Postgres stores `lock_timeout` / `statement_timeout` as int4 milliseconds, so
+ * this is their documented maximum. A bound above it passes every JavaScript
+ * check and then fails inside `set_config`, i.e. at the point where the caller
+ * has already decided it is protected.
+ */
+const PG_MAX_TIMEOUT_MS = 2147483647;
+
+/**
+ * Read `prior_ms` out of a driver result.
+ *
+ * Handles BOTH supported shapes: a postgres-js `Result` (array-like) and a
+ * node-postgres `{ rows: [...] }`. Accepting only the array made a perfectly
+ * readable node-pg result look "unrecoverable", which matters because the
+ * catalog caller THROWS on null — it would have turned a parseable result into
+ * a 500. The device-deletion suite already exercises the `{rows}` shape.
+ *
+ * Returns null when the value is absent, not a whole number, or outside the
+ * range Postgres can actually hold (negative, or above int4 milliseconds) —
+ * i.e. whenever a confident number would be a fabricated one.
+ */
+function readPriorMs(result: unknown): number | null {
+  const rows = Array.isArray(result)
+    ? result
+    : Array.isArray((result as { rows?: unknown })?.rows)
+      ? (result as { rows: unknown[] }).rows
+      : null;
+  const raw = (rows?.[0] as { prior_ms?: unknown } | undefined)?.prior_ms;
+  // Range-check every shape identically. A bare `Number.isInteger` accepts -1,
+  // and `Number('9007199254740993')` silently ROUNDS to ...992 — both would
+  // return a confident wrong timeout instead of the null that means "could not
+  // read it". A real Postgres timeout is a non-negative int4 ms value, so
+  // anything outside that is a malformed result, not a value.
+  const inRange = (n: number): number | null =>
+    Number.isInteger(n) && n >= 0 && n <= PG_MAX_TIMEOUT_MS ? n : null;
+  if (typeof raw === 'number') return inRange(raw);
+  if (typeof raw === 'string' && /^\d+$/.test(raw)) return inRange(Number(raw));
+  // `bigint`: `pg_settings.setting::bigint` is int8, and a node-postgres
+  // installation with an int8 parser (or a future postgres-js transform) hands
+  // it over as a bigint. Rejecting it would report a value that is present and
+  // exact as unreadable — and the catalog caller THROWS on null, turning a
+  // perfectly good result into a 500. Timeout values are milliseconds, so the
+  // safe-integer range is never a real constraint; bail rather than round.
+  if (typeof raw === 'bigint') {
+    return raw >= 0n && raw <= BigInt(PG_MAX_TIMEOUT_MS) ? Number(raw) : null;
+  }
+  return null;
+}
+
+/**
+ * Reject a bound that would not actually bound anything.
+ *
+ * `boundMs = 0` is the trap: Postgres reads 0 as "disable this timeout", so the
+ * never-widen CASE below (`prior.ms > boundMs`) is then true for every finite
+ * NON-ZERO prior value — and a prior of 0 already takes the other arm — so the
+ * helper would set `'0ms'` either way — silently converting a caller's 500ms
+ * limit into an unbounded wait, which is the exact failure these helpers exist
+ * to prevent. Both are exported and take an unrestricted `number`, so this is
+ * enforced at runtime rather than left to callers.
+ */
+function assertPositiveBound(boundMs: number, fn: string): void {
+  if (!Number.isInteger(boundMs) || boundMs <= 0 || boundMs > PG_MAX_TIMEOUT_MS) {
+    throw new Error(`${fn}: boundMs must be an integer in 1..${PG_MAX_TIMEOUT_MS} ms (got ${boundMs})`);
+  }
+}
+
+/**
  * Tighten `lock_timeout` for the current transaction, and report what it was.
  *
  * NOTE the limitation, which matters whenever a single statement takes MORE
@@ -40,6 +106,7 @@ export async function tightenLockTimeout(
   tx: { execute(q: unknown): Promise<unknown> },
   boundMs: number
 ): Promise<number | null> {
+  assertPositiveBound(boundMs, 'tightenLockTimeout');
   const tightened = await tx.execute(sql`
     WITH prior AS (SELECT setting::bigint AS ms FROM pg_settings WHERE name = 'lock_timeout')
     SELECT prior.ms AS prior_ms,
@@ -50,13 +117,7 @@ export async function tightenLockTimeout(
            ) AS applied
     FROM prior
   `);
-  const row = Array.isArray(tightened)
-    ? (tightened[0] as { prior_ms?: unknown } | undefined)
-    : undefined;
-  const raw = row?.prior_ms;
-  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
-  if (typeof raw === 'string' && /^\d+$/.test(raw)) return Number(raw);
-  return null;
+  return readPriorMs(tightened);
 }
 
 /**
@@ -87,6 +148,7 @@ export async function tightenStatementTimeout(
   tx: { execute(q: unknown): Promise<unknown> },
   boundMs: number
 ): Promise<number | null> {
+  assertPositiveBound(boundMs, 'tightenStatementTimeout');
   const tightened = await tx.execute(sql`
     WITH prior AS (SELECT setting::bigint AS ms FROM pg_settings WHERE name = 'statement_timeout')
     SELECT prior.ms AS prior_ms,
@@ -97,12 +159,6 @@ export async function tightenStatementTimeout(
            ) AS applied
     FROM prior
   `);
-  const row = Array.isArray(tightened)
-    ? (tightened[0] as { prior_ms?: unknown } | undefined)
-    : undefined;
-  const raw = row?.prior_ms;
-  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
-  if (typeof raw === 'string' && /^\d+$/.test(raw)) return Number(raw);
-  return null;
+  return readPriorMs(tightened);
 }
 

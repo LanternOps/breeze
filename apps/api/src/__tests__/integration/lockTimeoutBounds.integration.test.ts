@@ -14,76 +14,89 @@ const RUN = !!process.env.DATABASE_URL;
  * retaining every lock already taken. `statement_timeout` is the only one that
  * caps the statement as a whole.
  *
- * Tested here against the real server rather than asserted in a comment,
- * because a future refactor that "simplifies" the pair down to one would
- * reintroduce an unbounded wait while every higher-level test still passed.
+ * Tested here against the real server rather than asserted in a comment.
+ *
+ * NOTE what this file does NOT do: it installs the settings itself, so it
+ * proves the Postgres semantics, not that catalogService installs both. That
+ * wiring is pinned separately in catalogBundleCompositionRace
+ * ("installs BOTH bounds before the locking query") — an earlier version of
+ * this header wrongly claimed this test would catch that refactor.
  */
 describe.runIf(RUN)('lock_timeout is per-acquisition; statement_timeout bounds the statement', () => {
   const mk = () => postgres(process.env.DATABASE_URL!, { max: 1 });
 
   /** Holds `id`, resolving `acquired` only once the row lock is actually held. */
-  function holder(sqlc: ReturnType<typeof mk>, id: number, holdMs: number) {
+  function holder(sqlc: ReturnType<typeof mk>, id: number, release: Promise<void>) {
     let acquired!: () => void;
     const ready = new Promise<void>((r) => { acquired = r; });
     const done = sqlc.begin(async (tx) => {
       await tx`SELECT id FROM _lt_bounds WHERE id = ${id} FOR UPDATE`;
       acquired();
-      await new Promise((r) => setTimeout(r, holdMs));
+      // Held until the CALLER releases. Hold durations are driven from a single
+      // clock started after both holders are confirmed, rather than from each
+      // holder's own acquisition — otherwise acquisition skew silently changes
+      // the schedule the assertions depend on.
+      await release;
     });
     return { ready, done };
   }
 
+  /** Resolves after `ms`, measured from when this is called. */
+  const after = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
   it('two staggered blockers slip past lock_timeout but not statement_timeout', async () => {
-    const setup = mk();
-    await setup`CREATE TABLE IF NOT EXISTS _lt_bounds(id int primary key)`;
-    await setup`TRUNCATE _lt_bounds`;
-    await setup`INSERT INTO _lt_bounds VALUES (1),(2)`;
-
-    const a = mk(); const b = mk(); const reader = mk();
-    // Barriers, not sleeps: both rows are provably locked before the reader
-    // starts, so the schedule cannot silently degrade into a single blocker.
-    const h1 = holder(a, 1, 900);
-    const h2 = holder(b, 2, 1800);
-    await Promise.all([h1.ready, h2.ready]);
-
-    // Each individual wait stays under 1000ms; their sum does not.
-    const t0 = Date.now();
-    let lockOnly: unknown;
+    const setup = mk(); const a = mk(); const b = mk(); const reader = mk();
+    // Generous margins on purpose: a 100ms cushion flakes on a loaded CI box,
+    // and this test failing for timing reasons would teach the wrong lesson.
+    const HOLD_1 = 2000, HOLD_2 = 4000, LOCK_MS = 2500, STMT_MS = 3000;
     try {
-      await reader.begin(async (tx) => {
-        await tx`SET LOCAL lock_timeout = '1000ms'`;
-        await tx`SELECT id FROM _lt_bounds WHERE id IN (1,2) ORDER BY id FOR UPDATE`;
-      });
-    } catch (err) { lockOnly = err; }
-    const lockOnlyMs = Date.now() - t0;
+      await setup`CREATE TABLE IF NOT EXISTS _lt_bounds(id int primary key)`;
+      await setup`TRUNCATE _lt_bounds`;
+      await setup`INSERT INTO _lt_bounds VALUES (1),(2)`;
 
-    await Promise.allSettled([h1.done, h2.done]);
+      const run = async (withStatementTimeout: boolean) => {
+        let r1!: () => void, r2!: () => void;
+        const g1 = new Promise<void>((r) => { r1 = r; });
+        const g2 = new Promise<void>((r) => { r2 = r; });
+        const h1 = holder(a, 1, g1);
+        const h2 = holder(b, 2, g2);
+        // Both rows provably locked BEFORE the clock that drives releases.
+        await Promise.all([h1.ready, h2.ready]);
+        void after(HOLD_1).then(r1);
+        void after(HOLD_2).then(r2);
 
-    // lock_timeout alone did NOT bound it: it ran past its own 1000ms.
-    expect(lockOnly).toBeUndefined();
-    expect(lockOnlyMs).toBeGreaterThan(1000);
+        const t0 = Date.now();
+        let caught: any;
+        try {
+          await reader.begin(async (tx) => {
+            // `unsafe` because SET does not accept bind parameters — a
+            // templated value here becomes $1 and Postgres rejects it with a
+            // syntax error. The values are local constants, not caller input.
+            await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_MS}ms'`);
+            if (withStatementTimeout) await tx.unsafe(`SET LOCAL statement_timeout = '${STMT_MS}ms'`);
+            await tx`SELECT id FROM _lt_bounds WHERE id IN (1,2) ORDER BY id FOR UPDATE`;
+          });
+        } catch (err) { caught = err; }
+        const ms = Date.now() - t0;
+        await Promise.allSettled([h1.done, h2.done]);
+        return { caught, ms };
+      };
 
-    // Same shape, now with a statement deadline: bounded.
-    const h3 = holder(a, 1, 900);
-    const h4 = holder(b, 2, 1800);
-    await Promise.all([h3.ready, h4.ready]);
+      // Each individual wait (2000ms, then ~2000ms more) stays under the 2500ms
+      // per-lock bound; their sum does not. lock_timeout alone cannot stop it.
+      const lockOnly = await run(false);
+      expect(lockOnly.caught).toBeUndefined();
+      expect(lockOnly.ms).toBeGreaterThan(LOCK_MS);
 
-    const t1 = Date.now();
-    let bounded: any;
-    try {
-      await reader.begin(async (tx) => {
-        await tx`SET LOCAL lock_timeout = '1000ms'`;
-        await tx`SET LOCAL statement_timeout = '1200ms'`;
-        await tx`SELECT id FROM _lt_bounds WHERE id IN (1,2) ORDER BY id FOR UPDATE`;
-      });
-    } catch (err) { bounded = err; }
-    const boundedMs = Date.now() - t1;
-
-    await Promise.allSettled([h3.done, h4.done]);
-    await setup`DROP TABLE IF EXISTS _lt_bounds`;
-    await Promise.all([a.end(), b.end(), reader.end(), setup.end()]);
-
-    expect(bounded?.code).toBe('57014');
-    expect(boundedMs).toBeLessThan(lockOnlyMs);
-  }, 40000);
+      // Same schedule, plus a statement deadline: bounded.
+      const bounded = await run(true);
+      expect(bounded.caught?.code).toBe('57014');
+      expect(bounded.ms).toBeLessThan(lockOnly.ms);
+    } finally {
+      // In `finally` so a timing failure cannot leak clients into the rest of
+      // the suite and turn one red test into a cascade.
+      await setup`DROP TABLE IF EXISTS _lt_bounds`.catch(() => {});
+      await Promise.allSettled([a.end(), b.end(), reader.end(), setup.end()]);
+    }
+  }, 60000);
 });

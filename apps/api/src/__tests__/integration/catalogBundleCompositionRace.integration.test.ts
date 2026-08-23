@@ -351,7 +351,8 @@ describe.runIf(RUN)('#3816 catalog bundle composition races', () => {
    * The lock must be BOUNDED. Unbounded, this waits indefinitely for up to 201
    * rows from a request path while holding its pooled connection — the failure
    * class that keeps recurring here. Bounded, it becomes a fast 55P03 that the
-   * route maps to a retryable 409.
+   * SERVICE maps to a retryable 409 — the route only serialises what it is
+   * handed.
    *
    * Real contention, not a mock: a second connection holds the component row in
    * an open transaction while the compose tries to lock it.
@@ -386,10 +387,715 @@ describe.runIf(RUN)('#3816 catalog bundle composition races', () => {
     await holder.end();
 
     // The SQLSTATE is on `.cause` (DrizzleQueryError wraps it), which is exactly
-    // why the route uses pgErrorCode rather than a top-level `err.code` read.
+    // why the SERVICE reads it with pgErrorCode rather than a top-level
+    // `err.code`, which would match nothing.
     expect((caught as { code?: string })?.code).toBe('ITEM_BUSY');
     // And it gave up near the bound rather than hanging on the holder.
     expect(elapsed).toBeLessThan(15000);
+  }, 30000);
+
+  /**
+   * Pins the PRODUCTION WIRING, which the mechanism test in
+   * lockTimeoutBounds.integration.test.ts cannot: that one installs the
+   * settings itself, so deleting `tightenStatementTimeout` from
+   * `lockOwnedItemsInGlobalOrder` leaves it green. So does the contention test
+   * above, because it holds ONE row indefinitely and `lock_timeout` alone
+   * already covers that case.
+   *
+   * Asserts ORDER, not end state. An earlier draft of this test read the
+   * settings back AFTER the helper returned and asserted they were restored —
+   * which passes whether or not they were ever applied, i.e. exactly the defect
+   * it was meant to catch.
+   */
+  it('installs BOTH bounds before the locking query', async () => {
+    const f = await seedFixture();
+    const statements: string[] = [];
+
+    await withDbAccessContext(ctx(f.partnerId), async () => {
+      await db.transaction(async (tx) => {
+        // Record what the helper issues, in order.
+        const spy = {
+          ...tx,
+          execute: (q: unknown) => { statements.push(JSON.stringify(q)); return (tx as { execute: (q: unknown) => Promise<unknown> }).execute(q); },
+          // The locking query has to be recorded too, or "before" is unprovable.
+          // While this passed `select` straight through, the test asserted only
+          // that two timeout statements EXIST — moving both tighten calls after
+          // the locking query left it green, which is precisely the wiring the
+          // test is named for.
+          //
+          // Traced through a proxy rather than by patching `.for` on the object
+          // `select()` returns: the builder is a CHAIN, so `.for` only appears
+          // several links along (after from/where/orderBy) and patching the
+          // first link silently recorded nothing. `then` is forwarded unwrapped
+          // so awaiting the builder still works.
+          select: (...args: unknown[]) => {
+            const trace = (obj: unknown): unknown => {
+              if (obj === null || typeof obj !== 'object') return obj;
+              return new Proxy(obj as object, {
+                get(target, prop) {
+                  const value = Reflect.get(target, prop, target);
+                  if (typeof value !== 'function') return value;
+                  return (...callArgs: unknown[]) => {
+                    // `orderBy` is load-bearing, not cosmetic: the global id
+                    // order is what stops two composers forming a cycle.
+                    // Nothing recorded it, so deleting it could stay green
+                    // whenever Postgres happened to scan the two seeded ids in
+                    // the same physical order.
+                    if (prop === 'orderBy') statements.push('__LOCKING_ORDER_BY__');
+                    if (prop === 'for') statements.push(`__LOCKING_SELECT__ ${String(callArgs[0])}`);
+                    const result = (value as (...a: unknown[]) => unknown).apply(target, callArgs);
+                    return prop === 'then' ? result : trace(result);
+                  };
+                },
+              });
+            };
+            return trace((tx as unknown as { select: (...a: unknown[]) => unknown }).select(...args));
+          },
+        };
+        await (svc as unknown as {
+          __testables: { lockOwnedItemsInGlobalOrder: (t: unknown, ids: string[], p: string) => Promise<unknown> };
+        }).__testables.lockOwnedItemsInGlobalOrder(spy, [f.bundleA, f.plain], f.partnerId);
+      });
+    });
+
+    // Match the TIGHTEN, not the restore. Both read the same GUC name, and the
+    // restore is a bare `set_config` — so a matcher keyed on the name alone
+    // finds the restore and passes even when the tighten has been deleted.
+    // (Verified: an earlier version of this assertion did exactly that.) The
+    // tighten is the only statement that reads `pg_settings` for that GUC.
+    const tightened = (guc: string) =>
+      statements.findIndex((t) => t.includes('pg_settings') && t.includes(guc));
+
+    expect(tightened('lock_timeout'), 'lock_timeout was never tightened').toBeGreaterThanOrEqual(0);
+    expect(tightened('statement_timeout'), 'statement_timeout was never tightened').toBeGreaterThanOrEqual(0);
+
+    // ORDER, which is the whole point: a bound installed after the locking
+    // query bounds nothing.
+    const lockingAt = statements.findIndex((t) => t.startsWith('__LOCKING_SELECT__'));
+    expect(lockingAt, 'the locking select was never issued').toBeGreaterThanOrEqual(0);
+
+    // The MODE, not just that some lock was taken. `.for('share')` survived
+    // every other test here: FOR SHARE still conflicts with the FOR UPDATE the
+    // contention tests use, so they stayed green — but FOR SHARE does NOT
+    // conflict with itself, so two concurrent replacements of the same bundle
+    // could both hold the parent, both delete nothing, and both insert, leaving
+    // the UNION of two requests from an operation defined as replacement.
+    expect(statements[lockingAt], 'the item lock is no longer self-conflicting')
+      .toBe('__LOCKING_SELECT__ no key update');
+
+    // ...and it is ordered, before the lock is taken.
+    const orderAt = statements.indexOf('__LOCKING_ORDER_BY__');
+    expect(orderAt, 'the locking query no longer orders by id').toBeGreaterThanOrEqual(0);
+    expect(orderAt).toBeLessThan(lockingAt);
+    expect(tightened('lock_timeout'), 'lock_timeout was tightened AFTER the locking query').toBeLessThan(lockingAt);
+    expect(tightened('statement_timeout'), 'statement_timeout was tightened AFTER the locking query').toBeLessThan(lockingAt);
+
+    // Both RESTORES must be transaction-scoped. `set_config(..., false)` is
+    // session-scoped: it survives the commit and becomes the pooled backend's
+    // default for every later request handed that connection.
+    //
+    // Asserted on the emitted SQL rather than by reading the value back in a
+    // second transaction, because that read only observes the leak if the pool
+    // happens to hand back the SAME connection — a test that can pass for the
+    // wrong reason. (It also cannot see it at all when the restored value
+    // equals the default, which is the common case: writing 0 at session scope
+    // is indistinguishable from not writing it.)
+    // ALL FOUR set_config calls, not just the restores. Checking only the
+    // restores left the TIGHTENING free to go session-scoped: the local
+    // restore masks it for every in-transaction read, and on commit the pooled
+    // backend keeps 3s/4s for whatever request gets that connection next.
+    const configs = statements.filter((t) => t.includes('set_config'));
+    expect(configs.length, 'expected a tighten and a restore for each bound').toBe(4);
+    for (const cfg of configs) {
+      expect(cfg, 'a set_config is SESSION-scoped and will outlive the transaction').toContain('true');
+    }
+  });
+
+  /**
+   * The regression guard for the defect this file previously could not see:
+   * multi-row contention whose wait is split across acquisitions.
+   *
+   * `lock_timeout` fires per ACQUISITION, so with two blockers released at
+   * different times the second row's timer restarts and the STATEMENT deadline
+   * lands first — 57014, not 55P03. Mapping only 55P03 turned that into a 500.
+   * Measured directly on PG16 16.14 before this test existed: holders released
+   * 700ms apart under lock_timeout=1000ms/statement_timeout=1400ms cancelled at
+   * 1412ms with 57014 and never raised 55P03.
+   *
+   * The single-holder test above cannot catch this — one row held indefinitely
+   * is covered by `lock_timeout` alone.
+   */
+  it('maps a multi-row staggered lock wait to ITEM_LOCK_NOT_ACQUIRED, not a raw cancellation', async () => {
+    const f = await seedFixture();
+    const holderA = postgres(process.env.DATABASE_URL!, { max: 1 });
+    const holderB = postgres(process.env.DATABASE_URL!, { max: 1 });
+
+    // Lock the two rows the compose will take, in the same global (sorted) order
+    // the helper uses, so the compose blocks on the FIRST one and then on the
+    // SECOND with a fresh timer.
+    const sortedIds = [f.bundleA, f.plain].sort();
+    const first = sortedIds[0]!;
+    const second = sortedIds[1]!;
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstGate = new Promise<void>((r) => { releaseFirst = r; });
+    const secondGate = new Promise<void>((r) => { releaseSecond = r; });
+
+    // Gate on ACQUISITION, not on a sleep. A fixed delay is a guess about how
+    // long two connections take to take a row lock; if either has not acquired
+    // when the compose starts, the schedule the assertion depends on silently
+    // changes and the test proves nothing.
+    let firstReady!: () => void;
+    let secondReady!: () => void;
+    const firstAcquired = new Promise<void>((r) => { firstReady = r; });
+    const secondAcquired = new Promise<void>((r) => { secondReady = r; });
+
+    let firstPid = 0;
+    const holdingFirst = holderA.begin(async (tx) => {
+      const pidRows = await tx`SELECT pg_backend_pid() AS pid`;
+      firstPid = Number((pidRows[0] as { pid: number }).pid);
+      await tx`SELECT id FROM catalog_items WHERE id = ${first} FOR UPDATE`;
+      firstReady();
+      await firstGate;
+    });
+    let secondPid = 0;
+    const holdingSecond = holderB.begin(async (tx) => {
+      const pidRows = await tx`SELECT pg_backend_pid() AS pid`;
+      secondPid = Number((pidRows[0] as { pid: number }).pid);
+      await tx`SELECT id FROM catalog_items WHERE id = ${second} FOR UPDATE`;
+      secondReady();
+      await secondGate;
+    });
+    await Promise.all([firstAcquired, secondAcquired]);
+
+    /**
+     * Wait until some backend is actually BLOCKED BY `blockerPid`.
+     *
+     * The schedule cannot be driven off a JS timer. Postgres measures its
+     * timeouts from when the query message arrives; a `setTimeout` measures
+     * from when the promise was submitted, and pool queueing, transaction
+     * setup or CI load sit in between. If the first holder is released before
+     * the compose has actually blocked on it, the compose only ever waits on
+     * ONE row, `lock_timeout` wins, and the test fails against correct code.
+     */
+    const monitor = postgres(process.env.DATABASE_URL!, { max: 1 });
+    // Connect NOW. postgres-js is lazy, so leaving this until the first poll
+    // puts connection setup and auth INSIDE the window between the compose
+    // starting to wait and this test noticing — time the server is already
+    // counting against lock_timeout but the test is not.
+    await monitor`SELECT 1`;
+    /**
+     * Wait until `waiterPid` is blocked specifically BY `blockerPid`.
+     *
+     * Both pids are named. An earlier version asked only "is anything blocked
+     * by the holder", which any other backend touching `catalog_items` could
+     * satisfy — the holder's `SELECT ... FOR UPDATE` also takes a table-level
+     * RowShare lock, so a parallel DDL in the suite would have answered yes and
+     * released the holder before the compose had blocked at all.
+     */
+    const waitUntilBlockedBy = async (waiterPid: number, blockerPid: number, timeoutMs = 10000) => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const rows = await monitor`SELECT ${blockerPid}::int = ANY(pg_blocking_pids(${waiterPid}::int)) AS blocked`;
+        if ((rows[0] as { blocked: boolean }).blocked) return;
+        if (Date.now() > deadline) throw new Error(`pid ${waiterPid} never blocked on ${blockerPid}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    };
+
+    let caught: unknown;
+    let sawSecondWait = false;
+
+    // Two things have to be true, and only one of them is a timer.
+    //
+    // 1. The compose must PROVABLY be waiting on the first row before anything
+    //    is released — otherwise the run degenerates to a single lock wait.
+    // 2. Some time must then ELAPSE before releasing it, because the whole
+    //    point is that the first wait eats into the statement budget while the
+    //    second acquisition gets a FRESH per-lock timer. Releasing the instant
+    //    it blocks leaves the second wait covered by lock_timeout alone, which
+    //    is 55P03 at ~3.2s — measured, not guessed: that is exactly what this
+    //    test did before the hold was added.
+    //
+    // Margins, stated honestly. Let `d` be the lag between the first wait
+    // actually beginning on the server and this test observing it.
+    //   lower: the hold must exceed 1000ms, or the fresh 3000ms per-lock timer
+    //          on the SECOND row expires before the 4000ms statement deadline
+    //          and the result is 55P03 instead. HOLD=1800 clears it by 800ms.
+    //   upper: d + HOLD must stay under 3000ms, or lock_timeout fires on the
+    //          FIRST row before it is released. That leaves only ~1200ms for
+    //          `d`, NOT the ~2200ms an earlier version of this comment claimed
+    //          by measuring against the wrong deadline.
+    // `d` is why the monitor connection is warmed above. Postgres counts from
+    // query-message arrival; this test can only count from when it notices.
+    const HOLD_MS = 1800;
+    try {
+      await withDbAccessContext(ctx(f.partnerId), async () => {
+        // The composing backend's own pid, read on the SAME pooled connection
+        // the service will use (its db.transaction is a savepoint on it), so
+        // the poll below can name the waiter instead of accepting any backend.
+        const pidRows = await db.execute(sql`SELECT pg_backend_pid() AS pid`);
+        const composingPid = Number(
+          ((Array.isArray(pidRows) ? pidRows[0] : (pidRows as { rows: unknown[] }).rows[0]) as { pid: number }).pid
+        );
+        // Neutralise any role/database default: with a stricter effective
+        // statement_timeout the helper correctly preserves it, the statement
+        // dies on the FIRST row, and this test would pass without ever
+        // staggering — a false pass its own subject matter warns about.
+        await db.execute(sql`select set_config('statement_timeout', '0', true)`);
+        await db.execute(sql`select set_config('lock_timeout', '0', true)`);
+
+        const composing = svc.setBundleComponents(
+          f.bundleA,
+          [{ componentItemId: f.plain, quantity: 1, showOnInvoice: true, revenueAllocation: null }],
+          actorFor(f.partnerId),
+        ).catch((err) => { caught = err; });
+
+        await waitUntilBlockedBy(composingPid, firstPid);
+        await new Promise((r) => setTimeout(r, HOLD_MS));
+        releaseFirst();
+        // Now PROVE the second wait happened. Without this the assertion below
+        // is satisfied by any 57014 — including one raised while still waiting
+        // on the first row, which is not the interleaving this test is named
+        // for. There is ~2.2s between the release and the statement deadline,
+        // against a 25ms poll.
+        await waitUntilBlockedBy(composingPid, secondPid, 3000)
+          .then(() => { sawSecondWait = true; })
+          .catch(() => { sawSecondWait = false; });
+        await composing;
+      });
+    } finally {
+      // BOTH gates, unconditionally. Releasing only the second one meant any
+      // throw before `releaseFirst()` — a failed pid read, a rejected poll —
+      // left `holdingFirst` unresolved, so cleanup awaited it forever and the
+      // suite hung with three clients and two open transactions still holding
+      // rows, which then contaminates whatever runs next.
+      releaseFirst();
+      releaseSecond();
+      await holdingFirst.catch(() => {});
+      await holdingSecond.catch(() => {});
+      await monitor.end().catch(() => {});
+      await holderA.end().catch(() => {});
+      await holderB.end().catch(() => {});
+    }
+
+    // ITEM_LOCK_NOT_ACQUIRED, specifically — it is reachable ONLY through the 57014
+    // branch, so this assertion cannot be satisfied by the ordinary 55P03 path.
+    // Asserting the generic ITEM_BUSY here would have passed under the old
+    // 55P03-only mapping too if timing happened to produce a per-lock timeout,
+    // which is exactly the false pass this test exists to avoid.
+    // The staggered schedule actually happened: it waited on the first row,
+    // acquired it, and was then blocked by the second holder.
+    expect(sawSecondWait, 'never blocked on the SECOND row — not a staggered wait').toBe(true);
+    expect((caught as { code?: string })?.code).toBe('ITEM_LOCK_NOT_ACQUIRED');
+    // 409, not 5xx — see the code's comment: status drives HighErrorRate.
+    expect((caught as { status?: number })?.status).toBe(409);
+  }, 30000);
+
+  /**
+   * After an ITEM_BUSY the OUTER request transaction must still be usable, and
+   * must not have inherited the tightened timeouts.
+   *
+   * Both halves can fail silently. The locking helper deliberately restores the
+   * GUCs only on the success path, on the reasoning that a failure aborts the
+   * subtransaction and rolling back to the savepoint undoes the `SET LOCAL`
+   * anyway — that reasoning is load-bearing and was never asserted. If it were
+   * wrong, a contended compose would leave a 3s/4s deadline governing the rest
+   * of the caller's request, which is a much broader promise than this bound
+   * makes and would surface far from here.
+   */
+  it('leaves the outer transaction usable and the timeouts restored after ITEM_BUSY', async () => {
+    const f = await seedFixture();
+    const holder = postgres(process.env.DATABASE_URL!, { max: 1 });
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const ready = new Promise<void>((r) => { acquired = r; });
+
+    const holding = holder.begin(async (tx) => {
+      await tx`SELECT id FROM catalog_items WHERE id = ${f.plain} FOR UPDATE`;
+      acquired();
+      await gate;
+    });
+    await ready;
+
+    let caught: unknown;
+    let after: { lock: string; stmt: string } | undefined;
+
+    await withDbAccessContext(ctx(f.partnerId), async () => {
+      await db.transaction(async (outer) => {
+        // Record what the OUTER transaction had before any of this ran.
+        const before = await outer.execute(
+          sql`select current_setting('lock_timeout') as lock, current_setting('statement_timeout') as stmt`
+        );
+        const prior = (Array.isArray(before) ? before[0] : (before as { rows: unknown[] }).rows[0]) as { lock: string; stmt: string };
+
+        try {
+          await svc.setBundleComponents(
+            f.bundleA,
+            [{ componentItemId: f.plain, quantity: 1, showOnInvoice: true, revenueAllocation: null }],
+            actorFor(f.partnerId),
+          );
+        } catch (err) { caught = err; }
+
+        // The outer transaction must still accept work. If the savepoint had
+        // not absorbed the abort this throws 25P02 instead.
+        const rows = await outer.execute(
+          sql`select current_setting('lock_timeout') as lock, current_setting('statement_timeout') as stmt`
+        );
+        after = (Array.isArray(rows) ? rows[0] : (rows as { rows: unknown[] }).rows[0]) as { lock: string; stmt: string };
+        expect(after).toEqual(prior);
+      });
+    });
+
+    release();
+    await holding;
+    await holder.end();
+
+    expect((caught as { code?: string })?.code).toBe('ITEM_BUSY');
+    // Not left at the helper's bounds.
+    expect(after?.stmt).not.toBe('4s');
+    expect(after?.lock).not.toBe('3s');
+  }, 30000);
+
+  /**
+   * The SUCCESS-path restore, and the first test here to look at end state at
+   * all: the ordering test deliberately stopped doing so, and the failure-path
+   * tests roll the savepoint back, which undoes the SET LOCAL whether or not a
+   * restore exists. (The four-`set_config` assertion and the crossed-value
+   * tests below now also catch a deleted restore; when this test was written it
+   * was the only thing that did.)
+   *
+   * Left un-restored, the helper's 4s deadline governs the rest of the caller's
+   * request transaction — the unlocked read, the replace DML, and everything
+   * after — so a slow later statement becomes a raw 57014 outside the narrow
+   * catch, far from anything that mentions catalog locks.
+   */
+  it('restores both outer timeouts after the lock helper succeeds', async () => {
+    const f = await seedFixture();
+    let before!: { lock: string; stmt: string };
+    let after!: { lock: string; stmt: string };
+    const read = async (tx: { execute: (q: never) => Promise<unknown> }) => {
+      const r = await (tx as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+        sql`select current_setting('lock_timeout') as lock, current_setting('statement_timeout') as stmt`
+      );
+      return (Array.isArray(r) ? r[0] : (r as { rows: unknown[] }).rows[0]) as { lock: string; stmt: string };
+    };
+
+    await withDbAccessContext(ctx(f.partnerId), async () => {
+      await db.transaction(async (outer) => {
+        // Give the outer transaction a deadline of its own, so this asserts the
+        // caller's value is put back rather than merely that some value is set.
+        await outer.execute(sql`select set_config('statement_timeout', '9s', true)`);
+        await outer.execute(sql`select set_config('lock_timeout', '8s', true)`);
+        before = await read(outer as never);
+
+        await (svc as unknown as {
+          __testables: { lockOwnedItemsInGlobalOrder: (t: unknown, ids: string[], p: string) => Promise<unknown> };
+        }).__testables.lockOwnedItemsInGlobalOrder(outer, [f.bundleA, f.plain], f.partnerId);
+
+        after = await read(outer as never);
+      });
+    });
+
+    expect(before).toEqual({ lock: '8s', stmt: '9s' });
+    expect(after, 'the helper leaked its own bounds into the caller').toEqual(before);
+  });
+
+  /**
+   * NEVER-WIDEN, for the STATEMENT helper specifically, and with the two
+   * settings on OPPOSITE sides of their bounds.
+   *
+   * Both of those matter, and the 8s/9s test above proves neither:
+   *
+   *  - 8s and 9s are BOTH looser than their bounds, so that test only ever
+   *    exercises tighten-then-restore. Replacing `tightenStatementTimeout`'s
+   *    whole CASE with an unconditional `${boundMs}` survives it — and survives
+   *    the device-deletion never-widen test too, because device deletion never
+   *    calls the statement helper at all. The production failure is silent: an
+   *    outer 2s deadline becomes 4s, and since `lockTimeoutWasChanged(2000,
+   *    4000)` is false the helper does not restore it either, so the WIDENED
+   *    value stays in force for the rest of the caller's transaction.
+   *
+   *  - With lock and statement on opposite sides, restoring the statement
+   *    setting off the LOCK helper's prior value (`priorMs` instead of
+   *    `priorStmtMs`) is also caught: that predicate would read 2s-vs-4s,
+   *    conclude nothing changed, skip the restore, and leak 4s.
+   */
+  it('preserves a stricter outer statement_timeout and still restores a looser lock_timeout', async () => {
+    const f = await seedFixture();
+    let before!: { lock: string; stmt: string };
+    let after!: { lock: string; stmt: string };
+    const read = async (tx: { execute: (q: never) => Promise<unknown> }) => {
+      const r = await (tx as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+        sql`select current_setting('lock_timeout') as lock, current_setting('statement_timeout') as stmt`
+      );
+      return (Array.isArray(r) ? r[0] : (r as { rows: unknown[] }).rows[0]) as { lock: string; stmt: string };
+    };
+
+    await withDbAccessContext(ctx(f.partnerId), async () => {
+      await db.transaction(async (outer) => {
+        // statement 2s is STRICTER than the 4s bound -> must be left alone.
+        // lock 8s is LOOSER than the 3s bound -> must be tightened, then restored.
+        await outer.execute(sql`select set_config('statement_timeout', '2s', true)`);
+        await outer.execute(sql`select set_config('lock_timeout', '8s', true)`);
+        before = await read(outer as never);
+
+        await (svc as unknown as {
+          __testables: { lockOwnedItemsInGlobalOrder: (t: unknown, ids: string[], p: string) => Promise<unknown> };
+        }).__testables.lockOwnedItemsInGlobalOrder(outer, [f.bundleA, f.plain], f.partnerId);
+
+        after = await read(outer as never);
+      });
+    });
+
+    expect(before).toEqual({ lock: '8s', stmt: '2s' });
+    expect(after.stmt, 'a stricter outer statement_timeout was WIDENED').toBe('2s');
+    expect(after.lock, 'the looser outer lock_timeout was not restored').toBe('8s');
+  });
+
+  /**
+   * The MIRROR of the case above, and it is not redundant.
+   *
+   * Restoring the statement setting off the LOCK helper's prior value
+   * (`lockTimeoutWasChanged(priorMs, ...)` instead of `priorStmtMs`) survives
+   * every other arrangement here. It survives 8s/9s because both are looser, so
+   * both predicates agree. It survives 8s/2s because although the wrong
+   * predicate flips to true, the restore still WRITES `priorStmtMs` — it
+   * rewrites 2s as 2s and nothing is observable.
+   *
+   * Only lock-stricter / statement-looser separates them: the wrong predicate
+   * reads 2s-vs-4s, concludes nothing changed, SKIPS the statement restore, and
+   * leaves the helper's own 4s bound governing the rest of the transaction.
+   */
+  it('restores a looser outer statement_timeout when the lock_timeout was stricter', async () => {
+    const f = await seedFixture();
+    let after!: { lock: string; stmt: string };
+    const read = async (tx: { execute: (q: never) => Promise<unknown> }) => {
+      const r = await (tx as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+        sql`select current_setting('lock_timeout') as lock, current_setting('statement_timeout') as stmt`
+      );
+      return (Array.isArray(r) ? r[0] : (r as { rows: unknown[] }).rows[0]) as { lock: string; stmt: string };
+    };
+
+    await withDbAccessContext(ctx(f.partnerId), async () => {
+      await db.transaction(async (outer) => {
+        // lock 2s is STRICTER than the 3s bound -> left alone.
+        // statement 9s is LOOSER than the 4s bound -> tightened, must be restored.
+        await outer.execute(sql`select set_config('lock_timeout', '2s', true)`);
+        await outer.execute(sql`select set_config('statement_timeout', '9s', true)`);
+
+        await (svc as unknown as {
+          __testables: { lockOwnedItemsInGlobalOrder: (t: unknown, ids: string[], p: string) => Promise<unknown> };
+        }).__testables.lockOwnedItemsInGlobalOrder(outer, [f.bundleA, f.plain], f.partnerId);
+
+        after = await read(outer as never);
+      });
+    });
+
+    expect(after.lock, 'a stricter outer lock_timeout was WIDENED').toBe('2s');
+    expect(after.stmt, "the helper's 4s bound leaked past the lock step").toBe('9s');
+  });
+
+  /**
+   * The DEFAULT case, which every other restore test misses.
+   *
+   * Postgres ships both GUCs at `0` (disabled), so 0/0 is the default a
+   * deployment starts from unless a role or database default overrides it —
+   * and all three tests above use non-zero outer values.
+   * That gap lets `lockTimeoutWasChanged` drop its `priorMs === 0` arm and
+   * survive: the SQL still tightens 0 to 3s/4s, the predicate then reports
+   * "nothing changed", and NEITHER restore runs. Ordinary successful bundle
+   * composition would leave 3s/4s governing the rest of the request — and the
+   * same helper backs the device cascade, so it would leak there too.
+   *
+   * Asserts `0`, not merely "unchanged": the tightening is real, so this only
+   * passes if both values were actually put back.
+   */
+  it('restores both timeouts to 0 when the caller had the Postgres defaults', async () => {
+    const f = await seedFixture();
+    let after!: { lock: string; stmt: string };
+
+    await withDbAccessContext(ctx(f.partnerId), async () => {
+      await db.transaction(async (outer) => {
+        await outer.execute(sql`select set_config('lock_timeout', '0', true)`);
+        await outer.execute(sql`select set_config('statement_timeout', '0', true)`);
+
+        await (svc as unknown as {
+          __testables: { lockOwnedItemsInGlobalOrder: (t: unknown, ids: string[], p: string) => Promise<unknown> };
+        }).__testables.lockOwnedItemsInGlobalOrder(outer, [f.bundleA, f.plain], f.partnerId);
+
+        const r = await (outer as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+          sql`select current_setting('lock_timeout') as lock, current_setting('statement_timeout') as stmt`
+        );
+        after = (Array.isArray(r) ? r[0] : (r as { rows: unknown[] }).rows[0]) as { lock: string; stmt: string };
+      });
+    });
+
+    expect(after.lock, 'lock_timeout was left at the helper bound').toBe('0');
+    expect(after.stmt, 'statement_timeout was left at the helper bound').toBe('0');
+  });
+
+  /**
+   * The lock must cover the REQUESTED ids only — not the caller's whole catalog.
+   *
+   * Dropping `inArray(catalogItems.id, ordered)` and filtering on `partnerId`
+   * alone survives every other test here: the proxy records `.orderBy` and
+   * `.for` but never `.where`, and every other case only ever touches items the
+   * request already names. In production that mutation locks the partner's
+   * ENTIRE catalog for the duration of one bundle edit, so unrelated concurrent
+   * edits collide — the exact contention this PR exists to remove, made worse.
+   *
+   * Behavioural, and needs no timing barrier: an unrelated same-partner row is
+   * held for the whole compose. Correct code never asks for it and succeeds;
+   * the over-broad mutation blocks on it and fails.
+   */
+  it('locks only the requested ids, not the whole partner catalog', async () => {
+    const f = await seedFixture();
+    // A fourth item, same partner, NOT referenced by the compose below.
+    const unrelated = await withSystemDbAccessContext(async () => {
+      const [row] = await db.insert(catalogItems).values({
+        partnerId: f.partnerId, name: `unrelated-${Date.now()}`, sku: `unrelated-${Date.now()}`,
+        itemType: 'service', billingType: 'one_time', isBundle: false, isActive: true,
+        unitPrice: '10.00', costCurrency: 'USD'
+      }).returning({ id: catalogItems.id });
+      return row!.id;
+    });
+
+    const holder = postgres(process.env.DATABASE_URL!, { max: 1 });
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const ready = new Promise<void>((r) => { acquired = r; });
+    const holding = holder.begin(async (tx) => {
+      await tx`SELECT id FROM catalog_items WHERE id = ${unrelated} FOR UPDATE`;
+      acquired();
+      await gate;
+    });
+
+    try {
+      await ready;
+      // Composes bundleA from `plain`. `unrelated` is not named anywhere.
+      await withDbAccessContext(ctx(f.partnerId), () => svc.setBundleComponents(
+        f.bundleA,
+        [{ componentItemId: f.plain, quantity: 1, showOnInvoice: true, revenueAllocation: null }],
+        actorFor(f.partnerId),
+      ));
+    } finally {
+      release();
+      await holding.catch(() => {});
+      await holder.end().catch(() => {});
+    }
+  }, 30000);
+
+  /**
+   * A non-lock SQLSTATE must pass straight through.
+   *
+   * Widening the guard from `code === '57014'` to a bare `if (code)` survives
+   * every other test here, because nothing else makes the locking query fail
+   * for a non-lock reason. It would turn 42501 (insufficient_privilege), 40P01
+   * (deadlock_detected) and the 08xxx connection classes into a friendly 409
+   * "could not acquire the locks, try again" — advice that is wrong for all
+   * three, and which, because the route serialises a CatalogServiceError
+   * instead of throwing, never reaches Sentry either.
+   *
+   * Driven through a stub rather than a real privilege error: the point is the
+   * SQLSTATE branch, and the error is shaped the way Drizzle actually delivers
+   * one (code on `.cause`, not on the error itself).
+   */
+  it('lets a non-lock SQLSTATE propagate instead of mapping it to a lock failure', async () => {
+    const wrapped = Object.assign(new Error('permission denied for table catalog_items'), {
+      cause: { code: '42501' },
+    });
+    const priorRow = [{ prior_ms: '0' }];
+    const stubTx = {
+      execute: async () => priorRow,
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({ for: () => { throw wrapped; } }),
+          }),
+        }),
+      }),
+    };
+
+    await expect(
+      (svc as unknown as {
+        __testables: { lockOwnedItemsInGlobalOrder: (t: unknown, ids: string[], p: string) => Promise<unknown> };
+      }).__testables.lockOwnedItemsInGlobalOrder(
+        stubTx,
+        ['11111111-1111-4111-8111-111111111111'],
+        '22222222-2222-4222-8222-222222222222',
+      ),
+    ).rejects.toBe(wrapped);
+  });
+
+  /**
+   * A FOREIGN component must be read UNLOCKED — the partner filter on the
+   * locking query is load-bearing, not incidental.
+   *
+   * Dropping `eq(catalogItems.partnerId, partnerId)` survives every other test
+   * here, because nothing else names an item this partner does not own. The
+   * damage is specific: an INVALID cross-partner request from partner A would
+   * take a row lock on partner B's item before rejecting, so a request that is
+   * about to 400 can block partner B's legitimate work — or, if B holds it,
+   * come back as a lock failure instead of the validation error that explains
+   * what the caller actually did wrong.
+   *
+   * This is the same invariant that decided the design: CROSS_PARTNER needs the
+   * foreign row VISIBLE, not LOCKED. The dual-partner context is required for
+   * the row to be visible at all — under a single-partner RLS axis the lookup
+   * returns nothing and the service says COMPONENT_NOT_FOUND long before it
+   * reaches the cross-partner branch.
+   */
+  it('does not lock a foreign component when rejecting a cross-partner request', async () => {
+    const f = await seedFixture();
+    const suffix = Math.random().toString(36).slice(2, 10);
+    const foreign = await withSystemDbAccessContext(async () => {
+      const [p] = await db.insert(partners).values({
+        name: `Bundle race foreign ${suffix}`, slug: `bundle-race-foreign-${suffix}`,
+        type: 'msp', plan: 'pro', status: 'active', currencyCode: 'USD'
+      }).returning({ id: partners.id });
+      const [row] = await db.insert(catalogItems).values({
+        partnerId: p!.id, name: `foreign-${suffix}`, sku: `foreign-${suffix}`,
+        itemType: 'service', billingType: 'one_time', isBundle: false, isActive: true,
+        unitPrice: '10.00', costCurrency: 'USD'
+      }).returning({ id: catalogItems.id });
+      return { partnerId: p!.id, itemId: row!.id };
+    });
+
+    // Partner B holds its own row for the whole request.
+    const holder = postgres(process.env.DATABASE_URL!, { max: 1 });
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const ready = new Promise<void>((r) => { acquired = r; });
+    const holding = holder.begin(async (tx) => {
+      await tx`SELECT id FROM catalog_items WHERE id = ${foreign.itemId} FOR UPDATE`;
+      acquired();
+      await gate;
+    });
+
+    const dualCtx: DbAccessContext = {
+      scope: 'partner', orgId: null, accessibleOrgIds: [],
+      accessiblePartnerIds: [f.partnerId, foreign.partnerId], userId: null,
+    };
+
+    try {
+      await ready;
+      // Must be the VALIDATION error, promptly — not a lock failure.
+      await expect(
+        withDbAccessContext(dualCtx, () => svc.setBundleComponents(
+          f.bundleA,
+          [{ componentItemId: foreign.itemId, quantity: 1, showOnInvoice: true, revenueAllocation: null }],
+          actorFor(f.partnerId),
+        ))
+      ).rejects.toMatchObject({ code: 'BUNDLE_CROSS_PARTNER' });
+    } finally {
+      release();
+      await holding.catch(() => {});
+      await holder.end().catch(() => {});
+    }
   }, 30000);
 
   it('crossed parent/component requests reject as BUNDLE_NESTED rather than deadlocking', async () => {

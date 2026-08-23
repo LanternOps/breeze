@@ -4,6 +4,8 @@ vi.mock('./catalogService', () => {
   class CatalogServiceError extends Error {
     constructor(
       message: string,
+      // Mirror the production union exactly; a narrowed double silently blocks
+      // any test that needs a status the real class supports.
       public status: 400 | 403 | 404 | 409 = 400,
       public code?: string,
     ) {

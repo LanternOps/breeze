@@ -26,6 +26,34 @@ export type CatalogServiceErrorCode =
   // Someone else holds the item rows this write needs. Transient and
   // RETRYABLE — the request was valid and nothing was mutated.
   | 'ITEM_BUSY'
+  // The locking step did not finish. DISTINCT FROM `ITEM_BUSY` on purpose:
+  // SQLSTATE 57014 is plain `query_canceled` and names no cause. Contention is
+  // the common one, but a slow plan, an I/O stall, expensive RLS evaluation or
+  // an administrative `pg_cancel_backend` produce exactly the same code with
+  // nothing held by anyone — and a cancel can arrive immediately, so this is
+  // not even always a timeout. Usually retryable; a persistent plan regression
+  // or a repeated admin cancel is not, so it is not safe to hammer.
+  //
+  // STATUS IS 409, and that is a deliberate choice against the strict reading.
+  // RFC 9110 scopes 409 to a conflict with the resource's current state, which
+  // this cannot establish — so SOME 5xx is the stricter answer. (Not cleanly
+  // 503 either: RFC 9110 frames that as temporary overload or maintenance,
+  // which does not describe an administrative cancel.)
+  //
+  // 409 is kept because the status class drives alert SEVERITY:
+  // `monitoring/rules/breeze-rules.yml` classifies HighErrorRate **critical**
+  // at 5xx > 5% for 5m, against High4xxRate **warning** at > 20% for 10m — a
+  // 4x lower threshold and half the window for ordinary catalog contention.
+  // And because the route returns this status directly rather than raising, it
+  // never reaches Sentry, so that alert would fire with no exception behind it.
+  // (Where the alert actually GOES is deployment-specific and NOT established
+  // by this repo: the tracked `monitoring/alertmanager.yml` has its Slack,
+  // PagerDuty and email receivers commented out and sends critical alerts to a
+  // webhook with no matching route in `apps/api/src`.)
+  //
+  // The distinct CODE gives clients the distinction without reclassifying the
+  // response. Worth revisiting as 5xx plus a dedicated rule for this code.
+  | 'ITEM_LOCK_NOT_ACQUIRED'
   | 'DUPLICATE_SKU'
   | 'ORG_DENIED'
   | 'PRICE_OUT_OF_RANGE'
@@ -682,7 +710,9 @@ function canonicalUuid(value: string): string {
  * holding its pooled connection the whole time — the recurring production
  * failure here, and the same reason the device cascade grew a bound. A deadlock
  * resolves in milliseconds; a wait behind a long-running catalog import does
- * not. Bounded, it becomes a fast 55P03 that the route maps to a retryable 409.
+ * not. Bounded, it fails fast and retryably instead of pinning the connection —
+ * as 55P03 when a single acquisition times out, or as 57014 when the whole
+ * statement runs out of budget first (see the mapping below; both become 409).
  */
 const CATALOG_LOCK_TIMEOUT_MS = 3000;
 
@@ -702,8 +732,17 @@ const CATALOG_LOCK_TIMEOUT_MS = 3000;
  * an uninformative cancellation instead of ITEM_BUSY. Keeping this looser means
  * the common case (one blocked row) still reports contention, and this only
  * takes over when the per-lock bound cannot.
+ *
+ * Only 1s of separation, deliberately. Anything above the per-lock bound makes
+ * 55P03 reachable, and the gap buys nothing beyond that: this is an indexed
+ * lookup of at most 201 primary keys plus a sort, so a statement that has
+ * burned a second before reaching the contested lock is already abnormally
+ * slow and 57014 is the more honest answer. The ceiling matters because the
+ * request pool is 30 connections and this module already warns at a 2s held
+ * context — a looser cap would let a handful of contended composes pin the
+ * pool. Tune from measured production lock waits, not from this comment.
  */
-const CATALOG_LOCK_STATEMENT_TIMEOUT_MS = 8000;
+const CATALOG_LOCK_STATEMENT_TIMEOUT_MS = 4000;
 
 async function lockOwnedItemsInGlobalOrder(
   tx: DbExecutor,
@@ -727,8 +766,11 @@ async function lockOwnedItemsInGlobalOrder(
     // Fail here rather than proceed. Unlike lock_timeout, an unrestorable
     // statement_timeout is NOT behaviour-neutral: on the success path it would
     // govern the caller's remaining work — the unlocked read, the replace DML,
-    // and everything after this savepoint is released. Throwing lets the
-    // savepoint roll back, which undoes both SET LOCALs automatically.
+    // and everything after this nested scope returns. (postgres-js does not
+    // issue RELEASE SAVEPOINT on nested success — the scope simply returns —
+    // so a SET LOCAL taken inside it goes on applying to the outer
+    // transaction.) Throwing instead rolls back to the savepoint, which is what
+    // undoes both SET LOCALs automatically.
     // A plain Error on purpose: CatalogServiceError is the client-facing domain
     // type (400/403/404/409 only), and this is an internal fault, not something
     // the caller did wrong.
@@ -739,10 +781,84 @@ async function lockOwnedItemsInGlobalOrder(
   // ONE locking query, not one per id. The validator permits 200 components, so
   // a loop here would be up to 201 serial round trips with every earlier row
   // lock held open across all of them.
-  const owned = await tx.select(cols).from(catalogItems)
-    .where(and(inArray(catalogItems.id, [...ordered]), eq(catalogItems.partnerId, partnerId)))
-    .orderBy(asc(catalogItems.id))
-    .for('no key update');
+  //
+  // 57014 from THIS statement is OFTEN contention, and must not be a 500.
+  //
+  // `lock_timeout` fires per ACQUISITION, so a statement taking N locks gets a
+  // fresh interval per row and the statement deadline can land first even though
+  // every millisecond of the wait was lock contention. Measured on PG16 16.14 —
+  // two rows, holders released 700ms apart, `lock_timeout='1000ms'` and
+  // `statement_timeout='1400ms'`: the second acquisition's fresh timer would have
+  // expired at ~1700ms, so the statement was cancelled at 1412ms with 57014 and
+  // 55P03 never happened. Mapping only 55P03 therefore leaves ordinary
+  // multi-row contention surfacing as a 500.
+  //
+  // The two SQLSTATEs mean DIFFERENT things and get different codes.
+  //
+  // An earlier draft tried to decide whether a 57014 "was really contention" by
+  // checking whether THIS code had installed the deadline. That is not a sound
+  // signal in either direction, so it is gone:
+  //   - false positive: with no prior timeout the flag is true, so an
+  //     `pg_cancel_backend`, an I/O stall, a plan regression or simply an
+  //     expensive RLS evaluation would all have been reported as "another
+  //     operation is modifying it" with nothing held by anyone;
+  //   - false negative: a ROLE- or DATABASE-level `statement_timeout` stricter
+  //     than the bound (`ALTER ROLE ... SET statement_timeout`) is preserved,
+  //     so the flag is false and genuine staggered contention escaped raw.
+  // Those are server-side configuration, not "a caller", and `pg_settings`
+  // reports only the effective value — it cannot say who set it.
+  //
+  // What IS known is the statement: this catch wraps exactly the locking SELECT
+  // and nothing else (drizzle's builder defers execution to the await, so no
+  // other statement can run inside the try). That is enough to say WHICH
+  // statement failed. It is NOT enough to say why — an administrative cancel
+  // can arrive immediately, so it need not be a timeout at all — and nothing
+  // below claims otherwise: the message says only that the locks could not be
+  // acquired, which holds for a lock wait, a slow plan and a cancel alike.
+  let owned;
+  try {
+    owned = await tx.select(cols).from(catalogItems)
+      .where(and(inArray(catalogItems.id, [...ordered]), eq(catalogItems.partnerId, partnerId)))
+      .orderBy(asc(catalogItems.id))
+      .for('no key update');
+  } catch (err) {
+    // 55P03 is also mapped by `withBundleLockTimeoutMapped` around the whole
+    // transaction, so this arm is behaviourally redundant TODAY. Kept on
+    // purpose: this helper installs the bounds, so it owns what they raise, and
+    // handling only 57014 here would leave the two SQLSTATEs mapped in two
+    // different places — a later caller that used the helper without the outer
+    // wrapper would then get a clean 409 for one and a raw 500 for the other.
+    const code = pgErrorCode(err);
+    // 55P03 is `lock_not_available`: a lock this statement needed was held and
+    // the wait hit `lock_timeout`. Usually one of the item ROWS, though the
+    // same code covers the table and index locks the SELECT also takes — an
+    // ACCESS EXCLUSIVE table lock (a migration, a VACUUM FULL) raises it before
+    // row locking begins. Either way the advice is the same, and unlike 57014
+    // it is unambiguously "something was locked".
+    if (code === '55P03') {
+      throw new CatalogServiceError(
+        'Catalog item is busy: another operation is modifying it. Try again in a moment.',
+        409,
+        'ITEM_BUSY',
+      );
+    }
+    // 57014 is `query_canceled` — NOT necessarily a timeout at all, since an
+    // administrative cancel can arrive at any moment. Reachable on the ordinary contention path
+    // because `lock_timeout` is per ACQUISITION: locking N rows behind blockers
+    // that release at staggered times restarts the per-lock timer each time, so
+    // the STATEMENT deadline can land first even though every millisecond was
+    // spent waiting on locks. Measured on PG16 16.14 — two rows, holders
+    // released 700ms apart under lock_timeout=1000ms/statement_timeout=1400ms:
+    // cancelled at 1412ms with 57014, and 55P03 never happened.
+    if (code === '57014') {
+      throw new CatalogServiceError(
+        'Could not acquire the catalog item locks for this change. Try again in a moment.',
+        409,
+        'ITEM_LOCK_NOT_ACQUIRED',
+      );
+    }
+    throw err;
+  }
 
   // Restored only on the success path, deliberately. A 55P03 aborts the
   // (sub)transaction, so any statement after it fails 25P02 — restoring in a
@@ -774,14 +890,32 @@ async function lockOwnedItemsInGlobalOrder(
   // enter the map indistinguishable from a locked row, which is exactly the
   // unlocked-validation hole this fix exists to close. Excluding it makes the id
   // simply missing, so validation refuses the request instead of trusting an
-  // is_bundle flag nothing is holding. It costs nothing today — catalog ids are
-  // server-generated `defaultRandom()` and no writer moves partner_id, so no
-  // production path can put an owned row here — and it keeps the helper's
-  // invariant true on its own terms rather than on the rest of the repo's
-  // conventions. (This is only sound because ids are normalised before the
+  // is_bundle flag nothing is holding. (This is only sound because ids are normalised before the
   // locking query: otherwise the SAME row, locked by query 1 under one spelling,
   // would come back from query 2 under another and be dropped as if unlocked.)
   const foreign = unlocked.filter((r) => r.partnerId !== partnerId);
+
+  // A row that became OURS between the two statements is a retryable race, not
+  // a missing component. Dropping it silently (the previous behaviour here)
+  // would fail the request COMPONENT_NOT_FOUND for an id that demonstrably
+  // exists and is owned by the caller — fail-closed for the locking invariant,
+  // but a wrong and unactionable answer.
+  //
+  // NOT REACHABLE through either production caller today, and this does not
+  // pretend otherwise: the create validator exposes no `id` and the update
+  // validator no `partnerId` (`packages/shared/src/validators/catalog.ts`), so
+  // ids are always `defaultRandom()` and nothing moves ownership. It is a
+  // guard on the helper's own invariant rather than a fix for a live bug —
+  // kept because the invariant is what makes the second, UNLOCKED read safe to
+  // trust, and an id source or an ownership transfer added later would
+  // otherwise reopen the hole silently. Cheap: one length comparison.
+  if (unlocked.length !== foreign.length) {
+    throw new CatalogServiceError(
+      'Catalog item is busy: another operation is modifying it. Try again in a moment.',
+      409,
+      'ITEM_BUSY',
+    );
+  }
 
   return new Map([...owned, ...foreign].map((r) => [r.id, { isBundle: r.isBundle, partnerId: r.partnerId }]));
 }
@@ -959,10 +1093,13 @@ export async function setBundleComponents(
 /**
  * Runs `fn`, converting a lock-wait abort into ITEM_BUSY (409).
  *
- * 55P03 is the per-lock backstop firing; 57014 is the statement deadline. Both
- * mean the same thing to a caller — someone else is writing these rows, retry —
- * and neither is a bug in the request. The SQLSTATE is read with `pgErrorCode`
- * because Drizzle wraps the driver error and puts the code on `.cause`.
+ * ONLY 55P03, which Postgres defines as `lock_not_available` — it genuinely
+ * identifies contention on these rows, so "retry" is sound advice.
+ *
+ * 57014 is deliberately excluded even though the statement deadline raises it:
+ * it is generic `query_canceled` and identifies no source. The SQLSTATE is read
+ * with `pgErrorCode` because Drizzle wraps the driver error and puts the code
+ * on `.cause`.
  */
 async function withBundleLockTimeoutMapped<T>(fn: () => Promise<T>): Promise<T> {
   try {
@@ -1128,4 +1265,4 @@ export async function computeBundleEconomics(
  * compares it against a live server; exporting it outright would invite callers
  * to treat it as a validator, which it is not.
  */
-export const __testables = { canonicalUuid };
+export const __testables = { canonicalUuid, lockOwnedItemsInGlobalOrder };
