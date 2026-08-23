@@ -323,7 +323,36 @@
     "tabs": {
       "contracts": "Contracts",
       "templates": "Templates",
-      "documents": "Documents"
+      "documents": "Documents",
+      "currencyMismatches": "Currency mismatches"
+    },
+    "currencyMismatches": {
+      "title": "Currency mismatches",
+      "description": "Contracts still stamped in a currency their organization no longer bills in. Open a contract to review it — nothing is changed in bulk from here.",
+      "loading": "Loading…",
+      "loadError": "Could not load the currency mismatch report.",
+      "loadMore": "Load more",
+      "emptyTitle": "No currency mismatches",
+      "emptyBody": "Every contract is stamped in its organization's billing currency.",
+      "eligible": "Ready to restamp",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} draft invoices",
+      "blockingDrafts_one": "{{count}} draft invoice",
+      "columns": {
+        "contract": "Contract",
+        "organization": "Organization",
+        "status": "Status",
+        "currencies": "Contract → organization",
+        "nextBilling": "Next billing",
+        "eligibility": "Restamp eligibility"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Not active — only active contracts can be restamped",
+        "ORPHANED_CONTRACT_SOURCE": "Contract-sourced invoice lines cannot be attributed",
+        "ORPHANED_BILLING_PERIOD": "A billing period has no reachable invoice",
+        "BROKEN_CONTRACT_LINEAGE": "Invoice lineage check failed",
+        "UNBILLED_MONETARY_ROWS": "Draft invoices still hold money billed under this contract"
+      }
     },
     "templatesTab": {
       "title": "Contract templates",

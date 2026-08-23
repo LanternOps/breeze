@@ -77,6 +77,23 @@ export const listContractsQuerySchema = z.object({
   cursor: z.string().guid().optional()
 });
 
+/**
+ * Query for GET /contracts/currency-mismatches (multi-currency wave 6, #3778,
+ * Task 15) — the read-only anomaly inventory of contracts whose stamped
+ * currency no longer matches their organization's. `status` is a FILTER, not a
+ * scope: the report covers EVERY status by default, because a cancelled
+ * mis-stamped contract is still an anomaly worth seeing. Strict, so a mis-keyed
+ * filter is a 400 rather than a silently unfiltered full report.
+ */
+export const contractCurrencyMismatchQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
+  status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().guid().optional(),
+}).strict();
+
+export type ContractCurrencyMismatchQuery = z.infer<typeof contractCurrencyMismatchQuerySchema>;
+
 export const bulkContractIdsSchema = z.object({
   // capped at BULK_ID_LIMIT: each item runs sequentially in its own short transaction (conn-pool safety)
   ids: z.array(z.string().guid()).min(1).max(BULK_ID_LIMIT),

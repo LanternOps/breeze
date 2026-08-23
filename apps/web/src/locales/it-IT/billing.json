@@ -323,7 +323,36 @@
     "tabs": {
       "contracts": "Contratti",
       "templates": "Template",
-      "documents": "Documenti"
+      "documents": "Documenti",
+      "currencyMismatches": "Discrepanze di valuta"
+    },
+    "currencyMismatches": {
+      "title": "Discrepanze di valuta",
+      "description": "Contratti ancora registrati in una valuta che la loro organizzazione non fattura più. Apri un contratto per esaminarlo: qui non viene modificato nulla in blocco.",
+      "loading": "Caricamento…",
+      "loadError": "Impossibile caricare il report delle discrepanze di valuta.",
+      "loadMore": "Carica altro",
+      "emptyTitle": "Nessuna discrepanza di valuta",
+      "emptyBody": "Ogni contratto è registrato nella valuta di fatturazione della sua organizzazione.",
+      "eligible": "Pronto per la ri-registrazione",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} fatture in bozza",
+      "blockingDrafts_one": "{{count}} fattura in bozza",
+      "columns": {
+        "contract": "Contratto",
+        "organization": "Organizzazione",
+        "status": "Stato",
+        "currencies": "Contratto → organizzazione",
+        "nextBilling": "Prossima fatturazione",
+        "eligibility": "Idoneità alla ri-registrazione"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Non attivo: solo i contratti attivi possono essere ri-registrati",
+        "ORPHANED_CONTRACT_SOURCE": "Le righe fattura originate da contratti non possono essere attribuite",
+        "ORPHANED_BILLING_PERIOD": "Un periodo di fatturazione non ha una fattura raggiungibile",
+        "BROKEN_CONTRACT_LINEAGE": "Il controllo della provenienza della fattura non è riuscito",
+        "UNBILLED_MONETARY_ROWS": "Le fatture in bozza contengono ancora importi di questo contratto"
+      }
     },
     "templatesTab": {
       "title": "Template di contratto",

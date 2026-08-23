@@ -323,7 +323,36 @@
     "tabs": {
       "contracts": "Contratos",
       "templates": "Plantillas",
-      "documents": "Documentos"
+      "documents": "Documentos",
+      "currencyMismatches": "Diferencias de moneda"
+    },
+    "currencyMismatches": {
+      "title": "Diferencias de moneda",
+      "description": "Contratos que siguen registrados en una moneda que su organización ya no factura. Abre un contrato para revisarlo: aquí no se cambia nada de forma masiva.",
+      "loading": "Cargando…",
+      "loadError": "No se pudo cargar el informe de diferencias de moneda.",
+      "loadMore": "Cargar más",
+      "emptyTitle": "Sin diferencias de moneda",
+      "emptyBody": "Todos los contratos están registrados en la moneda de facturación de su organización.",
+      "eligible": "Listo para volver a registrar",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} facturas en borrador",
+      "blockingDrafts_one": "{{count}} factura en borrador",
+      "columns": {
+        "contract": "Contrato",
+        "organization": "Organización",
+        "status": "Estado",
+        "currencies": "Contrato → organización",
+        "nextBilling": "Próxima facturación",
+        "eligibility": "Elegibilidad para volver a registrar"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "No activo: solo los contratos activos pueden volver a registrarse",
+        "ORPHANED_CONTRACT_SOURCE": "No se pueden atribuir las líneas de factura originadas en contratos",
+        "ORPHANED_BILLING_PERIOD": "Un período de facturación no tiene una factura accesible",
+        "BROKEN_CONTRACT_LINEAGE": "La verificación del origen de la factura falló",
+        "UNBILLED_MONETARY_ROWS": "Las facturas en borrador todavía retienen importes de este contrato"
+      }
     },
     "templatesTab": {
       "title": "Plantillas de contrato",

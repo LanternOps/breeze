@@ -323,7 +323,36 @@
     "tabs": {
       "contracts": "Sözleşmeler",
       "templates": "Şablonlar",
-      "documents": "Belgeler"
+      "documents": "Belgeler",
+      "currencyMismatches": "Para birimi uyuşmazlıkları"
+    },
+    "currencyMismatches": {
+      "title": "Para birimi uyuşmazlıkları",
+      "description": "Kuruluşunun artık faturalamadığı bir para biriminde kayıtlı sözleşmeler. İncelemek için bir sözleşme açın — burada toplu değişiklik yapılmaz.",
+      "loading": "Yükleniyor…",
+      "loadError": "Para birimi uyuşmazlığı raporu yüklenemedi.",
+      "loadMore": "Daha fazla yükle",
+      "emptyTitle": "Para birimi uyuşmazlığı yok",
+      "emptyBody": "Her sözleşme, kuruluşunun faturalama para biriminde kayıtlı.",
+      "eligible": "Yeniden kaydedilmeye hazır",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} taslak fatura",
+      "blockingDrafts_one": "{{count}} taslak fatura",
+      "columns": {
+        "contract": "Sözleşme",
+        "organization": "Kuruluş",
+        "status": "Durum",
+        "currencies": "Sözleşme → kuruluş",
+        "nextBilling": "Sonraki faturalama",
+        "eligibility": "Yeniden kayıt uygunluğu"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Etkin değil — yalnızca etkin sözleşmeler yeniden kaydedilebilir",
+        "ORPHANED_CONTRACT_SOURCE": "Sözleşme kaynaklı fatura satırları ilişkilendirilemiyor",
+        "ORPHANED_BILLING_PERIOD": "Bir faturalama döneminin erişilebilir faturası yok",
+        "BROKEN_CONTRACT_LINEAGE": "Fatura soy zinciri denetimi başarısız oldu",
+        "UNBILLED_MONETARY_ROWS": "Taslak faturalar bu sözleşmede faturalanan tutarları hâlâ tutuyor"
+      }
     },
     "templatesTab": {
       "title": "Sözleşme şablonları",

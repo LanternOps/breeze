@@ -323,7 +323,36 @@
     "tabs": {
       "contracts": "Contratos",
       "templates": "Modelos",
-      "documents": "Documentos"
+      "documents": "Documentos",
+      "currencyMismatches": "Divergências de moeda"
+    },
+    "currencyMismatches": {
+      "title": "Divergências de moeda",
+      "description": "Contratos ainda registrados em uma moeda que a organização não fatura mais. Abra um contrato para revisá-lo — nada é alterado em massa aqui.",
+      "loading": "Carregando…",
+      "loadError": "Não foi possível carregar o relatório de divergências de moeda.",
+      "loadMore": "Carregar mais",
+      "emptyTitle": "Nenhuma divergência de moeda",
+      "emptyBody": "Todos os contratos estão registrados na moeda de faturamento da sua organização.",
+      "eligible": "Pronto para reregistrar",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} faturas em rascunho",
+      "blockingDrafts_one": "{{count}} fatura em rascunho",
+      "columns": {
+        "contract": "Contrato",
+        "organization": "Organização",
+        "status": "Status",
+        "currencies": "Contrato → organização",
+        "nextBilling": "Próximo faturamento",
+        "eligibility": "Elegibilidade para reregistro"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Não ativo — apenas contratos ativos podem ser reregistrados",
+        "ORPHANED_CONTRACT_SOURCE": "Linhas de fatura originadas de contratos não podem ser atribuídas",
+        "ORPHANED_BILLING_PERIOD": "Um período de faturamento não tem fatura acessível",
+        "BROKEN_CONTRACT_LINEAGE": "A verificação de origem da fatura falhou",
+        "UNBILLED_MONETARY_ROWS": "Faturas em rascunho ainda retêm valores faturados neste contrato"
+      }
     },
     "templatesTab": {
       "title": "Modelos de contrato",

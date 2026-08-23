@@ -323,7 +323,36 @@
     "tabs": {
       "contracts": "Verträge",
       "templates": "Vorlagen",
-      "documents": "Dokumente"
+      "documents": "Dokumente",
+      "currencyMismatches": "Währungsabweichungen"
+    },
+    "currencyMismatches": {
+      "title": "Währungsabweichungen",
+      "description": "Verträge, die noch in einer Währung erfasst sind, in der ihre Organisation nicht mehr abrechnet. Öffnen Sie einen Vertrag zur Prüfung — hier wird nichts in Sammelaktionen geändert.",
+      "loading": "Wird geladen…",
+      "loadError": "Der Bericht zu Währungsabweichungen konnte nicht geladen werden.",
+      "loadMore": "Mehr laden",
+      "emptyTitle": "Keine Währungsabweichungen",
+      "emptyBody": "Jeder Vertrag ist in der Abrechnungswährung seiner Organisation erfasst.",
+      "eligible": "Bereit zur Neuerfassung",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} Rechnungsentwürfe",
+      "blockingDrafts_one": "{{count}} Rechnungsentwurf",
+      "columns": {
+        "contract": "Vertrag",
+        "organization": "Organisation",
+        "status": "Status",
+        "currencies": "Vertrag → Organisation",
+        "nextBilling": "Nächste Abrechnung",
+        "eligibility": "Neuerfassung möglich"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Nicht aktiv — nur aktive Verträge können neu erfasst werden",
+        "ORPHANED_CONTRACT_SOURCE": "Vertragsbezogene Rechnungspositionen können nicht zugeordnet werden",
+        "ORPHANED_BILLING_PERIOD": "Ein Abrechnungszeitraum hat keine erreichbare Rechnung",
+        "BROKEN_CONTRACT_LINEAGE": "Prüfung der Rechnungsherkunft fehlgeschlagen",
+        "UNBILLED_MONETARY_ROWS": "Rechnungsentwürfe enthalten noch Beträge aus diesem Vertrag"
+      }
     },
     "templatesTab": {
       "title": "Vertragsvorlagen",

@@ -323,7 +323,36 @@
     "tabs": {
       "contracts": "Contrats",
       "templates": "Modèles",
-      "documents": "Documents"
+      "documents": "Documents",
+      "currencyMismatches": "Écarts de devise"
+    },
+    "currencyMismatches": {
+      "title": "Écarts de devise",
+      "description": "Contrats encore libellés dans une devise que leur organisation ne facture plus. Ouvrez un contrat pour l'examiner — rien n'est modifié en masse ici.",
+      "loading": "Chargement…",
+      "loadError": "Impossible de charger le rapport des écarts de devise.",
+      "loadMore": "Charger plus",
+      "emptyTitle": "Aucun écart de devise",
+      "emptyBody": "Chaque contrat est libellé dans la devise de facturation de son organisation.",
+      "eligible": "Prêt à être re-libellé",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} factures en brouillon",
+      "blockingDrafts_one": "{{count}} facture en brouillon",
+      "columns": {
+        "contract": "Contrat",
+        "organization": "Organisation",
+        "status": "Statut",
+        "currencies": "Contrat → organisation",
+        "nextBilling": "Prochaine facturation",
+        "eligibility": "Éligibilité au re-libellé"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Non actif — seuls les contrats actifs peuvent être re-libellés",
+        "ORPHANED_CONTRACT_SOURCE": "Les lignes de facture issues de contrats ne peuvent pas être attribuées",
+        "ORPHANED_BILLING_PERIOD": "Une période de facturation n'a aucune facture accessible",
+        "BROKEN_CONTRACT_LINEAGE": "La vérification de la filiation des factures a échoué",
+        "UNBILLED_MONETARY_ROWS": "Des factures en brouillon contiennent encore des montants de ce contrat"
+      }
     },
     "templatesTab": {
       "title": "Modèles de contrat",
