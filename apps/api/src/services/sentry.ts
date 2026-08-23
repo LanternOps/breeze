@@ -73,6 +73,15 @@ const ALLOWED_TAG_NAMES = new Set([
   // bucketEventLoopLag); neither carries a tenant, device, or host identifier.
   'connect_timeout_cause',
   'event_loop_lag_bucket',
+  // #3759: the device cascade warns in two situations an operator must be able
+  // to tell apart — it could not read the caller's prior `lock_timeout` back
+  // (so the bound stays in force instead of being restored), or the parent row
+  // lock matched no row (so the cascade ran under the old child-first ordering,
+  // the exact race the lock exists to close). `scrubEvent` deletes `message`,
+  // `logentry` and `extra` from every event, so without this the warning
+  // arrives as a contentless, ungroupable blank. Closed two-value set, written
+  // as string literals at both call sites; carries no tenant or device id.
+  'device_deletion_warning',
   // #3214: the pool-health watchdog's verdict is the ONLY part of its report
   // that can survive to Sentry — `scrubEvent` deletes `message`, `logentry` and
   // `extra` from every event, so an unallowlisted verdict would arrive as a

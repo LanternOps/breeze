@@ -38,6 +38,27 @@ export function isPgUniqueViolation(err: unknown, constraint?: string): boolean 
  * that branch on several codes; for a simple unique check prefer
  * {@link isPgUniqueViolation}. Returns undefined if no SQLSTATE is found.
  */
+/**
+ * Returns the error object that actually carries the SQLSTATE, unwrapping the
+ * DrizzleQueryError `.cause` chain — so `code`, `detail`, `table_name`,
+ * `constraint_name` and friends are all read from the SAME node.
+ *
+ * Use this instead of {@link pgErrorCode} whenever the handler needs more than
+ * the code. Unwrapping only the code and then reading `detail` off the OUTER
+ * error yields a blank detail on every Drizzle-issued statement, which is how a
+ * mapper ends up returning "related records in undefined".
+ */
+export function pgErrorNode(err: unknown): Record<string, unknown> | undefined {
+  let cur: unknown = err;
+  for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {
+    if (typeof (cur as { code?: unknown }).code === 'string') {
+      return cur as Record<string, unknown>;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 export function pgErrorCode(err: unknown): string | undefined {
   let cur: unknown = err;
   for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {

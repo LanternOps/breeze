@@ -71,6 +71,8 @@ import {
   withExtensionDeviceOrgDenormalized,
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
+import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+
 
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
@@ -1597,13 +1599,62 @@ coreRoutes.delete(
         }
       });
     } catch (err: unknown) {
-      const pgCode = (err as { code?: string })?.code;
+      // MUST unwrap. Drizzle wraps the postgres-js PostgresError in a
+      // DrizzleQueryError whose own `.code` is undefined — the SQLSTATE lives on
+      // `.cause`. Verified against live Postgres with real two-connection lock
+      // contention: a genuine lock timeout arrives here as
+      // `{ code: undefined, cause: { code: '55P03' } }`, so the top-level read
+      // this replaced returned undefined and BOTH branches below were dead —
+      // the 55P03 one silently, and the pre-existing 23503 one too. `pgErrors`
+      // documents exactly this hazard and exists for it.
+      const pgCode = pgErrorCode(err);
       if (pgCode === '23503') {
-        const detail = (err as { detail?: string })?.detail ?? '';
-        const constraintTable = (err as { table_name?: string })?.table_name;
-        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail}`, err);
+        // Read the diagnostics off the SAME node the code came from. Unwrapping
+        // only the code and then reading `detail`/`table_name` off the outer
+        // Drizzle error yields blanks on every wrapped statement, i.e. "related
+        // records in undefined" — this branch had never run before the unwrap
+        // above, so that was never observed.
+        const node = pgErrorNode(err);
+        const detail = typeof node?.detail === 'string' ? node.detail : '';
+        const constraintTable = typeof node?.table_name === 'string' ? node.table_name : undefined;
+        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail} (uninstallSent=${uninstallSent})`, err);
+        // This catch also covers dissolveLinkGroupIfBelowMinimum, so the
+        // violation is not necessarily a missing cascade-list table — say
+        // "may" rather than asserting a cause we have not established.
+        //
+        // uninstallSent carries the same weight it does on the 55P03 branch
+        // below: SELF_UNINSTALL is dispatched BEFORE this transaction and is
+        // irreversible, so the transaction rolling back leaves the row present
+        // while the agent may already be removing itself. The web callers
+        // surface only `err.message`, so the disclosure has to be IN the text,
+        // not merely in the JSON field.
         return c.json({
-          error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. This table may need to be added to the cascade delete list.`,
+          error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. A related table may be missing from the cascade delete list.${uninstallSent ? ' The uninstall command was already sent to the agent — the device record still exists, so retry this delete once the blocking records are resolved.' : ''}`,
+          uninstallSent,
+        }, 409);
+      }
+      // 55P03 lock_not_available — the cascade bounds its wait for the devices
+      // row (services/deviceDeletion.ts) so a delete racing a long-running site
+      // move or moveOrg fails fast instead of pinning a pooled connection.
+      // Without this branch that bound would surface as a generic 500, which
+      // reads as a bug rather than the transient, retryable conflict it is.
+      //
+      // RETRY IS NOT OPTIONAL WHEN uninstallSent IS TRUE. The best-effort
+      // SELF_UNINSTALL above is dispatched BEFORE this transaction and is
+      // irreversible, so a bounded lock failure is the one path that can leave
+      // an agent uninstalling itself while its device row survives — an
+      // unmanageable orphan if the operator walks away. The transaction itself
+      // rolled back cleanly (the lock is the first statement, so nothing was
+      // mutated); it is only that pre-dispatched command that has already
+      // happened. Report it explicitly so the caller knows a retry is required
+      // rather than merely advisable.
+      if (pgCode === '55P03') {
+        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it (uninstallSent=${uninstallSent})`, err);
+        return c.json({
+          error: uninstallSent
+            ? 'Device is busy: another operation is modifying it, so it was not deleted. The uninstall command was already sent to the agent — retry this delete to remove the device record.'
+            : 'Device is busy: another operation is currently modifying it. Try again in a moment.',
+          uninstallSent,
         }, 409);
       }
       throw err;
