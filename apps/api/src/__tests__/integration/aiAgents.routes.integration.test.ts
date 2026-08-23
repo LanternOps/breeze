@@ -423,11 +423,40 @@ describe('/api/v1/ai/agents', () => {
     expect((await res.json() as { code?: string }).code).toBe('MFA_REQUIRED');
   });
 
-  it('refuses a write from a role holding only organizations:read', async () => {
+  it('refuses every read to a role holding organizations:* but not ai_agents:*', async () => {
+    // The gate is a DEDICATED capability, not organizations:*. If these routes
+    // ever slip back to ORGS_READ/ORGS_WRITE, every org admin silently regains
+    // agent-authoring authority — which, once wave 4 enables `act`, is authority
+    // over customer machines.
     const app = buildApp();
     const seeded = await createIntegrationTestClient(app, {
       scope: 'partner',
-      rolePermissions: [{ resource: 'organizations', action: 'read' }],
+      rolePermissions: [
+        { resource: 'organizations', action: 'read' },
+        { resource: 'organizations', action: 'write' },
+      ],
+    });
+    const orgOnly = await mfaClient(app, {
+      userId: seeded.env.user.id,
+      email: seeded.env.user.email,
+      roleId: seeded.env.role.id,
+      orgId: null,
+      partnerId: seeded.env.partner.id,
+      scope: 'partner',
+    });
+
+    expect((await orgOnly.get('/api/v1/ai/agents')).status).toBe(403);
+    const res = await orgOnly.post('/api/v1/ai/agents', {
+      ownerScope: 'partner', kind: 'triage', name: 'Org perms only', mode: 'shadow',
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses a write from a role holding only ai_agents:read', async () => {
+    const app = buildApp();
+    const seeded = await createIntegrationTestClient(app, {
+      scope: 'partner',
+      rolePermissions: [{ resource: 'ai_agents', action: 'read' }],
     });
     const readOnly = await mfaClient(app, {
       userId: seeded.env.user.id,
