@@ -390,6 +390,39 @@ describe('accounting routes', () => {
     expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
   });
 
+  it('a successful capture with no updatedAt on the persisted row is reported, not logged as "unavailable"', async () => {
+    // Distinct from "the realm reported no currency": a good capture that cannot
+    // be written because the upsert returned an unexpected row shape is a defect,
+    // and silently discarding it under an "unavailable" warning hides it.
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.upsertConnection.mockResolvedValueOnce({
+      id: CONNECTION_ID,
+      partnerId: authState.partnerId,
+      provider: 'quickbooks',
+      realmId: 'realm-A',
+      updatedAt: null,
+      homeCurrency: null,
+    });
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('connected=1');
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+    expect(mocks.captureException).toHaveBeenCalled();
+  });
+
+  it('a realm that reports NO currency is a warning, never an exception', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
+    mocks.fetchHomeCurrency.mockResolvedValueOnce(null);
+
+    const res = await runCallback(app);
+
+    expect(res.status).toBe(302);
+    expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
   it('callback still connects when the compare-and-set loses the race, WITHOUT reporting an exception', async () => {
     // A lost CAS is an expected race on a normal user action (double connect),
     // so it must not reach Sentry at error level.

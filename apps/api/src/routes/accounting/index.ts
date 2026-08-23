@@ -306,8 +306,17 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
         { updatedAt: connection.updatedAt as Date, realmId: tokens.realmId },
         homeCurrency,
       ));
-    } else {
+    } else if (!homeCurrency) {
+      // The realm reported nothing — an ordinary external condition. Push-time
+      // fails closed on NULL, so a warning is the whole response.
       console.warn('[accounting] QuickBooks home currency unavailable', { partnerId: state.partnerId, provider });
+    } else {
+      // A GOOD capture we cannot anchor: the row we just upserted came back with
+      // no updatedAt, so the compare-and-set has no generation to target. That is
+      // an unexpected row shape, not an external outage — report it instead of
+      // discarding the value under an "unavailable" warning.
+      captureException(new Error('Accounting home currency captured but the persisted connection carried no updatedAt to compare-and-set against'), c);
+      console.error('[accounting] QuickBooks home currency captured but the persisted row has no updatedAt', { partnerId: state.partnerId, provider });
     }
   } catch (err) {
     // A lost compare-and-set is an EXPECTED race (double connect, concurrent
