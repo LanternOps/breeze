@@ -8,6 +8,7 @@ import { isHosted } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { countConnectedMailboxes } from './ticketMailbox/connectionService';
 import type {
   CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
@@ -656,8 +657,13 @@ export async function getOrgTicketSettings(orgId: string) {
 export async function upsertOrgTicketSettings(
   orgId: string,
   input: OrgTicketSettingsInput,
-  orgCurrencyCode: string,
 ) {
+  // #3778: the org currency is resolved INSIDE this transaction, under the
+  // SHARE barrier, as its first statement — the route used to resolve it in a
+  // separate pre-transaction read (`resolveAccessibleOrg`), which let a
+  // concurrent changeOrgCurrency stamp `rate_currency` with a stale code.
+  return db.transaction(async (tx) => {
+  const orgCurrencyCode = (await readOrgStampingDefaults(tx, orgId)).currencyCode;
   const fields: Record<string, unknown> = {};
   if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
   if (input.defaultHourlyRate !== undefined) {
@@ -691,7 +697,7 @@ export async function upsertOrgTicketSettings(
       }
     : {};
 
-  const [row] = await db
+  const [row] = await tx
     .insert(orgTicketSettings)
     .values({ orgId, rateCurrency: orgCurrencyCode, ...fields })
     .onConflictDoUpdate({
@@ -700,6 +706,7 @@ export async function upsertOrgTicketSettings(
     })
     .returning();
   return toOrgTicketSettingsResponse(orgId, row);
+  });
 }
 
 // ============================================================================

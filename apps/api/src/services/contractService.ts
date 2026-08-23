@@ -7,6 +7,7 @@ import { isRepresentableInCurrency, minorUnitExponent } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
+import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { countContractDevices, countContractSeats } from './contractQuantities';
@@ -65,18 +66,23 @@ export async function createContract(input: {
   requireOrgAccess(actor, input.orgId);
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
   // Derive partnerId from the org row — never trust actor.partnerId for the contract's FK.
-  const [org] = await db.select({ partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
+  // Creation barrier (#3778): org SHARE lock first, held to commit, so a
+  // concurrent changeOrgCurrency cannot let a default-derived stamp land unseen.
+  const [row] = await db.transaction(async (tx) => {
+  const locked = await readOrgStampingDefaults(tx, input.orgId);
+  const [org] = await tx.select({ partnerId: organizations.partnerId })
     .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
   if (!org) throw new ContractServiceError('Organization not found', 404, 'CONTRACT_NOT_FOUND');
-  const [row] = await db.insert(contracts).values({
+  return tx.insert(contracts).values({
     partnerId: org.partnerId, orgId: input.orgId, name: input.name, status: 'draft',
     billingTiming: input.billingTiming, intervalMonths: input.intervalMonths,
     startDate: input.startDate, endDate: input.endDate ?? null,
-    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? org.currencyCode,
+    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? locked.currencyCode,
     notes: input.notes ?? null, terms: input.terms ?? null, createdBy: actor.userId,
     autoRenew: input.autoRenew ?? false, renewalTermMonths: input.renewalTermMonths ?? null,
     renewalNoticeDays: input.renewalNoticeDays ?? null,
   }).returning();
+  });
   return row!;
 }
 

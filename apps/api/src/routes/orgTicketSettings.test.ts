@@ -144,10 +144,11 @@ describe('PATCH /organizations/:id/ticket-settings', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.orgId).toBe(ORG_ID);
+    // #3778: the route no longer passes a currency — the service resolves it
+    // inside its own transaction, under the org SHARE barrier.
     expect(serviceMocks.upsertOrgTicketSettings).toHaveBeenCalledWith(
       ORG_ID,
       expect.objectContaining({ defaultHourlyRate: 90, defaultBillable: true }),
-      'CAD',
     );
     expect(auditSpy).toHaveBeenCalledTimes(1);
     const event = auditSpy.mock.calls[0]?.[1];

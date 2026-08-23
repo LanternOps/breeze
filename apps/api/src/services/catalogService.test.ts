@@ -256,26 +256,32 @@ describe('setOrgPriceOverride', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
   it('locks the item, stamps the org currency + partner_id, upserts', async () => {
-    queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]); // lock
-    queueResult([{ partnerId: 'p1', currencyCode: 'EUR' }]); // org
+    queueResult([{ currencyCode: 'EUR' }]); // org SHARE barrier FIRST (#3778)
+    queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]); // item lock
+    queueResult([{ partnerId: 'p1' }]); // org partner membership
     queueResult([{ id: 'ov1', unitPrice: '9.00', currencyCode: 'EUR' }]);
     const row = await svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor);
     expect(row).toMatchObject({ unitPrice: '9.00' });
-    expect(mock.for.mock.invocationCallOrder[0]!).toBeLessThan(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!);
+    // Lock order (#3778): organizations FOR SHARE, THEN the catalog item FOR
+    // UPDATE, then the upsert — the org lock is the transaction's first statement.
+    expect(mock.for.mock.calls.map((c) => c[0])).toEqual(['share', 'update']);
+    expect(mock.for.mock.invocationCallOrder[1]!).toBeLessThan(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!);
     expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'p1', orgId: 'org1', currencyCode: 'EUR', unitPrice: '9.00' }));
   });
 
   it('ORG_DENIED (403) when the org belongs to another partner', async () => {
+    queueResult([{ currencyCode: 'EUR' }]); // org SHARE barrier (#3778)
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]);
-    queueResult([{ partnerId: 'p2', currencyCode: 'EUR' }]);
+    queueResult([{ partnerId: 'p2' }]);
     await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor))
       .rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
     expect(mock.insert).not.toHaveBeenCalled();
   });
 
   it('explicit JPY 10.5 → PRICE_NOT_REPRESENTABLE', async () => {
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier (#3778)
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]);
-    queueResult([{ partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ partnerId: 'p1' }]);
     await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 10.5, currencyCode: 'JPY' }, actor))
       .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
   });

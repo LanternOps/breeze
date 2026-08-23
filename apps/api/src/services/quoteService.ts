@@ -15,6 +15,7 @@ import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
+import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   sanitizeRichTextHtml,
@@ -353,16 +354,12 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   // currency; the partner inheritance shipped for #3200 predates per-org
   // currency, B3). No DB-default backstop: a missed stamp must fail loudly
   // (23502 once wave 2 drops the column default), never mint a silent USD quote.
-  let currencyCode = input.currencyCode;
-  if (!currencyCode) {
-    const [org] = await db
-      .select({ currencyCode: organizations.currencyCode })
-      .from(organizations)
-      .where(eq(organizations.id, input.orgId))
-      .limit(1);
-    if (!org) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
-    currencyCode = org.currencyCode;
-  }
+  //
+  // Creation barrier (#3778): the default read happens under an org SHARE lock
+  // held until the INSERT commits (see readOrgStampingDefaults), so a
+  // concurrent changeOrgCurrency either counts this quote in its in-lock
+  // summary or this stamp is the NEW currency — never an old stamp committed
+  // unseen. An explicit `input.currencyCode` is a source copy: no org reread.
   // Number at creation (not at send): techs reference the number while drafting
   // and in the list. A deleted draft leaves a counter gap, which the numbering
   // contract explicitly tolerates (see allocateQuoteCounter). sendQuote keeps
@@ -370,20 +367,24 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   const year = new Date().getUTCFullYear();
   const counter = await allocateQuoteCounter(partnerId, year);
   const quoteNumber = formatQuoteNumber('Q', year, counter);
-  const [row] = await db.insert(quotes).values({
-    partnerId,
-    orgId: input.orgId,
-    siteId: input.siteId ?? null,
-    quoteNumber,
-    title: input.title?.trim() || null,
-    currencyCode,
-    taxRate,
-    expiryDate: input.expiryDate ?? null,
-    introNotes: input.introNotes ?? null,
-    terms: input.terms ?? null,
-    termsAndConditions: input.termsAndConditions ?? null,
-    createdBy: actor.userId,
-  }).returning();
+  const [row] = await db.transaction(async (tx) => {
+    const currencyCode = input.currencyCode
+      ?? (await readOrgStampingDefaults(tx, input.orgId)).currencyCode;
+    return tx.insert(quotes).values({
+      partnerId,
+      orgId: input.orgId,
+      siteId: input.siteId ?? null,
+      quoteNumber,
+      title: input.title?.trim() || null,
+      currencyCode,
+      taxRate,
+      expiryDate: input.expiryDate ?? null,
+      introNotes: input.introNotes ?? null,
+      terms: input.terms ?? null,
+      termsAndConditions: input.termsAndConditions ?? null,
+      createdBy: actor.userId,
+    }).returning();
+  });
   return row!;
 }
 
@@ -549,6 +550,19 @@ async function cloneQuoteCore(
   }
 
   return db.transaction(async (tx) => {
+    if (orgChanged) {
+      // #3778: re-verify the same-currency guard under the org SHARE barrier,
+      // the FIRST statement of this transaction. The pre-transaction read above
+      // is a fast-fail: a changeOrgCurrency committing between the two would
+      // otherwise let a clone land on an org billing in another currency.
+      const locked = await readOrgStampingDefaults(tx, targetOrgId);
+      if (locked.currencyCode !== source.currencyCode) {
+        throw new QuoteServiceError(
+          `target organization uses ${locked.currencyCode}; this quote is in ${source.currencyCode} — clone within the same currency or recreate the quote`,
+          400, 'CURRENCY_MISMATCH',
+        );
+      }
+    }
     const [cloned] = await tx.insert(quotes).values({
       id: quoteId,
       partnerId: source.partnerId,
@@ -1084,6 +1098,16 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
       .from(quoteBlocks)
       .where(and(eq(quoteBlocks.quoteId, id), eq(quoteBlocks.blockType, 'contract')));
     await db.transaction(async (tx) => {
+      // #3778: re-verify the same-currency guard under the org SHARE barrier as
+      // the FIRST statement of this transaction (the pre-transaction check above
+      // is a fast-fail only).
+      const lockedTarget = await readOrgStampingDefaults(tx, targetOrgId);
+      if (lockedTarget.currencyCode !== q.currencyCode) {
+        throw new QuoteServiceError(
+          `target organization uses ${lockedTarget.currencyCode}; this quote is in ${q.currencyCode} — reassign within the same currency or recreate the quote`,
+          400, 'CURRENCY_MISMATCH',
+        );
+      }
       await assertContractBlocksValidForOrg(contractBlocks, { orgId: targetOrgId, partnerId: q.partnerId }, tx);
       await tx.update(quotes).set(set).where(eq(quotes.id, id));
       // Move the denormalized org_id on every child row in the same transaction.

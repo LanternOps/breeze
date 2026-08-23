@@ -9,7 +9,9 @@ const state = vi.hoisted(() => ({
 vi.mock('../db', () => {
   const makeSelectChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const method of ['from', 'where', 'limit', 'orderBy']) {
+    // `.for('share'|'update')` terminates the chain the same way — the org SHARE
+    // barrier (readOrgStampingDefaults, #3778) ends on it.
+    for (const method of ['from', 'where', 'limit', 'orderBy', 'for']) {
       chain[method] = vi.fn(() => chain);
     }
     (chain as { then: unknown }).then = (resolve: (value: unknown) => unknown) =>
@@ -31,7 +33,7 @@ vi.mock('../db', () => {
     return chain;
   };
 
-  const tx = { insert: vi.fn(() => makeInsertChain()) };
+  const tx = { insert: vi.fn(() => makeInsertChain()), select: vi.fn(() => makeSelectChain()) };
   return {
     db: {
       select: vi.fn(() => makeSelectChain()),
@@ -149,6 +151,7 @@ describe('cloneQuote', () => {
       // resolveQuoteTaxRate for the NEW org: 8% org rate, no partner default
       [{ taxExempt: false, taxRate: '0.08000' }],
       [{ defaultTaxRate: null }],
+      [{ currencyCode: 'USD' }], // org SHARE barrier inside the clone tx (#3778)
     );
 
     const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2', title: 'Beta rollout' });
@@ -319,6 +322,7 @@ describe('cloneQuote', () => {
       // resolveQuoteTaxRate for the new org
       [{ taxExempt: false, taxRate: '0.08000' }],
       [{ defaultTaxRate: null }],
+      [{ currencyCode: 'USD' }], // org SHARE barrier inside the clone tx (#3778)
     );
 
     const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2' });

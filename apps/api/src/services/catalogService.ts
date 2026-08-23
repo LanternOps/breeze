@@ -5,6 +5,7 @@ import {
 } from '../db/schema';
 import { emitCatalogEvent } from './catalogEvents';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { readOrgStampingDefaults } from './orgCurrencyCore';
 import {
   deriveUnitPrice, resolvePriceFrom, isPriceGap, detectBundleProblems, computeBundleEconomicsFrom,
   type BundleHeadlineGap,
@@ -525,16 +526,22 @@ export async function setOrgPriceOverride(itemId: string, orgId: string, input: 
   const unitPrice = input.unitPrice.toFixed(2);
   assertPriceInRange(unitPrice);
   return db.transaction(async (tx) => {
-    const item = await lockOwnedItemOr404(itemId, partnerId, tx); // item lock FIRST
+    // Lock order (#3778): `organizations FOR SHARE` is the FIRST statement of
+    // this transaction, BEFORE the catalog item lock — this call site used to
+    // lock the item first and then read the org unlocked, which both inverted
+    // the wave-6 global order (organizations -> contracts/catalog_items) and let
+    // a concurrent changeOrgCurrency stamp an override with a stale currency.
+    const lockedOrg = await readOrgStampingDefaults(tx, orgId);
+    const item = await lockOwnedItemOr404(itemId, partnerId, tx);
     // Overrides carry an explicit currency (default: the org's) + the
     // denormalized partner_id the composite same-partner FKs require. A
     // cross-partner org is refused here as 403 rather than surfacing as 23503.
-    const [org] = await tx.select({ partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
+    const [org] = await tx.select({ partnerId: organizations.partnerId })
       .from(organizations).where(eq(organizations.id, orgId)).limit(1);
     if (!org || org.partnerId !== item.partnerId) {
       throw new CatalogServiceError('Organization not found for this partner', 403, 'ORG_DENIED');
     }
-    const currencyCode = input.currencyCode ?? org.currencyCode;
+    const currencyCode = input.currencyCode ?? lockedOrg.currencyCode;
     assertRepresentable(unitPrice, currencyCode);
     const rows = await tx.insert(catalogItemOrgPricing)
       .values({ catalogItemId: itemId, orgId, partnerId: item.partnerId, currencyCode, unitPrice })

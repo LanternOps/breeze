@@ -145,10 +145,17 @@ function setAuth(overrides: Partial<{
 //   1) to load source/target organizations (returns array of org rows)
 //   2) to look up the target site (returns array with one site row)
 // Each call to .from(...).where(...) returns a thenable resolving to an array.
+// Org rows of the CURRENT test, shared with the in-transaction org SHARE
+// barrier (#3778): readOrgStampingDefaultsMany locks both orgs ascending by id
+// before anything else in the move transaction, and the currency guard now
+// compares those locked values rather than the pre-transaction read.
+let currentOrgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }> = [];
+
 function rigOrgAndSiteSelects(opts: {
   orgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }>;
   siteRow: { id: string } | null;
 }) {
+  currentOrgRows = opts.orgRows;
   let call = 0;
   vi.mocked(db.select).mockImplementation(() => {
     const idx = call++;
@@ -198,6 +205,7 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
   const updatedTables: string[] = [];
   const statements: string[] = [];
   const deviceUpdateSets: any[] = [];
+  let barrierReads = 0;
 
   vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
     const tx = {
@@ -224,10 +232,23 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
       // position so lock-order assertions can place it against the UPDATEs.
       select: vi.fn().mockImplementation(() => ({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockImplementation(async () => {
-            statements.push(`SELECT tickets.id (after ${updatedTables.length} updates)`);
-            return [{ id: BOUND_TICKET_ID }];
-          }),
+          where: vi.fn().mockImplementation(() => ({
+            // Awaited directly => the ticket-id lookup feeding the currency guard.
+            then: (res: any, rej: any) => {
+              statements.push(`SELECT tickets.id (after ${updatedTables.length} updates)`);
+              return Promise.resolve([{ id: BOUND_TICKET_ID }]).then(res, rej);
+            },
+            // `.limit(1).for('share')` => the org SHARE barrier (#3778), served
+            // in ascending-id order from this test's org rows.
+            limit: vi.fn(() => ({
+              for: vi.fn((mode: string) => {
+                statements.push(`SELECT organizations FOR ${mode} (after ${updatedTables.length} updates)`);
+                const ordered = [...currentOrgRows].sort((a, b) => a.id.localeCompare(b.id));
+                const row = ordered[barrierReads++];
+                return Promise.resolve(row ? [{ currencyCode: row.currencyCode ?? 'USD' }] : []);
+              }),
+            })),
+          })),
         }),
       })),
     };

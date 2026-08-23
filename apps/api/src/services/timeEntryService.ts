@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
+import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
@@ -257,8 +258,28 @@ async function lockTicketRow(ticketId: string): Promise<{ id: string; orgId: str
  */
 async function resolveAndLockTicketLink(ticketId: string, actor: TimeEntryActor) {
   let link = await resolveTicketLink(ticketId, actor);
+  // Creation barrier (#3778), ticket-child protocol:
+  //   organizations FOR SHARE -> tickets FOR UPDATE -> time/part INSERT.
+  // resolveTicketLink's reads run in a SYSTEM context (a separate transaction),
+  // so they take no lock here — this SHARE is the request transaction's FIRST
+  // lock, which is what keeps `organizations` outermost. Held to commit, so a
+  // concurrent changeOrgCurrency either counts the row it is about to see or
+  // this stamp is already the new currency.
+  let org = await readOrgStampingDefaults(db, link.ticket.orgId);
   const locked = await lockTicketRow(ticketId);
-  if (locked.orgId !== link.ticket.orgId) link = await resolveTicketLink(ticketId, actor);
+  if (locked.orgId !== link.ticket.orgId) {
+    // The ticket moved org between the unlocked resolve and the ticket lock.
+    // The second org SHARE is taken while holding the ticket lock, which cannot
+    // cycle: every other holder of an org lock takes SHARE too (SHARE/SHARE do
+    // not conflict) and the only FOR UPDATE holder, changeOrgCurrency, locks
+    // nothing else at all.
+    org = await readOrgStampingDefaults(db, locked.orgId);
+    link = await resolveTicketLink(ticketId, actor);
+  }
+  // The locked value is authoritative. A disagreement means a currency change
+  // committed between the unlocked resolve and the barrier; re-resolve so the
+  // stamp AND the match-or-skip default rate come from the new currency.
+  if (org.currencyCode !== link.currencyCode) link = await resolveTicketLink(ticketId, actor);
   return link;
 }
 

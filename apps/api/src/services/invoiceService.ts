@@ -18,6 +18,7 @@ import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssem
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import { changeOrgCurrency } from './orgCurrencyService';
+import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
@@ -93,18 +94,22 @@ export async function createManualInvoice(input: { orgId: string; siteId?: strin
   // Stamp the document currency at creation (spec §5): the explicit override
   // (used internally by contract generation, which copies the CONTRACT's stamp)
   // or the org's currency — never the partner's, and never a DB default.
-  let currencyCode = input.currencyCode;
-  if (!currencyCode) {
-    const [org] = await db.select({ currencyCode: organizations.currencyCode })
-      .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
-    if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
-    currencyCode = org.currencyCode;
-  }
-  const rows = await db.insert(invoices).values({
-    partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
-    notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null,
-    currencyCode, createdBy: actor.userId
-  }).returning();
+  // Creation barrier (#3778): the org default is read under a SHARE lock held
+  // to commit, so `changeOrgCurrency`'s FOR UPDATE either sees this draft in its
+  // in-lock summary or this insert re-reads the NEW default — a default-derived
+  // stamp can never commit unseen. An explicit `currencyCode` is a source copy
+  // (contract generation) and must NOT reread the org.
+  const rows = await db.transaction(async (tx) => {
+    let currencyCode = input.currencyCode;
+    if (!currencyCode) {
+      currencyCode = (await readOrgStampingDefaults(tx, input.orgId)).currencyCode;
+    }
+    return tx.insert(invoices).values({
+      partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
+      notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null,
+      currencyCode, createdBy: actor.userId
+    }).returning();
+  });
   return rows[0]!;
 }
 
@@ -984,15 +989,16 @@ export async function assembleDraftFromOrg(
   // Create the draft FIRST so the gathered line totals are rounded in the
   // invoice row's actual currency (JPY drafts must not persist cent-fraction
   // line totals). On an empty gather the transient draft is deleted again.
-  const [org] = await db.select({ currencyCode: organizations.currencyCode })
-    .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
-  if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
   // Header currency: the org's current currency (spec §5), or an explicit
   // override so pre-change billables (snapshotted in the org's OLD currency)
   // stay invoiceable (spec §7). Never a conversion — rows in any other currency
-  // are returned under `blockedByCurrency`.
-  const currencyCode = input.currencyCode ?? org.currencyCode;
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  // are returned under `blockedByCurrency`. The default read takes the org
+  // SHARE barrier so the stamp cannot lose a race with changeOrgCurrency (#3778).
+  const [inv] = await db.transaction(async (tx) => {
+    const org = await readOrgStampingDefaults(tx, input.orgId);
+    const currencyCode = input.currencyCode ?? org.currencyCode;
+    return tx.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  });
   const gathered = mergeAssembly(
     await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode),
     await gatherOrgParts(input.orgId, from, to, inv!.currencyCode)
@@ -1010,12 +1016,13 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   requireSiteAccess(actor, null);
   // Draft first: gathered line totals must round in the invoice row's actual
   // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
-  const [org] = await db.select({ currencyCode: organizations.currencyCode })
-    .from(organizations).where(eq(organizations.id, tk.orgId)).limit(1);
-  if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
-  // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7).
-  const currencyCode = opts.currencyCode ?? org.currencyCode;
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  // Ticket org's currency (spec §5) or the explicit old-currency override (spec §7),
+  // read under the org SHARE barrier (#3778).
+  const [inv] = await db.transaction(async (tx) => {
+    const org = await readOrgStampingDefaults(tx, tk.orgId);
+    const currencyCode = opts.currencyCode ?? org.currencyCode;
+    return tx.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
+  });
   const gathered = await gatherTicketBillables(ticketId, inv!.currencyCode);
   return finishAssembly(inv!, gathered, 'Nothing billable on this ticket', actor);
 }

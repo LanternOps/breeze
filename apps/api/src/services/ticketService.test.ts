@@ -139,6 +139,23 @@ vi.mock('../db', () => ({
           })
         })),
         execute: vi.fn((...args) => dbMocks.txExecuteMock(...args)),
+        // #3778: moveTicketOrg reads the org SHARE barrier and the org metadata
+        // INSIDE the transaction, so the tx stub needs a select chain that also
+        // terminates on `.for('share')`.
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn((w: unknown) => {
+              selectWhereMock(w);
+              return {
+                limit: vi.fn((l: unknown) => {
+                  selectLimitMock(l);
+                  const r = dbMocks.selectResult();
+                  return Object.assign(Promise.resolve(r), { for: vi.fn(() => Promise.resolve(r)) });
+                }),
+              };
+            }),
+          })),
+        })),
       };
       return fn(tx);
     })
@@ -2526,6 +2543,8 @@ describe('moveTicketOrg', () => {
     // Target org { id:'oB', partnerId:'p1', name:'Beta Corp' }
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }]) // getTicketOrThrow
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oB
       .mockResolvedValueOnce([                                                               // org lookup (IN clause)
         { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
         { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
@@ -2578,6 +2597,8 @@ describe('moveTicketOrg', () => {
     // Ticket in org oA (partner p1), target org oX (partner p2)
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }]) // ticket
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oX
       .mockResolvedValueOnce([
         { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
         { id: 'oX', partnerId: 'p2', name: 'Cross Corp', currencyCode: 'USD' }  // different partner!
@@ -2587,7 +2608,8 @@ describe('moveTicketOrg', () => {
     expect(err).toBeInstanceOf(TicketServiceError);
     expect(err.status).toBe(400);
     expect(err.message).toMatch(/same partner/i);
-    // No transaction started
+    // The transaction opens (the org SHARE barrier is its first statement, #3778)
+    // but rolls back: nothing is written.
     expect(setMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
     expect(auditMock).not.toHaveBeenCalled();
@@ -2611,6 +2633,8 @@ describe('moveTicketOrg', () => {
     // Org lookup returns only the source org — target is missing
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([])                          // org SHARE barrier: oB — absent, tolerated
       .mockResolvedValueOnce([{ id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' }]); // no oB row
 
     const err = await moveTicketOrg('t1', 'oB', { userId: 'admin' }).catch(e => e);
@@ -2624,6 +2648,8 @@ describe('moveTicketOrg', () => {
   function seedCrossCurrencyMove() {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([{ currencyCode: 'EUR' }])  // org SHARE barrier: oB
       .mockResolvedValueOnce([
         { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
         { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'EUR' }
@@ -2687,6 +2713,8 @@ describe('moveTicketOrg', () => {
   it('(c) a same-currency move calls the guard with matching currencies (it short-circuits) and changes nothing else', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oB
       .mockResolvedValueOnce([
         { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
         { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }

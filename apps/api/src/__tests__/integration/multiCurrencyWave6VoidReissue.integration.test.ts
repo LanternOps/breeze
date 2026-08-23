@@ -135,7 +135,7 @@ describe.runIf(RUN)(gateLabel('G5', 'void / reissue'), () => {
     // --- Seed: USD partner (language de-DE) + EUR org -----------------------
     const fixture = await seedGateOrg('EUR', { partnerCurrency: 'USD', partnerLanguage: 'de-DE' });
     await withSystemDbAccessContext(() => upsertOrgTicketSettings(
-      fixture.orgId, { defaultHourlyRate: 85.5, defaultBillable: true }, 'EUR',
+      fixture.orgId, { defaultHourlyRate: 85.5, defaultBillable: true },
     ));
     const ticket = await withSystemDbAccessContext(() => createTicket(
       { orgId: fixture.orgId, subject: 'W6 G5 EUR void/reissue', source: 'manual' },

@@ -119,6 +119,7 @@ describe('quoteService deposits', () => {
     queueResult([{ taxExempt: false, taxRate: '0.05000' }]);
     queueResult([{ defaultTaxRate: null }]);
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -149,6 +150,7 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
     queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp) — NO resolveQuoteTaxRate selects follow
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -174,6 +176,7 @@ describe('quoteService deposits', () => {
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -224,6 +227,7 @@ describe('quoteService deposits', () => {
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks re-validation fetch
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     // assertContractBlockValid inside the tx: version published, template OWNED BY org1 (invalid for org2)
     queueResult([{ templateId: 'tpl-1', status: 'published' }]);
     queueResult([{ status: 'active', orgId: 'org1', partnerId: 'p1' }]);
@@ -242,6 +246,7 @@ describe('quoteService deposits', () => {
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks fetch
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([{ templateId: 'tpl-1', status: 'published' }]); // version published
     queueResult([{ status: 'active', orgId: null, partnerId: 'p1' }]); // PARTNER-WIDE — visible to every org of the partner
     queueResult([]); // tx: quotes header update

@@ -69,3 +69,38 @@ export async function readOrgStampingDefaults(
   if (!org) throw new OrgCurrencyServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
   return org;
 }
+
+/**
+ * Multi-org variant of `readOrgStampingDefaults` for the cross-org moves
+ * (ticket move, device move): locks EVERY named organization `FOR SHARE` in
+ * ascending UUID order — the wave-6 rule that makes two concurrent moves
+ * between the same pair of orgs impossible to deadlock (#3778) — and returns
+ * the locked currency stamps keyed by org id.
+ *
+ * Like the single-row helper this MUST be the first statement of the caller's
+ * transaction: `organizations FOR SHARE x2 -> tickets/devices -> children`.
+ *
+ * TOLERANT of a missing org (unlike the single-row helper): the id is simply
+ * absent from the returned map. Cross-org movers already own richer domain
+ * errors for an unknown target ("Target organization not found", 404) and must
+ * not have them replaced by a generic ORG_NOT_FOUND just because the lock moved
+ * ahead of the existence check.
+ */
+export async function readOrgStampingDefaultsMany(
+  tx: DbExecutor, orgIds: string[]
+): Promise<Map<string, { currencyCode: string }>> {
+  const ordered = [...new Set(orgIds)].sort();
+  const out = new Map<string, { currencyCode: string }>();
+  for (const orgId of ordered) {
+    // Sequential on purpose: a Promise.all would let postgres.js interleave the
+    // two lock requests and lose the ascending order this helper exists to give.
+    const [org] = await tx
+      .select({ currencyCode: organizations.currencyCode })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1)
+      .for('share');
+    if (org) out.set(orgId, org);
+  }
+  return out;
+}

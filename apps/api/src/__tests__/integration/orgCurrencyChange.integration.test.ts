@@ -89,7 +89,7 @@ async function seedEurOrg(): Promise<Seeded> {
   const fixture = await seedGateOrg('EUR');
 
   await withSystemDbAccessContext(() => upsertOrgTicketSettings(
-    fixture.orgId, { defaultHourlyRate: ORG_RATE, defaultBillable: true }, 'EUR',
+    fixture.orgId, { defaultHourlyRate: ORG_RATE, defaultBillable: true },
   ));
 
   const invoice = await withSystemDbAccessContext(() => createManualInvoice(

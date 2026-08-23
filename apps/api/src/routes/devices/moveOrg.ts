@@ -23,6 +23,7 @@ import {
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
+import { readOrgStampingDefaultsMany } from '../../services/orgCurrencyCore';
 import { disconnectAgent } from '../agentWs';
 import { captureException } from '../../services/sentry';
 import {
@@ -117,7 +118,9 @@ moveOrgRoutes.post(
         id: organizations.id,
         partnerId: organizations.partnerId,
         name: organizations.name,
-        currencyCode: organizations.currencyCode,
+        // NOTE (#3778): currency is NOT read here any more — the guard uses the
+        // values read under the in-transaction org SHARE lock below, so a
+        // concurrent changeOrgCurrency cannot slip between this check and the move.
       })
       .from(organizations)
       .where(sql`${organizations.id} IN (${sourceOrgId}::uuid, ${targetOrgId}::uuid)`);
@@ -165,6 +168,15 @@ moveOrgRoutes.post(
     let currencyGuard: MoveCurrencyGuardDetails | null = null;
     try {
       await db.transaction(async (tx) => {
+        // Creation barrier / cross-org move lock order (#3778): BOTH organizations
+        // FOR SHARE, ascending UUID, as the FIRST statement of this transaction —
+        // before any device/ticket row is touched. Held to commit, so the
+        // source/target currency pair the guard below compares cannot be
+        // restamped by a concurrent changeOrgCurrency mid-move.
+        const lockedOrgs = await readOrgStampingDefaultsMany(tx, [sourceOrgId, targetOrgId]);
+        const lockedSourceCurrency = lockedOrgs.get(sourceOrgId)!.currencyCode;
+        const lockedTargetCurrency = lockedOrgs.get(targetOrgId)!.currencyCode;
+
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.
         const [row] = await tx
@@ -235,8 +247,8 @@ moveOrgRoutes.post(
         ).map((r) => r.id);
         currencyGuard = await assertTicketMoveCurrencyCompatible(tx, {
           ticketIds,
-          sourceCurrency: sourceOrg.currencyCode,
-          targetCurrency: targetOrg.currencyCode,
+          sourceCurrency: lockedSourceCurrency,
+          targetCurrency: lockedTargetCurrency,
           targetOrgName: targetOrg.name,
           acceptCurrencyMismatch: acceptCurrencyMismatch === true,
         });

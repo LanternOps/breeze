@@ -7,6 +7,7 @@ import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
 import { resolveSlaTargets } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
+import { readOrgStampingDefaultsMany } from './orgCurrencyCore';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
@@ -1353,23 +1354,30 @@ export async function moveTicketOrg(
   const ticket = await getTicketOrThrow(ticketId);
   if (ticket.orgId === targetOrgId) return ticket;
 
-  const orgRows = await db
-    .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name, currencyCode: organizations.currencyCode })
-    .from(organizations)
-    .where(sql`${organizations.id} IN (${ticket.orgId}::uuid, ${targetOrgId}::uuid)`)
-    .limit(2);
-  const sourceOrg = orgRows.find((r) => r.id === ticket.orgId);
-  const targetOrg = orgRows.find((r) => r.id === targetOrgId);
-  if (!targetOrg) throw new TicketServiceError('Target organization not found', 404);
-  if (!sourceOrg || sourceOrg.partnerId !== targetOrg.partnerId) {
-    throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
-  }
-
   let updated: typeof tickets.$inferSelect | undefined;
   let guard: MoveCurrencyGuardDetails | null = null;
   await db.transaction(async (tx) => {
-    // Lock order (global): tickets → time_entries → ticket_parts. The UPDATE
-    // takes the ticket row lock FIRST; the currency guard then locks the
+    // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
+    // UUID so two concurrent moves between the same pair cannot deadlock) →
+    // tickets → time_entries → ticket_parts. The org lock is the FIRST statement
+    // of this transaction and is held to commit, so the source/target currency
+    // pair the guard compares cannot be restamped mid-move.
+    const lockedOrgs = await readOrgStampingDefaultsMany(tx, [ticket.orgId, targetOrgId]);
+    const orgRows = await tx
+      .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
+      .from(organizations)
+      .where(sql`${organizations.id} IN (${ticket.orgId}::uuid, ${targetOrgId}::uuid)`)
+      .limit(2);
+    const sourceMeta = orgRows.find((r) => r.id === ticket.orgId);
+    const targetMeta = orgRows.find((r) => r.id === targetOrgId);
+    if (!targetMeta) throw new TicketServiceError('Target organization not found', 404);
+    if (!sourceMeta || sourceMeta.partnerId !== targetMeta.partnerId) {
+      throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
+    }
+    // Present by construction: the metadata rows above resolved, so the locks did too.
+    const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
+    const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };
+    // The UPDATE takes the ticket row lock; the currency guard then locks the
     // unbilled monetary children, and the org_id rewrites follow. A throw here
     // rolls this UPDATE back — nothing moves on a block.
     const [row] = await tx
