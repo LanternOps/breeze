@@ -289,7 +289,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR
   // partner-wide (partner_id set, org_id NULL). Created dual-axis from day one
-  // in 2026-09-01-ai-agents. Same blindspot as configuration_policies: the
+  // in 2026-09-02-ai-agents. Same blindspot as configuration_policies: the
   // org_id column means org-tenant auto-discovery already asserts the
   // breeze_has_org_access branch, so this entry is what asserts the
   // breeze_has_partner_access (partner-wide) branch. CHECK

@@ -70,7 +70,7 @@ export const aiSessions = pgTable('ai_sessions', {
   // AI agent principal (spec §3.3). CHECK ai_sessions_single_principal_check
   // (at most one of user_id/client_user_id/agent_id) and
   // ai_sessions_agent_type_check (type='agent' ⇒ agent_id set) live in
-  // 2026-09-01-ai-agents.sql. FK is declared in SQL to avoid a circular import
+  // 2026-09-02-ai-agents.sql. FK is declared in SQL to avoid a circular import
   // (aiAgents.ts imports aiSessions for ai_agent_runs.session_id).
   agentId: uuid('agent_id'),
 }, (table) => ({

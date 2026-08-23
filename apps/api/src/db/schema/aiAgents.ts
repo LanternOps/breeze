@@ -31,7 +31,7 @@ import { users } from './users';
 
 // Dual-ownership (#2135, spec §4.1): an agent belongs to EITHER one org
 // (org_id set) OR a whole partner (partner_id set, org_id NULL). The XOR
-// CHECK `ai_agents_one_owner_chk` lives in 2026-09-01-ai-agents.sql.
+// CHECK `ai_agents_one_owner_chk` lives in 2026-09-02-ai-agents.sql.
 // Never hard-deleted: `disabled_at` is the soft delete and the partial
 // unique indexes only consider live rows.
 export const aiAgents = pgTable('ai_agents', {
@@ -92,7 +92,7 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (table) => ({
-  // Tenant-scoped (see 2026-09-01-ai-agents.sql): a global unique on
+  // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.
   dedupeUq: unique('ai_agent_runs_org_dedupe_key_uq').on(table.orgId, table.dedupeKey),
   agentQueuedIdx: index('ai_agent_runs_agent_queued_idx').on(table.agentId, table.queuedAt.desc()),

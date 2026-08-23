@@ -69,7 +69,7 @@ async function creator(partnerId: string): Promise<string> {
 
 const BASE = { kind: 'triage' as const, name: 'Triage' };
 
-describe('ai_agents RLS — dual-axis (2026-09-01 migration)', () => {
+describe('ai_agents RLS — dual-axis (2026-09-02 migration)', () => {
   it('partner scope can INSERT a partner-wide agent', async () => {
     const partner = await createPartner();
     const by = await creator(partner.id);
