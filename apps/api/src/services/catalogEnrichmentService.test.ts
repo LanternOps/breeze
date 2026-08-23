@@ -69,6 +69,16 @@ describe('enrichCatalogItem', () => {
     expect(res.estimatedCost).toBe(80);
     expect(res.provenance.source).toBe('ai_enrich');
     expect(recordUsage).toHaveBeenCalledTimes(1);
+    expect(checkBudget).toHaveBeenCalledWith('o1', 'partner_key');
+    expect(recordUsage).toHaveBeenCalledWith(
+      null,
+      'o1',
+      'claude-sonnet-4-6',
+      100,
+      50,
+      true,
+      'partner_key',
+    );
     expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
   });
 
@@ -572,6 +582,14 @@ describe('polishCatalogText', () => {
     const res = await polishCatalogText({ name: 'apc 600va ups' }, actor);
     expect(res.factChanges).not.toBeNull();
     // Tokens were really spent on both turns — they must still be billed.
-    expect(recordUsage).toHaveBeenCalledWith(null, 'o1', expect.any(String), 200, 100, true);
+    expect(recordUsage).toHaveBeenCalledWith(
+      null,
+      'o1',
+      expect.any(String),
+      200,
+      100,
+      true,
+      'partner_key',
+    );
   });
 });

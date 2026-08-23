@@ -27,7 +27,8 @@ const routeMocks = vi.hoisted(() => ({
   createTimeEntryMock: vi.fn(),
   deviceInSiteScopeMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
-  resolveLlmConfigForOrgMock: vi.fn(),
+  getAnthropicClientForPartnerMock: vi.fn(),
+  anthropicClient: { messages: { create: vi.fn() } },
 }));
 
 const configRef = vi.hoisted(() => ({
@@ -45,7 +46,7 @@ vi.mock('../services/llm/llmConfigResolver', () => ({
       this.name = 'LlmUnavailableError';
     }
   },
-  resolveLlmConfigForOrg: routeMocks.resolveLlmConfigForOrgMock,
+  getAnthropicClientForPartner: routeMocks.getAnthropicClientForPartnerMock,
 }));
 
 vi.mock('../db', () => ({
@@ -106,6 +107,7 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: 'organizations.id',
     name: 'organizations.name',
+    partnerId: 'organizations.partnerId',
   },
   devices: {
     id: 'devices.id',
@@ -209,6 +211,7 @@ import { db } from '../db';
 import { getSessionMessages } from '../services/aiAgent';
 import { recordUsage } from '../services/aiCostTracker';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
+import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { TicketServiceError } from '../services/ticketService';
 
 const partnerAuth = authHarness.partnerAuth;
@@ -241,16 +244,22 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     app = new Hono();
     app.route('/ai', aiRoutes);
 
-    routeMocks.resolveLlmConfigForOrgMock.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-from-session-org',
-      apiKey: 'partner-key',
-      model: 'claude-sonnet-4-6',
-      configId: 'config-1',
-      configVersion: 2,
+    routeMocks.getAnthropicClientForPartnerMock.mockResolvedValue({
+      client: routeMocks.anthropicClient,
+      resolved: {
+        source: 'partner',
+        partnerId: 'partner-from-session-org',
+        apiKey: 'partner-key',
+        model: 'claude-sonnet-4-6',
+        configId: 'config-1',
+        configVersion: 2,
+      },
     });
 
-    vi.mocked(db.select).mockReturnValue(selectRows([{ name: 'Acme Co' }]) as any);
+    vi.mocked(db.select).mockReturnValue(selectRows([{
+      name: 'Acme Co',
+      partnerId: 'partner-from-session-org',
+    }]) as any);
   });
 
   function postDraft(sessionId: string, auth: any = partnerAuth) {
@@ -307,15 +316,28 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
         elapsedMinutes: expect.any(Number),
         model: 'claude-test',
         partnerId: 'partner-from-session-org',
+        client: routeMocks.anthropicClient,
       })
     );
-    expect(routeMocks.resolveLlmConfigForOrgMock).toHaveBeenCalledWith('org1');
-    expect(recordUsage).toHaveBeenCalledWith('s1', 'org1', 'claude-test', 10, 5, false);
+    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledTimes(1);
+    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-from-session-org');
+    expect(recordUsage).toHaveBeenCalledWith(
+      's1',
+      'org1',
+      'claude-test',
+      10,
+      5,
+      false,
+      'partner_key',
+    );
   });
 
   it('enriches a draft with the session device hostname', async () => {
     vi.mocked(db.select)
-      .mockReturnValueOnce(selectRows([{ name: 'Acme Co' }]) as any)
+      .mockReturnValueOnce(selectRows([{
+        name: 'Acme Co',
+        partnerId: 'partner-from-session-org',
+      }]) as any)
       .mockReturnValueOnce(selectRows([{ hostname: 'WKS-04' }]) as any);
     vi.mocked(getSessionMessages).mockResolvedValueOnce({
       session: { id: 's1', orgId: 'org1', deviceId: 'dev1', model: null, createdAt: new Date(), contextSnapshot: null },
@@ -388,11 +410,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
         { role: 'assistant', content: 'working' },
       ],
     } as any);
-    routeMocks.resolveLlmConfigForOrgMock.mockResolvedValueOnce({
-      source: 'unavailable',
-      partnerId: 'partner-from-session-org',
-      reason: 'key_error',
-    });
+    routeMocks.getAnthropicClientForPartnerMock.mockRejectedValueOnce(new LlmUnavailableError());
 
     const res = await postDraft('s1', partnerAuth);
 

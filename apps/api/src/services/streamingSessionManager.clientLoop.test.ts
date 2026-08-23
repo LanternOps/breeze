@@ -366,6 +366,7 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
       'sess-partner-usage',
       ORG, // session.orgId (dbSession.orgId) — NOT auth.orgId, which is null here
       expect.objectContaining({ total_cost_usd: 0.03 }),
+      'platform',
     );
   });
 });

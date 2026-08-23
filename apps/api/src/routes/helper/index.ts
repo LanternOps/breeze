@@ -121,7 +121,10 @@ async function runHelperPreFlight(
 
   // Budget check
   try {
-    const budgetError = await checkBudget(device.orgId);
+    const budgetError = await checkBudget(
+      device.orgId,
+      resolved.source === 'partner' ? 'partner_key' : 'platform',
+    );
     if (budgetError) return { ok: false, error: budgetError, status: 402 };
   } catch (err) {
     console.error('[Helper] Budget check failed:', err);

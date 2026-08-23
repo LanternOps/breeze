@@ -1,5 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { calculateCostCents, checkAiRateLimit, checkBudget, recordUsage, recordUsageFromSdkResult, sumInputTokens } from './aiCostTracker';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  calculateCostCents,
+  checkAiRateLimit,
+  checkBillingCredits,
+  checkBudget,
+  getUsageSummary,
+  recordUsage,
+  recordUsageFromSdkResult,
+  sumInputTokens,
+} from './aiCostTracker';
 import { db, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { rateLimiter } from './rate-limit';
@@ -41,6 +50,7 @@ vi.mock('../db/schema', () => ({
     totalOutputTokens: 'totalOutputTokens',
     totalCostCents: 'totalCostCents',
     turnCount: 'turnCount',
+    billingSource: 'billingSource',
   },
   aiCostUsage: {
     orgId: 'orgId',
@@ -51,6 +61,7 @@ vi.mock('../db/schema', () => ({
     totalCostCents: 'totalCostCents',
     messageCount: 'messageCount',
     toolExecutionCount: 'toolExecutionCount',
+    billingSource: 'billingSource',
   },
   aiBudgets: { orgId: 'orgId', dailyBudgetCents: 'dailyBudgetCents' },
   organizations: { id: 'id', partnerId: 'partnerId' },
@@ -59,6 +70,13 @@ vi.mock('../db/schema', () => ({
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
 vi.mock('./rate-limit', () => ({ rateLimiter: vi.fn() }));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn() }));
+
+const { resolveLlmConfigForOrgMock } = vi.hoisted(() => ({
+  resolveLlmConfigForOrgMock: vi.fn(),
+}));
+vi.mock('./llm/llmConfigResolver', () => ({
+  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
+}));
 
 const mockDb = db as unknown as {
   update: ReturnType<typeof vi.fn>;
@@ -106,7 +124,12 @@ function setupDbMocks(sessionModel: string | null) {
   // token-pricing fallback.
   mockDb.select.mockImplementation((cols?: Record<string, unknown>) => {
     const isModelLookup = !!cols && 'model' in cols;
-    const result = isModelLookup && sessionModel ? [{ model: sessionModel }] : [];
+    const isPartnerLookup = !!cols && 'partnerId' in cols;
+    const result = isModelLookup && sessionModel
+      ? [{ model: sessionModel }]
+      : isPartnerLookup
+        ? [{ partnerId: 'partner-1' }]
+        : [];
     return {
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -136,6 +159,76 @@ beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.BILLING_SERVICE_URL;
   delete process.env.BILLING_SERVICE_API_KEY;
+  resolveLlmConfigForOrgMock.mockResolvedValue({
+    source: 'platform',
+    apiKey: 'platform-key',
+    model: 'claude-sonnet-4-6',
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function enableBillingService(): ReturnType<typeof vi.fn> {
+  process.env.BILLING_SERVICE_URL = 'https://billing.internal';
+  process.env.BILLING_SERVICE_API_KEY = 'billing-key';
+  const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+function billingCreditsResponse(input: {
+  allowed: boolean;
+  remainingCredits: number;
+  plan: string;
+}): Response {
+  return new Response(JSON.stringify(input), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+describe('checkBillingCredits billing-source split', () => {
+  it('enforces plan entitlement for partner-key usage', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: false,
+      remainingCredits: 0,
+      plan: 'starter',
+    }));
+    setupDbMocks(null);
+
+    await expect(checkBillingCredits('org-1', 'partner_key')).resolves.toBe(
+      'AI assistant requires the Community plan.',
+    );
+  });
+
+  it('does not block partner-key usage when only Breeze credits are exhausted', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: false,
+      remainingCredits: 0,
+      plan: 'community',
+    }));
+    setupDbMocks(null);
+
+    await expect(checkBillingCredits('org-1', 'partner_key')).resolves.toBeNull();
+  });
+
+  it('keeps exhausted-credit denial for platform usage', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: false,
+      remainingCredits: 0,
+      plan: 'community',
+    }));
+    setupDbMocks(null);
+
+    await expect(checkBillingCredits('org-1', 'platform')).resolves.toBe(
+      'You are out of AI credits. Purchase more credits to continue.',
+    );
+  });
 });
 
 // ============================================
@@ -202,6 +295,48 @@ describe('calculateCostCents', () => {
 // ============================================
 
 describe('recordUsageFromSdkResult', () => {
+  it('stamps partner-key usage on the session and aggregate upsert without deducting credits', async () => {
+    const fetchMock = enableBillingService();
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-partner-key', 'org-1', {
+      total_cost_usd: 0.25,
+      usage: { input_tokens: 100, output_tokens: 50 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    }, 'partner_key');
+
+    expect(captured.sessionSet?.billingSource).toBe('partner_key');
+    expect(captured.aggregateValues).toHaveLength(2);
+    for (const values of captured.aggregateValues) {
+      expect(values.billingSource).toBe('partner_key');
+    }
+    for (const set of captured.aggregateConflictSets) {
+      expect(set.billingSource).toBe('partner_key');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps platform credit deduction and stamps platform on every write path', async () => {
+    const fetchMock = enableBillingService();
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-platform', 'org-1', {
+      total_cost_usd: 0.25,
+      usage: { input_tokens: 100, output_tokens: 50 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    }, 'platform');
+
+    expect(captured.sessionSet?.billingSource).toBe('platform');
+    expect(captured.aggregateValues.every((values) => values.billingSource === 'platform')).toBe(true);
+    expect(captured.aggregateConflictSets.every((set) => set.billingSource === 'platform')).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://billing.internal/api/internal/partners/partner-1/ai-credits/deduct',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('records a non-zero cost when total_cost_usd is 0 but tokens are present (uses result.model)', async () => {
     const captured = setupDbMocks(null);
 
@@ -528,6 +663,45 @@ describe('sumInputTokens', () => {
 // ============================================
 
 describe('recordUsage', () => {
+  it('stamps partner-key on insert and conflict-update values without invoking billing deduction', async () => {
+    const fetchMock = enableBillingService();
+    const captured = setupDbMocks(null);
+
+    await recordUsage(
+      null,
+      'org-1',
+      'claude-sonnet-4-6',
+      1_000,
+      500,
+      false,
+      'partner_key',
+    );
+
+    expect(captured.aggregateValues).toHaveLength(2);
+    expect(captured.aggregateValues.every((values) => values.billingSource === 'partner_key')).toBe(true);
+    expect(captured.aggregateConflictSets.every((set) => set.billingSource === 'partner_key')).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps platform recording behavior while stamping the platform discriminator', async () => {
+    const fetchMock = enableBillingService();
+    const captured = setupDbMocks(null);
+
+    await recordUsage(
+      null,
+      'org-1',
+      'claude-sonnet-4-6',
+      1_000,
+      500,
+      false,
+      'platform',
+    );
+
+    expect(captured.aggregateValues.every((values) => values.billingSource === 'platform')).toBe(true);
+    expect(captured.aggregateConflictSets.every((set) => set.billingSource === 'platform')).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('records the session row when a real sessionId is given', async () => {
     const captured = setupDbMocks(null);
 
@@ -567,6 +741,20 @@ describe('recordUsage', () => {
     await expect(
       recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, true),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('getUsageSummary billing display', () => {
+  it.each([
+    [{ source: 'partner', partnerId: 'partner-1', apiKey: 'key', model: 'claude-sonnet-4-6', configId: 'config-1', configVersion: 1 }, 'partner_key'],
+    [{ source: 'unavailable', partnerId: 'partner-1', reason: 'key_error' }, 'partner_key'],
+    [{ source: 'platform', apiKey: 'platform-key', model: 'claude-sonnet-4-6' }, 'platform'],
+  ] as const)('reports %s as %s', async (resolved, billedTo) => {
+    resolveLlmConfigForOrgMock.mockResolvedValueOnce(resolved);
+    setupDbMocks(null);
+
+    await expect(getUsageSummary('org-1')).resolves.toMatchObject({ billedTo });
+    expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith('org-1');
   });
 });
 

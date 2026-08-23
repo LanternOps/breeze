@@ -160,6 +160,7 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
       model: 'claude-opus-4-6',
     }));
     expect(resolveClientLlmConfigMock).toHaveBeenCalledWith(ORG_ID);
+    expect(checkBillingCreditsMock).toHaveBeenCalledWith(ORG_ID, 'partner_key');
     // The create audit records the resolved host.
     expect(writeAuditEventMock).toHaveBeenCalledWith(
       expect.anything(),

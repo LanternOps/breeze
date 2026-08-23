@@ -50,7 +50,7 @@ import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
-import { LlmUnavailableError, resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
+import { getAnthropicClientForPartner, LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
@@ -398,17 +398,24 @@ aiRoutes.post(
 
     const elapsedMinutes = Math.max(0, Math.round((Date.now() - new Date(session.createdAt).getTime()) / 60000));
     const model = session.model ?? resolveDefaultModel();
+    const [org] = await db
+      .select({ name: organizations.name, partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, session.orgId))
+      .limit(1);
 
     let draft;
+    let billingSource: 'platform' | 'partner_key' = 'platform';
     try {
-      const resolvedConfig = await resolveLlmConfigForOrg(session.orgId);
-      if (resolvedConfig.source === 'unavailable') throw new LlmUnavailableError();
+      const { client, resolved } = await getAnthropicClientForPartner(org?.partnerId ?? null);
+      billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
         contextSnapshot: session.contextSnapshot,
         elapsedMinutes,
         model,
-        partnerId: resolvedConfig.source === 'partner' ? resolvedConfig.partnerId : null,
+        partnerId: org?.partnerId ?? null,
+        client,
       });
     } catch (err) {
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
@@ -420,16 +427,19 @@ aiRoutes.post(
 
     // Best-effort cost accounting; never fails the request.
     try {
-      await recordUsage(sessionId, session.orgId, model, draft.inputTokens, draft.outputTokens, false);
+      await recordUsage(
+        sessionId,
+        session.orgId,
+        model,
+        draft.inputTokens,
+        draft.outputTokens,
+        false,
+        billingSource,
+      );
     } catch {
       // non-fatal
     }
 
-    const [org] = await db
-      .select({ name: organizations.name })
-      .from(organizations)
-      .where(eq(organizations.id, session.orgId))
-      .limit(1);
     let deviceHostname: string | null = null;
     if (session.deviceId) {
       const [dev] = await db
@@ -1033,7 +1043,8 @@ aiRoutes.get(
       return c.json({
         daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
         monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
-        budget: null
+        budget: null,
+        billedTo: 'platform' as const,
       });
     }
 

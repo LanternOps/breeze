@@ -376,7 +376,10 @@ export async function runPreFlightChecks(
 
   // Budget
   try {
-    const budgetError = await checkBudget(orgId);
+    const budgetError = await checkBudget(
+      orgId,
+      resolved.source === 'partner' ? 'partner_key' : 'platform',
+    );
     if (budgetError) return { ok: false, error: budgetError };
   } catch (err) {
     console.error('[AI-SDK] Budget check failed:', err);
