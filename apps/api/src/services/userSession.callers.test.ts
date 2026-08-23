@@ -5,9 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const SRC_DIR = join(import.meta.dirname, '..');
 
-const expectedCreateTokenPairFiles = new Set([
-  'routes/sso.ts',
-]);
+const expectedCreateTokenPairFiles = new Set<string>();
 
 const expectedCookieWriterFiles = new Set([
   'routes/sso.ts',
@@ -21,6 +19,7 @@ const expectedGuardedIssuerFiles = new Map([
   ['routes/auth/verifyEmail.ts', 2],
   ['routes/auth/invite.ts', 1],
   ['routes/auth/cfAccessRedirectLogin.ts', 1],
+  ['routes/sso.ts', 1],
 ]);
 
 const expectedSingleBoundaryFiles = new Map([
@@ -140,11 +139,10 @@ function buildInventories(): Readonly<{
 const frozenInventory = buildInventories();
 
 describe('frozen authentication issuer inventory', () => {
-  it('leaves exactly the SSO later-slice createTokenPair call', () => {
+  it('has no direct production createTokenPair caller outside the guarded issuer', () => {
     const calls = frozenInventory.createTokenPair;
     expect(new Set(calls.keys())).toEqual(expectedCreateTokenPairFiles);
-    expect([...calls.values()].reduce((sum, count) => sum + count, 0)).toBe(1);
-    expect(calls.get('routes/sso.ts')).toBe(1);
+    expect([...calls.values()].reduce((sum, count) => sum + count, 0)).toBe(0);
   });
 
   it('leaves exactly the SSO later-slice direct refresh-cookie write', () => {
@@ -253,5 +251,55 @@ describe('frozen authentication issuer inventory', () => {
     expect(outsideFinalization).toEqual([]);
   });
 
-  it.skip('has no process-local SSO exchange grant', () => {});
+  it('keeps SSO callback issuance and exchange installation behind durable boundaries', () => {
+    const file = join(SRC_DIR, 'routes/sso.ts');
+    const sourceText = readFileSync(file, 'utf8');
+    const ast = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const calls: Array<{ name: string; start: number; node: ts.CallExpression }> = [];
+    const processLocalGrantMaps: number[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)
+        && node.expression.text === 'Map') {
+        processLocalGrantMaps.push(node.getStart(ast));
+      }
+      if (ts.isCallExpression(node)) {
+        const name = ts.isIdentifier(node.expression)
+          ? node.expression.text
+          : ts.isPropertyAccessExpression(node.expression)
+            ? node.expression.name.text
+            : '';
+        if (name) calls.push({ name, start: node.getStart(ast), node });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+
+    expect(processLocalGrantMaps).toEqual([]);
+    expect(calls.filter(({ name }) => name === 'createTokenPair')).toEqual([]);
+
+    const issueCall = calls.find(({ name }) => name === 'issueUserSession');
+    expect(issueCall).toBeDefined();
+    let owner: ts.Node | undefined = issueCall?.node.parent;
+    let insideFinalization = false;
+    while (owner && !ts.isSourceFile(owner)) {
+      if ((ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))
+        && ts.isCallExpression(owner.parent)
+        && ts.isIdentifier(owner.parent.expression)
+        && owner.parent.expression.text === 'finishAuthIssuance'
+        && owner.parent.arguments.includes(owner)) {
+        insideFinalization = true;
+        break;
+      }
+      owner = owner.parent;
+    }
+    expect(insideFinalization).toBe(true);
+
+    const durableCreate = calls.find(({ name }) => name === 'createDurableSsoExchangeGrant');
+    expect(durableCreate).toBeDefined();
+    const consume = calls.find(({ name }) => name === 'consumeDurableSsoExchangeGrant');
+    const install = calls.find(({ name }) => name === 'setRefreshTokenCookie');
+    expect(consume).toBeDefined();
+    expect(install).toBeDefined();
+    expect(consume!.start).toBeLessThan(install!.start);
+  });
 });

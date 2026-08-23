@@ -126,6 +126,21 @@ async function checkCfAccessLoginEnabled(): Promise<boolean> {
   }
 }
 
+function buildApiUrl(path: string): string {
+  const apiHost = import.meta.env.PUBLIC_API_URL || '';
+  return `${apiHost}/api/v1${path}`;
+}
+
+async function bootstrapThenNavigate(url: string): Promise<void> {
+  const response = await fetch(buildApiUrl('/auth/browser-binding/bootstrap'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) throw new Error('Authentication bootstrap failed');
+  window.location.assign(url);
+}
+
 interface LoginPageProps {
   next?: string;
 }
@@ -160,6 +175,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // Only meaningful once enforceSSO is true: lets the user reveal the password
   // form that's collapsed behind it (see the enforceSSO comment below).
   const [showPasswordForm, setShowPasswordForm] = useState(false);
+  const [ssoBootstrapping, setSsoBootstrapping] = useState(false);
 
   const login = useAuthStore((state) => state.login);
 
@@ -199,11 +215,18 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
       return;
     }
     let cancelled = false;
-    void checkCfAccessLoginEnabled().then((enabled) => {
+    void checkCfAccessLoginEnabled().then(async (enabled) => {
       if (cancelled) return;
       if (enabled) {
         const nextParam = safeNext === '/' ? '' : `?next=${encodeURIComponent(safeNext)}`;
-        window.location.assign(`/api/v1/auth/cf-access-login${nextParam}`);
+        try {
+          await bootstrapThenNavigate(`/api/v1/auth/cf-access-login${nextParam}`);
+        } catch (caught) {
+          if (!cancelled) {
+            setError(caught instanceof Error ? caught.message : 'Authentication bootstrap failed');
+            setCfAccessRedirectChecked(true);
+          }
+        }
         return;
       }
       setCfAccessRedirectChecked(true);
@@ -311,6 +334,19 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     setSmsSending(false);
   };
 
+  const handlePartnerSso = async () => {
+    if (!partnerSso || ssoBootstrapping) return;
+    const url = `${partnerSso.loginUrl}${safeNext ? `?redirect=${encodeURIComponent(safeNext)}` : ''}`;
+    setSsoBootstrapping(true);
+    setError(undefined);
+    try {
+      await bootstrapThenNavigate(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Authentication bootstrap failed');
+      setSsoBootstrapping(false);
+    }
+  };
+
   // While the CF Access config check is in flight, render an empty placeholder
   // so the user doesn't see the password form flash before a redirect kicks in.
   if (!cfAccessRedirectChecked) {
@@ -370,16 +406,18 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
         </div>
       )}
       {partnerSso && (
-        <a
-          href={`${partnerSso.loginUrl}${safeNext ? `?redirect=${encodeURIComponent(safeNext)}` : ''}`}
+        <button
+          type="button"
+          onClick={handlePartnerSso}
+          disabled={ssoBootstrapping}
           data-testid="partner-sso-button"
-          className="mb-4 flex w-full items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+          className="mb-4 flex w-full items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           {t('login.signInWithProvider', {
             defaultValue: `Sign in with ${partnerSso.providerName}`,
             providerName: partnerSso.providerName,
           })}
-        </a>
+        </button>
       )}
       {/*
         enforceSSO only de-emphasizes the UI here — it collapses the password

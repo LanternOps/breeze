@@ -156,9 +156,9 @@ export const ssoSessions = pgTable('sso_sessions', {
   // = refresh_token_families.family_id == the initiating access token's `sid`.
   initiatingSessionId: uuid('initiating_session_id'),
 
-  // Nullable during rollout and for pre-deploy in-flight SSO rows. New login
-  // starts capture both fields so callbacks recover the exact transition
-  // generation without depending on a SameSite cookie.
+  // Nullable for link mode and pre-deploy in-flight SSO rows. New login starts
+  // refuse initiation without a live browser binding and capture both fields,
+  // so callbacks recover the exact transition generation durably.
   browserTransitionId: uuid('browser_transition_id'),
   browserGeneration: bigint('browser_generation', { mode: 'number' }),
 
