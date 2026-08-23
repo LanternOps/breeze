@@ -68,7 +68,7 @@ export default function PartnerAiProviderTab() {
     if (!trimmed || savingKey) return;
     setSavingKey(true);
     try {
-      const result = await runAction<ProviderMutationResult>({
+      await runAction<ProviderMutationResult>({
         request: () => fetchWithAuth('/ai/provider/key', {
           method: 'POST',
           body: JSON.stringify({ apiKey: trimmed }),
@@ -79,7 +79,10 @@ export default function PartnerAiProviderTab() {
       });
       // Write-only field: never keep the key around after a successful save.
       setApiKey('');
-      applyMutationResult(result);
+      // Refetch rather than merging the POST echo: the route reports the
+      // *effective* model (stored ?? platform default), which is not the
+      // stored value — merging it would show a pin that was never saved.
+      await fetchStatus();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('partnerAiProvider.keySaveFailed') });

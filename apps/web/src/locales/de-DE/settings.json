@@ -1309,7 +1309,7 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tools der Stufe 2 werden automatisch mit Audit-Protokollierung ausgeführt. Werkzeuge der Stufe 3 sind weiterhin genehmigungspflichtig.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Wie ein Aktionsplan, plus Live-Screenshots zwischen den Schritten und eine dauerhafte Stopp-Schaltfläche.",
     "untitled": "Ohne Titel",
-    "billedToPartnerKey": "Die KI-Nutzung wird über den eigenen Anthropic-Schlüssel Ihrer Organisation abgerechnet"
+    "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben"
   },
   "aiAgentsPage": {
     "title": "KI-Agenten",

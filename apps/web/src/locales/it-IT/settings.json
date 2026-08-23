@@ -1309,7 +1309,7 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Gli strumenti Tier 2 vengono eseguiti automaticamente con registrazione di audit. Gli strumenti Tier 3 richiedono ancora approvazione.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Come Piano d'azione, più screenshot live tra i passaggi e un pulsante Interrompi persistente.",
     "untitled": "Senza titolo",
-    "billedToPartnerKey": "L'utilizzo dell'IA viene addebitato sulla chiave Anthropic della tua organizzazione"
+    "billedToPartnerKey": "Addebitato sulla tua chiave: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze"
   },
   "aiAgentsPage": {
     "title": "Agenti AI",

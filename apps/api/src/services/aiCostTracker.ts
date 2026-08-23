@@ -33,7 +33,16 @@ const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion:
   'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 }
 };
 
-export const SUPPORTED_AI_MODELS: readonly string[] = Object.freeze(Object.keys(MODEL_PRICING));
+// Models a partner may pin as their BYOK default. MODEL_PRICING keeps legacy
+// snapshot ids for cost attribution on old sessions; those must not be offered
+// (or accepted) as new defaults — a retired snapshot pinned partner-wide fails
+// every AI session against the partner's own key.
+export const OFFERABLE_AI_MODELS: readonly string[] = Object.freeze([
+  'claude-opus-4-8',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+  'claude-fable-5',
+]);
 
 // Conservative last-resort pricing for an unrecognized model id. Mirrors the most
 // expensive current Opus-tier rate so we never silently undercount. Hitting this is logged.

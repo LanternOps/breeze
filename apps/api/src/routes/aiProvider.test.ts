@@ -48,7 +48,7 @@ vi.mock('../services/sentry', () => ({
 }));
 
 vi.mock('../services/aiCostTracker', () => ({
-  SUPPORTED_AI_MODELS: Object.freeze(['claude-sonnet-4-6', 'claude-haiku-4-5']),
+  OFFERABLE_AI_MODELS: Object.freeze(['claude-sonnet-4-6', 'claude-haiku-4-5']),
 }));
 
 vi.mock('../services/partnerLlmConfig', () => {

@@ -43,7 +43,7 @@ describe('AiUsagePage billedTo indicator', () => {
 
     await waitFor(() => expect(screen.getByTestId('ai-usage-billed-to-note')).toBeInTheDocument());
     expect(screen.getByTestId('ai-usage-billed-to-note').textContent)
-      .toContain("AI usage is billed to your organization's own Anthropic key");
+      .toContain('Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits');
   });
 
   it('does not render the note when usage is billed to the platform', async () => {

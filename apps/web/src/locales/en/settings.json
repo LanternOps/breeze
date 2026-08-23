@@ -1309,7 +1309,7 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
     "untitled": "Untitled",
-    "billedToPartnerKey": "AI usage is billed to your organization's own Anthropic key"
+    "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits"
   },
   "aiAgentsPage": {
     "title": "AI Agents",

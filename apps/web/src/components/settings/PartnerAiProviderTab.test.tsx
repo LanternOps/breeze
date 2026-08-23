@@ -91,18 +91,33 @@ describe('PartnerAiProviderTab', () => {
       .toBe('claude-sonnet-4-6');
   });
 
-  it('saves the key via POST and never renders it afterwards', async () => {
+  it('saves the key via POST, refetches the stored state, and never renders the key afterwards', async () => {
     const secret = 'sk-ant-api03-super-secret-key-1234567890';
-    mockApi(platformStatus, {
-      'POST /ai/provider/key': () => jsonRes({
-        configured: true,
-        provider: 'anthropic',
-        keyLast4: '7890',
-        defaultModel: null,
-        status: 'active',
-        verifiedAt: '2026-08-23T12:00:00.000Z',
-        lastError: null,
-      }),
+    // Model the real API: POST echoes the EFFECTIVE model (stored ?? platform
+    // default) while the stored default_model stays NULL on a fresh connect.
+    // The component must refetch rather than merge the POST echo, so the
+    // select shows "Platform default", not a pin that was never saved.
+    let connected = false;
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      const method = options?.method ?? 'GET';
+      if (method === 'POST' && url === '/ai/provider/key') {
+        connected = true;
+        return Promise.resolve(jsonRes({
+          configured: true,
+          provider: 'anthropic',
+          keyLast4: '7890',
+          defaultModel: 'claude-sonnet-4-6',
+          status: 'active',
+          verifiedAt: '2026-08-23T12:00:00.000Z',
+          lastError: null,
+        }));
+      }
+      if (method === 'GET' && url === '/ai/provider') {
+        return Promise.resolve(jsonRes(connected
+          ? { ...connectedStatus, keyLast4: '7890', defaultModel: null }
+          : platformStatus));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
     });
     const { container } = render(<PartnerAiProviderTab />);
 
@@ -123,6 +138,9 @@ describe('PartnerAiProviderTab', () => {
     expect(showToast).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'success', message: 'Anthropic key saved and verified.' }),
     );
+    // Stored default_model is NULL — the POST echo's effective model must not
+    // appear as a selected pin.
+    expect((screen.getByTestId('ai-provider-model-select') as HTMLSelectElement).value).toBe('');
   });
 
   it('surfaces the API error message when the key is rejected', async () => {

@@ -1309,7 +1309,7 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 araçları, denetim günlüğüyle otomatik olarak yürütülür. 3. Katman araçlarının hâlâ onaylanması gerekiyor.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Eylem Planını beğenin, artı adımlar arasında canlı ekran görüntüleri ve kalıcı Durdur düğmesi.",
     "untitled": "Başlıksız",
-    "billedToPartnerKey": "Yapay zeka kullanımı kuruluşunuzun kendi Anthropic anahtarına faturalandırılır"
+    "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
   },
   "aiAgentsPage": {
     "title": "Yapay Zeka Aracıları",
