@@ -94,6 +94,7 @@ import {
   DEVICE_LINKED_DEVICE_ID_TABLES,
 } from './core';
 import { db } from '../../db';
+import { isAgentConnected, sendCommandToAgent } from '../agentWs';
 
 const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
 
@@ -406,23 +407,78 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
    * 500 with no indication the uninstall had already gone out. Assert the
    * WRAPPED shape specifically — an unwrapped `{ code: '55P03' }` fixture would
    * pass against the broken code and prove nothing.
+   *
+   * Uses an ONLINE device with the uninstall actually dispatched. An earlier
+   * revision used the offline fixture, where `uninstallSent` can only ever be
+   * false, and merely asserted the property existed — code that hard-coded
+   * `false` would have passed it.
    */
-  it('maps a Drizzle-wrapped 55P03 to a retryable 409 that reports uninstallSent', async () => {
-    rigDeviceLookup(DEVICE);
+  // Still `decommissioned` — the route 400s anything else BEFORE it ever
+  // reaches the uninstall dispatch, so an 'online' status here would have
+  // tested the wrong branch entirely. What makes the uninstall fire is an
+  // agentId plus a live agent connection.
+  const CONNECTED_DEVICE = { ...DEVICE, agentId: 'agent-1' };
+
+  function rigUninstallDispatched() {
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+    // Returns synchronously — `uninstallSent = sendCommandToAgent(...)`, not an
+    // awaited promise, so mockResolvedValue would make uninstallSent a Promise.
+    vi.mocked(sendCommandToAgent).mockReturnValue(true as never);
+  }
+
+  it('maps a Drizzle-wrapped 55P03 to a retryable 409 that reports uninstallSent: true', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    rigUninstallDispatched();
     vi.mocked(db.transaction).mockImplementation(async () => {
       throw Object.assign(new Error('Failed query: SELECT id FROM devices ... FOR UPDATE'), {
         cause: Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
       });
     });
 
-    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+    const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
       method: 'DELETE',
       headers: { Authorization: 'Bearer t' },
     });
 
     expect(res.status).toBe(409);
     const body = await res.json() as { error: string; uninstallSent: boolean };
-    expect(body).toHaveProperty('uninstallSent');
-    expect(body.error).toMatch(/busy/i);
+    expect(body.uninstallSent).toBe(true);
+    expect(body.error).toMatch(/already sent/i);
+    expect(body.error).toMatch(/retry/i);
+  });
+
+  /**
+   * The 23503 branch had NEVER executed before the unwrap — the top-level
+   * `.code` read meant it was unreachable. Switching it on is a behaviour
+   * change, so it gets the same online-agent coverage: a rolled-back cascade
+   * leaves the row present while the agent may already be uninstalling, and the
+   * web callers surface only `err.message`, so the disclosure must be in the
+   * text and not merely in the JSON field.
+   */
+  it('maps a Drizzle-wrapped 23503 to a 409 that discloses the already-sent uninstall', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    rigUninstallDispatched();
+    vi.mocked(db.transaction).mockImplementation(async () => {
+      throw Object.assign(new Error('Failed query: DELETE FROM devices'), {
+        cause: Object.assign(new Error('update or delete violates foreign key constraint'), {
+          code: '23503',
+          detail: 'Key (id)=(...) is still referenced from table "some_child".',
+          table_name: 'some_child',
+        }),
+      });
+    });
+
+    const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json() as { error: string; uninstallSent: boolean };
+    expect(body.uninstallSent).toBe(true);
+    // table_name must come off the SAME node as the code, or this reads
+    // "related records in undefined".
+    expect(body.error).toContain('some_child');
+    expect(body.error).toMatch(/already sent/i);
   });
 });

@@ -71,7 +71,7 @@ import {
   withExtensionDeviceOrgDenormalized,
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
 
 
 /**
@@ -1607,11 +1607,28 @@ coreRoutes.delete(
       // documents exactly this hazard and exists for it.
       const pgCode = pgErrorCode(err);
       if (pgCode === '23503') {
-        const detail = (err as { detail?: string })?.detail ?? '';
-        const constraintTable = (err as { table_name?: string })?.table_name;
-        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail}`, err);
+        // Read the diagnostics off the SAME node the code came from. Unwrapping
+        // only the code and then reading `detail`/`table_name` off the outer
+        // Drizzle error yields blanks on every wrapped statement, i.e. "related
+        // records in undefined" — this branch had never run before the unwrap
+        // above, so that was never observed.
+        const node = pgErrorNode(err);
+        const detail = typeof node?.detail === 'string' ? node.detail : '';
+        const constraintTable = typeof node?.table_name === 'string' ? node.table_name : undefined;
+        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail} (uninstallSent=${uninstallSent})`, err);
+        // This catch also covers dissolveLinkGroupIfBelowMinimum, so the
+        // violation is not necessarily a missing cascade-list table — say
+        // "may" rather than asserting a cause we have not established.
+        //
+        // uninstallSent carries the same weight it does on the 55P03 branch
+        // below: SELF_UNINSTALL is dispatched BEFORE this transaction and is
+        // irreversible, so the transaction rolling back leaves the row present
+        // while the agent may already be removing itself. The web callers
+        // surface only `err.message`, so the disclosure has to be IN the text,
+        // not merely in the JSON field.
         return c.json({
-          error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. This table may need to be added to the cascade delete list.`,
+          error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. A related table may be missing from the cascade delete list.${uninstallSent ? ' The uninstall command was already sent to the agent — the device record still exists, so retry this delete once the blocking records are resolved.' : ''}`,
+          uninstallSent,
         }, 409);
       }
       // 55P03 lock_not_available — the cascade bounds its wait for the devices
