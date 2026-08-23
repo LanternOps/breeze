@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { pgErrorCode } from '../../utils/pgErrors';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { currencyCodeSchema, setBundleComponentsSchema } from '@breeze/shared';
@@ -21,18 +20,6 @@ const econQuery = z.object({ orgId: z.string().guid().optional(), currencyCode: 
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);
-  // 55P03 lock_not_available — setBundleComponents bounds its wait for the item
-  // locks, so a compose racing a long-running catalog write fails fast instead
-  // of pinning a pooled connection. Without this branch that bound would surface
-  // as a generic 500, which reads as a bug rather than the transient, retryable
-  // conflict it is. `pgErrorCode` unwraps the DrizzleQueryError: the SQLSTATE is
-  // on `.cause`, so a top-level `err.code` read would match nothing (#3760).
-  if (pgErrorCode(err) === '55P03') {
-    return c.json({
-      error: 'Catalog item is busy: another operation is modifying it. Try again in a moment.',
-      code: 'ITEM_BUSY',
-    }, 409);
-  }
   throw err;
 }
 

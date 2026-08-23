@@ -1,11 +1,11 @@
 import { and, asc, eq, getTableColumns, gt, ilike, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { tightenLockTimeout, lockTimeoutWasChanged } from '../db/lockTimeout';
+import { tightenLockTimeout, tightenStatementTimeout, lockTimeoutWasChanged, LOCK_WAIT_ABORT_CODES } from '../db/lockTimeout';
 import {
   catalogItems, catalogItemPrices, catalogItemOrgPricing, catalogBundleComponents, partners, organizations
 } from '../db/schema';
 import { emitCatalogEvent } from './catalogEvents';
-import { isPgUniqueViolation } from '../utils/pgErrors';
+import { isPgUniqueViolation, pgErrorCode } from '../utils/pgErrors';
 import { readOrgStampingDefaults, OrgCurrencyServiceError } from './orgCurrencyCore';
 import {
   deriveUnitPrice, resolvePriceFrom, isPriceGap, detectBundleProblems, computeBundleEconomicsFrom,
@@ -23,6 +23,9 @@ export type CatalogServiceErrorCode =
   | 'ITEM_NOT_FOUND'
   | 'NOT_A_BUNDLE'
   | 'ALLOCATION_CURRENCY_REQUIRED'
+  // Someone else holds the item rows this write needs. Transient and
+  // RETRYABLE — the request was valid and nothing was mutated.
+  | 'ITEM_BUSY'
   | 'DUPLICATE_SKU'
   | 'ORG_DENIED'
   | 'PRICE_OUT_OF_RANGE'
@@ -691,7 +694,16 @@ async function lockOwnedItemsInGlobalOrder(
   const ordered = [...new Set(ids)].sort();
 
   // Tighten BEFORE the locking query, never widening a stricter caller.
+  //
+  // BOTH bounds, deliberately. `lock_timeout` alone does NOT bound this
+  // statement: it applies per lock ACQUISITION, so a query taking up to 201
+  // locks gets a fresh interval for every row and a run of staggered blockers
+  // can hold the connection for N x the bound. Measured on PG16 — two rows,
+  // `lock_timeout='1000ms'`, staggered holders: the statement ran 1214ms and
+  // SUCCEEDED. `statement_timeout` is the actual deadline; `lock_timeout` stays
+  // as the per-lock backstop so a single long blocker still fails faster.
   const priorMs = await tightenLockTimeout(tx, CATALOG_LOCK_TIMEOUT_MS);
+  const priorStmtMs = await tightenStatementTimeout(tx, CATALOG_LOCK_TIMEOUT_MS);
   const cols = { id: catalogItems.id, isBundle: catalogItems.isBundle, partnerId: catalogItems.partnerId };
 
   // ONE locking query, not one per id. The validator permits 200 components, so
@@ -708,6 +720,12 @@ async function lockOwnedItemsInGlobalOrder(
   // rolling back to the savepoint that precedes a SET LOCAL undoes it.
   if (lockTimeoutWasChanged(priorMs, CATALOG_LOCK_TIMEOUT_MS)) {
     await tx.execute(sql`select set_config('lock_timeout', ${`${priorMs}ms`}, true)`);
+  }
+  // Restore the statement deadline immediately: left in force it would govern
+  // the unlocked read and the replace DML below too, which is a broader promise
+  // than this bound is making.
+  if (lockTimeoutWasChanged(priorStmtMs, CATALOG_LOCK_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('statement_timeout', ${`${priorStmtMs}ms`}, true)`);
   }
 
   // Anything not returned above is either foreign or absent. Read it unlocked so
@@ -817,7 +835,16 @@ export async function setBundleComponents(
   // and the function throws before deleting anything. Both production callers
   // establish an access context, so on both paths this is a SAVEPOINT within
   // their transaction, not a new transaction.
-  const id = await db.transaction(async (tx) => {
+  // Translate a lock/statement timeout into a TYPED domain error, here rather
+  // than at the route.
+  //
+  // Mapping raw 55P03 in the route's shared handleServiceError was too broad —
+  // that handler also serves GET /:id/economics, so any 55P03 arising anywhere
+  // in the catalog surface would have been reported as "this item is busy". It
+  // also missed a caller: aiToolsCatalog converts CatalogServiceError only, so
+  // the AI path would still have surfaced a raw driver error. A domain error
+  // fixes both, because every caller already understands CatalogServiceError.
+  const id = await withBundleLockTimeoutMapped(async () => db.transaction(async (tx) => {
     const componentIds = items.map((c) => c.componentItemId);
     const locked = await lockOwnedItemsInGlobalOrder(tx, [bundleKey, ...componentIds], partnerId);
 
@@ -884,7 +911,7 @@ export async function setBundleComponents(
       })));
     }
     return bundleKey;
-  });
+  }));
 
   // NOT an after-commit hook, and deliberately not labelled as one. Request
   // handlers already run inside `withDbAccessContext`, which opens the real
@@ -897,6 +924,29 @@ export async function setBundleComponents(
   // taken above are still held across this enqueue.
   await emitCatalogEvent({ type: 'catalog.item.updated', catalogItemId: id, partnerId, actorUserId: actor.userId });
   return getCatalogItem(id, actor);
+}
+
+/**
+ * Runs `fn`, converting a lock-wait abort into ITEM_BUSY (409).
+ *
+ * 55P03 is the per-lock backstop firing; 57014 is the statement deadline. Both
+ * mean the same thing to a caller — someone else is writing these rows, retry —
+ * and neither is a bug in the request. The SQLSTATE is read with `pgErrorCode`
+ * because Drizzle wraps the driver error and puts the code on `.cause`.
+ */
+async function withBundleLockTimeoutMapped<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (LOCK_WAIT_ABORT_CODES.has(pgErrorCode(err) ?? '')) {
+      throw new CatalogServiceError(
+        'Catalog item is busy: another operation is modifying it. Try again in a moment.',
+        409,
+        'ITEM_BUSY',
+      );
+    }
+    throw err;
+  }
 }
 
 /**

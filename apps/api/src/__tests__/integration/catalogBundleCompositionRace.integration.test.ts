@@ -356,7 +356,7 @@ describe.runIf(RUN)('#3816 catalog bundle composition races', () => {
    * Real contention, not a mock: a second connection holds the component row in
    * an open transaction while the compose tries to lock it.
    */
-  it('fails fast with 55P03 instead of waiting forever when an item row is held', async () => {
+  it('fails fast as ITEM_BUSY instead of waiting forever when an item row is held', async () => {
     const f = await seedFixture();
     const holder = postgres(process.env.DATABASE_URL!, { max: 1 });
     let released!: () => void;
@@ -387,10 +387,76 @@ describe.runIf(RUN)('#3816 catalog bundle composition races', () => {
 
     // The SQLSTATE is on `.cause` (DrizzleQueryError wraps it), which is exactly
     // why the route uses pgErrorCode rather than a top-level `err.code` read.
-    expect(pgErrorCode(caught)).toBe('55P03');
+    expect((caught as { code?: string })?.code).toBe('ITEM_BUSY');
     // And it gave up near the bound rather than hanging on the holder.
     expect(elapsed).toBeLessThan(15000);
   }, 30000);
+
+  /**
+   * STAGGERED blockers — the case a single-holder test cannot see, and the
+   * reason `lock_timeout` alone is not a bound.
+   *
+   * `lock_timeout` applies per lock ACQUISITION, not to the statement. Measured
+   * directly on PG16: two rows, `lock_timeout='1000ms'`, holders staggered so
+   * neither individual wait exceeds the limit — the statement ran 1214ms and
+   * SUCCEEDED. Scaled to the 200 components the validator allows, a run of
+   * blockers could hold a pooled request connection for minutes while retaining
+   * every lock taken so far. `statement_timeout` is what actually caps it.
+   */
+  it('gives up near the bound when several rows are blocked in sequence', async () => {
+    const f = await seedFixture();
+    const other = await withSystemDbAccessContext(async () => {
+      const [row] = await db.insert(catalogItems).values({
+        partnerId: f.partnerId, name: `stagger-${f.plain.slice(0, 6)}`, sku: `stagger-${f.plain.slice(0, 6)}`,
+        itemType: 'service', billingType: 'one_time', isBundle: false, isActive: true,
+        unitPrice: '10.00', costCurrency: 'USD',
+      }).returning({ id: catalogItems.id });
+      return row!.id;
+    });
+
+    // Stagger in the order the LOCK QUERY will acquire, which is `ORDER BY id`
+    // — i.e. uuid order, NOT the order these were created. An earlier revision
+    // of this test staggered by creation order; when the second-held row sorted
+    // first the reader took it before it was ever blocked, never accumulated
+    // the second wait, and the test passed against an unbounded statement.
+    const [firstId, secondId] = [f.plain, other].sort();
+    const a = postgres(process.env.DATABASE_URL!, { max: 1 });
+    const b = postgres(process.env.DATABASE_URL!, { max: 1 });
+    // Each holder blocks ONE row for less than the per-lock bound, back to back,
+    // so only a statement-wide deadline can stop the total.
+    const holdA = a.begin(async (tx) => {
+      await tx`SELECT id FROM catalog_items WHERE id = ${firstId} FOR UPDATE`;
+      await new Promise((r) => setTimeout(r, 2500));
+    });
+    const holdB = b.begin(async (tx) => {
+      await tx`SELECT id FROM catalog_items WHERE id = ${secondId} FOR UPDATE`;
+      await new Promise((r) => setTimeout(r, 5000));
+    });
+    // Both holders are in place before the reader starts.
+    await new Promise((r) => setTimeout(r, 400));
+
+    const startedAt = Date.now();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(ctx(f.partnerId), () => svc.setBundleComponents(
+        f.bundleA,
+        [
+          { componentItemId: f.plain, quantity: 1, showOnInvoice: true, revenueAllocation: null },
+          { componentItemId: other, quantity: 1, showOnInvoice: true, revenueAllocation: null },
+        ],
+        actorFor(f.partnerId),
+      ));
+    } catch (err) { caught = err; }
+    const elapsed = Date.now() - startedAt;
+
+    await Promise.allSettled([holdA, holdB]);
+    await a.end(); await b.end();
+
+    expect((caught as { code?: string })?.code).toBe('ITEM_BUSY');
+    // The whole statement is capped, not each row: without statement_timeout
+    // this could run to roughly the SUM of the waits.
+    expect(elapsed).toBeLessThan(6000);
+  }, 40000);
 
   it('crossed parent/component requests reject as BUNDLE_NESTED rather than deadlocking', async () => {
     // Regression guard for the lock ORDER, not for the original bug (the
