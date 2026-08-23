@@ -6,7 +6,7 @@ import {
   DEFAULT_MAX_STALENESS_DAYS,
   ExchangeRateServiceError,
   assertIsoDate,
-  convertForReporting,
+  convertForReportingBatch,
 } from './exchangeRateService';
 
 /**
@@ -203,8 +203,15 @@ export async function computeReportingTotal(
   // ONE conversion per DISTINCT currency — including the target itself, so even
   // the identity 1:1 comes from the FX service of record rather than being
   // synthesized here (the program has exactly one synthetic 1.00000000).
-  const converted = await Promise.all(
-    merged.map((g) => convertForReporting(g.amount, g.currencyCode, target, requestedDate)),
+  //
+  // ONE BATCH CALL, never a loop of single-pair conversions: the batch entry
+  // point loads every leg (sources AND target) in a SINGLE statement, so the
+  // whole total is derived from ONE database snapshot. Looping per group would
+  // take a fresh READ COMMITTED snapshot per group and let a feed or
+  // manual-rate commit landing mid-request produce a total whose legs never
+  // coexisted — plus up to 2N round trips per dashboard request.
+  const converted = await convertForReportingBatch(
+    merged.map((g) => ({ amount: g.amount, from: g.currencyCode })), target, requestedDate,
   );
 
   const exp = minorUnitExponent(target);

@@ -15,7 +15,7 @@ import { multiplyToCurrency } from '@breeze/shared';
 // and its integration twin already prove.
 // ---------------------------------------------------------------------------
 
-const { FakeExchangeRateServiceError, convertForReporting } = vi.hoisted(() => ({
+const { FakeExchangeRateServiceError, convertForReporting, convertForReportingBatch } = vi.hoisted(() => ({
   FakeExchangeRateServiceError: class ExchangeRateServiceError extends Error {
     constructor(
       public readonly status: number,
@@ -27,6 +27,7 @@ const { FakeExchangeRateServiceError, convertForReporting } = vi.hoisted(() => (
     }
   },
   convertForReporting: vi.fn(),
+  convertForReportingBatch: vi.fn(),
 }));
 
 vi.mock('./exchangeRateService', () => ({
@@ -39,6 +40,15 @@ vi.mock('./exchangeRateService', () => ({
     return value;
   },
   convertForReporting: (...args: unknown[]) => convertForReporting(...args),
+  // The batch primitive the module under test actually calls. Delegating to the
+  // same per-pair mock keeps every rate/unavailability fixture below unchanged
+  // while the production path stays single-snapshot.
+  convertForReportingBatch: (
+    items: readonly { amount: string; from: string }[], to: string, date: string,
+  ) => {
+    convertForReportingBatch(items, to, date);
+    return Promise.all(items.map((i) => convertForReporting(i.amount, i.from, to, date)));
+  },
 }));
 
 /** Terminal rows for the single `partners` read in resolvePartnerReportingCurrency. */
@@ -151,6 +161,7 @@ describe('computeReportingTotal', () => {
     expect(result.total).toBeNull();
     expect(result.groups).toEqual([]);
     expect(convertForReporting).not.toHaveBeenCalled();
+    expect(convertForReportingBatch).not.toHaveBeenCalled();
   });
 
   it('totals mixed groups exactly and discloses the OLDEST contributing rate date', async () => {
@@ -173,6 +184,35 @@ describe('computeReportingTotal', () => {
       ['CAD', '10.00', '1.00000000', 'identity'],
     ]);
     expect(result.unavailableCurrencyCodes).toEqual([]);
+  });
+
+  // Under READ COMMITTED each statement takes its OWN snapshot, so a total
+  // assembled from one FX round trip per group can mix legs from two database
+  // states (the hybrid cross-rate failure, one layer up) — and costs up to 2N
+  // round trips per dashboard request. The whole total must come from ONE
+  // batched call covering every source currency AND the target.
+  it('resolves every group in ONE batched FX call — never one round trip per group', async () => {
+    rates['USD->CAD'] = ['1.35000000', '2026-09-02', 'ecb'];
+    rates['EUR->CAD'] = ['1.50000000', '2026-09-02', 'ecb'];
+    rates['GBP->CAD'] = ['1.70000000', '2026-09-02', 'ecb'];
+    await computeReportingTotal([
+      { currencyCode: 'USD', amount: '1.00' },
+      { currencyCode: 'EUR', amount: '1.00' },
+      { currencyCode: 'GBP', amount: '1.00' },
+      { currencyCode: 'CAD', amount: '1.00' },
+    ], 'CAD', DATE);
+
+    expect(convertForReportingBatch).toHaveBeenCalledTimes(1);
+    expect(convertForReportingBatch.mock.calls[0]).toEqual([
+      [
+        { amount: '1.00', from: 'USD' },
+        { amount: '1.00', from: 'EUR' },
+        { amount: '1.00', from: 'GBP' },
+        { amount: '1.00', from: 'CAD' },
+      ],
+      'CAD',
+      DATE,
+    ]);
   });
 
   it('suppresses the WHOLE total when ONE leg is unavailable, echoing every group with its reason', async () => {
