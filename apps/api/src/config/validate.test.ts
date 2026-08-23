@@ -68,6 +68,37 @@ describe('validateConfig', () => {
     });
   });
 
+  it('accepts terminal preparation only when browser transitions are enforced', () => {
+    withEnv({
+      ...validEnv,
+      AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true',
+      AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true',
+    }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('rejects terminal preparation when browser transitions are not enforced', () => {
+    withEnv({
+      ...validEnv,
+      AUTH_BROWSER_TRANSITIONS_ENFORCED: 'false',
+      AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow(
+        /AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED.*AUTH_BROWSER_TRANSITIONS_ENFORCED/,
+      );
+    });
+  });
+
+  it.each([
+    ['AUTH_BROWSER_TRANSITIONS_ENFORCED', 'enabled'],
+    ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', 'enabled'],
+  ])('rejects an invalid boolean rollout value for %s', (key, value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).toThrow(new RegExp(key));
+    });
+  });
+
   it('passes with valid config in production', () => {
     withEnv({
       ...validEnv,

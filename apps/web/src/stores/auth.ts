@@ -1463,35 +1463,16 @@ export async function apiRegisterPartner(
 // refreshFetchOnce above.
 const LOGOUT_TIMEOUT_MS = 8000;
 
-export async function apiLogout(): Promise<void> {
-  const { tokens, logout } = useAuthStore.getState();
+export type LogoutOutcome =
+  | Readonly<{ kind: 'complete' }>
+  | Readonly<{ kind: 'partial'; message: string }>;
 
-  if (tokens?.accessToken) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
-    try {
-      await fetch(buildApiUrl('/auth/logout'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokens.accessToken}`
-        },
-        credentials: 'include',
-        signal: controller.signal
-      });
-    } catch (err) {
-      // Network error, offline, or the 8s abort fired. Ignored on purpose —
-      // the refresh-token family may survive server-side, but the client must
-      // still evict. Logged so a systematically failing revoke is diagnosable.
-      console.warn('[apiLogout] logout request failed; evicting client session anyway', err);
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
+export type CfTerminalLogoutPreparationOutcome =
+  | Readonly<{ kind: 'ready'; navigationUrl: string }>
+  | Readonly<{ kind: 'partial'; message: string }>;
 
-  logout();
-
-  // Clear all persisted store data to prevent stale state on next login
+function evictLocalAuthState(): void {
+  useAuthStore.getState().logout();
   try {
     localStorage.removeItem('breeze-auth');
     localStorage.removeItem('breeze-org');
@@ -1499,6 +1480,109 @@ export async function apiLogout(): Promise<void> {
   } catch {
     // localStorage may be unavailable
   }
+}
+
+function terminalLogoutHeaders(accessToken: string): Headers {
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+    'x-breeze-auth-transition': 'v1',
+  });
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken) headers.set(CSRF_HEADER_NAME, csrfToken);
+  return headers;
+}
+
+export function validateCfTerminalNavigationUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || typeof window === 'undefined') return null;
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (
+      url.origin !== window.location.origin
+      || url.username !== ''
+      || url.password !== ''
+      || url.pathname !== '/api/v1/auth/cf-access-logout'
+      || url.hash !== ''
+    ) return null;
+    const entries = [...url.searchParams.entries()];
+    if (entries.length !== 1 || entries[0]?.[0] !== 'ticket' || !entries[0][1]) return null;
+    return `${url.pathname}?ticket=${encodeURIComponent(entries[0][1])}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function apiLogout(retainedAccessToken?: string): Promise<LogoutOutcome> {
+  const { tokens } = useAuthStore.getState();
+  const accessToken = retainedAccessToken ?? tokens?.accessToken;
+  let outcome: LogoutOutcome = { kind: 'complete' };
+
+  if (accessToken) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+    try {
+      const response = await fetch(buildApiUrl('/auth/logout'), {
+        method: 'POST',
+        headers: terminalLogoutHeaders(accessToken),
+        credentials: 'include',
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        outcome = {
+          kind: 'partial',
+          message: 'Your local session was cleared, but durable server sign-out could not be confirmed.',
+        };
+      }
+    } catch (err) {
+      // Network error, offline, or the 8s abort fired. Ignored on purpose —
+      // the refresh-token family may survive server-side, but the client must
+      // still evict. Logged so a systematically failing revoke is diagnosable.
+      console.warn('[apiLogout] logout request failed; evicting client session anyway', err);
+      outcome = {
+        kind: 'partial',
+        message: 'Your local session was cleared, but durable server sign-out could not be confirmed.',
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  evictLocalAuthState();
+  return outcome;
+}
+
+export async function apiPrepareCfTerminalLogout(
+  retainedAccessToken?: string,
+): Promise<CfTerminalLogoutPreparationOutcome> {
+  const { tokens } = useAuthStore.getState();
+  const accessToken = retainedAccessToken ?? tokens?.accessToken;
+  let outcome: CfTerminalLogoutPreparationOutcome = {
+    kind: 'partial',
+    message: 'Your local session was cleared, but Cloudflare sign-out could not be prepared.',
+  };
+  if (accessToken) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+    try {
+      const response = await fetch(buildApiUrl('/auth/cf-access-logout/prepare'), {
+        method: 'POST',
+        headers: terminalLogoutHeaders(accessToken),
+        credentials: 'include',
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        const body = await response.json().catch(() => null) as { navigationUrl?: unknown } | null;
+        const navigationUrl = validateCfTerminalNavigationUrl(body?.navigationUrl);
+        if (navigationUrl) outcome = { kind: 'ready', navigationUrl };
+      }
+    } catch (error) {
+      console.warn('[apiLogout] Cloudflare terminal preparation failed; evicting locally', error);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  evictLocalAuthState();
+  return outcome;
 }
 
 export async function fetchAndApplyPreferences(): Promise<void> {

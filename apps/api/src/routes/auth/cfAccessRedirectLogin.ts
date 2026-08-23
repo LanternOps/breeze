@@ -7,17 +7,14 @@ import {
   cfAccessTeamDomain,
   cfAccessTrustEnabled,
   cfAccessTrustsMfa,
+  authBrowserTerminalPreparationEnabled,
 } from '../../config/env';
 import {
   CfAccessInvalidTokenError,
   CfAccessJwksUnavailableError,
   verifyCfAccessJwt,
 } from '../../services/cfAccessJwt';
-import {
-  revokeAllUserTokens,
-  revokeRefreshTokenJti,
-  verifyToken,
-} from '../../services';
+import { authMiddleware } from '../../middleware/auth';
 import {
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
@@ -36,10 +33,9 @@ import {
 } from '../../services/userSession';
 import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionMetrics';
 import { createAuditLogAsync } from '../../services/auditService';
-import { captureException } from '../../services/sentry';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
-import { ENABLE_2FA } from './schemas';
+import { CSRF_COOKIE_NAME, ENABLE_2FA } from './schemas';
 import {
   auditUserLoginFailure,
   clearRefreshTokenCookie,
@@ -51,8 +47,20 @@ import {
   installAuthorizedUserSessionCookies,
   installLegacyUserSessionCookiesDuringTransition,
   isAuthTransitionV1Request,
+  getCookieValue,
+  validateCookieCsrfRequest,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
+import {
+  completeCfTerminalLogout,
+  isCfTerminalLogoutPending,
+  prepareCfTerminalLogout,
+} from '../../services/terminalLogout';
+import {
+  issueTerminalLogoutTicket,
+  verifyTerminalLogoutTicket,
+  type TerminalLogoutTicketClaims,
+} from '../../services/terminalLogoutTicket';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -323,7 +331,11 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
 });
 
 /**
- * GET /api/v1/auth/cf-access-logout
+ * POST /api/v1/auth/cf-access-logout/prepare authenticates the browser,
+ * applies strict cookie/header CSRF, durably revokes refresh authority, and
+ * returns a signed one-time navigation URL. GET /cf-access-logout accepts only
+ * that ticket and chains the app/team Cloudflare logout hops to the cookie-less
+ * completion endpoint.
  *
  * Top-level browser navigation entry-point for completing logout when CF
  * Access trust is in front of Breeze. Without this, clicking "Sign out"
@@ -331,122 +343,161 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
  * for the user, so the next visit re-enters Breeze via the SSO redirect
  * loop with no user interaction.
  *
- * Flow:
- *   1. Clear the Breeze refresh cookie.
- *   2. 302 to CF Access logout endpoint with `returnTo` pointing back at
- *      `/login?signedOut=1`. CF clears its own session and bounces the
- *      user back. `LoginPage` honours the `signedOut=1` flag and shows
- *      the password form instead of triggering the SSO redirect again.
- *
- * If CF Access trust is disabled, falls back to a plain 302 to /login
- * after clearing the refresh cookie.
- *
- * Not authMiddleware-gated: a top-level GET navigation cannot present a
- * Bearer token. The refresh cookie is enough to identify the session and
- * the cookie is cleared regardless.
+ * Neither GET derives authority from cookies. Completion validates the signed
+ * correlation against PostgreSQL, consumes the nonce once, retires C1, and
+ * installs deterministic C2. Invalid, stale, replay-mismatched, or unavailable
+ * state fails closed without a redirect.
  */
-cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
-  // Server-side revocation, mirroring POST /logout (login.ts): identify the
-  // session from the refresh cookie (no Bearer token on a top-level GET),
-  // then revoke ALL of the user's tokens plus the specific refresh jti.
-  // Without this, "Sign out" via CF Access only cleared the cookie — the
-  // access + refresh tokens stayed live until natural expiry. Best-effort:
-  // a missing/invalid cookie or a Redis error still clears + redirects.
+function terminalTicketResponseHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
+    ...extra,
+  };
+}
+
+function terminalTicketError(message: string, status: 400 | 503): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: terminalTicketResponseHeaders({ 'Content-Type': 'application/json; charset=UTF-8' }),
+  });
+}
+
+function configuredPublicOrigin(): string | null {
+  const configuredBase = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || '').trim();
+  if (!configuredBase) return null;
   try {
-    const refreshToken = resolveRefreshToken(c);
-    if (refreshToken) {
-      const payload = await verifyToken(refreshToken);
-      if (payload && payload.type === 'refresh' && payload.sub) {
-        await revokeAllUserTokens(payload.sub);
-        if (payload.jti) {
-          await revokeRefreshTokenJti(payload.jti);
-        }
-      }
+    const parsed = new URL(configuredBase);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function verifiedTicketInput(ticket: string | undefined) {
+  if (!ticket) return null;
+  const verified = verifyTerminalLogoutTicket(ticket);
+  if (!verified) return null;
+  return {
+    verified,
+    correlation: {
+      transitionId: verified.claims.transitionId,
+      logoutId: verified.claims.logoutId,
+      generation: verified.claims.generation,
+      nonce: verified.claims.nonce,
+    },
+  };
+}
+
+cfAccessRedirectLoginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
+  if (!authBrowserTerminalPreparationEnabled()) {
+    return c.json({ error: 'Terminal logout preparation is disabled' }, 503);
+  }
+
+  const csrfError = validateCookieCsrfRequest(c);
+  const csrfCookie = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
+  if (csrfError || !csrfCookie || !c.req.header('origin')) {
+    return c.json({ error: csrfError ?? 'Missing CSRF cookie or request origin' }, 403);
+  }
+
+  const auth = c.get('auth');
+  const token = auth.token;
+  if (
+    !token
+    || typeof token.aep !== 'number'
+    || typeof token.mep !== 'number'
+    || !token.sid
+  ) {
+    return c.json({ error: 'Invalid or expired token' }, 401);
+  }
+
+  try {
+    const prepared = await prepareCfTerminalLogout({
+      binding: requestAuthBinding(c),
+      access: {
+        userId: auth.user.id,
+        authEpoch: token.aep,
+        mfaEpoch: token.mep,
+        familyId: token.sid,
+      },
+      refreshToken: resolveRefreshToken(c),
+    });
+    const claims: TerminalLogoutTicketClaims = {
+      version: 1,
+      audience: 'terminal-logout-completion',
+      transitionId: prepared.transitionId,
+      logoutId: prepared.logoutId,
+      generation: prepared.generation,
+      nonce: prepared.nonce,
+      issuedAt: prepared.issuedAt,
+      expiresAt: prepared.expiresAt,
+    };
+    const ticket = issueTerminalLogoutTicket(claims);
+    clearRefreshTokenCookie(c);
+    return c.json({
+      navigationUrl: `/api/v1/auth/cf-access-logout?ticket=${encodeURIComponent(ticket)}`,
+    });
+  } catch (error) {
+    console.error('[cf-access-logout] Durable terminal preparation failed:', error);
+    return c.json({ error: 'Terminal logout preparation unavailable' }, 503);
+  }
+});
+
+cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
+  const ticket = c.req.query('ticket');
+  const input = verifiedTicketInput(ticket);
+  if (!input) {
+    return terminalTicketError('Invalid or expired terminal logout ticket', 400);
+  }
+  try {
+    if (!await isCfTerminalLogoutPending(input.correlation)) {
+      return terminalTicketError('Invalid or expired terminal logout ticket', 400);
     }
   } catch (error) {
-    console.error(
-      '[cf-access-logout] Failed to revoke tokens during logout — clearing cookie anyway:',
-      error
-    );
+    console.error('[cf-access-logout] Pending ticket check failed:', error);
+    return terminalTicketError('Terminal logout temporarily unavailable', 503);
+  }
+  if (!cfAccessTrustEnabled()) {
+    return terminalTicketError('Cloudflare Access logout is disabled', 503);
+  }
+  const teamDomain = cfAccessTeamDomain();
+  const origin = configuredPublicOrigin();
+  if (!teamDomain || !origin) {
+    return terminalTicketError('Cloudflare Access logout is misconfigured', 503);
+  }
+
+  const completion = `${origin}/api/v1/auth/cf-access-logout/complete?ticket=${encodeURIComponent(ticket!)}`;
+  const teamLogout = `https://${teamDomain}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(completion)}`;
+  const appLogout = `${origin}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(teamLogout)}`;
+  return new Response(null, {
+    status: 302,
+    headers: terminalTicketResponseHeaders({ Location: appLogout }),
+  });
+});
+
+cfAccessRedirectLoginRoutes.get('/cf-access-logout/complete', async (c) => {
+  const input = verifiedTicketInput(c.req.query('ticket'));
+  if (!input) {
+    return terminalTicketError('Invalid or expired terminal logout ticket', 400);
+  }
+  let result;
+  try {
+    result = await completeCfTerminalLogout({
+      ...input.correlation,
+      signingKeyId: input.verified.signingKeyId,
+    });
+  } catch (error) {
+    console.error('[cf-access-logout] Ticket completion failed:', error);
+    return terminalTicketError('Terminal logout temporarily unavailable', 503);
+  }
+  if (result.kind === 'invalid') {
+    return terminalTicketError('Invalid or expired terminal logout ticket', 400);
   }
 
   clearRefreshTokenCookie(c);
-
-  if (!cfAccessTrustEnabled()) {
-    return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
-  }
-
-  const teamDomain = cfAccessTeamDomain();
-  if (!teamDomain) {
-    return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
-  }
-
-  // Resolve the public origin from configuration, NOT the request. The Host
-  // header is attacker-controllable, and the origin ends up in a Location
-  // header — deriving it from the request is an open redirect (a crafted
-  // Host would bounce the user's browser to an attacker domain after CF
-  // logout). DASHBOARD_URL / PUBLIC_APP_URL is the established pattern for
-  // building user-facing absolute URLs (see login.ts, password.ts).
-  const configuredBase = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || '')
-    .trim()
-    .replace(/\/$/, '');
-  let origin = '';
-  let parseError: unknown;
-  if (configuredBase) {
-    try {
-      const parsed = new URL(configuredBase);
-      // Only http(s) bases yield a usable origin — anything else (e.g. an
-      // opaque scheme) serialises `origin` to the literal string "null".
-      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-        origin = parsed.origin;
-      }
-    } catch (err) {
-      parseError = err;
-    }
-  }
-  if (!origin) {
-    // Fail closed (#2895). There is no safe way to synthesise an absolute
-    // origin here: the request Host header is attacker-controllable and
-    // would turn this Location into an open redirect. Skip the CF Access
-    // logout chain (which requires absolute URLs) and land on the relative
-    // /login instead — the Breeze session is already revoked and its cookie
-    // cleared above, so the user is signed out of Breeze either way. Only
-    // the CF Access cookies survive until the operator configures an origin.
-    //
-    // Name the configured value in the log: "unset", "typo'd" and "wrong
-    // scheme" are three different operator fixes, and a message that only
-    // said "not configured" reads as wrong to someone who can see the var
-    // is set. The value is a public URL, not a secret.
-    const cause = parseError instanceof Error ? ` (${parseError.message})` : '';
-    const message =
-      '[cf-access-logout] DASHBOARD_URL / PUBLIC_APP_URL did not resolve to an http(s) origin ' +
-      `(configured: ${configuredBase ? JSON.stringify(configuredBase) : '<unset>'})${cause} — ` +
-      'skipping the Cloudflare Access logout chain and redirecting to /login. Set DASHBOARD_URL ' +
-      'to the public Breeze URL to fully sign users out of Cloudflare Access.';
-    console.error(message);
-    // console.error is stdout-only on a hosted deployment, and this silently
-    // disables half of the sign-out. Surface it where an operator will see it.
-    captureException(new Error(message), c);
-    return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
-  }
-
-  // CF Access stores TWO `CF_Authorization` cookies per session:
-  // 1. Per-application cookie at the app domain (app.example.com)
-  // 2. Global session token at the team domain (your-team.cloudflareaccess.com)
-  // Each domain's `/cdn-cgi/access/logout` endpoint clears only its own
-  // cookie (per
-  // https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/).
-  // For a full logout we need to hit both. Chain them via returnTo:
-  //
-  //   app-logout (clears per-app cookie)
-  //   └─ returnTo=team-logout (clears global cookie)
-  //      └─ returnTo=/login?signedOut=1
-  //
-  // The `/cdn-cgi/access/*` paths are reserved by Cloudflare and
-  // intercepted at the edge, so they never hit the origin and aren't
-  // affected by the `/api/*` bypass app.
-  const finalReturn = `${origin}/login?signedOut=1`;
-  const teamLogout = `https://${teamDomain}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(finalReturn)}`;
-  const appLogout = `${origin}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(teamLogout)}`;
-  return new Response(null, { status: 302, headers: { Location: appLogout } });
+  installAuthBindingReplacement(c, result.replacement);
+  return new Response(null, {
+    status: 303,
+    headers: terminalTicketResponseHeaders({ Location: '/login?signedOut=1' }),
+  });
 });

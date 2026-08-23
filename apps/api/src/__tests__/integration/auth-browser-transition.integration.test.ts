@@ -12,7 +12,7 @@ import {
   users,
   userPasskeys,
 } from '../../db/schema';
-import { authBindingRoutes } from '../../routes/auth/binding';
+import { AUTH_BINDING_COOKIE_NAME, authBindingRoutes } from '../../routes/auth/binding';
 import {
   AuthIssuanceCapabilityError,
   beginAuthIssuance,
@@ -29,6 +29,15 @@ import {
   UserSessionEpochMismatchError,
   type UserSessionIdentity,
 } from '../../services/userSession';
+import {
+  completeCfTerminalLogout,
+  performOrdinaryTerminalLogout,
+  prepareCfTerminalLogout,
+} from '../../services/terminalLogout';
+import {
+  issueTerminalLogoutTicket,
+  verifyTerminalLogoutTicket,
+} from '../../services/terminalLogoutTicket';
 import { advanceUserEpochs } from '../../services/authLifecycle';
 import { createPartner as createRegistrationPartner } from '../../services/partnerCreate';
 import { createPartner as createFixturePartner, createUser } from './db-utils';
@@ -58,7 +67,7 @@ async function freshBrowserBinding(): Promise<string> {
   return value;
 }
 
-async function waitForBackendBlockedBy(blockerPid: number): Promise<void> {
+async function waitForBackendBlockedBy(blockerPid: number, expectedWaiters = 1): Promise<void> {
   const deadline = Date.now() + 10_000;
   for (;;) {
     const rows = await getTestDb().execute<{ waiting: number }>(sql`
@@ -68,7 +77,7 @@ async function waitForBackendBlockedBy(blockerPid: number): Promise<void> {
         AND state = 'active'
         AND ${blockerPid} = ANY(pg_catalog.pg_blocking_pids(pid))
     `);
-    if ((rows[0]?.waiting ?? 0) > 0) return;
+    if ((rows[0]?.waiting ?? 0) >= expectedWaiters) return;
     if (Date.now() > deadline) throw new Error('finalization did not block on the transition lock');
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -110,6 +119,159 @@ async function fixture() {
 }
 
 describe('guarded auth browser transition races', () => {
+  runDb('ordinary terminal logout atomically revokes A/C and retires C1 with C2', async () => {
+    const { user, identity } = await fixture();
+    const binding = await freshBrowserBinding();
+    const capability = await beginAuthIssuance({ kind: 'browser', value: binding });
+    const issued = await finishAuthIssuance(capability, (tx) => issueUserSession(identity, {
+      tx,
+      capability,
+      expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+    }));
+
+    const result = await performOrdinaryTerminalLogout({
+      binding: { kind: 'browser', value: binding },
+      access: {
+        userId: user.id,
+        authEpoch: user.authEpoch,
+        mfaEpoch: user.mfaEpoch,
+        familyId: issued.familyId,
+      },
+      refreshToken: null,
+    });
+
+    const [transition] = await getTestDb().select().from(authBrowserTransitions)
+      .where(eq(authBrowserTransitions.id, capability.transitionId)).limit(1);
+    const [family] = await getTestDb().select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, issued.familyId)).limit(1);
+    const [liveUser] = await getTestDb().select({ authEpoch: users.authEpoch }).from(users)
+      .where(eq(users.id, user.id)).limit(1);
+    expect(transition?.state).toBe('retired');
+    expect(family?.revokedAt).toBeInstanceOf(Date);
+    expect(liveUser?.authEpoch).toBe(user.authEpoch + 1);
+    expect(result.replacement.kind).toBe('browser');
+    expect(result.replacement.value).not.toBe(binding);
+  });
+
+  runDb('a delayed C1 response after logout is inert and deterministically recovers C2', async () => {
+    const { user, identity } = await fixture();
+    const c1 = await freshBrowserBinding();
+    const capability = await beginAuthIssuance({ kind: 'browser', value: c1 });
+    const issuedBeforeDelayedResponse = await finishAuthIssuance(capability, (tx) => issueUserSession(identity, {
+      tx,
+      capability,
+      expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+    }));
+
+    const logout = await performOrdinaryTerminalLogout({
+      binding: { kind: 'browser', value: c1 },
+      access: {
+        userId: user.id,
+        authEpoch: user.authEpoch,
+        mfaEpoch: user.mfaEpoch,
+        familyId: issuedBeforeDelayedResponse.familyId,
+      },
+      refreshToken: null,
+    });
+
+    // Model an already-issued response arriving late and overwriting the
+    // browser's binding cookie with C1. Bootstrap cannot revive C1; it resolves
+    // the retired row to the deterministic successor created by logout.
+    const recovery = await authBindingRoutes.request('/browser-binding/bootstrap', {
+      method: 'POST',
+      headers: { cookie: `${AUTH_BINDING_COOKIE_NAME}=${c1}` },
+    });
+    expect(recovery.status).toBe(204);
+    const recovered = new RegExp(`${AUTH_BINDING_COOKIE_NAME}=([0-9a-f]{64})`)
+      .exec(recovery.headers.get('set-cookie') ?? '')?.[1];
+    expect(recovered).toBe(logout.replacement.value);
+    expect(recovered).not.toBe(c1);
+  });
+
+  runDb('two CF completions consume one nonce and return the same deterministic C2', async () => {
+    const { user, identity } = await fixture();
+    const binding = await freshBrowserBinding();
+    const capability = await beginAuthIssuance({ kind: 'browser', value: binding });
+    const issued = await finishAuthIssuance(capability, (tx) => issueUserSession(identity, {
+      tx,
+      capability,
+      expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
+    }));
+    const pending = await prepareCfTerminalLogout({
+      binding: { kind: 'browser', value: binding },
+      access: {
+        userId: user.id,
+        authEpoch: user.authEpoch,
+        mfaEpoch: user.mfaEpoch,
+        familyId: issued.familyId,
+      },
+      refreshToken: null,
+    });
+    const ticket = issueTerminalLogoutTicket({
+      version: 1,
+      audience: 'terminal-logout-completion',
+      transitionId: pending.transitionId,
+      logoutId: pending.logoutId,
+      generation: pending.generation,
+      nonce: pending.nonce,
+      issuedAt: pending.issuedAt,
+      expiresAt: pending.expiresAt,
+    });
+    const verified = verifyTerminalLogoutTicket(ticket);
+    if (!verified) throw new Error('fresh terminal logout ticket did not verify');
+    const completionInput = {
+      transitionId: verified.claims.transitionId,
+      logoutId: verified.claims.logoutId,
+      generation: verified.claims.generation,
+      nonce: verified.claims.nonce,
+      signingKeyId: verified.signingKeyId,
+    };
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => undefined });
+    const holderPid = (await holder<{ pid: number }[]>`
+      SELECT pg_backend_pid()::int AS pid
+    `)[0]?.pid;
+    if (holderPid === undefined) throw new Error('could not determine completion barrier PID');
+    const barrierReady = deferred<void>();
+    const releaseBarrier = deferred<void>();
+    let settled;
+    try {
+      const barrier = holder.begin(async (tx) => {
+        await tx`
+          SELECT id FROM auth_browser_transitions
+          WHERE id = ${pending.transitionId}
+          FOR UPDATE
+        `;
+        barrierReady.resolve();
+        await releaseBarrier.promise;
+      });
+      await barrierReady.promise;
+      const completions = Promise.all([
+        completeCfTerminalLogout(completionInput),
+        completeCfTerminalLogout(completionInput),
+      ]);
+      // The shared Drizzle pool may queue the second promise behind the first;
+      // observing one backend blocked by our row lock is the deterministic
+      // barrier proving completion cannot pass before both promises exist.
+      await waitForBackendBlockedBy(holderPid);
+      releaseBarrier.resolve();
+      await barrier;
+      settled = await completions;
+    } finally {
+      releaseBarrier.resolve();
+      await closeClient(holder);
+    }
+    expect(settled.map((result) => result.kind).sort()).toEqual(['completed', 'replayed']);
+    expect(settled[0]).toHaveProperty('replacement.value');
+    expect(settled[1]).toHaveProperty('replacement.value');
+    if (settled[0].kind === 'invalid' || settled[1].kind === 'invalid') {
+      throw new Error('completion unexpectedly invalid');
+    }
+    expect(settled[0].replacement).toEqual(settled[1].replacement);
+
+    const replay = await completeCfTerminalLogout(completionInput);
+    expect(replay.kind).toBe('replayed');
+  });
+
   runDb('allows at most one cross-binding registration account and session winner', async () => {
     const suffix = randomUUID();
     const email = `registration-race-${suffix}@example.test`;

@@ -218,6 +218,8 @@ const lockedTransitionFields = {
   logoutExpiresAt: authBrowserTransitions.logoutExpiresAt,
   logoutId: authBrowserTransitions.logoutId,
   completionNonceDigest: authBrowserTransitions.completionNonceDigest,
+  currentUserId: authBrowserTransitions.currentUserId,
+  currentFamilyId: authBrowserTransitions.currentFamilyId,
   databaseNow: sql<Date>`now()`,
 };
 
@@ -231,6 +233,8 @@ type LockedTransition = {
   logoutExpiresAt: Date | null;
   logoutId: string | null;
   completionNonceDigest: string | null;
+  currentUserId: string | null;
+  currentFamilyId: string | null;
   databaseNow: Date | string;
 };
 
@@ -276,6 +280,109 @@ async function lockTransitionById(
     .for('update')
     .limit(1);
   return transition;
+}
+
+export type TerminalLogoutTransitionLock = Readonly<{
+  id: string;
+  generation: number;
+  state: LockedTransition['state'];
+  currentUserId: string | null;
+  currentFamilyId: string | null;
+  databaseNow: Date;
+}>;
+
+export type TerminalLogoutTransitionMutation = Readonly<{
+  tx: AuthLifecycleTransaction;
+  transition: TerminalLogoutTransitionLock;
+  retireWithSuccessor(): Promise<AuthBindingSource>;
+  markLogoutPending(input: Readonly<{
+    logoutId: string;
+    nonceDigest: string;
+    expiresAt: Date;
+  }>): Promise<Readonly<{ transitionId: string; logoutId: string; generation: number }>>;
+}>;
+
+/**
+ * Resolve and lock C1 before any user/family lock, then expose only the two
+ * terminal state transitions needed by the logout service. The callback and
+ * state mutation share one system transaction.
+ */
+export async function withTerminalLogoutTransition<T>(
+  source: AuthBindingSource,
+  callback: (mutation: TerminalLogoutTransitionMutation) => Promise<T>,
+): Promise<T> {
+  const keyMaterials = getSecretDerivedKeyMaterials(AUTH_BINDING_DERIVATION_DOMAIN);
+  if (!AUTH_BINDING_PATTERN.test(source.value)) {
+    throw new AuthBindingRotationRequiredError(freshBinding(source.kind, keyMaterials), 'invalid');
+  }
+  const resolution = bindingResolution(source, keyMaterials);
+  return withAuthLifecycleSystemTransaction(async (tx) => {
+    const locked = await lockTransitionForResolution(tx, resolution);
+    if (!locked) throw new AuthBindingUnavailableError('missing');
+    const { transition, matchedKey } = locked;
+    const publicTransition: TerminalLogoutTransitionLock = Object.freeze({
+      id: transition.id,
+      generation: transition.generation,
+      state: transition.state,
+      currentUserId: transition.currentUserId,
+      currentFamilyId: transition.currentFamilyId,
+      databaseNow: new Date(transition.databaseNow),
+    });
+
+    return callback(Object.freeze({
+      tx,
+      transition: publicTransition,
+      retireWithSuccessor: async () => {
+        const replacement = await ensureSuccessorTransition(
+          tx,
+          source.kind,
+          transition,
+          matchedKey,
+          keyMaterials,
+        );
+        const retired = await tx
+          .update(authBrowserTransitions)
+          .set({
+            state: 'retired',
+            activeOperationId: null,
+            activeOperationExpiresAt: null,
+            retiredAt: sql`now()`,
+            updatedAt: sql`now()`,
+          })
+          .where(and(
+            eq(authBrowserTransitions.id, transition.id),
+            eq(authBrowserTransitions.generation, transition.generation),
+            eq(authBrowserTransitions.state, 'active'),
+          ))
+          .returning({ id: authBrowserTransitions.id });
+        if (retired.length !== 1) throw new AuthIssuanceCapabilityError();
+        return replacement;
+      },
+      markLogoutPending: async ({ logoutId, nonceDigest, expiresAt }) => {
+        const generation = transition.generation + 1;
+        const [pending] = await tx
+          .update(authBrowserTransitions)
+          .set({
+            generation,
+            state: 'logout_pending',
+            activeOperationId: null,
+            activeOperationExpiresAt: null,
+            logoutId,
+            completionNonceDigest: nonceDigest,
+            logoutExpiresAt: expiresAt,
+            updatedAt: sql`now()`,
+          })
+          .where(and(
+            eq(authBrowserTransitions.id, transition.id),
+            eq(authBrowserTransitions.generation, transition.generation),
+            eq(authBrowserTransitions.state, 'active'),
+          ))
+          .returning({ id: authBrowserTransitions.id });
+        if (!pending) throw new AuthIssuanceCapabilityError();
+        return Object.freeze({ transitionId: transition.id, logoutId, generation });
+      },
+    }));
+  });
 }
 
 function instantMillis(value: Date | string): number {

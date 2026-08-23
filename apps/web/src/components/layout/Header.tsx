@@ -27,7 +27,12 @@ import NotificationCenter from './NotificationCenter';
 import TimerWidget from '../time/TimerWidget';
 import CommandPalette from './CommandPalette';
 import SupportModal from '../support/SupportModal';
-import { useAuthStore, apiLogout, fetchWithAuth } from '../../stores/auth';
+import {
+  useAuthStore,
+  apiLogout,
+  apiPrepareCfTerminalLogout,
+  fetchWithAuth,
+} from '../../stores/auth';
 import { useAiStore } from '../../stores/aiStore';
 import { useHelpStore } from '../../stores/helpStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -65,6 +70,7 @@ export default function Header() {
   const [showSupportModal, setShowSupportModal] = useState(false);
   const [billingLoading, setBillingLoading] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [logoutFailure, setLogoutFailure] = useState<{ message: string } | null>(null);
   const features = useFeaturesStore((s) => s.features);
   const loadFeatures = useFeaturesStore((s) => s.load);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -73,6 +79,7 @@ export default function Header() {
   const themePanelRef = useRef<HTMLDivElement>(null);
   const userTriggerRef = useRef<HTMLButtonElement>(null);
   const userPanelRef = useRef<HTMLDivElement>(null);
+  const logoutAccessTokenRef = useRef<string | null>(null);
 
   const { user, isAuthenticated } = useAuthStore();
   // Resolve the avatar through fetchWithAuth so internal /api/v1/users/<id>/avatar
@@ -219,6 +226,8 @@ export default function Header() {
 
   const handleSignOut = async () => {
     setIsLoggingOut(true);
+    setLogoutFailure(null);
+    logoutAccessTokenRef.current ??= useAuthStore.getState().tokens?.accessToken ?? null;
 
     // When CF Access trust is in front of Breeze, a normal SPA-side logout
     // only clears the Breeze session — CF Access still holds a session for
@@ -229,22 +238,32 @@ export default function Header() {
     // to /login?signedOut=1.
     const cfAccessEnabled = useFeaturesStore.getState().cfAccessLogin.enabled;
     if (cfAccessEnabled) {
-      // Drop in-memory state first so any racing component doesn't read
-      // stale tokens before the navigation lands.
-      try { useAuthStore.getState().logout(); } catch { /* zustand always present */ }
-      try { localStorage.removeItem('breeze-auth'); } catch { /* localStorage may be unavailable */ }
-      try { localStorage.removeItem('breeze-org'); } catch { /* localStorage may be unavailable */ }
-      window.location.assign('/api/v1/auth/cf-access-logout');
+      const outcome = await apiPrepareCfTerminalLogout(logoutAccessTokenRef.current ?? undefined);
+      if (outcome.kind === 'ready') {
+        logoutAccessTokenRef.current = null;
+        window.location.assign(outcome.navigationUrl);
+        return;
+      }
+      setLogoutFailure({ message: outcome.message });
+      setIsLoggingOut(false);
       return;
     }
 
     try {
-      await apiLogout();
-      await navigateTo('/login', { replace: true });
-    } catch {
-      // Even if logout fails on server, redirect to login
-      await navigateTo('/login', { replace: true });
+      const outcome = await apiLogout(logoutAccessTokenRef.current ?? undefined);
+      if (outcome.kind === 'complete') {
+        logoutAccessTokenRef.current = null;
+        await navigateTo('/login', { replace: true });
+        return;
+      }
+      setLogoutFailure({ message: outcome.message });
+    } catch (error) {
+      console.error('[logout] Unexpected terminal logout failure', error);
+      setLogoutFailure({
+        message: 'Your local session was cleared, but server sign-out could not be confirmed.',
+      });
     }
+    setIsLoggingOut(false);
   };
 
   // Get user initials for avatar
@@ -258,6 +277,30 @@ export default function Header() {
     }
     return parts[0][0].toUpperCase();
   };
+
+  if (logoutFailure) {
+    return (
+      <section
+        data-testid="logout-failure"
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-background px-4"
+        aria-live="polite"
+      >
+        <div className="w-full max-w-md rounded-lg border bg-card p-6 text-center shadow-lg">
+          <h1 className="text-lg font-semibold">Signed out on this device</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{logoutFailure.message}</p>
+          <button
+            data-testid="logout-retry"
+            type="button"
+            disabled={isLoggingOut}
+            onClick={() => void handleSignOut()}
+            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
+            {isLoggingOut ? 'Retrying…' : 'Retry server sign-out'}
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <header className="flex h-16 items-center justify-between gap-2 border-b bg-card px-2 sm:px-4 md:px-6">

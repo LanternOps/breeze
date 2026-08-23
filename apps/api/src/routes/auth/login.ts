@@ -45,7 +45,8 @@ import {
   type AuthorizedUserSession,
   type UserSessionIdentity,
 } from '../../services';
-import { advanceUserEpochs, revokeRefreshFamilyById } from '../../services/authLifecycle';
+import { advanceUserEpochs } from '../../services/authLifecycle';
+import { performOrdinaryTerminalLogout } from '../../services/terminalLogout';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
 import { authMiddleware } from '../../middleware/auth';
@@ -54,7 +55,7 @@ import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { rateLimitIpKey } from '../../services/clientIp';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { nanoid } from 'nanoid';
-import { ENABLE_2FA, loginSchema } from './schemas';
+import { CSRF_COOKIE_NAME, ENABLE_2FA, loginSchema } from './schemas';
 import {
   getClientIP,
   getClientRateLimitKey,
@@ -77,6 +78,7 @@ import {
   mintLoginRegisterGrant,
   isAuthTransitionV1Request,
   authClientUpgradeRequiredResponse,
+  getCookieValue,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
@@ -750,40 +752,39 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 // Logout
 loginRoutes.post('/logout', authMiddleware, async (c) => {
   const auth = c.get('auth');
-  // Resolve the family: access-token `sid` is authoritative; fall back to the
-  // refresh cookie's verified `fam` when present.
-  let familyId: string | null = auth.token?.sid ?? null;
-  if (!familyId) {
-    const refreshToken = resolveRefreshToken(c);
-    if (refreshToken) {
-      const rp = await verifyToken(refreshToken);
-      familyId = rp?.type === 'refresh' ? (rp.fam ?? null) : null;
-    }
+  const csrfError = validateCookieCsrfRequest(c);
+  const csrfCookie = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
+  if (csrfError || !csrfCookie || !c.req.header('origin')) {
+    return c.json({ error: csrfError ?? 'Missing CSRF cookie or request origin' }, 403);
   }
 
-  let durableOk = true;
-  if (familyId) {
-    try {
-      // Self-revocation: the request context's userId IS this user, so the
-      // user-id-scoped refresh_token_families RLS policy admits the write —
-      // the ambient db.transaction is fine here (unlike Task 9's admin paths).
-      await db.transaction(async (tx) => {
-        await revokeRefreshFamilyById(tx, familyId!, 'logout');
-      });
-    } catch (error) {
-      durableOk = false;
-      console.error('[auth] Durable logout revocation failed:', error);
-    }
+  const token = auth.token;
+  if (
+    !token
+    || typeof token.aep !== 'number'
+    || typeof token.mep !== 'number'
+    || !token.sid
+  ) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid or expired token' }, 401);
   }
 
-  // Post-commit best-effort Redis cleanup — same scope as today's logout
-  // (user-wide access-token cutoff + current refresh jti). Deliberately NOT
-  // runPostCommitCleanup: logout must not sweep the user's MCP OAuth grants.
+  let durableOk = false;
   try {
-    await revokeAllUserTokens(auth.user.id);
-    await revokeCurrentRefreshTokenJti(c, auth.user.id);
+    const result = await performOrdinaryTerminalLogout({
+      binding: requestAuthBinding(c),
+      access: {
+        userId: auth.user.id,
+        authEpoch: token.aep,
+        mfaEpoch: token.mep,
+        familyId: token.sid,
+      },
+      refreshToken: resolveRefreshToken(c),
+    });
+    installAuthBindingReplacement(c, result.replacement);
+    durableOk = true;
   } catch (error) {
-    console.error('[auth] Logout Redis cleanup failed (durable revocation state above):', error);
+    console.error('[auth] Durable terminal logout failed:', error);
   }
 
   // Always clear the local cookie — even on durable failure the client should
@@ -803,7 +804,7 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     ipAddress: getClientIP(c),
     userAgent: c.req.header('user-agent'),
     result: durableOk ? 'success' : 'failure',
-    details: durableOk ? undefined : { reason: 'durable_revocation_failed', familyId },
+    details: durableOk ? undefined : { reason: 'durable_revocation_failed' },
   });
 
   if (!durableOk) {

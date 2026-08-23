@@ -5,6 +5,7 @@ import {
   apiAcceptInvite,
   apiLogin,
   apiLogout,
+  apiPrepareCfTerminalLogout,
   apiPreviewInvite,
   apiRegisterPartner,
   apiResetPassword,
@@ -20,7 +21,8 @@ import {
   restoreAccessTokenFromCookie,
   restoreAccessTokenFromCookieDetailed,
   useAuthStore,
-  waitForPendingRefresh
+  waitForPendingRefresh,
+  validateCfTerminalNavigationUrl,
 } from './auth';
 
 vi.mock('@simplewebauthn/browser', () => ({
@@ -1032,11 +1034,120 @@ describe('auth API helpers', () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
     vi.stubGlobal('fetch', fetchMock);
 
-    await apiLogout();
+    const outcome = await apiLogout();
 
+    expect(outcome.kind).toBe('partial');
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().tokens).toBeNull();
     expect(useAuthStore.getState().user).toBeNull();
+  });
+
+  it('apiLogout surfaces durable server failure while always evicting locally', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ error: 'postgres unavailable' }, false, 500));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await apiLogout();
+
+    expect(outcome).toMatchObject({ kind: 'partial' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get('Authorization')).toBe('Bearer access-old');
+    expect(headers.get('x-breeze-csrf')).toBe('csrf-test-token');
+    expect(headers.get('x-breeze-auth-transition')).toBe('v1');
+  });
+
+  it('apiLogout reports complete only after a successful terminal response', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ success: true })));
+
+    await expect(apiLogout()).resolves.toEqual({ kind: 'complete' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
+  it('accepts only the exact same-origin ticketed Cloudflare navigation URL', () => {
+    const origin = window.location.origin;
+    expect(validateCfTerminalNavigationUrl('/api/v1/auth/cf-access-logout?ticket=signed.ticket'))
+      .toBe('/api/v1/auth/cf-access-logout?ticket=signed.ticket');
+    expect(validateCfTerminalNavigationUrl(
+      `${origin}/api/v1/auth/cf-access-logout?ticket=signed.ticket`,
+    )).toBe('/api/v1/auth/cf-access-logout?ticket=signed.ticket');
+    for (const unsafe of [
+      'https://evil.example/api/v1/auth/cf-access-logout?ticket=signed.ticket',
+      '/api/v1/auth/cf-access-logout',
+      '/api/v1/auth/cf-access-logout?ticket=',
+      '/api/v1/auth/cf-access-logout?ticket=one&ticket=two',
+      '/api/v1/auth/cf-access-logout?ticket=one&next=/evil',
+      '/api/v1/auth/cf-access-logout/complete?ticket=one',
+      '/api/v1/auth/cf-access-logout?ticket=one#fragment',
+      `https://user@${window.location.host}/api/v1/auth/cf-access-logout?ticket=one`,
+    ]) {
+      expect(validateCfTerminalNavigationUrl(unsafe)).toBeNull();
+    }
+  });
+
+  it('prepares CF terminal logout, validates navigation, and then evicts local state', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({
+      navigationUrl: '/api/v1/auth/cf-access-logout?ticket=signed.ticket',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await apiPrepareCfTerminalLogout();
+
+    expect(outcome).toEqual({
+      kind: 'ready', navigationUrl: '/api/v1/auth/cf-access-logout?ticket=signed.ticket',
+    });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/auth/cf-access-logout/prepare');
+    const headers = new Headers(init.headers);
+    expect(headers.get('Authorization')).toBe('Bearer access-old');
+    expect(headers.get('x-breeze-csrf')).toBe('csrf-test-token');
+    expect(headers.get('x-breeze-auth-transition')).toBe('v1');
+  });
+
+  it('fails closed on prepare errors or invalid navigation and still evicts locally', async () => {
+    for (const response of [
+      makeResponse({ error: 'postgres unavailable' }, false, 503),
+      makeResponse({ navigationUrl: '/api/v1/auth/cf-access-logout' }),
+      makeResponse({ navigationUrl: 'https://evil.example/api/v1/auth/cf-access-logout?ticket=x' }),
+    ]) {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+      await expect(apiPrepareCfTerminalLogout()).resolves.toMatchObject({ kind: 'partial' });
+      expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    }
+  });
+
+  it('allows a signed-out retry to use only an explicitly retained in-memory access token', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'postgres unavailable' }, false, 503))
+      .mockResolvedValueOnce(makeResponse({
+        navigationUrl: '/api/v1/auth/cf-access-logout?ticket=retry.ticket',
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiPrepareCfTerminalLogout()).resolves.toMatchObject({ kind: 'partial' });
+    expect(useAuthStore.getState().tokens).toBeNull();
+    await expect(apiPrepareCfTerminalLogout('access-old')).resolves.toEqual({
+      kind: 'ready', navigationUrl: '/api/v1/auth/cf-access-logout?ticket=retry.ticket',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows ordinary signed-out retry with an explicitly retained in-memory access token', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'postgres unavailable' }, false, 500))
+      .mockResolvedValueOnce(makeResponse({ success: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiLogout()).resolves.toMatchObject({ kind: 'partial' });
+    await expect(apiLogout('access-old')).resolves.toEqual({ kind: 'complete' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('apiLogout resolves on its own 8s timeout when the logout request never settles', async () => {

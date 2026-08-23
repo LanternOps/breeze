@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { envFlag } from '../config/env';
+import { authBrowserTransitionsEnforced } from '../config/env';
+export { authBrowserTransitionsEnforced } from '../config/env';
 import { users } from '../db/schema/users';
 import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
 import {
@@ -69,10 +70,6 @@ export class UserSessionEpochMismatchError extends AuthIssuanceCapabilityError {
     this.name = 'UserSessionEpochMismatchError';
     this.message = 'Verified authentication state changed before session issuance';
   }
-}
-
-export function authBrowserTransitionsEnforced(): boolean {
-  return envFlag('AUTH_BROWSER_TRANSITIONS_ENFORCED', false);
 }
 
 async function lockLiveUserSecurityState(

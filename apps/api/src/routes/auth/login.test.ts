@@ -147,6 +147,20 @@ vi.mock('../../services/auditService', () => ({
   createAuditLogAsync: vi.fn(),
 }));
 
+const terminalLogoutState = vi.hoisted(() => ({
+  error: null as Error | null,
+  calls: [] as Array<Record<string, unknown>>,
+  replacement: { kind: 'browser' as const, value: 'c2-binding' },
+}));
+
+vi.mock('../../services/terminalLogout', () => ({
+  performOrdinaryTerminalLogout: vi.fn(async (input: Record<string, unknown>) => {
+    terminalLogoutState.calls.push(input);
+    if (terminalLogoutState.error) throw terminalLogoutState.error;
+    return { replacement: terminalLogoutState.replacement, cleanupOk: true };
+  }),
+}));
+
 vi.mock('../../services/anomalyMetrics', () => ({
   recordFailedLogin: vi.fn(),
 }));
@@ -187,7 +201,7 @@ vi.mock('../../middleware/auth', () => ({
       partnerId: null,
       orgId: 'org-1',
       user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
-      token: { sid: 'family-1' },
+      token: { sid: 'family-1', aep: 4, mep: 7 },
     });
     return next();
   }),
@@ -1289,125 +1303,53 @@ describe('POST /refresh — per-family rate limiting (#3696)', () => {
 // the DB FIRST, then do the same Redis cleanup it always did, and only report
 // success when the durable revoke actually committed.
 describe('POST /logout', () => {
-  async function postLogout() {
-    return loginRoutes.request('/logout', { method: 'POST' });
+  async function postLogout(headers: Record<string, string> = {}) {
+    return loginRoutes.request('/logout', {
+      method: 'POST',
+      headers: {
+        cookie: 'breeze_csrf_token=csrf-token; breeze_auth_binding=c1',
+        'x-breeze-csrf': 'csrf-token',
+        origin: 'http://localhost',
+        'sec-fetch-site': 'same-origin',
+        ...headers,
+      },
+    });
   }
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(revokeRefreshFamilyById).mockResolvedValue(undefined);
-    vi.mocked(revokeAllUserTokens).mockResolvedValue(undefined);
-    vi.mocked(revokeCurrentRefreshTokenJti).mockResolvedValue(undefined);
+    terminalLogoutState.error = null;
+    terminalLogoutState.calls = [];
     vi.mocked(resolveRefreshToken).mockReturnValue(null);
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
   });
 
-  it('durably revokes the sid family, runs Redis cleanup, clears the cookie, and returns 200', async () => {
+  it('requires strict cookie/header CSRF before invoking terminal logout', async () => {
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue('Missing CSRF cookie');
     const res = await postLogout();
-    const body = await res.json();
+    expect(res.status).toBe(403);
+    expect(terminalLogoutState.calls).toEqual([]);
+  });
 
+  it('passes revalidated access claims, refresh cookie, and C1 to terminal logout', async () => {
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-cookie');
+    const res = await postLogout();
     expect(res.status).toBe(200);
-    expect(body).toEqual({ success: true });
-
-    // Durable revoke happens inside db.transaction, keyed on the access
-    // token's sid (set to 'family-1' by the authMiddleware mock above) —
-    // NOT a bare fire-and-forget call outside a transaction.
-    expect(db.transaction).toHaveBeenCalledTimes(1);
-    expect(revokeRefreshFamilyById).toHaveBeenCalledWith(expect.anything(), 'family-1', 'logout');
-
-    // Same Redis cleanup logout always did — scoped to this session, never
-    // runPostCommitCleanup's user-wide MCP OAuth grant sweep.
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-    expect(revokeCurrentRefreshTokenJti).toHaveBeenCalledWith(expect.anything(), 'user-1');
-
-    // ORDER matters: the durable DB revoke must land BEFORE the best-effort
-    // Redis cleanup — reordering the blocks would reintroduce SR2-04 (Redis
-    // succeeds, DB revoke silently skipped/failed, token survives 7 days).
-    const durableOrder = vi.mocked(revokeRefreshFamilyById).mock.invocationCallOrder[0];
-    const txOrder = vi.mocked(db.transaction).mock.invocationCallOrder[0];
-    const redisOrder = vi.mocked(revokeAllUserTokens).mock.invocationCallOrder[0];
-    expect(durableOrder).toBeDefined();
-    expect(redisOrder).toBeDefined();
-    expect(txOrder).toBeLessThan(redisOrder!);
-    expect(durableOrder!).toBeLessThan(redisOrder!);
-
+    expect(terminalLogoutState.calls).toEqual([expect.objectContaining({
+      access: { userId: 'user-1', authEpoch: 4, mfaEpoch: 7, familyId: 'family-1' },
+      refreshToken: 'refresh-cookie',
+      binding: expect.objectContaining({ kind: 'browser' }),
+    })]);
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'user.logout', result: 'success' }),
-    );
   });
 
-  it('returns 500 with a failure audit when the durable revoke throws, but still clears the cookie', async () => {
-    vi.mocked(db.transaction).mockRejectedValueOnce(new Error('connection lost'));
-
+  it('returns 500 without claiming durable completion when PostgreSQL rolls back', async () => {
+    terminalLogoutState.error = new Error('connection lost');
     const res = await postLogout();
     const body = await res.json();
-
     expect(res.status).toBe(500);
-    expect(body).not.toEqual({ success: true });
-
+    expect(body).toEqual({ error: 'Logout could not be fully completed. Please try again.' });
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'user.logout',
-        result: 'failure',
-        details: { reason: 'durable_revocation_failed', familyId: 'family-1' },
-      }),
-    );
-
-    // The failure audit must never carry raw token/session material — only
-    // the family id (an opaque UUID, not a bearer credential) and a reason.
-    const auditCall = vi.mocked(createAuditLogAsync).mock.calls[0]?.[0] as { details?: unknown };
-    expect(JSON.stringify(auditCall.details)).not.toMatch(/eyJ|Bearer|refresh_token/i);
-  });
-
-  it('still reports success and clears the cookie when Redis cleanup fails after the durable revoke already committed', async () => {
-    vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
-
-    const res = await postLogout();
-    const body = await res.json();
-
-    // The durable revocation already committed — Redis is best-effort cleanup
-    // layered on top, so its failure must not flip the reported outcome.
-    expect(res.status).toBe(200);
-    expect(body).toEqual({ success: true });
-    expect(revokeRefreshFamilyById).toHaveBeenCalledWith(expect.anything(), 'family-1', 'logout');
-    expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'user.logout', result: 'success' }),
-    );
-  });
-
-  it('skips the durable revoke for a legacy sid-less token with no refresh cookie, but still runs Redis cleanup and succeeds', async () => {
-    // Legacy access token minted before the sid rollout + no refresh cookie:
-    // there is no family to resolve, so the durable block is skipped entirely
-    // (nothing to revoke ≠ a failure) while everything else behaves as before.
-    vi.mocked(authMiddleware).mockImplementationOnce(async (c: any, next: () => Promise<void>) => {
-      c.set('auth', {
-        scope: 'organization',
-        partnerId: null,
-        orgId: 'org-1',
-        user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
-        token: {}, // no sid
-      });
-      await next();
-    });
-    vi.mocked(resolveRefreshToken).mockReturnValue(null);
-
-    const res = await postLogout();
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body).toEqual({ success: true });
-
-    expect(db.transaction).not.toHaveBeenCalled();
-    expect(revokeRefreshFamilyById).not.toHaveBeenCalled();
-
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-    expect(revokeCurrentRefreshTokenJti).toHaveBeenCalledWith(expect.anything(), 'user-1');
-    expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'user.logout', result: 'success' }),
-    );
   });
 });
 

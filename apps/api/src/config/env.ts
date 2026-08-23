@@ -402,6 +402,17 @@ export function cfAccessTrustsMfa(): boolean {
   return envFlag('CF_ACCESS_TRUSTS_MFA');
 }
 
+// Browser authentication transition rollout. Both switches are deliberately
+// read at call time and default off; validation prevents terminal preparation
+// from being enabled before transition enforcement.
+export function authBrowserTransitionsEnforced(): boolean {
+  return envFlag('AUTH_BROWSER_TRANSITIONS_ENFORCED', false);
+}
+
+export function authBrowserTerminalPreparationEnabled(): boolean {
+  return envFlag('AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', false);
+}
+
 // Emergency kill switches for ML/AI producers. These are intentionally read at
 // call time so ops can flip process/runtime env and workers can stop writing
 // outputs without a redeploy.
