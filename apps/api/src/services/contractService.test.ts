@@ -579,6 +579,44 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     expect(params).toContain('org2');
   });
 
+  // A contract is flipped to 'expired' LAZILY by generateInvoices/renewal at its
+  // NEXT billing date — there is no expiry reaper — so `status = 'active'` alone
+  // reports an already-ended contract for up to a full billing interval, while
+  // billing itself skips it via isExpired. The rollup must apply the same guard.
+  it('excludes an ACTIVE contract whose due period already starts on/after endDate', async () => {
+    queueResult([contract({
+      intervalMonths: 12, billingTiming: 'advance',
+      startDate: '2025-09-01', endDate: '2026-07-31', nextBillingAt: '2026-09-01',
+    })]);
+    queueResult([line({ unitPrice: '1200.00' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
+    expect(out.has('org1')).toBe(false);
+  });
+
+  it('still counts an ARREARS contract whose due period started before endDate', async () => {
+    queueResult([contract({
+      intervalMonths: 12, billingTiming: 'arrears',
+      startDate: '2025-09-01', endDate: '2026-09-01', nextBillingAt: '2026-09-01',
+    })]);
+    queueResult([line({ unitPrice: '1200.00' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
+  });
+
+  it('excludes an ACTIVE contract past its endDate with no nextBillingAt pointer', async () => {
+    queueResult([contract({ endDate: '2026-07-31', nextBillingAt: null })]);
+    queueResult([line({ unitPrice: '50.00' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
+    expect(out.has('org1')).toBe(false);
+  });
+
+  it('keeps an open-ended (endDate null) contract', async () => {
+    queueResult([contract({ endDate: null, nextBillingAt: '2026-09-01', billingTiming: 'advance' })]);
+    queueResult([line({ unitPrice: '50.00' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '50.00' }]);
+  });
+
   it('amortises a 12-month contract of 1200.00 to 100.00 monthly', async () => {
     queueResult([contract({ intervalMonths: 12 })]);
     queueResult([line({ unitPrice: '1200.00' })]);

@@ -5,7 +5,7 @@ import { ContractServiceError, actorCan, type ContractActor } from './contractTy
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
-import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
+import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
 import { emitContractEvent } from './contractEvents';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 
@@ -275,14 +275,39 @@ async function loadCatalogPriceInputs(
  * the dashboard agrees with the invoices it predicts. Never converts and never
  * falls through to another currency's price.
  */
+/**
+ * The billing sites' expiry test, evaluated against the period the sweep is
+ * NEXT going to bill (`duePeriodStartFor`, exactly as generateDueInvoice does).
+ * A contract with no pointer can never produce another invoice, so it is judged
+ * against today instead. Open-ended (endDate null) is never past its end.
+ */
+function isPastEndForReporting(
+  c: { endDate: string | null; nextBillingAt: string | null; billingTiming: 'advance' | 'arrears'; intervalMonths: number },
+  asOfISO: string,
+): boolean {
+  if (c.endDate === null || c.endDate === undefined) return false;
+  const periodStart = c.nextBillingAt
+    ? duePeriodStartFor(c.billingTiming, c.nextBillingAt, c.intervalMonths > 0 ? c.intervalMonths : 1)
+    : asOfISO;
+  return isExpired({ endDate: c.endDate, periodStart });
+}
+
 export async function summarizeActiveContractMrrByOrg(
   orgIds: readonly string[],
+  asOf: Date = new Date(),
 ): Promise<Map<string, OrgCurrencyMrr[]>> {
   const out = new Map<string, OrgCurrencyMrr[]>();
   if (orgIds.length === 0) return out;
 
-  const rows = await db.select().from(contracts)
+  const active = await db.select().from(contracts)
     .where(and(inArray(contracts.orgId, [...orgIds]), eq(contracts.status, 'active' as never)));
+  // `status = 'active'` alone is NOT "still running": a contract is flipped to
+  // 'expired' LAZILY inside generateDueInvoice / renewal, at its next billing
+  // date — there is no expiry reaper — so an ended annual contract keeps the
+  // 'active' stamp for up to a whole interval. Billing already skips it via
+  // isExpired, so reporting it here would break this rollup's contract that the
+  // dashboard agrees with the invoices it predicts. Same guard, same inputs.
+  const rows = active.filter((c) => !isPastEndForReporting(c, todayISO(asOf)));
   if (rows.length === 0) return out;
 
   const allLines = await db.select().from(contractLines)
