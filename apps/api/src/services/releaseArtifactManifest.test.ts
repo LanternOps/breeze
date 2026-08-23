@@ -206,6 +206,66 @@ describe("releaseArtifactManifest", () => {
     );
   });
 
+  // D4 (#3836) fix round 1: binarySync.ts's registerFromOfficialManifest
+  // needs to tell "asset genuinely absent from the manifest" (legitimate
+  // local/BYO fallback case) apart from "asset present but its entry is
+  // wrong" (must fail closed) WITHOUT matching on `.message` text, which is
+  // not a contract. These two tests pin the typed discriminant that makes
+  // that safe: only the true not-found case is ReleaseManifestAssetAbsentError;
+  // every other ReleaseManifestAssetLookupError variant (e.g. a malformed
+  // sha256 on a PRESENT entry) is deliberately NOT that subclass, even
+  // though its message text could say anything.
+  describe("asset lookup error typing (D4, #3836 fix round 1)", () => {
+    it("an asset name absent from the manifest's assets array throws ReleaseManifestAssetAbsentError", async () => {
+      const { ReleaseManifestAssetAbsentError } = await import("./releaseArtifactManifest");
+      const asset = Buffer.from("trusted-agent-binary");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-windows-amd64.exe", // not in the manifest
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).rejects.toThrow(ReleaseManifestAssetAbsentError);
+    });
+
+    it("an asset PRESENT with a malformed sha256 throws the base ReleaseManifestAssetLookupError, NOT the absent subclass", async () => {
+      const { ReleaseManifestAssetAbsentError, ReleaseManifestAssetLookupError } =
+        await import("./releaseArtifactManifest");
+      const asset = Buffer.from("trusted-agent-binary");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+        assetOverrides: { sha256: "not-a-valid-sha256" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      expect.assertions(3);
+      try {
+        await verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-linux-amd64", // present, just malformed
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        });
+      } catch (err) {
+        expect(err).toBeInstanceOf(ReleaseManifestAssetLookupError);
+        // This is the tripwire: even though the base-class instance's
+        // message ("...has invalid sha256 for...") does not currently
+        // contain "does not include", a caller distinguishing by message
+        // text alone would be one coincidental wording change away from
+        // misclassifying this as absent. instanceof must reject it
+        // regardless of message content.
+        expect(err).not.toBeInstanceOf(ReleaseManifestAssetAbsentError);
+        expect((err as Error).message).toMatch(/invalid sha256/);
+      }
+    });
+  });
+
   it("skips GitHub manifest fetches when no API trust root is configured", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

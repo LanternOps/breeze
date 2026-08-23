@@ -15,7 +15,7 @@ import {
 import { getBinaryEdition } from "./binaryEdition";
 import {
   isReleaseArtifactManifestVerificationConfigured,
-  ReleaseManifestAssetLookupError,
+  ReleaseManifestAssetAbsentError,
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactManifestIntegrity,
 } from "./releaseArtifactManifest";
@@ -490,21 +490,22 @@ export function __resetRefusedManifestAssetWarnCache(): void {
 // two very different shapes: the asset name isn't in the manifest's `assets`
 // array at all (the legitimate local/BYO case — this component simply isn't
 // covered by the staged official manifest), and the asset name IS present but
-// its entry is malformed (invalid/missing sha256 or size). Only the former is
-// "absent"; the latter is a manifest that affirmatively claims to cover this
-// asset with garbage metadata, which must fail closed exactly like a
-// distributability-policy refusal. selectManifestAsset's not-found message
-// ("...does not include <name>") is the only textual signal that
-// distinguishes the two — there is no separate error class because no other
-// caller in the repo has needed the distinction (agentVersions.ts's
-// validateReleaseManifest treats the whole class as one "asset lookup
-// failed" reason, which is fine for a serve-or-refuse decision but not for
-// this absent-vs-refused fallback decision).
+// its entry is malformed (invalid/missing sha256 or size) or the manifest
+// fails a repository/release identity check. Only the former is "absent";
+// the latter is a manifest that affirmatively claims to cover this asset
+// with garbage or mismatched metadata, which must fail closed exactly like a
+// distributability-policy refusal.
+//
+// This checks the typed ReleaseManifestAssetAbsentError subclass — thrown
+// ONLY at selectManifestAsset's "not found in assets" site
+// (releaseArtifactManifest.ts) — not `.message` text. A substring match on
+// the message was tried first and rejected in review: `.message` is not a
+// contract, so any OTHER lookup-error message coincidentally gaining a
+// matching substring would misclassify a present-but-malformed entry as
+// absent and let it through the ungated fallback — the exact fail-open
+// direction this task closes (D4, #3836, fix round 1).
 function isAssetAbsentFromManifest(err: unknown): boolean {
-  return (
-    err instanceof ReleaseManifestAssetLookupError &&
-    err.message.includes("does not include")
-  );
+  return err instanceof ReleaseManifestAssetAbsentError;
 }
 
 // Reports (console.error + deduped captureException) a manifest asset that

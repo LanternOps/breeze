@@ -62,6 +62,27 @@ export class ReleaseManifestAssetLookupError extends Error {
   }
 }
 
+// The one ReleaseManifestAssetLookupError variant that means the asset name
+// simply isn't in the manifest's `assets` array at all — as opposed to being
+// present with malformed metadata (invalid sha256/size) or a repository/
+// release identity mismatch, both of which are still ReleaseManifestAssetLookupError
+// but must NOT be treated as "absent" by a caller like binarySync.ts's
+// registerFromOfficialManifest, which uses "absent" to decide whether a
+// local/BYO fallback is legitimate (D4, #3836). A caller distinguishing
+// "absent" from "present but wrong" needs a typed discriminant here rather
+// than matching on `.message` text, which is not a contract and could
+// coincidentally collide with wording used by an unrelated lookup failure —
+// silently flipping a fail-closed decision to fail-open (review finding,
+// fix round 1). Thrown ONLY at the single "not found in assets" site in
+// selectManifestAsset below; every other ReleaseManifestAssetLookupError
+// throw in this file stays the base class.
+export class ReleaseManifestAssetAbsentError extends ReleaseManifestAssetLookupError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReleaseManifestAssetAbsentError";
+  }
+}
+
 // The manifest's signature verified and the asset entry was found, but
 // policy refuses to serve it: assertDistributableReleaseAsset's intendedUse/
 // signing-input/platformTrust/edition checks, or the caller's own
@@ -426,7 +447,7 @@ function selectManifestAsset(args: {
   const assets = manifest.assets as ReleaseArtifactManifestAsset[];
   const entry = assets.find((candidate) => candidate.name === args.assetName);
   if (!entry) {
-    throw new ReleaseManifestAssetLookupError(
+    throw new ReleaseManifestAssetAbsentError(
       `Release artifact manifest does not include ${args.assetName}`,
     );
   }
