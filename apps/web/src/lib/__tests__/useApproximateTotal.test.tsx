@@ -1,0 +1,233 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+
+const fetchWithAuth = vi.fn();
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+
+import { useApproximateTotal, resetApproximateTotalCache } from '../useApproximateTotal';
+import { approximateTotalCache } from '../approximateTotalCache';
+import type { ReportingTotalResponse } from '@/lib/reporting/approximateTotal';
+
+const jsonRes = (payload: unknown, status = 200) =>
+  ({ ok: status < 400, status, json: async () => payload }) as Response;
+
+const AVAILABLE: ReportingTotalResponse = {
+  status: 'available',
+  targetCurrencyCode: 'CAD',
+  requestedDate: '2026-08-21',
+  maxStalenessDays: 7,
+  rateDate: '2026-08-21',
+  total: '22940.00',
+  groups: [
+    { currencyCode: 'EUR', amount: '4100.00', convertedAmount: '6440.00', rate: '1.57073170', rateDate: '2026-08-21', source: 'ecb' },
+    { currencyCode: 'USD', amount: '12300.00', convertedAmount: '16500.00', rate: '1.34146341', rateDate: '2026-08-21', source: 'ecb' },
+  ],
+  unavailableCurrencyCodes: [],
+};
+
+const BOOK = [{ code: 'USD', amount: '12300.00' }, { code: 'EUR', amount: '4100.00' }];
+
+function Probe({ id = 'state', book = BOOK, date }: {
+  id?: string;
+  book?: readonly { code: string; amount: string | number }[];
+  date?: string;
+}) {
+  const { response, loading, failed } = useApproximateTotal(book, date);
+  return (
+    <div
+      data-testid={id}
+      data-loading={String(loading)}
+      data-failed={String(failed)}
+    >
+      {response ? `${response.status}:${response.total ?? '-'}:${response.targetCurrencyCode}` : 'null'}
+    </div>
+  );
+}
+
+beforeEach(() => {
+  fetchWithAuth.mockReset();
+  resetApproximateTotalCache();
+  vi.useRealTimers();
+});
+
+describe('useApproximateTotal — request shape', () => {
+  it('requests /billing/reporting-totals with the built groups param and the given date, and NO `to`', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    render(<Probe date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+
+    const url = String(fetchWithAuth.mock.calls[0][0]);
+    expect(url.startsWith('/billing/reporting-totals?')).toBe(true);
+    const params = new URLSearchParams(url.slice(url.indexOf('?') + 1));
+    // buildGroupsParam output: sorted, deduplicated, `CODE:amount` joined by ','.
+    expect(params.get('groups')).toBe('EUR:4100.00,USD:12300.00');
+    expect(params.get('date')).toBe('2026-08-21');
+    // The SERVER derives the reporting currency (organization-scoped viewers
+    // cannot read /orgs/partners/me) — the client must never name a target.
+    expect(params.has('to')).toBe(false);
+    expect(url).not.toContain('USD:0');
+  });
+
+  it('defaults the date to today in UTC when the caller gives none', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    render(<Probe />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    const params = new URLSearchParams(String(fetchWithAuth.mock.calls[0][0]).split('?')[1]);
+    expect(params.get('date')).toBe(new Date().toISOString().slice(0, 10));
+  });
+
+  it('does not fetch at all for an empty book', async () => {
+    render(<Probe book={[]} />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.loading).toBe('false'));
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+    expect(screen.getByTestId('state').textContent).toBe('null');
+    expect(screen.getByTestId('state').dataset.failed).toBe('false');
+  });
+
+  it('does not fetch when every entry is malformed (nothing to ask about)', async () => {
+    render(<Probe book={[{ code: 'USD', amount: 'not-a-number' }, { code: '', amount: '1.00' }]} />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.loading).toBe('false'));
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('never sends a currency the caller did not provide, and never substitutes USD', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: { ...AVAILABLE, groups: [] } }));
+    render(<Probe book={[{ code: 'gbp', amount: '10.00' }]} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    const url = String(fetchWithAuth.mock.calls[0][0]);
+    const params = new URLSearchParams(url.split('?')[1]);
+    expect(params.get('groups')).toBe('GBP:10.00');
+    expect(url).not.toContain('USD');
+    expect(params.has('to')).toBe(false);
+  });
+});
+
+describe('useApproximateTotal — caching and de-duplication', () => {
+  it('two components mounted with the same key share ONE in-flight request', async () => {
+    let resolve: (r: Response) => void = () => {};
+    fetchWithAuth.mockReturnValue(new Promise<Response>((r) => { resolve = r; }));
+    render(<><Probe id="a" date="2026-08-21" /><Probe id="b" date="2026-08-21" /></>);
+    expect(screen.getByTestId('a').dataset.loading).toBe('true');
+    expect(screen.getByTestId('b').dataset.loading).toBe('true');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+
+    resolve(jsonRes({ data: AVAILABLE }));
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+    await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('available:22940.00:CAD'));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('a later mount with the same key is served from the cache without a second request', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    const first = render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+    first.unmount();
+
+    render(<Probe id="b" date="2026-08-21" />);
+    expect(screen.getByTestId('b').textContent).toBe('available:22940.00:CAD');
+    expect(screen.getByTestId('b').dataset.loading).toBe('false');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('a different book (or date) is a different key and fetches again', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    render(<Probe id="b" date="2026-08-20" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
+    render(<Probe id="c" book={[{ code: 'USD', amount: '1.00' }]} date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(3));
+  });
+
+  it('resetApproximateTotalCache() clears cached results so the next mount refetches', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    const first = render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+    first.unmount();
+
+    resetApproximateTotalCache();
+    expect(approximateTotalCache.values.size).toBe(0);
+
+    render(<Probe id="b" date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
+  });
+
+  it('a response that arrives after a reset is discarded, never committed to the new cache', async () => {
+    let resolve: (r: Response) => void = () => {};
+    fetchWithAuth.mockReturnValueOnce(new Promise<Response>((r) => { resolve = r; }));
+    render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+
+    resetApproximateTotalCache();
+    resolve(jsonRes({ data: AVAILABLE }));
+    await waitFor(() => expect(screen.getByTestId('a').dataset.loading).toBe('false'));
+    expect(approximateTotalCache.values.size).toBe(0);
+  });
+});
+
+describe('useApproximateTotal — failure semantics', () => {
+  it.each([403, 500, 502])('a %i response sets failed, leaves response null and caches nothing', async (status) => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ error: { code: 'BOOM' } }, status));
+    render(<Probe date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.failed).toBe('true'));
+    expect(screen.getByTestId('state').textContent).toBe('null');
+    expect(screen.getByTestId('state').dataset.loading).toBe('false');
+    expect(approximateTotalCache.values.size).toBe(0);
+  });
+
+  it('a 409 NO_REPORTING_CURRENCY is a quiet `failed` — no throw, no error surfaced', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes(
+      { error: { code: 'NO_REPORTING_CURRENCY', message: 'No reporting currency is configured for this partner' } },
+      409,
+    ));
+    render(<Probe date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.failed).toBe('true'));
+    expect(screen.getByTestId('state').textContent).toBe('null');
+    expect(approximateTotalCache.values.size).toBe(0);
+  });
+
+  it('a rejected fetch (session expired) is `failed`, never an unhandled rejection', async () => {
+    fetchWithAuth.mockRejectedValue(new Error('session expired'));
+    render(<Probe date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.failed).toBe('true'));
+    expect(screen.getByTestId('state').textContent).toBe('null');
+  });
+
+  it('a malformed 200 body is a failure and is NOT cached', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: { status: 'weird', total: 12 } }));
+    render(<Probe date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.failed).toBe('true'));
+    expect(approximateTotalCache.values.size).toBe(0);
+  });
+
+  it('a failed request is retried on the next mount (only validated results are cached)', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: { code: 'BOOM' } }, 500));
+    const first = render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').dataset.failed).toBe('true'));
+    first.unmount();
+
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ data: AVAILABLE }));
+    render(<Probe id="b" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('available:22940.00:CAD'));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches an `unavailable` result — it is a valid answer, not a failure', async () => {
+    const unavailable: ReportingTotalResponse = {
+      ...AVAILABLE,
+      status: 'unavailable',
+      rateDate: null,
+      total: null,
+      unavailableCurrencyCodes: ['EUR'],
+    };
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: unavailable }));
+    const first = render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('unavailable:-:CAD'));
+    expect(screen.getByTestId('a').dataset.failed).toBe('false');
+    first.unmount();
+
+    render(<Probe id="b" date="2026-08-21" />);
+    expect(screen.getByTestId('b').textContent).toBe('unavailable:-:CAD');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+});
