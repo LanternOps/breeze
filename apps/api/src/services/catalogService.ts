@@ -1,5 +1,6 @@
 import { and, asc, eq, getTableColumns, gt, ilike, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
+import { tightenLockTimeout, lockTimeoutWasChanged } from '../db/lockTimeout';
 import {
   catalogItems, catalogItemPrices, catalogItemOrgPricing, catalogBundleComponents, partners, organizations
 } from '../db/schema';
@@ -671,12 +672,26 @@ function canonicalUuid(value: string): string {
  * once both writers contend on the component's own item row, which must already
  * exist because the edge has an FK to it.)
  */
+/**
+ * Bound on how long the item lock below may wait.
+ *
+ * Without it this can block indefinitely on up to 201 rows from a request path,
+ * holding its pooled connection the whole time — the recurring production
+ * failure here, and the same reason the device cascade grew a bound. A deadlock
+ * resolves in milliseconds; a wait behind a long-running catalog import does
+ * not. Bounded, it becomes a fast 55P03 that the route maps to a retryable 409.
+ */
+const CATALOG_LOCK_TIMEOUT_MS = 3000;
+
 async function lockOwnedItemsInGlobalOrder(
   tx: DbExecutor,
   ids: readonly string[],
   partnerId: string
 ) {
   const ordered = [...new Set(ids)].sort();
+
+  // Tighten BEFORE the locking query, never widening a stricter caller.
+  const priorMs = await tightenLockTimeout(tx, CATALOG_LOCK_TIMEOUT_MS);
   const cols = { id: catalogItems.id, isBundle: catalogItems.isBundle, partnerId: catalogItems.partnerId };
 
   // ONE locking query, not one per id. The validator permits 200 components, so
@@ -686,6 +701,14 @@ async function lockOwnedItemsInGlobalOrder(
     .where(and(inArray(catalogItems.id, [...ordered]), eq(catalogItems.partnerId, partnerId)))
     .orderBy(asc(catalogItems.id))
     .for('no key update');
+
+  // Restored only on the success path, deliberately. A 55P03 aborts the
+  // (sub)transaction, so any statement after it fails 25P02 — restoring in a
+  // `finally` would mask the timeout the caller needs to see. Nothing leaks:
+  // rolling back to the savepoint that precedes a SET LOCAL undoes it.
+  if (lockTimeoutWasChanged(priorMs, CATALOG_LOCK_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${priorMs}ms`}, true)`);
+  }
 
   // Anything not returned above is either foreign or absent. Read it unlocked so
   // detectBundleProblems can tell those two apart. Rows invisible under RLS are

@@ -7,6 +7,8 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('../../services/catalogEvents', () => ({ emitCatalogEvent: vi.fn().mockResolvedValue(undefined) }));
 
 import { sql } from 'drizzle-orm';
+import postgres from 'postgres';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
 import { partners, catalogItems } from '../../db/schema';
 import * as svc from '../../services/catalogService';
@@ -344,6 +346,51 @@ describe.runIf(RUN)('#3816 catalog bundle composition races', () => {
       f.bundleA, fractionalYen, actorFor(f.partnerId), 'JPY'
     ))).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE' });
   });
+
+  /**
+   * The lock must be BOUNDED. Unbounded, this waits indefinitely for up to 201
+   * rows from a request path while holding its pooled connection — the failure
+   * class that keeps recurring here. Bounded, it becomes a fast 55P03 that the
+   * route maps to a retryable 409.
+   *
+   * Real contention, not a mock: a second connection holds the component row in
+   * an open transaction while the compose tries to lock it.
+   */
+  it('fails fast with 55P03 instead of waiting forever when an item row is held', async () => {
+    const f = await seedFixture();
+    const holder = postgres(process.env.DATABASE_URL!, { max: 1 });
+    let released!: () => void;
+    const releaseGate = new Promise<void>((r) => { released = r; });
+
+    // Hold f.plain FOR UPDATE, then keep the transaction open.
+    const holding = holder.begin(async (tx) => {
+      await tx`SELECT id FROM catalog_items WHERE id = ${f.plain} FOR UPDATE`;
+      await releaseGate;
+    });
+    // Give the holder time to actually take the lock.
+    await new Promise((r) => setTimeout(r, 300));
+
+    const startedAt = Date.now();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(ctx(f.partnerId), () => svc.setBundleComponents(
+        f.bundleA,
+        [{ componentItemId: f.plain, quantity: 1, showOnInvoice: true, revenueAllocation: null }],
+        actorFor(f.partnerId),
+      ));
+    } catch (err) { caught = err; }
+    const elapsed = Date.now() - startedAt;
+
+    released();
+    await holding;
+    await holder.end();
+
+    // The SQLSTATE is on `.cause` (DrizzleQueryError wraps it), which is exactly
+    // why the route uses pgErrorCode rather than a top-level `err.code` read.
+    expect(pgErrorCode(caught)).toBe('55P03');
+    // And it gave up near the bound rather than hanging on the holder.
+    expect(elapsed).toBeLessThan(15000);
+  }, 30000);
 
   it('crossed parent/component requests reject as BUNDLE_NESTED rather than deadlocking', async () => {
     // Regression guard for the lock ORDER, not for the original bug (the
