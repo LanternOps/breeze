@@ -1833,6 +1833,7 @@
       "warningCategories": "{{count}} Ticket-Kategoriensätze in einer anderen Währung werden übersprungen.",
       "warningOverrides": "{{count}} Katalog-Preisüberschreibungen der Organisation in einer anderen Währung werden übersprungen.",
       "recovery": "Um die oben genannten {{currency}}-Positionen abzurechnen, erstellen Sie einen Entwurf in {{currency}}.",
+      "rateLess": "{{count}} nicht abgerechnete Zeiteinträge haben Stunden, aber keinen Stundensatz. Legen Sie einen Satz fest – eine Währungsänderung wirkt sich nicht auf sie aus.",
       "retention": "Nur zukünftige Dokumente, Zeiteinträge und Teile ändern sich. Kein Betrag wird jemals umgerechnet, und bestehende Entwürfe, Verträge und nicht abgerechnete Positionen behalten ihre gestempelte Währung.",
       "advisory": "Diese Zahlen sind eine Vorschau, keine Zusage — alles, was danach entsteht, ist nicht enthalten.",
       "stale": "Die Abrechnungswährung wurde während der Prüfung auf {{currency}} geändert. Prüfen Sie die aktualisierte Zusammenfassung und bestätigen Sie erneut.",

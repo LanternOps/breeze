@@ -62,6 +62,13 @@ export interface OrgCurrencyImpact {
     orgDefaultRate: { configured: boolean; rateCurrency: string | null; willStopApplying: boolean };
     categoryRatesSkipped: number;
     orgCatalogOverridesSkipped: number;
+    /** Unbilled time with hours but NO hourly rate, stamped in the TARGET
+     *  currency or not stamped at all (review 6). These are not stranded by the
+     *  change and must never appear as an impact group: their fix is "set a
+     *  rate", never "assemble a draft in <currency>" — and an unstamped row has
+     *  no currency an assembly could even be addressed to. Rate-less rows in an
+     *  OLD currency ARE stranded and stay inside that currency's group. */
+    rateLessTimeEntries: number;
   };
 }
 
@@ -229,11 +236,18 @@ export async function getOrgCurrencyImpact(
     b.laborAmount = amountFor(r.labor2, r.labor0, key);
   }
 
-  // Missing-rate time: hours but no amount. Match-or-skip found no rate in the
-  // org's currency, so assembly treats it as a gap (never a zero line). Reported
-  // under its own stamp with no amount, and NOT filtered on the target currency
-  // — the gap exists regardless of which currency the row carries.
-  const missingRateRows = await dbc
+  // Rate-less time: hours but no amount. Match-or-skip found no rate in the
+  // org's currency, so assembly treats it as a gap (never a zero line). NOT
+  // filtered on the target currency, because the gap exists whatever the row
+  // carries — but the two halves mean different things and get different
+  // advice (review 6):
+  //   - stamped in an OLD currency  -> stranded; stays in that currency's group,
+  //     whose `assemble_draft` recovery is addressable;
+  //   - stamped in the TARGET currency, or not stamped at all -> NOT stranded;
+  //     a configuration warning, because "assemble a draft in <target>" is
+  //     nonsense and "assemble a draft in UNKNOWN" is rejected outright by
+  //     `assembleDraftFromOrg`'s currency validator.
+  const rateLessRows = await dbc
     .select({ currencyCode: timeEntries.currencyCode, n: count() })
     .from(timeEntries)
     .where(and(
@@ -242,7 +256,11 @@ export async function getOrgCurrencyImpact(
       isNull(timeEntries.hourlyRate)
     ))
     .groupBy(timeEntries.currencyCode);
-  for (const r of missingRateRows) group(r.currencyCode).billables.missingRateTimeEntries = Number(r.n);
+  let rateLessTimeEntries = 0;
+  for (const r of rateLessRows) {
+    if (r.currencyCode === null || r.currencyCode === target) { rateLessTimeEntries += Number(r.n); continue; }
+    group(r.currencyCode).billables.missingRateTimeEntries = Number(r.n);
+  }
 
   // Parts: `unit_price` and `currency_code` are both NOT NULL, so every unbilled
   // part is monetary and stamped. Aggregated in SQL for the same reason as time.
@@ -299,7 +317,14 @@ export async function getOrgCurrencyImpact(
     currentCurrencyCode: org.currencyCode,
     targetCurrencyCode: target,
     changeRequired: org.currencyCode !== target,
-    impactsByCurrency: [...groups.values()].sort((a, b) => a.currencyCode.localeCompare(b.currencyCode)),
+    // Belt and braces (review 6): every group carries an `assemble_draft`
+    // recovery, so a group the operator could not act on must never ship. The
+    // target currency is not stranded, and UNKNOWN is not a currency an
+    // assembly can be addressed to. No query above can produce either key any
+    // more — this keeps it that way.
+    impactsByCurrency: [...groups.values()]
+      .filter((g) => g.currencyCode !== target && g.currencyCode !== UNKNOWN_CURRENCY_KEY)
+      .sort((a, b) => a.currencyCode.localeCompare(b.currencyCode)),
     configurationWarnings: {
       orgDefaultRate: {
         configured: rateConfigured,
@@ -307,7 +332,8 @@ export async function getOrgCurrencyImpact(
         willStopApplying: rateConfigured && rateSettings!.rateCurrency !== target
       },
       categoryRatesSkipped: Number(categorySkipped?.n ?? 0),
-      orgCatalogOverridesSkipped: Number(overridesSkipped?.n ?? 0)
+      orgCatalogOverridesSkipped: Number(overridesSkipped?.n ?? 0),
+      rateLessTimeEntries
     }
   };
 }

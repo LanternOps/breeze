@@ -1833,6 +1833,7 @@
       "warningCategories": "{{count}} tariffe di categoria ticket in un'altra valuta verranno ignorate.",
       "warningOverrides": "{{count}} override di prezzo a catalogo dell'organizzazione in un'altra valuta verranno ignorati.",
       "recovery": "Per fatturare gli elementi in {{currency}} qui sopra, componi una bozza in {{currency}}.",
+      "rateLess": "{{count}} voci di tempo non fatturate hanno ore ma nessuna tariffa oraria. Imposta una tariffa: un cambio di valuta non le riguarda.",
       "retention": "Cambiano solo documenti, voci di tempo e ricambi futuri. Nessun importo viene mai convertito e bozze, contratti ed elementi non fatturati esistenti mantengono la valuta con cui sono stati marcati.",
       "advisory": "Questi conteggi sono un'anteprima, non una promessa: non includono nulla di creato successivamente.",
       "stale": "La valuta di fatturazione è passata a {{currency}} durante la revisione. Controlla il riepilogo aggiornato e conferma di nuovo.",

@@ -128,6 +128,7 @@ const impactPayload = (over: Record<string, unknown> = {}) => ({
     orgDefaultRate: { configured: true, rateCurrency: 'USD', willStopApplying: true },
     categoryRatesSkipped: 2,
     orgCatalogOverridesSkipped: 4,
+    rateLessTimeEntries: 0,
   },
   ...over,
 });
@@ -162,6 +163,30 @@ describe('OrgBillingSettings — currency selector and change flow', () => {
       expect((screen.getByTestId('org-billing-currency') as HTMLSelectElement).value).toBe('EUR'));
   });
 
+  it('reports rate-less unbilled time as its own line, never as a recovery group', async () => {
+    mockCurrencyFlow({
+      impact: impactPayload({
+        impactsByCurrency: [],
+        configurationWarnings: {
+          orgDefaultRate: { configured: false, rateCurrency: null, willStopApplying: false },
+          categoryRatesSkipped: 0,
+          orgCatalogOverridesSkipped: 0,
+          rateLessTimeEntries: 5,
+        },
+      }),
+    });
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
+
+    selectCurrency('EUR');
+
+    await waitFor(() => expect(screen.getByTestId('org-billing-currency-panel')).toBeInTheDocument());
+    expect(screen.getByTestId('org-billing-currency-rate-less')).toHaveTextContent('5');
+    // Nothing is stranded, so no group and no assemble-draft instruction.
+    expect(screen.getByTestId('org-billing-currency-none')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-billing-currency-recovery-EUR')).toBeNull();
+  });
+
   it('fetches the impact preview on change, renders it, and PATCHes nothing', async () => {
     mockCurrencyFlow();
     render(<OrgBillingSettings orgId="org-1" />);
@@ -187,6 +212,9 @@ describe('OrgBillingSettings — currency selector and change flow', () => {
     expect(screen.getByTestId('org-billing-currency-warning-rate')).toBeInTheDocument();
     expect(screen.getByTestId('org-billing-currency-warning-categories')).toHaveTextContent('2');
     expect(screen.getByTestId('org-billing-currency-warning-overrides')).toHaveTextContent('4');
+    // Rate-less time is NOT stranded by the change, so it never gets a
+    // per-currency "assemble a draft in X" card (#3778, review 6).
+    expect(screen.queryByTestId('org-billing-currency-rate-less')).toBeNull();
     expect(screen.getByTestId('org-billing-currency-retention')).toBeInTheDocument();
     // …and NOTHING was mutated.
     expect(findPatch()).toBeUndefined();

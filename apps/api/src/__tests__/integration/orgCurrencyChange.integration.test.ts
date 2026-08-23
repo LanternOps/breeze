@@ -38,7 +38,7 @@ vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().m
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
-  catalogItemOrgPricing, contracts, invoices, organizations, orgTicketSettings, ticketParts, timeEntries,
+  catalogItemOrgPricing, contracts, invoices, organizations, orgTicketSettings, ticketParts, tickets, timeEntries,
 } from '../../db/schema';
 import {
   activateContract, addContractLineToContract, createContract,
@@ -191,6 +191,41 @@ describe.runIf(RUN)('org currency change (#3778, spec §5)', () => {
     expect(impact.configurationWarnings.orgDefaultRate)
       .toEqual({ configured: true, rateCurrency: 'EUR', willStopApplying: true });
     expect(impact.configurationWarnings.orgCatalogOverridesSkipped).toBe(1);
+  });
+
+  it('separates rate-less time stranded in an OLD currency from rate-less time already in the TARGET (review 6)', async () => {
+    const s = await seedEurOrg();
+    const [ticket] = await withSystemDbAccessContext(() => db
+      .select({ id: tickets.id }).from(tickets).where(eq(tickets.orgId, s.fixture.orgId)).limit(1));
+
+    // Two unbilled entries with hours but NO rate: one stranded in EUR, one
+    // already stamped in the target GBP (history a wave-2+ org can hold).
+    await withSystemDbAccessContext(() => db.insert(timeEntries).values([
+      {
+        partnerId: s.fixture.partnerId, orgId: s.fixture.orgId, ticketId: ticket!.id,
+        userId: s.fixture.userId, startedAt: T0, endedAt: T90, durationMinutes: 90,
+        description: 'Rate-less EUR', isBillable: true, hourlyRate: null,
+        currencyCode: 'EUR', billingStatus: 'not_billed',
+      },
+      {
+        partnerId: s.fixture.partnerId, orgId: s.fixture.orgId, ticketId: ticket!.id,
+        userId: s.fixture.userId, startedAt: T0, endedAt: T90, durationMinutes: 90,
+        description: 'Rate-less GBP', isBillable: true, hourlyRate: null,
+        currencyCode: 'GBP', billingStatus: 'not_billed',
+      },
+    ]));
+
+    const impact = await withSystemDbAccessContext(() => getOrgCurrencyImpact(s.fixture.orgId, 'GBP', s.fixture.actor));
+
+    // The GBP one is NOT stranded: it must never raise a GBP group telling the
+    // operator to assemble a GBP draft for billables that are already in GBP.
+    expect(impact.impactsByCurrency.map((g) => g.currencyCode)).toEqual(['EUR', 'USD']);
+    expect(impact.configurationWarnings.rateLessTimeEntries).toBe(1);
+    // The EUR one IS stranded, and stays inside the EUR group.
+    const eur = impact.impactsByCurrency.find((g) => g.currencyCode === 'EUR')!;
+    expect(eur.billables.missingRateTimeEntries).toBe(1);
+    // It carries hours but no amount, so it never inflates the EUR labor sum.
+    expect(eur.billables.laborAmount).toBe('128.25');
   });
 
   it('commits the change, leaves every pre-existing row byte-for-byte unchanged, and stamps GBP on FUTURE documents', async () => {

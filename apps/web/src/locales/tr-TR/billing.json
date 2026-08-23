@@ -1833,6 +1833,7 @@
       "warningCategories": "Başka bir para birimindeki {{count}} talep kategorisi ücreti atlanacak.",
       "warningOverrides": "Başka bir para birimindeki {{count}} organizasyon katalog fiyatı geçersiz kılması atlanacak.",
       "recovery": "Yukarıdaki {{currency}} kalemlerini faturalamak için {{currency}} cinsinden bir taslak oluşturun.",
+      "rateLess": "{{count}} faturalanmamış zaman kaydında saat var ancak saatlik ücret yok. Bir ücret belirleyin — para birimi değişikliği bunları etkilemez.",
       "retention": "Yalnızca gelecekteki belgeler, zaman kayıtları ve parçalar değişir. Hiçbir tutar dönüştürülmez; mevcut taslaklar, sözleşmeler ve faturalanmamış kalemler damgalandıkları para birimini korur.",
       "advisory": "Bu sayılar bir önizlemedir, taahhüt değil — sonrasında oluşturulanlar dahil değildir.",
       "stale": "Siz incelerken faturalama para birimi {{currency}} olarak değişti. Güncellenen özeti kontrol edip yeniden onaylayın.",

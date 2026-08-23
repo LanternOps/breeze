@@ -35,6 +35,10 @@ interface OrgCurrencyImpact {
     orgDefaultRate: { configured: boolean; rateCurrency: string | null; willStopApplying: boolean };
     categoryRatesSkipped: number;
     orgCatalogOverridesSkipped: number;
+    /** Unbilled time with hours but no hourly rate, stamped in the TARGET
+     *  currency or unstamped — NOT stranded by the change, so it is reported on
+     *  its own line and never as a "assemble a draft in X" group (#3778). */
+    rateLessTimeEntries: number;
   };
 }
 
@@ -370,6 +374,12 @@ export default function OrgBillingSettings({ orgId }: Props) {
                     </p>
                   </div>
                 ))}
+
+                {impact.configurationWarnings.rateLessTimeEntries > 0 && (
+                  <p className="text-sm text-muted-foreground" data-testid="org-billing-currency-rate-less">
+                    {t('orgBillingSettings.currency.rateLess', { count: impact.configurationWarnings.rateLessTimeEntries })}
+                  </p>
+                )}
 
                 <div>
                   <h4 className="text-sm font-semibold">{t('orgBillingSettings.currency.warningsTitle')}</h4>

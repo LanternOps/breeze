@@ -1833,6 +1833,7 @@
       "warningCategories": "Se omitirán {{count}} tarifas de categoría de tickets en otra moneda.",
       "warningOverrides": "Se omitirán {{count}} anulaciones de precio de catálogo de la organización en otra moneda.",
       "recovery": "Para facturar los elementos en {{currency}} anteriores, arme un borrador en {{currency}}.",
+      "rateLess": "{{count}} entradas de tiempo sin facturar tienen horas pero no tarifa por hora. Defina una tarifa: un cambio de moneda no las afecta.",
       "retention": "Solo cambian los documentos, entradas de tiempo y partes futuros. Ningún importe se convierte y los borradores, contratos y elementos sin facturar existentes conservan la moneda con la que fueron sellados.",
       "advisory": "Estos conteos son una vista previa, no una promesa: no incluyen nada creado después.",
       "stale": "La moneda de facturación cambió a {{currency}} mientras revisaba. Revise el resumen actualizado y confirme de nuevo.",

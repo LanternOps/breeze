@@ -204,6 +204,7 @@ describe('getOrgCurrencyImpact (#3778)', () => {
       orgDefaultRate: { configured: true, rateCurrency: 'EUR', willStopApplying: true },
       categoryRatesSkipped: 4,
       orgCatalogOverridesSkipped: 2,
+      rateLessTimeEntries: 0,
     });
   });
 
@@ -233,6 +234,38 @@ describe('getOrgCurrencyImpact (#3778)', () => {
     });
     const impact = await getOrgCurrencyImpact('org1', 'USD', actor);
     expect(impact.impactsByCurrency[0]!.billables.laborAmount).toBe('660.00');
+  });
+
+  it('never emits a group keyed on the TARGET currency for rate-less entries (review 6)', async () => {
+    // A EUR time entry with a null rate, in an org moving USD -> EUR. It is not
+    // stranded: telling the operator to assemble a EUR draft is nonsense.
+    queueImpact({
+      org: [{ id: 'org1', partnerId: 'p1', currencyCode: 'USD' }],
+      missingRate: [{ currencyCode: 'EUR', n: 3 }],
+    });
+    const impact = await getOrgCurrencyImpact('org1', 'EUR', actor);
+    expect(impact.impactsByCurrency).toEqual([]);
+    expect(impact.configurationWarnings.rateLessTimeEntries).toBe(3);
+  });
+
+  it('never emits an UNKNOWN recovery currency for unstamped rate-less entries (review 6)', async () => {
+    queueImpact({ missingRate: [{ currencyCode: null, n: 2 }] });
+    const impact = await getOrgCurrencyImpact('org1', 'GBP', actor);
+    expect(impact.impactsByCurrency).toEqual([]);
+    expect(impact.configurationWarnings.rateLessTimeEntries).toBe(2);
+  });
+
+  it('counts rate-less entries stranded in an OLD currency inside that currency group', async () => {
+    queueImpact({
+      missingRate: [{ currencyCode: 'EUR', n: 4 }, { currencyCode: 'GBP', n: 1 }, { currencyCode: null, n: 1 }],
+    });
+    const impact = await getOrgCurrencyImpact('org1', 'GBP', actor);
+    expect(impact.impactsByCurrency.map((g) => g.currencyCode)).toEqual(['EUR']);
+    const eur = impact.impactsByCurrency[0]!;
+    expect(eur.billables.missingRateTimeEntries).toBe(4);
+    expect(eur.recovery).toEqual({ kind: 'assemble_draft', currencyCode: 'EUR' });
+    // The target-stamped and unstamped ones need a RATE, not an assemble-draft.
+    expect(impact.configurationWarnings.rateLessTimeEntries).toBe(2);
   });
 
   it('throws ORG_DENIED (403) for a cross-org actor', async () => {

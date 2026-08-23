@@ -1833,6 +1833,7 @@
       "warningCategories": "{{count}} taxas de categoria de chamados em outra moeda serão ignoradas.",
       "warningOverrides": "{{count}} substituições de preço de catálogo da organização em outra moeda serão ignoradas.",
       "recovery": "Para faturar os itens em {{currency}} acima, monte um rascunho em {{currency}}.",
+      "rateLess": "{{count}} lançamentos de tempo não faturados têm horas, mas nenhum valor por hora. Defina um valor — a mudança de moeda não os afeta.",
       "retention": "Apenas documentos, apontamentos de tempo e peças futuros mudam. Nenhum valor é convertido, e rascunhos, contratos e itens não faturados existentes mantêm a moeda com que foram carimbados.",
       "advisory": "Estas contagens são uma prévia, não uma promessa — nada criado depois está incluído.",
       "stale": "A moeda de faturamento mudou para {{currency}} enquanto você revisava. Confira o resumo atualizado e confirme novamente.",

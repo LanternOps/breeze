@@ -1833,6 +1833,7 @@
       "warningCategories": "{{count}} tarifs de catégorie de tickets dans une autre devise seront ignorés.",
       "warningOverrides": "{{count}} remplacements de prix catalogue de l'organisation dans une autre devise seront ignorés.",
       "recovery": "Pour facturer les éléments en {{currency}} ci-dessus, assemblez un brouillon en {{currency}}.",
+      "rateLess": "{{count}} entrées de temps non facturées ont des heures mais aucun taux horaire. Définissez un taux — un changement de devise ne les touche pas.",
       "retention": "Seuls les futurs documents, saisies de temps et pièces changent. Aucun montant n'est jamais converti et les brouillons, contrats et éléments non facturés existants conservent leur devise d'origine.",
       "advisory": "Ces décomptes sont un aperçu, pas une garantie — rien de ce qui est créé ensuite n'y figure.",
       "stale": "La devise de facturation est passée à {{currency}} pendant votre vérification. Consultez le résumé actualisé et confirmez à nouveau.",
