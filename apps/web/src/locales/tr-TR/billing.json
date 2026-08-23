@@ -920,6 +920,11 @@
       "cloneError": "Alıntı kopyalanamadı.",
       "cloneQuote": "Klon alıntısı",
       "cloneSavingTitle": "Klonlamadan önce değişikliklerin kaydedilmesinin tamamlanmasını bekleyin.",
+      "reviseQuote": "Teklifi revize et",
+      "revising": "Revizyon oluşturuluyor…",
+      "reviseSuccess": "Revizyon oluşturuldu.",
+      "reviseError": "Revizyon oluşturulamadı.",
+      "reviseInProgress": "Zaten devam eden bir revizyon var — açılıyor.",
       "cloneSuccess": "Alıntı kopyalandı.",
       "cloning": "Klonlanıyor…",
       "deleteConfirm": {

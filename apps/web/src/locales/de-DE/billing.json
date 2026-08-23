@@ -920,6 +920,11 @@
       "cloneError": "Das Angebot konnte nicht dupliziert werden.",
       "cloneQuote": "Angebot duplizieren",
       "cloneSavingTitle": "Warten Sie vor dem Duplizieren, bis die Änderungen gespeichert sind.",
+      "reviseQuote": "Angebot überarbeiten",
+      "revising": "Überarbeitung wird erstellt…",
+      "reviseSuccess": "Überarbeitung erstellt.",
+      "reviseError": "Überarbeitung konnte nicht erstellt werden.",
+      "reviseInProgress": "Eine Überarbeitung läuft bereits – sie wird geöffnet.",
       "cloneSuccess": "Angebot dupliziert.",
       "cloning": "Wird dupliziert…",
       "deleteConfirm": {

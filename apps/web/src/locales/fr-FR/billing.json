@@ -920,6 +920,11 @@
       "cloneError": "Impossible de dupliquer le devis.",
       "cloneQuote": "Dupliquer le devis",
       "cloneSavingTitle": "Attendez la fin de l'enregistrement avant de dupliquer.",
+      "reviseQuote": "Réviser le devis",
+      "revising": "Création de la révision…",
+      "reviseSuccess": "Révision créée.",
+      "reviseError": "Impossible de créer une révision.",
+      "reviseInProgress": "Une révision est déjà en cours — ouverture.",
       "cloneSuccess": "Devis dupliqué.",
       "cloning": "Duplication…",
       "deleteConfirm": {

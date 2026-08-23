@@ -920,6 +920,11 @@
       "cloneError": "No se pudo clonar la cotización.",
       "cloneQuote": "Clonar cotización",
       "cloneSavingTitle": "Espere a que se guarden los cambios antes de clonar.",
+      "reviseQuote": "Revisar cotización",
+      "revising": "Creando revisión…",
+      "reviseSuccess": "Revisión creada.",
+      "reviseError": "No se pudo crear una revisión.",
+      "reviseInProgress": "Ya hay una revisión en curso: se abrirá.",
       "cloneSuccess": "Cotización clonada.",
       "cloning": "Clonando…",
       "deleteConfirm": {

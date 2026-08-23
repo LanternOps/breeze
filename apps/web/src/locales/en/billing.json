@@ -920,6 +920,11 @@
       "cloneError": "Could not clone the quote.",
       "cloneQuote": "Clone quote",
       "cloneSavingTitle": "Wait for changes to finish saving before cloning.",
+      "reviseQuote": "Revise quote",
+      "revising": "Creating revision…",
+      "reviseSuccess": "Revision created.",
+      "reviseError": "Could not create a revision.",
+      "reviseInProgress": "A revision is already in progress — opening it.",
       "cloneSuccess": "Quote cloned.",
       "cloning": "Cloning…",
       "deleteConfirm": {

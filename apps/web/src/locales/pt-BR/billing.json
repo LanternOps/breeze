@@ -920,6 +920,11 @@
       "cloneError": "Não foi possível clonar a cotação.",
       "cloneQuote": "Clonar cotação",
       "cloneSavingTitle": "Aguarde até que as alterações sejam salvas antes de clonar.",
+      "reviseQuote": "Revisar orçamento",
+      "revising": "Criando revisão…",
+      "reviseSuccess": "Revisão criada.",
+      "reviseError": "Não foi possível criar uma revisão.",
+      "reviseInProgress": "Já há uma revisão em andamento — abrindo.",
       "cloneSuccess": "Cotação clonada.",
       "cloning": "Clonando…",
       "deleteConfirm": {

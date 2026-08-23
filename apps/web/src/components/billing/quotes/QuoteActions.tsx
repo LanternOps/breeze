@@ -3,7 +3,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { parseAddressList, MAX_RECIPIENTS } from '../shared/addressList';
 import { scheduleQuoteSend, cancelScheduledSend } from '../../../lib/api/quotes';
@@ -12,7 +12,7 @@ import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { fetchWithAuth } from '../../../stores/auth';
 import { getJwtClaims } from '../../../lib/authScope';
-import { cloneQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
+import { cloneQuote, reviseQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
@@ -714,6 +714,42 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }
   }, [cloning, quote.id, cloneOrgId, cloneTitle, savePending, t]);
 
+  // Revise: create a linked draft that will REPLACE this quote when sent.
+  // Distinct from Clone, which starts an unrelated quote and leaves this one
+  // live. Navigation mirrors clone() exactly so both land the tech on the new
+  // draft the same way.
+  const [revising, setRevising] = useState(false);
+  const revise = useCallback(async () => {
+    if (revising || savePending) return;
+    setRevising(true);
+    setMenuOpen(false);
+    try {
+      const result = await runAction<{ data: { id: string } }>({
+        request: () => reviseQuote(quote.id),
+        errorFallback: t('quotes.actions.reviseError'),
+        successMessage: t('quotes.actions.reviseSuccess'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      if (result?.data?.id) void navigateTo(`/billing/quotes/${result.data.id}`);
+    } catch (err) {
+      // Only one open revision per quote is allowed. A bare 409 would leave the
+      // tech stuck with no route to the draft that is blocking them, so steer
+      // them to it instead. Without the id there is nothing to open — fall
+      // through to the normal error handling rather than navigating nowhere.
+      const existingId = err instanceof ActionError && err.status === 409 && err.code === 'REVISION_IN_PROGRESS'
+        ? (err.body as { meta?: { revisionQuoteId?: string } } | undefined)?.meta?.revisionQuoteId
+        : undefined;
+      if (existingId) {
+        showToast({ message: t('quotes.actions.reviseInProgress'), type: 'info' });
+        void navigateTo(`/billing/quotes/${existingId}`);
+      } else {
+        handleActionError(err, t('quotes.actions.reviseError'));
+      }
+    } finally {
+      setRevising(false);
+    }
+  }, [revising, quote.id, savePending, t]);
+
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
   // sit in a row. The class fragments below are the only thing the variant changes.
@@ -812,6 +848,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
 
   const canSend = can('quotes', 'send') && isDraft;
   const canClone = can('quotes', 'write');
+  // Exactly the statuses the server will supersede (SUPERSEDABLE in
+  // services/quoteLifecycle.ts). A draft has nothing to replace; accepted and
+  // converted are settled; superseded is already retired.
+  const canRevise = can('quotes', 'write')
+    && (['sent', 'viewed', 'declined', 'expired'] as const).includes(quote.status as 'sent');
   const canDelete = can('quotes', 'write') && isDraft;
   // Resend and share-link share one gate (see quoteShareLinkAvailable above,
   // which mirrors assertLinkableQuote in services/quoteLifecycle.ts).
@@ -950,6 +991,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {copyingLink ? t('quotes.actions.copyingShareLink') : t('quotes.actions.copyShareLink')}
           </button>
         )}
+        {!header && canRevise && (
+          <button
+            type="button"
+            onClick={() => void revise()}
+            disabled={revising || savePending}
+            title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+            data-testid="quote-revise"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {revising ? t('quotes.actions.revising') : t('quotes.actions.reviseQuote')}
+          </button>
+        )}
         {!header && canClone && (
           <button
             type="button"
@@ -1019,6 +1072,20 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                     className="block w-full px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-50"
                   >
                     {copyingLink ? t('quotes.actions.copyingShareLink') : t('quotes.actions.copyShareLink')}
+                  </button>
+                )}
+                {canRevise && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    onClick={() => void revise()}
+                    disabled={revising || savePending}
+                    title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+                    data-testid="quote-revise"
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-50"
+                  >
+                    {revising ? t('quotes.actions.revising') : t('quotes.actions.reviseQuote')}
                   </button>
                 )}
                 {canClone && (

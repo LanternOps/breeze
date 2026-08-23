@@ -920,6 +920,11 @@
       "cloneError": "Impossibile clonare il preventivo.",
       "cloneQuote": "Clona preventivo",
       "cloneSavingTitle": "Attendi il salvataggio delle modifiche prima di clonare.",
+      "reviseQuote": "Rivedi preventivo",
+      "revising": "Creazione revisione…",
+      "reviseSuccess": "Revisione creata.",
+      "reviseError": "Impossibile creare una revisione.",
+      "reviseInProgress": "Una revisione è già in corso: verrà aperta.",
       "cloneSuccess": "Preventivo clonato.",
       "cloning": "Clonazione…",
       "deleteConfirm": {
