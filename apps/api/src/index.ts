@@ -517,7 +517,8 @@ app.use('*', securityMiddleware());
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
-    capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+    capture: (message, tags) =>
+      captureMessage(message, { eventCode: 'body_limit_rejected', tags }),
   })
 );
 app.use('*', globalRateLimit());
@@ -1878,7 +1879,8 @@ async function bootstrap(): Promise<void> {
   const eventLoopMonitor = startEventLoopMonitor({
     onSample: createStarvationReporter({
       thresholdMs: getEventLoopStarvationThresholdMs,
-      capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+      capture: (message, tags) =>
+        captureMessage(message, { eventCode: 'event_loop_starvation', tags }),
     }),
   });
   // Say whether the instance can see its own loop, and at what settings. Without

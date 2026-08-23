@@ -9,6 +9,10 @@ import {
   UNMATCHED_ROUTE_LABEL,
   safeMatchedRouteLabel,
 } from './safeRequestLabel';
+import {
+  isRegisteredSentryEventCode,
+  type SentryEventCode,
+} from './sentryEventCodes';
 
 // SQLSTATE 42501 (insufficient_privilege) is what forced row-level security
 // raises when `breeze_app` writes a row that fails a policy's WITH CHECK clause
@@ -101,6 +105,31 @@ const ALLOWED_TAG_NAMES = new Set([
   // cluster groupable and actionable.
   'body_limit_rule',
   'body_limit_max_size',
+  // BREEZE-18: the required `captureMessage` discriminator. `scrubEvent`
+  // deletes `message`, `logentry` and `extra` from every event, so before this
+  // existed any captureMessage that happened not to carry one of the tags above
+  // shipped a completely EMPTY event — Sentry grouped 11,466 of them into one
+  // untriageable issue, 95% of its recent events carrying zero tags at all.
+  // Every entry above it is the same lesson relearned per incident; this one
+  // closes the class. Bounded by construction: the value is a string literal
+  // from the closed SENTRY_EVENT_CODES registry (services/sentryEventCodes.ts),
+  // type-enforced by `tsc` and re-checked at runtime, so it can never carry a
+  // tenant, device, host or path.
+  'event_code',
+  // #3836/D4: a refused official-manifest asset (binarySync) is reported as an
+  // exception whose descriptive message the scrubber deletes, so the production
+  // issue could not say WHICH asset was refused — and the INTENDED case
+  // (unsigned darwin artifacts, pending signed macOS releases) was therefore
+  // indistinguishable from a real trust regression. `binary_component` is the
+  // hardcoded component name from the sync call sites ('agent', 'viewer', …);
+  // `release_asset_name` is a RELEASE ARTIFACT filename — a build output name
+  // like `breeze-agent-windows-amd64.exe`, bounded by the release matrix and
+  // carrying no tenant, device, org or host identifier; `manifest_refusal_reason`
+  // is a closed set derived from the thrown error's CLASS (never its message
+  // text, which is unbounded and interpolates the offending values).
+  'binary_component',
+  'release_asset_name',
+  'manifest_refusal_reason',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
@@ -385,30 +414,62 @@ export function captureException(
 }
 
 /**
- * `tags` mirrors captureException's third parameter. Prefer it over `extra` for
- * any low-cardinality discriminator you will want to GROUP BY in Sentry: extras
- * are only visible once you open an individual event, while tags are
- * searchable and drive the "break down by" UI. Attributing a recurring warning
- * to its source is exactly that job — an unfilterable 7k-event bucket
- * (BREEZE-A) is what happens without it.
+ * Options bag for `captureMessage`.
+ *
+ * WHY AN OPTIONS OBJECT (BREEZE-18): `eventCode` had to become REQUIRED, which
+ * changes the arity of every call however it is added, so there was no
+ * "cheaper" positional variant to prefer. Given a free choice, the object wins
+ * on the three things that outlive this change:
+ *   - the required field sits adjacent to `message` and is self-labelling at
+ *     the call site, instead of being an unlabelled literal in slot 2 or 5;
+ *   - the four optional fields stop being order-dependent — a dozen call sites
+ *     previously padded `undefined` into `extra` purely to reach `tags`;
+ *   - the next optional knob (a `fingerprint`, a sampling hint) is added
+ *     without touching a single existing caller.
+ * `captureException` keeps its positional shape deliberately: it has no
+ * required discriminator, and churning it would buy nothing.
+ *
+ * Prefer `tags` over `extra` for any low-cardinality discriminator you will
+ * want to GROUP BY in Sentry: extras are only visible once you open an
+ * individual event (and `scrubEvent` deletes them outright before send), while
+ * tags are searchable and drive the "break down by" UI.
  *
  * Keep tag values low-cardinality (a handler name, not an id) — high-cardinality
  * tags inflate Sentry's index without making anything more triageable.
  */
-export function captureMessage(
-  message: string,
-  level: 'info' | 'warning' | 'error' = 'warning',
-  extra?: Record<string, unknown>,
-  tags?: Record<string, string>
-): void {
+export interface CaptureMessageOptions {
+  /**
+   * REQUIRED, and applied as the `event_code` tag by `captureMessage` itself
+   * rather than threaded through `tags` — a caller cannot forget it, misspell
+   * the tag name, or have it silently dropped by the allowlist. Must be a
+   * hardcoded literal from SENTRY_EVENT_CODES; never interpolate an id.
+   */
+  eventCode: SentryEventCode;
+  level?: 'info' | 'warning' | 'error';
+  /** Deleted by `scrubEvent` before send; kept for local console parity only. */
+  extra?: Record<string, unknown>;
+  tags?: Record<string, string>;
+}
+
+export function captureMessage(message: string, options: CaptureMessageOptions): void {
   if (!initialized) {
     return;
   }
+
+  const { eventCode, level = 'warning', extra, tags } = options;
 
   Sentry.withScope((scope) => {
     scope.setLevel(level);
     void extra;
     setCallerTags(scope, tags);
+    // Set AFTER the caller's tags so a `tags: { event_code: ... }` bag can never
+    // override the call site's own code, and guarded so an unregistered value
+    // arriving from untyped JS degrades to a named sentinel rather than an
+    // unbounded tag or (worse) the contentless event this exists to prevent.
+    scope.setTag(
+      'event_code',
+      isRegisteredSentryEventCode(eventCode) ? eventCode : 'unregistered_event_code',
+    );
     Sentry.captureMessage(message);
   });
 }

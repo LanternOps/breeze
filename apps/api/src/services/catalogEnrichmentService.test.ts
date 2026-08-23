@@ -376,8 +376,10 @@ describe('polishCatalogText', () => {
     // operator can catch the model inventing specs on live quotes.
     expect(captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('over-claimed'),
-      'warning',
-      expect.objectContaining({ added: expect.arrayContaining(['144hz']) }),
+      expect.objectContaining({
+        eventCode: 'catalog_polish_fact_over_claim',
+        extra: expect.objectContaining({ added: expect.arrayContaining(['144hz']) }),
+      }),
     );
   });
 

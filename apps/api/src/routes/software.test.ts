@@ -1151,8 +1151,10 @@ describe('software routes', () => {
       });
       expect(captureMessage).toHaveBeenCalledWith(
         'software version created with undetermined installer type',
-        'warning',
-        expect.objectContaining({ downloadUrlHost: 'vendor.example.com' }),
+        expect.objectContaining({
+          eventCode: 'software_version_installer_type_unknown',
+          extra: expect.objectContaining({ downloadUrlHost: 'vendor.example.com' }),
+        }),
       );
     });
 
@@ -1162,7 +1164,7 @@ describe('software routes', () => {
       await createVersion({
         downloadUrl: 'https://vendor.example.com/get?token=SECRET-CAPABILITY',
       });
-      const logged = vi.mocked(captureMessage).mock.calls.at(-1)?.[2];
+      const logged = vi.mocked(captureMessage).mock.calls.at(-1)?.[1]?.extra;
       expect(JSON.stringify(logged)).not.toContain('SECRET-CAPABILITY');
     });
 

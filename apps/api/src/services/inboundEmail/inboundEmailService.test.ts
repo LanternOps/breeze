@@ -643,8 +643,10 @@ describe('processInboundEmail', () => {
     expect(log[0]!.error).toContain('no-mailgun-authserv');
     // A signature-verified webhook with no usable verdict is anomalous -> Sentry warning.
     expect(captureMessageMock).toHaveBeenCalledTimes(1);
-    expect(captureMessageMock.mock.calls[0]![1]).toBe('warning');
-    expect(captureMessageMock.mock.calls[0]![2]).toMatchObject({ diagnostic: 'no-mailgun-authserv' });
+    expect(captureMessageMock.mock.calls[0]![1]).toMatchObject({
+      eventCode: 'inbound_email_sender_auth_unverified',
+      extra: expect.objectContaining({ diagnostic: 'no-mailgun-authserv' }),
+    });
   });
 
   it('does NOT alert Sentry for an ordinary unverified sender (genuine DMARC fail, no diagnostic)', async () => {
@@ -1401,8 +1403,10 @@ describe('processInboundEmail — cross-channel claim ledger (spec §4)', () => 
 
     expect(captureMessageMock).toHaveBeenCalledWith(
       expect.stringContaining('lost the message-id claim race'),
-      'warning',
-      expect.objectContaining({ ourTicketId: 't-new', winnerTicketId: 't-winner', path: 'create' })
+      expect.objectContaining({
+        eventCode: 'inbound_email_claim_race_lost',
+        extra: expect.objectContaining({ ourTicketId: 't-new', winnerTicketId: 't-winner', path: 'create' })
+      })
     );
     const rows = inboundOf();
     expect(rows[0]!.parseStatus).toBe('created');

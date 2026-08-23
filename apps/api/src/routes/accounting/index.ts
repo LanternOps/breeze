@@ -324,7 +324,10 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     // the generation that survived. Report it as a warning so it stops filing
     // Sentry issues on a normal user action; genuine failures stay exceptions.
     if (isHomeCurrencyCasAbort(err)) {
-      captureMessage('[accounting] QuickBooks home currency capture lost the compare-and-set', 'warning', { partnerId: state.partnerId, provider });
+      captureMessage('[accounting] QuickBooks home currency capture lost the compare-and-set', {
+        eventCode: 'accounting_home_currency_cas_lost',
+        extra: { partnerId: state.partnerId, provider },
+      });
       console.warn('[accounting] QuickBooks home currency capture lost the compare-and-set', { partnerId: state.partnerId, provider });
     } else {
       captureException(err instanceof Error ? err : new Error(String(err)), c);

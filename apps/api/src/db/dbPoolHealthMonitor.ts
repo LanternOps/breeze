@@ -516,19 +516,23 @@ export async function runDbPoolHealthCheck(
         // deletes message/extra from every event — so it carries the actionable
         // part. The extras are passed anyway (correct shape, and free) and the
         // full prose is already on console.warn above.
-        captureMessage(assessment.headline, 'warning', {
-          message: assessment.message,
-          verdict: assessment.verdict,
-          timeouts: assessment.stats.timeouts,
-          ratePerMin: assessment.stats.ratePerMin,
-          windowMs: assessment.stats.windowMs,
-          byCause: assessment.stats.byCause,
-          probeMs: assessment.probeMs,
-          probeError: assessment.probeError,
-          // States this event's own sampling rate, so the throttle cannot make a
-          // storm look like a single occurrence.
-          suppressedSinceLastCapture: suppressed,
-        }, { db_pool_health_verdict: assessment.verdict });
+        captureMessage(assessment.headline, {
+          eventCode: 'db_pool_health_degraded',
+          extra: {
+            message: assessment.message,
+            verdict: assessment.verdict,
+            timeouts: assessment.stats.timeouts,
+            ratePerMin: assessment.stats.ratePerMin,
+            windowMs: assessment.stats.windowMs,
+            byCause: assessment.stats.byCause,
+            probeMs: assessment.probeMs,
+            probeError: assessment.probeError,
+            // States this event's own sampling rate, so the throttle cannot make
+            // a storm look like a single occurrence.
+            suppressedSinceLastCapture: suppressed,
+          },
+          tags: { db_pool_health_verdict: assessment.verdict },
+        });
       } catch (captureErr) {
         console.error('[db-pool-health] failed to report verdict to Sentry:', captureErr);
       }
@@ -555,11 +559,15 @@ export async function runDbPoolHealthCheck(
       )
     ) {
       try {
-        captureMessage('[db-pool-health] watchdog evaluation failed', 'warning', {
-          error: err instanceof Error ? err.message : String(err),
-          checkFailures,
-          suppressedSinceLastCapture: takeSuppressedCount('check-failed'),
-        }, { db_pool_health_verdict: 'check-failed' });
+        captureMessage('[db-pool-health] watchdog evaluation failed', {
+          eventCode: 'db_pool_health_check_failed',
+          extra: {
+            error: err instanceof Error ? err.message : String(err),
+            checkFailures,
+            suppressedSinceLastCapture: takeSuppressedCount('check-failed'),
+          },
+          tags: { db_pool_health_verdict: 'check-failed' },
+        });
       } catch {
         // The reporter is the thing that failed; the console line above stands.
       }

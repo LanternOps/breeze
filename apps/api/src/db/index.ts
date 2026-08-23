@@ -505,17 +505,21 @@ export async function withDbAccessContext<T>(
             // Throttle the Sentry capture per scope (see getHeldContextCaptureThrottleMs)
             // so a recurring conn-hold can't flood the org's event quota.
             if (shouldCaptureHeldContext(context.scope, Date.now(), getHeldContextCaptureThrottleMs())) {
-              captureMessage(message, 'warning', {
-                heldMs,
-                scope: context.scope,
-                // `openedAt` is the actionable one — it names the caller that
-                // opened the context. `stack` is kept (emitter-side, i.e. the
-                // await trampoline) only because the previous shape had it and
-                // dropping a field silently is worse than an extra one.
-                openedAtFrame: openerFrame?.location,
-                openedAt: opener?.stack,
-                stack: new Error().stack,
-              }, Object.keys(tags).length > 0 ? tags : undefined);
+              captureMessage(message, {
+                eventCode: 'db_context_held_too_long',
+                extra: {
+                  heldMs,
+                  scope: context.scope,
+                  // `openedAt` is the actionable one — it names the caller that
+                  // opened the context. `stack` is kept (emitter-side, i.e. the
+                  // await trampoline) only because the previous shape had it and
+                  // dropping a field silently is worse than an extra one.
+                  openedAtFrame: openerFrame?.location,
+                  openedAt: opener?.stack,
+                  stack: new Error().stack,
+                },
+                tags: Object.keys(tags).length > 0 ? tags : undefined,
+              });
             }
           }
         }
@@ -706,7 +710,7 @@ function reportContextlessWrite(label: string): void {
   const key = stack ?? label;
   if (reportedContextlessSites.has(key)) return;
   reportedContextlessSites.add(key);
-  captureMessage(message, 'warning', { stack });
+  captureMessage(message, { eventCode: 'db_contextless_write', extra: { stack } });
 }
 
 // Best-effort extraction of the leading SQL text from a drizzle `sql` object so
@@ -812,7 +816,10 @@ export function assertOutsideHeldDbContext(operation: string): void {
   console.warn(message);
   const stack = new Error().stack;
   if (!shouldReportHeldContextSite(stack ?? operation)) return;
-  captureMessage(message, 'warning', { operation, stack });
+  captureMessage(message, {
+    eventCode: 'db_operation_inside_held_context',
+    extra: { operation, stack },
+  });
 }
 
 const proxiedDb = new Proxy(baseDb, {

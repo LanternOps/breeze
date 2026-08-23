@@ -277,9 +277,11 @@ describe('dbPoolHealthMonitor (#3214)', () => {
       expect(captureMessage).toHaveBeenCalledTimes(1);
       expect(captureMessage).toHaveBeenCalledWith(
         expect.stringContaining('POOL DEGRADED'),
-        'warning',
-        expect.objectContaining({ verdict: 'pool-degraded', timeouts: 40 }),
-        { db_pool_health_verdict: 'pool-degraded' },
+        expect.objectContaining({
+          eventCode: 'db_pool_health_degraded',
+          extra: expect.objectContaining({ verdict: 'pool-degraded', timeouts: 40 }),
+          tags: { db_pool_health_verdict: 'pool-degraded' },
+        }),
       );
     });
 
@@ -354,9 +356,11 @@ describe('dbPoolHealthMonitor (#3214)', () => {
 
       expect(captureMessage).toHaveBeenCalledWith(
         '[db-pool-health] watchdog evaluation failed',
-        'warning',
-        expect.objectContaining({ error: 'stats exploded', checkFailures: 1 }),
-        { db_pool_health_verdict: 'check-failed' },
+        expect.objectContaining({
+          eventCode: 'db_pool_health_check_failed',
+          extra: expect.objectContaining({ error: 'stats exploded', checkFailures: 1 }),
+          tags: { db_pool_health_verdict: 'check-failed' },
+        }),
       );
     });
 
@@ -439,7 +443,7 @@ describe('dbPoolHealthMonitor (#3214)', () => {
       await runDbPoolHealthCheck(deps); // captured again
 
       const last = captureMessage.mock.calls.at(-1);
-      expect(last?.[2]).toMatchObject({ suppressedSinceLastCapture: 2 });
+      expect(last?.[1].extra).toMatchObject({ suppressedSinceLastCapture: 2 });
     });
   });
 
