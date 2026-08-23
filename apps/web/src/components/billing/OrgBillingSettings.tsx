@@ -146,7 +146,14 @@ export default function OrgBillingSettings({ orgId }: Props) {
     setImpactLoading(true);
     try {
       const res = await fetchWithAuth(
-        `/orgs/${orgId}/billing-settings/currency-impact?currencyCode=${encodeURIComponent(code)}`);
+        `/orgs/${orgId}/billing-settings/currency-impact?currencyCode=${encodeURIComponent(code)}`,
+        // The org is already in the PATH, and the query schema is `.strict()` —
+        // letting fetchWithAuth append the org-switcher's `orgId` (which need
+        // not even be this org) 400s the request and the panel degrades to
+        // "summary could not be loaded". Caught by the wave-6 browser slice
+        // (e2e-tests/tests/multi-currency.spec.ts); unit tests mock
+        // fetchWithAuth and cannot see the injection.
+        { skipOrgIdInjection: true });
       if (res.status === 401) return UNAUTHORIZED();
       if (!res.ok) throw new Error('impact failed');
       const body = (await res.json()) as { data: OrgCurrencyImpact };

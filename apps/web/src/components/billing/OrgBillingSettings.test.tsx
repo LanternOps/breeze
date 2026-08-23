@@ -170,7 +170,13 @@ describe('OrgBillingSettings — currency selector and change flow', () => {
     selectCurrency('EUR');
 
     await waitFor(() => expect(screen.getByTestId('org-billing-currency-panel')).toBeInTheDocument());
-    expect(fetchMock.mock.calls.some((c) => c[0] === IMPACT_URL)).toBe(true);
+    const impactCall = fetchMock.mock.calls.find((c) => c[0] === IMPACT_URL);
+    expect(impactCall).toBeDefined();
+    // The org is already in the path and the API's query schema is `.strict()`:
+    // fetchWithAuth's automatic `&orgId=` injection would 400 the preview and
+    // silently degrade the panel to its error copy. Regression guard for the
+    // defect the wave-6 browser slice caught (#3778).
+    expect((impactCall?.[1] as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection).toBe(true);
     // Per-currency counts, grouped by the ROW's own stamp.
     expect(screen.getByTestId('org-billing-impact-USD-draftInvoices')).toHaveTextContent('2');
     expect(screen.getByTestId('org-billing-impact-USD-activeContracts')).toHaveTextContent('4');
