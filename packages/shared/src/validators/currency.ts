@@ -31,3 +31,41 @@ export const changeCurrencySchema = z.object({
 });
 
 export type ChangeCurrencyInput = z.infer<typeof changeCurrencySchema>;
+
+/**
+ * Reporting-only FX (multi-currency spec §8, wave 7 #3779). `rate` is a
+ * positive decimal STRING with at most 8 places — a JS number would lose
+ * precision at the numeric(18,8) boundary. The service re-validates (and owns
+ * real-calendar-date validity, e.g. 2026-02-30, plus the EUR-pivot rule); this
+ * is the user-facing shape error.
+ */
+const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
+const positiveRateSchema = z
+  .string()
+  .regex(/^\d+(\.\d{1,8})?$/, 'Expected a positive decimal with at most 8 places')
+  .refine((s) => Number(s) > 0, { message: 'Rate must be greater than zero' });
+
+export const exchangeRateKeyParamSchema = z.object({
+  rateDate: isoDateSchema,
+  baseCode: currencyCodeSchema,
+  quoteCode: currencyCodeSchema,
+}).strict().refine((v) => v.baseCode !== v.quoteCode, {
+  message: 'base and quote currency must differ',
+  path: ['quoteCode'],
+});
+
+/** Strict: an operator who thinks they are pinning an ECB rate must be told
+ *  they cannot, not have `source` silently dropped. */
+export const manualExchangeRateBodySchema = z.object({ rate: positiveRateSchema }).strict();
+
+export const exchangeRateListQuerySchema = z.object({
+  baseCode: currencyCodeSchema.optional(),
+  quoteCode: currencyCodeSchema.optional(),
+  source: z.enum(['ecb', 'manual']).optional(),
+  onOrBefore: isoDateSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+}).strict();
+
+export type ExchangeRateKeyParam = z.infer<typeof exchangeRateKeyParamSchema>;
+export type ManualExchangeRateBody = z.infer<typeof manualExchangeRateBodySchema>;
+export type ExchangeRateListQuery = z.infer<typeof exchangeRateListQuerySchema>;
