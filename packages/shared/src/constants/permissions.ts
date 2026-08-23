@@ -132,6 +132,15 @@ export const PERMISSION_GRANTS = {
   // cross-user admin/audit surface must NOT be gated on organizations:read.
   AI_SESSIONS_READ_ALL: { resource: 'ai_sessions', action: 'read_all' },
 
+  // AI agents (#3821) — authoring an agent policy is what will eventually
+  // authorize autonomous action on customer machines, so it gets its own
+  // capability rather than riding on organizations:write. Sharing that grant
+  // would mean every existing org admin silently acquired agent-authoring
+  // authority the day wave 4 enabled `act` mode, with no deliberate decision
+  // by the partner who granted it. Same reasoning as AI_SESSIONS_READ_ALL.
+  AI_AGENTS_READ: { resource: 'ai_agents', action: 'read' },
+  AI_AGENTS_WRITE: { resource: 'ai_agents', action: 'write' },
+
   // Action intents / durable approvals — gates who may decide (approve/deny) a
   // pending action-intent approval, distinct from creating/reading intents.
   APPROVALS_DECIDE: { resource: 'approvals', action: 'decide' },

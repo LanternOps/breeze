@@ -25,8 +25,13 @@ import { resolveOrgId } from './networkShared';
 export const aiAgentsRoutes = new Hono();
 aiAgentsRoutes.use('*', authMiddleware);
 
-const requireAiRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
-const requireAiWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+// Dedicated capabilities, NOT organizations:read/write. Authoring an agent
+// policy is what will eventually authorize autonomous action on customer
+// machines, and organizations:write is held by every org admin — sharing it
+// would hand agent-authoring authority to all of them the day wave 4 enables
+// `act` mode, with nobody having decided to. Partner Admin keeps access via *:*.
+const requireAiRead = requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PERMISSIONS.AI_AGENTS_READ.action);
+const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action);
 const scopes = requireScope('organization', 'partner', 'system');
 
 // NOTE (deviation from the plan, deliberate): these handlers do NOT call
