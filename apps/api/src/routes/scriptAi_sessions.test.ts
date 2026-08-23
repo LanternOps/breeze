@@ -86,7 +86,7 @@ vi.mock('../services/sentry', () => ({
 }));
 
 vi.mock('../services/llm/llmConfigResolver', () => ({
-  resolveLlmConfig: vi.fn(),
+  resolveLlmConfigForOrg: vi.fn(),
 }));
 
 import { authMiddleware } from '../middleware/auth';
@@ -98,7 +98,8 @@ import {
   closeScriptBuilderSession,
 } from '../services/scriptBuilderService';
 import { streamingSessionManager } from '../services/streamingSessionManager';
-import { resolveLlmConfig } from '../services/llm/llmConfigResolver';
+import { resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
+import { captureException } from '../services/sentry';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -135,7 +136,7 @@ describe('scriptAi routes — session CRUD', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setAuth();
-    vi.mocked(resolveLlmConfig).mockResolvedValue({
+    vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({
       source: 'platform',
       apiKey: 'platform-key',
       model: 'claude-sonnet-4-6',
@@ -163,7 +164,7 @@ describe('scriptAi routes — session CRUD', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe(SESSION_ID);
-      expect(resolveLlmConfig).toHaveBeenCalledWith('partner-1');
+      expect(resolveLlmConfigForOrg).toHaveBeenCalledWith(ORG_ID);
       expect(createScriptBuilderSession).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ title: 'Build a backup script' }),
@@ -172,7 +173,7 @@ describe('scriptAi routes — session CRUD', () => {
     });
 
     it('returns ai_unavailable as 503 before creating the database session', async () => {
-      vi.mocked(resolveLlmConfig).mockResolvedValue({
+      vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({
         source: 'unavailable',
         partnerId: 'partner-1',
         reason: 'key_error',
@@ -186,6 +187,22 @@ describe('scriptAi routes — session CRUD', () => {
 
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(createScriptBuilderSession).not.toHaveBeenCalled();
+    });
+
+    it('captures resolver throws and returns a generic retryable 503', async () => {
+      const error = new Error('raw organization lookup failure');
+      vi.mocked(resolveLlmConfigForOrg).mockRejectedValueOnce(error);
+
+      const res = await app.request('/ai/script-builder/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Build a backup script' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
+      expect(captureException).toHaveBeenCalledWith(error, expect.anything());
       expect(createScriptBuilderSession).not.toHaveBeenCalled();
     });
 

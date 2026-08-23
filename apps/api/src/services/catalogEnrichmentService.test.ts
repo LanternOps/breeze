@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureMessage, getAnthropicClientForPartner } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureException, captureMessage, getAnthropicClientForPartner } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   checkUserAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   recordUsage: vi.fn(async () => {}),
+  captureException: vi.fn(),
   captureMessage: vi.fn(),
   getAnthropicClientForPartner: vi.fn(),
 }));
@@ -14,7 +15,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
 }));
 vi.mock('./aiAgent', () => ({ resolveDefaultModel: () => 'claude-sonnet-4-6' }));
 vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage }));
-vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage }));
+vi.mock('./sentry', () => ({ captureException, captureMessage }));
 vi.mock('./llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner,
   LlmUnavailableError: class LlmUnavailableError extends Error {
@@ -46,6 +47,7 @@ beforeEach(() => {
     resolved: { source: 'partner', partnerId: 'p1', apiKey: 'partner-key', model: 'claude-sonnet-4-6' },
   });
   captureMessage.mockClear();
+  captureException.mockClear();
   checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
   checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
 });
@@ -289,6 +291,21 @@ describe('enrichDistributorListing', () => {
     const res = await enrichDistributorListing('Some product', 'hardware', actor);
     expect(res).toBeNull();
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('keeps raw values but logs and captures a broken partner credential', async () => {
+    getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await enrichDistributorListing('Some product', 'hardware', actor);
+
+    expect(res).toBeNull();
+    expect(consoleError).toHaveBeenCalledWith('[distributor-enrich] failed:', 'AI is unavailable');
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'EnrichmentError',
+      code: 'AI_UNAVAILABLE',
+    }));
+    consoleError.mockRestore();
   });
 
   it('returns null for a blank query without calling the model', async () => {

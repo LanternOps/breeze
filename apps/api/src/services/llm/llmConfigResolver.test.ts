@@ -12,7 +12,7 @@ const {
   decryptMock,
   contextState,
 } = vi.hoisted(() => ({
-  anthropicOptions: [] as Array<{ apiKey?: string }>,
+  anthropicOptions: [] as Array<{ apiKey?: string; authToken?: string | null; baseURL?: string }>,
   captureExceptionMock: vi.fn(),
   captureMessageMock: vi.fn(),
   dbState: {
@@ -28,13 +28,13 @@ const {
 
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class MockAnthropic {
-    constructor(options: { apiKey?: string }) {
+    constructor(options: { apiKey?: string; authToken?: string | null; baseURL?: string }) {
       anthropicOptions.push(options);
     }
   },
 }));
 
-vi.mock('../aiAgent', () => ({
+vi.mock('../aiModel', () => ({
   resolveDefaultModel: () => 'claude-sonnet-4-6',
 }));
 
@@ -84,14 +84,18 @@ vi.mock('../../db', () => ({
 
 import {
   getAnthropicClientForPartner,
+  LlmOrgResolutionError,
   LlmUnavailableError,
   markPartnerLlmError,
   resolveLlmConfig,
+  resolveLlmConfigForOrg,
 } from './llmConfigResolver';
 import { SecretKeyMaterialError } from '../secretCrypto';
 import { captureException, captureMessage } from '../sentry';
 
 const originalPlatformKey = process.env.ANTHROPIC_API_KEY;
+const originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+const originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -122,12 +126,47 @@ beforeEach(() => {
   contextState.systemCalls = 0;
   decryptMock.mockReturnValue('partner-plaintext-key');
   process.env.ANTHROPIC_API_KEY = 'platform-key';
+  delete process.env.ANTHROPIC_BASE_URL;
+  delete process.env.ANTHROPIC_AUTH_TOKEN;
 });
 
 afterEach(() => {
   vi.useRealTimers();
   if (originalPlatformKey === undefined) delete process.env.ANTHROPIC_API_KEY;
   else process.env.ANTHROPIC_API_KEY = originalPlatformKey;
+  if (originalAnthropicBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+  else process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseUrl;
+  if (originalAnthropicAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+  else process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicAuthToken;
+});
+
+describe('resolveLlmConfigForOrg', () => {
+  it('resolves the partner from the organization under system DB context', async () => {
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [row()]);
+
+    await expect(resolveLlmConfigForOrg('33333333-3333-4333-8333-333333333333')).resolves.toMatchObject({
+      source: 'partner',
+      partnerId: PARTNER_ID,
+      apiKey: 'partner-plaintext-key',
+    });
+
+    expect(contextState.outsideCalls).toBe(2);
+    expect(contextState.systemCalls).toBe(2);
+  });
+
+  it('throws the typed org-resolution error when the organization is missing', async () => {
+    dbState.selectResults.push([]);
+
+    const promise = resolveLlmConfigForOrg('33333333-3333-4333-8333-333333333333');
+    await expect(promise).rejects.toBeInstanceOf(LlmOrgResolutionError);
+    await expect(promise).rejects.toMatchObject({
+      name: 'LlmOrgResolutionError',
+      orgId: '33333333-3333-4333-8333-333333333333',
+    });
+    expect(decryptMock).not.toHaveBeenCalled();
+    expect(contextState.outsideCalls).toBe(1);
+    expect(contextState.systemCalls).toBe(1);
+  });
 });
 
 describe('resolveLlmConfig', () => {
@@ -302,14 +341,30 @@ describe('markPartnerLlmError', () => {
 });
 
 describe('getAnthropicClientForPartner', () => {
-  it('constructs the Anthropic client with the partner key instead of the platform key', async () => {
+  it('pins partner clients to public Anthropic and disables environment auth-token inheritance', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'https://operator-proxy.example';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'operator-bearer-token';
     dbState.selectResults.push([row()]);
 
     const result = await getAnthropicClientForPartner(PARTNER_ID);
 
     expect(result.resolved).toMatchObject({ source: 'partner', apiKey: 'partner-plaintext-key' });
-    expect(anthropicOptions).toEqual([{ apiKey: 'partner-plaintext-key' }]);
+    expect(anthropicOptions).toEqual([{
+      apiKey: 'partner-plaintext-key',
+      authToken: null,
+      baseURL: 'https://api.anthropic.com',
+    }]);
     expect(anthropicOptions[0]?.apiKey).not.toBe('platform-key');
+  });
+
+  it('leaves platform client endpoint and auth-token selection environment-aware', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'https://operator-proxy.example';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'operator-bearer-token';
+
+    const result = await getAnthropicClientForPartner(null);
+
+    expect(result.resolved).toMatchObject({ source: 'platform', apiKey: 'platform-key' });
+    expect(anthropicOptions).toEqual([{ apiKey: 'platform-key' }]);
   });
 
   it('throws LlmUnavailableError instead of constructing a client for unavailable config', async () => {

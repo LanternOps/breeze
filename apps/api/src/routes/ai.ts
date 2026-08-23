@@ -50,7 +50,7 @@ import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
-import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
+import { LlmUnavailableError, resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
@@ -165,6 +165,7 @@ aiRoutes.post(
       });
       return c.json(session, 201);
     } catch (err) {
+      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       const message = err instanceof Error ? err.message : 'Failed to create session';
       if (message === 'Organization context required') return c.json({ error: message }, 400);
       if (message === 'Invalid M365 connection') return c.json({ error: message }, 400);
@@ -400,12 +401,14 @@ aiRoutes.post(
 
     let draft;
     try {
+      const resolvedConfig = await resolveLlmConfigForOrg(session.orgId);
+      if (resolvedConfig.source === 'unavailable') throw new LlmUnavailableError();
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
         contextSnapshot: session.contextSnapshot,
         elapsedMinutes,
         model,
-        partnerId: auth.partnerId ?? null,
+        partnerId: resolvedConfig.source === 'partner' ? resolvedConfig.partnerId : null,
       });
     } catch (err) {
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
@@ -535,6 +538,7 @@ aiRoutes.post(
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
+      if (preflight.status === 503) return c.json({ error: err }, 503);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
@@ -545,7 +549,11 @@ aiRoutes.post(
     const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, resolved } = preflight;
 
     // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
-    if (isOpenAICompatibleProvider()) {
+    const useOpenAICompatibleProvider = isOpenAICompatibleProvider();
+    if (useOpenAICompatibleProvider && resolved.source === 'partner') {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
+    if (useOpenAICompatibleProvider) {
       const openaiManager = getOpenAISessionManager();
       const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
 

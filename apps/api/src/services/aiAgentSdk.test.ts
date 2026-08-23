@@ -48,9 +48,9 @@ vi.mock('./aiAgent', () => ({
   waitForApproval: vi.fn(),
 }));
 
-const mockResolveLlmConfig = vi.fn();
+const mockResolveLlmConfigForOrg = vi.fn();
 vi.mock('./llm/llmConfigResolver', () => ({
-  resolveLlmConfig: (...args: unknown[]) => mockResolveLlmConfig(...args),
+  resolveLlmConfigForOrg: (...args: unknown[]) => mockResolveLlmConfigForOrg(...args),
 }));
 
 const mockCheckAiRateLimit = vi.fn();
@@ -309,7 +309,7 @@ describe('runPreFlightChecks', () => {
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
     mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
-    mockResolveLlmConfig.mockResolvedValue({
+    mockResolveLlmConfigForOrg.mockResolvedValue({
       source: 'platform',
       apiKey: 'platform-key',
       model: 'claude-sonnet-4-6',
@@ -325,7 +325,7 @@ describe('runPreFlightChecks', () => {
   });
 
   it('returns the ai_unavailable 503 contract before rate, budget, or SDK preparation', async () => {
-    mockResolveLlmConfig.mockResolvedValue({
+    mockResolveLlmConfigForOrg.mockResolvedValue({
       source: 'unavailable',
       partnerId: 'partner-1',
       reason: 'key_error',
@@ -334,10 +334,36 @@ describe('runPreFlightChecks', () => {
     const result = await runPreFlightChecks('session-1', 'hello', auth);
 
     expect(result).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
-    expect(mockResolveLlmConfig).toHaveBeenCalledWith('partner-1');
+    expect(mockResolveLlmConfigForOrg).toHaveBeenCalledWith('org-1');
     expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
     expect(mockCheckBudget).not.toHaveBeenCalled();
     expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
+  });
+
+  it('captures resolver failures and returns a generic retryable 503', async () => {
+    const error = new Error('raw resolver failure');
+    mockResolveLlmConfigForOrg.mockRejectedValueOnce(error);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'AI configuration could not be loaded. Try again.',
+      status: 503,
+    });
+    expect(mockCaptureException).toHaveBeenCalledWith(error, undefined, {
+      service: 'aiAgentSdk',
+      orgId: 'org-1',
+    });
+    expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+  });
+
+  it('resolves from the persisted session org instead of the caller partner token', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ orgId: 'org-session-99' }));
+
+    await runPreFlightChecks('session-1', 'hello', makeAuth({ partnerId: null, scope: 'system' }));
+
+    expect(mockResolveLlmConfigForOrg).toHaveBeenCalledWith('org-session-99');
   });
 
   // --- Rate limits use session's org, not auth's org ---

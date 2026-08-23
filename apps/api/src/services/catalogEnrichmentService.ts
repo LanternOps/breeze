@@ -404,7 +404,7 @@ export async function enrichDistributorListing(
   } catch (err) {
     if (err instanceof EnrichTimeoutError) {
       console.warn('[distributor-enrich] timed out — keeping raw values');
-    } else if (err instanceof EnrichmentError) {
+    } else if (err instanceof EnrichmentError && err.code !== 'AI_UNAVAILABLE') {
       // Expected: budget/rate/parse — the user-visible "skipped" signal is the
       // aiEnriched:false attribute the caller stores.
       console.warn('[distributor-enrich] skipped:', err.code, err.message);

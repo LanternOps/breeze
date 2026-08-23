@@ -1,18 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { rateLimiterMock, getRedisMock, dbSelectMock, resolveLlmConfigMock } = vi.hoisted(() => ({
+const { rateLimiterMock, getRedisMock, resolveLlmConfigForOrgMock } = vi.hoisted(() => ({
   rateLimiterMock: vi.fn(),
   getRedisMock: vi.fn(() => ({}) as never),
-  dbSelectMock: vi.fn(),
-  resolveLlmConfigMock: vi.fn(),
+  resolveLlmConfigForOrgMock: vi.fn(),
 }));
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 vi.mock('./rate-limit', () => ({ rateLimiter: rateLimiterMock }));
-vi.mock('../db', () => ({ db: { select: dbSelectMock } }));
-vi.mock('../db/schema', () => ({ organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' } }));
 vi.mock('./llm/llmConfigResolver', () => ({
-  resolveLlmConfig: (...args: unknown[]) => resolveLlmConfigMock(...args),
+  LlmOrgResolutionError: class LlmOrgResolutionError extends Error {
+    readonly orgId: string;
+    constructor(orgId: string) {
+      super(`Organization ${orgId} could not be resolved for AI configuration.`);
+      this.name = 'LlmOrgResolutionError';
+      this.orgId = orgId;
+    }
+  },
+  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 
 import {
@@ -31,6 +36,7 @@ import {
 import { CLIENT_HOSTS, type ClientHost } from './clientAiHosts';
 import { CLIENT_TOOL_REGISTRIES, isClientHostSupported } from './clientAiTools';
 import { defaultClientAiPolicy } from './clientAiPolicy';
+import { LlmOrgResolutionError } from './llm/llmConfigResolver';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
 const USER = 'beefbeef-1111-4222-8333-444455556666';
@@ -38,7 +44,7 @@ const USER = 'beefbeef-1111-4222-8333-444455556666';
 beforeEach(() => {
   vi.clearAllMocks();
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
-  resolveLlmConfigMock.mockResolvedValue({
+  resolveLlmConfigForOrgMock.mockResolvedValue({
     source: 'platform',
     apiKey: 'platform-key',
     model: 'claude-sonnet-4-6',
@@ -149,23 +155,22 @@ describe('generateClientSessionTitle', () => {
 
 describe('resolveClientLlmConfig', () => {
   it('resolves the provider from the authenticated organization owner', async () => {
-    const limit = vi.fn(() => Promise.resolve([{ partnerId: 'partner-from-org' }]));
-    const where = vi.fn(() => ({ limit }));
-    const from = vi.fn(() => ({ where }));
-    dbSelectMock.mockReturnValue({ from });
-
     await resolveClientLlmConfig(ORG);
 
-    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-from-org');
-    expect(where).toHaveBeenCalledOnce();
+    expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith(ORG);
   });
 
-  it('has no caller-supplied partner seam and fails if the authenticated org no longer exists', async () => {
-    const limit = vi.fn(() => Promise.resolve([]));
-    dbSelectMock.mockReturnValue({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit })) })) });
+  it('tags a missing organization with client-ai context before rethrowing', async () => {
+    const error = new LlmOrgResolutionError(ORG);
+    resolveLlmConfigForOrgMock.mockRejectedValueOnce(error);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    await expect(resolveClientLlmConfig(ORG)).rejects.toThrow('Organization not found');
-    expect(resolveLlmConfigMock).not.toHaveBeenCalled();
+    await expect(resolveClientLlmConfig(ORG)).rejects.toBe(error);
+    expect(consoleError).toHaveBeenCalledWith('[client-ai] failed to resolve organization LLM config', {
+      orgId: ORG,
+      error,
+    });
+    consoleError.mockRestore();
   });
 });
 

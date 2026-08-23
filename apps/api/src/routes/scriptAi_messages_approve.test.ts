@@ -153,6 +153,24 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     });
 
+    it('preserves the structured retryable 503 from resolver preflight failures', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: false,
+        error: 'AI configuration could not be loaded. Try again.',
+        status: 503,
+      });
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
     it('threads the resolved config into SDK session creation', async () => {
       const resolved = {
         source: 'partner' as const,

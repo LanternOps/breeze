@@ -40,7 +40,7 @@ import {
 } from './actionIntents/secretBearingTools';
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
-import { resolveLlmConfig, type UsableLlmConfig } from './llm/llmConfigResolver';
+import { resolveLlmConfigForOrg, type UsableLlmConfig } from './llm/llmConfigResolver';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -350,7 +350,17 @@ export async function runPreFlightChecks(
   }
   const orgId = session.orgId;
 
-  const resolved = await resolveLlmConfig(auth.partnerId ?? null);
+  let resolved;
+  try {
+    resolved = await resolveLlmConfigForOrg(orgId);
+  } catch (error) {
+    captureException(error, undefined, { service: 'aiAgentSdk', orgId });
+    return {
+      ok: false,
+      error: 'AI configuration could not be loaded. Try again.',
+      status: 503,
+    };
+  }
   if (resolved.source === 'unavailable') {
     return { ok: false, error: 'ai_unavailable', status: 503 };
   }

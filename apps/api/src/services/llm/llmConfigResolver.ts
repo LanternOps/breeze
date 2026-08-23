@@ -1,8 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { partnerLlmConfigs } from '../../db/schema';
-import { resolveDefaultModel } from '../aiAgent';
+import { organizations, partnerLlmConfigs } from '../../db/schema';
+import { resolveDefaultModel } from '../aiModel';
 import { decryptPartnerLlmApiKey } from '../partnerLlmConfig';
 import { SecretKeyMaterialError } from '../secretCrypto';
 import { captureException, captureMessage } from '../sentry';
@@ -44,6 +44,29 @@ export class LlmUnavailableError extends Error {
     super(message);
     this.name = 'LlmUnavailableError';
   }
+}
+
+export class LlmOrgResolutionError extends Error {
+  readonly orgId: string;
+
+  constructor(orgId: string) {
+    super(`Organization ${orgId} could not be resolved for AI configuration.`);
+    this.name = 'LlmOrgResolutionError';
+    this.orgId = orgId;
+  }
+}
+
+async function readOrganizationPartnerId(orgId: string): Promise<string | null | undefined> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [organization] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+      return organization?.partnerId;
+    }),
+  );
 }
 
 async function readPartnerLlmConfig(partnerId: string) {
@@ -123,6 +146,12 @@ export async function resolveLlmConfig(partnerId: string | null): Promise<Resolv
   };
 }
 
+export async function resolveLlmConfigForOrg(orgId: string): Promise<ResolvedLlmConfig> {
+  const partnerId = await readOrganizationPartnerId(orgId);
+  if (partnerId === undefined) throw new LlmOrgResolutionError(orgId);
+  return resolveLlmConfig(partnerId ?? null);
+}
+
 export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
 
 /**
@@ -175,7 +204,13 @@ export async function getAnthropicClientForPartner(partnerId: string | null): Pr
     throw error;
   }
   return {
-    client: new Anthropic({ apiKey: resolved.apiKey }),
+    client: resolved.source === 'partner'
+      ? new Anthropic({
+          apiKey: resolved.apiKey,
+          authToken: null,
+          baseURL: 'https://api.anthropic.com',
+        })
+      : new Anthropic({ apiKey: resolved.apiKey }),
     resolved,
   };
 }

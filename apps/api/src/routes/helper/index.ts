@@ -36,6 +36,7 @@ import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnFor
 import { helperAuth, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
 import { resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
+import { captureException } from '../../services/sentry';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const HELPER_RATE_LIMIT = 30;
@@ -97,7 +98,13 @@ async function runHelperPreFlight(
     return { ok: false, error: `Session turn limit reached (${session.maxTurns})`, status: 400 };
   }
 
-  const resolved = await resolveLlmConfig(partnerId);
+  let resolved;
+  try {
+    resolved = await resolveLlmConfig(partnerId);
+  } catch (error) {
+    captureException(error, undefined, { service: 'helperRoutes', orgId: device.orgId });
+    return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
+  }
   if (resolved.source === 'unavailable') {
     return { ok: false, error: 'ai_unavailable', status: 503 };
   }
@@ -187,7 +194,13 @@ helperRoutes.post(
     const device = c.get('helperDevice');
     const auth = c.get('auth');
     const body = c.req.valid('json') ?? {};
-    const resolved = await resolveLlmConfig(auth.partnerId ?? null);
+    let resolved;
+    try {
+      resolved = await resolveLlmConfig(auth.helperDevicePartnerId ?? null);
+    } catch (error) {
+      captureException(error, c, { service: 'helperRoutes', orgId: device.orgId });
+      return c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503);
+    }
     if (resolved.source === 'unavailable') {
       return c.json({ error: 'ai_unavailable' }, 503);
     }
@@ -254,7 +267,12 @@ helperRoutes.post(
     const { content } = c.req.valid('json');
 
     // Pre-flight checks
-    const preflight = await runHelperPreFlight(sessionId, content, device, auth.partnerId ?? null);
+    const preflight = await runHelperPreFlight(
+      sessionId,
+      content,
+      device,
+      auth.helperDevicePartnerId ?? null,
+    );
     if (!preflight.ok) {
       return c.json({ error: preflight.error }, preflight.status as 400);
     }

@@ -215,9 +215,39 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
     await first.processorPromise;
   });
 
-  it('disposes and recreates the SDK query with fresh credentials when configVersion changes', async () => {
+  it('keeps a processing SDK session on config mismatch so the concurrent-message guard applies', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const first = await manager.getOrCreate(
+      'sess-config-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PARTNER_CONFIG,
+    );
+    first.state = 'processing';
+    const rotated = { ...PARTNER_CONFIG, apiKey: 'partner-key-v2', configVersion: 2 };
+
+    const second = await manager.getOrCreate(
+      'sess-config-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, rotated,
+    );
+
+    expect(second).toBe(first);
+    expect(manager.tryTransitionToProcessing(second)).toBe(false);
+    expect(first.abortController.signal.aborted).toBe(false);
+    expect(first.query.close).not.toHaveBeenCalled();
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(first.llmConfigSnapshot).toEqual({
+      source: 'partner',
+      configId: PARTNER_CONFIG.configId,
+      configVersion: 1,
+    });
+
+    gate.resolve();
+    await first.processorPromise;
+  });
+
+  it('publishes terminal events and recreates an idle SDK session with fresh credentials when configVersion changes', async () => {
     const oldGate = deferred();
     const newGate = deferred();
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const gates = [oldGate.promise, newGate.promise];
     queryMock.mockImplementation((args: { prompt: unknown; options: Record<string, unknown> }) => {
       const gate = gates[capturedQueryArgs.length]!;
@@ -234,6 +264,7 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
     const first = await manager.getOrCreate(
       'sess-config-rotated', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PARTNER_CONFIG,
     );
+    first.state = 'idle';
     const rotated = { ...PARTNER_CONFIG, apiKey: 'partner-key-v2', configVersion: 2 };
     const second = await manager.getOrCreate(
       'sess-config-rotated', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, rotated,
@@ -242,6 +273,18 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
     expect(second).not.toBe(first);
     expect(first.abortController.signal.aborted).toBe(true);
     expect(first.query.close).toHaveBeenCalledOnce();
+    expect(first.eventBus.getReplayEvents()).toEqual(expect.arrayContaining([
+      { type: 'error', message: 'AI provider configuration changed — please resend your message' },
+      { type: 'done' },
+    ]));
+    expect(infoSpy).toHaveBeenCalledWith(
+      '[StreamingSessionManager] rotating idle AI session after provider configuration change',
+      {
+        breezeSessionId: 'sess-config-rotated',
+        oldConfigVersion: 1,
+        newConfigVersion: 2,
+      },
+    );
     expect(queryMock).toHaveBeenCalledTimes(2);
     expect(capturedQueryArgs[1]!.options.env).toEqual(expect.objectContaining({
       ANTHROPIC_API_KEY: 'partner-key-v2',
@@ -258,6 +301,7 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
 
     newGate.resolve();
     await second.processorPromise;
+    infoSpy.mockRestore();
   });
 });
 

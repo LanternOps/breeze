@@ -10,24 +10,26 @@
  */
 
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
-import { organizations } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import type { ClientAiOrgPolicy } from './clientAiPolicy';
 import type { ClientHost } from './clientAiHosts';
-import { resolveLlmConfig, type ResolvedLlmConfig } from './llm/llmConfigResolver';
+import {
+  LlmOrgResolutionError,
+  resolveLlmConfigForOrg,
+  type ResolvedLlmConfig,
+} from './llm/llmConfigResolver';
 
 export async function resolveClientLlmConfig(orgId: string): Promise<ResolvedLlmConfig> {
-  const [organization] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-
-  if (!organization) throw new Error('Organization not found');
-  return resolveLlmConfig(organization.partnerId ?? null);
+  try {
+    return await resolveLlmConfigForOrg(orgId);
+  } catch (error) {
+    if (error instanceof LlmOrgResolutionError) {
+      console.error('[client-ai] failed to resolve organization LLM config', { orgId, error });
+    }
+    throw error;
+  }
 }
 
 /**

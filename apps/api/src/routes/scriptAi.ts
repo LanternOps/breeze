@@ -32,7 +32,7 @@ import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
-import { resolveLlmConfig } from '../services/llm/llmConfigResolver';
+import { resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
 
 export const scriptAiRoutes = new Hono();
 const requireScriptAiRead = requirePermission(
@@ -73,8 +73,18 @@ scriptAiRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
+    const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+    if (!orgId) return c.json({ error: 'Organization context required' }, 400);
+
+    let resolved;
     try {
-      const resolved = await resolveLlmConfig(auth.partnerId ?? null);
+      resolved = await resolveLlmConfigForOrg(orgId);
+    } catch (err) {
+      captureException(err, c);
+      return c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503);
+    }
+
+    try {
       if (resolved.source === 'unavailable') {
         return c.json({ error: 'ai_unavailable' }, 503);
       }
@@ -171,6 +181,7 @@ scriptAiRoutes.post(
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
+      if (preflight.status === 503) return c.json({ error: err }, 503);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);

@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { resolveLlmConfigMock } = vi.hoisted(() => ({ resolveLlmConfigMock: vi.fn() }));
+const { captureExceptionMock, resolveLlmConfigMock } = vi.hoisted(() => ({
+  captureExceptionMock: vi.fn(),
+  resolveLlmConfigMock: vi.fn(),
+}));
 
 vi.mock('../../db', () => ({
   db: {
@@ -98,6 +101,10 @@ vi.mock('../../services/aiAgentSdk', () => ({
 
 vi.mock('../../services/llm/llmConfigResolver', () => ({
   resolveLlmConfig: (...args: unknown[]) => resolveLlmConfigMock(...args),
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...args),
 }));
 
 // Keep the real declaration schema + name helpers (used at route-construction
@@ -223,6 +230,26 @@ describe('helper routes permission derivation', () => {
     expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
   });
 
+  it('captures resolver throws and returns a generic retryable 503 when creating a session', async () => {
+    mockHelperAuthDevice();
+    const resolverError = new Error('database driver detail');
+    resolveLlmConfigMock.mockRejectedValueOnce(resolverError);
+
+    const res = await app.request('/helper/chat/sessions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
+    expect(captureExceptionMock).toHaveBeenCalledWith(resolverError, expect.anything(), {
+      service: 'helperRoutes',
+      orgId: 'org-1',
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it('returns helper config with server-derived permissionLevel', async () => {
     mockHelperAuthDevice();
     vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('extended');
@@ -344,6 +371,37 @@ describe('helper routes permission derivation', () => {
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+  });
+
+  it('captures resolver throws and returns a generic retryable 503 on a turn', async () => {
+    mockHelperAuthDevice();
+    resolveLlmConfigMock.mockRejectedValueOnce(new Error('decrypt subsystem failed'));
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1',
+            orgId: 'org-1',
+            deviceId: 'device-1',
+            status: 'active',
+            maxTurns: 50,
+            turnCount: 0,
+            createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
+    expect(captureExceptionMock).toHaveBeenCalledOnce();
+    expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
   });
 });
 

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partnerLlmConfigs } from '../db/schema';
-import { resolveDefaultModel } from './aiAgent';
+import { resolveDefaultModel } from './aiModel';
 import { SUPPORTED_AI_MODELS } from './aiCostTracker';
 import {
   columnAad,

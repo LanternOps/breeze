@@ -27,6 +27,7 @@ const routeMocks = vi.hoisted(() => ({
   createTimeEntryMock: vi.fn(),
   deviceInSiteScopeMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
+  resolveLlmConfigForOrgMock: vi.fn(),
 }));
 
 const configRef = vi.hoisted(() => ({
@@ -44,6 +45,7 @@ vi.mock('../services/llm/llmConfigResolver', () => ({
       this.name = 'LlmUnavailableError';
     }
   },
+  resolveLlmConfigForOrg: routeMocks.resolveLlmConfigForOrgMock,
 }));
 
 vi.mock('../db', () => ({
@@ -208,7 +210,6 @@ import { getSessionMessages } from '../services/aiAgent';
 import { recordUsage } from '../services/aiCostTracker';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
 import { TicketServiceError } from '../services/ticketService';
-import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 
 const partnerAuth = authHarness.partnerAuth;
 const orgAuth = authHarness.orgAuth;
@@ -239,6 +240,15 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     authHarness.currentAuth.value = partnerAuth;
     app = new Hono();
     app.route('/ai', aiRoutes);
+
+    routeMocks.resolveLlmConfigForOrgMock.mockResolvedValue({
+      source: 'partner',
+      partnerId: 'partner-from-session-org',
+      apiKey: 'partner-key',
+      model: 'claude-sonnet-4-6',
+      configId: 'config-1',
+      configVersion: 2,
+    });
 
     vi.mocked(db.select).mockReturnValue(selectRows([{ name: 'Acme Co' }]) as any);
   });
@@ -296,9 +306,10 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
         contextSnapshot: null,
         elapsedMinutes: expect.any(Number),
         model: 'claude-test',
-        partnerId: 'partner-111',
+        partnerId: 'partner-from-session-org',
       })
     );
+    expect(routeMocks.resolveLlmConfigForOrgMock).toHaveBeenCalledWith('org1');
     expect(recordUsage).toHaveBeenCalledWith('s1', 'org1', 'claude-test', 10, 5, false);
   });
 
@@ -377,12 +388,17 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
         { role: 'assistant', content: 'working' },
       ],
     } as any);
-    vi.mocked(draftTicketFromTranscript).mockRejectedValueOnce(new LlmUnavailableError());
+    routeMocks.resolveLlmConfigForOrgMock.mockResolvedValueOnce({
+      source: 'unavailable',
+      partnerId: 'partner-from-session-org',
+      reason: 'key_error',
+    });
 
     const res = await postDraft('s1', partnerAuth);
 
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
   });
 });
 

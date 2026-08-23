@@ -558,8 +558,33 @@ export class StreamingSessionManager {
     const existing = this.sessions.get(breezeSessionId);
     if (existing && existing.state !== 'closed') {
       if (!llmConfigSnapshotsMatch(existing.llmConfigSnapshot, resolved)) {
-        this.remove(breezeSessionId);
-      } else {
+        if (existing.state === 'processing') {
+          // Rotation applies on the next turn. Reusing the live session here
+          // lets the route's existing concurrent-message guard return a 409
+          // without killing an in-flight stream mid-response.
+        } else if (existing.state === 'idle') {
+          const oldConfigVersion = existing.llmConfigSnapshot.source === 'partner'
+            ? existing.llmConfigSnapshot.configVersion
+            : null;
+          const newSnapshot = llmConfigSnapshot(resolved);
+          const newConfigVersion = newSnapshot.source === 'partner'
+            ? newSnapshot.configVersion
+            : null;
+          console.info(
+            '[StreamingSessionManager] rotating idle AI session after provider configuration change',
+            { breezeSessionId, oldConfigVersion, newConfigVersion },
+          );
+          existing.eventBus.publish({
+            type: 'error',
+            message: 'AI provider configuration changed — please resend your message',
+          });
+          existing.eventBus.publish({ type: 'done' });
+          this.remove(breezeSessionId);
+        }
+      }
+
+      const reusable = this.sessions.get(breezeSessionId);
+      if (reusable && reusable.state !== 'closed') {
         // Update per-request context. Device-bound sessions re-narrow the fresh
         // request auth to the session org every time (#3087) — `toolAuth` must
         // never revert to the raw login scope on a follow-up message. Narrow
@@ -567,14 +592,14 @@ export class StreamingSessionManager {
         // `existing.orgId` snapshot captured at session creation — this is the
         // current DB value, so it survives the device being moved to a
         // different org mid-session.
-        existing.auth = auth;
-        existing.toolAuth = existing.deviceId
+        reusable.auth = auth;
+        reusable.toolAuth = reusable.deviceId
           ? buildDeviceBoundSessionAuth(auth, dbSession.orgId)
           : auth;
-        existing.auditSnapshot = snapshot;
-        existing.allowedTools = allowedTools;
-        existing.lastActivityAt = Date.now();
-        return existing;
+        reusable.auditSnapshot = snapshot;
+        reusable.allowedTools = allowedTools;
+        reusable.lastActivityAt = Date.now();
+        return reusable;
       }
     }
 
