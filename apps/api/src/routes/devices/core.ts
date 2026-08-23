@@ -71,6 +71,8 @@ import {
   withExtensionDeviceOrgDenormalized,
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
+import { pgErrorCode } from '../../utils/pgErrors';
+
 
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
@@ -1595,7 +1597,15 @@ coreRoutes.delete(
         }
       });
     } catch (err: unknown) {
-      const pgCode = (err as { code?: string })?.code;
+      // MUST unwrap. Drizzle wraps the postgres-js PostgresError in a
+      // DrizzleQueryError whose own `.code` is undefined — the SQLSTATE lives on
+      // `.cause`. Verified against live Postgres with real two-connection lock
+      // contention: a genuine lock timeout arrives here as
+      // `{ code: undefined, cause: { code: '55P03' } }`, so the top-level read
+      // this replaced returned undefined and BOTH branches below were dead —
+      // the 55P03 one silently, and the pre-existing 23503 one too. `pgErrors`
+      // documents exactly this hazard and exists for it.
+      const pgCode = pgErrorCode(err);
       if (pgCode === '23503') {
         const detail = (err as { detail?: string })?.detail ?? '';
         const constraintTable = (err as { table_name?: string })?.table_name;

@@ -391,4 +391,38 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(res.status).toBe(200);
     expect(dissolveLinkGroupIfBelowMinimum).not.toHaveBeenCalled();
   });
+
+  /**
+   * A lock timeout must surface as the retryable 409 that reports
+   * `uninstallSent`, because the SELF_UNINSTALL is dispatched BEFORE the
+   * transaction and is irreversible — a bounded lock failure is the one path
+   * that can leave an agent uninstalling itself while its device row survives.
+   *
+   * The shape here is not invented. It is what a REAL lock timeout produces:
+   * verified against live Postgres with two connections contending on one row,
+   * the error arrives as `{ code: undefined, cause: { code: '55P03' } }`,
+   * because Drizzle wraps the postgres-js PostgresError. The route used to read
+   * the top-level `.code`, so this branch was dead and the operator got a bare
+   * 500 with no indication the uninstall had already gone out. Assert the
+   * WRAPPED shape specifically — an unwrapped `{ code: '55P03' }` fixture would
+   * pass against the broken code and prove nothing.
+   */
+  it('maps a Drizzle-wrapped 55P03 to a retryable 409 that reports uninstallSent', async () => {
+    rigDeviceLookup(DEVICE);
+    vi.mocked(db.transaction).mockImplementation(async () => {
+      throw Object.assign(new Error('Failed query: SELECT id FROM devices ... FOR UPDATE'), {
+        cause: Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
+      });
+    });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json() as { error: string; uninstallSent: boolean };
+    expect(body).toHaveProperty('uninstallSent');
+    expect(body.error).toMatch(/busy/i);
+  });
 });
