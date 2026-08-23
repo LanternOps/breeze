@@ -136,7 +136,7 @@ describe('recordActionIntentEvent', () => {
     }
   });
 
-  it('omits actorId and leaves actorType undefined when no actor is given (resolves to system downstream)', () => {
+  it('does not synthesise an actorType when the caller supplies neither actorId nor actorType', () => {
     recordActionIntentEvent({
       orgId: 'org-1',
       intentId: 'intent-1',
@@ -193,9 +193,13 @@ describe('recordActionIntentEvent', () => {
     );
   });
 
-  it('still resolves a human-driven event to user, and an actor-less one to system', () => {
-    // Pins the fallback this change must NOT disturb: passing `undefined`
-    // actorType has to leave auditEvents.ts:68 doing exactly what it did before.
+  it('passes actorId through without synthesising actorType, even when an actorId is present', () => {
+    // This layer only proves PASS-THROUGH: actorType stays whatever the
+    // caller supplied (undefined here). The actual resolution formula
+    // (`actorType ?? (actorId ? 'user' : 'system')`) lives one layer down in
+    // auditEvents.ts, which this file mocks out — it is NOT exercised here.
+    // Covered directly (with the real, unmocked formula) by
+    // auditEvents.test.ts > writeAuditEvent > actorType resolution.
     recordActionIntentEvent({
       orgId: 'org-1',
       intentId: 'intent-1',
