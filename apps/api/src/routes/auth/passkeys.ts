@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -7,13 +7,25 @@ import { userPasskeys, users } from '../../db/schema';
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import {
-  bindRefreshJtiToFamily,
-  createTokenPair,
   getRedis,
   getUserEpochs,
   mfaLimiter,
-  mintRefreshTokenFamily,
-  rateLimiter
+  rateLimiter,
+  beginAuthIssuance,
+  finishAuthIssuance,
+  cancelAuthIssuance,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  bindIssuedUserSession,
+  authBrowserTransitionsEnforced,
+  recordAuthTransitionLegacyIssuer,
+  type AuthIssuanceCapability,
+  type AuthorizedUserSession,
+  type UserSessionIdentity,
 } from '../../services';
 import {
   PasskeyChallengeError,
@@ -41,12 +53,36 @@ import {
   resolveCurrentUserTokenContext,
   resolveEnrollmentStepUp,
   setRefreshTokenCookie,
+  installAuthorizedUserSessionCookies,
+  installLegacyUserSessionCookiesDuringTransition,
   toPublicTokens,
   userRequiresSetup,
-  writeAuthAudit
+  writeAuthAudit,
+  isAuthTransitionV1Request,
+  authClientUpgradeRequiredResponse,
 } from './helpers';
+import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
+
+function authTransitionClientClass(c: Context): 'web' | 'native' {
+  return readMobileDeviceId(c) ? 'native' : 'web';
+}
+
+function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    installAuthBindingReplacement(c, error.replacement);
+    return c.json({ error: error.message, reason: 'auth_binding_rotation_required' }, 428);
+  }
+  if (
+    error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError
+  ) {
+    return c.json({ error: 'Authentication issuance unavailable' }, 409);
+  }
+  return null;
+}
 
 // WebAuthn assertion/attestation payloads are large nested objects validated
 // structurally by @simplewebauthn; at this layer we only need a string `id` to
@@ -364,7 +400,6 @@ passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsS
   if (!pendingAllowsPasskey(pending)) {
     return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
   }
-
   // Throttle challenge issuance so it can't be hammered, but on a SEPARATE
   // bucket from /verify. A legitimate retry issues one /options + one /verify;
   // sharing the bucket would let challenge issuance consume the verify
@@ -410,6 +445,10 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   }
   if (!pendingAllowsPasskey(pending)) {
     return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
+  }
+  const transitionV1 = isAuthTransitionV1Request(c);
+  if (!transitionV1 && authBrowserTransitionsEnforced()) {
+    return authClientUpgradeRequiredResponse(c);
   }
 
   // Rate limit assertion attempts, mirroring the TOTP path in mfa.ts.
@@ -458,6 +497,24 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return c.json({ error: 'Passkey is not registered for this account' }, 403);
   }
 
+  let capability: AuthIssuanceCapability | null = null;
+  if (transitionV1) {
+    try {
+      capability = await beginAuthIssuance(requestAuthBinding(c));
+      if (
+        capability.transitionId !== pending.transitionId
+        || capability.generation !== pending.browserGeneration
+      ) {
+        await cancelAuthIssuance(capability);
+        return c.json({ error: 'Invalid or expired MFA session' }, 409);
+      }
+    } catch (error) {
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+  }
+
   let verification;
   try {
     verification = await verifyPasskeyAuthentication({
@@ -466,6 +523,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       passkey: toStoredCredential(passkey)
     });
   } catch (err) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
     if (err instanceof PasskeyChallengeError) {
       return c.json({ error: err.message }, 401);
     }
@@ -473,37 +531,29 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   }
 
   if (!verification.verified) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
     return c.json({ error: 'Passkey verification failed' }, 401);
   }
 
   const updateFields = authenticationInfoToPasskeyUpdateFields(verification);
-  // System DB context required: passkey MFA runs before the user is
-  // authenticated, so without it this `user_passkeys` RLS UPDATE silently
-  // matches 0 rows under breeze_app (Shape 6: user_id = breeze_current_user_id()
-  // OR scope = 'system'). last_used_at never moves AND the WebAuthn signature
-  // counter is never persisted — defeating clone detection. Same root cause as
-  // the users.last_login_at update below (#2210, #1375).
-  await withSystemDbAccessContext(() =>
-    db
-      .update(userPasskeys)
-      .set({
-        counter: updateFields.counter,
-        deviceType: updateFields.deviceType,
-        backedUp: updateFields.backedUp,
-        lastUsedAt: updateFields.lastUsedAt,
-        updatedAt: new Date()
-      })
-      .where(eq(userPasskeys.id, passkey.id))
-  );
-
-  // Single-use: consume the pending token. `redis` is guarded non-null above,
-  // so this can't silently no-op the way `getRedis()?.del(...)` would.
-  await redis.del(`mfa:pending:${tempToken}`);
-
-  // #4067: passkey continuation of a link-on-first-SSO-login ceremony —
-  // finalize the SSO link + SSO-style mint instead of the password-login
-  // mint below (see the same branch in mfa.ts /mfa/verify).
   if (pending.ssoLinkTokenHash) {
+    // Preserve mainline's link-on-first-login semantics while the normal
+    // password-login path below keeps passkey effects inside its guarded
+    // issuance transaction.
+    await withSystemDbAccessContext(() =>
+      db
+        .update(userPasskeys)
+        .set({
+          counter: updateFields.counter,
+          deviceType: updateFields.deviceType,
+          backedUp: updateFields.backedUp,
+          lastUsedAt: updateFields.lastUsedAt,
+          updatedAt: new Date()
+        })
+        .where(eq(userPasskeys.id, passkey.id))
+    );
+    await redis.del(`mfa:pending:${tempToken}`);
+
     const outcome = await finalizeSsoPendingLink(c, pending.ssoLinkTokenHash, {
       breezeMfaVerified: true,
       expectedUserId: user.id,
@@ -535,33 +585,78 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     });
   }
 
-  const context = await resolveCurrentUserTokenContext(user.id);
-  const familyId = await mintRefreshTokenFamily(user.id);
-  const epochs = await getUserEpochs(user.id);
-  if (!epochs) throw new Error('user epochs unavailable at token mint');
-  const tokens = await createTokenPair({
-    sub: user.id,
+  let context;
+  try {
+    context = await resolveCurrentUserTokenContext(user.id);
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    throw error;
+  }
+  const identity: UserSessionIdentity = {
+    userId: user.id,
     email: user.email,
     roleId: context.roleId,
     orgId: context.orgId,
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: true,
-    aep: epochs.authEpoch,
-    mep: epochs.mfaEpoch,
-    mdid: readMobileDeviceId(c) ?? undefined
-  }, { refreshFam: familyId });
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+  };
 
-  // System DB context required: passkey login is unauthenticated at this point,
-  // so without it the `users` RLS UPDATE silently matches 0 rows under
-  // breeze_app and last_login_at never moves (#1375).
-  await withSystemDbAccessContext(() =>
-    db
-      .update(users)
-      .set({ lastLoginAt: new Date() })
-      .where(eq(users.id, user.id))
-  );
+  let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+  if (capability) {
+    const guardedCapability = capability;
+    try {
+      tokens = await finishAuthIssuance(guardedCapability, async (tx) => {
+        const issued = await issueUserSession(identity, { tx, capability: guardedCapability });
+        await tx
+          .update(userPasskeys)
+          .set({
+            counter: updateFields.counter,
+            deviceType: updateFields.deviceType,
+            backedUp: updateFields.backedUp,
+            lastUsedAt: updateFields.lastUsedAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(userPasskeys.id, passkey.id));
+        await tx
+          .update(users)
+          .set({ lastLoginAt: new Date() })
+          .where(eq(users.id, user.id));
+        return issued;
+      });
+    } catch (error) {
+      await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    await bindIssuedUserSession(tokens);
+  } else {
+    await withSystemDbAccessContext(() =>
+      db
+        .update(userPasskeys)
+        .set({
+          counter: updateFields.counter,
+          deviceType: updateFields.deviceType,
+          backedUp: updateFields.backedUp,
+          lastUsedAt: updateFields.lastUsedAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(userPasskeys.id, passkey.id))
+    );
+    recordAuthTransitionLegacyIssuer('passkey', authTransitionClientClass(c));
+    tokens = await issueUserSessionLegacyDuringTransition(identity);
+    await withSystemDbAccessContext(() =>
+      db
+        .update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.id, user.id))
+    );
+  }
+
+  // Single-use only after session authority commits.
+  await redis.del(`mfa:pending:${tempToken}`);
 
   auditLogin(c, {
     orgId: context.orgId ?? null,
@@ -573,7 +668,8 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     ip: getClientIP(c)
   });
 
-  setRefreshTokenCookie(c, tokens.refreshToken);
+  if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
+  else installLegacyUserSessionCookiesDuringTransition(c, tokens);
 
   return c.json({
     user: {

@@ -15,10 +15,23 @@ import {
   verifyCfAccessJwt,
 } from '../services/cfAccessJwt';
 import {
-  bindRefreshJtiToFamily,
-  createTokenPair,
   getUserEpochs,
-  mintRefreshTokenFamily,
+  beginAuthIssuance,
+  finishAuthIssuance,
+  cancelAuthIssuance,
+  assertAuthIssuanceCapability,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  bindIssuedUserSession,
+  authBrowserTransitionsEnforced,
+  recordAuthTransitionLegacyIssuer,
+  type AuthIssuanceCapability,
+  type AuthorizedUserSession,
+  type UserSessionIdentity,
 } from '../services';
 import { getRedis } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
@@ -30,16 +43,48 @@ import {
   getClientIP,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
-  setRefreshTokenCookie,
+  installAuthorizedUserSessionCookies,
+  installLegacyUserSessionCookiesDuringTransition,
   toPublicTokens,
   userRequiresSetup,
   userHasUsablePasskey,
+  isAuthTransitionV1Request,
+  authClientUpgradeRequiredResponse,
 } from '../routes/auth/helpers';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
+import { installAuthBindingReplacement, requestAuthBinding } from '../routes/auth/binding';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 const CF_ACCESS_JWT_HEADER = 'cf-access-jwt-assertion';
+
+function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    installAuthBindingReplacement(c, error.replacement);
+    return c.json({ error: error.message, reason: 'auth_binding_rotation_required' }, 428);
+  }
+  if (
+    error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError
+  ) {
+    return c.json({ error: 'Authentication issuance unavailable' }, 409);
+  }
+  return null;
+}
+
+async function beginCfIssuance(c: Context): Promise<AuthIssuanceCapability | Response | null> {
+  if (!isAuthTransitionV1Request(c)) {
+    return authBrowserTransitionsEnforced() ? authClientUpgradeRequiredResponse(c) : null;
+  }
+  try {
+    return await beginAuthIssuance(requestAuthBinding(c));
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+}
 
 /**
  * Hono middleware that short-circuits `POST /auth/login` when a valid
@@ -171,6 +216,26 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     const pendingPolicy = await getEffectiveMfaPolicy({
       scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
     });
+    const admission = await beginCfIssuance(c);
+    if (admission instanceof Response) return admission;
+    const capability = admission;
+    let pendingTransition = { transitionId: 'legacy', browserGeneration: 0 };
+    if (capability) {
+      try {
+        pendingTransition = await finishAuthIssuance(capability, async (tx) => {
+          await assertAuthIssuanceCapability(tx, capability);
+          return {
+            transitionId: capability.transitionId,
+            browserGeneration: capability.generation,
+          };
+        });
+      } catch (error) {
+        await cancelAuthIssuance(capability).catch(() => undefined);
+        const response = authIssuanceAdmissionError(c, error);
+        if (!response) throw error;
+        return response;
+      }
+    }
     const PENDING_TTL_SECONDS = 300;
     await redis.setex(
       `mfa:pending:${tempToken}`,
@@ -183,6 +248,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
         mfaEpoch: pendingEpochs.mfaEpoch,
         statusExpectation: user.status,
         allowedMethods: pendingPolicy.allowedMethods,
+        ...pendingTransition,
         expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
       })
     );
@@ -230,38 +296,47 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     (user.mfaEnabled && trustsMfa) ||
     (!user.mfaEnabled && !policy.required);
 
+  const admission = await beginCfIssuance(c);
+  if (admission instanceof Response) return admission;
+  const capability = admission;
+
   // Mint a fresh refresh-token family for this login so the rotation chain
   // participates in OAuth 2.1 reuse-detection — same invariant as every
   // other authenticated mint path (see services/refreshTokenFamily.ts and
   // the /login handler this middleware short-circuits).
-  const familyId = await mintRefreshTokenFamily(user.id);
-  const epochs = await getUserEpochs(user.id);
-  if (!epochs) throw new Error('user epochs unavailable at token mint');
-
-  const tokens = await createTokenPair(
-    {
-      sub: user.id,
+  const identity: UserSessionIdentity = {
+      userId: user.id,
       email: user.email,
       roleId: context.roleId,
       orgId: context.orgId,
       partnerId: context.partnerId,
       scope: context.scope,
       mfa: mfaSatisfied,
-      aep: epochs.authEpoch,
-      mep: epochs.mfaEpoch,
-      mdid: readMobileDeviceId(c) ?? undefined,
-    },
-    { refreshFam: familyId }
-  );
+      mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+  };
 
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
-
-  // System DB context required: no request auth context is established on this
-  // pre-auth path, so a bare UPDATE silently matches 0 rows under breeze_app RLS
-  // and last_login_at never moves (#1375).
-  await withSystemDbAccessContext(() =>
-    db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
-  );
+  let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+  if (capability) {
+    try {
+      tokens = await finishAuthIssuance(capability, async (tx) => {
+        const issued = await issueUserSession(identity, { tx, capability });
+        await tx.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+        return issued;
+      });
+    } catch (error) {
+      await cancelAuthIssuance(capability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    await bindIssuedUserSession(tokens);
+  } else {
+    recordAuthTransitionLegacyIssuer('cf_access', readMobileDeviceId(c) ? 'native' : 'web');
+    tokens = await issueUserSessionLegacyDuringTransition(identity);
+    await withSystemDbAccessContext(() =>
+      db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
+    );
+  }
 
   createAuditLogAsync({
     orgId: context.orgId ?? undefined,
@@ -283,7 +358,8 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     result: 'success',
   });
 
-  setRefreshTokenCookie(c, tokens.refreshToken);
+  if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
+  else installLegacyUserSessionCookiesDuringTransition(c, tokens);
 
   return c.json({
     user: {

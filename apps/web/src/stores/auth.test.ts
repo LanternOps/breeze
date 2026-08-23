@@ -9,6 +9,7 @@ import {
   apiRegisterPartner,
   apiResetPassword,
   apiVerifyMFA,
+  apiVerifyPasskeyMFA,
   AuthSessionExpiredError,
   AuthThrottledError,
   fetchAndApplyPreferences,
@@ -20,6 +21,11 @@ import {
   useAuthStore,
   waitForPendingRefresh
 } from './auth';
+
+vi.mock('@simplewebauthn/browser', () => ({
+  startAuthentication: vi.fn(async () => ({ id: 'credential-1', response: {} })),
+  startRegistration: vi.fn(async () => ({ id: 'credential-1', response: {} })),
+}));
 
 // fetchAndApplyPreferences (auth.ts) is the only call site for these two exports
 // (verified via grep on auth.ts) — mocking the whole appearance module is safe
@@ -946,6 +952,61 @@ describe('auth API helpers', () => {
     expect(result).toEqual({ success: true, user: { ...baseUser, requiresSetup: false }, tokens, requiresSetup: false });
   });
 
+  it.each([
+    {
+      name: 'password login',
+      invoke: () => apiLogin('user@example.com', 'password'),
+      responses: [
+        makeResponse({ reason: 'auth_binding_rotation_required' }, false, 428),
+        makeResponse({ user: baseUser, tokens: baseTokens }),
+      ],
+      issuerPath: '/api/v1/auth/login',
+    },
+    {
+      name: 'MFA verification',
+      invoke: () => apiVerifyMFA('123456', 'temp-1', 'totp'),
+      responses: [
+        makeResponse({ reason: 'auth_binding_rotation_required' }, false, 428),
+        makeResponse({ user: baseUser, tokens: baseTokens }),
+      ],
+      issuerPath: '/api/v1/auth/mfa/verify',
+    },
+  ])('retries $name exactly once on 428 and advertises transition-v1', async ({ invoke, responses, issuerPath }) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responses[0])
+      .mockResolvedValueOnce(responses[1]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await invoke();
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchMock.mock.calls as Array<[string, RequestInit]>) {
+      expect(url).toBe(issuerPath);
+      expect(new Headers(init.headers).get('x-breeze-auth-transition')).toBe('v1');
+    }
+  });
+
+  it('retries only passkey verification on 428, not challenge options', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'challenge-1' } }))
+      .mockResolvedValueOnce(makeResponse({ reason: 'auth_binding_rotation_required' }, false, 428))
+      .mockResolvedValueOnce(makeResponse({ user: baseUser, tokens: baseTokens }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await apiVerifyPasskeyMFA('temp-1');
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/auth/mfa/passkey/options');
+    const verifyCalls = fetchMock.mock.calls.slice(1) as Array<[string, RequestInit]>;
+    expect(verifyCalls).toHaveLength(2);
+    for (const [url, init] of verifyCalls) {
+      expect(url).toContain('/auth/mfa/passkey/verify');
+      expect(new Headers(init.headers).get('x-breeze-auth-transition')).toBe('v1');
+    }
+  });
+
   it('apiLogout clears state even when logout network call fails', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
@@ -1054,6 +1115,22 @@ describe('refresh rotation-race recovery (#1107)', () => {
       status: 401,
       json: vi.fn().mockResolvedValue({ error: 'Refresh already in progress', reason: 'refresh_raced' })
     }) as unknown as Response;
+
+  it('retries a binding 428 exactly once inside one refresh attempt', async () => {
+    const refreshed: Tokens = { accessToken: 'access-after-binding', expiresInSeconds: 3600 };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ reason: 'auth_binding_rotation_required' }, false, 428))
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchMock.mock.calls as Array<[string, RequestInit]>) {
+      expect(new Headers(init.headers).get('x-breeze-auth-transition')).toBe('v1');
+    }
+  });
 
   it('retries refresh once when the server reports a benign race, then succeeds', async () => {
     const refreshed: Tokens = { accessToken: 'access-after-race', expiresInSeconds: 3600 };

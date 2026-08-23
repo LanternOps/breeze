@@ -14,10 +14,14 @@ import {
   buildAuthBindingCookie,
   buildClearAuthBindingCookie,
   setRefreshTokenCookie,
+  installAuthorizedUserSessionCookies,
+  isAuthTransitionV1Request,
+  authClientUpgradeRequiredResponse,
   clearRefreshTokenCookie,
   _resetAuthCookieWarnStateForTests,
   type PendingMfaRecord,
 } from './helpers';
+import type { AuthorizedUserSession } from '../../services/userSession';
 import type { RequestLike } from '../../services/auditEvents';
 import type { Context } from 'hono';
 
@@ -178,6 +182,8 @@ describe('parsePendingMfa (SR2-06 strict parse)', () => {
     passkeyAvailable: false,
     authEpoch: 3,
     mfaEpoch: 5,
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    browserGeneration: 3,
     statusExpectation: 'active',
     allowedMethods: { totp: true, sms: false, passkey: true },
     expiresAt: Date.now() + 300_000,
@@ -199,6 +205,13 @@ describe('parsePendingMfa (SR2-06 strict parse)', () => {
   it('returns null for JSON missing mfaEpoch', () => {
     const { mfaEpoch, ...rest } = fullRecord;
     expect(parsePendingMfa(JSON.stringify(rest))).toBeNull();
+  });
+
+  it('returns null for JSON missing the durable browser transition identity', () => {
+    const { transitionId, ...withoutTransition } = fullRecord;
+    const { browserGeneration, ...withoutGeneration } = fullRecord;
+    expect(parsePendingMfa(JSON.stringify(withoutTransition))).toBeNull();
+    expect(parsePendingMfa(JSON.stringify(withoutGeneration))).toBeNull();
   });
 
   it('returns null for JSON missing allowedMethods', () => {
@@ -227,6 +240,8 @@ describe('evaluatePendingMfa (SR2-06)', () => {
     passkeyAvailable: false,
     authEpoch: 3,
     mfaEpoch: 5,
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    browserGeneration: 3,
     statusExpectation: 'active',
     allowedMethods: { totp: true, sms: true, passkey: true },
     expiresAt: Date.now() + 300_000,
@@ -490,6 +505,19 @@ describe('auth cookie Secure flag (#1618 regression)', () => {
     expect(refresh).toContain('SameSite=Lax');
   });
 
+  it('installs refresh authority only from the branded guarded-session boundary', () => {
+    process.env.NODE_ENV = 'production';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
+    const issued = {
+      refreshToken: 'guarded.refresh.jwt',
+    } as AuthorizedUserSession;
+
+    installAuthorizedUserSessionCookies(c, issued);
+
+    expect(setCookies[0]).toContain('breeze_refresh_token=guarded.refresh.jwt');
+    expect(setCookies[1]).toContain('breeze_csrf_token=');
+  });
+
   it('production served over HTTPS still issues Secure cookies', () => {
     process.env.NODE_ENV = 'production';
     const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
@@ -561,6 +589,30 @@ describe('auth cookie Secure flag (#1618 regression)', () => {
     const cleared = buildClearAuthBindingCookie(true);
     expect(cleared).toContain('breeze_auth_binding=;');
     expect(cleared).toContain('Max-Age=0');
+  });
+});
+
+describe('auth transition-v1 client dispatch', () => {
+  it('recognizes only the explicit versioned capability header', () => {
+    const request = (value?: string) => ({
+      req: { header: (name: string) => name === 'x-breeze-auth-transition' ? value : undefined },
+    }) as Context;
+    expect(isAuthTransitionV1Request(request('v1'))).toBe(true);
+    expect(isAuthTransitionV1Request(request(' V1 '))).toBe(true);
+    expect(isAuthTransitionV1Request(request())).toBe(false);
+    expect(isAuthTransitionV1Request(request('v2'))).toBe(false);
+  });
+
+  it('returns the stable upgrade-required response for enforcement-time legacy clients', async () => {
+    const json = vi.fn((body: unknown, status: number) =>
+      new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }));
+    const response = authClientUpgradeRequiredResponse({ json } as unknown as Context);
+
+    expect(response.status).toBe(426);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Authentication client upgrade required',
+      reason: 'auth_client_upgrade_required',
+    });
   });
 });
 

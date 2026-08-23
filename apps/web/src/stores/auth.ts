@@ -359,6 +359,18 @@ type RefreshOutcome =
 
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
+async function fetchAuthIssuerWithBindingRetry(
+  input: RequestInfo | URL,
+  init: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('x-breeze-auth-transition', 'v1');
+  const capableInit = { ...init, headers };
+  const first = await fetch(input, capableInit);
+  if (first.status !== 428) return first;
+  return fetch(input, capableInit);
+}
+
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
 // discriminated result so the caller can tell three cases apart:
 //   - raced:     a benign concurrent race (server reason 'refresh_raced',
@@ -437,7 +449,7 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
 
   let refreshResponse: Response;
   try {
-    refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
+    refreshResponse = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/refresh'), {
       method: 'POST',
       headers,
       credentials: 'include',
@@ -1187,7 +1199,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/login'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1229,7 +1241,7 @@ export async function apiLogin(email: string, password: string): Promise<{
 
 export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<ApiAuthSuccess> {
   try {
-    const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1274,7 +1286,7 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
     const optionsJSON = optionsData.options ?? optionsData.optionsJSON;
     const credential = await getPasskeyCredential(optionsJSON);
 
-    const verifyResponse = await fetch(buildApiUrl('/auth/mfa/passkey/verify'), {
+    const verifyResponse = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/passkey/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',

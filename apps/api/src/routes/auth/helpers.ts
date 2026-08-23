@@ -23,6 +23,7 @@ import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../../
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../../services/auditEvents';
+import type { AuthorizedUserSession } from '../../services/userSession';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
   decryptMfaTotpSecret,
@@ -47,6 +48,18 @@ import {
 const { db } = dbModule;
 
 export const AUTH_BINDING_COOKIE_NAME = 'breeze_auth_binding';
+export const AUTH_TRANSITION_CAPABILITY_HEADER = 'x-breeze-auth-transition';
+
+export function isAuthTransitionV1Request(c: Context): boolean {
+  return c.req.header(AUTH_TRANSITION_CAPABILITY_HEADER)?.trim().toLowerCase() === 'v1';
+}
+
+export function authClientUpgradeRequiredResponse(c: Context): Response {
+  return c.json({
+    error: 'Authentication client upgrade required',
+    reason: 'auth_client_upgrade_required',
+  }, 426);
+}
 
 /**
  * Run `fn` inside the SYSTEM DB access context.
@@ -884,6 +897,18 @@ export function setRefreshTokenCookie(c: Context, refreshToken: string): void {
   c.header('Set-Cookie', buildCsrfTokenCookie(csrfToken, connectionSecure), { append: true });
 }
 
+export function installAuthorizedUserSessionCookies(c: Context, issued: AuthorizedUserSession): void {
+  setRefreshTokenCookie(c, issued.refreshToken);
+}
+
+/** Temporary companion boundary for the source-frozen enforcement-false seam. */
+export function installLegacyUserSessionCookiesDuringTransition(
+  c: Context,
+  issued: Readonly<{ refreshToken: string }>,
+): void {
+  setRefreshTokenCookie(c, issued.refreshToken);
+}
+
 export function clearRefreshTokenCookie(c: Context): void {
   // Derive from the same request so the clearing cookie's attributes match the
   // set cookie's within this transport (a `Secure` clear sent over HTTP would
@@ -1075,6 +1100,8 @@ export interface PendingMfaRecord {
   passkeyAvailable: boolean;
   authEpoch: number;
   mfaEpoch: number;
+  transitionId: string;
+  browserGeneration: number;
   statusExpectation: string;
   allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
   expiresAt: number;
@@ -1107,6 +1134,8 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
     (method !== 'totp' && method !== 'sms' && method !== 'passkey') ||
     typeof parsed.authEpoch !== 'number' ||
     typeof parsed.mfaEpoch !== 'number' ||
+    typeof parsed.transitionId !== 'string' ||
+    typeof parsed.browserGeneration !== 'number' ||
     typeof parsed.statusExpectation !== 'string' ||
     typeof parsed.expiresAt !== 'number' ||
     !am || typeof am !== 'object'
@@ -1127,6 +1156,8 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
     passkeyAvailable: parsed.passkeyAvailable === true,
     authEpoch: parsed.authEpoch,
     mfaEpoch: parsed.mfaEpoch,
+    transitionId: parsed.transitionId,
+    browserGeneration: parsed.browserGeneration,
     statusExpectation: parsed.statusExpectation,
     allowedMethods: {
       totp: am.totp !== false,

@@ -42,13 +42,48 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
-vi.mock('../../services', () => ({
-  createTokenPair: vi.fn(async () => ({
+vi.mock('../../services', () => {
+  const createTokenPair = vi.fn(async (_payload?: unknown, _options?: unknown) => ({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'refresh-jti',
     expiresInSeconds: 900,
-  })),
+  }));
+  const mintRefreshTokenFamily = vi.fn(async () => 'family-id');
+  const getUserEpochs = vi.fn(async (_userId?: string) => ({ authEpoch: 1, mfaEpoch: 1 }));
+  const bindRefreshJtiToFamily = vi.fn(async (_jti?: string, _familyId?: string) => undefined);
+  const legacyIssuer = vi.fn(async (identity: any) => {
+    const familyId = identity.legacyFamilyId ?? await mintRefreshTokenFamily();
+    const epochs = await getUserEpochs(identity.userId);
+    if (!epochs) throw new Error('Cannot issue session for missing user');
+    const tokens = await createTokenPair({
+        sub: identity.userId,
+        email: identity.email,
+        roleId: identity.roleId,
+        orgId: identity.orgId,
+        partnerId: identity.partnerId,
+        scope: identity.scope,
+        mfa: identity.mfa,
+        aep: epochs?.authEpoch,
+        mep: epochs?.mfaEpoch,
+        mdid: identity.mobileDeviceId,
+      }, { refreshFam: familyId });
+    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    return {
+      ...tokens,
+      familyId,
+    };
+  });
+  class AuthBindingRotationRequiredError extends Error {
+    status = 428;
+    constructor(readonly replacement: unknown) { super('rotation required'); }
+  }
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  class RefreshTokenCurrentnessError extends Error {}
+  return {
+  createTokenPair,
   verifyToken: vi.fn(async () => null),
   verifyPassword: vi.fn(async () => true),
   hashPassword: vi.fn(async () => 'dummy-hash'),
@@ -71,15 +106,38 @@ vi.mock('../../services', () => ({
   isFamilyRevoked: vi.fn(async () => false),
   touchFamilyLastUsed: vi.fn(async () => undefined),
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
-  mintRefreshTokenFamily: vi.fn(async () => 'family-id'),
-  bindRefreshJtiToFamily: vi.fn(async () => undefined),
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily,
   recordAccountFailure: vi.fn(async () => ({ count: 1, newlyLocked: false })),
   clearAccountFailures: vi.fn(async () => undefined),
   isAccountLocked: vi.fn(async () => false),
   getAccountLockoutWindowSeconds: vi.fn(() => 900),
-  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
+  getUserEpochs,
   getRefreshFamily: vi.fn(async () => ({ revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 86_400_000) })),
-}));
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  assertAuthIssuanceCapability: vi.fn(async () => undefined),
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  RefreshTokenCurrentnessError,
+  issueUserSession: vi.fn(async () => ({
+    accessToken: 'guarded-access-token',
+    refreshToken: 'guarded-refresh-token',
+    refreshJti: 'guarded-refresh-jti',
+    expiresInSeconds: 900,
+    familyId: 'guarded-family-id',
+    transitionId: 'transition-1',
+    generation: 1,
+  })),
+  issueUserSessionLegacyDuringTransition: legacyIssuer,
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
+  recordAuthTransitionLegacyIssuer: vi.fn(),
+  };
+});
 
 vi.mock('../../services/email', () => ({
   getEmailService: vi.fn(() => null),
@@ -236,6 +294,7 @@ import {
   isRefreshTokenJtiRevoked,
   revokeFamily,
   revokeRefreshTokenJti,
+  markRefreshTokenJtiRotated,
   revokeAllUserTokens,
   bindRefreshJtiToFamily,
   isTokenIssuedBeforePasswordChange,
@@ -248,6 +307,15 @@ import {
   rateLimiter,
   getRefreshRateLimit,
   getRefreshRateWindowSeconds,
+  beginAuthIssuance,
+  finishAuthIssuance,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  bindIssuedUserSession,
+  recordAuthTransitionLegacyIssuer,
+  AuthBindingRotationRequiredError,
+  AuthIssuanceCapabilityError,
+  RefreshTokenCurrentnessError,
 } from '../../services';
 import { revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { authMiddleware } from '../../middleware/auth';
@@ -334,6 +402,66 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: 'Invalid email or password' });
     expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('uses guarded issuance for a transition-v1 password client', async () => {
+    const tx = { update: vi.fn(() => updateChain()) };
+    vi.mocked(finishAuthIssuance).mockImplementationOnce(async (_capability, callback) => callback(tx as any));
+
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      { 'x-breeze-auth-transition': 'v1' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(beginAuthIssuance).toHaveBeenCalledTimes(1);
+    expect(issueUserSession).toHaveBeenCalledTimes(1);
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
+    expect(res.headers.get('set-cookie')).toContain('breeze_refresh_token=');
+  });
+
+  it('returns 428 with a replacement binding before guarded issuance', async () => {
+    vi.mocked(beginAuthIssuance).mockRejectedValueOnce(new AuthBindingRotationRequiredError({
+      kind: 'browser',
+      value: 'a'.repeat(64),
+    }, 'invalid'));
+
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      { 'x-breeze-auth-transition': 'v1' },
+    );
+
+    expect(res.status).toBe(428);
+    expect(res.headers.get('set-cookie')).toContain('breeze_auth_binding=');
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+  });
+
+  it('rejects logout-pending after admission without irreversible login effects', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      { 'x-breeze-auth-transition': 'v1' },
+    );
+
+    expect(res.status).toBe(409);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('returns 426 without invoking the legacy seam once enforcement is enabled', async () => {
+    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'true';
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(426);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'auth_client_upgrade_required' });
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+    delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
   });
 
   // The web auth store is seeded from THIS payload on password login; the
@@ -751,6 +879,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     }]) as any);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
     vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
       roleId: 'role-1',
       partnerId: 'partner-1',
@@ -826,6 +955,7 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
     }]) as any);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 1 });
     vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
       roleId: 'role-1',
       partnerId: 'partner-1',
@@ -855,6 +985,55 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
       expect.objectContaining({ aep: 3, mep: 1 }),
       { refreshFam: 'family-42' }
     );
+  });
+
+  it('does not count a legacy issuer when the Redis rotation claim loses', async () => {
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValueOnce(false);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
+    expect(recordAuthTransitionLegacyIssuer).not.toHaveBeenCalled();
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+  });
+
+  it('returns refresh_raced without clearing a winning sibling cookie when durable CAS loses', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new RefreshTokenCurrentnessError());
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).not.toHaveBeenCalled();
+  });
+
+  it('does not rotate Redis state or install a cookie when logout wins refresh finalization', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(409);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(markRefreshTokenJtiRotated).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).not.toHaveBeenCalled();
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 
   it('rejects with 401 and clears the cookie when the refresh aep no longer matches the live user row (global sign-out)', async () => {

@@ -4,7 +4,6 @@ import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users } from '../../db/schema';
 import {
-  createTokenPair,
   verifyToken,
   verifyPassword,
   hashPassword,
@@ -22,14 +21,29 @@ import {
   isFamilyRevoked,
   touchFamilyLastUsed,
   isTokenIssuedBeforePasswordChange,
-  mintRefreshTokenFamily,
-  bindRefreshJtiToFamily,
   recordAccountFailure,
   clearAccountFailures,
   isAccountLocked,
   getAccountLockoutWindowSeconds,
   getUserEpochs,
-  getRefreshFamily
+  getRefreshFamily,
+  beginAuthIssuance,
+  finishAuthIssuance,
+  cancelAuthIssuance,
+  assertAuthIssuanceCapability,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  RefreshTokenCurrentnessError,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  bindIssuedUserSession,
+  authBrowserTransitionsEnforced,
+  recordAuthTransitionLegacyIssuer,
+  type AuthIssuanceCapability,
+  type AuthorizedUserSession,
+  type UserSessionIdentity,
 } from '../../services';
 import { advanceUserEpochs, revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { getEmailService } from '../../services/email';
@@ -44,7 +58,8 @@ import { ENABLE_2FA, loginSchema } from './schemas';
 import {
   getClientIP,
   getClientRateLimitKey,
-  setRefreshTokenCookie,
+  installAuthorizedUserSessionCookies,
+  installLegacyUserSessionCookiesDuringTransition,
   clearRefreshTokenCookie,
   resolveRefreshToken,
   validateCookieCsrfRequest,
@@ -59,8 +74,11 @@ import {
   userRequiresSetup,
   userHasUsablePasskey,
   authResponseFloorPromise,
-  mintLoginRegisterGrant
+  mintLoginRegisterGrant,
+  isAuthTransitionV1Request,
+  authClientUpgradeRequiredResponse,
 } from './helpers';
+import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
@@ -105,6 +123,28 @@ function getDummyPasswordHash(): Promise<string> {
 // SR2-22 shares this exact equalizer (now `authResponseFloorPromise` in
 // ./helpers) with /forgot-password rather than defining a second one.
 const loginResponseFloorPromise = authResponseFloorPromise;
+
+function authTransitionClientClass(c: Context): 'web' | 'native' {
+  return readMobileDeviceId(c) ? 'native' : 'web';
+}
+
+function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    installAuthBindingReplacement(c, error.replacement);
+    return c.json({
+      error: error.message,
+      reason: 'auth_binding_rotation_required',
+    }, 428);
+  }
+  if (
+    error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError
+  ) {
+    return c.json({ error: 'Authentication issuance unavailable' }, 409);
+  }
+  return null;
+}
 
 // Task 10 helper: bump the per-account failure counter, and if THIS
 // attempt is the one that crossed the lockout threshold, fire a security
@@ -207,6 +247,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // branch awaits it too so attackers can't observationally distinguish
   // "Redis is down right now" from any other denial outcome.
   const floorPromise = loginResponseFloorPromise();
+  const transitionV1 = isAuthTransitionV1Request(c);
+  if (!transitionV1 && authBrowserTransitionsEnforced()) {
+    await floorPromise;
+    return authClientUpgradeRequiredResponse(c);
+  }
 
   // Rate limit by IP + email combination - fail closed for security
   // In E2E mode, skip rate limiting entirely
@@ -445,6 +490,18 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     return c.json(IP_NOT_ALLOWED_BODY, 403);
   }
 
+  let capability: AuthIssuanceCapability | null = null;
+  if (transitionV1) {
+    try {
+      capability = await beginAuthIssuance(requestAuthBinding(c));
+    } catch (error) {
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      await floorPromise;
+      return response;
+    }
+  }
+
   // Check if MFA is required. This happens after the SSO-only check so an
   // org-enforced SSO user cannot obtain an MFA temp token through password auth.
   if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
@@ -475,6 +532,25 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     const pendingPolicy = await getEffectiveMfaPolicy({
       scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
     });
+    let pendingTransition = { transitionId: 'legacy', browserGeneration: 0 };
+    if (capability) {
+      const guardedCapability = capability;
+      try {
+        pendingTransition = await finishAuthIssuance(guardedCapability, async (tx) => {
+          await assertAuthIssuanceCapability(tx, guardedCapability);
+          return {
+            transitionId: guardedCapability.transitionId,
+            browserGeneration: guardedCapability.generation,
+          };
+        });
+      } catch (error) {
+        await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+        const response = authIssuanceAdmissionError(c, error);
+        if (!response) throw error;
+        await floorPromise;
+        return response;
+      }
+    }
     const PENDING_TTL_SECONDS = 300;
     const pendingRecord = {
       userId: user.id,
@@ -488,6 +564,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       mfaEpoch: pendingEpochs.mfaEpoch,
       statusExpectation: user.status,
       allowedMethods: pendingPolicy.allowedMethods,
+      ...pendingTransition,
       expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
     };
     await getRedis()!.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
@@ -546,54 +623,65 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // The helper is shared by every authenticated token-mint path (login,
   // mfa-verify, register-partner, accept-invite, sso) — one source of
   // truth so no future path can quietly opt out of reuse-detection.
-  const familyId = await mintRefreshTokenFamily(user.id);
-
-  // Epochs are the DB-authoritative source for aep/mep — never trust caller
-  // input. A null read means the user row vanished between the earlier
-  // lookup and here (deleted mid-request); fail closed with the same
-  // generic 401 every other login failure returns rather than leak which
-  // stage failed.
-  const epochs = await getUserEpochs(user.id);
-  if (!epochs) {
-    await floorPromise;
-    return c.json(genericAuthError(), 401);
-  }
-
-  const tokens = await createTokenPair({
-    sub: user.id,
+  const identity: UserSessionIdentity = {
+    userId: user.id,
     email: user.email,
     roleId,
     orgId,
     partnerId,
     scope,
     mfa: mfaSatisfied,
-    aep: epochs.authEpoch,
-    mep: epochs.mfaEpoch,
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
-    mdid: readMobileDeviceId(c) ?? undefined
-  }, { refreshFam: familyId });
+    mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+  };
 
-  // Record the jti → family mapping in Redis for hot-path /refresh lookup.
-  // Best-effort: the family id is also encoded in the JWT, so a Redis miss
-  // still works via the verified claim.
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
-
-  // Update last login. MUST run inside a system DB context: /login is an
-  // unauthenticated route, so no breeze.user_id/partner/org GUC is set and the
-  // `users` RLS UPDATE policy would match 0 rows silently under breeze_app —
-  // the bug that froze last_login_at platform-wide (#1375). System scope
-  // satisfies RLS the same way the pre-auth user lookup above does.
-  await withSystemDbAccessContext(() =>
-    dbWriteExpectingRows('users.last_login_at', () =>
-      db
+  let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+  if (capability) {
+    const guardedCapability = capability;
+    try {
+      tokens = await finishAuthIssuance(guardedCapability, async (tx) => {
+        const issued = await issueUserSession(identity, { tx, capability: guardedCapability });
+        await dbWriteExpectingRows('users.last_login_at', () =>
+          tx
+            .update(users)
+            .set({ lastLoginAt: new Date() })
+            .where(eq(users.id, user.id))
+            .returning({ id: users.id })
+        );
+        return issued;
+      });
+    } catch (error) {
+      await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      await floorPromise;
+      return response;
+    }
+    await bindIssuedUserSession(tokens);
+  } else {
+    recordAuthTransitionLegacyIssuer('password', authTransitionClientClass(c));
+    try {
+      tokens = await issueUserSessionLegacyDuringTransition(identity);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Cannot issue session for missing user') {
+        await floorPromise;
+        return c.json(genericAuthError(), 401);
+      }
+      throw error;
+    }
+    await withSystemDbAccessContext(() =>
+      dbWriteExpectingRows('users.last_login_at', () =>
+        db
         .update(users)
         .set({ lastLoginAt: new Date() })
         .where(eq(users.id, user.id))
         .returning({ id: users.id })
-    )
-  );
+      )
+    );
+  }
+  const familyId = tokens.familyId;
 
   // Task 10: clear the per-account failure counter on successful login so
   // a real user with one fat-finger doesn't slowly approach a lockout over
@@ -608,7 +696,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 
   auditLogin(c, { orgId: orgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: false, scope, ip });
 
-  setRefreshTokenCookie(c, tokens.refreshToken);
+  if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
+  else installLegacyUserSessionCookiesDuringTransition(c, tokens);
 
   const requiresSetup = userRequiresSetup(user);
 
@@ -713,6 +802,10 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
 
 // Refresh token
 loginRoutes.post('/refresh', async (c) => {
+  const transitionV1 = isAuthTransitionV1Request(c);
+  if (!transitionV1 && authBrowserTransitionsEnforced()) {
+    return authClientUpgradeRequiredResponse(c);
+  }
   const refreshToken = resolveRefreshToken(c);
 
   if (!refreshToken) {
@@ -914,62 +1007,91 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  // Task 7: revoke the OLD jti BEFORE minting the new token, not after. This
-  // closes a TOCTOU window — a concurrent /refresh racing on the same cookie
-  // would otherwise both see "jti not revoked" and both mint new pairs.
-  // Revocation failing OR the claim being lost to a concurrent /refresh means
-  // we must NOT issue a new cookie. `revokeRefreshTokenJti` returns false when
-  // the jti was already claimed (NX failed) — that proves another /refresh
-  // raced us, so the legitimate path is to refuse and let the loser retry.
-  // Drop the rotation-grace marker BEFORE revoking the old jti so it is
-  // already present whenever the revoked state becomes visible to a concurrent
-  // racer (see the reuse-detection branch above, issue #1107).
-  await markRefreshTokenJtiRotated(payload.jti);
-
-  let claimedRevocation: boolean;
-  try {
-    claimedRevocation = await revokeRefreshTokenJti(payload.jti);
-  } catch (error) {
-    console.error('[auth] Refusing to mint refresh token — old jti revocation failed:', error);
-    clearRefreshTokenCookie(c);
-    return c.json({ error: 'Invalid refresh token' }, 401);
-  }
-  if (!claimedRevocation) {
-    // Another /refresh already revoked this jti — the legitimate client
-    // double-fired the same cookie (multi-tab, heartbeat, reload-mid-flight).
-    // We lost the race, so we must not mint a new pair, but we must also NOT
-    // clear the cookie: the winning sibling already set a fresh cookie this
-    // browser shares, and clearing it would log the user out (#1107). Surface
-    // a distinct reason so the client retries rather than redirecting to login.
-    return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
+  let capability: AuthIssuanceCapability | null = null;
+  if (transitionV1) {
+    try {
+      capability = await beginAuthIssuance(requestAuthBinding(c));
+    } catch (error) {
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
   }
 
-  // Create new token pair. The rotated refresh token inherits the family from
-  // the verified `fam` claim so reuse-detection follows the whole chain.
-  const tokens = await createTokenPair({
-    sub: user.id,
+  // Transition-aware refresh uses the durable family current-JTI CAS below as
+  // the authority decision. Redis rotated/revoked markers are only accelerators
+  // and are populated after that transaction commits. The frozen legacy path
+  // retains its pre-W07 Redis claim ordering until enforcement retires it.
+  const identity: UserSessionIdentity = {
+    userId: user.id,
     email: user.email,
     roleId: context.roleId,
     orgId: context.orgId,
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: ENABLE_2FA ? payload.mfa : false,
-    aep: user.authEpoch,
-    mep: user.mfaEpoch,
     // SR-001: preserve the device binding from the prior (signed) refresh
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.
-    mdid: carryForwardBinding(payload)
-  }, { refreshFam: familyId });
+    mobileDeviceId: carryForwardBinding(payload),
+    legacyFamilyId: familyId,
+  };
 
-  // Map the newly-minted jti to the same family so a future replay of THIS
-  // jti can also be detected via Redis. Best-effort; the JWT `fam` claim
-  // is the primary record.
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+  let tokens: AuthorizedUserSession | Awaited<ReturnType<typeof issueUserSessionLegacyDuringTransition>>;
+  if (capability) {
+    const guardedCapability = capability;
+    try {
+      tokens = await finishAuthIssuance(guardedCapability, (tx) =>
+        issueUserSession(identity, {
+          tx,
+          capability: guardedCapability,
+          familyId,
+          refreshRotation: {
+            presentedJti: payload.jti!,
+            authEpoch: user.authEpoch,
+            mfaEpoch: user.mfaEpoch,
+          },
+        })
+      );
+    } catch (error) {
+      await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+      if (error instanceof RefreshTokenCurrentnessError) {
+        return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
+      }
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    await bindIssuedUserSession(tokens);
+    await markRefreshTokenJtiRotated(payload.jti).catch((error) => {
+      console.error('[auth] Failed to write post-commit refresh rotation marker:', error);
+    });
+    await revokeRefreshTokenJti(payload.jti).catch((error) => {
+      console.error('[auth] Failed to write post-commit refresh revocation marker:', error);
+      return false;
+    });
+  } else {
+    await markRefreshTokenJtiRotated(payload.jti);
+    let claimedRevocation: boolean;
+    try {
+      claimedRevocation = await revokeRefreshTokenJti(payload.jti);
+    } catch (error) {
+      console.error('[auth] Refusing to mint refresh token — old jti revocation failed:', error);
+      clearRefreshTokenCookie(c);
+      return c.json({ error: 'Invalid refresh token' }, 401);
+    }
+    if (!claimedRevocation) {
+      return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
+    }
+    recordAuthTransitionLegacyIssuer('refresh', authTransitionClientClass(c));
+    tokens = await issueUserSessionLegacyDuringTransition(identity);
+  }
+
   // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
   // blocks the refresh.
   void touchFamilyLastUsed(familyId);
 
-  setRefreshTokenCookie(c, tokens.refreshToken);
+  if (capability) installAuthorizedUserSessionCookies(c, tokens as AuthorizedUserSession);
+  else installLegacyUserSessionCookiesDuringTransition(c, tokens);
   return c.json({ tokens: toPublicTokens(tokens) });
 });
