@@ -28,8 +28,10 @@ describe('actionIntentStatusEnum', () => {
 });
 
 describe('actionIntentSourceEnum', () => {
-  it('has exactly chat and mcp_api', () => {
-    expect(actionIntentSourceEnum).toEqual(['chat', 'mcp_api']);
+  it('has exactly chat, mcp_api, and ai_agent', () => {
+    // 'ai_agent' (wave 3) is the autonomous AI agent principal's source —
+    // NOT the same as 'agent', which is the Go device agent.
+    expect(actionIntentSourceEnum).toEqual(['chat', 'mcp_api', 'ai_agent']);
   });
 });
 
