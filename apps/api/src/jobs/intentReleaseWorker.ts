@@ -7,6 +7,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
+import { createNotification } from '../services/userNotifications';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
@@ -616,18 +617,99 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
 }
 
 /**
+ * Tell the requester how their intent ended.
+ *
+ * The point of doing this from the outbox rather than inline at decide time:
+ * the requester's chat turn is usually long over by then
+ * (aiAgentSdk.ts:1030-1040), which is exactly why they never learned the
+ * outcome before wave 2.
+ *
+ * Reads the intent fresh instead of trusting the job payload. Outbox rows are
+ * delivered at-least-once and can be processed well after the fact, so the
+ * status on the row is the truth and the event is only a nudge to go look.
+ */
+async function notifyRequesterOfOutcome(
+  intentId: string,
+  eventType: 'intent_approved' | 'intent_rejected' | 'intent_expired',
+): Promise<void> {
+  const [intent] = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        id: actionIntents.id,
+        orgId: actionIntents.orgId,
+        requestedByUserId: actionIntents.requestedByUserId,
+        targetSummary: actionIntents.targetSummary,
+        status: actionIntents.status,
+      })
+      .from(actionIntents)
+      .where(eq(actionIntents.id, intentId))
+      .limit(1));
+
+  if (!intent?.requestedByUserId || !intent.orgId) return;
+
+  // Copy is about AUTHORIZATION, never about the action succeeding. Approval
+  // releases execution; it does not complete it, and the tool may still fail.
+  const copy = {
+    intent_approved: {
+      title: 'Approval granted',
+      message: `${intent.targetSummary} was approved and is now running.`,
+    },
+    intent_rejected: {
+      title: 'Approval denied',
+      message: `${intent.targetSummary} was denied and will not run.`,
+    },
+    intent_expired: {
+      title: 'Approval expired',
+      message: `${intent.targetSummary} expired before it was decided and will not run.`,
+    },
+  }[eventType];
+
+  await withSystemDbAccessContext(() =>
+    createNotification({
+      userId: intent.requestedByUserId!,
+      orgId: intent.orgId,
+      type: 'approval',
+      title: copy.title,
+      message: copy.message,
+      link: '/approvals',
+      metadata: { intentId: intent.id, outcome: eventType },
+      // One outcome notification per intent, whatever the redelivery count.
+      dedupeKey: `intent-outcome:${intent.id}`,
+    }));
+}
+
+/**
  * One job's worth of dispatch logic, factored out of the Worker processor so
- * it can be unit tested without spinning up a real BullMQ Worker. Only
- * `intent_approved` is a release trigger — `intent_created` (also published
- * to this same queue by intentOutboxPublisher.ts, which this worker shares
- * a queue with but not a consumer role) is acknowledged as a no-op rather
- * than thrown on, so it doesn't retry forever.
+ * it can be unit tested without spinning up a real BullMQ Worker.
+ *
+ * `intent_approved` is the release trigger AND an outcome to report.
+ * `intent_rejected` / `intent_expired` are outcome-only. `intent_created` is
+ * acknowledged as a no-op rather than thrown on, so it doesn't retry forever
+ * (intentOutboxPublisher.ts shares this queue but not this consumer role).
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
+  if (data.eventType === 'intent_rejected' || data.eventType === 'intent_expired') {
+    await notifyRequesterOfOutcome(data.intentId, data.eventType);
+    return { released: false };
+  }
+
   if (data.eventType !== 'intent_approved') {
     return { released: false };
   }
+
   await releaseApprovedIntent(data.intentId);
+
+  // AFTER the release, and deliberately not allowed to undo it. The release
+  // already committed; throwing here would retry the whole job and re-run
+  // releaseApprovedIntent, which is why the notification is swallowed and the
+  // CAS inside the release path is what makes a retry safe.
+  try {
+    await notifyRequesterOfOutcome(data.intentId, 'intent_approved');
+  } catch (err) {
+    console.error(`[IntentReleaseWorker] outcome notification failed for intent ${data.intentId}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+
   return { released: true };
 }
 

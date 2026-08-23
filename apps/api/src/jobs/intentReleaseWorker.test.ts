@@ -189,6 +189,14 @@ vi.mock('../services/toolTimeouts', async (importOriginal) => {
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
   and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
+  // Reached transitively via services/userNotifications (countUnread).
+  sql: Object.assign(() => ({}), { raw: () => ({}) }),
+}));
+
+// The outcome notification is a collaborator, stubbed so these tests stay a
+// unit test of the release/dispatch logic.
+vi.mock('../services/userNotifications', () => ({
+  createNotification: vi.fn(async () => 'notif-1'),
 }));
 
 // bullmq is a real dependency we don't want to spin up — mock Worker/Job to

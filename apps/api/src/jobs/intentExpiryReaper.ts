@@ -2,7 +2,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db } from '../db';
-import { actionIntents } from '../db/schema/actionIntents';
+import { actionIntents, intentOutbox } from '../db/schema/actionIntents';
 import type { ActionIntentSource } from '../db/schema/actionIntents';
 import { approvalRequests } from '../db/schema/approvals';
 import { getBullMQConnection } from '../services/redis';
@@ -191,6 +191,25 @@ export async function reapExpiredIntents(): Promise<number> {
       .where(and(eq(approvalRequests.status, 'pending'), inArray(approvalRequests.intentId, intentIds)));
   } catch (err) {
     console.error('[IntentExpiryReaper] Failed to expire linked approval_requests:', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+
+  // Record the outcome so the requester can be told. The reaper previously
+  // mutated intent and approval rows and wrote an audit event, but no outbox
+  // row — so an intent that timed out simply went quiet on the person who
+  // asked for it. Best-effort: a failure here must not undo the expiry, which
+  // is the part that actually keeps a stale intent from running.
+  try {
+    await db.insert(intentOutbox).values(
+      rows.map((row) => ({
+        intentId: row.id,
+        eventType: 'intent_expired' as const,
+        // Ids only, matching the approve/deny rows — no argument content.
+        payload: { intentId: row.id, orgId: row.org_id },
+      })),
+    );
+  } catch (err) {
+    console.error('[IntentExpiryReaper] Failed to write intent_expired outbox rows:', err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
