@@ -233,4 +233,40 @@ describe('fetchHomeCurrency', () => {
     await expect(quickbooksProvider.fetchHomeCurrency(conn({ realmId: null }))).rejects.toThrow(/realmId/);
     await expect(quickbooksProvider.fetchHomeCurrency(conn({ accessToken: null }))).rejects.toThrow(/access token/);
   });
+
+  it('throws the SAME sanitized error when a 200 is not JSON — the body never reaches telemetry', async () => {
+    // Intuit endpoints sit behind proxies/WAFs that can answer 200 with an HTML
+    // page. An unguarded response.json() would throw a SyntaxError whose message
+    // embeds a snippet of that body, and the OAuth callback hands the error
+    // straight to captureException — defeating the non-2xx sanitization.
+    const html = '<html><body>Blocked: realm 4620816365 customer Acme Ltd</body></html>';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(html, { status: 200, headers: { 'Content-Type': 'text/html' } }),
+    );
+
+    const err = await quickbooksProvider.fetchHomeCurrency(conn()).then(
+      () => { throw new Error('expected fetchHomeCurrency to reject on a non-JSON 200'); },
+      (e: Error & { status?: number; operation?: string; body?: string }) => e,
+    );
+
+    expect(err.status).toBe(200);
+    expect(err.operation).toBe('fetchHomeCurrency');
+    expect(err.body).toBeUndefined();
+    const serialized = JSON.stringify({ ...err, message: err.message });
+    expect(serialized).not.toContain('Acme Ltd');
+    expect(serialized).not.toContain('4620816365');
+    expect(serialized).not.toContain('<html>');
+    expect(err).not.toBeInstanceOf(SyntaxError);
+  });
+
+  it('does not leave the error-path response body unconsumed (undici holds the connection until GC)', async () => {
+    const response = new Response(JSON.stringify({ Fault: {} }), { status: 403 });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response);
+
+    await expect(quickbooksProvider.fetchHomeCurrency(conn())).rejects.toThrow();
+
+    // cancel() (or a read) disturbs the stream; an untouched body leaves this false.
+    expect(response.bodyUsed).toBe(true);
+  });
+
 });

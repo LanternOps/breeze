@@ -49,6 +49,19 @@ interface QboRawCustomer {
 }
 
 /**
+ * Builds the DELIBERATELY sanitized preferences error (multi-currency §11).
+ * This error is handed to captureException by the OAuth callback and a QBO
+ * fault body — or a proxy's HTML error page — can carry realm/company/customer
+ * detail, so only the status and the operation ever travel.
+ */
+function preferencesError(status: number, reason: string): Error & { status?: number; operation: string } {
+  const err = new Error(`QuickBooks preferences request ${reason} (status ${status})`) as Error & { status?: number; operation: string };
+  err.status = status;
+  err.operation = 'fetchHomeCurrency';
+  return err;
+}
+
+/**
  * QBO Preferences response. `HomeCurrency` is a REFERENCE object, so the code
  * lives at `.value` — and it comes from Preferences, never CompanyInfo
  * (multi-currency §11).
@@ -198,17 +211,23 @@ export class QuickbooksProvider implements AccountingProvider {
     );
 
     if (!response.ok) {
-      // DELIBERATELY sanitized, unlike listRemoteCustomers: this error is passed
-      // to captureException by the OAuth callback (multi-currency §11), and a QBO
-      // fault body can carry realm/company/customer detail. Status + operation are
-      // enough to triage; the body is never read, so it cannot leak.
-      const err = new Error(`QuickBooks preferences request failed with ${response.status}`);
-      (err as Error & { status?: number; operation?: string }).status = response.status;
-      (err as Error & { status?: number; operation?: string }).operation = 'fetchHomeCurrency';
-      throw err;
+      // Sanitized, unlike listRemoteCustomers. The body is never read — but it
+      // must still be discarded, or undici holds the connection open until GC.
+      await response.body?.cancel().catch(() => {});
+      throw preferencesError(response.status, 'failed');
     }
 
-    return mapQboHomeCurrency(await response.json() as QboRawPreferences);
+    // Guarded: a proxy/WAF can answer 200 with an HTML page, and the SyntaxError
+    // from an unguarded .json() embeds a snippet of that body in its message —
+    // which the OAuth callback would hand straight to captureException, defeating
+    // the sanitization above.
+    let parsed: QboRawPreferences;
+    try {
+      parsed = await response.json() as QboRawPreferences;
+    } catch {
+      throw preferencesError(response.status, 'returned a non-JSON body');
+    }
+    return mapQboHomeCurrency(parsed);
   }
 
   async upsertCustomer(
