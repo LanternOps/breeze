@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { resolveDefaultModel } from './aiAgent';
 
 const execFileAsync = promisify(execFile);
 
@@ -96,7 +97,7 @@ async function analyzeWithClaude(input: {
   const client = new Anthropic();
 
   const resp = await client.messages.create({
-    model: 'claude-sonnet-4-5-20250929',
+    model: resolveDefaultModel(),
     max_tokens: 512,
     system: [
       {

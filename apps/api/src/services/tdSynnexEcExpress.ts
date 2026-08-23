@@ -538,6 +538,7 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
     const enriched = await enrichDistributorListing(query, 'hardware', {
       userId: actor.userId,
       orgId: actor.accessibleOrgIds?.[0] ?? null,
+      partnerId: actor.partnerId,
     });
     if (enriched) {
       name = enriched.name;

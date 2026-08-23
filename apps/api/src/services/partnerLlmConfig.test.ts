@@ -46,7 +46,7 @@ vi.mock('@anthropic-ai/sdk', () => {
   return { default: MockAnthropic };
 });
 
-vi.mock('./aiAgent', () => ({
+vi.mock('./aiModel', () => ({
   resolveDefaultModel: () => 'claude-sonnet-4-6',
 }));
 

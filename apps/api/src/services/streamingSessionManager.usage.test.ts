@@ -73,6 +73,12 @@ const DB_SESSION = {
   systemPrompt: null,
 };
 
+const PLATFORM_CONFIG = {
+  source: 'platform' as const,
+  apiKey: 'platform-key',
+  model: 'claude-sonnet-4-6',
+};
+
 /** Partner-scoped technician: orgId is null on the auth context (the #3095 trigger). */
 const PARTNER_AUTH = {
   orgId: null,
@@ -124,7 +130,15 @@ afterEach(() => {
 
 async function runSession(sessionId: string, messages: unknown[]) {
   mockSdkQuery(messages);
-  const session = await manager.getOrCreate(sessionId, DB_SESSION, PARTNER_AUTH, undefined, 'PROMPT', undefined);
+  const session = await manager.getOrCreate(
+    sessionId,
+    DB_SESSION,
+    PARTNER_AUTH,
+    undefined,
+    'PROMPT',
+    undefined,
+    PLATFORM_CONFIG,
+  );
   await session.processorPromise;
   return session;
 }
@@ -228,7 +242,15 @@ describe('fallback accumulation from assistant messages', () => {
     const gate = new Promise<void>((r) => (releaseGate = r));
     mockSdkQuery([assistantMsg({ input_tokens: 500, output_tokens: 60 })], gate);
 
-    const session = await manager.getOrCreate('sess-abandoned-extra', DB_SESSION, PARTNER_AUTH, undefined, 'PROMPT', undefined);
+    const session = await manager.getOrCreate(
+      'sess-abandoned-extra',
+      DB_SESSION,
+      PARTNER_AUTH,
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
     const recordExtraUsage = vi.fn(() => Promise.resolve());
     session.recordExtraUsage = recordExtraUsage;
 
@@ -259,7 +281,15 @@ describe('fallback accumulation from assistant messages', () => {
       }),
     ]);
 
-    const session = await manager.getOrCreate('sess-cache-surfaces', DB_SESSION, PARTNER_AUTH, undefined, 'PROMPT', undefined);
+    const session = await manager.getOrCreate(
+      'sess-cache-surfaces',
+      DB_SESSION,
+      PARTNER_AUTH,
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
     const recordExtraUsage = vi.fn(() => Promise.resolve());
     session.recordExtraUsage = recordExtraUsage;
 

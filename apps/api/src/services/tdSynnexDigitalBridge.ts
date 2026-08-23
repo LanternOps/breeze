@@ -556,6 +556,7 @@ export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItem
     const enriched = await enrichDistributorListing(query, 'hardware', {
       userId: actor.userId,
       orgId: actor.accessibleOrgIds?.[0] ?? null,
+      partnerId: actor.partnerId,
     });
     if (enriched) {
       name = enriched.name;

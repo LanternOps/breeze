@@ -38,12 +38,13 @@ import {
   recordClientUsage,
 } from '../../services/clientAiUsage';
 import {
-  DEFAULT_CLIENT_AI_MODEL,
   buildClientAuthContext,
   buildClientSystemPrompt,
   checkClientRateLimits,
   generateClientSessionTitle,
+  resolveClientLlmConfig,
 } from '../../services/clientAiSessions';
+import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import {
   CLIENT_HOSTS,
   CLIENT_SESSION_TYPES,
@@ -167,6 +168,8 @@ async function ensureActiveClientSession(
   policy: ClientAiOrgPolicy,
 ): Promise<ActiveSession> {
   const maxBudgetUsd = await getRemainingClientBudgetUsd(policy);
+  const resolved = await resolveClientLlmConfig(sessionRow.orgId);
+  if (resolved.source === 'unavailable') throw new LlmUnavailableError();
 
   // The session's host is encoded in its stored `type` (e.g. 'excel_client').
   const host = clientHostFromType(sessionRow.type);
@@ -196,6 +199,7 @@ async function ensureActiveClientSession(
     c,
     sessionRow.systemPrompt ?? buildClientSystemPrompt(host, policy.writeMode),
     maxBudgetUsd,
+    resolved,
     clientMcpToolNamesForWriteMode(host, policy.writeMode),
     (_getAuth, _onPreToolUse, _onPostToolUse, getSession) => ({
       // The technician pre/post callbacks are deliberately unused: they reject
@@ -259,7 +263,11 @@ clientAiSessionRoutes.post('/', async (c) => {
     return c.json({ error: 'unsupported_host', host }, 400);
   }
 
-  const model = policy.allowedModels[0] ?? DEFAULT_CLIENT_AI_MODEL;
+  const resolved = await resolveClientLlmConfig(auth.orgId);
+  if (resolved.source === 'unavailable') {
+    return c.json({ error: 'ai_unavailable' }, 503);
+  }
+  const model = policy.allowedModels[0] ?? resolved.model;
   const systemPrompt = buildClientSystemPrompt(host, policy.writeMode);
 
   const [session] = await db
@@ -588,6 +596,9 @@ clientAiSessionRoutes.post(
       if (err instanceof ClientHostUnsupportedError) {
         return c.json({ error: 'unsupported_host' }, 400);
       }
+      if (err instanceof LlmUnavailableError) {
+        return c.json({ error: 'ai_unavailable' }, 503);
+      }
       throw err;
     }
 
@@ -697,6 +708,9 @@ clientAiSessionRoutes.get('/:id/events', async (c) => {
   } catch (err) {
     if (err instanceof ClientHostUnsupportedError) {
       return c.json({ error: 'unsupported_host' }, 400);
+    }
+    if (err instanceof LlmUnavailableError) {
+      return c.json({ error: 'ai_unavailable' }, 503);
     }
     throw err;
   }

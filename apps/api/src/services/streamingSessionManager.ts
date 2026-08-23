@@ -30,6 +30,7 @@ import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isRecognizedSelfHostSignal } from '../config/env';
+import type { UsableLlmConfig } from './llm/llmConfigResolver';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -99,17 +100,32 @@ const SDK_CHILD_ENV_ALLOWLIST = [
   'COMSPEC',
 ] as const;
 
-export function buildClaudeSdkChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+const SDK_CHILD_ENV_CREDENTIAL_KEYS = new Set<string>([
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+]);
+
+export function buildClaudeSdkChildEnv(
+  resolved: UsableLlmConfig,
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
   const env: Record<string, string> = {
     CI: 'true',
     CLAUDE_AGENT_SDK_CLIENT_APP: source.CLAUDE_AGENT_SDK_CLIENT_APP ?? 'breeze-api/ai-agent',
   };
 
   for (const key of SDK_CHILD_ENV_ALLOWLIST) {
+    if (resolved.source === 'partner' && SDK_CHILD_ENV_CREDENTIAL_KEYS.has(key)) continue;
     const value = source[key];
     if (typeof value === 'string' && value.length > 0) {
       env[key] = value;
     }
+  }
+
+  if (resolved.source === 'partner') {
+    env.ANTHROPIC_API_KEY = resolved.apiKey;
+    return env;
   }
 
   // ANTHROPIC_BASE_URL (#1412): forward ONLY when self-host is affirmatively
@@ -282,6 +298,29 @@ export interface AuditSnapshot {
   userAgent: string | undefined;
 }
 
+export interface LlmConfigSnapshot {
+  readonly source: UsableLlmConfig['source'];
+  readonly configId?: string;
+  readonly configVersion?: number;
+}
+
+function llmConfigSnapshot(resolved: UsableLlmConfig): LlmConfigSnapshot {
+  return resolved.source === 'partner'
+    ? {
+        source: resolved.source,
+        configId: resolved.configId,
+        configVersion: resolved.configVersion,
+      }
+    : { source: resolved.source };
+}
+
+function llmConfigSnapshotsMatch(snapshot: LlmConfigSnapshot, resolved: UsableLlmConfig): boolean {
+  const fresh = llmConfigSnapshot(resolved);
+  return snapshot.source === fresh.source
+    && snapshot.configId === fresh.configId
+    && snapshot.configVersion === fresh.configVersion;
+}
+
 export interface ActiveSession {
   readonly breezeSessionId: string;
   /**
@@ -303,6 +342,7 @@ export interface ActiveSession {
    * tokens for cost tracking when the SDK fails to report total_cost_usd.
    */
   readonly model: string;
+  readonly llmConfigSnapshot: LlmConfigSnapshot;
   sdkSessionId: string | null;
   query: Query;
   abortController: AbortController;
@@ -484,7 +524,7 @@ export class StreamingSessionManager {
     dbSession: {
       orgId: string;
       sdkSessionId: string | null;
-      model: string;
+      model?: string | null;
       maxTurns: number;
       turnCount: number;
       systemPrompt: string | null;
@@ -500,6 +540,7 @@ export class StreamingSessionManager {
     requestContext: RequestLike | undefined,
     systemPrompt: string,
     maxBudgetUsd: number | undefined,
+    resolved: UsableLlmConfig,
     allowedTools?: string[],
     mcpServerFactory?: (
       getAuth: () => AuthContext,
@@ -516,21 +557,50 @@ export class StreamingSessionManager {
 
     const existing = this.sessions.get(breezeSessionId);
     if (existing && existing.state !== 'closed') {
-      // Update per-request context. Device-bound sessions re-narrow the fresh
-      // request auth to the session org every time (#3087) — `toolAuth` must
-      // never revert to the raw login scope on a follow-up message. Narrow
-      // against the freshly-loaded `dbSession.orgId`, not the possibly-stale
-      // `existing.orgId` snapshot captured at session creation — this is the
-      // current DB value, so it survives the device being moved to a
-      // different org mid-session.
-      existing.auth = auth;
-      existing.toolAuth = existing.deviceId
-        ? buildDeviceBoundSessionAuth(auth, dbSession.orgId)
-        : auth;
-      existing.auditSnapshot = snapshot;
-      existing.allowedTools = allowedTools;
-      existing.lastActivityAt = Date.now();
-      return existing;
+      if (!llmConfigSnapshotsMatch(existing.llmConfigSnapshot, resolved)) {
+        if (existing.state === 'processing') {
+          // Rotation applies on the next turn. Reusing the live session here
+          // lets the route's existing concurrent-message guard return a 409
+          // without killing an in-flight stream mid-response.
+        } else if (existing.state === 'idle') {
+          const oldConfigVersion = existing.llmConfigSnapshot.source === 'partner'
+            ? existing.llmConfigSnapshot.configVersion
+            : null;
+          const newSnapshot = llmConfigSnapshot(resolved);
+          const newConfigVersion = newSnapshot.source === 'partner'
+            ? newSnapshot.configVersion
+            : null;
+          console.info(
+            '[StreamingSessionManager] rotating idle AI session after provider configuration change',
+            { breezeSessionId, oldConfigVersion, newConfigVersion },
+          );
+          existing.eventBus.publish({
+            type: 'error',
+            message: 'AI provider configuration changed — please resend your message',
+          });
+          existing.eventBus.publish({ type: 'done' });
+          this.remove(breezeSessionId);
+        }
+      }
+
+      const reusable = this.sessions.get(breezeSessionId);
+      if (reusable && reusable.state !== 'closed') {
+        // Update per-request context. Device-bound sessions re-narrow the fresh
+        // request auth to the session org every time (#3087) — `toolAuth` must
+        // never revert to the raw login scope on a follow-up message. Narrow
+        // against the freshly-loaded `dbSession.orgId`, not the possibly-stale
+        // `existing.orgId` snapshot captured at session creation — this is the
+        // current DB value, so it survives the device being moved to a
+        // different org mid-session.
+        reusable.auth = auth;
+        reusable.toolAuth = reusable.deviceId
+          ? buildDeviceBoundSessionAuth(auth, dbSession.orgId)
+          : auth;
+        reusable.auditSnapshot = snapshot;
+        reusable.allowedTools = allowedTools;
+        reusable.lastActivityAt = Date.now();
+        return reusable;
+      }
     }
 
     // Create new session components
@@ -568,11 +638,13 @@ export class StreamingSessionManager {
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
+    const effectiveModel = dbSession.model || resolved.model;
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
       deviceId,
-      model: dbSession.model,
+      model: effectiveModel,
+      llmConfigSnapshot: llmConfigSnapshot(resolved),
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
       abortController,
@@ -645,7 +717,7 @@ export class StreamingSessionManager {
         prompt: inputController.getInputStream(),
         options: {
           systemPrompt: effectiveSystemPrompt,
-          model: dbSession.model,
+          model: effectiveModel,
           maxTurns,
           maxBudgetUsd,
           tools: [],
@@ -653,7 +725,7 @@ export class StreamingSessionManager {
           mcpServers: { [mcpServerName]: mcpServer },
           includePartialMessages: true,
           abortController,
-          env: buildClaudeSdkChildEnv(),
+          env: buildClaudeSdkChildEnv(resolved),
           resume: dbSession.sdkSessionId ?? undefined,
           persistSession: true,
           settingSources: [],
@@ -1210,7 +1282,7 @@ export class StreamingSessionManager {
 
       // Always clean up the session from the map after the processor exits
       this.clearTurnTimeout(session);
-      if (this.sessions.has(session.breezeSessionId)) {
+      if (this.sessions.get(session.breezeSessionId) === session) {
         this.remove(session.breezeSessionId);
       }
     }

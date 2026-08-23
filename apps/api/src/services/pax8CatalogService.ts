@@ -144,6 +144,7 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
     const enriched = await enrichDistributorListing(query, 'software', {
       userId: actor.userId,
       orgId: actor.accessibleOrgIds?.[0] ?? null,
+      partnerId: actor.partnerId,
     });
     if (enriched) {
       name = enriched.name;

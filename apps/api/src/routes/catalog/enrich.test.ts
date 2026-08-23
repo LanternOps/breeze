@@ -52,7 +52,7 @@ describe('POST /catalog/enrich', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).data.draft.name).toBe('X');
     // No partner on the token → no style override (built-in house format).
-    expect(enrichCatalogItem).toHaveBeenCalledWith('APC UPS', undefined, { userId: 'u1', orgId: 'o1' }, null);
+    expect(enrichCatalogItem).toHaveBeenCalledWith('APC UPS', undefined, { userId: 'u1', orgId: 'o1', partnerId: null }, null);
   });
 
   it('passes the partner catalog_ai_style through to the service', async () => {
@@ -65,7 +65,7 @@ describe('POST /catalog/enrich', () => {
     });
     expect(res.status).toBe(200);
     expect(enrichCatalogItem).toHaveBeenCalledWith(
-      'APC UPS', undefined, { userId: 'u1', orgId: 'o1' }, 'Terse, single-paragraph descriptions.',
+      'APC UPS', undefined, { userId: 'u1', orgId: 'o1', partnerId: 'p1' }, 'Terse, single-paragraph descriptions.',
     );
   });
 
@@ -101,7 +101,7 @@ describe('POST /catalog/polish', () => {
     expect(body.data).toEqual({ name: 'Clean Name', description: 'Clean desc.', changed: true });
     expect(polishCatalogText).toHaveBeenCalledWith(
       { name: 'spl clean name disti', description: 'clean desc' },
-      { userId: 'u1', orgId: 'o1' },
+      { userId: 'u1', orgId: 'o1', partnerId: null },
       null,
     );
   });
