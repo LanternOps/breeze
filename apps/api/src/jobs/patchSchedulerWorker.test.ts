@@ -72,7 +72,13 @@ import { __testOnly } from './patchSchedulerWorker';
 import { enqueuePatchJob, filterOrphanedJobIds } from './patchJobExecutor';
 import { captureException } from '../services/sentry';
 
-const { loadDeviceSchedulingContexts, enqueueScanResults, resolveDeviceIdsForAssignment } = __testOnly;
+const {
+  loadDeviceSchedulingContexts,
+  enqueueScanResults,
+  resolveDeviceIdsForAssignment,
+  resetReconcileTracking,
+  PATCH_RECONCILE_STALL_SWEEPS,
+} = __testOnly;
 
 // Drizzle's `eq`/`and` build a real SQL AST (queryChunks tree), even though our
 // mocked schema columns are plain strings rather than real Column objects —
@@ -352,6 +358,9 @@ describe('loadDeviceSchedulingContexts (#1318 partner tz)', () => {
 describe('enqueueScanResults orphan reconcile (#1733)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The streak tracking behind the BREEZE-1A stall escalation is module-level
+    // (the scheduler is a singleton), so it must be cleared between cases.
+    resetReconcileTracking();
   });
 
   const now = new Date('2026-06-21T09:00:00Z');
@@ -374,9 +383,15 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
     expect(enqueuePatchJob).toHaveBeenCalledWith('job-orphan', undefined);
     expect(enqueuePatchJob).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ enqueued: 1, recovered: 1 });
-    // recovered > 0 → surfaced to Sentry so the #1733 race rate is observable
+    // A NEW orphan is surfaced so the #1733 race rate stays observable — but as
+    // a named, warning-level notice, not an anonymous error (BREEZE-1A).
     expect(captureException).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining('#1733 race active') }),
+      expect.objectContaining({
+        name: 'PatchOrphanRecoveredNotice',
+        message: expect.stringContaining('#1733 race active'),
+      }),
+      undefined,
+      { patch_reconcile_stage: 'recovered', patch_reconcile_repeat: '1' },
     );
   });
 
@@ -425,7 +440,11 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
     }, now);
 
     expect(result).toEqual({ enqueued: 0, recovered: 0 });
-    expect(captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { patch_reconcile_stage: 'enqueue_failed' },
+    );
   });
 
   it('recovers nothing when no scheduled rows are orphaned', async () => {
@@ -451,6 +470,102 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
 
     expect(result).toEqual({ enqueued: 1, recovered: 0 });
     expect(enqueuePatchJob).toHaveBeenCalledWith('job-1');
-    expect(captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { patch_reconcile_stage: 'sweep_failed' },
+    );
+  });
+});
+
+// BREEZE-1A: 342 error-level events over 19 days, every one of them saying the
+// backstop "recovered" something and none of them saying it was the SAME row on
+// every scheduler tick. A healthy recovery is visible for exactly one sweep
+// (processExecutePatchJob claims the row out of `scheduled`), so a streak means
+// the re-enqueue is not taking effect.
+describe('enqueueScanResults reconcile reporting (BREEZE-1A)', () => {
+  const now = new Date('2026-06-21T09:00:00Z');
+  const orphan = { id: 'job-stuck', scheduledAt: null };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetReconcileTracking();
+  });
+
+  async function sweepRecovering(ids: string[]) {
+    vi.mocked(filterOrphanedJobIds).mockResolvedValueOnce(
+      ids.map((id) => ({ id, scheduledAt: null })),
+    );
+    return enqueueScanResults({ enqueueJobIds: [], staleScheduledJobs: [] }, now);
+  }
+
+  function noticeCalls() {
+    return vi.mocked(captureException).mock.calls.filter(
+      ([err]) => (err as Error)?.name === 'PatchOrphanRecoveredNotice',
+    );
+  }
+
+  function stallCalls() {
+    return vi.mocked(captureException).mock.calls.filter(
+      ([err]) => (err as Error)?.name === 'PatchReconcileStalledError',
+    );
+  }
+
+  it('reports the same orphan once, not once per sweep, below the stall threshold', async () => {
+    for (let sweep = 0; sweep < PATCH_RECONCILE_STALL_SWEEPS - 1; sweep += 1) {
+      await sweepRecovering([orphan.id]);
+    }
+
+    expect(noticeCalls()).toHaveLength(1);
+    expect(stallCalls()).toHaveLength(0);
+  });
+
+  it('escalates to a named error exactly once when a job keeps being re-enqueued', async () => {
+    for (let sweep = 0; sweep < PATCH_RECONCILE_STALL_SWEEPS + 3; sweep += 1) {
+      await sweepRecovering([orphan.id]);
+    }
+
+    const stalls = stallCalls();
+    expect(stalls).toHaveLength(1);
+    expect((stalls[0]?.[0] as Error).message).toContain('job-stuck');
+    expect(stalls[0]?.[2]).toEqual({
+      patch_reconcile_stage: 'stalled',
+      patch_reconcile_repeat: '5-9',
+    });
+  });
+
+  it('resets a streak once the job stops being recovered, and re-reports it as new', async () => {
+    await sweepRecovering([orphan.id]);
+    await sweepRecovering([orphan.id]);
+    // Sweep that recovered nothing → the row left `scheduled`, streak is over.
+    await sweepRecovering([]);
+    await sweepRecovering([orphan.id]);
+
+    // Two separate episodes → two "new orphan" notices, no stall escalation.
+    expect(noticeCalls()).toHaveLength(2);
+    expect(stallCalls()).toHaveLength(0);
+  });
+
+  it('does not clear streaks on a sweep that failed before it could enumerate orphans', async () => {
+    for (let sweep = 0; sweep < PATCH_RECONCILE_STALL_SWEEPS - 1; sweep += 1) {
+      await sweepRecovering([orphan.id]);
+    }
+    // A sweep that throws knows nothing about which ids are still orphaned; if
+    // it cleared the streak the stall would never be reachable under a flapping
+    // Redis connection — exactly the condition that strands the row.
+    vi.mocked(filterOrphanedJobIds).mockRejectedValueOnce(new Error('queue read failed'));
+    await enqueueScanResults({ enqueueJobIds: [], staleScheduledJobs: [] }, now);
+
+    await sweepRecovering([orphan.id]);
+
+    expect(stallCalls()).toHaveLength(1);
+  });
+
+  it('counts distinct new orphans in one sweep as a single notice', async () => {
+    await sweepRecovering(['job-a', 'job-b', 'job-c']);
+
+    const notices = noticeCalls();
+    expect(notices).toHaveLength(1);
+    expect((notices[0]?.[0] as Error).message).toContain('Recovered 3');
   });
 });

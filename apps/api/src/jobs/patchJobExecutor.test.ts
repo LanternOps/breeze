@@ -98,6 +98,7 @@ import {
   selectStaleScheduledJobIds,
   filterOrphanedJobIds,
   parseJobCategoryList,
+  StaleQueueJobRemovalError,
 } from './patchJobExecutor';
 import { resolveApprovedPatchesForDevice } from '../services/patchApprovalEvaluator';
 import { queueCommandForExecution } from '../services/commandQueue';
@@ -853,6 +854,71 @@ describe('orphaned scheduled-job reconcile (#1733)', () => {
     const orphaned = await filterOrphanedJobIds([]);
     expect(orphaned).toEqual([]);
     expect(shared.getJobMock).not.toHaveBeenCalled();
+  });
+
+  // BREEZE-1A. `queue.add({ jobId })` is a silent no-op when the job hash still
+  // exists, so "this id is free" has to be true or the recovery does nothing
+  // while reporting success — one identical Sentry event per 60s scan forever.
+  it('clears a queue job stuck in the unknown state so the id is actually free', async () => {
+    // 'unknown' = the hash exists but the job is in no list. It is not reusable
+    // and it is not completed/failed, so the old code left it in place and then
+    // re-added onto the occupied id.
+    const removeMock = vi.fn().mockResolvedValue(undefined);
+    shared.getJobMock.mockResolvedValue({
+      id: 'patch-job-job-u',
+      getState: vi.fn().mockResolvedValue('unknown'),
+      remove: removeMock,
+    });
+
+    const orphaned = await filterOrphanedJobIds([{ id: 'job-u', scheduledAt: null }]);
+
+    expect(removeMock).toHaveBeenCalled();
+    expect(orphaned).toEqual([{ id: 'job-u', scheduledAt: null }]);
+  });
+
+  it('refuses to report an id as free when the stale job could not be removed', async () => {
+    const removeMock = vi.fn().mockRejectedValue(new Error('WRONGTYPE'));
+    shared.getJobMock.mockResolvedValue({
+      id: 'patch-job-job-x',
+      // Still terminal after the failed removal → the id remains occupied.
+      getState: vi.fn().mockResolvedValue('failed'),
+      remove: removeMock,
+    });
+
+    await expect(
+      filterOrphanedJobIds([{ id: 'job-x', scheduledAt: null }]),
+    ).rejects.toThrow(StaleQueueJobRemovalError);
+  });
+
+  it('does not re-add onto an occupied id when removal fails (the silent no-op path)', async () => {
+    shared.getJobMock.mockResolvedValue({
+      id: 'patch-job-job-x',
+      getState: vi.fn().mockResolvedValue('completed'),
+      remove: vi.fn().mockRejectedValue(new Error('Could not remove job')),
+    });
+
+    await expect(enqueuePatchJob('job-x')).rejects.toThrow(StaleQueueJobRemovalError);
+    // The old behaviour swallowed the removal failure and called add(), which
+    // BullMQ silently dropped because the hash was still there.
+    expect(shared.addMock).not.toHaveBeenCalled();
+  });
+
+  it('reuses a job that raced back into the queue while it was being removed', async () => {
+    // BullMQ refuses to remove a locked/active job. That outcome is correct —
+    // the run is happening — so it must be reported as reusable, not as a fault.
+    const getState = vi.fn()
+      .mockResolvedValueOnce('completed')
+      .mockResolvedValueOnce('active');
+    shared.getJobMock.mockResolvedValue({
+      id: 'patch-job-job-r',
+      getState,
+      remove: vi.fn().mockRejectedValue(new Error('job is locked')),
+    });
+
+    const orphaned = await filterOrphanedJobIds([{ id: 'job-r', scheduledAt: null }]);
+
+    expect(orphaned).toEqual([]);
+    expect(getState).toHaveBeenCalledTimes(2);
   });
 });
 

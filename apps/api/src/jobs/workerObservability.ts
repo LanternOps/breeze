@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/node';
-import type { Worker } from 'bullmq';
+import type { Job, Worker } from 'bullmq';
 import { captureException } from '../services/sentry';
 
 /**
@@ -57,7 +57,91 @@ function tagJobExecution(worker: Worker, name: string): void {
   };
 }
 
-export function attachWorkerObservability(worker: Worker, name: string): void {
+/**
+ * How a worker wants ONE of its own failure modes reported (BREEZE-1J).
+ *
+ * The default — every rejection of every attempt captured at error level — is
+ * right for a worker whose job handler only throws on genuine faults. It is
+ * wrong for a handler that also `throw`s to ask BullMQ for a retry on an
+ * EXPECTED, self-healing condition: that produces one error-level Sentry event
+ * per attempt for something nobody should be paged about, and (because the
+ * attempts are identical) the SDK's default Dedupe integration collapses the
+ * burst so the issue's occurrence count doesn't even reflect reality.
+ *
+ * Returning a classification does NOT make the failure silent — it stays
+ * console-logged on every attempt and still reaches Sentry. It only changes the
+ * severity and, for `reportOnlyWhenExhausted`, folds the identical intermediate
+ * attempts into the single report that says the job actually gave up.
+ */
+export interface WorkerFailureClassification {
+  /**
+   * Closed, hardcoded label for this failure mode — becomes the
+   * `worker_failure_reason` tag. Must never carry a tenant, device, session or
+   * job identifier: it is a discriminator, not a payload.
+   */
+  reason: string;
+  /** `warning` for an expected, self-healing condition; `error` otherwise. */
+  level: 'warning' | 'error';
+  /**
+   * Report only once the job has exhausted its configured attempts. Use for a
+   * condition where every attempt fails for the same reason, so the
+   * intermediate attempts add volume and no information.
+   */
+  reportOnlyWhenExhausted?: boolean;
+}
+
+export interface WorkerObservabilityOptions {
+  /**
+   * Classify a job failure. Return `null` (or omit the option entirely) to keep
+   * the default error-level report on every attempt.
+   */
+  classifyFailure?: (
+    job: Job | undefined,
+    err: Error,
+  ) => WorkerFailureClassification | null;
+}
+
+/**
+ * True once BullMQ will not retry this job again. `attemptsMade` is already
+ * incremented when `failed` fires, so the final attempt is the one where it has
+ * reached the configured ceiling. Unknown job shape → treat as exhausted, so an
+ * unrecognised BullMQ version reports MORE rather than swallowing the report.
+ */
+function hasExhaustedAttempts(job: Job | undefined): boolean {
+  if (!job) return true;
+  const attempts = job.opts?.attempts ?? 1;
+  const made = job.attemptsMade ?? 0;
+  if (!Number.isFinite(attempts) || !Number.isFinite(made)) return true;
+  return made >= attempts;
+}
+
+/**
+ * A classifier fault must cost the classification, never the report — same
+ * trade as the CONNECT_TIMEOUT classifier in services/sentry.
+ */
+function safeClassify(
+  classify: WorkerObservabilityOptions['classifyFailure'],
+  name: string,
+  job: Job | undefined,
+  err: Error,
+): WorkerFailureClassification | null {
+  if (!classify) return null;
+  try {
+    return classify(job, err) ?? null;
+  } catch (classifierError) {
+    console.error(
+      `[${name}] failure classifier threw; reporting at default severity:`,
+      classifierError,
+    );
+    return null;
+  }
+}
+
+export function attachWorkerObservability(
+  worker: Worker,
+  name: string,
+  options?: WorkerObservabilityOptions,
+): void {
   tagJobExecution(worker, name);
 
   worker.on('error', (e) => {
@@ -66,10 +150,27 @@ export function attachWorkerObservability(worker: Worker, name: string): void {
   });
 
   worker.on('failed', (job, err) => {
+    const classification = safeClassify(options?.classifyFailure, name, job, err);
+
+    if (classification?.reportOnlyWhenExhausted && !hasExhaustedAttempts(job)) {
+      // Not silent: the attempt is logged, and the exhausting attempt below is
+      // what reaches Sentry with the same reason label.
+      console.warn(
+        `[${name}] job ${job?.id} attempt ${job?.attemptsMade} failed `
+        + `(${classification.reason}); retrying:`,
+        err,
+      );
+      return;
+    }
+
     console.error(`[${name}] job ${job?.id} failed:`, err);
     Sentry.withScope((scope) => {
       scope.setTag('worker', name);
       scope.setTag('jobId', job?.id);
+      if (classification) {
+        scope.setLevel(classification.level);
+        scope.setTag('worker_failure_reason', classification.reason);
+      }
       scope.setContext('job', { name: job?.name });
       captureException(err);
     });

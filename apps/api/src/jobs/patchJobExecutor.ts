@@ -123,6 +123,40 @@ function getPatchJobCompletionId(patchJobId: string): string {
   return `patch-job-completion-${patchJobId}`;
 }
 
+/**
+ * A stale queue entry that could not be cleared, so re-adding its stable jobId
+ * would be a silent no-op. Named (rather than a bare Error) so it survives
+ * Sentry's scrubber — `scrubEvent` deletes the message but keeps the exception
+ * type. See resolveActiveQueueJob for why this matters.
+ */
+export class StaleQueueJobRemovalError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'StaleQueueJobRemovalError';
+  }
+}
+
+/**
+ * Return the reusable queue job for one of `candidateIds`, clearing any
+ * terminal leftover so the caller can re-add on the same stable jobId.
+ *
+ * The clearing is load-bearing, not housekeeping: `queue.add(..., { jobId })` is
+ * a SILENT NO-OP in BullMQ when a job hash with that id already exists — it
+ * returns the existing job and queues nothing. So an "absent" answer from this
+ * helper is a promise that the id is free. Two holes broke that promise:
+ *
+ *   - a `remove()` rejection was swallowed into console.error and the helper
+ *     still answered "absent", handing the caller an add that did nothing while
+ *     reporting success;
+ *   - `getState()` also answers `'unknown'` for a job hash that is in no list,
+ *     which matched neither branch and fell through to the same no-op add.
+ *
+ * Either one strands a `patch_jobs` row in `status='scheduled'` with no queue
+ * job forever: the #1733 reconcile sweep then "recovers" the same row on every
+ * 60s scan, incrementing its counter and emitting one more identical Sentry
+ * event, while nothing actually runs (BREEZE-1A). Failing loudly is the point —
+ * the caller reports a lost run as page-worthy.
+ */
 async function resolveActiveQueueJob(queue: Queue, candidateIds: string[]) {
   for (const candidateId of candidateIds) {
     const existing = await queue.getJob(candidateId);
@@ -131,10 +165,21 @@ async function resolveActiveQueueJob(queue: Queue, candidateIds: string[]) {
     if (isReusableState(state)) {
       return existing;
     }
-    if (state === 'completed' || state === 'failed') {
-      await existing.remove().catch((error) => {
-        console.error(`[PatchJobExecutor] Failed to remove stale job ${candidateId}:`, error);
-      });
+    try {
+      await existing.remove();
+    } catch (error) {
+      // A terminal job can race back into the queue between getState() and
+      // remove() (BullMQ refuses to remove a locked/active job). That outcome is
+      // correct — reuse it rather than reporting a fault.
+      const recheck = await existing.getState().catch(() => 'unknown');
+      if (isReusableState(recheck)) {
+        return existing;
+      }
+      throw new StaleQueueJobRemovalError(
+        `[PatchJobExecutor] Could not remove stale job ${candidateId} (state=${state}); `
+        + 're-enqueuing this id would be a silent no-op',
+        { cause: error },
+      );
     }
   }
 

@@ -32,7 +32,13 @@ vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
 }));
 
+import { UnrecoverableError } from 'bullmq';
 import {
+  classifyDesktopFinalizationFailure,
+  DesktopFinalizationIntentAbsentError,
+  DesktopFinalizationIntentMismatchError,
+  DesktopFinalizationIntentReleaseError,
+  DesktopFinalizationStopPendingError,
   enqueueDesktopSessionFinalization,
   processDesktopSessionFinalizationJob,
 } from './desktopSessionFinalizationWorker';
@@ -85,7 +91,7 @@ describe('desktop session finalization worker', () => {
     await expect(processDesktopSessionFinalizationJob({
       name: 'finalize-desktop-session',
       data: { version: 1, sessionId: SESSION_ID, finalizationId: FINALIZATION_ID },
-    } as any)).rejects.toThrow('stop pending');
+    } as any)).rejects.toThrow(DesktopFinalizationStopPendingError);
     expect(releaseDesktopFinalizationIntentMock).not.toHaveBeenCalled();
   });
 
@@ -104,6 +110,77 @@ describe('desktop session finalization worker', () => {
     await expect(processDesktopSessionFinalizationJob({
       name: 'finalize-desktop-session',
       data: { version: 1, sessionId: SESSION_ID, finalizationId: FINALIZATION_ID },
-    } as any)).rejects.toThrow('compare-delete failed');
+    } as any)).rejects.toThrow(DesktopFinalizationIntentReleaseError);
+  });
+});
+
+// BREEZE-1J. In production `scrubEvent` deletes the message from every event,
+// so four different conditions all arrived as `Error: [redacted]` with a single
+// app frame. The exception TYPE survives the scrubber, so each condition needs
+// its own class — and the expected, self-healing ones must not be error-level.
+describe('desktop finalization failure shapes (BREEZE-1J)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    finalizeDesktopSessionOnceMock.mockResolvedValue('finalized');
+    releaseDesktopFinalizationIntentMock.mockResolvedValue(true);
+  });
+
+  const job = {
+    name: 'finalize-desktop-session',
+    data: { version: 1, sessionId: SESSION_ID, finalizationId: FINALIZATION_ID },
+  } as any;
+
+  it('treats an already-released intent as an unrecoverable lost race, not a retryable fault', async () => {
+    // The only writer that removes the intent is a successful compare-delete, so
+    // an absent intent means another finalizer already finished this session.
+    // Retrying four more times cannot bring it back.
+    getDesktopFinalizationIntentMock.mockResolvedValue(null);
+
+    const error = await processDesktopSessionFinalizationJob(job).catch((e) => e);
+
+    expect(error).toBeInstanceOf(DesktopFinalizationIntentAbsentError);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect(finalizeDesktopSessionOnceMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a mismatched intent identity as a full-severity, retryable anomaly', async () => {
+    getDesktopFinalizationIntentMock.mockResolvedValue({
+      input: {
+        version: 1,
+        sessionId: SESSION_ID,
+        finalizationId: '33333333-3333-4333-8333-333333333333',
+      },
+      canonicalPayload: '{"exact":true}',
+      payloadSha256: 'a'.repeat(64),
+    });
+
+    const error = await processDesktopSessionFinalizationJob(job).catch((e) => e);
+
+    expect(error).toBeInstanceOf(DesktopFinalizationIntentMismatchError);
+    expect(error).not.toBeInstanceOf(UnrecoverableError);
+    // Not classified → keeps the default error-level report on every attempt.
+    expect(classifyDesktopFinalizationFailure(undefined, error)).toBeNull();
+  });
+
+  it('classifies a pending agent stop as a warning reported only once the job gives up', () => {
+    expect(
+      classifyDesktopFinalizationFailure(undefined, new DesktopFinalizationStopPendingError('x')),
+    ).toEqual({
+      reason: 'desktop_stop_pending',
+      level: 'warning',
+      reportOnlyWhenExhausted: true,
+    });
+  });
+
+  it('classifies an already-released intent as a warning, reported on its single attempt', () => {
+    expect(
+      classifyDesktopFinalizationFailure(undefined, new DesktopFinalizationIntentAbsentError('x')),
+    ).toEqual({ reason: 'desktop_intent_already_released', level: 'warning' });
+  });
+
+  it('leaves a release failure at full severity', () => {
+    expect(
+      classifyDesktopFinalizationFailure(undefined, new DesktopFinalizationIntentReleaseError('x')),
+    ).toBeNull();
   });
 });
