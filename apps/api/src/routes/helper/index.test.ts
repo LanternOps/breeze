@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { captureExceptionMock, resolveLlmConfigMock } = vi.hoisted(() => ({
+const { captureExceptionMock, resolveLlmConfigMock, checkBudgetMock } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
   resolveLlmConfigMock: vi.fn(),
+  checkBudgetMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -84,7 +85,7 @@ vi.mock('../../services/screenshotStorage', () => ({
 }));
 
 vi.mock('../../services/aiCostTracker', () => ({
-  checkBudget: vi.fn(),
+  checkBudget: (...args: unknown[]) => checkBudgetMock(...args),
   getRemainingBudgetUsd: vi.fn(),
 }));
 
@@ -335,6 +336,7 @@ describe('helper routes permission derivation', () => {
     }));
     expect(getOrCreateCall?.[8]).toBeUndefined();
     expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+    expect(checkBudgetMock).toHaveBeenCalledWith('org-1', 'partner_key');
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
   });
 

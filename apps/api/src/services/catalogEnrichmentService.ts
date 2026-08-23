@@ -187,16 +187,19 @@ function lastTextBlock(content: Array<{ type: string; text?: string }>): string 
 
 export const aiEnrichmentProvider: EnrichmentProvider = {
   async enrich(query, hint, actor, styleOverride) {
+    const { client, resolved } = await resolveEnrichmentClient(actor.partnerId);
     if (actor.orgId) {
       const rate = await checkAiRateLimit(actor.userId, actor.orgId);
       if (rate) throw new EnrichmentError(rate, 'AI_LIMIT', 429);
-      const budget = await checkBudget(actor.orgId);
+      const budget = await checkBudget(
+        actor.orgId,
+        resolved.source === 'partner' ? 'partner_key' : 'platform',
+      );
       if (budget) throw new EnrichmentError(budget, 'AI_LIMIT', 429);
     } else {
       console.warn('[catalog-enrich] no org context — skipping budget/rate checks');
     }
 
-    const { client, resolved } = await resolveEnrichmentClient(actor.partnerId);
     const model = resolved.model;
     const tools: Anthropic.Messages.ToolUnion[] = [
       { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
@@ -240,7 +243,15 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
       // pass null and let recordUsage write only the org-budget aggregates. The
       // previous 'catalog-enrich-<uuid>' label was not a valid uuid and threw
       // before any spend was recorded, bypassing budget enforcement (issue #1949).
-      recordUsage(null, actor.orgId, model, totalIn, totalOut, true)
+      recordUsage(
+        null,
+        actor.orgId,
+        model,
+        totalIn,
+        totalOut,
+        true,
+        resolved.source === 'partner' ? 'partner_key' : 'platform',
+      )
         .catch((err) => {
           console.error('[catalog-enrich] recordUsage failed:', err);
           captureException(err instanceof Error ? err : new Error(String(err)));
@@ -600,11 +611,15 @@ export async function polishCatalogText(
 ): Promise<PolishTextResponse> {
   const wantName = Boolean(input.name?.trim());
   const wantDescription = Boolean(input.description?.trim());
+  const { client, resolved } = await resolveEnrichmentClient(actor.partnerId);
 
   if (actor.orgId) {
     const rate = await checkAiRateLimit(actor.userId, actor.orgId);
     if (rate) throw new EnrichmentError(rate, 'AI_LIMIT', 429);
-    const budget = await checkBudget(actor.orgId);
+    const budget = await checkBudget(
+      actor.orgId,
+      resolved.source === 'partner' ? 'partner_key' : 'platform',
+    );
     if (budget) throw new EnrichmentError(budget, 'AI_LIMIT', 429);
   } else {
     // No org to bill (e.g. partner-level catalog). We can't enforce an org budget,
@@ -615,7 +630,6 @@ export async function polishCatalogText(
     console.warn('[catalog-polish] no org context — per-user rate limit only, spend not recorded');
   }
 
-  const { client, resolved } = await resolveEnrichmentClient(actor.partnerId);
   const model = resolved.model;
   // Wrap the untrusted fields in delimiters and tell the model to treat them as
   // data, reducing prompt-injection leverage over the system prompt.
@@ -676,7 +690,15 @@ export async function polishCatalogText(
     // transport throw on the retry turn — so spend can't escape the org budget
     // (issue #1949 class). Best-effort; never blocks or masks the outcome.
     if (actor.orgId && (totalIn || totalOut)) {
-      recordUsage(null, actor.orgId, model, totalIn, totalOut, true).catch((err) => {
+      recordUsage(
+        null,
+        actor.orgId,
+        model,
+        totalIn,
+        totalOut,
+        true,
+        resolved.source === 'partner' ? 'partner_key' : 'platform',
+      ).catch((err) => {
         console.error('[catalog-polish] recordUsage failed:', err);
         captureException(err instanceof Error ? err : new Error(String(err)));
       });

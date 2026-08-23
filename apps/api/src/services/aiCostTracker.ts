@@ -11,6 +11,9 @@ import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
+import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
+
+export type AiBillingSource = 'platform' | 'partner_key';
 
 // Cost per million tokens, expressed in cents (USD * 100).
 // Source: official Anthropic pricing — https://platform.claude.com/docs/en/about-claude/models/overview
@@ -45,7 +48,10 @@ const DEFAULT_PRICING = { inputPerMillion: 500, outputPerMillion: 2500 };
 const CACHE_READ_INPUT_MULTIPLIER = 0.1;
 const CACHE_WRITE_INPUT_MULTIPLIER = 1.25;
 
-export async function checkBillingCredits(orgId: string): Promise<string | null> {
+export async function checkBillingCredits(
+  orgId: string,
+  billingSource: AiBillingSource,
+): Promise<string | null> {
   const billingUrl = process.env.BILLING_SERVICE_URL;
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
   if (!billingUrl || !billingKey) return null;
@@ -81,7 +87,9 @@ export async function checkBillingCredits(orgId: string): Promise<string | null>
       if (['free', 'starter'].includes(data.plan)) {
         return 'AI assistant requires the Community plan.';
       }
-      return 'You are out of AI credits. Purchase more credits to continue.';
+      if (billingSource === 'platform') {
+        return 'You are out of AI credits. Purchase more credits to continue.';
+      }
     }
 
     return null;
@@ -207,8 +215,11 @@ export function calculateCostCents(
  * Check if the org is within budget limits before sending a message.
  * Returns null if allowed, or an error message if blocked.
  */
-export async function checkBudget(orgId: string): Promise<string | null> {
-  const creditError = await checkBillingCredits(orgId);
+export async function checkBudget(
+  orgId: string,
+  billingSource: AiBillingSource,
+): Promise<string | null> {
+  const creditError = await checkBillingCredits(orgId, billingSource);
   if (creditError) return creditError;
 
   // #2190 — getEffectiveAiBudget reads organizations/partners/aiBudgets; run
@@ -334,7 +345,8 @@ export async function recordUsage(
   model: string,
   inputTokens: number,
   outputTokens: number,
-  isToolExecution: boolean
+  isToolExecution: boolean,
+  billingSource: AiBillingSource,
 ): Promise<void> {
   const costCents = calculateCostCents(model, inputTokens, outputTokens);
   const now = new Date();
@@ -358,6 +370,7 @@ export async function recordUsage(
           totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
           totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
           totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
+          billingSource,
           turnCount: sql`${aiSessions.turnCount} + 1`,
           lastActivityAt: new Date(),
           updatedAt: new Date()
@@ -386,7 +399,8 @@ export async function recordUsage(
           totalCostCents: costCents,
           sessionCount: 0,
           messageCount: 1,
-          toolExecutionCount: isToolExecution ? 1 : 0
+          toolExecutionCount: isToolExecution ? 1 : 0,
+          billingSource,
         })
         .onConflictDoUpdate({
           target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
@@ -398,6 +412,7 @@ export async function recordUsage(
             toolExecutionCount: isToolExecution
               ? sql`${aiCostUsage.toolExecutionCount} + 1`
               : aiCostUsage.toolExecutionCount,
+            billingSource,
             updatedAt: new Date()
           }
         }));
@@ -446,7 +461,8 @@ export async function recordUsageFromSdkResult(
      * don't track tool calls (or turns with none) leave the counter untouched.
      */
     toolExecutionCount?: number;
-  }
+  },
+  billingSource: AiBillingSource,
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
@@ -510,6 +526,7 @@ export async function recordUsageFromSdkResult(
         totalInputTokens: sql`${aiSessions.totalInputTokens} + ${recordedInputTokens}`,
         totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
         totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
+        billingSource,
         turnCount: sql`${aiSessions.turnCount} + ${result.num_turns}`,
         lastActivityAt: now,
         updatedAt: now
@@ -534,7 +551,8 @@ export async function recordUsageFromSdkResult(
           totalCostCents: costCents,
           sessionCount: 0,
           messageCount: 1,
-          toolExecutionCount
+          toolExecutionCount,
+          billingSource,
         })
         .onConflictDoUpdate({
           target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
@@ -548,6 +566,7 @@ export async function recordUsageFromSdkResult(
             // without ever touching tool_execution_count, so it stayed 0 forever
             // even though ai_tool_executions rows were being written correctly.
             toolExecutionCount: sql`${aiCostUsage.toolExecutionCount} + ${toolExecutionCount}`,
+            billingSource,
             updatedAt: now
           }
         });
@@ -561,7 +580,9 @@ export async function recordUsageFromSdkResult(
     console.error('[AI] Cost anomaly check failed (SDK):', err);
   });
 
-  await deductBillingCredits(orgId, costCents);
+  if (billingSource === 'platform') {
+    await deductBillingCredits(orgId, costCents);
+  }
 }
 
 /**
@@ -575,6 +596,7 @@ export async function recordOpenAIUsage(
   inputTokens: number,
   outputTokens: number,
   costUsd: number,
+  billingSource: AiBillingSource,
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordOpenAIUsage — empty orgId for session=${sessionId}`);
@@ -592,6 +614,7 @@ export async function recordOpenAIUsage(
         totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
         totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
+        billingSource,
         lastActivityAt: now,
         updatedAt: now,
       })
@@ -615,6 +638,7 @@ export async function recordOpenAIUsage(
           sessionCount: 0,
           messageCount: 1,
           toolExecutionCount: 0,
+          billingSource,
         })
         .onConflictDoUpdate({
           target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
@@ -623,6 +647,7 @@ export async function recordOpenAIUsage(
             outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
             totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
             messageCount: sql`${aiCostUsage.messageCount} + 1`,
+            billingSource,
             updatedAt: now,
           },
         });
@@ -635,7 +660,9 @@ export async function recordOpenAIUsage(
     console.error('[AI] Cost anomaly check failed (OpenAI):', err);
   });
 
-  await deductBillingCredits(orgId, costCents);
+  if (billingSource === 'platform') {
+    await deductBillingCredits(orgId, costCents);
+  }
 }
 
 /**
@@ -830,6 +857,7 @@ export async function getUsageSummary(orgId: string): Promise<{
     dailyUsedCents: number;
     approvalMode: string;
   } | null;
+  billedTo: AiBillingSource;
 }> {
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -853,6 +881,8 @@ export async function getUsageSummary(orgId: string): Promise<{
     .where(eq(aiBudgets.orgId, orgId))
     .limit(1);
 
+  const billedTo = await getLlmBillingSourceForOrg(orgId);
+
   return {
     daily: {
       inputTokens: dailyUsage?.inputTokens ?? 0,
@@ -873,6 +903,7 @@ export async function getUsageSummary(orgId: string): Promise<{
       monthlyUsedCents: monthlyUsage?.totalCostCents ?? 0,
       dailyUsedCents: dailyUsage?.totalCostCents ?? 0,
       approvalMode: budget.approvalMode ?? 'per_step',
-    } : null
+    } : null,
+    billedTo,
   };
 }
