@@ -313,7 +313,8 @@ describe.runIf(RUN)('ACTIVE-contract currency restamp (#3778, Task 14)', () => {
         description: 'Legacy contract line', quantity: '1', unitPrice: '10.00',
         taxable: false, customerVisible: true, lineTotal: '10.00',
       }).returning({ id: invoiceLines.id });
-      // Issue is irrelevant — this blocker is org-wide and status-independent.
+      // The invoice stays in DRAFT: after the wave-6 reachability fix, blocker
+      // (4) is scoped to draft invoices, so this is the shape that still blocks.
       return row!.id;
     });
 
@@ -322,6 +323,92 @@ describe.runIf(RUN)('ACTIVE-contract currency restamp (#3778, Task 14)', () => {
     ))).rejects.toMatchObject({
       code: 'ORPHANED_CONTRACT_SOURCE', status: 409, details: { lineIds: [orphanLineId] },
     });
+  });
+
+  it('(4) the SAME legacy orphan on an ISSUED invoice does NOT block — the escape hatch stays reachable', async () => {
+    // ESCAPE-HATCH REACHABILITY (wave-6 review). Migration 2026-09-02-a RAISEs a
+    // warning for exactly these rows: contract-source lines whose contract_lines
+    // row was deleted before the durable column existed. They live on invoices
+    // that were issued years ago and can never be edited or deleted. When
+    // blocker (4) ignored invoice status, ONE such line 409'd EVERY active
+    // contract in the org forever — so the pre-wave-2 legacy orgs the hatch was
+    // built for were precisely the ones that could never reach it.
+    //
+    // Lines on a non-draft invoice are already BILLED: no money can be restranded
+    // by restamping the contract, because the invoice carries its own currency
+    // snapshot and is immutable. The safety property blocker (4) exists to
+    // protect — never restamp while unbilled money is attributable-in-doubt —
+    // is fully preserved by scoping it to draft.
+    const f = await seedGateOrg('EUR');
+    const { contractId, lineId } = await seedActiveContract(f, 'USD');
+    // Make the contract itself eligible; the orphan is the only thing under test.
+    await withSystemDbAccessContext(() => removeContractLine(contractId, lineId, f.actor));
+
+    // A real, ISSUED invoice — issued FIRST, then the legacy orphan is grafted
+    // on by raw SQL, which is exactly how these rows came to exist (the
+    // contract_lines row was deleted long after the invoice was issued).
+    const draftId = await withSystemDbAccessContext(async () => {
+      const inv = await createManualInvoice({ orgId: f.orgId, currencyCode: 'USD' }, invActor(f));
+      await addManualLine(inv.id, { description: 'Onboarding', quantity: 1, unitPrice: 100, taxable: false } as never, invActor(f));
+      return inv.id;
+    });
+    const issuedId = (await withSystemDbAccessContext(() => issueInvoice(draftId, invActor(f)))).id;
+
+    const orphanLineId = await withSystemDbAccessContext(async () => {
+      const [row] = await db.insert(invoiceLines).values({
+        invoiceId: issuedId, orgId: f.orgId, sourceType: 'contract',
+        sourceId: '00000000-0000-4000-8000-00000000dead', sourceContractId: null,
+        description: 'Legacy contract line', quantity: '1', unitPrice: '10.00',
+        taxable: false, customerVisible: true, lineTotal: '10.00',
+      }).returning({ id: invoiceLines.id });
+      return row!.id;
+    });
+
+    // Precondition: the row really is the org-wide orphan shape blocker (4)
+    // matches — otherwise this test would pass vacuously.
+    const [issuedStatus] = await withSystemDbAccessContext(() => db
+      .select({ status: invoices.status }).from(invoices).where(eq(invoices.id, issuedId)).limit(1));
+    expect(issuedStatus!.status).not.toBe('draft');
+    const [orphan] = await withSystemDbAccessContext(() => db
+      .select({ sourceType: invoiceLines.sourceType, sourceContractId: invoiceLines.sourceContractId })
+      .from(invoiceLines).where(eq(invoiceLines.id, orphanLineId)).limit(1));
+    expect(orphan!.sourceType).toBe('contract');
+    expect(orphan!.sourceContractId).toBeNull();
+
+    const updated = await withSystemDbAccessContext(() => changeContractCurrency(
+      contractId, { currencyCode: 'EUR', confirmActiveChange: true }, manageActor(f)));
+
+    expect(updated.currencyCode).toBe('EUR');
+    expect(updated.status).toBe('active');
+    // The already-billed invoice keeps its own snapshot — no restamp of history.
+    const [inv] = await withSystemDbAccessContext(() => db
+      .select({ currencyCode: invoices.currencyCode }).from(invoices).where(eq(invoices.id, issuedId)).limit(1));
+    expect(inv!.currencyCode).toBe('USD');
+  });
+
+  it('(4) a legacy orphan on a VOID invoice does NOT block either', async () => {
+    const f = await seedGateOrg('EUR');
+    const { contractId, lineId } = await seedActiveContract(f, 'USD');
+    await withSystemDbAccessContext(() => removeContractLine(contractId, lineId, f.actor));
+
+    const draftId = await withSystemDbAccessContext(async () => {
+      const inv = await createManualInvoice({ orgId: f.orgId, currencyCode: 'USD' }, invActor(f));
+      await addManualLine(inv.id, { description: 'Onboarding', quantity: 1, unitPrice: 100, taxable: false } as never, invActor(f));
+      return inv.id;
+    });
+    const issuedId = (await withSystemDbAccessContext(() => issueInvoice(draftId, invActor(f)))).id;
+    await withSystemDbAccessContext(() => voidInvoice(issuedId, 'wave-6 reachability test', { reissue: false }, invActor(f)));
+
+    await withSystemDbAccessContext(() => db.insert(invoiceLines).values({
+      invoiceId: issuedId, orgId: f.orgId, sourceType: 'contract',
+      sourceId: '00000000-0000-4000-8000-00000000beef', sourceContractId: null,
+      description: 'Legacy contract line', quantity: '1', unitPrice: '10.00',
+      taxable: false, customerVisible: true, lineTotal: '10.00',
+    }));
+
+    const updated = await withSystemDbAccessContext(() => changeContractCurrency(
+      contractId, { currencyCode: 'EUR', confirmActiveChange: true }, manageActor(f)));
+    expect(updated.currencyCode).toBe('EUR');
   });
 
   // -------------------------------------------------------------------------

@@ -257,7 +257,7 @@ export interface ContractCurrencyEligibility {
   draftInvoiceIds: string[];
   /** contract_billing_periods rows with no invoice, or a missing/invisible one. */
   orphanedBillingPeriodIds: string[];
-  /** Org-wide source_type='contract' lines this service cannot attribute. */
+  /** Org-wide source_type='contract' lines on DRAFT invoices this service cannot attribute. */
   orphanedContractSourceLineIds: string[];
   /** Period invoices failing the explicit lineage check (c)/(d)/(e). */
   brokenLineageInvoiceIds: string[];
@@ -339,10 +339,23 @@ export async function inspectContractCurrencyEligibility(
   // (4) Conservative ORG-WIDE blocker: a source_type='contract' line the service
   // cannot attribute to any contract (NULL lineage AND a source_id resolving to
   // no live contract_lines row, NULL source_id included). Refuse, never guess.
+  //
+  // SCOPED TO DRAFT, exactly as blocker (3) is. The blocker exists to stop a
+  // restamp while money that MIGHT belong to this contract is still unbilled and
+  // re-priceable; a line on an issued/paid/void invoice is already billed and
+  // carries the invoice's own immutable currency snapshot, so no restamp can
+  // strand it. Without the status filter the blocker was unsatisfiable: migration
+  // 2026-09-02-a RAISEs a warning for precisely these legacy rows (a
+  // contract_lines row deleted before the durable column existed), they sit on
+  // invoices that can never be edited or deleted, and ONE of them 409'd EVERY
+  // active contract in the org forever — locking the pre-wave-2 legacy orgs out
+  // of the escape hatch that was built for them.
   const orphanSources = await tx.execute<{ id: string }>(sql`
     SELECT il.id AS id
       FROM invoice_lines il
+      JOIN invoices i ON i.id = il.invoice_id
      WHERE il.org_id = ${c.orgId}
+       AND i.status = 'draft'
        AND il.source_type = 'contract'
        AND il.source_contract_id IS NULL
        AND NOT EXISTS (SELECT 1 FROM contract_lines cl WHERE cl.id = il.source_id)
