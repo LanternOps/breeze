@@ -5,6 +5,14 @@ import { quoteStatusSchema, type QuoteDepositValidation } from '@breeze/shared';
 // schema (validators/quotes.ts); infer the type here rather than re-declaring it.
 export type QuoteStatus = z.infer<typeof quoteStatusSchema>;
 
+export const REVISABLE_STATUSES = ['sent', 'viewed', 'declined', 'expired'] as const satisfies readonly QuoteStatus[];
+
+export type SupersedableStatus = (typeof REVISABLE_STATUSES)[number];
+
+export function isSupersedable(status: QuoteStatus): status is SupersedableStatus {
+  return (REVISABLE_STATUSES as readonly QuoteStatus[]).includes(status);
+}
+
 export interface QuoteActor {
   /** The user who initiated the action, or null for system/background actors. */
   userId: string | null;

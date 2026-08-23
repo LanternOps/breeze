@@ -1207,6 +1207,12 @@ describe('resendQuote', () => {
 
   it.each(['draft', 'accepted', 'declined', 'converted'])('refuses to re-send a %s quote', async (status) => {
     queueGetQuote({ ...OPEN_QUOTE, status });
+    // resendQuote's fresh locked status read now 404s on zero rows instead of
+    // falling back to the stale snapshot, so the row must be queued for it.
+    // A draft consumes one read more than the settled statuses inside
+    // queueGetQuote, which would otherwise leave this read empty; queueing it
+    // here keeps every status on the intended 409 path rather than a 404.
+    queueResult([{ status }]);
     await expect(resendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 
@@ -1286,6 +1292,10 @@ describe('getQuoteShareLink', () => {
 
   it('refuses a draft — there is no link until the quote is sent', async () => {
     queueGetQuote({ ...SENT, status: 'draft' });
+    // Same reason as the resend draft case: the fresh locked read now 404s on
+    // zero rows rather than reusing the stale snapshot, and a draft consumes an
+    // extra read inside queueGetQuote. Queue the row so this stays a 409.
+    queueResult([{ status: 'draft' }]);
     await expect(getQuoteShareLink('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 

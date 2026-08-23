@@ -13,7 +13,14 @@ import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
-import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
+import {
+  QuoteServiceError,
+  assertOrg,
+  assertSite,
+  assertQuoteAccess,
+  isSupersedable,
+  type QuoteActor,
+} from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
@@ -269,10 +276,11 @@ async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select
 
 /** Load a quote and assert it is owned/accessible AND still a draft (409 if not). */
 async function loadDraft(quoteId: string, actor: QuoteActor) {
-  // FOR UPDATE: every block/line/content mutator funnels through here, so one
-  // lock serializes ALL draft edits against a concurrent send. Without it, an
-  // edit landing between sendQuote's content read and its draft→sent claim
-  // would ship a quote whose stored content differs from the PDF just emailed.
+  // FOR UPDATE: block/line/content mutators that use loadDraft share this lock,
+  // serializing their draft edits against a concurrent send. writeQuoteImage is
+  // the current exception: it inserts only an unreferenced image row, which is
+  // safe today because that cannot change the rendered document. Any new content
+  // mutator must come through loadDraft before writing.
   const [q] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
@@ -711,8 +719,6 @@ async function resolveQuoteLineageRoot(
   return current;
 }
 
-const REVISABLE_STATUSES = new Set(['sent', 'viewed', 'declined', 'expired']);
-
 /**
  * Create a linked draft revision without touching the live parent. The parent
  * stays live until this revision is SENT — sendQuote flips it to 'superseded'
@@ -724,10 +730,9 @@ export async function reviseQuote(id: string, actor: QuoteActor) {
   // getQuote's snapshot is unlocked, so a customer accept committing between
   // that read and the clone insert would otherwise let a revision draft attach
   // to an ACCEPTED quote — precisely the state PARENT_CONVERTED exists to
-  // prevent, and one nothing downstream would flag. Lock order (parent row
-  // first) matches acceptQuote and sendQuote's supersede, so those serialize
-  // against this instead of deadlocking. Every gate below reads the LOCKED
-  // status, never the snapshot.
+  // prevent, and one nothing downstream would flag. This row lock serializes
+  // the revision decision against acceptQuote and sendQuote's parent flip.
+  // Every gate below reads the LOCKED status, never the snapshot.
   const [locked] = await db.select({ status: quotes.status }).from(quotes)
     .where(eq(quotes.id, parentRow.id)).limit(1).for('update');
   if (!locked) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
@@ -754,7 +759,9 @@ export async function reviseQuote(id: string, actor: QuoteActor) {
       successor ? { successorQuoteId: successor.id } : undefined,
     );
   }
-  if (!REVISABLE_STATUSES.has(parent.status)) {
+  // The shared revisable set deliberately excludes accepted/converted because
+  // those settled outcomes already have an invoice or contract behind them.
+  if (!isSupersedable(parent.status)) {
     throw new QuoteServiceError(`Cannot revise a quote in status ${parent.status}`, 409, 'INVALID_STATE');
   }
   if (!parent.quoteNumber) {

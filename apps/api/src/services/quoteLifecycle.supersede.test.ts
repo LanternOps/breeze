@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Param, SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Controllable Drizzle chain mock — same pattern as quoteLifecycle.test.ts.
 // Tests queue the rows each db call resolves to, in call order.
@@ -65,6 +66,18 @@ vi.mock('./email', async (importOriginal) => {
 });
 
 import { sendQuote } from './quoteLifecycle';
+
+const dialect = new PgDialect();
+/**
+ * Compile a captured predicate to its SQL text + bound params. The bag-of-values
+ * walker below is operator-blind: it cannot tell `and` from `or`, `in` from
+ * `not in`, or `=` from `<>`, so an assertion built only on bound values stays
+ * green while the predicate inverts. Asserting the compiled SQL closes that.
+ */
+function compilePredicate(node: unknown): { sql: string; params: unknown[] } {
+  const q = dialect.sqlToQuery(node as SQL);
+  return { sql: q.sql, params: q.params as unknown[] };
+}
 
 /** Walk a Drizzle predicate for its bound (column, value) pairs. */
 function collectBoundParams(node: unknown): { column: string; value: unknown }[] {
@@ -184,9 +197,9 @@ describe('sendQuote — revision supersede', () => {
     expect(flip!.publicLinkRevokedAt).toBeInstanceOf(Date);
 
     const parentWhereIndex = whereCalls.reduce<number>((matchedIndex, predicate, index) => {
-      const bindings = collectBoundParams(predicate);
-      return bindings.length === 1
-        && bindings.some((binding) => binding.column === 'id' && binding.value === 'q1')
+      // Exact SQL, not a value bag: this must match the parent's LOCKING READ
+      // (id + org scope) and never the flip, whose predicate also binds q1.
+      return compilePredicate(predicate).sql === '("quotes"."id" = $1 and "quotes"."org_id" = $2)'
         ? index
         : matchedIndex;
     }, -1);
@@ -206,17 +219,17 @@ describe('sendQuote — revision supersede', () => {
 
     await sendQuote('q2', actor);
 
-    // Find the predicate used by the flip: it must bind the parent id AND the
-    // full allowed-status set. A bare `WHERE id = ?` here would let a stale
-    // read stomp a concurrently-settled parent.
-    const predicates = whereCalls.map(collectBoundParams);
-    const flipPredicate = predicates.find((p) =>
-      p.some((b) => b.column === 'id' && b.value === 'q1')
-      && p.some((b) => b.value === 'sent')
-      && p.some((b) => b.value === 'viewed')
-      && p.some((b) => b.value === 'declined')
-      && p.some((b) => b.value === 'expired'));
+    // Find the predicate used by the flip: it must bind the parent id AND use
+    // an IN status guard. A bare `WHERE id = ?` here would let a stale read
+    // stomp a concurrently-settled parent.
+    const flipPredicate = whereCalls.map(compilePredicate).find((predicate) =>
+      predicate.params.includes('q1') && predicate.sql.includes('"status" in'));
     expect(flipPredicate).toBeDefined();
+    // Exact SQL is intentional: and→or, in→not in, and eq→ne must all fail.
+    expect(flipPredicate!.sql).toBe(
+      '("quotes"."id" = $1 and "quotes"."org_id" = $2 and "quotes"."status" in ($3, $4, $5, $6))',
+    );
+    expect(flipPredicate!.params).toEqual(['q1', 'org1', 'sent', 'viewed', 'declined', 'expired']);
   });
 
   it('refuses to supersede an accepted parent (PARENT_CONVERTED) and never claims the child', async () => {

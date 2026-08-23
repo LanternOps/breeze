@@ -5,7 +5,13 @@ import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from 
 import { organizations, partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { getQuote, toCustomerLines } from './quoteService';
-import { QuoteServiceError, type QuoteActor } from './quoteTypes';
+import {
+  QuoteServiceError,
+  REVISABLE_STATUSES,
+  isSupersedable,
+  type QuoteActor,
+  type SupersedableStatus,
+} from './quoteTypes';
 import { validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { createQuoteAcceptToken, regenerateQuoteAcceptToken, type QuoteAcceptTokenIdentity } from './quoteAcceptToken';
@@ -55,12 +61,18 @@ export interface SendQuoteEmailOptions {
   includePdf?: boolean;
 }
 
-/**
- * Parent statuses a revision send is allowed to retire. `accepted`/`converted`
- * are deliberately absent — those are settled outcomes with an invoice or
- * contract behind them, and are refused with PARENT_CONVERTED instead.
- */
-const SUPERSEDABLE = ['sent', 'viewed', 'declined', 'expired'] as const;
+export interface QuoteSupersedeResult {
+  parentQuoteId: string;
+  previousStatus: SupersedableStatus;
+}
+
+export interface SendQuoteResult {
+  quote: QuoteRow;
+  emailed: boolean;
+  emailReason?: SendQuoteEmailReason;
+  acceptUrl: string;
+  superseded?: QuoteSupersedeResult;
+}
 
 /**
  * Issue (if draft) + send: assign number, status→sent, sentAt, mint token,
@@ -71,13 +83,7 @@ export async function sendQuote(
   id: string,
   actor: QuoteActor,
   opts: SendQuoteEmailOptions = {},
-): Promise<{
-  quote: QuoteRow;
-  emailed: boolean;
-  emailReason?: SendQuoteEmailReason;
-  acceptUrl: string;
-  superseded?: { parentQuoteId: string; previousStatus: string };
-}> {
+): Promise<SendQuoteResult> {
   // Lock the CHILD first, before reading its content: a concurrent draft edit
   // (now blocked on loadDraft's FOR UPDATE) must not land between the content
   // read below and the draft→sent claim, or we email a PDF that no longer
@@ -92,23 +98,29 @@ export async function sendQuote(
 
   // ---- Revision supersede, part 1: lock + validate the parent -------------
   // Runs INSIDE the ambient request/system transaction so the parent flip and
-  // the child's draft→sent claim commit or roll back together. Lock order
-  // (parent first) matches acceptQuote's FOR UPDATE on the same row, so a
-  // concurrent accept and this send serialize instead of deadlocking.
-  let parentToSupersede: { id: string; status: string } | null = null;
+  // the child's draft→sent claim commit or roll back together. This locks the
+  // child first and then its parent; acceptQuote locks exactly one row, and the
+  // revision chain is acyclic, so concurrent accept/send operations serialize
+  // without forming a lock cycle.
+  let parentToSupersede: { id: string; status: SupersedableStatus } | null = null;
   if (quote.revisionOfQuoteId) {
     const [parent] = await db.select({ id: quotes.id, status: quotes.status })
-      .from(quotes).where(eq(quotes.id, quote.revisionOfQuoteId)).limit(1).for('update');
+      .from(quotes)
+      .where(and(eq(quotes.id, quote.revisionOfQuoteId), eq(quotes.orgId, quote.orgId)))
+      .limit(1)
+      .for('update');
     if (!parent) throw new QuoteServiceError('Original quote not found', 409, 'INVALID_STATE');
     if (parent.status === 'converted' || parent.status === 'accepted') {
       throw new QuoteServiceError(
         'The original quote was accepted while this revision was being drafted — it can no longer be sent',
         409, 'PARENT_CONVERTED');
     }
-    if (!(SUPERSEDABLE as readonly string[]).includes(parent.status)) {
+    // Parent statuses a revision send may retire deliberately exclude the
+    // settled accepted/converted outcomes with an invoice or contract behind them.
+    if (!isSupersedable(parent.status)) {
       throw new QuoteServiceError(`Cannot supersede a quote in status ${parent.status}`, 409, 'INVALID_STATE');
     }
-    parentToSupersede = parent;
+    parentToSupersede = { id: parent.id, status: parent.status };
   }
 
   // Send-time contract-variable gate (Task 12): a contract block's declared
@@ -276,14 +288,20 @@ export async function sendQuote(
   // The predicate re-asserts the allowed set even under the lock (belt to the
   // FOR UPDATE strap). public_link_revoked_at is the DB-authoritative
   // revocation for the parent's public link — deliberately NO Redis revoke:
-  // Redis cannot join this transaction, and every public route loads the row.
+  // Redis cannot join this transaction. GET /:token re-reads the row and refuses
+  // a superseded quote. NOTE: the public asset routes do not yet check status or
+  // publicLinkRevokedAt; closing that gap is W04's asset-closure scope.
   // Columns left untouched on purpose: declinedAt, declineReason, expiryDate,
   // viewedAt are the parent's historical record.
-  let supersededResult: { parentQuoteId: string; previousStatus: string } | undefined;
+  let supersededResult: QuoteSupersedeResult | undefined;
   if (parentToSupersede) {
     const flipped = await db.update(quotes)
       .set({ status: 'superseded', publicLinkRevokedAt: now, updatedAt: now })
-      .where(and(eq(quotes.id, parentToSupersede.id), inArray(quotes.status, [...SUPERSEDABLE])))
+      .where(and(
+        eq(quotes.id, parentToSupersede.id),
+        eq(quotes.orgId, quote.orgId),
+        inArray(quotes.status, [...REVISABLE_STATUSES]),
+      ))
       .returning({ id: quotes.id });
     if (flipped.length === 0) {
       throw new QuoteServiceError('The original quote settled while sending the revision', 409, 'PARENT_CONVERTED');
@@ -708,7 +726,8 @@ export async function getQuoteShareLink(
   // refuses it with no change needed there.
   const [freshShare] = await db.select({ status: quotes.status })
     .from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
-  assertLinkableQuote({ ...quote, status: freshShare?.status ?? quote.status }, 'share');
+  if (!freshShare) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  assertLinkableQuote({ ...quote, status: freshShare.status }, 'share');
   const { acceptUrl, origin } = await resolveAcceptUrl(quote);
   return {
     acceptUrl, origin, reissued: origin !== 'reproduced',
@@ -743,7 +762,8 @@ export async function resendQuote(
   // parent flip.
   const [freshResend] = await db.select({ status: quotes.status })
     .from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
-  assertLinkableQuote({ ...quote, status: freshResend?.status ?? quote.status }, 're-send');
+  if (!freshResend) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  assertLinkableQuote({ ...quote, status: freshResend.status }, 're-send');
   if (!quote.quoteNumber) {
     // A sent quote always has a number (sendQuote allocates one on the way
     // through). Missing here means the row was tampered with or half-migrated.

@@ -35,7 +35,9 @@ import { captureException } from '../services/sentry';
 import { db, withSystemDbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
 import { sendQuote, type SendQuoteEmailOptions } from '../services/quoteLifecycle';
-import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
+import { requestLikeFromSnapshot } from '../services/auditEvents';
+import { writeAuditEvent } from '../services/auditEvents';
+import { supersededAuditEvent } from '../services/quoteSupersedeAudit';
 import { QuoteServiceError, type QuoteActor } from '../services/quoteTypes';
 
 const QUOTE_SEND_QUEUE = 'quote-send';
@@ -211,18 +213,18 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
   // Emit only after the transaction commits, so a rolled-back send can never
   // leave a success audit behind. Audit persistence has its own internal retry queue.
   if (!failed && supersedeAudit) {
+    // No request here, so attribute the actor who scheduled the send explicitly
+    // — writeRouteAudit's auth-context extraction is unavailable on this path.
     writeAuditEvent(requestLikeFromSnapshot({}), {
-      orgId: supersedeAudit.orgId,
-      action: 'quote.superseded',
-      resourceType: 'quote',
-      resourceId: supersedeAudit.parentQuoteId,
-      result: 'success',
-      details: {
-        supersededByQuoteId: quoteId,
+      ...supersededAuditEvent({
+        childQuoteId: quoteId,
+        orgId: supersedeAudit.orgId,
+        parentQuoteId: supersedeAudit.parentQuoteId,
         previousStatus: supersedeAudit.previousStatus,
         revisionNumber: supersedeAudit.revisionNumber,
         emailed: supersedeAudit.emailed,
-      },
+      }),
+      actorId: actor.userId,
     });
   }
   if (!failed) return;
