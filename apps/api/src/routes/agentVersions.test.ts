@@ -70,6 +70,7 @@ import {
   agentVersionRoutes,
   validateReleaseManifest,
   verifyEd25519ManifestSignature,
+  canonicalReleaseAssetName,
 } from "./agentVersions";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
@@ -1629,21 +1630,41 @@ describe("agentVersions routes", () => {
   // requests it that way (updater.downloadBinary). These three cases are the
   // per-component coverage those two route names were describing.
   describe("GET /agent-versions/:version/download — signingKeyId passthrough", () => {
+    // Task 2 (#3836): the download path is now key-ID-aware, so each case
+    // must configure trust that actually matches its claimed signingKeyId
+    // (official ID -> RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS, deploy-* ->
+    // the matching manifest_signing_keys row) for the manifest to verify —
+    // exactly the binding this suite exists to prove is enforced.
     const cases = [
       {
         component: "agent",
         assetName: "breeze-agent-linux-amd64",
         signingKeyId: "release-artifact-manifest-ed25519",
+        configureTrust: (signed: { publicKey: string }) => {
+          process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        },
       },
       {
         component: "helper",
         assetName: "breeze-helper-linux.AppImage",
         signingKeyId: "deploy-2026-07-23-helper",
+        configureTrust: (signed: { publicKey: string }) => {
+          vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+            {
+              keyId: "deploy-2026-07-23-helper",
+              publicKeyB64: signed.publicKey,
+              validFrom: new Date().toISOString(),
+            },
+          ]);
+        },
       },
       {
         component: "watchdog",
         assetName: "breeze-watchdog-linux-amd64",
         signingKeyId: "release-artifact-manifest-ed25519",
+        configureTrust: (signed: { publicKey: string }) => {
+          process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        },
       },
     ];
 
@@ -1659,6 +1680,7 @@ describe("agentVersions routes", () => {
           checksum,
           size: 4096,
         });
+        tc.configureTrust(signed);
 
         vi.mocked(db.select).mockReturnValue({
           from: vi.fn().mockReturnValue({
@@ -2173,5 +2195,491 @@ describe("verifyEd25519ManifestSignature — empty-keyset opt-in (#643)", () => 
       { allowEmptyKeysetSoftPass: true },
     );
     expect(result).toBe(false);
+  });
+});
+
+// D1 (#3836): canonicalReleaseAssetName must reproduce EXACTLY the filenames
+// binarySync.ts's scanBinaryDir/parseBinaryFilename (agent/watchdog/backup)
+// and USER_HELPER_TARGETS (user-helper) produce — every case below is
+// cross-checked against those sources, not invented independently.
+// component="helper" is deliberately always null: its real registration is
+// HELPER_TARGETS (binarySync.ts ~line 59), a per-OS (not per-arch) asset
+// name (windows -> breeze-helper-windows.msi, darwin (both arches, same
+// file) -> breeze-helper-macos.dmg, linux -> breeze-helper-linux.AppImage) —
+// see the controller-review regression test below for why an earlier
+// version of this function (returning "breeze-desktop-helper-darwin-<arch>"
+// for helper/macos) was WRONG and would have 409'd real
+// BINARY_SOURCE=github helper rows.
+describe("canonicalReleaseAssetName (D1, #3836)", () => {
+  const cases: Array<[string, string, string, string | null]> = [
+    // agent — windows/linux/darwin, both arches. Also proves "macos" (the DB
+    // platform value) and "darwin" (the wire/manifest value some callers use)
+    // both resolve to the same on-disk name.
+    ["agent", "windows", "amd64", "breeze-agent-windows-amd64.exe"],
+    ["agent", "windows", "arm64", "breeze-agent-windows-arm64.exe"],
+    ["agent", "linux", "amd64", "breeze-agent-linux-amd64"],
+    ["agent", "linux", "arm64", "breeze-agent-linux-arm64"],
+    ["agent", "macos", "amd64", "breeze-agent-darwin-amd64"],
+    ["agent", "macos", "arm64", "breeze-agent-darwin-arm64"],
+    ["agent", "darwin", "amd64", "breeze-agent-darwin-amd64"],
+
+    // watchdog — same shape as agent (WATCHDOG_TARGETS = AGENT_TARGETS).
+    ["watchdog", "windows", "amd64", "breeze-watchdog-windows-amd64.exe"],
+    ["watchdog", "linux", "amd64", "breeze-watchdog-linux-amd64"],
+    ["watchdog", "linux", "arm64", "breeze-watchdog-linux-arm64"],
+    ["watchdog", "macos", "amd64", "breeze-watchdog-darwin-amd64"],
+    ["watchdog", "macos", "arm64", "breeze-watchdog-darwin-arm64"],
+
+    // backup — same shape as agent (BACKUP_TARGETS = AGENT_TARGETS).
+    ["backup", "windows", "amd64", "breeze-backup-windows-amd64.exe"],
+    ["backup", "linux", "amd64", "breeze-backup-linux-amd64"],
+    ["backup", "linux", "arm64", "breeze-backup-linux-arm64"],
+    ["backup", "macos", "amd64", "breeze-backup-darwin-amd64"],
+    ["backup", "macos", "arm64", "breeze-backup-darwin-arm64"],
+
+    // user-helper — Windows only (USER_HELPER_TARGETS).
+    ["user-helper", "windows", "amd64", "breeze-user-helper-windows-amd64.exe"],
+    ["user-helper", "windows", "arm64", "breeze-user-helper-windows-arm64.exe"],
+    ["user-helper", "macos", "amd64", null],
+    ["user-helper", "linux", "amd64", null],
+
+    // helper — always null (see the describe-block comment above): the real
+    // asset name (breeze-helper-macos.dmg / -windows.msi / -linux.AppImage)
+    // is per-OS, not per-arch, so it must resolve via the URL-basename
+    // fallback instead.
+    ["helper", "macos", "amd64", null],
+    ["helper", "macos", "arm64", null],
+    ["helper", "windows", "amd64", null],
+    ["helper", "linux", "amd64", null],
+
+    // Unknown component/platform/arch — every unrecognized shape falls back
+    // to the caller's assetNameFromDownloadUrl, never fabricates a name.
+    ["viewer", "windows", "amd64", null],
+    ["not-a-real-component", "linux", "amd64", null],
+    ["agent", "solaris", "amd64", null],
+    ["agent", "linux", "mips", null],
+  ];
+
+  it.each(cases)(
+    "component=%s platform=%s arch=%s -> %s",
+    (component, platform, arch, expected) => {
+      expect(canonicalReleaseAssetName(component, platform, arch)).toBe(expected);
+    },
+  );
+});
+
+// D3 (#3836): the schema-v1 catch in validateReleaseManifest used to
+// collapse EVERY throw from verifyReleaseArtifactManifestAsset into
+// invalid_release_manifest_signature. These tests pin the split to typed
+// errors exported from releaseArtifactManifest.ts.
+describe("validateReleaseManifest — schema-v1 reason split (D3, #3836)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+  });
+
+  function makeSignedSchemaV1Manifest(
+    assets: Array<{
+      name: string;
+      sha256: string;
+      size: number;
+      platformTrust?: string;
+      edition?: string;
+    }>,
+    release = "v1.0.0",
+  ) {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+    const rawPublicKey = publicDer.subarray(publicDer.length - 32);
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release,
+      assets,
+    });
+    return {
+      manifest,
+      signature: sign(null, Buffer.from(manifest, "utf8"), privateKey).toString(
+        "base64",
+      ),
+      publicKey: rawPublicKey.toString("base64"),
+    };
+  }
+
+  it("returns release_manifest_asset_lookup_failed when the canonical asset is absent from a validly-signed manifest", async () => {
+    const signed = makeSignedSchemaV1Manifest([
+      {
+        name: "breeze-agent-windows-amd64.exe",
+        sha256: "a".repeat(64),
+        size: 10,
+        platformTrust: requiredPlatformTrustFor("breeze-agent-windows-amd64.exe") ?? undefined,
+      },
+    ]);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const result = await validateReleaseManifest({
+      manifest: signed.manifest,
+      signature: signed.signature,
+      version: "1.0.0",
+      platform: "linux",
+      arch: "amd64",
+      component: "agent",
+      // Deliberately irrelevant: D1 makes the canonical (component, platform,
+      // arch) shape win over the URL basename, so this URL is never consulted.
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum: "b".repeat(64),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "release_manifest_asset_lookup_failed",
+    });
+  });
+
+  it("returns release_asset_not_distributable when the asset entry fails the platform-trust policy check", async () => {
+    const assetName = "breeze-agent-windows-amd64.exe";
+    const checksum = "c".repeat(64);
+    const signed = makeSignedSchemaV1Manifest([
+      // Windows .exe requires "windows-authenticode-required"; "none" with no
+      // edition claim is refused by assertDistributableReleaseAsset.
+      { name: assetName, sha256: checksum, size: 10, platformTrust: "none" },
+    ]);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const result = await validateReleaseManifest({
+      manifest: signed.manifest,
+      signature: signed.signature,
+      version: "1.0.0",
+      platform: "windows",
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "release_asset_not_distributable",
+    });
+  });
+
+  it("#641 — a forged signature still returns invalid_release_manifest_signature even though the asset would otherwise fail lookup", async () => {
+    // The manifest is well-formed but does NOT include the asset a valid
+    // signature would need to cover — if signature verification were skipped
+    // or ran second, this would leak release_manifest_asset_lookup_failed to
+    // an attacker who never held the signing key. It must not: verify
+    // ReleaseArtifactManifestAsset checks the signature before ever
+    // attempting the lookup.
+    const attacker = generateKeyPairSync("ed25519");
+    const trusted = generateKeyPairSync("ed25519");
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release: "v1.0.0",
+      assets: [{ name: "breeze-agent-windows-amd64.exe", sha256: "a".repeat(64), size: 10 }],
+    });
+    const forgedSignature = sign(
+      null,
+      Buffer.from(manifest, "utf8"),
+      attacker.privateKey,
+    ).toString("base64");
+    const trustedPublicDer = trusted.publicKey.export({
+      format: "der",
+      type: "spki",
+    }) as Buffer;
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = trustedPublicDer
+      .subarray(trustedPublicDer.length - 32)
+      .toString("base64");
+
+    const result = await validateReleaseManifest({
+      manifest,
+      signature: forgedSignature,
+      version: "1.0.0",
+      platform: "linux", // resolves to breeze-agent-linux-amd64 — not in `assets` above
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum: "b".repeat(64),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "invalid_release_manifest_signature",
+    });
+  });
+});
+
+// Task 2 (#3836): key-ID-aware dispatch for validateReleaseManifest.
+// Mirrors the agent's exact-ID semantics (agent/internal/updater/
+// updater.go verifyManifestSignature, ~line 769): an explicit signingKeyId
+// binds verification to that ONE key — never a fallback across the whole
+// trusted set. Before this, the legacy (non schema-v1) branch checked a
+// row's signature against the UNION of env keys and every DB deployment
+// key regardless of what signingKeyId claimed, so a row stamped with the
+// official key ID but actually signed by a per-deployment key (or
+// vice-versa) passed the server even though a real agent's exact-ID
+// lookup would reject it.
+describe("validateReleaseManifest — key-ID-aware dispatch (Task 2, #3836)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([]);
+  });
+
+  function rawPub(publicKey: { export: (opts: { format: "der"; type: "spki" }) => Buffer }): Buffer {
+    const der = publicKey.export({ format: "der", type: "spki" });
+    return der.subarray(der.length - 32);
+  }
+
+  function legacyManifest() {
+    return JSON.stringify({
+      version: "1.0.0",
+      component: "agent",
+      platform: "linux",
+      arch: "amd64",
+      url: "https://s3.example.com/agent-1.0.0",
+      checksum: "b".repeat(64),
+      size: 45000000,
+    });
+  }
+
+  const legacyArgsBase = {
+    version: "1.0.0",
+    platform: "linux",
+    arch: "amd64",
+    component: "agent",
+    downloadUrl: "https://s3.example.com/agent-1.0.0",
+    checksum: "b".repeat(64),
+    fileSize: 45000000,
+  };
+
+  it("REJECTS a row stamped with the official key ID but signed by a DB-trusted deployment key (the exact bug this task closes)", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+
+    // The deploy key IS otherwise trusted (present in manifest_signing_keys)
+    // — that's the point: a legitimately-trusted key must still be rejected
+    // when it isn't the ONE key the claimed ID names.
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(deployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "release-artifact-manifest-ed25519",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("ACCEPTS a row stamped with the official key ID when signed by a genuinely official (RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS) key", async () => {
+    const official = generateKeyPairSync("ed25519");
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPub(official.publicKey).toString("base64");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), official.privateKey).toString("base64");
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "release-artifact-manifest-ed25519",
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("REJECTS a row stamped with the official key ID when no official key is configured, even with DB deployment keys present", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(deployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "release-artifact-manifest-ed25519",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("REJECTS a row stamped with a deploy-* key ID when signed by the OFFICIAL key instead of that DB key row (vice-versa case)", async () => {
+    const official = generateKeyPairSync("ed25519");
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPub(official.publicKey).toString("base64");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), official.privateKey).toString("base64");
+
+    // A DIFFERENT deploy key row exists under the claimed ID — its actual
+    // public key never signed this manifest.
+    const otherDeployKey = generateKeyPairSync("ed25519");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(otherDeployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("ACCEPTS a row stamped with a deploy-* key ID when signed by exactly that DB key row", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(deployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("REJECTS a deploy-* key ID with no matching manifest_signing_keys row (rotated out / never existed)", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("REJECTS a deploy-* key ID when getActiveTrustKeyset (manifest_signing_keys lookup) fails outright", async () => {
+    // Fix round 1 review finding: the try/catch around getActiveTrustKeyset
+    // in verifyManifestSignatureForSigningKeyId's deploy-* branch had no
+    // test. A transient DB failure while resolving the ONE key a deploy-*
+    // signingKeyId names must fail closed, not silently fall through to a
+    // wider trust set.
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockRejectedValue(
+      new Error("connection refused"),
+    );
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("REJECTS a deploy-* key ID whose matched manifest_signing_keys row decodes to a non-32-byte key (corrupted row)", async () => {
+    // Optional coverage (fix round 1 review): the rawKey.length !== 32 guard
+    // in verifyEd25519SignatureAgainstSingleRawKey.
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: Buffer.from("too-short").toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("keeps the legacy whole-set behavior unchanged for absent/unrecognized signingKeyId (no ID narrowing applies)", async () => {
+    const trusted = generateKeyPairSync("ed25519");
+    process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS = rawPub(trusted.publicKey).toString("base64");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), trusted.privateKey).toString("base64");
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      // no signingKeyId at all
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("rejects a schema-v1 row whose stamped key ID is NOT the official ID, even though the signature verifies under the official key (schema-v1 can only ever prove official provenance)", async () => {
+    const official = generateKeyPairSync("ed25519");
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPub(official.publicKey).toString("base64");
+
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release: "v1.0.0",
+      assets: [
+        {
+          name: "breeze-agent-linux-amd64",
+          sha256: "a".repeat(64),
+          size: 10,
+          platformTrust: requiredPlatformTrustFor("breeze-agent-linux-amd64") ?? undefined,
+        },
+      ],
+    });
+    const signature = sign(null, Buffer.from(manifest, "utf8"), official.privateKey).toString("base64");
+
+    const result = await validateReleaseManifest({
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+      version: "1.0.0",
+      platform: "linux",
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum: "a".repeat(64),
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
   });
 });
