@@ -22,6 +22,7 @@ import { describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { userNotifications } from '../../db/schema';
+import { createNotification } from '../../services/userNotifications';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -211,6 +212,62 @@ describe('user_notifications RLS — user axis', () => {
     await seedNotification(fx.userAId, fx.orgAId, 'null key 1');
     await expect(seedNotification(fx.userAId, fx.orgAId, 'null key 2'))
       .resolves.toBeTruthy();
+  });
+
+  runDb('createNotification dedupes through the real partial index', async () => {
+    // `user_notifications_user_dedupe_key_uq` is PARTIAL (WHERE dedupe_key IS
+    // NOT NULL, migration 2026-09-04). Postgres only accepts a partial index
+    // as an ON CONFLICT arbiter when the statement carries the matching
+    // predicate — an onConflictDoNothing target WITHOUT the `where` clause
+    // fails EVERY insert at plan time with 42P10. No mocked unit test can see
+    // that, so this exercises the REAL createNotification against real
+    // Postgres: first insert lands, the duplicate is swallowed to null, and
+    // exactly one row exists.
+    const fx = await seed();
+    const key = `intent-approval:${fx.orgAId}:real-producer`;
+    const input = {
+      userId: fx.userAId,
+      orgId: fx.orgAId,
+      type: 'approval' as const,
+      title: 'via createNotification',
+      dedupeKey: key,
+    };
+
+    const first = await withSystemDbAccessContext(() => createNotification(input));
+    expect(typeof first).toBe('string');
+
+    const second = await withSystemDbAccessContext(() => createNotification(input));
+    expect(second).toBeNull();
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select().from(userNotifications).where(and(
+        eq(userNotifications.userId, fx.userAId),
+        eq(userNotifications.dedupeKey, key),
+      )));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).toBe(first);
+  });
+
+  runDb('nesting does not escalate: system wrapper inside an org context stays org-scoped', async () => {
+    // withDbAccessContext is a PASSTHROUGH when an ambient context already
+    // exists (db/index.ts ~440): a withSystemDbAccessContext opened inside a
+    // request-scoped context keeps the requester's RLS context. This pins that
+    // the user-axis hardening cannot be accidentally escalated past — the
+    // nested "system" wrapper still cannot write a notification addressed to
+    // someone else.
+    const fx = await seed();
+
+    await expectSqlState(
+      () => withDbAccessContext(fx.ctxUserA, () =>
+        withSystemDbAccessContext(() =>
+          db.insert(userNotifications).values({
+            userId: fx.userPeerId,
+            orgId: fx.orgAId,
+            type: 'approval',
+            title: 'escalation attempt',
+          }))),
+      '42501',
+    );
   });
 
   runDb('breeze_app cannot bypass RLS on this table', async () => {

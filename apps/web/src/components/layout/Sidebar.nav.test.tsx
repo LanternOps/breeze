@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 
 // Mock the stores so importing Sidebar.tsx (which the navSections export lives
@@ -155,6 +155,38 @@ describe('sidebar i18n seed', () => {
 
     const badge = await screen.findByLabelText('3 pending approvals');
     expect(badge.closest('a')).toHaveAttribute('href', '/approvals');
+  });
+
+  it('keeps the previously shown approvals count when a poll returns a malformed body', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      fetchWithAuthMock.mockImplementation(async (url: string) =>
+        (url === '/approvals/pending/count'
+          ? { ok: true, status: 200, json: async () => ({ count: 3 }) }
+          : { ok: false, status: 404, json: async () => ({}) }) as Response,
+      );
+
+      render(<Sidebar currentPath="/" />);
+      await act(async () => {});
+      expect(screen.getByLabelText('3 pending approvals')).toBeInTheDocument();
+
+      // Next poll answers 200 with an unparseable body: the count must NOT be
+      // coerced to 0 (an affirmative "nothing pending") — the last good count
+      // stays on screen.
+      fetchWithAuthMock.mockImplementation(async (url: string) =>
+        (url === '/approvals/pending/count'
+          ? { ok: true, status: 200, json: async () => { throw new SyntaxError('bad json'); } }
+          : { ok: false, status: 404, json: async () => ({}) }) as Response,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(screen.getByLabelText('3 pending approvals')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      warnSpy.mockRestore();
+    }
   });
 
   it('gives every top-level item a key that resolves in both locales', () => {

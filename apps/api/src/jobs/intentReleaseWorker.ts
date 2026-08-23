@@ -651,18 +651,25 @@ async function notifyRequesterOfOutcome(
     captureException(new Error(`intent ${intentId} not found for outcome notification`));
     return;
   }
-  // Expected and silent: MCP / API-key-sourced intents have no human requester
-  // (requestingApiKeyId is set instead), so there is nobody to notify.
-  // org_id is NOT NULL in the schema, so it is deliberately not checked here.
+  // Defensive today: no creation path sets requestingApiKeyId yet —
+  // createActionIntent attributes every intent to auth.user.id (see
+  // actorContext.ts). When API-key-owned MCP intents land (Plan 2), those rows
+  // have no human requester and correctly stay silent; agent-originated
+  // intents (wave 3b) get their own recipient routing instead of this early
+  // return. org_id is NOT NULL in the schema, so it is deliberately not
+  // checked here.
   if (!intent.requestedByUserId) return;
 
-  // A SUPERVISED intent's requester is also its only approver, and they were
-  // watching the chat stream that created it — the inline timeout already told
-  // them. Notifying here would put a bell row on every abandoned 5-minute chat
+  // A SUPERVISED intent's requester is also its only approver. Every
+  // supervised intent today is chat-sourced, so the requester was watching the
+  // chat stream that created it — the inline timeout already told them.
+  // Notifying here would put a bell row on every abandoned 5-minute chat
   // intent, which is easily the highest-volume producer of this new type, and
   // would train people to ignore the bell. Only four-eyes has a requester who
   // genuinely could not see the outcome. Mirrors the same scope gate the push
-  // path uses at intentService.ts.
+  // path uses at intentService.ts. Revisit when supervised mcp_api intents
+  // exist: those get a 24h window with NO inline channel (computeExpiresAt,
+  // intentService.ts), so the "they were watching" rationale won't hold there.
   if (intent.approvalScope !== 'four_eyes') return;
 
   // Copy comes from the intent's CURRENT status, not from the event type.

@@ -17,6 +17,11 @@ import { formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
+/** WS is only a nudge; polling is the guarantee. useEventStream gives up
+ *  permanently after repeated ticket failures, and these approvals are
+ *  time-boxed — with no fallback they would arrive AND expire unseen. Same
+ *  cadence as NotificationCenter's POLL_INTERVAL_MS. */
+const POLL_INTERVAL_MS = 30_000;
 const APPROVAL_EVENTS = ['notification.created'];
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -65,10 +70,18 @@ export default function ApprovalsInbox() {
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState('');
   const liveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mirrors `approvals` so the silent-failure branch of loadApprovals (empty
+  // deps) can see whether anything is currently on screen.
+  const approvalsRef = useRef<PendingApproval[]>([]);
 
-  const loadApprovals = useCallback(async () => {
-    setLoading(true);
-    setLoadError(false);
+  const loadApprovals = useCallback(async (options?: { silent?: boolean }) => {
+    // Silent reloads (WS nudge, poll, reconnect, post-decision refresh) must
+    // not flash the already-rendered list back to a spinner.
+    const silent = options?.silent === true;
+    if (!silent) {
+      setLoading(true);
+      setLoadError(false);
+    }
     try {
       const response = await fetchWithAuth('/approvals/pending?limit=25');
       if (response.status === 401) {
@@ -77,22 +90,28 @@ export default function ApprovalsInbox() {
       }
       if (!response.ok) throw new Error('Unable to load approvals');
       const body = (await response.json()) as { approvals?: PendingApproval[] };
-      setApprovals(Array.isArray(body.approvals) ? body.approvals : []);
+      const rows = Array.isArray(body.approvals) ? body.approvals : [];
+      approvalsRef.current = rows;
+      setApprovals(rows);
+      setLoadError(false);
     } catch {
-      setLoadError(true);
+      // A failed silent refresh keeps the list the user already has instead of
+      // blanking it to the error card — unless there is nothing on screen, in
+      // which case repeated failure must still surface.
+      if (!silent || approvalsRef.current.length === 0) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
-  const { subscribe, unsubscribe } = useEventStream({
+  const { connected, subscribe, unsubscribe } = useEventStream({
     onEvent: (event) => {
       if (event.type !== 'notification.created') return;
       // notification.created is content-free by contract. Debounce the nudge
       // and reload the authoritative approval rows from the API.
       if (liveDebounceRef.current) clearTimeout(liveDebounceRef.current);
       liveDebounceRef.current = setTimeout(() => {
-        void loadApprovals();
+        void loadApprovals({ silent: true });
       }, LIVE_REFETCH_DEBOUNCE_MS);
     },
   });
@@ -100,6 +119,26 @@ export default function ApprovalsInbox() {
   useEffect(() => {
     void loadApprovals();
   }, [loadApprovals]);
+
+  // Polling fallback: the WS layer can die permanently and silently
+  // (useEventStream stops retrying after 5 ticket failures), and approvals
+  // expire in minutes. The nudge makes the inbox fast; this makes it correct.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void loadApprovals({ silent: true });
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [loadApprovals]);
+
+  // Refetch on WS reconnect: anything that arrived during the outage produced
+  // no nudge, so a fresh connection means our snapshot may be stale.
+  const wasConnectedRef = useRef(connected);
+  useEffect(() => {
+    if (connected && !wasConnectedRef.current) {
+      void loadApprovals({ silent: true });
+    }
+    wasConnectedRef.current = connected;
+  }, [connected, loadApprovals]);
 
   useEffect(() => {
     subscribe(APPROVAL_EVENTS);
@@ -156,7 +195,7 @@ export default function ApprovalsInbox() {
         return;
       }
       setDenyingId(null);
-      await loadApprovals();
+      await loadApprovals({ silent: true });
     } catch (err) {
       if (isNoApproverDeviceError(err) || isStepUpRequired(err)) {
         setDecisionError(approval.id, 'noApproverDevice');
@@ -170,9 +209,23 @@ export default function ApprovalsInbox() {
         setDecisionError(approval.id, 'verificationFailed');
         return;
       }
-      // 401 means the auth layer is already redirecting; leaving a stale error
-      // beside a row the user is navigating away from would only confuse.
-      if (err instanceof ActionError && err.status === 401) return;
+      // 401 is NOT handled upstream here: decideIntentApproval opts out of the
+      // auth layer's refresh-and-redirect (skipUnauthorizedRetry +
+      // treatUnauthorizedAsError), so nobody else is redirecting. The decide
+      // route answers 401 for two very different things (routes/approvals.ts):
+      // `assertion_failed` / `reauth_required` are server-side WebAuthn PROOF
+      // rejections — surface those inline exactly like a client-side
+      // CeremonyError. Any other 401 is genuine session expiry, so send the
+      // user to login the same way loadApprovals does.
+      if (err instanceof ActionError && err.status === 401) {
+        const token = (err.body as { error?: unknown } | null | undefined)?.error;
+        if (token === 'assertion_failed' || token === 'reauth_required') {
+          setDecisionError(approval.id, 'verificationFailed');
+          return;
+        }
+        UNAUTHORIZED();
+        return;
+      }
       // An ActionError was already toasted by runAction, but the toast is
       // transient and the row is where the retry lives — so both kinds of
       // failure also get an inline message.
@@ -283,6 +336,10 @@ export default function ApprovalsInbox() {
                           id={`approval-deny-reason-${approval.id}`}
                           className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
                           rows={2}
+                          // Mirrors the server's z.string().max(500): without a
+                          // client cap the 400 surfaces as generic copy and the
+                          // typed reason's rejection is opaque.
+                          maxLength={500}
                           value={denyReason}
                           placeholder={t('denyReasonPlaceholder')}
                           onChange={(event) => setDenyReason(event.target.value)}

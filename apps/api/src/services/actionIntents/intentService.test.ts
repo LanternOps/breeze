@@ -158,6 +158,7 @@ vi.mock('../../db', () => ({
   },
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
 }));
 
 vi.mock('../../db/schema/actionIntents', () => ({

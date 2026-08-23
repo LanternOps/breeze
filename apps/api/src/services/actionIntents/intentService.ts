@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
 import {
@@ -668,7 +668,10 @@ export async function createActionIntent(
       // failure was swallowed to console.error. The in-app row is the channel
       // that always exists, so it must not be downstream of the phone lookup.
       try {
-        await withSystemDbAccessContext(() =>
+        // runOutsideDbContext first: a bare system wrapper inside an ambient
+        // request context is a passthrough (db/index.ts ~440), and this
+        // cross-user insert would then 42501 into the catch below.
+        await runOutsideDbContext(() => withSystemDbAccessContext(() =>
           createNotification({
             userId,
             orgId,
@@ -681,7 +684,7 @@ export async function createActionIntent(
             // Survives outbox/BullMQ redelivery: one approver, one intent, one
             // row in the bell.
             dedupeKey: `intent-approval:${creation.intent.id}`,
-          }));
+          })));
       } catch (err) {
         // Sentry, not just console.error. This is the highest-stakes swallow in
         // the wave: it is the ONLY channel a phoneless approver has, and the

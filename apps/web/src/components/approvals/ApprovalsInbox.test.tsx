@@ -1,13 +1,16 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ApprovalsInbox from './ApprovalsInbox';
+import { ActionError } from '@/lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 
 const intentApprovalsMock = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+const navigateToMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 vi.mock('@/hooks/useEventStream', () => ({
   useEventStream: () => ({
     connected: true,
@@ -54,6 +57,10 @@ beforeEach(() => {
   fetchMock.mockResolvedValue(
     response({ approvals: [pendingApproval], nextCursor: null }),
   );
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('ApprovalsInbox', () => {
@@ -162,5 +169,123 @@ describe('ApprovalsInbox', () => {
 
     const error = await screen.findByTestId('approval-error-approval-1');
     expect(error).toHaveTextContent(/register.*approver device/i);
+  });
+
+  it('caps the deny reason at the server limit of 500 characters', async () => {
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-deny-approval-1'));
+    expect(screen.getByTestId('approval-deny-reason-approval-1')).toHaveAttribute(
+      'maxlength',
+      '500',
+    );
+  });
+
+  it('surfaces a server-side WebAuthn rejection (401 assertion_failed) inline, without redirecting', async () => {
+    intentApprovalsMock.decide.mockRejectedValue(
+      new ActionError('Verification failed', 401, undefined, { error: 'assertion_failed' }),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    const error = await screen.findByTestId('approval-error-approval-1');
+    expect(error).toHaveTextContent(/verification/i);
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a reauth_required 401 inline as a verification failure too', async () => {
+    intentApprovalsMock.decide.mockRejectedValue(
+      new ActionError('Verification failed', 401, undefined, { error: 'reauth_required' }),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    const error = await screen.findByTestId('approval-error-approval-1');
+    expect(error).toHaveTextContent(/verification/i);
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('redirects to login on a genuine session-expiry 401 (no proof token)', async () => {
+    intentApprovalsMock.decide.mockRejectedValue(new ActionError('Unauthorized', 401));
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalled());
+    expect(screen.queryByTestId('approval-error-approval-1')).not.toBeInTheDocument();
+  });
+
+  it('shows the generic inline decision error for a non-401 ActionError', async () => {
+    intentApprovalsMock.decide.mockRejectedValue(
+      new ActionError('Conflict', 409, undefined, { error: 'conflict' }),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    const error = await screen.findByTestId('approval-error-approval-1');
+    expect(error).toHaveTextContent(/could not be submitted/i);
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('polls for approvals every 30 seconds as a fallback for a dead WebSocket', async () => {
+    vi.useFakeTimers();
+    render(<ApprovalsInbox />);
+
+    // Flush the mount load (the fetch mock resolves in microtasks).
+    await act(async () => {});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes silently: no loading spinner while re-fetching an already-loaded list', async () => {
+    vi.useFakeTimers();
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+    expect(screen.getByTestId('approval-row-approval-1')).toBeInTheDocument();
+
+    // Make the poll's fetch hang so the in-flight refresh state is observable.
+    let resolveRefresh!: (r: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => { resolveRefresh = resolve; }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    // The refresh is in flight — the list must stay put, no spinner flash.
+    expect(screen.queryByTestId('approvals-loading')).not.toBeInTheDocument();
+    expect(screen.getByTestId('approval-row-approval-1')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveRefresh(response({ approvals: [pendingApproval], nextCursor: null }));
+    });
+    expect(screen.getByTestId('approval-row-approval-1')).toBeInTheDocument();
+  });
+
+  it('keeps the current list when a silent refresh fails, instead of blanking to the error card', async () => {
+    vi.useFakeTimers();
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+    expect(screen.getByTestId('approval-row-approval-1')).toBeInTheDocument();
+
+    fetchMock.mockRejectedValueOnce(new Error('network down'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(screen.getByTestId('approval-row-approval-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('approvals-error')).not.toBeInTheDocument();
   });
 });

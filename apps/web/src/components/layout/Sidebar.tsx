@@ -406,6 +406,16 @@ function useDeletionRequestsBadge(enabled: boolean): number | undefined {
   return count;
 }
 
+// Warn once per session when the approvals badge fetch fails. The badge only
+// hides itself on failure, so without a trace the failure is invisible — but
+// the 30s poll means warning every time would spam the console.
+let approvalsBadgeFailureWarned = false;
+function warnApprovalsBadgeFailureOnce(detail: unknown): void {
+  if (approvalsBadgeFailureWarned) return;
+  approvalsBadgeFailureWarned = true;
+  console.warn('[sidebar] pending-approvals badge fetch failed', detail);
+}
+
 function usePendingApprovalsBadge(): number | undefined {
   const [count, setCount] = useState<number | undefined>(undefined);
   useEffect(() => {
@@ -414,10 +424,20 @@ function usePendingApprovalsBadge(): number | undefined {
       try {
         const response = await fetchWithAuth('/approvals/pending/count');
         if (!response.ok) return;
-        const data = (await response.json().catch(() => ({}))) as { count?: number };
-        if (!cancelled) setCount(typeof data.count === 'number' ? data.count : 0);
-      } catch {
+        let data: unknown;
+        try {
+          data = await response.json();
+        } catch (err) {
+          // Malformed body: keep the previously shown count. Coercing a parse
+          // failure to 0 would affirmatively claim "nothing pending".
+          warnApprovalsBadgeFailureOnce(err);
+          return;
+        }
+        const nextCount = (data as { count?: unknown } | null | undefined)?.count;
+        if (!cancelled) setCount(typeof nextCount === 'number' ? nextCount : 0);
+      } catch (err) {
         // The inbox remains reachable; a badge fetch failure only hides its count.
+        warnApprovalsBadgeFailureOnce(err);
       }
     };
     void load();
