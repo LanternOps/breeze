@@ -46,7 +46,11 @@ export const actionIntentStatusEnum = [
 ] as const;
 export type ActionIntentStatus = (typeof actionIntentStatusEnum)[number];
 
-export const actionIntentSourceEnum = ['chat', 'mcp_api'] as const;
+// 'ai_agent' (wave 3, #3824): a headless agent proposal. Distinct from 'chat'
+// because nobody is watching a chat pane — supervised agent intents must be
+// notified, and they carry an agent-specific expiry rather than the 5-minute
+// chat deadline.
+export const actionIntentSourceEnum = ['chat', 'mcp_api', 'ai_agent'] as const;
 export type ActionIntentSource = (typeof actionIntentSourceEnum)[number];
 
 /**
@@ -59,6 +63,10 @@ export const actionIntentOriginPrincipalKindEnum = [
   'api_key',
   'oauth_grant',
   'agent',
+  // The AI agent principal (wave 3). NOT the same as 'agent', which is the Go
+  // device agent — see actorContext.ts, where the two must map to different
+  // AuthContexts.
+  'ai_agent',
   'helper',
   'system',
   'unknown',
