@@ -16,6 +16,7 @@ export * from './email';
 export * from './auditService';
 export * from './tokenRevocation';
 export * from './refreshTokenFamily';
+export * from './authBrowserTransition';
 export * from './clientIp';
 export { getUserEpochs } from './authEpochs';
 export { getRefreshFamily } from './refreshTokenFamily';

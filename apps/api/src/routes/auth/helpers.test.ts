@@ -11,6 +11,8 @@ import {
   buildRefreshTokenCookie,
   buildCsrfTokenCookie,
   buildClearRefreshTokenCookie,
+  buildAuthBindingCookie,
+  buildClearAuthBindingCookie,
   setRefreshTokenCookie,
   clearRefreshTokenCookie,
   _resetAuthCookieWarnStateForTests,
@@ -541,6 +543,24 @@ describe('auth cookie Secure flag (#1618 regression)', () => {
     expect(buildCsrfTokenCookie('t', false)).not.toContain('Secure');
     expect(buildClearRefreshTokenCookie(true)).toContain('; Secure');
     expect(buildClearRefreshTokenCookie(false)).not.toContain('Secure');
+    expect(buildAuthBindingCookie('binding', true)).toContain('; Secure');
+    expect(buildAuthBindingCookie('binding', false)).not.toContain('Secure');
+    expect(buildClearAuthBindingCookie(true)).toContain('; Secure');
+    expect(buildClearAuthBindingCookie(false)).not.toContain('Secure');
+  });
+
+  it('keeps the dedicated binding host-only, HttpOnly, path-wide, and separate from CSRF', () => {
+    const cookie = buildAuthBindingCookie('binding-value', true);
+    expect(cookie).toContain('breeze_auth_binding=binding-value');
+    expect(cookie).toContain('Path=/');
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('SameSite=Lax');
+    expect(cookie).not.toContain('Domain=');
+    expect(cookie).not.toContain('breeze_csrf_token');
+
+    const cleared = buildClearAuthBindingCookie(true);
+    expect(cleared).toContain('breeze_auth_binding=;');
+    expect(cleared).toContain('Max-Age=0');
   });
 });
 

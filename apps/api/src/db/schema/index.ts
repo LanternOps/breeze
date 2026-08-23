@@ -88,6 +88,7 @@ export * from './deploymentInvites';
 export * from './emailVerificationTokens';
 export * from './manifestSigningKeys';
 export * from './refreshTokenFamilies';
+export * from './authBrowserTransitions';
 export * from './tenantVariables';
 export * from './tickets';
 export * from './officeAddin';

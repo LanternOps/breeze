@@ -1,6 +1,8 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex, integer } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { bigint, check, foreignKey, pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex, integer } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { users } from './users';
+import { authBrowserTransitions } from './authBrowserTransitions';
 
 export const ssoProviderTypeEnum = pgEnum('sso_provider_type', ['oidc', 'saml']);
 export const ssoProviderStatusEnum = pgEnum('sso_provider_status', ['active', 'inactive', 'testing']);
@@ -154,9 +156,29 @@ export const ssoSessions = pgTable('sso_sessions', {
   // = refresh_token_families.family_id == the initiating access token's `sid`.
   initiatingSessionId: uuid('initiating_session_id'),
 
+  // Nullable during rollout and for pre-deploy in-flight SSO rows. New login
+  // starts capture both fields so callbacks recover the exact transition
+  // generation without depending on a SameSite cookie.
+  browserTransitionId: uuid('browser_transition_id'),
+  browserGeneration: bigint('browser_generation', { mode: 'number' }),
+
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  browserTransitionPairCheck: check(
+    'sso_sessions_browser_transition_pair_chk',
+    sql`(${table.browserTransitionId} IS NULL) = (${table.browserGeneration} IS NULL)`,
+  ),
+  browserGenerationCheck: check(
+    'sso_sessions_browser_generation_chk',
+    sql`${table.browserGeneration} IS NULL OR ${table.browserGeneration} >= 1`,
+  ),
+  browserTransitionFk: foreignKey({
+    columns: [table.browserTransitionId],
+    foreignColumns: [authBrowserTransitions.id],
+    name: 'sso_sessions_browser_transition_fk',
+  }).onDelete('cascade'),
+}));
 
 // SSO Verified Domains — org proves DNS ownership before JIT-provisioning is
 // allowed for addresses in the domain (security review #2, H-2, Plan B).

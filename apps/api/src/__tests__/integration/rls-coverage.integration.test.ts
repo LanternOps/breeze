@@ -97,6 +97,8 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'abuse_sweep_state', // Abuse-sweep scan state (incremental execution-scan high-water mark). No tenant column. Forced RLS, system-only policy.
   'abuse_endpoint_fingerprints', // Cross-partner endpoint-fingerprint corpus for the recidivist-endpoint abuse detector. Carries partner_id but is deliberately operator-only (mirrors abuse_script_hosts). Forced RLS, system-only policy.
   'sso_sessions', // Pre-auth SSO CSRF/PKCE transaction store (state/nonce/code_verifier + link binding). No tenant column; written/consumed only by unauthenticated callback + system-context routes. Forced RLS, system-only policy → only system context.
+  'auth_browser_transitions', // Browser/native authentication transition state. Forced RLS, one system-only ALL policy; raw bindings are never stored and tenants cannot read browser-to-account correlation.
+  'sso_token_exchange_grants', // One-time SSO exchange authority. Forced RLS, one system-only ALL policy; only guarded auth lifecycle transactions may consume it.
   'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
   'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.
 ]);

@@ -46,6 +46,8 @@ import {
 
 const { db } = dbModule;
 
+export const AUTH_BINDING_COOKIE_NAME = 'breeze_auth_binding';
+
 /**
  * Run `fn` inside the SYSTEM DB access context.
  *
@@ -763,6 +765,11 @@ export function buildRefreshTokenCookie(refreshToken: string, connectionSecure: 
   return `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}; Path=${REFRESH_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
 }
 
+export function buildAuthBindingCookie(value: string, connectionSecure: boolean): string {
+  const sameSite = resolveAuthCookieSameSite();
+  return `${AUTH_BINDING_COOKIE_NAME}=${encodeURIComponent(value)}; Path=/; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
+}
+
 export function buildCsrfTokenCookie(csrfToken: string, connectionSecure: boolean): string {
   const sameSite = resolveAuthCookieSameSite();
   return `${CSRF_COOKIE_NAME}=${encodeURIComponent(csrfToken)}; Path=${CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
@@ -771,6 +778,11 @@ export function buildCsrfTokenCookie(csrfToken: string, connectionSecure: boolea
 export function buildClearRefreshTokenCookie(connectionSecure: boolean): string {
   const sameSite = resolveAuthCookieSameSite();
   return `${REFRESH_COOKIE_NAME}=; Path=${REFRESH_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=0`;
+}
+
+export function buildClearAuthBindingCookie(connectionSecure: boolean): string {
+  const sameSite = resolveAuthCookieSameSite();
+  return `${AUTH_BINDING_COOKIE_NAME}=; Path=/; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=0`;
 }
 
 export function buildClearCsrfTokenCookie(connectionSecure: boolean): string {
