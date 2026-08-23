@@ -43,11 +43,20 @@ vi.mock('./catalogService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./catalogService')>();
   return { ...actual, resolvePrice: vi.fn() };
 });
+// Multi-currency wave 7 (#3779): the MRR rollup prices catalog lines through the
+// SAME pure price-book resolver billing uses. Spy on it while calling through —
+// the resolution rules themselves stay under catalogPricing.test.ts.
+vi.mock('./catalogPricing', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./catalogPricing')>();
+  return { ...actual, resolvePriceFrom: vi.fn(actual.resolvePriceFrom) };
+});
 
 import * as svc from './contractService';
 import { db } from '../db';
 import { resolvePrice, CatalogServiceError } from './catalogService';
+import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
+import { countContractDevices, countContractSeats } from './contractQuantities';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 
@@ -517,5 +526,161 @@ describe('changeContractCurrency — ACTIVE escape hatch (#3778)', () => {
         svc.changeContractCurrency('c1', { currencyCode: 'EUR', confirmActiveChange: true }, manageActor)
       ).rejects.toMatchObject({ code: 'NOT_A_DRAFT', status: 409 });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-currency wave 7 (#3779): per-currency partner-dashboard MRR.
+// ---------------------------------------------------------------------------
+describe('summarizeActiveContractMrrByOrg (#3779)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    vi.mocked(countContractDevices).mockResolvedValue(0);
+    vi.mocked(countContractSeats).mockResolvedValue(0);
+  });
+
+  /** Every bound parameter value inside a Drizzle SQL/condition tree. */
+  function collectParams(node: unknown, out: unknown[] = [], seen = new Set<unknown>()): unknown[] {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return out;
+    seen.add(node);
+    if (Array.isArray(node)) { for (const c of node) collectParams(c, out, seen); return out; }
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      if (key === 'value') {
+        if (Array.isArray(child)) out.push(...child.filter((v) => typeof v !== 'object'));
+        else if (child !== null && typeof child !== 'object') out.push(child);
+      }
+      if (child && typeof child === 'object') collectParams(child, out, seen);
+    }
+    return out;
+  }
+
+  const contract = (over: Record<string, unknown> = {}) => ({
+    id: 'c1', orgId: 'org1', status: 'active', currencyCode: 'USD', intervalMonths: 1, ...over,
+  });
+  const line = (over: Record<string, unknown> = {}) => ({
+    id: 'l1', contractId: 'c1', lineType: 'flat', unitPrice: '100.00',
+    manualQuantity: null, siteId: null, catalogItemId: null, ...over,
+  });
+
+  it('returns an empty map without querying when no org ids are given', async () => {
+    const out = await svc.summarizeActiveContractMrrByOrg([]);
+    expect(out.size).toBe(0);
+    expect((db as unknown as { select: { mock: { calls: unknown[][] } } }).select.mock.calls.length).toBe(0);
+  });
+
+  it('filters on status=active and the requested org ids in the contract query', async () => {
+    queueResult([]);
+    await svc.summarizeActiveContractMrrByOrg(['org1', 'org2']);
+    const where = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[0]![0];
+    const params = collectParams(where);
+    expect(params).toContain('active');
+    expect(params).toContain('org1');
+    expect(params).toContain('org2');
+  });
+
+  it('amortises a 12-month contract of 1200.00 to 100.00 monthly', async () => {
+    queueResult([contract({ intervalMonths: 12 })]);
+    queueResult([line({ unitPrice: '1200.00' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
+  });
+
+  it('amortises a 3-month contract of 300.00 to 100.00 monthly', async () => {
+    queueResult([contract({ intervalMonths: 3 })]);
+    queueResult([line({ unitPrice: '300.00' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
+  });
+
+  it('keeps two currencies under ONE org as two entries, never a sum', async () => {
+    queueResult([
+      contract({ id: 'c1', currencyCode: 'USD' }),
+      contract({ id: 'c2', currencyCode: 'EUR' }),
+    ]);
+    queueResult([
+      line({ id: 'l1', contractId: 'c1', unitPrice: '1230.00' }),
+      line({ id: 'l2', contractId: 'c2', unitPrice: '410.00' }),
+    ]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    expect(out.get('org1')).toEqual([
+      { currencyCode: 'EUR', amount: '410.00' },
+      { currencyCode: 'USD', amount: '1230.00' },
+    ]);
+  });
+
+  it('rounds each contract in its OWN currency — a JPY contract never yields a fractional yen', async () => {
+    queueResult([contract({ currencyCode: 'JPY', intervalMonths: 2 })]);
+    queueResult([line({ unitPrice: '201' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    // roundToCurrency returns the fixed-2 string the numeric(_,2) columns
+    // store; for a zero-decimal currency that is a WHOLE major unit — 101.00,
+    // never the 100.50 a naive 201/2 would emit.
+    expect(out.get('org1')).toEqual([{ currencyCode: 'JPY', amount: '101.00' }]);
+  });
+
+  it('omits an org with no active contracts from the map entirely', async () => {
+    queueResult([contract({ orgId: 'org1' })]);
+    queueResult([line({ unitPrice: '50.00' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1', 'org2']);
+    expect(out.has('org2')).toBe(false);
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '50.00' }]);
+  });
+
+  it('batches device counts: one call per distinct (orgId, siteId) across all orgs', async () => {
+    vi.mocked(countContractDevices).mockResolvedValue(2);
+    queueResult(['org1', 'org2', 'org3'].map((orgId, i) => contract({ id: `c${i}`, orgId })));
+    queueResult(['c0', 'c1', 'c2'].flatMap((contractId) => [
+      line({ id: `${contractId}-a`, contractId, lineType: 'per_device', unitPrice: '10.00' }),
+      line({ id: `${contractId}-b`, contractId, lineType: 'per_device', unitPrice: '5.00' }),
+    ]));
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1', 'org2', 'org3']);
+    expect(vi.mocked(countContractDevices).mock.calls.length).toBe(3);
+    expect(out.get('org2')).toEqual([{ currencyCode: 'USD', amount: '30.00' }]);
+  });
+
+  it('does not inherit the listContracts page cap — 120 orgs all report', async () => {
+    const orgIds = Array.from({ length: 120 }, (_, i) => `org${i}`);
+    queueResult(orgIds.map((orgId, i) => contract({ id: `c${i}`, orgId })));
+    queueResult(orgIds.map((_, i) => line({ id: `l${i}`, contractId: `c${i}`, unitPrice: '7.00' })));
+    const out = await svc.summarizeActiveContractMrrByOrg(orgIds);
+    expect(out.size).toBe(120);
+    expect((db as unknown as { limit: { mock: { calls: unknown[][] } } }).limit.mock.calls.length).toBe(0);
+  });
+
+  it('prices a catalog line through the price book, not the line snapshot', async () => {
+    queueResult([contract({ currencyCode: 'USD' })]);
+    queueResult([line({ catalogItemId: 'item-1', unitPrice: '10.00' })]);
+    queueResult([]);                                   // no org overrides
+    queueResult([{ itemId: 'item-1', currencyCode: 'USD', unitPrice: '42.00' }]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    expect(vi.mocked(resolvePriceFrom)).toHaveBeenCalled();
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '42.00' }]);
+  });
+
+  it('prefers an org override stamped in the contract currency over the price book', async () => {
+    queueResult([contract({ currencyCode: 'USD' })]);
+    queueResult([line({ catalogItemId: 'item-1', unitPrice: '10.00' })]);
+    queueResult([{ itemId: 'item-1', orgId: 'org1', currencyCode: 'USD', unitPrice: '33.00' }]);
+    queueResult([{ itemId: 'item-1', currencyCode: 'USD', unitPrice: '42.00' }]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '33.00' }]);
+  });
+
+  it('falls back to the stamped unitPrice on a price-book gap — never another currency price, never converted', async () => {
+    queueResult([contract({ currencyCode: 'USD' })]);
+    queueResult([line({ catalogItemId: 'item-1', unitPrice: '10.00' })]);
+    queueResult([{ itemId: 'item-1', orgId: 'org1', currencyCode: 'EUR', unitPrice: '999.00' }]); // wrong-currency override
+    queueResult([]);                                    // no USD book row (the gap)
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '10.00' }]);
+  });
+
+  it('never consults the resolver for a non-catalog line', async () => {
+    queueResult([contract()]);
+    queueResult([line({ catalogItemId: null, unitPrice: '10.00' })]);
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    expect(vi.mocked(resolvePriceFrom)).not.toHaveBeenCalled();
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '10.00' }]);
   });
 });

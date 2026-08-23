@@ -1,9 +1,9 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { contracts, contractLines, contractBillingPeriods, organizations } from '../db/schema';
+import { contracts, contractLines, contractBillingPeriods, organizations, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
-import { isRepresentableInCurrency, minorUnitExponent, PERMISSION_GRANTS } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
 import { emitContractEvent } from './contractEvents';
@@ -31,6 +31,7 @@ async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Prom
 
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
+import { resolvePriceFrom, isPriceGap } from './catalogPricing';
 import { countContractDevices, countContractSeats } from './contractQuantities';
 import type { InvoiceActor } from './invoiceTypes';
 
@@ -214,6 +215,151 @@ export async function computeContractEstimate(contractId: string, actor: Contrac
     out.push({ lineId: l.id, lineType: l.lineType, quantity, value: value.toFixed(2), live });
   }
   return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out };
+}
+
+// ---- per-currency MRR rollup (multi-currency wave 7, #3779) ----------------
+
+export interface OrgCurrencyMrr { currencyCode: string; amount: string }
+
+/** `${catalogItemId}|${currencyCode}|${orgId}` */
+type PriceKey = string;
+function priceKey(itemId: string, currencyCode: string, orgId: string): PriceKey {
+  return `${itemId}|${currencyCode}|${orgId}`;
+}
+
+/**
+ * Batched, read-only price-book inputs for every catalog line in the rollup:
+ * org overrides for the orgs in play and price-book rows for the currencies in
+ * play, in two queries total rather than three per line.
+ */
+async function loadCatalogPriceInputs(
+  itemIds: string[], orgIds: string[], currencyCodes: string[],
+): Promise<{
+  overrides: Map<string, { unitPrice: string; currencyCode: string }>;
+  bookRows: Map<string, { unitPrice: string }>;
+}> {
+  const overrideRows = await db.select({
+    itemId: catalogItemOrgPricing.catalogItemId,
+    orgId: catalogItemOrgPricing.orgId,
+    currencyCode: catalogItemOrgPricing.currencyCode,
+    unitPrice: catalogItemOrgPricing.unitPrice,
+  }).from(catalogItemOrgPricing)
+    .where(and(inArray(catalogItemOrgPricing.catalogItemId, itemIds), inArray(catalogItemOrgPricing.orgId, orgIds)));
+  const bookPriceRows = await db.select({
+    itemId: catalogItemPrices.itemId,
+    currencyCode: catalogItemPrices.currencyCode,
+    unitPrice: catalogItemPrices.unitPrice,
+  }).from(catalogItemPrices)
+    .where(and(inArray(catalogItemPrices.itemId, itemIds), inArray(catalogItemPrices.currencyCode, currencyCodes)));
+
+  const overrides = new Map<string, { unitPrice: string; currencyCode: string }>();
+  for (const r of overrideRows) overrides.set(`${r.itemId}|${r.orgId}`, { unitPrice: r.unitPrice, currencyCode: r.currencyCode });
+  const bookRows = new Map<string, { unitPrice: string }>();
+  for (const r of bookPriceRows) bookRows.set(`${r.itemId}|${r.currencyCode}`, { unitPrice: r.unitPrice });
+  return { overrides, bookRows };
+}
+
+/**
+ * Estimated monthly recurring revenue per org, GROUPED BY the contract's own
+ * stamped currency (multi-currency spec §8: honest per-currency segmentation,
+ * never a cross-currency sum). One org can legitimately hold active contracts
+ * in several currencies after an org-default change — history keeps its stamp.
+ *
+ * "Estimated" because per_device/per_seat quantities are resolved live; the
+ * figure is never persisted. No FX happens here: converting to a single
+ * reporting currency is the CALLER's optional, explicitly-approximate step.
+ *
+ * Catalog-backed lines are priced through the SAME resolver recurring billing
+ * uses (`resolvePriceFrom`, spec §6: org override in the contract's currency →
+ * price-book row for that currency → the line's stamped snapshot on a gap), so
+ * the dashboard agrees with the invoices it predicts. Never converts and never
+ * falls through to another currency's price.
+ */
+export async function summarizeActiveContractMrrByOrg(
+  orgIds: readonly string[],
+): Promise<Map<string, OrgCurrencyMrr[]>> {
+  const out = new Map<string, OrgCurrencyMrr[]>();
+  if (orgIds.length === 0) return out;
+
+  const rows = await db.select().from(contracts)
+    .where(and(inArray(contracts.orgId, [...orgIds]), eq(contracts.status, 'active' as never)));
+  if (rows.length === 0) return out;
+
+  const allLines = await db.select().from(contractLines)
+    .where(inArray(contractLines.contractId, rows.map((r) => r.id)));
+  const byContract = new Map<string, typeof allLines>();
+  for (const l of allLines) {
+    const list = byContract.get(l.contractId);
+    if (list) list.push(l); else byContract.set(l.contractId, [l]);
+  }
+
+  // Price-book inputs, loaded once for the whole dashboard.
+  const catalogItemIds = [...new Set(allLines.map((l) => l.catalogItemId).filter((v): v is string => !!v))];
+  let overrides = new Map<string, { unitPrice: string; currencyCode: string }>();
+  let bookRows = new Map<string, { unitPrice: string }>();
+  if (catalogItemIds.length > 0) {
+    const contractsWithCatalog = rows.filter((c) => (byContract.get(c.id) ?? []).some((l) => l.catalogItemId));
+    const loaded = await loadCatalogPriceInputs(
+      catalogItemIds,
+      [...new Set(contractsWithCatalog.map((c) => c.orgId))],
+      [...new Set(contractsWithCatalog.map((c) => c.currencyCode))],
+    );
+    overrides = loaded.overrides;
+    bookRows = loaded.bookRows;
+  }
+  // Resolve once per distinct (itemId, currencyCode, orgId), like the device and
+  // seat caches below.
+  const priceCache = new Map<PriceKey, string | null>();
+  function resolvedUnitPrice(itemId: string, currencyCode: string, orgId: string): string | null {
+    const key = priceKey(itemId, currencyCode, orgId);
+    if (priceCache.has(key)) return priceCache.get(key)!;
+    // The rollup consumes only the unit price; candidate selection and
+    // representability depend solely on the override/book rows and the target
+    // currency, never on the item's cost snapshot — so the cost fields are
+    // stubbed rather than loading every catalog item for a figure that ignores
+    // them. A gap (either kind) is a null here: the caller bills the stamped
+    // snapshot, exactly as addContractLine does.
+    const resolved = resolvePriceFrom(
+      { costBasis: null, costCurrency: currencyCode, taxable: false, taxCategory: null },
+      overrides.get(`${itemId}|${orgId}`) ?? null,
+      bookRows.get(`${itemId}|${currencyCode}`) ?? null,
+      currencyCode,
+    );
+    const price = isPriceGap(resolved) ? null : resolved.unitPrice;
+    priceCache.set(key, price);
+    return price;
+  }
+
+  // Shared across ALL orgs in this call, so a distinct (org, site) device count
+  // and a distinct org seat count each run exactly once for the whole dashboard.
+  const dc: DeviceCache = new Map();
+  const sc: SeatCache = new Map();
+  const totals = new Map<string, Map<string, number>>(); // orgId -> currency -> monthly
+
+  for (const c of rows) {
+    let periodValue = 0;
+    for (const l of byContract.get(c.id) ?? []) {
+      const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
+      const unitPrice = l.catalogItemId
+        ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
+        : l.unitPrice;
+      periodValue += Number(unitPrice) * quantity;
+    }
+    const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
+    // Round each contract in ITS OWN currency before grouping — a JPY contract
+    // must never contribute a fractional yen.
+    const monthly = Number(roundToCurrency(periodValue / months, c.currencyCode));
+    const perOrg = totals.get(c.orgId) ?? new Map<string, number>();
+    perOrg.set(c.currencyCode, (perOrg.get(c.currencyCode) ?? 0) + monthly);
+    totals.set(c.orgId, perOrg);
+  }
+
+  for (const [orgId, perCurrency] of totals) {
+    out.set(orgId, [...perCurrency.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([currencyCode, amount]) => ({ currencyCode, amount: roundToCurrency(amount, currencyCode) })));
+  }
+  return out;
 }
 
 export async function updateContract(contractId: string, patch: UpdateContractInput, actor: ContractActor) {
