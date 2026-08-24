@@ -2,7 +2,9 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { extractRowCount } from '../../db/rowCount';
 import { notificationChannels, organizations, partners } from '../../db/schema';
+import { captureException } from '../../services/sentry';
 import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
@@ -687,7 +689,7 @@ channelsRoutes.post(
       : scrubChannelTestError(channel.type, channelConfig, testResult.message);
 
     try {
-      await withAuthDbAccessContext(auth, () =>
+      const persistResult = await withAuthDbAccessContext(auth, () =>
         db.update(notificationChannels)
           .set({
             lastTestedAt: new Date(),
@@ -696,8 +698,29 @@ channelsRoutes.post(
           })
           .where(eq(notificationChannels.id, channel.id))
       );
+
+      // A zero-row UPDATE does not throw. `channel` was fetched moments ago
+      // under this same auth, so matching nothing means the row moved out from
+      // under us (a concurrent org move) or a policy divergence. Either way the
+      // card silently keeps whatever it showed before — which, now that a
+      // verdict is rendered, can be a stale green "Success" sitting under a
+      // toast that just said the test failed. That is #3697 one layer down, so
+      // it does not get to be silent.
+      if (extractRowCount(persistResult) === 0) {
+        captureException(
+          new Error('Notification channel test outcome matched 0 rows'),
+          c,
+          { channelId: channel.id, channelType: channel.type }
+        );
+      }
     } catch (persistError) {
+      // Still best-effort: a DB hiccup must not turn a completed outbound send
+      // into an error response, and the HTTP body already carries the verdict.
+      // But console.error alone made this invisible off-box, and this write now
+      // carries the operator-facing REASON rather than just a timestamp — the
+      // whole point of the fix is lost without a signal that it did not land.
       console.error('[Channels] Failed to persist test outcome', { channelId: channel.id, persistError });
+      captureException(persistError, c, { channelId: channel.id, channelType: channel.type });
     }
 
     const response = {

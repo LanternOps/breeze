@@ -11,7 +11,14 @@ import { Hono } from 'hono';
 // HTTP body already carried the message correctly — the defect was entirely in
 // what survived the request.
 
-const { authRef, channelRowRef, updateSetRef, senderResultRef } = vi.hoisted(() => ({
+const {
+  authRef,
+  channelRowRef,
+  updateSetRef,
+  senderResultRef,
+  updateRowCountRef,
+  capturedExceptionsRef,
+} = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'organization' as string,
@@ -25,6 +32,10 @@ const { authRef, channelRowRef, updateSetRef, senderResultRef } = vi.hoisted(() 
   channelRowRef: { current: undefined as Record<string, unknown> | undefined },
   updateSetRef: { current: undefined as Record<string, unknown> | undefined },
   senderResultRef: { current: { success: false, error: 'unset' } as { success: boolean; error?: string } },
+  // postgres-js resolves an UPDATE to a Result carrying `.count`; the route
+  // reads it via extractRowCount to catch a silent zero-row write.
+  updateRowCountRef: { current: 1 },
+  capturedExceptionsRef: { current: [] as unknown[] },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -48,7 +59,7 @@ vi.mock('../../db', () => {
     },
     values: () => builder,
     from: () => builder,
-    where: () => Promise.resolve(undefined),
+    where: () => Promise.resolve({ count: updateRowCountRef.current }),
     limit: () => Promise.resolve(channelRowRef.current ? [channelRowRef.current] : []),
     returning: () => Promise.resolve([]),
   };
@@ -97,6 +108,10 @@ vi.mock('../../db/schema', () => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn((err: unknown) => { capturedExceptionsRef.current.push(err); }),
+}));
 
 // Crypto is bypassed, but scrubChannelTestError is deliberately left REAL: the
 // point of the slack case below is that the route hands the scrubber the
@@ -165,6 +180,8 @@ function fakeSlackWebhookUrl(secret: string): string {
 describe('POST /alerts/channels/:id/test — persisted test outcome (#3697)', () => {
   beforeEach(() => {
     updateSetRef.current = undefined;
+    updateRowCountRef.current = 1;
+    capturedExceptionsRef.current = [];
     channelRowRef.current = emailChannel();
   });
 
@@ -193,6 +210,71 @@ describe('POST /alerts/channels/:id/test — persisted test outcome (#3697)', ()
 
     expect(updateSetRef.current?.lastTestStatus).toBe('success');
     expect(updateSetRef.current?.lastTestError).toBeNull();
+  });
+
+  // A sender that THROWS rather than resolving {success:false} takes the
+  // catch-all path, whose message is built from an Error rather than the
+  // hand-crafted strings every other case produces. Network clients routinely
+  // embed the URL they were called with in `error.message`, and for a slack
+  // channel that URL is the credential — so the scrub has to hold here too.
+  it('scrubs and persists a reason from a sender that throws', async () => {
+    const webhookUrl = fakeSlackWebhookUrl('QQQQQQQQQQQQQQQQQQQQQQQQ');
+    channelRowRef.current = emailChannel({ type: 'slack', config: { webhookUrl } });
+    const { sendWebhookNotification } = await import('../../services/notificationSenders');
+    vi.mocked(sendWebhookNotification).mockRejectedValueOnce(new Error(`socket hang up posting to ${webhookUrl}`));
+
+    await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+
+    const stored = updateSetRef.current?.lastTestError as string;
+    expect(updateSetRef.current?.lastTestStatus).toBe('failed');
+    expect(stored).toContain('Failed to test channel');
+    expect(stored).not.toContain(webhookUrl);
+    expect(stored).not.toContain('QQQQQQQQQQQQQQQQQQQQQQQQ');
+  });
+
+  // The deploy-drift branch (DB enum has a type the code does not handle)
+  // returns 501 BEFORE the persist. Writing a verdict there would record
+  // "failed" for a channel nobody actually tested. The invariant is currently
+  // only stated in a comment, and a refactor that hoists the persist would
+  // break it silently.
+  it('persists nothing for an unsupported channel type', async () => {
+    channelRowRef.current = emailChannel({ type: 'carrier-pigeon' });
+
+    const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+
+    expect(res.status).toBe(501);
+    expect(updateSetRef.current).toBeUndefined();
+  });
+
+  // A zero-row UPDATE does not throw. Before this was checked, the card kept
+  // its previous verdict — potentially a stale green "Success" under a toast
+  // that just said the test failed — with nothing recorded anywhere.
+  it('reports a persist that silently matched no rows', async () => {
+    senderResultRef.current = { success: false, error: RESEND_ERROR };
+    updateRowCountRef.current = 0;
+
+    const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+
+    // The caller still gets its verdict — the persist stays best-effort.
+    expect(res.status).toBe(200);
+    expect(capturedExceptionsRef.current).toHaveLength(1);
+    expect((capturedExceptionsRef.current[0] as Error).message).toContain('0 rows');
+  });
+
+  it('reports a persist that threw instead of failing the request', async () => {
+    senderResultRef.current = { success: false, error: RESEND_ERROR };
+    const { db } = await import('../../db');
+    const updateSpy = vi.spyOn(db, 'update').mockImplementationOnce(() => {
+      throw new Error('connection terminated');
+    });
+
+    const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+    updateSpy.mockRestore();
+
+    // The outbound send already happened; a DB hiccup must not retro-fail it.
+    expect(res.status).toBe(200);
+    expect(capturedExceptionsRef.current).toHaveLength(1);
+    expect((capturedExceptionsRef.current[0] as Error).message).toContain('connection terminated');
   });
 
   // End-to-end proof that the route hands the scrubber the DECRYPTED config.
