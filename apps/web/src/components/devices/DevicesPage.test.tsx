@@ -1292,18 +1292,59 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     // An impatient double-click on a bulk REBOOT must not reboot the fleet twice.
     //
-    // What this actually fences: converting the dialog to a stay-mounted +
-    // spinner pattern (leaning on ConfirmDialog's `disabled`, or on the
-    // actionInProgress guard — which reads a stale `false` closure and cannot
-    // help) lets the second click through and fires sendBulkCommand twice.
-    // It does NOT discriminate the set-state-before-dispatch ORDER: under React
-    // 18 both updates flush together at the end of the handler, so swapping them
-    // would still pass. The unmount is the guard; the ordering is not load-bearing.
+    // Two things fence this now (#3705), and the unmount is no longer either of
+    // them: ConfirmDialog holds a synchronous ref latch, so converting this to a
+    // stay-mounted + spinner pattern no longer lets the second click through
+    // (`disabled` and runBulkAction's `actionInProgress` both read a closure
+    // captured at render and still cannot help). It does NOT discriminate the
+    // set-state-before-dispatch ORDER: under React 18 both updates flush
+    // together at the end of the handler, so swapping them would still pass.
     fireEvent.click(confirm);
     fireEvent.click(confirm);
 
     await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
     expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1);
+  });
+
+  // #3705, the OTHER half of the double-click. The one above proves the same
+  // button cannot fire twice. This proves the second press cannot fire
+  // something ELSE: confirming tears the portal out, and in a browser that
+  // press is hit-tested afterwards against whatever now occupies those
+  // coordinates — the bulk bar and the device rows the dialog was centred over.
+  //
+  // jsdom has no layout, so it cannot pick that target itself; the test hands
+  // the press to the bulk Wake button directly, which is what a browser does.
+  // What is faithfully modelled is the part that matters: the press arrives
+  // carrying detail === 2, because the platform click counter comes from the
+  // time and distance between presses, never from the hit-test target.
+  it('a double-click on confirm cannot fire an unrelated action underneath', async () => {
+    const { sendDeviceCommand, sendBulkWakeCommand } = await import('../../services/deviceActions');
+    vi.mocked(sendDeviceCommand).mockResolvedValue({ command: {} } as never);
+    vi.mocked(sendBulkWakeCommand).mockResolvedValue({ sent: [], failed: [] } as never);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-reboot-${DEV_1}`));
+
+    // Press 1 of the double-click: lands on Confirm, unmounts the dialog.
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
+    fireEvent.mouseDown(confirmBtn, { detail: 1 });
+    fireEvent.mouseUp(confirmBtn, { detail: 1 });
+    fireEvent.click(confirmBtn, { detail: 1 });
+    await waitFor(() => expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1));
+
+    // Press 2, now hit-testing through to the fleet Wake the operator never
+    // aimed at. Wake is deliberately UNGATED, so nothing else would stop it.
+    const wake = screen.getByTestId('bulk-wake');
+    fireEvent.mouseDown(wake, { detail: 2 });
+    fireEvent.mouseUp(wake, { detail: 2 });
+    fireEvent.click(wake, { detail: 2 });
+
+    expect(vi.mocked(sendBulkWakeCommand)).not.toHaveBeenCalled();
+    expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledWith(DEV_1, 'reboot');
   });
 });
 

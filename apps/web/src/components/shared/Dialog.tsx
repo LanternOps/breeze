@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useCallback,
   type ReactNode,
@@ -25,6 +26,93 @@ const maxWidthClass: Record<DialogMaxWidth, string> = {
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+/* Gesture-tail guard (#3705).
+ *
+ * A dialog closes by tearing its portal out of the DOM, so on a REAL
+ * double-click the second physical press is hit-tested AFTER the backdrop is
+ * gone — against whatever now occupies those coordinates. Confirm buttons sit
+ * centred over dense list and grid layouts whose rows carry live actions, so
+ * the hazard is not a duplicate of the action just confirmed; it is an
+ * UNRELATED action firing from the second half of the gesture.
+ *
+ * The discriminator is `MouseEvent.detail`, the platform click counter.
+ * Chromium, Gecko and WebKit all derive it from the button, the time and the
+ * distance between presses rather than from the DOM target, so the second
+ * press still reports `detail === 2` even though it now lands on a different
+ * element. (That is consistent de-facto behaviour across the three engines
+ * rather than a normative guarantee: UI Events defines the counter but does not
+ * say that a change of target must leave it alone. The latch in ConfirmDialog
+ * is the belt to this pair of braces.)
+ *
+ * A deliberate NEW double-click after the dialog closed begins with a press
+ * whose `detail` is 1, which stands the guard down before its own second press
+ * arrives — so intentional double-clicks keep working. That is also what bounds
+ * the guard's lifetime: it retires on the next fresh press rather than on a
+ * timer, because OS double-click intervals are user-configurable (Windows
+ * allows up to 5s) and any fixed ceiling would either expire before the second
+ * press or linger well past it.
+ *
+ * KNOWN TRADE-OFF. The counter cannot distinguish "second half of an
+ * accidental double-click" from "deliberate fast click at the same spot right
+ * after confirming" — both arrive as `detail >= 2`, and the second one is
+ * therefore swallowed until the user pauses long enough for the counter to
+ * reset. Because the counter only increments for presses within a few pixels
+ * of the last one, that costs at most a repeated click at the coordinates the
+ * confirm button just vacated, and it errs on the side of not firing a
+ * destructive command the user did not aim at. The place most likely to feel
+ * it is the remote FileManager, whose table rows are double-click-to-open and
+ * reflow underneath a delete confirm.
+ *
+ * SCOPE — deliberately narrow. This blocks the mouse/click activation tail and
+ * nothing else. Handlers bound to `pointerdown`/`pointerup` are NOT covered:
+ * those report `detail === 0`, so the same discriminator cannot classify them,
+ * and suppressing them wholesale would eat the opening press of a legitimate
+ * new gesture (and interfere with pointer capture and dragging). Keyboard- and
+ * AT-synthesised clicks also report 0 and pass through untouched, by design.
+ */
+const GUARDED_EVENTS = ['mousedown', 'mouseup', 'click', 'dblclick'] as const;
+
+let disarmActiveGestureTailGuard: (() => void) | null = null;
+
+function armGestureTailGuard() {
+  if (typeof document === 'undefined') return;
+  // Stacked dialogs: only ever one guard installed.
+  disarmActiveGestureTailGuard?.();
+
+  const disarm = () => {
+    for (const type of GUARDED_EVENTS) document.removeEventListener(type, onEvent, true);
+    if (disarmActiveGestureTailGuard === disarm) disarmActiveGestureTailGuard = null;
+  };
+
+  // `UIEvent`, not React's imported `MouseEvent` — these are native events.
+  function onEvent(e: Event) {
+    if ((e as UIEvent).detail >= 2) {
+      e.preventDefault();
+      e.stopPropagation();
+      // React attaches its listener to the root container, a descendant of
+      // document, so stopping here in the capture phase means the tail of the
+      // gesture never reaches any handler underneath.
+      e.stopImmediatePropagation();
+      return;
+    }
+    // detail <= 1 — a genuinely new gesture. Stand down and let it through.
+    if (e.type === 'mousedown' || e.type === 'click') disarm();
+  }
+
+  for (const type of GUARDED_EVENTS) document.addEventListener(type, onEvent, true);
+  disarmActiveGestureTailGuard = disarm;
+}
+
+/** How long after a press inside the dialog a teardown still counts as caused
+ *  by that press. Only decides whether to ARM; the guard's own lifetime is
+ *  bounded by the next fresh press, not by this. */
+const POINTER_CAUSED_CLOSE_MS = 1000;
+
+// The portal must be gone before the guard is installed, and the listener must
+// be in place before the browser dispatches the next press. A layout effect's
+// cleanup runs inside the commit, which is both; a passive one runs after.
+const useIsomorphicLayoutEffect = typeof document !== 'undefined' ? useLayoutEffect : useEffect;
 
 export interface DialogProps {
   open: boolean;
@@ -87,6 +175,22 @@ export function Dialog({
     };
   }, [open]);
 
+  // #3705: arm the guard as the portal is torn out — but ONLY when a press
+  // inside the dialog could have caused the teardown (confirm, Cancel, a
+  // backdrop click). Escape, an async settle and a route change have no gesture
+  // in flight, and arming after those would let the guard eat a deliberate
+  // click, or leak into whatever screen renders next. StrictMode's extra
+  // setup/cleanup cycle is filtered out by the same test.
+  const lastPointerDownAtRef = useRef(0);
+  useIsomorphicLayoutEffect(() => {
+    if (!open) return;
+    return () => {
+      if (Date.now() - lastPointerDownAtRef.current < POINTER_CAUSED_CLOSE_MS) {
+        armGestureTailGuard();
+      }
+    };
+  }, [open]);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
       if (e.key === 'Escape') {
@@ -128,6 +232,9 @@ export function Dialog({
       style={{ animation: 'dialog-backdrop-in 150ms ease-out' }}
       onClick={handleBackdropClick}
       onKeyDown={handleKeyDown}
+      onMouseDownCapture={() => {
+        lastPointerDownAtRef.current = Date.now();
+      }}
     >
       <div
         ref={panelRef}
