@@ -434,6 +434,16 @@ git add apps/api/src/routes/agents/heartbeat.ts apps/api/src/routes/agents/heart
 git commit -m "fix(agent): report health independently of reachability"
 ```
 
+## Verified corrections for Tasks 7–11
+
+The following current-state corrections override narrower file lists or interfaces in Tasks 7–11 below:
+
+- Task 7 also changes `scriptExecution.test.ts`, `multi-tenant-isolation.test.ts`, and `openapi.ts`. Normalize duplicate requested IDs by first occurrence and return one ordered target result per distinct ID. Gate in oracle-safe order: missing/inaccessible, site, script-org, OS, decommissioned, maintenance. Zero admission is a valid rejected admission, not a global error. Route audit occurs only when at least one target is admitted; mobile/remediation locate results by requested device ID and mutate nothing on zero admission.
+- Task 8 also migrates `ScriptTestRunner`, `deviceActions`, `DevicesPage`, `DeviceDetailPage`, their tests, and locale parity. All consumers parse `ScriptAdmissionResult`; only `ScriptTestRunner` polls a real admitted execution to terminal state. A rejected 201 is never toasted or rendered as success.
+- Task 9 uses the execution-time-verified migration name `2026-09-08-automation-action-results.sql` after the committed `2026-09-07` health migration. Persist `terminalSource` plus `terminalIsProvisional`; only a reaper timeout is replaceable by later guarded real evidence. Seed derives org ownership under a device `FOR KEY SHARE` lock. Reconciliation locks the run `FOR UPDATE`, recomputes rather than increments, preserves legacy zero-action runs, and publishes a terminal event only on the effective parent CAS.
+- Task 10 also changes config-policy runtime tests, `softwareDeployment.ts` and its tests, and `automationWorker.ts`/tests. Software fanout returns an exact per-device `deploymentResultId`; mixed-action batching retains original normalized indexes. Ordinary and config-policy runs seed before dispatch. The worker must not hold a long ambient system transaction around the new short action transactions.
+- Task 11 also changes `agentWs.test.ts`, `software.ts`, and `software.test.ts`. HTTP and WS share a guarded command-to-action mapping and invoke it after an effective command CAS even when result validation later rejects the frame. Script/software handlers return the effective transitioned row ID; cancellation and every reaper reconcile only returned/guarded source changes. Direct WS and queued software paths are both covered.
+
 ### Task 7: Canonical per-target script admission (RMM-QA-212)
 
 **Files:**
