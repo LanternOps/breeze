@@ -365,7 +365,7 @@ describe('exchangeRateSync worker', () => {
     });
 
     it('runs at 17:15 UTC, after the ECB ~16:00 CET publication', () => {
-      expect(__testOnly.DAILY_CRON).toBe('15 17 * * *');
+      expect(__testOnly.DAILY_CRON).toBe('13 17 * * *');
     });
   });
 

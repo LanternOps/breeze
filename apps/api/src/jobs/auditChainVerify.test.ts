@@ -137,7 +137,7 @@ describe('auditChainVerify worker', () => {
   });
 
   it('exposes a daily cron and stable identifiers', () => {
-    expect(__testOnly.DAILY_CRON).toBe('15 4 * * *');
+    expect(__testOnly.DAILY_CRON).toBe('13 4 * * *');
     expect(__testOnly.JOB_NAME).toBe('audit-chain-verify');
     expect(__testOnly.REPEAT_JOB_ID).toBe('audit-chain-verify');
   });
@@ -160,7 +160,7 @@ describe('auditChainVerify worker', () => {
       await scheduleAuditChainVerify();
       expect(addMock).toHaveBeenCalledTimes(1);
       const [, , opts] = addMock.mock.calls[0] as [unknown, unknown, Record<string, unknown>];
-      expect((opts.repeat as { pattern: string }).pattern).toBe('15 4 * * *');
+      expect((opts.repeat as { pattern: string }).pattern).toBe('13 4 * * *');
       expect(opts.jobId).toBe('audit-chain-verify');
     });
 

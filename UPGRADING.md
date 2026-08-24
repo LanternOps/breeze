@@ -1,5 +1,65 @@
 # Upgrading Breeze
 
+## No action required: nightly job schedules were staggered
+
+Every BullMQ job registered with `repeat: { every: N }` fires on a wall-clock
+boundary derived from the Unix epoch, so all `every: 24h` jobs used to fire at
+exactly 00:00:00.000 UTC together — 18 of the 97 repeat entries on hosted
+production shared a single millisecond, and eleven of those were batched
+retention `DELETE`s competing for the same Postgres pool as live agent traffic.
+
+Those registrations are now explicit, staggered cron slots allocated in
+`apps/api/src/jobs/scheduleRegistry.ts`. No two scheduled jobs that run hourly
+or less often share a firing minute any more — including the daily vulnerability
+feed syncs, which used to co-fire with the hourly risk-score refresh on minute 0
+(the 13:00 pair was holding database connections for ~128 s a day).
+
+Daily job times have therefore moved. If you monitor for a specific job's run
+time, the registry lists every slot; nothing runs on a schedule you can no longer
+see.
+
+**No Redis cleanup is needed.** Each job's initializer removes its queue's
+existing repeat entries before re-registering, so the first boot of the new API
+image replaces the old schedule rather than adding a second one. To confirm
+after deploying, the total repeat count should stay flat rather than roughly
+double:
+
+```bash
+docker exec -i breeze-redis redis-cli --scan --pattern 'bull:*:repeat' \
+  | while read -r k; do printf '%s %s\n' "$(docker exec -i breeze-redis redis-cli ZCARD "$k")" "$k"; done \
+  | sort -rn
+```
+
+Two renamed environment variables (both optional, both previously undocumented
+apart from one example line in the admin guide):
+
+| Removed | Replacement | Notes |
+|---|---|---|
+| `USER_RISK_SCAN_INTERVAL_MS` | `USER_RISK_SCAN_CRON` | Value is now a cron pattern, e.g. `57 4,10,16,22 * * *`. |
+| `USER_RISK_RETENTION_INTERVAL_MS` | `USER_RISK_RETENTION_CRON` | Value is now a cron pattern, e.g. `45 8 * * *`. |
+| `ML_OUTPUT_RETENTION_INTERVAL_MS` | `ML_OUTPUT_RETENTION_CRON` | Value is now a cron pattern, e.g. `25 8 * * *`. |
+
+Setting a removed variable now logs a startup warning naming its replacement,
+and the job runs on its allocated default slot. Pick a minute no other job owns
+— the registry lists every allocated slot in one place.
+
+Cron overrides are validated at boot. Breeze requires the full five-field form:
+`cron-parser` does not reject a short expression, it pads the missing fields, so
+`*/5` means "day-of-month step 5, every minute" (first run four days later)
+rather than "every five minutes". An override that fails validation is ignored
+in favour of the built-in slot, with an error on stdout and in Sentry — a bad
+cadence value never prevents the API from becoming ready.
+
+### What this does not change
+
+The ~43 sub-hourly repeatable jobs (5s/30s/60s/2m/5m/10m/15m/30m sweeps) are
+deliberately still registered with `every:` — a 60-second tick has to fire every
+60 seconds. They remain epoch-aligned, so the 5-, 10-, 15- and 30-minute jobs do
+still converge on 00:00:00.000 alongside each other. The production `ZRANGE`
+above was taken mid-day and structurally could not show them. Midnight is
+quieter, not empty: what changed is that the heavy batched-`DELETE` retention
+jobs are no longer part of that convergence.
+
 ## Action required: reconnect Microsoft 365 ticket mailboxes
 
 This release strengthens Microsoft 365 ticket mailbox consent by verifying the Microsoft tenant and consenting administrator identity and binding the tenant to its Breeze partner. During the upgrade, every non-disabled Microsoft 365 ticket mailbox connection becomes `reauth_required`. Disabled rows that still hold a legacy tenant or delta cursor also become `reauth_required` and have that state cleared. Already-disabled rows with neither value remain disabled and are not reactivated.

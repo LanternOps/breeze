@@ -101,6 +101,7 @@
     "@types/semver": "^7.8.0",
     "@types/ssh2-sftp-client": "^9.0.6",
     "@vitest/coverage-v8": "^4.1.10",
+    "cron-parser": "4.9.0",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "jszip": "^3.10.1",

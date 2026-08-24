@@ -96,7 +96,8 @@ describe('user risk retention worker', () => {
       }),
       expect.objectContaining({
         jobId: __testOnly.REPEAT_JOB_ID,
-        repeat: { every: __testOnly.DEFAULT_RETENTION_INTERVAL_MS },
+        // Staggered daily slot, not an epoch-anchored interval (scheduleRegistry.ts).
+        repeat: { pattern: '43 8 * * *' },
       }),
     );
   });

@@ -44,12 +44,13 @@ import {
   refreshPartnerStripeAccount,
   PartnerStripeError,
 } from '../services/partnerStripe';
+import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'stripe-account-cache-refresh';
 const JOB_NAME = 'stripe-account-cache-refresh';
 const REPEAT_JOB_ID = 'stripe-account-cache-refresh-daily';
 const BOOT_JOB_ID = 'stripe-account-cache-refresh-boot';
-const DAILY_CRON = '45 3 * * *';
+const DAILY_CRON = jobSchedule('stripe-account-cache-refresh');
 
 function isRefreshEnabled(): boolean {
   const raw = process.env.STRIPE_ACCOUNT_CACHE_REFRESH_ENABLED;

@@ -103,7 +103,7 @@ describe('metric rollup maintenance worker', () => {
     expect(__testOnly.QUEUE_NAME).toBe('metric-rollup-maintenance');
     expect(__testOnly.JOB_NAME).toBe('metric-rollup-maintenance');
     expect(__testOnly.REPEAT_JOB_ID).toBe('metric-rollup-maintenance');
-    expect(__testOnly.DAILY_CRON).toBe('15 3 * * *');
+    expect(__testOnly.DAILY_CRON).toBe('13 3 * * *');
   });
 
   it('isMaintenanceEnabled defaults ON and accepts standard falsy values', () => {
@@ -129,7 +129,7 @@ describe('metric rollup maintenance worker', () => {
       }),
       expect.objectContaining({
         jobId: 'metric-rollup-maintenance',
-        repeat: { pattern: '15 3 * * *' },
+        repeat: { pattern: '13 3 * * *' },
       }),
     );
   });

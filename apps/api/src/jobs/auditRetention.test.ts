@@ -110,7 +110,7 @@ describe('auditRetention worker', () => {
   });
 
   it('exposes the daily cron pattern at 03:30 UTC', () => {
-    expect(__testOnly.DAILY_CRON).toBe('30 3 * * *');
+    expect(__testOnly.DAILY_CRON).toBe('28 3 * * *');
     expect(__testOnly.JOB_NAME).toBe('audit-log-retention');
     expect(__testOnly.REPEAT_JOB_ID).toBe('audit-log-retention');
   });
@@ -136,7 +136,7 @@ describe('auditRetention worker', () => {
     expect(data).toEqual({});
     expect(opts).toMatchObject({
       jobId: 'audit-log-retention',
-      repeat: { pattern: '30 3 * * *' },
+      repeat: { pattern: '28 3 * * *' },
     });
   });
 

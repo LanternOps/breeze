@@ -181,7 +181,7 @@ describe('enrollmentKeyCleanup worker', () => {
   });
 
   it('exposes the daily cron pattern at 04:00 UTC', () => {
-    expect(__testOnly.DAILY_CRON).toBe('0 4 * * *');
+    expect(__testOnly.DAILY_CRON).toBe('8 4 * * *');
     expect(__testOnly.JOB_NAME).toBe('enrollment-key-cleanup');
     expect(__testOnly.REPEAT_JOB_ID).toBe('enrollment-key-cleanup');
     expect(__testOnly.QUEUE_NAME).not.toContain(':');
@@ -234,7 +234,7 @@ describe('enrollmentKeyCleanup worker', () => {
       expect(data).toEqual({});
       expect(opts).toMatchObject({
         jobId: 'enrollment-key-cleanup',
-        repeat: { pattern: '0 4 * * *' },
+        repeat: { pattern: '8 4 * * *' },
       });
     });
 

@@ -21,9 +21,11 @@ import { generateDueInvoice } from '../services/contractService';
 import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
 import { sendInvoiceEmail } from '../services/invoicePdf';
+import { jobSchedule } from './scheduleRegistry';
 
 const CONTRACT_QUEUE = 'contract-jobs';
-const BILLING_SWEEP_CRON = '0 5 * * *'; // daily 05:00, before the invoice overdue sweep (06:00)
+// Daily, before the invoice overdue sweep in the same hour lane.
+const BILLING_SWEEP_CRON = jobSchedule('contract-billing-sweep');
 
 let contractQueue: Queue | null = null;
 let contractWorker: Worker | null = null;
