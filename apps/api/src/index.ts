@@ -228,6 +228,10 @@ import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
 import {
+  initializeAuthBrowserTransitionCleanupWorker,
+  shutdownAuthBrowserTransitionCleanupWorker,
+} from './jobs/authBrowserTransitionCleanup';
+import {
   initializeStripeAccountCacheRefreshWorker,
   shutdownStripeAccountCacheRefreshWorker,
 } from './jobs/stripeAccountCacheRefresh';
@@ -1376,6 +1380,7 @@ async function initializeWorkers(): Promise<void> {
     ['serviceProcessCheckRetention', initializeServiceProcessCheckRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
+    ['authBrowserTransitionCleanup', initializeAuthBrowserTransitionCleanupWorker],
     // #3777 review F6: bootstrap/refresh the Stripe account currency cache for
     // connections that predate it (boot one-shot + daily sweep).
     ['stripeAccountCacheRefresh', initializeStripeAccountCacheRefreshWorker],
@@ -1618,6 +1623,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownServiceProcessCheckRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
+    shutdownAuthBrowserTransitionCleanupWorker,
     shutdownStripeAccountCacheRefreshWorker,
     shutdownExchangeRateSyncWorker,
     shutdownOAuthRevocationRetryWorker,

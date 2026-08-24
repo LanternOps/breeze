@@ -435,6 +435,25 @@ describe('POST /login — IP allowlist', () => {
     expect(res.headers.get('set-cookie')).toContain('breeze_refresh_token=');
   });
 
+  it.each([
+    ['web', {}],
+    ['native', { 'x-breeze-mobile-device-id': 'install-1' }],
+  ] as const)(
+    'keeps enforcement-false %s clients on the measured legacy seam',
+    async (clientClass, headers) => {
+      const res = await postLogin(
+        { email: 'admin@msp.com', password: 'correct-horse' },
+        headers,
+      );
+
+      expect(res.status).toBe(200);
+      expect(issueUserSessionLegacyDuringTransition).toHaveBeenCalledTimes(1);
+      expect(recordAuthTransitionLegacyIssuer).toHaveBeenCalledWith('password', clientClass);
+      expect(beginAuthIssuance).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
+    },
+  );
+
   it('returns 428 with a replacement binding before guarded issuance', async () => {
     vi.mocked(beginAuthIssuance).mockRejectedValueOnce(new AuthBindingRotationRequiredError({
       kind: 'browser',

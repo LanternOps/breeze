@@ -10,6 +10,11 @@ import {
 } from '../services/api';
 import { storeToken, storeUser, clearAuthData } from '../services/auth';
 import { markAppLockUnlocked } from '../services/appLockStore';
+import {
+  advanceSessionGeneration,
+  commitIfCurrent,
+  currentSessionGeneration,
+} from '../services/sessionGeneration';
 
 export type PushRegistrationStatus = 'idle' | 'ok' | 'failed' | 'unsupported';
 
@@ -61,26 +66,24 @@ const initialState: AuthState = {
 export const loginAsync = createAsyncThunk(
   'auth/login',
   async ({ email, password }: { email: string; password: string }, { rejectWithValue }) => {
+    const generation = currentSessionGeneration();
     try {
       const result = await apiLogin(email, password);
 
       if (result.kind === 'mfaRequired') {
-        return { mfa: result.challenge };
+        const committed = await commitIfCurrent(generation, async () => result.challenge);
+        return committed === undefined ? { superseded: true as const } : { mfa: committed };
       }
 
-      await storeToken(result.token);
-      await storeUser(result.user);
-      // Last, and awaited: `storeUser` throws, and a login the user was told
-      // failed must not leave an "unlocked" stamp behind. Awaited because the
-      // token only reaches Redux on `fulfilled`, and the token reaching Redux
-      // is what triggers the cold-launch check that reads this record.
-      //
-      // Never allowed to fail the login, whose credentials are already in the
-      // keychain by now — rejecting here would strand the user on the login
-      // screen with a session that restores on the next launch anyway. A missed
-      // stamp costs one spurious Face ID prompt, and appLockStore has already
-      // reported it to Sentry.
-      await markAppLockUnlocked().catch(() => {});
+      const committed = await commitIfCurrent(generation, async () => {
+        await storeToken(result.token);
+        await storeUser(result.user);
+        // Last, and awaited: `storeUser` throws, and a login the user was told
+        // failed must not leave an "unlocked" stamp behind.
+        await markAppLockUnlocked().catch(() => {});
+        return true;
+      });
+      if (committed === undefined) return { superseded: true as const };
 
       return { token: result.token, user: result.user, registerGrant: result.registerGrant };
     } catch (error: unknown) {
@@ -93,11 +96,16 @@ export const loginAsync = createAsyncThunk(
 export const verifyMfaAsync = createAsyncThunk(
   'auth/verifyMfa',
   async ({ code, tempToken }: { code: string; tempToken: string }, { rejectWithValue }) => {
+    const generation = currentSessionGeneration();
     try {
       const response = await apiVerifyMfa(code, tempToken);
-      await storeToken(response.token);
-      await storeUser(response.user);
-      await markAppLockUnlocked().catch(() => {});
+      const committed = await commitIfCurrent(generation, async () => {
+        await storeToken(response.token);
+        await storeUser(response.user);
+        await markAppLockUnlocked().catch(() => {});
+        return true;
+      });
+      if (committed === undefined) return { superseded: true as const };
       return response;
     } catch (error: unknown) {
       const apiError = error as { message?: string };
@@ -109,11 +117,12 @@ export const verifyMfaAsync = createAsyncThunk(
 export const logoutAsync = createAsyncThunk(
   'auth/logout',
   async (_, { rejectWithValue }) => {
+    advanceSessionGeneration();
     // Best-effort server logout; we tear down local state regardless of its
     // outcome so the user always leaves the authenticated surface.
     let apiErrorMessage: string | undefined;
     try {
-      await apiLogout();
+      await apiLogout({ sessionGenerationAlreadyAdvanced: true });
     } catch (error: unknown) {
       apiErrorMessage = (error as { message?: string }).message || 'Logout failed';
       // A failed server-side logout may leave the session token live on the
@@ -205,6 +214,7 @@ const authSlice = createSlice({
       .addCase(loginAsync.fulfilled, (state, action) => {
         state.isLoading = false;
         state.error = null;
+        if ('superseded' in action.payload) return;
         if ('mfa' in action.payload && action.payload.mfa) {
           state.mfaChallenge = action.payload.mfa;
           return;
@@ -226,6 +236,7 @@ const authSlice = createSlice({
       })
       .addCase(verifyMfaAsync.fulfilled, (state, action) => {
         state.isLoading = false;
+        if ('superseded' in action.payload) return;
         state.token = action.payload.token;
         state.user = action.payload.user;
         state.error = null;

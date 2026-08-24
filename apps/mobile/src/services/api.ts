@@ -11,6 +11,11 @@ import {
   getCsrfHeaderValue,
   readCsrfCookie,
 } from './csrfToken';
+import {
+  advanceSessionGeneration,
+  commitIfCurrent,
+  currentSessionGeneration,
+} from './sessionGeneration';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -19,7 +24,17 @@ const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
 export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
+export const NATIVE_AUTH_BINDING_HEADER = 'x-breeze-native-auth-binding';
+export const NATIVE_AUTH_BINDING_KEY = 'breeze_native_auth_binding_v1';
+const AUTH_TRANSITION_HEADER = 'x-breeze-auth-transition';
+const AUTH_TRANSITION_VERSION = 'v1';
 export const DEVICE_BLOCKED_CODE = 'device_blocked';
+
+const NATIVE_AUTH_ISSUER_ENDPOINTS = new Set([
+  '/auth/login',
+  '/auth/mfa/verify',
+  '/auth/refresh',
+]);
 
 type DeviceBlockedListener = (reason: string | null) => void;
 const deviceBlockedListeners = new Set<DeviceBlockedListener>();
@@ -209,97 +224,107 @@ async function requestWithPrefix<T>(
   options: RequestInit = {},
   timeoutMs?: number
 ): Promise<T> {
-  const token = await getToken();
-  const method = (options.method ?? 'GET').toUpperCase();
-
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  };
-
-  if (token) {
-    (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
-  }
-
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-    // Echo the server's double-submit token. Sending the fixed bootstrap value
-    // once the CSRF cookie exists fails `safeCompareTokens` server-side and
-    // rejects every refresh, which ends the session at the access-token TTL.
-    (headers as Record<string, string>)[CSRF_HEADER_NAME] = await getCsrfHeaderValue();
-  }
-
-  // Always send the per-install id so the API can recognise this phone. This
-  // used to be a harmless soft-matching hint (the lifecycle/lockout flow), but
-  // post-#2707 the server also gates login-time register_approver_device grant
-  // minting on this header — if SecureStore fails here, the phone never gets a
-  // grant, approver registration permanently defers, and there is no recovery:
-  // ApprovalGate's deferred-banner "sign out and back in" advice cannot fix a
-  // device that can't produce an installation id at all. Report failures so
-  // they're observable instead of silently capping the phone at L1 forever.
-  try {
-    const installationId = await getOrCreateInstallationId();
-    if (installationId) {
-      (headers as Record<string, string>)[MOBILE_DEVICE_ID_HEADER] = installationId;
-    }
-  } catch (e) {
-    Sentry.captureMessage('installation id unavailable for mobile-device header', {
-      level: 'warning',
-      tags: { area: 'mobile-device-id-header' },
-      extra: { errorName: (e as Error)?.name ?? 'unknown' },
-    });
-  }
-
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
   const url = `${baseUrl}${prefix}${endpoint}`;
-  const response = await fetchWithTimeout(
-    url,
-    { ...options, headers, credentials: 'include' },
-    timeoutMs
-  );
+  const nativeAuthIssuer = prefix === API_CORE_PREFIX
+    && NATIVE_AUTH_ISSUER_ENDPOINTS.has(endpoint);
+  const capturedGeneration = currentSessionGeneration();
+  let retriedBindingBootstrap = false;
 
-  // The server sets a fresh CSRF cookie on login and refresh, and clears it on
-  // sign-out or a rejected refresh. It is deliberately not HttpOnly so a native
-  // client can read and echo it. A `cleared` signal must drop our copy too —
-  // holding a token whose cookie is gone fails the server's no-cookie path,
-  // which accepts only the bootstrap literal.
-  await applyCsrfSignal(readCsrfCookie(response.headers.get('set-cookie')));
+  while (true) {
+    const token = await getToken();
+    const method = (options.method ?? 'GET').toUpperCase();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(options.headers as Record<string, string> | undefined),
+    };
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({} as Record<string, unknown>));
-    const code = typeof body.code === 'string' ? body.code : undefined;
-    if (code === DEVICE_BLOCKED_CODE) {
-      const reason = typeof body.reason === 'string' ? body.reason : null;
-      notifyDeviceBlocked(reason);
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      // Echo the server's double-submit token. Sending the fixed bootstrap value
+      // once the CSRF cookie exists fails `safeCompareTokens` server-side and
+      // rejects every refresh, which ends the session at the access-token TTL.
+      headers[CSRF_HEADER_NAME] = await getCsrfHeaderValue();
     }
+
+    // Always send the per-install id so the API can recognise this phone. This
+    // selects native transport but is not accepted by the server as binding
+    // authority; only the signed native binding below carries authority.
+    try {
+      const installationId = await getOrCreateInstallationId();
+      if (installationId) headers[MOBILE_DEVICE_ID_HEADER] = installationId;
+    } catch (e) {
+      Sentry.captureMessage('installation id unavailable for mobile-device header', {
+        level: 'warning',
+        tags: { area: 'mobile-device-id-header' },
+        extra: { errorName: (e as Error)?.name ?? 'unknown' },
+      });
+    }
+
+    if (nativeAuthIssuer) {
+      headers[AUTH_TRANSITION_HEADER] = AUTH_TRANSITION_VERSION;
+      const binding = await SecureStore.getItemAsync(NATIVE_AUTH_BINDING_KEY).catch(() => null);
+      if (binding) headers[NATIVE_AUTH_BINDING_HEADER] = binding;
+    }
+
+    const response = await fetchWithTimeout(
+      url,
+      { ...options, headers, credentials: 'include' },
+      timeoutMs
+    );
+
+    if (nativeAuthIssuer && response.status === 428 && !retriedBindingBootstrap) {
+      retriedBindingBootstrap = true;
+      const replacement = response.headers.get(NATIVE_AUTH_BINDING_HEADER)?.trim();
+      if (replacement) {
+        const committed = await commitIfCurrent(capturedGeneration, async () => {
+          await SecureStore.setItemAsync(NATIVE_AUTH_BINDING_KEY, replacement, {
+            keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+          });
+          return replacement;
+        });
+        if (committed !== undefined) continue;
+      }
+    }
+
+    // A delayed pre-logout issuer must not restore its CSRF mirror. Non-issuer
+    // requests retain the existing immediate behavior.
+    const applyCsrf = () => applyCsrfSignal(readCsrfCookie(response.headers.get('set-cookie')));
+    if (nativeAuthIssuer) {
+      await commitIfCurrent(capturedGeneration, applyCsrf);
+    } else {
+      await applyCsrf();
+    }
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({} as Record<string, unknown>));
+      const code = typeof body.code === 'string' ? body.code : undefined;
+      if (code === DEVICE_BLOCKED_CODE) {
+        const reason = typeof body.reason === 'string' ? body.reason : null;
+        notifyDeviceBlocked(reason);
+      }
     // Self-heal a token the server will not accept. The stored value can
     // outlive its cookie — SecureStore survives an iOS reinstall while the
     // cookie jar does not — and if `set-cookie` is not readable on this runtime
     // we would never have learned a good one. Forgetting it makes the next
     // request bootstrap with the literal the no-cookie path accepts, so the
     // client recovers instead of looping.
-    const message =
-      (typeof body.error === 'string' && body.error)
-      || (typeof body.message === 'string' && body.message)
-      || 'An error occurred';
-    if (/csrf/i.test(message)) {
-      await forgetCsrfToken();
+      const message =
+        (typeof body.error === 'string' && body.error)
+        || (typeof body.message === 'string' && body.message)
+        || 'An error occurred';
+      if (/csrf/i.test(message)) await forgetCsrfToken();
+
+      const error: ApiError = { message, code, statusCode: response.status };
+      throw error;
     }
 
-    const error: ApiError = {
-      message,
-      code,
-      statusCode: response.status
-    };
-    throw error;
-  }
+    const text = await response.text();
+    if (!text) return {} as T;
 
-  // Handle empty responses
-  const text = await response.text();
-  if (!text) {
-    return {} as T;
+    return JSON.parse(text);
   }
-
-  return JSON.parse(text);
 }
 
 async function request<T>(
@@ -428,15 +453,30 @@ export async function sendMfaSms(tempToken: string): Promise<void> {
   });
 }
 
-export async function logout(): Promise<void> {
+export async function logout(
+  options: Readonly<{ sessionGenerationAlreadyAdvanced?: boolean }> = {},
+): Promise<void> {
+  if (!options.sessionGenerationAlreadyAdvanced) advanceSessionGeneration();
+  const logoutGeneration = currentSessionGeneration();
   try {
     await requestWithPrefix('/auth/logout', API_CORE_PREFIX, { method: 'POST' });
   } catch {
     // Ignore logout errors
   }
+  // Serialize cleanup behind any persistence write that had already entered
+  // the generation queue. Otherwise a slow SecureStore write can land after
+  // these deletes and resurrect pre-logout binding state.
+  await commitIfCurrent(logoutGeneration, async () => {
+    await Promise.all([
+      SecureStore.deleteItemAsync(TOKEN_KEY),
+      SecureStore.deleteItemAsync(NATIVE_AUTH_BINDING_KEY),
+      forgetCsrfToken(),
+    ]);
+  });
 }
 
 export async function refreshToken(): Promise<{ token: string }> {
+  const generation = currentSessionGeneration();
   const response = await requestWithPrefix<{ tokens?: AuthTokensPayload; accessToken?: string }>(
     '/auth/refresh',
     API_CORE_PREFIX,
@@ -447,6 +487,15 @@ export async function refreshToken(): Promise<{ token: string }> {
   const token = response.tokens?.accessToken || response.accessToken;
   if (!token) {
     throw { message: 'Failed to refresh token' } as ApiError;
+  }
+  // Callers such as aiChat persist the returned token. Refuse to hand them a
+  // response that began before logout advanced the generation, otherwise the
+  // caller could reinstall access authority after local teardown completed.
+  if (generation !== currentSessionGeneration()) {
+    throw {
+      message: 'Refresh response belongs to a superseded session',
+      code: 'session_superseded',
+    } as ApiError;
   }
   return { token };
 }

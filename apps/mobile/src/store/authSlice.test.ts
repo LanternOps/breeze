@@ -168,6 +168,39 @@ describe('interactive sign-in stamps the app lock as unlocked', () => {
 });
 
 describe('logoutAsync', () => {
+  it('advances the session generation before network logout and fences a delayed login write', async () => {
+    let releaseLogin!: (value: unknown) => void;
+    api.login.mockImplementation(() => new Promise((resolve) => { releaseLogin = resolve; }));
+    const store = makeStore();
+    const staleLogin = store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+    await vi.waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
+
+    await store.dispatch(logoutAsync());
+    releaseLogin({ kind: 'success', token: 'stale-token', user: fakeUser, registerGrant: null });
+    await staleLogin;
+
+    expect(auth.storeToken).not.toHaveBeenCalled();
+    expect(auth.storeUser).not.toHaveBeenCalled();
+    expect(store.getState().auth.token).toBeNull();
+    expect(store.getState().auth.user).toBeNull();
+  });
+
+  it('fences delayed MFA credential persistence after logout', async () => {
+    let releaseMfa!: (value: unknown) => void;
+    api.verifyMfa.mockImplementation(() => new Promise((resolve) => { releaseMfa = resolve; }));
+    const store = makeStore();
+    const staleMfa = store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'temp-old' }));
+    await vi.waitFor(() => expect(api.verifyMfa).toHaveBeenCalledTimes(1));
+
+    await store.dispatch(logoutAsync());
+    releaseMfa({ token: 'stale-token', user: fakeUser, registerGrant: null });
+    await staleMfa;
+
+    expect(auth.storeToken).not.toHaveBeenCalled();
+    expect(auth.storeUser).not.toHaveBeenCalled();
+    expect(store.getState().auth.token).toBeNull();
+  });
+
   it('API ok + wipe ok → fulfilled, wipe runs exactly once', async () => {
     const store = makeStore();
     const result = await store.dispatch(logoutAsync());
