@@ -5,6 +5,7 @@ import {
   checkBillingCredits,
   checkBudget,
   getUsageSummary,
+  recordSessionlessSdkUsage,
   recordUsage,
   recordUsageFromSdkResult,
   sumInputTokens,
@@ -737,6 +738,126 @@ describe('recordUsage', () => {
     await expect(
       recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, true, 'platform'),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ============================================
+// recordSessionlessSdkUsage — headless agent runs (wave 3c review finding)
+// ============================================
+
+describe('recordSessionlessSdkUsage', () => {
+  const agentRunUsage = {
+    costCents: 40,
+    usage: {
+      input_tokens: 10,
+      output_tokens: 20,
+      cache_read_input_tokens: 90_000,
+      cache_creation_input_tokens: 5_000,
+    },
+    numTurns: 5,
+    toolExecutionCount: 3,
+    model: 'claude-sonnet-4-6',
+  };
+
+  it('writes the org aggregates without touching ai_sessions', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordSessionlessSdkUsage('org-1', agentRunUsage, 'platform');
+
+    // There is no session row for a headless run.
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(captured.aggregateValues).toHaveLength(2);
+    expect(captured.aggregateValues.map((v) => v.period).sort()).toEqual(['daily', 'monthly']);
+    for (const agg of captured.aggregateValues) {
+      // The SDK's own figure, not a re-pricing of input+output.
+      expect(agg.totalCostCents).toBe(40);
+      // All three input slices, so a cached agent prompt is not under-reported.
+      expect(agg.inputTokens).toBe(95_010);
+      expect(agg.outputTokens).toBe(20);
+      expect(agg.toolExecutionCount).toBe(3);
+      expect(agg.messageCount).toBe(5);
+    }
+    for (const set of captured.aggregateConflictSets) {
+      expect(recordedIncrement(set, 'inputTokens')).toBe(95_010);
+      expect(recordedCostCents(set)).toBe(40);
+      expect(recordedIncrement(set, 'messageCount')).toBe(5);
+      expect(recordedIncrement(set, 'toolExecutionCount')).toBe(3);
+    }
+  });
+
+  it('deducts platform AI credits — the gap that made agent runs effectively free', async () => {
+    const fetchMock = enableBillingService();
+    setupDbMocks(null);
+
+    await recordSessionlessSdkUsage('org-1', agentRunUsage, 'platform');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://billing.internal/api/internal/partners/partner-1/ai-credits/deduct',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body).toEqual({ costCents: 40 });
+  });
+
+  it('never deducts credits for partner-key (BYOK) billing', async () => {
+    const fetchMock = enableBillingService();
+    setupDbMocks(null);
+
+    await recordSessionlessSdkUsage('org-1', agentRunUsage, 'partner_key');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const captured = setupDbMocks(null);
+    await recordSessionlessSdkUsage('org-1', agentRunUsage, 'partner_key');
+    expect(captured.aggregateValues.every((v) => v.billingSource === 'partner_key')).toBe(true);
+  });
+
+  it('records a cache-only turn that reports zero plain input/output tokens', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordSessionlessSdkUsage('org-1', {
+      costCents: 12,
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 200_000 },
+      numTurns: 2,
+    }, 'platform');
+
+    expect(captured.aggregateValues).toHaveLength(2);
+    expect(captured.aggregateValues[0]!.totalCostCents).toBe(12);
+    expect(captured.aggregateValues[0]!.inputTokens).toBe(200_000);
+  });
+
+  it('prices from tokens when the SDK reported no cost (issue #1326 shape)', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordSessionlessSdkUsage('org-1', {
+      costCents: 0,
+      usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
+      numTurns: 1,
+      model: 'claude-sonnet-4-6',
+    }, 'platform');
+
+    expect(captured.aggregateValues[0]!.totalCostCents).toBe(1800);
+  });
+
+  it('writes nothing at all for an empty result', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordSessionlessSdkUsage('org-1', {
+      costCents: 0,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      numTurns: 0,
+    }, 'platform');
+
+    expect(captured.aggregateValues).toHaveLength(0);
+  });
+
+  it('self-contexts every write (the caller is a contextless BullMQ processor)', async () => {
+    setupDbMocks(null);
+
+    await recordSessionlessSdkUsage('org-1', agentRunUsage, 'platform');
+
+    // Both upserts (+ the credit lookup) run inside their own short system
+    // context: a contextless write under forced RLS matches 0 rows.
+    expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
 

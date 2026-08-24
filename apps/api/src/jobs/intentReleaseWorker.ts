@@ -627,7 +627,20 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
  * it is ever invoked from inside a request transaction.
  */
 async function loadRunAndAgent(runId: string): Promise<{
-  run: { id: string; agentId: string } | null;
+  run: {
+    id: string;
+    agentId: string;
+    /**
+     * The MERGED recipient set from the run's immutable snapshot — the only
+     * correct source. `ai_agents.recipients` on the row `run.agent_id` points
+     * at is always the PARTNER BASELINE (resolveEffectiveAgentSystem pins
+     * `agentId: partnerRow.id`), so using it silently drops every recipient an
+     * organization added through its override, and notifies nobody at all when
+     * only the override configured any. `mergeAgentPolicies` already unions
+     * the two sets into `effective.recipients`.
+     */
+    recipients: Partial<AiAgentRecipients>;
+  } | null;
   agent: {
     id: string;
     orgId: string | null;
@@ -638,7 +651,11 @@ async function loadRunAndAgent(runId: string): Promise<{
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [run] = await db
-        .select({ id: aiAgentRuns.id, agentId: aiAgentRuns.agentId })
+        .select({
+          id: aiAgentRuns.id,
+          agentId: aiAgentRuns.agentId,
+          policySnapshot: aiAgentRuns.policySnapshot,
+        })
         .from(aiAgentRuns)
         .where(eq(aiAgentRuns.id, runId))
         .limit(1);
@@ -653,7 +670,14 @@ async function loadRunAndAgent(runId: string): Promise<{
         .from(aiAgents)
         .where(eq(aiAgents.id, run.agentId))
         .limit(1);
-      return { run, agent: agent ?? null };
+      return {
+        run: {
+          id: run.id,
+          agentId: run.agentId,
+          recipients: run.policySnapshot?.effective?.recipients ?? {},
+        },
+        agent: agent ?? null,
+      };
     }));
 }
 
@@ -737,7 +761,13 @@ async function notifyRequesterOfOutcome(
   if (!intent.requestedByUserId && intent.requestingAgentRunId) {
     const { run, agent } = await loadRunAndAgent(intent.requestingAgentRunId);
     if (!run || !agent) return;
-    const userIds = await resolveRecipientUserIds(agent, intent.orgId);
+    // Merged set from the run snapshot, not the baseline agent row's column
+    // (see loadRunAndAgent). resolveRecipientUserIds ignores the owner fields
+    // of its first argument and re-derives membership against the intent org.
+    const userIds = await resolveRecipientUserIds(
+      { orgId: agent.orgId, partnerId: agent.partnerId, recipients: run.recipients },
+      intent.orgId,
+    );
     const { title, message, priority } = agentOutcomeCopy(intent);
     for (const userId of userIds) {
       // runOutsideDbContext first — a bare system wrapper inside an ambient

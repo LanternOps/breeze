@@ -296,6 +296,11 @@ import { initializeWingetIndexSyncWorker, shutdownWingetIndexSyncWorker } from '
 import { initializeVulnerabilityJobs, shutdownVulnerabilityJobs } from './jobs/vulnerabilityJobs';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
+// AI agents wave 3c: importing this module also REGISTERS the run enqueuer with
+// services/aiAgents/runService at module scope, so the manual-trigger route can
+// enqueue even in a process whose background workers never booted.
+import { initializeAiAgentRunner, shutdownAiAgentRunner } from './jobs/aiAgentRunner';
+
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
@@ -1422,6 +1427,8 @@ async function initializeWorkers(): Promise<void> {
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
     ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
     ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
+    // initializeAiAgentRunner is synchronous (returns void), so wrap it.
+    ['aiAgentRunner', async () => { initializeAiAgentRunner(); }],
     ['auditBaselineJobs', initializeAuditBaselineJobs],
     ['cisJobs', initializeCisJobs],
     ['automationWorker', initializeAutomationWorker],
@@ -1706,6 +1713,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAbuseSignalsWorker,
     shutdownUserRiskRetention,
     shutdownAutomationWorker,
+    shutdownAiAgentRunner,
     shutdownSoftwareRemediationWorker,
     shutdownSoftwareComplianceWorker,
     shutdownAuditBaselineJobs,

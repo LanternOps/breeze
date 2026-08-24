@@ -265,6 +265,23 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
   }).strict(),
 ]);
 
+/**
+ * AI agents wave 3c: the `ai-agent` queue's only payload.
+ *
+ * Deliberately carries the run id and NOTHING else — org, device, mode and the
+ * policy snapshot all live on the `ai_agent_runs` row the admission gate
+ * (`services/aiAgents/runService.ts`) already committed. A job that carried its
+ * own copy of the authority could be replayed against a run whose policy has
+ * since changed; re-reading the row makes the DB the single source of truth for
+ * what the run is allowed to do.
+ */
+export const aiAgentQueueJobDataSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('execute-agent-run'),
+    runId: z.string().min(1),
+  }).strict(),
+]);
+
 export const sensitiveDataQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('dispatch-scan'),
@@ -306,6 +323,7 @@ export type MonitorQueueJobData = z.infer<typeof monitorQueueJobDataSchema>;
 export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema>;
 export type AutomationAssignmentLevel = z.infer<typeof automationAssignmentLevelSchema>;
 export type SensitiveDataQueueJobData = z.infer<typeof sensitiveDataQueueJobDataSchema>;
+export type AiAgentQueueJobData = z.infer<typeof aiAgentQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
 export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;
