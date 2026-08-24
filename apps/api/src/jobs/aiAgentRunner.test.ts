@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * Wave 3c Task 3 — the `ai-agent` queue + worker shell.
+ * Wave 3c — the `ai-agent` queue + worker shell.
  *
- * The run loop itself (Task 4) is NOT under test here; the processor is
- * asserted only to delegate to `executeAgentRun`.
+ * The run loop itself is NOT under test here (see
+ * `services/aiAgents/runLoop.test.ts`); the processor is asserted only to
+ * validate its payload and delegate to `executeAgentRun`.
  */
 
 const shared = vi.hoisted(() => {
+  const executeAgentRun = vi.fn(async (_runId: string) => undefined);
   // Recorded OUTSIDE the mock's call log: registration happens once at module
   // import, long before any beforeEach `vi.clearAllMocks()` runs.
   const registeredEnqueuers: unknown[] = [];
@@ -28,6 +30,7 @@ const shared = vi.hoisted(() => {
     }),
     attachWorkerObservability: vi.fn(),
     isRedisAvailable: vi.fn(() => true),
+    executeAgentRun,
   };
 });
 
@@ -68,6 +71,12 @@ vi.mock('../services/redis', () => ({
 // enqueue. Mocked so this suite does not drag runService's whole module graph in.
 vi.mock('../services/aiAgents/runService', () => ({
   registerAgentRunEnqueuer: shared.registerAgentRunEnqueuer,
+}));
+
+// The loop lives in a service module so it is testable without BullMQ/Redis;
+// this suite only cares that the processor reaches it.
+vi.mock('../services/aiAgents/runLoop', () => ({
+  executeAgentRun: shared.executeAgentRun,
 }));
 
 vi.mock('./workerObservability', () => ({
@@ -264,9 +273,8 @@ describe('ai-agent runner bootstrap', () => {
     initializeAiAgentRunner();
     const { processor } = shared.workerCalls[0]!;
 
-    await expect(
-      processor(fakeJob({ type: 'execute-agent-run', runId: 'run-9' })),
-    ).rejects.toThrow(/not_implemented/);
+    await processor(fakeJob({ type: 'execute-agent-run', runId: 'run-9' }));
+    expect(shared.executeAgentRun).toHaveBeenCalledWith('run-9');
 
     // Wrong BullMQ job name is dead-lettered before the payload is even read.
     await expect(
@@ -276,6 +284,9 @@ describe('ai-agent runner bootstrap', () => {
     await expect(
       processor(fakeJob({ type: 'execute-agent-run' })),
     ).rejects.toThrow();
+
+    // Neither malformed delivery reached the loop.
+    expect(shared.executeAgentRun).toHaveBeenCalledTimes(1);
   });
 
   it('closes worker and queue on shutdown', async () => {
@@ -288,7 +299,10 @@ describe('ai-agent runner bootstrap', () => {
     expect(shared.closeQueueMock).toHaveBeenCalled();
   });
 
-  it('executeAgentRun is a Task 4 stub that fails loudly', async () => {
-    await expect(executeAgentRun('run-1')).rejects.toThrow(/not_implemented/);
+  it('re-exports the run loop so the processor and the module contract stay one function', async () => {
+    // The loop is defined in services/aiAgents/runLoop.ts; this file re-exports
+    // it so callers (and the plan's contract) still see `executeAgentRun` here.
+    await executeAgentRun('run-1');
+    expect(shared.executeAgentRun).toHaveBeenCalledWith('run-1');
   });
 });

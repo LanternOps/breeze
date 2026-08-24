@@ -4,7 +4,8 @@
  * This module owns DURABILITY for headless agent runs, and nothing else. The
  * decision to run at all is made by `services/aiAgents/runService.ts`
  * (`createAndEnqueueAgentRun`), which commits the `ai_agent_runs` row and then
- * hands the run id here; the run loop itself lives in `executeAgentRun`.
+ * hands the run id here; the run loop itself lives in
+ * `services/aiAgents/runLoop.ts` and is re-exported below as `executeAgentRun`.
  *
  * Three properties are load-bearing and deliberately unlike the other workers:
  *
@@ -34,14 +35,15 @@ import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidat
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { registerAgentRunEnqueuer } from '../services/aiAgents/runService';
+import { executeAgentRun } from '../services/aiAgents/runLoop';
 import { aiAgentQueueJobDataSchema, type AiAgentQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 
 export const AI_AGENT_QUEUE = 'ai-agent';
 export const AI_AGENT_RUN_JOB_NAME = 'execute-agent-run';
 
-/** Wall-clock ceiling for a run is 600s (Task 4 owns the abort controller); the
- *  BullMQ lock has to outlive that plus teardown, hence 720s. */
+/** Wall-clock ceiling for a run is 600s (the run loop owns the abort
+ *  controller); the BullMQ lock has to outlive that plus teardown, hence 720s. */
 const AI_AGENT_LOCK_DURATION_MS = 720_000;
 
 let aiAgentQueue: Queue<AiAgentQueueJobData> | null = null;
@@ -66,15 +68,18 @@ function getAiAgentQueue(): Queue<AiAgentQueueJobData> {
 }
 
 /**
- * Execute one agent run. Filled in by wave 3c Task 4 (the SDK `query()` loop).
+ * Execute one agent run — the SDK `query()` loop.
  *
- * NOTE for Task 4: the processor deliberately does NOT hold an ambient system
- * DB context (see `createAiAgentWorker`). Every DB touch must establish its own
- * — `transitionRunStatus` and the runService helpers already self-context.
+ * Re-exported rather than defined here on purpose. The loop lives in
+ * `services/aiAgents/runLoop.ts` so that the guardrail hooks it builds can be
+ * driven by service-level tests (the red-team contract suite most of all)
+ * without dragging BullMQ and Redis into their module graph, and so this file
+ * stays about durability alone. The processor's contract is unchanged.
+ *
+ * The processor deliberately does NOT hold an ambient system DB context (see
+ * `createAiAgentWorker`); every DB touch inside the loop self-contexts.
  */
-export async function executeAgentRun(runId: string): Promise<void> {
-  throw new Error(`not_implemented: agent run execution lands in wave 3c task 4 (runId=${runId})`);
-}
+export { executeAgentRun };
 
 export async function enqueueAgentRunJob(runId: string): Promise<{ enqueued: boolean; jobId?: string }> {
   const payload = aiAgentQueueJobDataSchema.safeParse({
