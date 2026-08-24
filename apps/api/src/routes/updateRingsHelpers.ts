@@ -73,10 +73,22 @@ export function buildPartnerAssignmentCondition(
  *     endpoint resolves counts for every ring at once.
  *  2. The scheduler re-clamps subset (org/site/group/device) assignments to the
  *     policy's partner to close a TOCTOU hole (an org reparented to another
- *     partner after the assignment was written). This module does not need to:
- *     it runs inside the REQUEST RLS context, where `breeze.accessible_org_ids`
- *     is the caller's partner's *current* org list, so a reparented org's
- *     devices are already invisible. RLS is the stricter of the two here.
+ *     partner after the assignment row was written, #2280). This module does
+ *     not replicate that clamp, for two independent reasons:
+ *       - The hole is now closed in the DATABASE. Migration
+ *         2026-07-28-config-policy-assignment-target-integrity.sql attaches
+ *         `a_config_policy_assignment_target_update` (AFTER UPDATE OF id,
+ *         partner_id ON organizations), which re-runs
+ *         breeze_validate_config_policy_assignment_target and RAISES on a
+ *         partner mismatch — so the reparent is rejected rather than leaving a
+ *         stale assignment behind. That holds under every scope, system
+ *         included. (The scheduler's clamp predates this trigger; it is now
+ *         belt-and-braces, not the only guard.)
+ *       - On the request path this module additionally runs inside the caller's
+ *         RLS context, where `breeze.accessible_org_ids` is the partner's
+ *         *current* org list, so such devices would be invisible anyway.
+ *     Note the RLS half does NOT apply to a system-scope caller (no org clamp);
+ *     the trigger is what covers that case.
  */
 async function resolveRingAssignedDeviceIds(assignments: RingAssignment[]): Promise<Set<string>> {
   const deviceIds = new Set<string>();
