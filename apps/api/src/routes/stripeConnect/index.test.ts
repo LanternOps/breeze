@@ -8,7 +8,9 @@ const authGates = vi.hoisted(() => ({
 const authState: { value: any } = {
   value: {
     user: { id: '11111111-1111-1111-1111-111111111111', email: 'u@example.com', name: 'U' },
+    scope: 'partner',
     partnerId: 'partner-1',
+    partnerOrgAccess: 'all',
   },
 };
 
@@ -83,7 +85,9 @@ describe('stripe-connect (API-key) routes', () => {
     authGates.mfaDenied = false;
     authState.value = {
       user: { id: '11111111-1111-1111-1111-111111111111', email: 'u@example.com', name: 'U' },
+      scope: 'partner',
       partnerId: 'partner-1',
+      partnerOrgAccess: 'all',
     };
     (savePartnerStripeKey as any).mockResolvedValue({
       stripeAccountId: 'acct_9',
@@ -284,6 +288,44 @@ describe('stripe-connect (API-key) routes', () => {
     authState.value = { user: { id: '11111111-1111-1111-1111-111111111111', email: 'u@example.com', name: 'U' }, partnerId: null };
     const res = await postKey('sk_test_abcdefghijkl');
     expect(res.status).toBe(403);
+  });
+
+  // Org-scoped tokens carry the org's partnerId, and billing:manage can be
+  // granted to org-scope custom roles — the partnerId presence check alone
+  // does not prove partner-wide authority over the payment credential.
+  it.each([
+    ['GET /', () => stripeConnectRoutes.request('/', { method: 'GET' })],
+    ['POST /key', () => postKey('sk_test_abcdefghijkl')],
+    ['POST /refresh', () => stripeConnectRoutes.request('/refresh', { method: 'POST' })],
+    ['DELETE /', () => stripeConnectRoutes.request('/', { method: 'DELETE' })],
+  ] as const)('%s rejects organization-scoped auth even when it carries a partnerId', async (_name, request) => {
+    authState.value = {
+      user: { id: '11111111-1111-1111-1111-111111111111', email: 'u@example.com', name: 'U' },
+      scope: 'organization',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      partnerOrgAccess: null,
+    };
+    const res = await request();
+    expect(res.status).toBe(403);
+    expect(savePartnerStripeKey).not.toHaveBeenCalled();
+    expect(disconnectPartnerStripe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['POST /key', () => postKey('sk_test_abcdefghijkl')],
+    ['DELETE /', () => stripeConnectRoutes.request('/', { method: 'DELETE' })],
+  ] as const)('%s rejects partner auth limited to selected organizations', async (_name, request) => {
+    authState.value = {
+      user: { id: '11111111-1111-1111-1111-111111111111', email: 'u@example.com', name: 'U' },
+      scope: 'partner',
+      partnerId: 'partner-1',
+      partnerOrgAccess: 'selected',
+    };
+    const res = await request();
+    expect(res.status).toBe(403);
+    expect(savePartnerStripeKey).not.toHaveBeenCalled();
+    expect(disconnectPartnerStripe).not.toHaveBeenCalled();
   });
 
   it('403s when MFA is not satisfied', async () => {
