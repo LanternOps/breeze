@@ -381,6 +381,109 @@ afterEach(() => {
   }
 });
 
+describe('POST /agents/:id/heartbeat — reachability ownership', () => {
+  const pendingDevice = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date('2026-08-01T00:00:00.000Z'),
+    status: 'pending',
+    lastSeenAt: null,
+    mainAgentSilentSince: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+  });
+
+  it('an authenticated main-agent heartbeat promotes pending to online and advances lastSeenAt', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(200);
+    const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(update.status).toBe('online');
+    expect(update.lastSeenAt).toBeInstanceOf(Date);
+  });
+
+  it('an authenticated watchdog heartbeat updates watchdog fields without changing main reachability', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+
+    const response = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        agentVersion: '0.65.10',
+        role: 'watchdog',
+        watchdogState: 'MONITORING',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(update).toMatchObject({
+      watchdogStatus: 'connected',
+      watchdogVersion: '0.65.10',
+      watchdogLastSeen: expect.any(Date),
+    });
+    expect(update).not.toHaveProperty('status');
+    expect(update).not.toHaveProperty('lastSeenAt');
+  });
+
+  it('rejects a missing authenticated agent context without a reachability write', async () => {
+    const app = new Hono();
+    app.route('/agents', heartbeatRoutes);
+
+    const response = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(401);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a watchdog credential declaring the main-agent role without a reachability write', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+
+    const response = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentVersion: '0.65.10', role: 'agent' }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
