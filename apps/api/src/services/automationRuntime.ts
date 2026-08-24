@@ -197,6 +197,18 @@ export type AutomationAction =
   | DeploySoftwareAction
   | AiTriageAction;
 
+/**
+ * AI agents wave 3d (#3824): what the triggering EVENT was, threaded from
+ * processTriggerEvent through the queue into every action's execution context.
+ * Only populated for managed automations (automations.managedByAgentId).
+ */
+export type AutomationTriggerContext = {
+  alertId: string | null;
+  eventId: string | null;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info' | null;
+  ruleId: string | null;
+};
+
 export type NotificationTargets = {
   channelIds?: string[];
   emails?: string[];
@@ -846,8 +858,10 @@ async function ensureAutomationAlertRule(orgId: string): Promise<string> {
 }
 
 type ActionExecutionContext = {
-  automation: Pick<AutomationRow, 'id' | 'orgId' | 'name' | 'createdBy'>;
+  automation: Pick<AutomationRow, 'id' | 'orgId' | 'name' | 'createdBy' | 'managedByAgentId'>;
   runId: string;
+  /** Present only for event-bound managed runs. */
+  trigger?: AutomationTriggerContext;
   device: {
     id: string;
     // Worker-created child rows (alerts, notifications) always take the
@@ -1560,8 +1574,12 @@ export async function createAutomationRunRecord(options: {
   automation: AutomationRow;
   triggeredBy: string;
   details?: Record<string, unknown>;
+  /** Event-target binding (#3824): when set, the run targets EXACTLY these
+   * devices and resolveAutomationTargetDeviceIds is NOT consulted. */
+  boundDeviceIds?: string[];
 }): Promise<{ run: AutomationRunRow; targetDeviceIds: string[] }> {
-  const targetDeviceIds = await resolveAutomationTargetDeviceIds(options.automation);
+  const targetDeviceIds = options.boundDeviceIds
+    ?? await resolveAutomationTargetDeviceIds(options.automation);
 
   const [run] = await db
     .insert(automationRuns)
@@ -1757,13 +1775,14 @@ async function markAutomationRunFailedAfterError(runId: string, err: unknown): P
 export async function executeAutomationRun(
   runId: string,
   targetDeviceIdsFromQueue?: string[],
+  triggerContext?: AutomationTriggerContext,
 ): Promise<{
   status: 'completed' | 'failed' | 'partial';
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
   try {
-    return await executeAutomationRunInner(runId, targetDeviceIdsFromQueue);
+    return await executeAutomationRunInner(runId, targetDeviceIdsFromQueue, triggerContext);
   } catch (err) {
     await markAutomationRunFailedAfterError(runId, err).catch((cleanupErr) => {
       console.error(
@@ -1775,9 +1794,30 @@ export async function executeAutomationRun(
   }
 }
 
+/**
+ * Builds the per-device ActionExecutionContext for one run. Extracted (and
+ * exported for tests via __testOnly) so the #3824 event-target binding —
+ * `trigger` reaching EVERY action's context — is unit-provable without
+ * driving a full mocked run.
+ */
+function buildActionExecutionContext(base: {
+  automation: ActionExecutionContext['automation'];
+  runId: string;
+  scriptsById: ActionExecutionContext['scriptsById'];
+  channelsById: ActionExecutionContext['channelsById'];
+  variableScope: ActionExecutionContext['variableScope'];
+  /** REQUIRED (explicit `undefined` for unbound runs), not optional: an
+   *  optional property would let the call site silently drop the event
+   *  binding and still compile — the exact #3824 failure mode. */
+  trigger: AutomationTriggerContext | undefined;
+}, device: ActionExecutionContext['device']): ActionExecutionContext {
+  return { ...base, device };
+}
+
 async function executeAutomationRunInner(
   runId: string,
   targetDeviceIdsFromQueue?: string[],
+  triggerContext?: AutomationTriggerContext,
 ): Promise<{
   status: 'completed' | 'failed' | 'partial';
   devicesSucceeded: number;
@@ -1920,14 +1960,14 @@ async function executeAutomationRunInner(
       for (const [actionIndex, action] of normalized.actions.entries()) {
         // deploy_software is handled by the batched executeDeploySoftwareActions pass below
         if (action.type === 'deploy_software') continue;
-        const result = await executeAction(action, actionIndex, {
+        const result = await executeAction(action, actionIndex, buildActionExecutionContext({
           automation,
           runId: run.id,
-          device,
           scriptsById,
           channelsById,
           variableScope,
-        });
+          trigger: triggerContext,
+        }, device));
 
         logs.push(result.log);
         deviceOutput.push(`[${result.log.level}] ${result.log.message}`);
@@ -2462,6 +2502,9 @@ export async function executeConfigPolicyAutomationRun(
     orgId,
     name: automation.name,
     createdBy: null,
+    // Config-policy automations are never agent-managed (#3824): managed rows
+    // live in `automations` and are resolved through managed_by_agent_id.
+    managedByAgentId: null,
   };
 
   const existingLogs = getExistingLogs(run.logs);
@@ -2590,3 +2633,9 @@ export async function executeConfigPolicyAutomationRun(
     devicesFailed,
   };
 }
+
+// Exported for unit tests of the #3824 event-target binding. Internal helper,
+// not part of the runtime's public surface.
+export const __testOnly = {
+  buildActionExecutionContext,
+};
