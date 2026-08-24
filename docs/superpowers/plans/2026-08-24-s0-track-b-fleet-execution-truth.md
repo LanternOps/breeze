@@ -326,7 +326,7 @@ git commit -m "fix(api): make heartbeat authoritative for reachability"
 - Modify: `packages/shared/src/types/index.ts`
 - Create: `apps/api/src/db/schema/agentHealth.ts`
 - Modify: `apps/api/src/db/schema/index.ts`
-- Create, subject to the execution-time naming gate: `apps/api/migrations/2026-08-24-s0-b1-agent-health-observations.sql`
+- Create, subject to the execution-time naming gate: `apps/api/migrations/2026-09-07-agent-health-observations.sql`
 - Modify: `apps/api/src/routes/agents/schemas.ts`
 - Modify: `apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts`
 - Create: `apps/api/src/services/agentHealthObservations.ts`
@@ -338,10 +338,11 @@ git commit -m "fix(api): make heartbeat authoritative for reachability"
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
 - Modify: `apps/api/src/services/tenantCascade.test.ts`
 - Modify: `apps/api/src/extensions/tenancyRegistry.test.ts`
+- Modify: `apps/api/src/db/ensureAppRole.ts`
 
 **Interfaces:**
 - The heartbeat wire field is optional `healthStatus`. V1 matches `Omit<AgentHealthObservation, 'deviceId'> & { deviceId?: string }`; legacy unversioned maps and unknown versions are tolerated without rejecting reachability.
-- Produces immutable `agentHealthObservations` and mutable `deviceAgentHealthLatest` tables with direct `orgId`/`deviceId` ownership, server `receivedAt`, observation identity, and latest compare-and-set ordering.
+- Produces immutable `agentHealthObservations` and mutable `deviceAgentHealthLatest` tables with direct `orgId`/`deviceId` ownership, server `receivedAt`, observation identity, and latest compare-and-set ordering. V1 retry identity is unique `(deviceId, observedAt)` because the approved wire type has no `observationId`; an exact retry is idempotent and the same identity with a different payload is rejected as equivocation.
 
 ```ts
 export async function recordAgentHealthObservation(input: {
@@ -353,11 +354,11 @@ export async function recordAgentHealthObservation(input: {
 
 - [ ] **Step 1: Reverify the migration filename, then write parser RED tests**
 
-List every `2026-08-24*` migration and run `bash scripts/check-migration-naming.sh`. Keep the proposed filename only if it still sorts after every dependency. Test old omission, current unversioned `healthStatus`, valid v1, mismatched optional wire device ID, unknown version, and malformed components. Every unsupported health case must leave the otherwise valid heartbeat accepted.
+List the current migration tail and run `bash scripts/check-migration-naming.sh`. The verified current tail is `2026-09-06`; keep `2026-09-07-agent-health-observations.sql` only if it still sorts after every dependency. Test old omission, current unversioned `healthStatus`, valid v1, mismatched optional wire device ID, unknown version, and malformed components. Every unsupported health case must leave the otherwise valid heartbeat accepted.
 
 - [ ] **Step 2: Write service and real-PostgreSQL RED tests**
 
-Assert the service locks the authenticated device `FOR KEY SHARE` before child insert. In real PostgreSQL prove cross-org isolation, forced RLS, denied observation UPDATE, allowed cascade deletion, complete cascade/restamp/export registration, duplicate idempotency, and deterministic latest projection for duplicate/out-of-order receipts.
+Assert the service locks the authenticated device `FOR KEY SHARE` before child insert. In real PostgreSQL prove cross-org isolation, forced RLS, denied observation UPDATE, allowed cascade deletion, complete cascade/restamp/export registration, exact-retry idempotency, equivocation rejection, and deterministic latest projection for duplicate/out-of-order receipts. Generic RLS coverage still expects structural policies for all four DML operations; prove immutability through revoked app-role UPDATE privilege plus a database trigger, not by omitting the UPDATE policy.
 
 - [ ] **Step 3: Run RED**
 
@@ -370,7 +371,7 @@ Expected: schema/table/service are absent and the new contracts fail.
 
 - [ ] **Step 4: Add the additive schema, migration, parser, and service**
 
-Enable and force RLS in the creation migration. Register both tables in all applicable contracts; classify `components` as `excludedOpen`. In a short system transaction, lock the authenticated device, verify its organization, insert immutable evidence, then compare-and-set latest using `(receivedAt, observationId)`. Persist authoritative `deviceId` from authenticated context and reject only an explicit unequal wire value from persistence, without rejecting reachability.
+Enable and force RLS in the creation migration. Register both tables in all applicable contracts; classify `components` as `excludedOpen`. In a short system transaction, lock the authenticated device, verify its organization, insert immutable evidence, then compare-and-set latest using `(receivedAt, observationId)`. Persist authoritative `deviceId` from authenticated context and reject only an explicit unequal wire value from persistence, without rejecting reachability. Because startup blanket grants would otherwise restore UPDATE, modify `ensureAppRole.ts` to re-revoke observation UPDATE on every boot; retain a structural UPDATE RLS policy for coverage and use the trigger/privilege boundary as immutability enforcement.
 
 - [ ] **Step 5: Run GREEN and commit**
 
@@ -380,7 +381,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 pnpm --filter @breeze/api exec vitest run --config vitest.config.rls-coverage.ts src/__tests__/integration/rls-coverage.integration.test.ts
 bash scripts/check-migration-naming.sh
 pnpm db:check-drift
-git add packages/shared/src/types/agentHealth.ts packages/shared/src/types/index.ts apps/api/src/db/schema/agentHealth.ts apps/api/src/db/schema/index.ts apps/api/migrations apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts apps/api/src/services/agentHealthObservations.ts apps/api/src/services/agentHealthObservations.test.ts apps/api/src/__tests__/integration/agentHealthObservations.integration.test.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantCascade.test.ts apps/api/src/extensions/tenancyRegistry.test.ts
+git add packages/shared/src/types/agentHealth.ts packages/shared/src/types/index.ts apps/api/src/db/schema/agentHealth.ts apps/api/src/db/schema/index.ts apps/api/migrations/2026-09-07-agent-health-observations.sql apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts apps/api/src/services/agentHealthObservations.ts apps/api/src/services/agentHealthObservations.test.ts apps/api/src/__tests__/integration/agentHealthObservations.integration.test.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantCascade.test.ts apps/api/src/extensions/tenancyRegistry.test.ts apps/api/src/db/ensureAppRole.ts
 git commit -m "fix(db): persist versioned agent health observations"
 ```
 
@@ -396,6 +397,7 @@ git commit -m "fix(db): persist versioned agent health observations"
 - Modify: `agent/internal/health/health_test.go`
 - Modify: `agent/internal/heartbeat/heartbeat.go`
 - Modify: `agent/internal/heartbeat/heartbeat_test.go`
+- Modify: any dead `userHelpers` health-map mutation path identified by discovery
 
 **Interfaces:**
 - `GET /devices/:id/health` authorizes tenant and site access and returns `{ status: 'unknown', observation: null }` or `{ status: 'known', observation: AgentHealthObservation, receivedAt: string }`.
@@ -421,7 +423,7 @@ Expected: no observation call/read route exists and Go still emits an untyped ma
 
 - [ ] **Step 4: Implement post-transaction ingest and typed producer**
 
-Call `recordAgentHealthObservation` only after `withDbAccessContext(...)` returns at the existing `scoped instanceof Response` boundary, where the request-long transaction has released. Treat persistence failure as health-observability failure, not heartbeat failure. Replace `Summary() map[string]any` upload use with a locked typed immutable snapshot and retain the `healthStatus` JSON key.
+Call `recordAgentHealthObservation` immediately after `withDbAccessContext(...)` returns and after `if (scoped instanceof Response) return scoped;`, where the request-long transaction has released. The service itself uses `runOutsideDbContext`, a short system transaction, and `FOR KEY SHARE`. Treat persistence failure as health-observability failure, not heartbeat failure. Replace `Summary() map[string]any` upload use with a locked typed immutable snapshot, retain the `healthStatus` JSON key, and remove the dead/unconsumed `userHelpers` health-map mutation rather than carrying it into the typed payload.
 
 - [ ] **Step 5: Run GREEN and commit**
 
