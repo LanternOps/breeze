@@ -26,8 +26,11 @@ import {
   normalizeAutomationActions,
   normalizeAutomationTrigger,
   normalizeNotificationTargets,
+  replaceAutomationResourceBindings,
+  resolveAutomationReferencesForOwner,
   withWebhookDefaults,
 } from '../services/automationRuntime';
+import { AutomationReferenceAuthorizationError } from '../services/automationReferenceAuthorization';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
 import {
   canManagePartnerWidePolicies,
@@ -44,6 +47,14 @@ const automationWebhookReplayCache = new Map<string, number>();
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isAutomationReferenceDenial(error: unknown): boolean {
+  return error instanceof AutomationReferenceAuthorizationError
+    || (typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'unknown_or_unauthorized_reference');
 }
 
 function asString(value: unknown): string | undefined {
@@ -926,23 +937,34 @@ automationRoutes.post(
         return siteScopeDenied;
       }
 
-      const [automation] = await db
-        .insert(automations)
-        .values({
-          id: automationId,
-          orgId: owner.orgId,
-          partnerId: owner.partnerId,
-          name: data.name,
-          description: data.description,
-          enabled: data.enabled,
-          trigger: storedTrigger,
-          conditions: data.conditions,
+      const automation = await db.transaction(async (tx) => {
+        const resolved = await resolveAutomationReferencesForOwner(
+          tx,
+          owner,
           actions,
-          onFailure: data.onFailure,
           notificationTargets,
-          createdBy: auth.user.id,
-        })
-        .returning();
+        );
+        const [created] = await tx
+          .insert(automations)
+          .values({
+            id: automationId,
+            orgId: owner.orgId,
+            partnerId: owner.partnerId,
+            name: data.name,
+            description: data.description,
+            enabled: data.enabled,
+            trigger: storedTrigger,
+            conditions: data.conditions,
+            actions,
+            onFailure: data.onFailure,
+            notificationTargets,
+            createdBy: auth.user.id,
+          })
+          .returning();
+        if (!created) return null;
+        await replaceAutomationResourceBindings(tx, created.id, owner, resolved);
+        return created;
+      });
 
       if (!automation) {
         return c.json({ error: 'Failed to create automation' }, 500);
@@ -961,6 +983,9 @@ automationRoutes.post(
     } catch (error) {
       if (error instanceof AutomationValidationError) {
         return c.json({ error: error.message }, 400);
+      }
+      if (isAutomationReferenceDenial(error)) {
+        return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
       }
       throw error;
     }
@@ -1054,6 +1079,13 @@ async function handleUpdateAutomation(c: Context) {
       );
     }
 
+    const effectiveActions = data.actions !== undefined
+      ? updates.actions as ReturnType<typeof normalizeAutomationActions>
+      : normalizeAutomationActions(automation.actions);
+    const effectiveNotificationTargets = notificationTargetsProvided
+      ? updates.notificationTargets as ReturnType<typeof normalizeNotificationTargets>
+      : normalizeNotificationTargets(automation.notificationTargets);
+
     // Site-scope gate: re-validate the post-update target set against the
     // caller's allowlist. Covers conditions/trigger changes that would widen
     // the target set beyond a site-restricted editor's sites.
@@ -1066,11 +1098,23 @@ async function handleUpdateAutomation(c: Context) {
       return siteScopeDenied;
     }
 
-    const [updated] = await db
-      .update(automations)
-      .set(updates)
-      .where(eq(automations.id, automationId))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const axes = { orgId: automation.orgId, partnerId: automation.partnerId };
+      const resolved = await resolveAutomationReferencesForOwner(
+        tx,
+        axes,
+        effectiveActions,
+        effectiveNotificationTargets,
+      );
+      const [row] = await tx
+        .update(automations)
+        .set(updates)
+        .where(eq(automations.id, automationId))
+        .returning();
+      if (!row) return null;
+      await replaceAutomationResourceBindings(tx, automationId, axes, resolved);
+      return row;
+    });
 
     if (!updated) {
       return c.json({ error: 'Automation not found' }, 404);
@@ -1089,6 +1133,9 @@ async function handleUpdateAutomation(c: Context) {
   } catch (error) {
     if (error instanceof AutomationValidationError) {
       return c.json({ error: error.message }, 400);
+    }
+    if (isAutomationReferenceDenial(error)) {
+      return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
     }
     throw error;
   }
