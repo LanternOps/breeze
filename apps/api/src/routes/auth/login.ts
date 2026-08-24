@@ -88,6 +88,7 @@ import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { waitForAuthTransitionFinalizationTestBarrier } from './authTransitionTestControl';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -496,7 +497,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   if (transitionV1) {
     try {
       capability = await beginAuthIssuance(requestAuthBinding(c));
+      await waitForAuthTransitionFinalizationTestBarrier(c);
     } catch (error) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
       const response = authIssuanceAdmissionError(c, error);
       if (!response) throw error;
       await floorPromise;
@@ -1024,7 +1027,9 @@ loginRoutes.post('/refresh', async (c) => {
   if (transitionV1) {
     try {
       capability = await beginAuthIssuance(requestAuthBinding(c));
+      await waitForAuthTransitionFinalizationTestBarrier(c);
     } catch (error) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
       const response = authIssuanceAdmissionError(c, error);
       if (!response) throw error;
       return response;

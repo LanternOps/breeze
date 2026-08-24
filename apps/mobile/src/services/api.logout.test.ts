@@ -2,15 +2,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const secureValues = new Map<string, string>();
 const fetchWithTimeout = vi.fn();
-
-vi.mock('expo-secure-store', () => ({
-  WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'device-only',
+const serverConfig = vi.hoisted(() => ({
+  getServerUrl: vi.fn(async () => 'https://api.example.test'),
+}));
+const secureStore = vi.hoisted(() => ({
   getItemAsync: vi.fn(async (key: string) => secureValues.get(key) ?? null),
   setItemAsync: vi.fn(async (key: string, value: string) => { secureValues.set(key, value); }),
   deleteItemAsync: vi.fn(async (key: string) => { secureValues.delete(key); }),
 }));
-vi.mock('@sentry/react-native', () => ({ captureMessage: vi.fn() }));
-vi.mock('./serverConfig', () => ({ getServerUrl: vi.fn(async () => 'https://api.example.test') }));
+
+vi.mock('expo-secure-store', () => ({
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'device-only',
+  getItemAsync: (...args: Parameters<typeof secureStore.getItemAsync>) => secureStore.getItemAsync(...args),
+  setItemAsync: (...args: Parameters<typeof secureStore.setItemAsync>) => secureStore.setItemAsync(...args),
+  deleteItemAsync: (...args: Parameters<typeof secureStore.deleteItemAsync>) => secureStore.deleteItemAsync(...args),
+}));
+vi.mock('@sentry/react-native', () => ({ captureMessage: vi.fn(), captureException: vi.fn() }));
+vi.mock('./serverConfig', () => ({ getServerUrl: () => serverConfig.getServerUrl() }));
 vi.mock('./installationId', () => ({
   getOrCreateInstallationId: vi.fn(async () => 'install-1'),
 }));
@@ -19,8 +27,10 @@ vi.mock('./fetchWithTimeout', () => ({
 }));
 const csrf = { forget: vi.fn(async () => undefined) };
 vi.mock('./csrfToken', () => ({
+  CSRF_TOKEN_KEY: 'breeze_csrf_token',
   applyCsrfSignal: vi.fn(async () => undefined),
   forgetCsrfToken: () => csrf.forget(),
+  clearCsrfToken: () => csrf.forget(),
   getCsrfHeaderValue: vi.fn(async () => 'csrf'),
   readCsrfCookie: vi.fn(() => ({ kind: 'absent' })),
 }));
@@ -43,11 +53,95 @@ function response(status: number, body: unknown = {}): Response {
 
 beforeEach(() => {
   secureValues.clear();
+  serverConfig.getServerUrl.mockReset().mockResolvedValue('https://api.example.test');
+  secureStore.getItemAsync.mockClear();
+  secureStore.setItemAsync.mockReset().mockImplementation(async (key: string, value: string) => {
+    secureValues.set(key, value);
+  });
+  secureStore.deleteItemAsync.mockReset().mockImplementation(async (key: string) => {
+    secureValues.delete(key);
+  });
   csrf.forget.mockClear();
   fetchWithTimeout.mockReset();
 });
 
 describe('native logout generation fencing', () => {
+  it('captures generation before server URL resolution and never sends a superseded issuer', async () => {
+    let releaseServerUrl!: (value: string) => void;
+    serverConfig.getServerUrl
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseServerUrl = resolve; }))
+      .mockResolvedValue('https://api.example.test');
+    fetchWithTimeout.mockImplementation((url: string) => {
+      if (url.endsWith('/auth/logout')) return Promise.resolve(response(204));
+      throw new Error(`stale issuer was sent: ${url}`);
+    });
+
+    const staleMfa = verifyMfa('123456', 'temp-old');
+    await vi.waitFor(() => expect(serverConfig.getServerUrl).toHaveBeenCalledTimes(1));
+    await logout();
+    releaseServerUrl('https://api.example.test');
+
+    await expect(staleMfa).rejects.toMatchObject({ code: 'session_superseded' });
+    expect(fetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a binding bootstrap after logout supersedes its queued persistence', async () => {
+    let releaseBindingWrite!: () => void;
+    let bindingWriteStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { bindingWriteStarted = resolve; });
+    const writeRelease = new Promise<void>((resolve) => { releaseBindingWrite = resolve; });
+    secureStore.setItemAsync.mockImplementationOnce(async (key: string, value: string) => {
+      bindingWriteStarted();
+      await writeRelease;
+      secureValues.set(key, value);
+    });
+    fetchWithTimeout
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'binding required' }), {
+        status: 428,
+        headers: {
+          'content-type': 'application/json',
+          [NATIVE_AUTH_BINDING_HEADER]: 'f'.repeat(64),
+        },
+      }))
+      .mockResolvedValueOnce(response(204));
+
+    const staleMfa = verifyMfa('123456', 'temp-old');
+    await writeStarted;
+    const logoutRequest = logout();
+    releaseBindingWrite();
+    await logoutRequest;
+
+    await expect(staleMfa).rejects.toMatchObject({ code: 'session_superseded' });
+    expect(fetchWithTimeout).toHaveBeenCalledTimes(2);
+    expect(secureValues.has(NATIVE_AUTH_BINDING_KEY)).toBe(false);
+  });
+
+  it('does not let an A-session stale CSRF error mutate a replacement B session', async () => {
+    let releaseA!: (value: Response) => void;
+    const delayedA = new Promise<Response>((resolve) => { releaseA = resolve; });
+    fetchWithTimeout.mockImplementation((url: string, init: RequestInit) => {
+      if (url.endsWith('/auth/mfa/verify')) {
+        const body = JSON.parse(String(init.body)) as { tempToken: string };
+        if (body.tempToken === 'temp-a') return delayedA;
+        return Promise.resolve(response(200, {
+          user: { id: 'user-b', email: 'b@example.test', name: 'B', role: 'admin' },
+          tokens: { accessToken: 'access-b' },
+        }));
+      }
+      if (url.endsWith('/auth/logout')) return Promise.resolve(response(204));
+      throw new Error(`unexpected request ${url}`);
+    });
+
+    const staleA = verifyMfa('123456', 'temp-a');
+    await vi.waitFor(() => expect(fetchWithTimeout).toHaveBeenCalledTimes(1));
+    await logout();
+    await expect(verifyMfa('654321', 'temp-b')).resolves.toMatchObject({ token: 'access-b' });
+    releaseA(response(403, { error: 'CSRF token mismatch' }));
+
+    await expect(staleA).rejects.toMatchObject({ code: 'session_superseded' });
+    expect(csrf.forget).toHaveBeenCalledTimes(1);
+  });
+
   it('clears token, CSRF mirror, and native binding even when server logout fails', async () => {
     secureValues.set('breeze_auth_token', 'access-old');
     secureValues.set(NATIVE_AUTH_BINDING_KEY, 'a'.repeat(64));
@@ -80,7 +174,7 @@ describe('native logout generation fencing', () => {
       },
     }));
 
-    await expect(staleMfa).rejects.toMatchObject({ statusCode: 428 });
+    await expect(staleMfa).rejects.toMatchObject({ code: 'session_superseded' });
     expect(fetchWithTimeout).toHaveBeenCalledTimes(2);
     expect(secureValues.has(NATIVE_AUTH_BINDING_KEY)).toBe(false);
   });

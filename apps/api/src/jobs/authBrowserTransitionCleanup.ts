@@ -51,6 +51,7 @@ export async function scheduleAuthBrowserTransitionCleanup(
 }
 
 export async function initializeAuthBrowserTransitionCleanupWorker(): Promise<void> {
+  if (cleanupWorker) return;
   cleanupWorker = createAuthBrowserTransitionCleanupWorker();
   cleanupWorker.on('error', (error) => {
     console.error('[AuthBrowserTransitionCleanup] Worker error:', error);

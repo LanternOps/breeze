@@ -7,6 +7,7 @@ const {
   workerCloseMock,
   cleanupMock,
   capturedProcessor,
+  workerConstructMock,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
   getRepeatableJobsMock: vi.fn(),
@@ -14,6 +15,7 @@ const {
   workerCloseMock: vi.fn(),
   cleanupMock: vi.fn(),
   capturedProcessor: { current: null as null | ((job: { name: string }) => Promise<unknown>) },
+  workerConstructMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -25,6 +27,7 @@ vi.mock('bullmq', () => ({
   },
   Worker: class {
     constructor(_name: string, processor: (job: { name: string }) => Promise<unknown>) {
+      workerConstructMock();
       capturedProcessor.current = processor;
     }
     on = vi.fn();
@@ -91,5 +94,14 @@ describe('auth browser transition cleanup worker', () => {
 
     expect(workerCloseMock).toHaveBeenCalledTimes(1);
     expect(queueCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replace or leak the live worker when initialized twice', async () => {
+    await initializeAuthBrowserTransitionCleanupWorker();
+    await initializeAuthBrowserTransitionCleanupWorker();
+
+    expect(workerConstructMock).toHaveBeenCalledTimes(1);
+    await shutdownAuthBrowserTransitionCleanupWorker();
+    expect(workerCloseMock).toHaveBeenCalledTimes(1);
   });
 });

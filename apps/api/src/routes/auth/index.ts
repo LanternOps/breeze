@@ -12,6 +12,7 @@ import { cfAccessRedirectLoginRoutes } from './cfAccessRedirectLogin';
 import { passkeyRoutes } from './passkeys';
 import { loginContextRoutes } from './loginContext';
 import { authBindingRoutes } from './binding';
+import { authTransitionTestControlRoutes } from './authTransitionTestControl';
 
 export const authRoutes = new Hono();
 
@@ -31,3 +32,4 @@ authRoutes.route('/', testApprovalRoutes);
 authRoutes.route('/', cfAccessRedirectLoginRoutes);
 authRoutes.route('/', loginContextRoutes);
 authRoutes.route('/', authBindingRoutes);
+authRoutes.route('/', authTransitionTestControlRoutes);

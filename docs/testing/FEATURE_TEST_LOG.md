@@ -39,6 +39,21 @@ Use the `feature-testing` skill to run structured verification and record result
 - Web suite: the initial resource-contended run passed 624 files/6,364 tests and timed out only the filesystem scan, which then passed 2/2 alone. The resource-stable four-shard rerun passed all 625 files/6,365 tests (shards: 1,617 + 1,946 + 1,200 + 1,602).
 - Static/build gates: API TypeScript (8 GB heap), Astro check (0 errors), mobile TypeScript, API/web lint, API/web builds, schema drift, CI YAML parse, and `git diff --check` exited 0.
 
+### Independent-review hardening
+
+- **AUTH-01:** Native requests now capture their session generation synchronously before the first await and recheck it before every send/retry, response-owned mutation, and issuer return. Deterministic server-URL, binding-retry, and stale-error barriers cover A → logout → B supersession, including generation-fenced CSRF deletion.
+- **AUTH-02:** Session-owned secure writes and complete token/user/CSRF/native-binding teardown now share the serialized generation queue. Local invalidation advances once and queues cleanup before slow logout I/O; login/MFA, refresh, and AI-chat bearer persistence are fenced. Tests cover slow persistence, delayed/failed logout, synchronous invalidation, and A → logout → B.
+- **BROWSER-01:** A fail-closed test-only barrier can pause after issuer admission and before finalization only when `NODE_ENV=test`, `E2E_MODE` is enabled, and a 32+-character secret matches. Real Chromium proves logout invalidates the admitted issuer before release, and the CF completion contract observes exactly one successor row at generation 1 across replay.
+- **CI-01:** `ci-success` now exports the browser contract result and fails unless it is `success`; a workflow contract locks both the environment mapping and predicate.
+- **JOB-01:** Cleanup worker initialization is idempotent; two calls construct exactly one worker.
+- Review RED (native): `pnpm --filter=breeze-mobile exec vitest run src/services/api.logout.test.ts src/services/auth.test.ts src/services/aiChat.test.ts src/store/authSlice.test.ts` — exit 1; 7 failed and 52 passed across 4 files.
+- Review RED (cleanup/CI): `pnpm --filter=@breeze/api exec vitest run src/jobs/authBrowserTransitionCleanup.test.ts src/config/authBrowserTransitionWorkflowContract.test.ts` — exit 1; 2 failed and 4 passed across 2 files.
+- Review RED (browser seam): `pnpm --filter=@breeze/api exec vitest run src/routes/auth/authTransitionTestBarrier.test.ts` — exit 1 because the intentionally test-first barrier module did not exist.
+- Review GREEN (native final): `pnpm --filter=breeze-mobile exec vitest run src/services/api.logout.test.ts src/services/api.mfa.test.ts src/services/auth.test.ts src/services/aiChat.test.ts src/services/sessionGeneration.test.ts src/store/authSlice.test.ts src/store/resettable.test.ts src/store/logoutResetContract.test.ts` — exit 0; 8 files and 74 tests passed.
+- Review GREEN (API final): `pnpm --filter=@breeze/api exec vitest run src/jobs/authBrowserTransitionCleanup.test.ts src/config/authBrowserTransitionWorkflowContract.test.ts src/routes/auth/authTransitionTestBarrier.test.ts src/routes/auth/login.test.ts` — exit 0; 4 files and 56 tests passed.
+- Review GREEN (real Chromium): `pnpm --dir e2e-tests exec playwright test --config=playwright.auth-browser-transition.config.ts` — exit 0; 2 tests passed in 2.9 seconds against the isolated controller-managed stack.
+- Review static gates: API TypeScript with an 8 GB heap, mobile TypeScript, E2E TypeScript, targeted API ESLint, CI YAML safe parse, browser discovery, and `git diff --check` exited 0. Mobile/E2E expose no lint script and the root has no flat ESLint config, so a direct root ESLint probe exited 2 at configuration discovery without linting source.
+
 ### Phase boundary
 
 The legacy issuer seam and one-argument family mint overload remain active, final zero-legacy source assertions remain inactive, no guard-complete marker is true/exported, and neither production flag is enabled. Released minimum mobile version, app-store availability, and the full configured maximum refresh-family lifetime of zero supported-client legacy events remain external Phase 2 prerequisites documented in `docs/operations/auth-browser-transition-rollout.md`.

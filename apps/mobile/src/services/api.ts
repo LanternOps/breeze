@@ -12,10 +12,11 @@ import {
   readCsrfCookie,
 } from './csrfToken';
 import {
-  advanceSessionGeneration,
   commitIfCurrent,
   currentSessionGeneration,
 } from './sessionGeneration';
+import { beginSessionInvalidation } from './sessionAuthority';
+import { AUTH_TOKEN_KEY, NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -25,7 +26,7 @@ const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
 export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
 export const NATIVE_AUTH_BINDING_HEADER = 'x-breeze-native-auth-binding';
-export const NATIVE_AUTH_BINDING_KEY = 'breeze_native_auth_binding_v1';
+export { NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
 const AUTH_TRANSITION_HEADER = 'x-breeze-auth-transition';
 const AUTH_TRANSITION_VERSION = 'v1';
 export const DEVICE_BLOCKED_CODE = 'device_blocked';
@@ -207,11 +208,9 @@ type MobileDeviceRecord = {
 };
 
 // Token management
-const TOKEN_KEY = 'breeze_auth_token';
-
 async function getToken(): Promise<string | null> {
   try {
-    return await SecureStore.getItemAsync(TOKEN_KEY);
+    return await SecureStore.getItemAsync(AUTH_TOKEN_KEY);
   } catch {
     return null;
   }
@@ -222,17 +221,28 @@ async function requestWithPrefix<T>(
   endpoint: string,
   prefix: string,
   options: RequestInit = {},
-  timeoutMs?: number
+  timeoutMs?: number,
+  sessionContext: Readonly<{
+    capturedGeneration?: number;
+    bearerToken?: string | null;
+  }> = {},
 ): Promise<T> {
+  // This must be the first operation: even server URL discovery can block on
+  // storage, and a logout during that await must supersede this request.
+  const capturedGeneration = sessionContext.capturedGeneration
+    ?? currentSessionGeneration();
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
+  assertCurrentSession(capturedGeneration);
   const url = `${baseUrl}${prefix}${endpoint}`;
   const nativeAuthIssuer = prefix === API_CORE_PREFIX
     && NATIVE_AUTH_ISSUER_ENDPOINTS.has(endpoint);
-  const capturedGeneration = currentSessionGeneration();
   let retriedBindingBootstrap = false;
 
   while (true) {
-    const token = await getToken();
+    assertCurrentSession(capturedGeneration);
+    const token = Object.prototype.hasOwnProperty.call(sessionContext, 'bearerToken')
+      ? sessionContext.bearerToken ?? null
+      : await getToken();
     const method = (options.method ?? 'GET').toUpperCase();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -268,11 +278,13 @@ async function requestWithPrefix<T>(
       if (binding) headers[NATIVE_AUTH_BINDING_HEADER] = binding;
     }
 
+    assertCurrentSession(capturedGeneration);
     const response = await fetchWithTimeout(
       url,
       { ...options, headers, credentials: 'include' },
       timeoutMs
     );
+    assertCurrentSession(capturedGeneration);
 
     if (nativeAuthIssuer && response.status === 428 && !retriedBindingBootstrap) {
       retriedBindingBootstrap = true;
@@ -284,26 +296,29 @@ async function requestWithPrefix<T>(
           });
           return replacement;
         });
-        if (committed !== undefined) continue;
+        assertCurrentSession(capturedGeneration);
+        if (committed !== undefined) {
+          assertCurrentSession(capturedGeneration);
+          continue;
+        }
       }
     }
 
-    // A delayed pre-logout issuer must not restore its CSRF mirror. Non-issuer
-    // requests retain the existing immediate behavior.
+    // Every response-derived write is session-owned. A delayed ordinary API
+    // response can be just as stale as an issuer response after account switch.
     const applyCsrf = () => applyCsrfSignal(readCsrfCookie(response.headers.get('set-cookie')));
-    if (nativeAuthIssuer) {
-      await commitIfCurrent(capturedGeneration, applyCsrf);
-    } else {
-      await applyCsrf();
-    }
+    await commitIfCurrent(capturedGeneration, applyCsrf);
+    assertCurrentSession(capturedGeneration);
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({} as Record<string, unknown>));
+      assertCurrentSession(capturedGeneration);
       const code = typeof body.code === 'string' ? body.code : undefined;
       if (code === DEVICE_BLOCKED_CODE) {
         const reason = typeof body.reason === 'string' ? body.reason : null;
         notifyDeviceBlocked(reason);
       }
+      assertCurrentSession(capturedGeneration);
     // Self-heal a token the server will not accept. The stored value can
     // outlive its cookie — SecureStore survives an iOS reinstall while the
     // cookie jar does not — and if `set-cookie` is not readable on this runtime
@@ -314,17 +329,29 @@ async function requestWithPrefix<T>(
         (typeof body.error === 'string' && body.error)
         || (typeof body.message === 'string' && body.message)
         || 'An error occurred';
-      if (/csrf/i.test(message)) await forgetCsrfToken();
+      if (/csrf/i.test(message)) {
+        await commitIfCurrent(capturedGeneration, forgetCsrfToken);
+        assertCurrentSession(capturedGeneration);
+      }
 
       const error: ApiError = { message, code, statusCode: response.status };
       throw error;
     }
 
     const text = await response.text();
+    assertCurrentSession(capturedGeneration);
     if (!text) return {} as T;
 
     return JSON.parse(text);
   }
+}
+
+function assertCurrentSession(capturedGeneration: number): void {
+  if (capturedGeneration === currentSessionGeneration()) return;
+  throw {
+    message: 'Response belongs to a superseded session',
+    code: 'session_superseded',
+  } as ApiError;
 }
 
 async function request<T>(
@@ -454,25 +481,51 @@ export async function sendMfaSms(tempToken: string): Promise<void> {
 }
 
 export async function logout(
-  options: Readonly<{ sessionGenerationAlreadyAdvanced?: boolean }> = {},
+  options: Readonly<{
+    sessionGenerationAlreadyAdvanced?: boolean;
+    localCleanupAlreadyEnqueued?: boolean;
+    bearerToken?: string | null;
+  }> = {},
 ): Promise<void> {
-  if (!options.sessionGenerationAlreadyAdvanced) advanceSessionGeneration();
-  const logoutGeneration = currentSessionGeneration();
+  const invalidation = options.sessionGenerationAlreadyAdvanced
+    ? null
+    : beginSessionInvalidation();
+  const logoutGeneration = invalidation?.generation ?? currentSessionGeneration();
+  const networkLogout = requestWithPrefix(
+    '/auth/logout',
+    API_CORE_PREFIX,
+    { method: 'POST' },
+    undefined,
+    {
+      capturedGeneration: logoutGeneration,
+      ...(options.bearerToken !== undefined ? { bearerToken: options.bearerToken } : {}),
+    },
+  );
+  // Attach the rejection handler immediately; secure cleanup may be queued
+  // behind a slow old-session write and must not leave an early network error
+  // unhandled while we wait.
+  const networkResult = networkLogout.then(
+    () => undefined,
+    () => undefined,
+  );
+  const cleanup = options.localCleanupAlreadyEnqueued
+    ? Promise.resolve()
+    : invalidation?.cleanup ?? commitIfCurrent(logoutGeneration, async () => {
+      await Promise.all([
+        SecureStore.deleteItemAsync(AUTH_TOKEN_KEY),
+        SecureStore.deleteItemAsync(NATIVE_AUTH_BINDING_KEY),
+        forgetCsrfToken(),
+      ]);
+    });
+
+  // Cleanup is enqueued before waiting on the network. The request already
+  // captured its generation and optional bearer synchronously above.
   try {
-    await requestWithPrefix('/auth/logout', API_CORE_PREFIX, { method: 'POST' });
+    await cleanup;
+    await networkResult;
   } catch {
     // Ignore logout errors
   }
-  // Serialize cleanup behind any persistence write that had already entered
-  // the generation queue. Otherwise a slow SecureStore write can land after
-  // these deletes and resurrect pre-logout binding state.
-  await commitIfCurrent(logoutGeneration, async () => {
-    await Promise.all([
-      SecureStore.deleteItemAsync(TOKEN_KEY),
-      SecureStore.deleteItemAsync(NATIVE_AUTH_BINDING_KEY),
-      forgetCsrfToken(),
-    ]);
-  });
 }
 
 export async function refreshToken(): Promise<{ token: string }> {

@@ -168,6 +168,72 @@ describe('interactive sign-in stamps the app lock as unlocked', () => {
 });
 
 describe('logoutAsync', () => {
+  it('enqueues the local secure wipe before a delayed network logout completes', async () => {
+    let releaseLogout!: () => void;
+    api.logout.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseLogout = resolve; }));
+    const store = makeStore();
+
+    const logoutRequest = store.dispatch(logoutAsync());
+    await vi.waitFor(() => expect(api.logout).toHaveBeenCalledTimes(1));
+
+    expect(auth.clearAuthData).toHaveBeenCalledTimes(1);
+    releaseLogout();
+    await logoutRequest;
+  });
+
+  it('sync logout advances generation and fences an in-flight login before persistence', async () => {
+    let releaseLogin!: (value: unknown) => void;
+    api.login.mockImplementation(() => new Promise((resolve) => { releaseLogin = resolve; }));
+    const store = makeStore();
+    const staleLogin = store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+    await vi.waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
+
+    store.dispatch(logout());
+    releaseLogin({ kind: 'success', token: 'stale-token', user: fakeUser, registerGrant: null });
+    await staleLogin;
+
+    expect(auth.storeToken).not.toHaveBeenCalled();
+    expect(auth.clearAuthData).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes slow A persistence, logout wipe, then replacement B persistence', async () => {
+    const events: string[] = [];
+    let releaseAStore!: () => void;
+    let markAStoreStarted!: () => void;
+    const aStoreStarted = new Promise<void>((resolve) => { markAStoreStarted = resolve; });
+    const aStoreRelease = new Promise<void>((resolve) => { releaseAStore = resolve; });
+    auth.storeToken.mockImplementation(async (token: string) => {
+      if (token === 'token-a') {
+        events.push('a:start');
+        markAStoreStarted();
+        await aStoreRelease;
+        events.push('a:end');
+      } else {
+        events.push('b:token');
+      }
+    });
+    auth.clearAuthData.mockImplementation(async () => { events.push('wipe'); });
+    api.login.mockImplementation(async (email: string) => ({
+      kind: 'success',
+      token: email.startsWith('a@') ? 'token-a' : 'token-b',
+      user: { ...fakeUser, email },
+      registerGrant: null,
+    }));
+    const store = makeStore();
+
+    const loginA = store.dispatch(loginAsync({ email: 'a@example.test', password: 'pw' }));
+    await aStoreStarted;
+    const logoutRequest = store.dispatch(logoutAsync());
+    await vi.waitFor(() => expect(api.logout).toHaveBeenCalledTimes(1));
+    const loginB = store.dispatch(loginAsync({ email: 'b@example.test', password: 'pw' }));
+    releaseAStore();
+    await Promise.all([loginA, logoutRequest, loginB]);
+
+    expect(events).toEqual(['a:start', 'a:end', 'wipe', 'b:token']);
+    expect(store.getState().auth.token).toBe('token-b');
+    expect(store.getState().auth.user?.email).toBe('b@example.test');
+  });
+
   it('advances the session generation before network logout and fences a delayed login write', async () => {
     let releaseLogin!: (value: unknown) => void;
     api.login.mockImplementation(() => new Promise((resolve) => { releaseLogin = resolve; }));

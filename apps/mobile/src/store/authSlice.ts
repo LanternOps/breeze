@@ -8,13 +8,13 @@ import {
   type MfaChallenge,
   type User,
 } from '../services/api';
-import { storeToken, storeUser, clearAuthData } from '../services/auth';
+import { storeToken, storeUser } from '../services/auth';
 import { markAppLockUnlocked } from '../services/appLockStore';
 import {
-  advanceSessionGeneration,
   commitIfCurrent,
   currentSessionGeneration,
 } from '../services/sessionGeneration';
+import { beginSessionInvalidation } from '../services/sessionAuthority';
 
 export type PushRegistrationStatus = 'idle' | 'ok' | 'failed' | 'unsupported';
 
@@ -116,14 +116,23 @@ export const verifyMfaAsync = createAsyncThunk(
 
 export const logoutAsync = createAsyncThunk(
   'auth/logout',
-  async (_, { rejectWithValue }) => {
-    advanceSessionGeneration();
+  async (_, { rejectWithValue, getState }) => {
+    const invalidation = beginSessionInvalidation();
+    const bearerToken = (getState() as { auth: AuthState }).auth.token;
     // Best-effort server logout; we tear down local state regardless of its
     // outcome so the user always leaves the authenticated surface.
     let apiErrorMessage: string | undefined;
-    try {
-      await apiLogout({ sessionGenerationAlreadyAdvanced: true });
-    } catch (error: unknown) {
+    const networkLogout = apiLogout({
+      sessionGenerationAlreadyAdvanced: true,
+      localCleanupAlreadyEnqueued: true,
+      bearerToken,
+    });
+    const [networkResult, cleanupResult] = await Promise.allSettled([
+      networkLogout,
+      invalidation.cleanup,
+    ]);
+    if (networkResult.status === 'rejected') {
+      const error = networkResult.reason;
       apiErrorMessage = (error as { message?: string }).message || 'Logout failed';
       // A failed server-side logout may leave the session token live on the
       // backend — security-relevant, and the rejected reducer discards the
@@ -136,9 +145,8 @@ export const logoutAsync = createAsyncThunk(
     // survived; surface that as a rejection rather than letting it escape the
     // thunk unhandled — the Redux session reset still happens via the
     // logout/rejected reducers, so the user is signed out either way.
-    try {
-      await clearAuthData();
-    } catch (error: unknown) {
+    if (cleanupResult.status === 'rejected') {
+      const error = cleanupResult.reason;
       const wipeMessage = (error as { message?: string }).message || 'Secure wipe failed';
       return rejectWithValue(apiErrorMessage ? `${apiErrorMessage}; ${wipeMessage}` : wipeMessage);
     }
@@ -279,9 +287,9 @@ const authSlice = createSlice({
   },
 });
 
-export const {
+const {
+  logout: reduceLogout,
   setCredentials,
-  logout,
   clearError,
   clearMfaChallenge,
   setLoading,
@@ -289,4 +297,25 @@ export const {
   setApproverRegistration,
   clearAuthenticatorRegisterGrant,
 } = authSlice.actions;
+
+export {
+  setCredentials,
+  clearError,
+  clearMfaChallenge,
+  setLoading,
+  setPushRegistration,
+  setApproverRegistration,
+  clearAuthenticatorRegisterGrant,
+};
+
+export const logout = Object.assign(
+  (): ReturnType<typeof reduceLogout> => {
+    // Action creation is synchronous, so request/write fencing happens before
+    // Redux publishes the signed-out state to the UI.
+    const { cleanup } = beginSessionInvalidation();
+    void cleanup.catch(() => undefined); // clearAuthData already reports failures
+    return reduceLogout();
+  },
+  { type: reduceLogout.type, match: reduceLogout.match },
+);
 export default authSlice.reducer;

@@ -2320,6 +2320,7 @@ jobs:
       E2E_AUTH_TRANSITION_API_URL: http://127.0.0.1:3005
       E2E_ADMIN_EMAIL: admin@breeze.local
       E2E_ADMIN_PASSWORD: BreezeAdmin123!
+      AUTH_TRANSITION_TEST_CONTROL_SECRET: ci-auth-transition-test-control-v1-7Kp4mQ9x
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2410,6 +2411,7 @@ jobs:
           CHECK_MIGRATIONS_NONSUPERUSER_RESULT: ${{ needs.check-migrations-nonsuperuser.result }}
           RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
           SMOKE_TEST_RESULT: ${{ needs.smoke-test.result }}
+          AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           if [[ "${LINT_RESULT}" != "success" ]] || \
@@ -2438,6 +2440,7 @@ jobs:
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \
+             [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "success" ]] || \
              [[ "${RUST_CHECK_RESULT}" != "success" ]]; then
             echo "One or more required jobs failed"
             exit 1
