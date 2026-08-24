@@ -27,7 +27,9 @@
  *     shape compatible with this dispatcher's one-command-per-target model.
  *   - 'script' actionKind (not a commandType) -> CommandTypes.SCRIPT ('script'),
  *     requires `scriptId`; payload built from the resolved script row,
- *     mirroring aiToolsScripts.ts's `run_script` tool.
+ *     mirroring aiToolsScripts.ts's `run_script` tool. RESTRICTED to scripts
+ *     whose parameters are all `runtime`-sourced — see
+ *     {@link REMEDIATION_BOUND_PARAMETER_ERROR}.
  */
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
@@ -46,11 +48,48 @@ import type { AuthContext } from '../../middleware/auth';
 import { CommandTypes, queueCommandForExecution } from '../commandQueue';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { captureException } from '../sentry';
+import { hasTenantVariableBoundParameters } from '../sourcedParameters';
 import { getFleetFinding } from './query';
 
 /** Real commandType values a caller may request under `actionKind: 'command'`. */
 export const REMEDIATION_COMMAND_TYPE_ALLOWLIST = ['restart_service', 'reboot'] as const;
 export type RemediationCommandType = (typeof REMEDIATION_COMMAND_TYPE_ALLOWLIST)[number];
+
+/**
+ * #3409 PR4c-2. Fleet remediation is the FOURTH script-dispatch path and the
+ * only one that does not go through `dispatchScriptToDevice`
+ * (`services/scriptDispatch.ts`) — it owns its own bulk target/result model,
+ * so it never calls `resolveSourcedParameters`, never opens the tenant
+ * variable scope, and never seals a `secretEnvEnvelope`. A script declaring a
+ * bound (non-`runtime`) parameter therefore cannot be dispatched from here
+ * without silently running with that binding UNRESOLVED — `BREEZE_VAR_*`
+ * unset, `BREEZE_PARAM_*` empty, and no error anywhere. For a `tenantSecret`
+ * that is the exact silent-wrong-run PR4c exists to prevent, so this path
+ * refuses the script instead, at run creation AND again at dispatch.
+ */
+export const REMEDIATION_BOUND_PARAMETER_ERROR =
+  'Scripts with server-resolved parameters (variables, secrets, device fields) cannot be used for fleet remediation yet';
+
+/**
+ * Does this script declare ANY parameter whose value the SERVER must resolve?
+ *
+ * `hasTenantVariableBoundParameters` (`services/sourcedParameters.ts`, the one
+ * authority) answers this for the two variable-backed sources; `builtin` and
+ * `deviceCustomField` are equally unresolvable on this path, so they are
+ * folded in with the same deliberately-tolerant element-by-element scan. A
+ * `source` that is present but not the string `'runtime'` counts as bound even
+ * when the rest of the element fails to parse — a binding we cannot READ must
+ * never be downgraded to "the caller may supply it".
+ */
+function hasServerResolvedParameters(parameters: unknown): boolean {
+  if (hasTenantVariableBoundParameters(parameters)) return true;
+  if (!Array.isArray(parameters)) return false;
+  return parameters.some((element) => {
+    if (element === null || typeof element !== 'object') return false;
+    const source = (element as { source?: unknown }).source;
+    return typeof source === 'string' && source !== 'runtime';
+  });
+}
 
 interface RemediateRequestBase {
   parameters: Record<string, unknown>;
@@ -400,7 +439,7 @@ async function validateRemediationScript(
   findingOrgId: string
 ): Promise<{ error?: string }> {
   const [script] = await db
-    .select({ id: scripts.id, orgId: scripts.orgId })
+    .select({ id: scripts.id, orgId: scripts.orgId, parameters: scripts.parameters })
     .from(scripts)
     .where(and(eq(scripts.id, scriptId), isNull(scripts.deletedAt)))
     .limit(1);
@@ -410,6 +449,12 @@ async function validateRemediationScript(
   }
   if (script.orgId !== null && script.orgId !== findingOrgId) {
     return { error: 'Script does not belong to an accessible organization' };
+  }
+  // Refuse at CREATION so the caller gets a 400 they can act on, rather than a
+  // run that queues and then fails every target. See
+  // REMEDIATION_BOUND_PARAMETER_ERROR for why this path cannot resolve them.
+  if (hasServerResolvedParameters(script.parameters)) {
+    return { error: REMEDIATION_BOUND_PARAMETER_ERROR };
   }
   return {};
 }
@@ -552,6 +597,11 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
   let reportedUnexpected = false;
 
   let scriptPayload: { language: string; content: string; timeoutSeconds: number; runAs: string } | null = null;
+  // Why the reason is a variable: a script that GAINED a bound parameter since
+  // run creation is unavailable to this path for a different reason than one
+  // that was deleted or re-tenanted, and "Script no longer available" would
+  // send the operator looking for a deletion that never happened.
+  let scriptUnavailableReason = 'Script no longer available';
   if (run.actionKind === 'script' && run.scriptId) {
     // Re-fetch under the SAME guards as validateRemediationScript at
     // creation time: non-deleted, and either org-less (system/universal
@@ -566,11 +616,23 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
         content: scripts.content,
         timeoutSeconds: scripts.timeoutSeconds,
         runAs: scripts.runAs,
+        parameters: scripts.parameters,
       })
       .from(scripts)
       .where(and(eq(scripts.id, run.scriptId), isNull(scripts.deletedAt)))
       .limit(1);
-    scriptPayload = script && (script.orgId === null || script.orgId === run.orgId) ? script : null;
+    if (script && (script.orgId === null || script.orgId === run.orgId)) {
+      // Defence in depth for #3409 PR4c-2: `validateRemediationScript` already
+      // refused this script at creation, but the re-fetch exists precisely
+      // because the row can be EDITED in between — and adding a bound
+      // parameter is the edit that turns an accepted run into one that would
+      // dispatch with the binding unresolved. Fail the targets loudly instead.
+      if (hasServerResolvedParameters(script.parameters)) {
+        scriptUnavailableReason = REMEDIATION_BOUND_PARAMETER_ERROR;
+      } else {
+        scriptPayload = script;
+      }
+    }
   }
 
   for (const target of pendingTargets) {
@@ -617,9 +679,14 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
 
       if (run.actionKind === 'script') {
         if (!scriptPayload) {
-          throw new Error('Script no longer available');
+          throw new Error(scriptUnavailableReason);
         }
         type = CommandTypes.SCRIPT;
+        // #3409 PR4c-2: `parameters` here is the caller's snapshot verbatim —
+        // this path has no server-side resolution and NO secret envelope, so
+        // only runtime-sourced scripts ever reach it (guarded twice above).
+        // Adding a bound parameter to this payload requires routing the path
+        // through `dispatchScriptToDevice` first, not a resolver call here.
         payload = {
           scriptId: run.scriptId,
           language: scriptPayload.language,

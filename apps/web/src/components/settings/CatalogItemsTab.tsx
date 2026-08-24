@@ -6,7 +6,8 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
-import { formatMoney } from '../../lib/timeFormat';
+import { formatMoney } from '../billing/shared/format';
+import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
 import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
 import CatalogDistributorDrawer from './CatalogDistributorDrawer';
 import Pax8CatalogDrawer from './Pax8CatalogDrawer';
@@ -36,6 +37,7 @@ interface ExpandState {
 
 export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number }) {
   const { t } = useTranslation('settings');
+  // INTERIM (#3777): replaced by wave-3 price books (per-item, per-currency).
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -65,6 +67,19 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
 
   const { can } = usePermissions();
   const canWrite = can('catalog', 'write');
+
+  // Price / margin columns read the price book in the partner's currency. Until
+  // it resolves (or if it fails) the cells render '—' — never a USD assumption.
+  const { currency: partnerCurrency } = usePartnerCurrency(!isOrgScoped);
+  const partnerPrice = useCallback(
+    (it: CatalogItem): string | null =>
+      partnerCurrency ? it.prices?.find((p) => p.currencyCode === partnerCurrency)?.unitPrice ?? null : null,
+    [partnerCurrency],
+  );
+  const rowMargin = useCallback(
+    (it: CatalogItem) => computeMargin(partnerPrice(it), it.costBasis, partnerCurrency, it.costCurrency),
+    [partnerPrice, partnerCurrency],
+  );
 
   const load = useCallback(async (v: View) => {
     setLoading(true);
@@ -158,8 +173,9 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
         delete next[it.id];
         return next;
       }
-      // Lazily fetch this bundle's components + rolled-up economics.
-      void Promise.all([getCatalogItem(it.id), getBundleEconomics(it.id)])
+      // Lazily fetch this bundle's components + rolled-up economics (in the
+      // partner currency; the server defaults to it when none is given).
+      void Promise.all([getCatalogItem(it.id), getBundleEconomics(it.id, { currencyCode: partnerCurrency ?? undefined })])
         .then(async ([detailRes, econRes]) => {
           if (detailRes.status === 401 || econRes.status === 401) return UNAUTHORIZED();
           // The component list is the load-bearing read; a failure must NOT render
@@ -179,7 +195,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
         .catch(() => setExpanded((p) => (p[it.id] ? { ...p, [it.id]: { loading: false, failed: true, components: [], economics: null } } : p)));
       return { ...prev, [it.id]: { loading: true, failed: false, components: [], economics: null } };
     });
-  }, []);
+  }, [partnerCurrency]);
 
   const itemName = useCallback(
     (id: string) => items.find((i) => i.id === id)?.name ?? t('catalogItemsTab.unknownItem'),
@@ -200,17 +216,18 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
     const dir = sort.dir === 'asc' ? 1 : -1;
     out = [...out].sort((a, b) => {
       if (sort.key === 'name') return a.name.localeCompare(b.name) * dir;
-      if (sort.key === 'unitPrice') return (Number(a.unitPrice) - Number(b.unitPrice)) * dir;
-      // margin: nulls always sort to the bottom regardless of direction
-      const ma = computeMargin(a.unitPrice, a.costBasis);
-      const mb = computeMargin(b.unitPrice, b.costBasis);
-      if (ma == null && mb == null) return 0;
-      if (ma == null) return 1;
-      if (mb == null) return -1;
-      return (ma - mb) * dir;
+      // price / margin: nulls (no partner-currency row, no comparable margin)
+      // always sort to the bottom regardless of direction
+      const [va, vb] = sort.key === 'unitPrice'
+        ? [partnerPrice(a), partnerPrice(b)].map((v) => (v == null ? null : Number(v)))
+        : [rowMargin(a), rowMargin(b)];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return (va - vb) * dir;
     });
     return out;
-  }, [items, typeFilter, search, sort]);
+  }, [items, typeFilter, search, sort, partnerPrice, rowMargin]);
 
   const capHit = items.length >= CATALOG_PAGE_LIMIT;
 
@@ -380,7 +397,10 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
               </thead>
               <tbody>
                 {rows.map((it) => {
-                  const margin = computeMargin(it.unitPrice, it.costBasis);
+                  const price = partnerPrice(it);
+                  const margin = rowMargin(it);
+                  const extraCurrencies = (it.prices?.length ?? 0) - (price == null ? 0 : 1);
+                  const marginUnavailable = margin == null && !!it.costBasis && !!partnerCurrency && it.costCurrency !== partnerCurrency;
                   const exp = expanded[it.id];
                   const isOpen = !!exp;
                   return (
@@ -426,9 +446,24 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                           </span>
                         </td>
                         <td className="px-3 py-3 font-mono text-xs text-muted-foreground">{it.sku ?? '—'}</td>
-                        <td className="px-3 py-3 text-right tabular-nums">{formatMoney(it.unitPrice)}</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{it.costBasis ? formatMoney(it.costBasis) : '—'}</td>
-                        <td className={`px-3 py-3 text-right tabular-nums ${marginTone(margin)}`} data-testid={`catalog-margin-${it.id}`}>
+                        <td className="px-3 py-3 text-right tabular-nums" data-testid={`catalog-price-${it.id}`}>
+                          {price != null && partnerCurrency ? formatMoney(price, partnerCurrency) : '—'}
+                          {extraCurrencies > 0 && (
+                            <span
+                              className="ml-1.5 rounded border border-border bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground"
+                              title={it.prices.map((p) => p.currencyCode).join(', ')}
+                              data-testid={`catalog-price-more-${it.id}`}
+                            >
+                              {t('catalogItemsTab.nMoreCurrencies', { count: extraCurrencies })}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{it.costBasis ? formatMoney(it.costBasis, it.costCurrency) : '—'}</td>
+                        <td
+                          className={`px-3 py-3 text-right tabular-nums ${marginTone(margin)}`}
+                          title={marginUnavailable ? t('catalogItemsTab.marginUnavailableCostIn', { currency: it.costCurrency }) : undefined}
+                          data-testid={`catalog-margin-${it.id}`}
+                        >
                           {formatMargin(margin)}
                         </td>
                         <td className="px-3 py-3 text-right" onClick={(e) => e.stopPropagation()}>
@@ -470,9 +505,19 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                                   ))}
                                 </ul>
                                 {exp.economics && (
-                                  <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 border-t pt-2 text-xs text-muted-foreground">
-                                    <span>{t('catalogItemsTab.componentCost')}<span className="tabular-nums text-foreground">{formatMoney(exp.economics.totalCost)}</span></span>
-                                    <span>{t('catalogItemsTab.bundleMargin')}<span className={`tabular-nums ${marginTone(exp.economics.marginPct)}`}>{formatMoney(exp.economics.margin)} ({formatMargin(exp.economics.marginPct)})</span></span>
+                                  <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 border-t pt-2 text-xs text-muted-foreground" data-testid={`catalog-bundle-economics-${it.id}`}>
+                                    {!exp.economics.priceBookComplete ? (
+                                      // A component (or the bundle) has no price in this
+                                      // currency — totals are withheld, never partially summed.
+                                      <span>{t('catalogItemsTab.incompletePriceBook')} ({exp.economics.currencyCode})</span>
+                                    ) : !exp.economics.marginAvailable ? (
+                                      <span>{t('catalogItemsTab.marginUnavailable')} ({exp.economics.currencyCode})</span>
+                                    ) : (
+                                      <>
+                                        <span>{t('catalogItemsTab.componentCost')}<span className="tabular-nums text-foreground">{formatMoney(exp.economics.totalCost, exp.economics.currencyCode)}</span></span>
+                                        <span>{t('catalogItemsTab.bundleMargin')}<span className={`tabular-nums ${marginTone(exp.economics.marginPct)}`}>{formatMoney(exp.economics.margin, exp.economics.currencyCode)} ({formatMargin(exp.economics.marginPct)})</span></span>
+                                      </>
+                                    )}
                                   </div>
                                 )}
                               </div>

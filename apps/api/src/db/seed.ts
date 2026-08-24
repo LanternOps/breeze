@@ -204,6 +204,12 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'ai_sessions', action: 'read_all',
     description: "View all users' AI session history (admin audit dashboard)" },
 
+  // AI agents (#3821)
+  { resource: 'ai_agents', action: 'read',
+    description: 'View AI agent policies' },
+  { resource: 'ai_agents', action: 'write',
+    description: 'Create, edit and disable AI agent policies' },
+
   // Action intents / durable approvals
   { resource: 'approvals', action: 'decide',
     description: 'Decide (approve/deny) pending action-intent approvals' },
@@ -293,6 +299,11 @@ export const SYSTEM_ROLES = [
       'audit:read',
       'vulnerabilities:accept_risk',
       'ai_sessions:read_all',
+      // An org admin may tighten their own org's agent policy. Creating a
+      // PARTNER-WIDE baseline additionally requires partner scope with
+      // org_access='all' (canManagePartnerWidePolicies), so this grant cannot
+      // reach across orgs.
+      'ai_agents:read', 'ai_agents:write',
       'approvals:decide',
       // Tenant variables (#3409): managing the definitions is an admin task;
       // running a script that USES one only needs scripts:execute.
@@ -1091,10 +1102,18 @@ export async function seedDefaultAdmin() {
     orgId = existingOrg.id;
     console.log('  Default organization already exists.');
   } else {
+    const [partnerRow] = await db
+      .select({ currencyCode: partners.currencyCode })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1);
+    if (!partnerRow) throw new Error('Default partner not found');
+
     const [newOrg] = await db
       .insert(organizations)
       .values({
         partnerId,
+        currencyCode: partnerRow.currencyCode,
         name: 'Default Organization',
         slug: 'default-organization',
         type: 'customer',

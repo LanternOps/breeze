@@ -804,7 +804,17 @@
     "working": "Elaborazione...",
     "disconnect": "Disconnetti",
     "saving": "Salvataggio...",
-    "saveKey": "Salva chiave"
+    "saveKey": "Salva chiave",
+    "defaultCurrency": "Regola in {{currency}}",
+    "accountCountry": "Paese {{country}}",
+    "refreshedAt": "Aggiornato {{when}}",
+    "refresh": "Aggiorna",
+    "refreshing": "Aggiornamento…",
+    "refreshed": "Dettagli dell'account Stripe aggiornati",
+    "couldNotRefresh": "Impossibile aggiornare i dettagli dell'account Stripe.",
+    "notCached": "Valuta non ancora in cache — aggiorna per recuperarla da Stripe.",
+    "staleCache": "Impossibile raggiungere Stripe — vengono mostrati gli ultimi dettagli dell'account in cache.",
+    "reconnectRequired": "La chiave Stripe salvata (•••• {{last4}}) non funziona più: {{reason}} Incolla una nuova chiave per riconnetterti; i pagamenti online falliranno fino ad allora."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossibile salvare le mappature siti.",

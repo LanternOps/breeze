@@ -38,7 +38,7 @@ async function seedMembershiplessPartnerAdmin(): Promise<OrgFixture> {
       .values({ name: `MP ${sfx}`, slug: `mp-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
       .returning({ id: partners.id });
     const [o] = await db.insert(organizations)
-      .values({ partnerId: p!.id, name: 'MOrg', slug: `mo-${sfx}` })
+      .values({ currencyCode: 'USD', partnerId: p!.id, name: 'MOrg', slug: `mo-${sfx}` })
       .returning({ id: organizations.id });
     const [u] = await db.insert(users)
       .values({ partnerId: p!.id, orgId: o!.id, email: `mp-${sfx}@x.io`, name: 'MP', status: 'active' })
@@ -66,7 +66,7 @@ async function seedOrgMemberUser(): Promise<OrgFixture> {
       .values({ name: `OM ${sfx}`, slug: `om-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
       .returning({ id: partners.id });
     const [o] = await db.insert(organizations)
-      .values({ partnerId: p!.id, name: 'OMOrg', slug: `omo-${sfx}` })
+      .values({ currencyCode: 'USD', partnerId: p!.id, name: 'OMOrg', slug: `omo-${sfx}` })
       .returning({ id: organizations.id });
     const [u] = await db.insert(users)
       .values({ partnerId: p!.id, orgId: o!.id, email: `om-${sfx}@x.io`, name: 'OM', status: 'active' })
@@ -93,7 +93,7 @@ async function seedPartnerUserWithSendPerm(): Promise<Fixture> {
       .values({ name: `PP ${sfx}`, slug: `pp-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
       .returning({ id: partners.id });
     const [o] = await db.insert(organizations)
-      .values({ partnerId: p!.id, name: 'POrg', slug: `po-${sfx}` })
+      .values({ currencyCode: 'USD', partnerId: p!.id, name: 'POrg', slug: `po-${sfx}` })
       .returning({ id: organizations.id });
     const [u] = await db.insert(users)
       .values({ partnerId: p!.id, orgId: o!.id, email: `pp-${sfx}@x.io`, name: 'PP', status: 'active' })

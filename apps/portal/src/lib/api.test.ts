@@ -58,3 +58,22 @@ describe('portalApi.getTicketForms request path', () => {
     expect(result.data).toEqual([]);
   });
 });
+
+
+describe('publicApiPath (rendered into HTML)', () => {
+  it('is same-origin relative on the server even with INTERNAL_API_URL set', async () => {
+    vi.stubEnv('INTERNAL_API_URL', 'http://api:3001');
+    const { publicApiPath, buildPortalApiUrl } = await import('./api');
+    expect(publicApiPath('/portal/quotes/q1/pdf')).toBe('/api/v1/portal/quotes/q1/pdf');
+    // The contrast that matters: the fetch URL may carry the internal host, the
+    // rendered path never does.
+    expect(buildPortalApiUrl('/portal/quotes/q1/pdf')).toMatch(/^http:\/\/api:3001\/api\/v1\/portal\/quotes\/q1\/pdf$/);
+    vi.unstubAllEnvs();
+  });
+
+  it('normalises a leading /api/ and a missing slash', async () => {
+    const { publicApiPath } = await import('./api');
+    expect(publicApiPath('portal/x')).toBe('/api/v1/portal/x');
+    expect(publicApiPath('/api/portal/x')).toBe('/api/v1/portal/x');
+  });
+});

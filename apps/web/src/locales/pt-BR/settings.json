@@ -128,6 +128,39 @@
       "hybridPlan": "Plano híbrido"
     }
   },
+  "partnerAiProvider": {
+    "title": "Provedor de IA",
+    "subtitle": "Execute a IA do Breeze com sua própria chave de API da Anthropic em vez da chave da plataforma.",
+    "platformKey": "Chave da plataforma",
+    "platformKeyDescription": "Os recursos de IA usam a chave Anthropic do Breeze e são cobrados como créditos de IA do Breeze.",
+    "yourKey": "Sua chave •••• {{last4}}",
+    "verifiedAt": "Verificada em {{date}}",
+    "notVerifiedYet": "Ainda não verificada",
+    "defaultModelValue": "Modelo padrão: {{model}}",
+    "platformDefault": "Padrão da plataforma",
+    "keyErrorTitle": "Sua chave Anthropic não está funcionando",
+    "reconnectHint": "Os recursos de IA ficam indisponíveis para suas organizações até você salvar uma chave válida abaixo.",
+    "connectKeyTitle": "Conectar sua chave Anthropic",
+    "replaceKeyTitle": "Substituir sua chave Anthropic",
+    "keyLabel": "Chave de API da Anthropic",
+    "writeOnlyHint": "A chave é verificada ao salvar e nunca é exibida novamente.",
+    "saveKey": "Salvar chave",
+    "keySaved": "Chave Anthropic salva e verificada.",
+    "keySaveFailed": "Não foi possível salvar a chave Anthropic.",
+    "defaultModelLabel": "Modelo padrão",
+    "defaultModelHint": "Usado em novas sessões de IA em todas as suas organizações.",
+    "modelUpdated": "Modelo padrão atualizado.",
+    "modelUpdateFailed": "Não foi possível atualizar o modelo padrão.",
+    "disconnectTitle": "Voltar para a chave da plataforma",
+    "disconnectDescription": "Remove sua chave Anthropic. O uso de IA volta a ser cobrado como créditos de IA do Breeze.",
+    "disconnect": "Desconectar",
+    "disconnectConfirm": "Desconectar sua chave Anthropic? Os recursos de IA voltarão a usar a chave da plataforma e os créditos de IA do Breeze.",
+    "disconnected": "Chave Anthropic removida. Os recursos de IA agora usam a chave da plataforma.",
+    "disconnectFailed": "Não foi possível desconectar a chave Anthropic.",
+    "permissionDenied": "Gerenciar o provedor de IA exige permissões de faturamento e acesso a todas as organizações.",
+    "loadFailed": "Não foi possível carregar a configuração do provedor de IA.",
+    "workspaceDisclosure": "O enriquecimento de conteúdo do Workspace atualmente usa a chave da plataforma."
+  },
   "partnerDefaults": {
     "notSet": "Não definido — as organizações configuram individualmente",
     "updatePolicy": "Política de atualização do agente",
@@ -417,6 +450,10 @@
         "label": "Orçamentos de IA",
         "description": "Limites de gastos com IA"
       },
+      "aiProvider": {
+        "label": "Provedor de IA",
+        "description": "Use sua própria chave Anthropic"
+      },
       "branding": {
         "label": "Identidade visual",
         "description": "Logotipo e cores"
@@ -452,7 +489,7 @@
     "loadFailed": "Não foi possível carregar sua identidade visual atual — recarregue a página antes de salvar ou você poderá substituir configurações existentes.",
     "logoUrl": "URL do logotipo",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "Uma URL <code>https://</code> para seu logotipo. Deixe em branco para não usar logotipo.",
+    "logoHelp": "SVG ou PNG. Logos largos funcionam melhor: o portal o exibe em altura fixa, então mire em cerca de 4:1 e pelo menos 320px de largura.",
     "accentColor": "Cor de destaque",
     "colorPicker": "Seletor de cor de destaque",
     "colorHelp": "Uma cor hexadecimal <code>#rrggbb</code>.",
@@ -1271,7 +1308,100 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "A IA propõe um plano de várias etapas. O usuário aprova o plano inteiro de uma só vez; depois, as etapas são executadas automaticamente.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "As ferramentas de nível 2 são executadas automaticamente com registro de auditoria. As ferramentas de nível 3 ainda exigem aprovação.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",
-    "untitled": "Sem título"
+    "untitled": "Sem título",
+    "billedToPartnerKey": "Cobrado na sua chave — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze"
+  },
+  "aiAgentsPage": {
+    "title": "Agentes de IA",
+    "description": "Trabalhadores de IA nomeados, com uma política. Os parceiros definem a linha de base; as organizações só podem restringi-la.",
+    "empty": "Nenhum agente ainda.",
+    "allOrgs": "Todas as organizações",
+    "allOrgsHint": "Em todo o parceiro: vale para cada organização, a menos que uma organização a restrinja.",
+    "stateEnabled": "Ativado",
+    "stateDisabled": "Desativado",
+    "errors": {
+      "load": "Não foi possível carregar os agentes.",
+      "kindExists": "Já existe um agente deste tipo para este proprietário. Edite o existente ou desative-o primeiro.",
+      "modeNotSupported": "Esse modo ainda não está disponível. Por enquanto os agentes podem investigar e propor, mas não agir."
+    },
+    "actions": {
+      "add": "Novo agente",
+      "edit": "Editar",
+      "save": "Salvar",
+      "cancel": "Cancelar",
+      "disable": "Desativar",
+      "confirmDisable": "Confirmar desativação"
+    },
+    "toasts": {
+      "saved": "Agente salvo",
+      "saveFailed": "Não foi possível salvar o agente.",
+      "disabled": "Agente desativado",
+      "disableFailed": "Não foi possível desativar o agente."
+    },
+    "issues": {
+      "name": "Dê um nome ao agente.",
+      "severities": "Selecione ao menos uma severidade de alerta.",
+      "org": "Selecione uma organização antes de criar um agente pertencente à organização.",
+      "allKindsTaken": "Todos os tipos de agente já possuem um agente para este proprietário. Edite um agente existente."
+    },
+    "editor": {
+      "newTitle": "Novo agente",
+      "editTitle": "Editar agente",
+      "scopeLegend": "Aplica-se a",
+      "allOrgs": "Todas as organizações",
+      "allOrgsHint": "(linha de base em todo o parceiro)",
+      "thisOrg": "Somente esta organização"
+    },
+    "sections": {
+      "scope": "Quando é executado",
+      "permissions": "Permissões",
+      "limits": "Limites",
+      "notifications": "Notificações",
+      "instructions": "Instruções"
+    },
+    "kinds": {
+      "triage": "Triagem de alertas",
+      "patch": "Aplicação de patches",
+      "helpdesk": "Central de ajuda"
+    },
+    "modes": {
+      "off": "Desligado",
+      "shadow": "Sombra — apenas investigar e propor",
+      "act": "Agir — disponível em uma versão futura"
+    },
+    "severities": {
+      "critical": "Crítica",
+      "high": "Alta",
+      "medium": "Média",
+      "low": "Baixa",
+      "info": "Informativa"
+    },
+    "fields": {
+      "kind": "Tipo",
+      "kindImmutable": "O tipo de um agente não pode ser alterado depois de criado.",
+      "name": "Nome",
+      "mode": "Modo",
+      "enabled": "Ativado",
+      "respectMaintenanceWindows": "Respeitar as janelas de manutenção",
+      "toolAllowlist": "Ferramentas permitidas",
+      "toolAllowlistHint": "Ferramentas somente leitura estão sempre disponíveis. Liste as ferramentas que alteram e que este agente pode propor, uma por linha.",
+      "protectedHint": "Nunca são tocados, independentemente do que o agente propuser. Uma entrada por linha.",
+      "protectedServices": "Serviços protegidos",
+      "protectedPaths": "Caminhos protegidos",
+      "protectedRegistryKeys": "Chaves de registro protegidas",
+      "maxDevicesPerRun": "Máx. de dispositivos por execução",
+      "maxRunsPerHour": "Máx. de execuções por hora",
+      "maxBudgetCentsPerDay": "Orçamento diário (centavos)",
+      "wallClockSeconds": "Duração máx. da execução (segundos)",
+      "maxFleetPercentPerDay": "Parcela máx. da frota por dia (%)",
+      "cooldownSeconds": "Intervalo por dispositivo (segundos)",
+      "recipientRolesHint": "Funções notificadas quando este agente propõe algo.",
+      "recipientRolesEmpty": "Nenhuma função disponível.",
+      "instructionsHint": "Apenas orientação — tom, o que verificar primeiro, convenções internas. Nunca concede permissões.",
+      "charactersLeft": "Restam {{count}} caracteres",
+      "recipientRolesFailed": "Não foi possível carregar as funções, então os destinatários das notificações não podem ser alterados agora."
+    },
+    "loading": "Carregando agentes…"
   },
   "apiKeyForm": {
     "devicesRead": "Dispositivos: leitura",
@@ -1542,7 +1672,20 @@
     "saving": "Salvando…",
     "saveChanges": "Salvar alterações",
     "createItem": "Criar item",
-    "unknownItem": "Item desconhecido"
+    "unknownItem": "Item desconhecido",
+    "priceBook": "Tabela de preços",
+    "addCurrencyPrice": "Adicionar um preço em outra moeda…",
+    "removePrice": "Remover o preço em {{currency}}",
+    "priceCurrency": "Moeda do preço",
+    "costCurrency": "Moeda do custo",
+    "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
+    "overrideCurrency": "Moeda do preço especial",
+    "noPricesYet": "Ainda não há preços. Adicione pelo menos uma moeda.",
+    "loadingPartnerCurrency": "Carregando a moeda do parceiro…",
+    "partnerCurrencyUnavailable": "Não foi possível carregar a moeda do seu parceiro.",
+    "retry": "Tentar novamente",
+    "priceCouldNotBeSavedRetry": "Não foi possível salvar o preço em {{currency}}. Tente novamente.",
+    "priceCouldNotBeRemovedRetry": "Não foi possível remover o preço em {{currency}}. Tente novamente."
   },
   "catalogItemsTab": {
     "itemArchived": "Item arquivado",
@@ -1589,7 +1732,12 @@
     "margin": "Margem",
     "unknownItem": "Item desconhecido",
     "collapseBundle": "Recolher pacote",
-    "expandBundle": "Expandir pacote"
+    "expandBundle": "Expandir pacote",
+    "nMoreCurrencies_one": "+{{count}} moeda",
+    "nMoreCurrencies_other": "+{{count}} moedas",
+    "incompletePriceBook": "Tabela de preços incompleta",
+    "marginUnavailable": "Margem indisponível",
+    "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catálogo de Produtos",
@@ -1723,6 +1871,7 @@
     "close": "Fechar",
     "imported": "Importou \"{{name}}\" para o catálogo",
     "importedWithoutCleanup": "\"{{name}}\" importado — A limpeza de IA não estava disponível, manteve o nome original.",
+    "importedPricePreserved": "\"{{name}}\" importado — seu preço existente em {{currencies}} foi mantido; apenas o custo foi atualizado do Pax8.",
     "couldNotImportThePax8Product": "Não foi possível importar o produto Pax8."
   },
   "profilePage": {
@@ -2042,6 +2191,7 @@
     "saveChanges": "Salvar alterações"
   },
   "tdSynnexCatalogPanel": {
+    "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
     "tDSYNNEXSettingsFailedToLoad": "As configurações do TD SYNNEX não foram carregadas.",
     "tDSYNNEXSettingsSaved": "Configurações do TD SYNNEX salvas",
     "tDSYNNEXConnectionTestSucceeded": "Teste de conexão TD SYNNEX bem-sucedido",
@@ -2107,6 +2257,7 @@
     "notConfigured": "Não configurado"
   },
   "tdSynnexEcExpressPanel": {
+    "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
     "tDSYNNEXPricingSettingsSaved": "Configurações de preços do TD SYNNEX salvas",
     "tDSYNNEXPricingConnectionTestSucceeded": "Teste de conexão de preços TD SYNNEX bem-sucedido",
     "enterAValidSellPrice": "Insira um preço de venda válido.",
@@ -2251,7 +2402,7 @@
     "responseSLAMinutes": "SLA de resposta (minutos)",
     "resolutionSLAMinutes": "SLA de resolução (minutos)",
     "billableByDefault": "Faturável por padrão",
-    "defaultHourlyRate": "Taxa horária padrão (US$)",
+    "defaultHourlyRate": "Taxa horária padrão ({{currency}})",
     "save": "Salvar",
     "cancel": "Cancelar",
     "responseMinutes": "Resposta {{count}}m",
@@ -2752,7 +2903,8 @@
     "billing": {
       "title": "Padrões de faturamento",
       "description": "Configurações de faturamento padrão para lançamentos de horas em chamados desta organização.",
-      "hourlyRate": "Taxa horária padrão (US$)",
+      "hourlyRate": "Taxa horária padrão ({{currency}})",
+      "currencyNudge": "Esta organização fatura em {{orgCurrency}}, e não na moeda padrão do seu parceiro, {{partnerCurrency}}. As taxas informadas aqui são armazenadas em {{orgCurrency}} e nunca são convertidas.",
       "billable": "Faturável padrão",
       "inherit": "Herdar",
       "billableOption": "Faturável",

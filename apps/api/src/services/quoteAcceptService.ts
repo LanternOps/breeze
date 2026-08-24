@@ -1,8 +1,9 @@
 import { eq, sql } from 'drizzle-orm';
-import { db } from '../db';
-import { quotes, quoteBlocks, quoteLines, quoteAcceptances } from '../db/schema/quotes';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { quotes, quoteBlocks, quoteLines, quoteAcceptances, quoteRecipients } from '../db/schema/quotes';
 import { invoices, invoiceLines } from '../db/schema/invoices';
 import { partners } from '../db/schema/orgs';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
@@ -16,6 +17,7 @@ import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
 import { captureException } from './sentry';
 import type { ContractBlockRenderData } from './contractTemplateRender';
+import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import {
   assertContractRenderDataComplete,
   buildContractHashParts,
@@ -101,6 +103,15 @@ export async function acceptQuote(
   ) {
     throw new QuoteServiceError('This link is invalid or has expired', 401, 'RESPONSE_CONSUMED');
   }
+  // A replaced quote is gone, not merely in a wrong state: 410 tells the
+  // customer (and the portal) that this specific document is permanently
+  // retired rather than temporarily unacceptable. Checked BEFORE the generic
+  // status guard so a superseded quote never reports as a plain 409.
+  // publicLinkRevokedAt remains a forward-compatibility guard for any future
+  // standalone link revoke that does not also change the quote status.
+  if (quote.status === 'superseded' || quote.publicLinkRevokedAt != null) {
+    throw new QuoteServiceError('This quote has been replaced by a newer version', 410, 'QUOTE_SUPERSEDED');
+  }
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot accept a quote in status ${quote.status}`, 409, 'INVALID_STATE');
   }
@@ -135,7 +146,21 @@ export async function acceptQuote(
   // so a later template republish or manual-variable edit invalidates the signature.
   assertContractRenderDataComplete(blocks, params.contractRenderData);
   const contractRenderData = params.contractRenderData ?? [];
-  const contractParts = buildContractHashParts(blocks, contractRenderData, quote, effectiveDate);
+  // Partner row (language setting + invoice numbering), read ONCE: the render
+  // locale below and the invoice issue fields further down must agree on it.
+  const [partner] = await db
+    .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays, settings: partners.settings })
+    .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+  // Render locale for the contract parts + executed PDF: the quote's send-time
+  // snapshot (every non-draft quote carries one since 2026-09-01-b), falling
+  // back to the PARTNER's language for an unstamped row — the same fallback the
+  // portal/public render, the quote branding and the invoice stamp below use.
+  // A bare 'en' fallback here would hash and PDF in English a document the
+  // customer was shown in the partner's language. Legacy acceptances do not
+  // depend on this: 2026-09-01-b stamped render_locale on every historical row,
+  // so verification reads the persisted value (acceptanceRenderLocale).
+  const renderLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partner);
+  const contractParts = buildContractHashParts(blocks, contractRenderData, quote, effectiveDate, renderLocale);
 
   const quoteSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, contractParts);
   const captured = await getAcceptanceProvider().capture({
@@ -162,10 +187,14 @@ export async function acceptQuote(
       userAgent: params.userAgent ?? null,
       quoteSha256,
       acceptanceTokenJti: params.acceptanceTokenJti ?? null,
+      renderLocale,
     })
     .returning({ id: quoteAcceptances.id });
 
   // 2. Convert ONE-TIME lines to a draft invoice (Phase 2: recurring lines deferred to the Phase 4 Contract).
+  //    document_locale is NOT copied onto the draft here: it is an issue-time
+  //    snapshot, stamped below when the invoice auto-issues (one-time lines) or
+  //    by issueInvoice when it issues later (#3777).
   const oneTime = lines.filter((l) => l.recurrence === 'one_time' && l.customerVisible);
   const [invoice] = await db
     .insert(invoices)
@@ -184,7 +213,7 @@ export async function acceptQuote(
   const totalsLines: { lineTotal: string; taxable: boolean; customerVisible: boolean }[] = [];
   for (let i = 0; i < oneTime.length; i++) {
     const l = oneTime[i]!;
-    const lineTotal = computeLineTotal(l.quantity, l.unitPrice);
+    const lineTotal = computeLineTotal(l.quantity, l.unitPrice, quote.currencyCode);
     await db.insert(invoiceLines).values({
       invoiceId: invoice!.id,
       orgId: quote.orgId,
@@ -218,7 +247,7 @@ export async function acceptQuote(
     });
     totalsLines.push({ lineTotal, taxable: l.taxable, customerVisible: true });
   }
-  const totals = computeInvoiceTotals(totalsLines, quote.taxRate ?? null);
+  const totals = computeInvoiceTotals(totalsLines, quote.taxRate ?? null, quote.currencyCode);
 
   // Auto-issue on accept (Phase 3): if the converted invoice has payable (one-time)
   // lines, ISSUE it now — allocate a gapless invoice number and flip to 'sent' — so
@@ -241,9 +270,6 @@ export async function acceptQuote(
     updatedAt: now,
   };
   if (oneTime.length > 0) {
-    const [partner] = await db
-      .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays })
-      .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
     const year = now.getUTCFullYear();
     const counterRows = await db.execute(sql`
       INSERT INTO partner_invoice_sequences (partner_id, year, counter)
@@ -266,6 +292,13 @@ export async function acceptQuote(
     issueFields.billToAddress = quote.billToAddress ?? null;
     issueFields.billToTaxId = quote.billToTaxId ?? null;
     issueFields.sellerSnapshot = quote.sellerSnapshot ?? null;
+    // This IS the invoice's issue moment (it never goes through issueInvoice),
+    // so stamp its render locale here (#3777). The accepted quote's own stamp
+    // is the natural value — the same rule sellerSnapshot follows above — with
+    // the partner's language only as a fallback for an unstamped quote. Same
+    // expression as `renderLocale` above, so the executed contract and the
+    // invoice it issues can never be rendered in two different languages.
+    issueFields.documentLocale = renderLocale;
     issueFields.termsAndConditions = quote.termsAndConditions ?? null;
     issueFields.terms = quote.terms ?? null;
     // Deposit terms travel from the signed quote onto the issued invoice.
@@ -312,14 +345,15 @@ export async function acceptQuote(
   // cadence. Runs inside this same system-scope accept transaction, so a failure
   // rolls back the whole accept. accept's SELECT ... FOR UPDATE convert guard
   // already makes this at-most-once. Quotes carry currency/terms snapshotted at
-  // send, so the contract inherits the accepted terms.
+  // send, so the contract inherits the accepted terms. (No document_locale:
+  // contracts have no locale column — their documents resolve it at render.)
   const startDate = effectiveDate; // accept date, date-only UTC (shared with the snapshot)
   const contractSpecs = buildContractSpecsFromQuote(
     {
       orgId: quote.orgId,
       partnerId: quote.partnerId,
       quoteNumber: quote.quoteNumber ?? quote.id,
-      currencyCode: quote.currencyCode ?? null,
+      currencyCode: quote.currencyCode,
       terms: quote.terms ?? null,
     },
     lines.map((l) => ({
@@ -366,6 +400,7 @@ export async function acceptQuote(
     contractRenderData,
     blocks,
     effectiveDate,
+    renderLocale,
   );
 
   // Phase 5: stage any Pax8-backed fulfillment in this exact transaction,
@@ -428,6 +463,82 @@ export async function emitAcceptInvoiceIssued(
     await enqueueInvoicePdfRender(res.invoiceId);
   } catch (err) {
     console.error('[quoteAccept] enqueueInvoicePdfRender failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
+/**
+ * Mint (or reproduce) the just-issued invoice's durable public view-and-pay
+ * url — the accept response's replacement for the retired one-shot Stripe
+ * `payUrl` (2026-08-21 spec §8: the browser lands on the durable page, which
+ * offers payment; nothing lives only in one response). Post-commit,
+ * best-effort: returns null rather than failing an accept the customer
+ * already completed. Runs in its own system context.
+ */
+export async function resolveAcceptInvoiceUrl(
+  res: { invoiceId: string; invoiceIssued: boolean },
+): Promise<string | null> {
+  if (!res.invoiceIssued) return null;
+  try {
+    return await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const [inv] = await db.select({
+        id: invoices.id, dueDate: invoices.dueDate,
+        publicLinkTokenHash: invoices.publicLinkTokenHash,
+        publicLinkTokenCt: invoices.publicLinkTokenCt,
+        publicLinkExpiresAt: invoices.publicLinkExpiresAt,
+      }).from(invoices).where(eq(invoices.id, res.invoiceId)).limit(1);
+      if (!inv) return null;
+      const link = await getOrMintInvoiceLink(inv);
+      return buildPublicInvoiceUrl(link.token);
+    }));
+  } catch (err) {
+    console.error('[quoteAccept] public invoice link mint failed after accept', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
+
+/**
+ * Auto-email the just-issued invoice (with its public pay link) after an
+ * accept — DEFAULT ON, gated by partners.auto_email_invoice_on_quote_accept.
+ * This is what makes closing the confirmation tab harmless: the durable link
+ * lands in the customer's inbox without the MSP doing anything.
+ *
+ * Recipients: the quote's recorded send recipients ∪ the org billing contact
+ * (deliverInvoiceEmail's own fallback when the quote has none on record) —
+ * KNOWN addresses only, never the unverified signer-entered email.
+ *
+ * Post-commit and best-effort like every other accept side effect: a failure
+ * is logged + captured, never surfaced to the accepting customer. Runs in its
+ * own system context (the accept transaction is already committed and closed).
+ */
+export async function autoEmailAcceptedInvoice(
+  res: { invoiceId: string; invoiceIssued: boolean; quote: QuoteRow },
+): Promise<void> {
+  if (!res.invoiceIssued) return;
+  try {
+    await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const [partner] = await db.select({ auto: partners.autoEmailInvoiceOnQuoteAccept })
+        .from(partners).where(eq(partners.id, res.quote.partnerId)).limit(1);
+      // Same `!== false` shape as the settings read-back — default ON.
+      if (partner?.auto === false) return;
+      const recips = await db.select({ email: quoteRecipients.email })
+        .from(quoteRecipients).where(eq(quoteRecipients.quoteId, res.quote.id));
+      const to = Array.from(new Set(recips.map((r) => r.email.trim().toLowerCase()).filter(Boolean)));
+      // Lazy import mirrors sendInvoiceEmail's own issueInvoice import — the
+      // invoicePdf module pulls the whole email/PDF stack.
+      const { sendInvoiceEmail } = await import('./invoicePdf');
+      const result = await sendInvoiceEmail(
+        res.invoiceId,
+        { userId: null, partnerId: res.quote.partnerId, accessibleOrgIds: [res.quote.orgId] },
+        to.length > 0 ? { to } : {},
+      );
+      if (!result.emailed) {
+        console.warn('[quoteAccept] auto-email skipped', `invoiceId=${res.invoiceId}`, `reason=${result.reason}`);
+      }
+    }));
+  } catch (err) {
+    console.error('[quoteAccept] auto-email failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 }

@@ -6,9 +6,10 @@ import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
 import { syncPax8Integration } from '../services/pax8SyncService';
+import { jobSchedule } from './scheduleRegistry';
 
 const PAX8_QUEUE = 'pax8-sync';
-const PAX8_SYNC_CRON = '15 4 * * *';
+const PAX8_SYNC_CRON = jobSchedule('pax8-sync');
 
 type Pax8SyncJobData =
   | { type: 'sync-integration'; integrationId: string }

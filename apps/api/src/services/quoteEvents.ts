@@ -10,7 +10,7 @@ import { captureException } from './sentry';
 export const QUOTE_EVENTS_QUEUE = 'quote-events';
 
 export interface QuoteEvent {
-  type: 'quote.viewed';
+  type: 'quote.viewed' | 'quote.accepted' | 'quote.declined';
   quoteId: string;
   orgId: string;
   partnerId: string;

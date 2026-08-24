@@ -524,6 +524,449 @@ describe('scripts routes', () => {
     });
   });
 
+  // -------------------------------------------------------------------
+  // Save-time parameter-binding secret mismatch (#3409 PR4c-2, Task 6)
+  // -------------------------------------------------------------------
+  // Symmetric to the content check above: a `tenantVariable` binding whose
+  // target is a secret, or a `tenantSecret` binding whose target is NOT a
+  // secret, is rejected when the definitions are stored — the web warning
+  // already promises "the save will be rejected". Unknown keys pass (a
+  // partner-wide script resolves per org later).
+  describe('save-time parameter-binding secret mismatch', () => {
+    const mockExistingScript = () =>
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1,
+              name: 'Existing',
+              content: 'echo hi',
+              version: 1,
+              isSystem: false,
+              orgId: ORG_ID,
+              parameters: []
+            }])
+          })
+        })
+      } as any);
+
+    const createWith = (parameters: unknown[]) =>
+      app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Bound params',
+          osTypes: ['linux'],
+          language: 'bash',
+          content: 'echo "$BREEZE_PARAM_P"',
+          parameters
+        })
+      });
+
+    const updateWith = (parameters: unknown[]) =>
+      app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ parameters })
+      });
+
+    const secretRow = { id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID };
+    const plainRow = { id: 'tv-2', key: 'repo_url', value: 'https://dl.example', isSecret: false, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID };
+
+    it('400s a create whose tenantVariable parameter binds a SECRET variable', async () => {
+      mockTenantVariableScopeRows([secretRow]);
+      const res = await createWith([{ name: 'p', type: 'string', source: 'tenantVariable', variableKey: 's1_token' }]);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe(
+        'Parameter "p" binds secret variable "s1_token" with source "From a variable"; use a secret parameter instead'
+      );
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('400s a create whose tenantSecret parameter binds a NON-secret variable', async () => {
+      mockTenantVariableScopeRows([plainRow]);
+      const res = await createWith([{ name: 'p', type: 'string', source: 'tenantSecret', variableKey: 'repo_url' }]);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Parameter "p" is a secret parameter but variable "repo_url" is not a secret');
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('accepts a create whose bindings target UNKNOWN keys (either source) — resolved per org at dispatch', async () => {
+      mockTenantVariableScopeRows([]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Bound params', orgId: ORG_ID }])
+        })
+      } as any);
+      const res = await createWith([
+        { name: 'p', type: 'string', source: 'tenantVariable', variableKey: 'not_yet_created' },
+        { name: 'q', type: 'string', source: 'tenantSecret', variableKey: 'also_not_yet' }
+      ]);
+      expect(res.status).toBe(201);
+    });
+
+    it('accepts a create whose bindings match their targets (plain→tenantVariable, secret→tenantSecret)', async () => {
+      mockTenantVariableScopeRows([secretRow, plainRow]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Bound params', orgId: ORG_ID }])
+        })
+      } as any);
+      const res = await createWith([
+        { name: 'p', type: 'string', source: 'tenantVariable', variableKey: 'repo_url' },
+        { name: 'q', type: 'string', source: 'tenantSecret', variableKey: 's1_token' }
+      ]);
+      expect(res.status).toBe(201);
+    });
+
+    it('400s an UPDATE whose new tenantVariable parameter binds a SECRET variable, and never writes it', async () => {
+      mockExistingScript();
+      mockTenantVariableScopeRows([secretRow]);
+      const res = await updateWith([{ name: 'p', type: 'string', source: 'tenantVariable', variableKey: 's1_token' }]);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe(
+        'Parameter "p" binds secret variable "s1_token" with source "From a variable"; use a secret parameter instead'
+      );
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('400s an UPDATE whose new tenantSecret parameter binds a NON-secret variable, and never writes it', async () => {
+      mockExistingScript();
+      mockTenantVariableScopeRows([plainRow]);
+      const res = await updateWith([{ name: 'p', type: 'string', source: 'tenantSecret', variableKey: 'repo_url' }]);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Parameter "p" is a secret parameter but variable "repo_url" is not a secret');
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('accepts an UPDATE whose new bindings target UNKNOWN keys', async () => {
+      mockExistingScript();
+      mockTenantVariableScopeRows([]);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Existing', orgId: ORG_ID, version: 2 }])
+          })
+        })
+      } as any);
+      const res = await updateWith([{ name: 'p', type: 'string', source: 'tenantSecret', variableKey: 'not_yet_created' }]);
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // Ownership TIER of the secret vs. the SCRIPT (#3409 PR4c-2 review).
+  // -------------------------------------------------------------------
+  // A script may resolve a secret at or below its own ownership tier, never
+  // above: a partner-wide script (org_id NULL) may bind a partner-owned OR an
+  // org-owned secret; an ORG-scoped script may bind only an org-owned one.
+  //
+  // It is deliberately NOT a caller-capability check. `tenantVariableRead-
+  // Condition` widens partner-wide variable KEYS to organization-scope
+  // sessions and `resolveForOrg` inherits the ROWS into every org, so an org
+  // admin who could bind the MSP's partner-wide secret into an org-scoped
+  // script could base64 it out through script output (both redactors are
+  // exact-substring). Gating on the caller instead of the script does not
+  // stop that: a full-partner admin's org-scoped script is editable and
+  // runnable by that org's own admins afterwards.
+  //
+  // Dispatch is the authority (services/sourcedParameters.ts, `tenantSecret`
+  // arm); these cases pin the save-time FAST FAIL.
+  describe('secret ownership tier vs. script scope', () => {
+    // org_id IS NULL on the tenant_variables row -> ownerScope 'partner'.
+    const partnerSecretRow = {
+      id: 'tv-3', key: 'psa_api_token', value: 'shh', isSecret: true, version: 1,
+      ownerOrgId: null, forOrgId: ORG_ID
+    };
+    const orgSecretRow = {
+      id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1,
+      ownerOrgId: ORG_ID, forOrgId: ORG_ID
+    };
+    const DENIED =
+      'Parameter "psa" binds partner-wide secret variable "psa_api_token"; an organization-scoped script cannot use one — make the script partner-wide, or use an organization-owned secret.';
+
+    // The partner-wide branch of the save-time lookup reads tenant_variables
+    // directly (org_id IS NULL AND partner_id = ...) — no resolver join, so
+    // the chain shape differs from mockTenantVariableScopeRows above.
+    function mockPartnerWideVariableRows(rows: unknown[]): void {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows)
+        })
+      } as any);
+    }
+
+    const secretParam = (variableKey: string) => ({
+      name: 'psa', type: 'string', source: 'tenantSecret', variableKey
+    });
+
+    async function usePartnerAuth(partnerOrgAccess: 'all' | 'selected') {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner' as const,
+          partnerId: PARTNER_ID,
+          partnerOrgAccess,
+          orgId: null,
+          token: {
+            sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+            orgId: null, partnerId: PARTNER_ID, scope: 'partner', type: 'access', mfa: true,
+          },
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (id: string) => id === ORG_ID,
+        });
+        return next();
+      });
+    }
+
+    const createWithParams = (parameters: unknown[], extra: Record<string, unknown> = {}) =>
+      app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Binds PSA token',
+          osTypes: ['linux'],
+          language: 'bash',
+          content: 'echo hi',
+          parameters,
+          ...extra
+        })
+      });
+
+    it('400s a create by an ORG-scope caller binding a partner-wide secret, and never inserts', async () => {
+      mockTenantVariableScopeRows([partnerSecretRow]);
+      const res = await createWithParams([secretParam('psa_api_token')]);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(DENIED);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    // The tier is the SCRIPT's, not the caller's: a full-partner admin creating
+    // a script for ONE org is creating an org-scoped script, which that org's
+    // admins can edit and run afterwards.
+    it('400s a full-partner admin binding a partner-wide secret into an ORG-scoped script', async () => {
+      await usePartnerAuth('all');
+      mockTenantVariableScopeRows([partnerSecretRow]);
+      const res = await createWithParams([secretParam('psa_api_token')], { orgId: ORG_ID, availability: 'org' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(DENIED);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('400s a SELECTED-access partner user binding a partner-wide secret into an ORG-scoped script', async () => {
+      await usePartnerAuth('selected');
+      mockTenantVariableScopeRows([partnerSecretRow]);
+      const res = await createWithParams([secretParam('psa_api_token')], { orgId: ORG_ID, availability: 'org' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(DENIED);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it("ALLOWS a PARTNER-WIDE create binding the partner's own secret", async () => {
+      await usePartnerAuth('all');
+      mockPartnerWideVariableRows([{ key: 'psa_api_token', isSecret: true }]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Binds PSA token', orgId: null }])
+        })
+      } as any);
+      const res = await createWithParams([secretParam('psa_api_token')], { availability: 'partner' });
+      expect(res.status).toBe(201);
+    });
+
+    // The PRIMARY use case: one partner-wide script, each target org's OWN
+    // value resolved per device at dispatch. The key is simply not visible to
+    // the partner-wide lookup at save time, and must not be rejected for that.
+    it('ALLOWS a PARTNER-WIDE create binding a key that only exists as an ORG-owned secret', async () => {
+      await usePartnerAuth('all');
+      mockPartnerWideVariableRows([]); // no partner-wide row named s1_token
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Binds PSA token', orgId: null }])
+        })
+      } as any);
+      const res = await createWithParams([secretParam('s1_token')], { availability: 'partner' });
+      expect(res.status).toBe(201);
+    });
+
+    it('leaves an ORG-owned secret binding unaffected for the same org-scope caller', async () => {
+      mockTenantVariableScopeRows([orgSecretRow]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Binds PSA token', orgId: ORG_ID }])
+        })
+      } as any);
+      const res = await createWithParams([
+        { name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 's1_token' }
+      ]);
+      expect(res.status).toBe(201);
+    });
+
+    it('400s an UPDATE by an ORG-scope caller binding a partner-wide secret, and never writes it', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1, name: 'Existing', content: 'echo hi', version: 1,
+              isSystem: false, orgId: ORG_ID, parameters: []
+            }])
+          })
+        })
+      } as any);
+      mockTenantVariableScopeRows([partnerSecretRow]);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ parameters: [secretParam('psa_api_token')] })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(DENIED);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it("ALLOWS an UPDATE of an already PARTNER-WIDE script binding the partner's own secret", async () => {
+      await usePartnerAuth('all');
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1, name: 'Existing', content: 'echo hi', version: 1,
+              isSystem: false, orgId: null, partnerId: PARTNER_ID, parameters: []
+            }])
+          })
+        })
+      } as any);
+      mockPartnerWideVariableRows([{ key: 'psa_api_token', isSecret: true }]);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Existing', orgId: null }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ parameters: [secretParam('psa_api_token')] })
+      });
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // POST /scripts/import/:id — the fourth write ingress (#3409 PR4c-2).
+  // -------------------------------------------------------------------
+  // Cloning a system script copies `source.parameters` verbatim. Before this
+  // change the clone ran NEITHER save-time secret check, so it was a straight
+  // bypass of both the content gate and the partner-wide binding gate above.
+  describe('clone a system script — save-time secret checks', () => {
+    const systemSource = (overrides: Record<string, unknown> = {}) => ({
+      id: SCRIPT_ID_2,
+      name: 'System Script',
+      description: null,
+      category: null,
+      osTypes: ['linux'],
+      language: 'bash',
+      content: 'echo hi',
+      parameters: null,
+      timeoutSeconds: 300,
+      runAs: 'system',
+      isSystem: true,
+      ...overrides
+    });
+
+    function mockClonePreamble(source: Record<string, unknown>, existing: unknown[] = []) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([source]) })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(existing) })
+          })
+        } as any);
+    }
+
+    const clone = () =>
+      app.request(`/scripts/import/${SCRIPT_ID_2}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({})
+      });
+
+    it('400s a clone whose copied parameters bind a partner-wide secret, and never inserts', async () => {
+      mockClonePreamble(
+        systemSource({
+          parameters: [{ name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 'psa_api_token' }]
+        })
+      );
+      mockTenantVariableScopeRows([
+        { id: 'tv-3', key: 'psa_api_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: null, forOrgId: ORG_ID }
+      ]);
+
+      const res = await clone();
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(
+        'Parameter "psa" binds partner-wide secret variable "psa_api_token"; an organization-scoped script cannot use one — make the script partner-wide, or use an organization-owned secret.'
+      );
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('400s a clone whose copied parameters bind an ORG secret with the plain tenantVariable source', async () => {
+      mockClonePreamble(
+        systemSource({
+          parameters: [{ name: 'p', type: 'string', source: 'tenantVariable', variableKey: 's1_token' }]
+        })
+      );
+      mockTenantVariableScopeRows([
+        { id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID }
+      ]);
+
+      const res = await clone();
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(
+        'Parameter "p" binds secret variable "s1_token" with source "From a variable"; use a secret parameter instead'
+      );
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('400s a clone whose copied CONTENT references a secret variable', async () => {
+      mockClonePreamble(systemSource({ content: 'echo {{var.s1_token}}' }));
+      mockTenantVariableScopeRows([
+        { id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID }
+      ]);
+
+      const res = await clone();
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('s1_token');
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('clones a clean system script unchanged', async () => {
+      mockClonePreamble(systemSource());
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'System Script', orgId: ORG_ID }])
+        })
+      } as any);
+
+      const res = await clone();
+      expect(res.status).toBe(201);
+      expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    });
+  });
+
   it('should prevent deleting scripts with active executions', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce({
@@ -2117,6 +2560,10 @@ describe('scripts routes', () => {
               { id: SCRIPT_ID_1, name: 'S', content: 'echo hi', version: 7, isSystem: false, orgId: ORG_ID, ...stored },
             ]),
           }),
+          // A tenantVariable/tenantSecret binding triggers the save-time
+          // mismatch lookup (loadTenantVariableScope: innerJoin + where).
+          // No rows → unknown key → allowed.
+          innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
         }),
       } as any);
       const set = vi.fn().mockReturnValue({
@@ -2149,6 +2596,9 @@ describe('scripts routes', () => {
 
     it('accepts every bound source on create', async () => {
       mockCreateInsert();
+      // The tenantVariable binding triggers the save-time mismatch lookup
+      // (#3409 PR4c-2); no rows → unknown key → allowed.
+      mockTenantVariableScopeRows([]);
       const res = await post([
         { name: 'apiKey', type: 'string', source: 'tenantVariable', variableKey: 'vendor_api_key' },
         { name: 'assetTag', type: 'string', source: 'deviceCustomField', fieldKey: 'asset_tag' },

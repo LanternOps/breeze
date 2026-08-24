@@ -16,6 +16,7 @@ import {
 import { formatMoney, formatDate, sumByCurrency } from '../billing/invoiceTypes';
 import { StatusPill } from '../billing/shared/StatusPill';
 import { StatCard } from '../billing/shared/StatCard';
+import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
 import { SortableTh } from '../billing/shared/SortableTh';
 import { TableSkeleton } from '../billing/shared/TableSkeleton';
 import { ROW_LINK_CLASS, writeHashFilters } from '../billing/shared/listChrome';
@@ -354,6 +355,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           label={t('contracts.contractsList.stats.estimatedMonthlyRecurring')}
           value={mrrDisplay}
           hint={t('contracts.contractsList.stats.activeContractCount', { count: mrr.count })}
+          detail={<ApproximateMoneyLine byCurrency={mrr.byCurrency} testId="contracts-mrr-approx" />}
           className="inline-flex flex-col"
           testId="contracts-mrr-strip"
         />

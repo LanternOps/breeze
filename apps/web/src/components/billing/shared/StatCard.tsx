@@ -7,6 +7,11 @@ interface StatCardProps {
   value: ReactNode;
   /** Optional sub-caption below the figure (e.g. '3 open', 'needs follow-up'). */
   hint?: string;
+  /** Optional node rendered BETWEEN the figure and the hint — the slot the
+   *  reporting-only "≈ approximate total" line occupies (multi-currency spec
+   *  §8). Purely additive: a card without `detail` renders exactly as before,
+   *  and the authoritative per-currency `value` above it never changes. */
+  detail?: ReactNode;
   /** When provided the card is an interactive filter button; omit for a static
    *  read-only stat (e.g. contracts MRR). */
   onClick?: () => void;
@@ -29,7 +34,7 @@ const BASE = 'rounded-lg border px-4 py-3 text-left';
  * as a <div>. Extracted from the Invoices strip so quotes/contracts can't drift
  * in padding, tone, or focus behaviour.
  */
-export function StatCard({ label, value, hint, onClick, active, tone = 'default', className, testId }: StatCardProps) {
+export function StatCard({ label, value, hint, detail, onClick, active, tone = 'default', className, testId }: StatCardProps) {
   const destructive = tone === 'destructive';
   const toneCls = destructive ? 'border-destructive/30 bg-destructive/5' : 'bg-card';
   const labelCls = destructive ? 'text-destructive' : 'text-muted-foreground';
@@ -40,6 +45,7 @@ export function StatCard({ label, value, hint, onClick, active, tone = 'default'
     <>
       <div className={`text-xs ${labelCls}`}>{label}</div>
       <div className={`mt-0.5 text-lg font-semibold tabular-nums ${valueCls}`}>{value}</div>
+      {detail}
       {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
     </>
   );

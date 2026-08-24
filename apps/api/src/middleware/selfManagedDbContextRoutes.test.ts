@@ -13,6 +13,19 @@ describe('isSelfManagedDbContextRoute', () => {
     ['post', '/api/v1/invoices/abc-123/pay-link'], // method is case-insensitive
     ['POST', '/api/v1/portal/invoices/def-456/pay'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/'],
+    // Customer-portal "Pay quote" (#3777 review F2) — createQuotePayLink →
+    // createInvoicePayLink → checkout.sessions.create, same shape as the
+    // invoice pay route above. Until registered, the portal auth middleware
+    // pinned the request tx AND a system tx across the Stripe round-trip.
+    ['POST', '/api/v1/portal/quotes/def-456/pay'],
+    ['POST', '/api/v1/portal/quotes/def-456/pay/'],
+    ['post', '/api/v1/portal/quotes/def-456/pay'], // method is case-insensitive
+    ['POST', '/api/v1/partner/stripe-connect/key'],
+    ['POST', '/api/v1/partner/stripe-connect/key/'],
+    ['GET', '/api/v1/partner/stripe-connect'],
+    ['GET', '/api/v1/partner/stripe-connect/'],
+    ['POST', '/api/v1/partner/stripe-connect/refresh'],
+    ['POST', '/api/v1/partner/stripe-connect/refresh/'],
     // QuickBooks customer import — both page the QBO API inside the handler.
     ['GET', '/api/v1/accounting/quickbooks/customers'],
     ['GET', '/api/v1/accounting/quickbooks/customers/'],
@@ -86,7 +99,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices/abc-123/pay-link/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
+    ['GET', '/api/v1/portal/quotes/def-456/pay', 'portal quote pay is POST-only'],
+    ['POST', '/api/v1/portal/quotes/def-456/accept', 'accept/decline are DB-only and keep the ambient org tx'],
+    ['POST', '/api/v1/portal/quotes/def-456/decline', 'accept/decline are DB-only and keep the ambient org tx'],
+    ['POST', '/api/v1/portal/quotes//pay', 'empty id segment must not match'],
+    ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
+    ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
     ['GET', '/api/v1/accounting/quickbooks', 'accounting status route does only DB work — keep ambient tx'],
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],

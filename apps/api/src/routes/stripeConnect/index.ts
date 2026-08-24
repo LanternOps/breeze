@@ -3,11 +3,16 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { HTTPException } from 'hono/http-exception';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   savePartnerStripeKey,
-  getPartnerStripeStatus,
+  getPartnerStripeAccountSnapshot,
+  refreshPartnerStripeAccount,
   disconnectPartnerStripe,
   PartnerStripeError,
 } from '../../services/partnerStripe';
@@ -34,6 +39,7 @@ stripeConnectRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     const { apiKey } = c.req.valid('json');
     try {
       const result = await savePartnerStripeKey({
@@ -53,6 +59,9 @@ stripeConnectRoutes.post(
         stripeAccountId: result.stripeAccountId,
         livemode: result.livemode,
         last4: result.last4,
+        defaultCurrency: result.defaultCurrency,
+        accountCountry: result.accountCountry,
+        accountRefreshedAt: result.accountRefreshedAt.toISOString(),
       });
     } catch (err) {
       // A rejected/unreadable key is a user-actionable 400/409/500 with a clear
@@ -71,14 +80,67 @@ stripeConnectRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    const status = await getPartnerStripeStatus(auth.partnerId);
-    if (!status.connected) return c.json({ status: 'disconnected', last4: status.last4 });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: 'Viewing the partner Stripe configuration requires full partner org access (orgAccess must be "all")' });
+    // ONE snapshot: status, display fields and cached account facts come from
+    // the same row read (or the same RETURNING'd refresh) — never a status read
+    // combined with a separate cache read (review F9). The cache state is part
+    // of the contract: `stale` = Stripe unreachable, cached value shown;
+    // `reconnect_required` = the stored key no longer works and the partner
+    // must paste a new one — reported as such, never as "connected" (review F4).
+    const snap = await getPartnerStripeAccountSnapshot(auth.partnerId);
+    if (!snap.connected) return c.json({ status: 'disconnected', last4: snap.last4 });
     return c.json({
-      status: 'connected',
-      stripeAccountId: status.stripeAccountId,
-      livemode: status.livemode,
-      last4: status.last4,
+      status: snap.cacheState === 'reconnect_required' ? 'reconnect_required' : 'connected',
+      stripeAccountId: snap.stripeAccountId,
+      livemode: snap.livemode,
+      last4: snap.last4,
+      defaultCurrency: snap.defaultCurrency,
+      accountCountry: snap.accountCountry,
+      accountRefreshedAt: snap.accountRefreshedAt?.toISOString() ?? null,
+      cacheState: snap.cacheState,
+      stale: snap.cacheState !== 'fresh',
+      error: snap.error,
     });
+  }
+);
+
+stripeConnectRoutes.post(
+  '/refresh',
+  requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    try {
+      const result = await refreshPartnerStripeAccount(auth.partnerId);
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'stripe_connect.account_refreshed',
+        resourceType: 'partner',
+        resourceId: auth.partnerId,
+        details: {
+          defaultCurrency: result.defaultCurrency,
+          accountCountry: result.accountCountry,
+        },
+      });
+      return c.json({
+        status: 'connected',
+        stripeAccountId: result.stripeAccountId,
+        livemode: result.livemode,
+        last4: result.last4,
+        defaultCurrency: result.defaultCurrency,
+        accountCountry: result.accountCountry,
+        accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+        cacheState: 'fresh',
+        stale: false,
+        error: null,
+      });
+    } catch (err) {
+      if (err instanceof PartnerStripeError) {
+        return c.json({ error: err.message }, err.status);
+      }
+      throw err;
+    }
   }
 );
 
@@ -89,6 +151,7 @@ stripeConnectRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     await disconnectPartnerStripe(auth.partnerId);
     writeRouteAudit(c, {
       orgId: null,

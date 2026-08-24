@@ -3,6 +3,7 @@ import {
   createCatalogItemSchema,
   updateCatalogItemSchema,
   orgPriceOverrideSchema,
+  setItemPriceSchema,
   setBundleComponentsSchema,
   listCatalogQuerySchema,
   enrichRequestSchema,
@@ -64,20 +65,98 @@ describe('createCatalogItemSchema', () => {
     });
     expect(r.success).toBe(false);
   });
+
+  it('accepts prices without a legacy unitPrice and normalizes currency codes', () => {
+    const r = createCatalogItemSchema.parse({
+      itemType: 'service',
+      name: 'Onsite hour',
+      prices: [{ currencyCode: 'eur', unitPrice: 10 }],
+    });
+
+    expect(r.prices).toEqual([{ currencyCode: 'EUR', unitPrice: 10 }]);
+  });
+
+  it('requires at least one price source', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'service',
+      name: 'Onsite hour',
+    });
+
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues).toContainEqual(expect.objectContaining({
+        message: 'A price is required: provide unitPrice, prices, or costBasis + markupPercent',
+        path: ['unitPrice'],
+      }));
+    }
+  });
+
+  it('rejects duplicate currencies in prices', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'service',
+      name: 'Onsite hour',
+      prices: [
+        { currencyCode: 'eur', unitPrice: 10 },
+        { currencyCode: 'EUR', unitPrice: 12 },
+      ],
+    });
+
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues).toContainEqual(expect.objectContaining({
+        message: 'Duplicate currency in prices',
+        path: ['prices'],
+      }));
+    }
+  });
+
+  it('rejects unsupported currencies in prices', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'service',
+      name: 'Onsite hour',
+      prices: [{ currencyCode: 'ZZZ', unitPrice: 10 }],
+    });
+
+    expect(r.success).toBe(false);
+  });
+
+  it('normalizes costCurrency', () => {
+    const r = createCatalogItemSchema.parse({
+      itemType: 'service',
+      name: 'Onsite hour',
+      unitPrice: 10,
+      costCurrency: 'cad',
+    });
+
+    expect(r.costCurrency).toBe('CAD');
+  });
 });
 
 describe('updateCatalogItemSchema', () => {
   it('requires at least one field', () => {
     expect(updateCatalogItemSchema.safeParse({}).success).toBe(false);
   });
+
+  it('normalizes costCurrency', () => {
+    expect(updateCatalogItemSchema.parse({ costCurrency: 'cad' }).costCurrency).toBe('CAD');
+  });
 });
 
 describe('orgPriceOverrideSchema', () => {
-  it('accepts a valid override', () => {
-    expect(orgPriceOverrideSchema.safeParse({ unitPrice: 99.5 }).success).toBe(true);
+  it('accepts an override without a currency', () => {
+    expect(orgPriceOverrideSchema.safeParse({ unitPrice: 5 }).success).toBe(true);
+  });
+  it('accepts and normalizes an override currency', () => {
+    expect(orgPriceOverrideSchema.parse({ unitPrice: 5, currencyCode: 'gbp' }).currencyCode).toBe('GBP');
   });
   it('rejects negative price', () => {
     expect(orgPriceOverrideSchema.safeParse({ unitPrice: -5 }).success).toBe(false);
+  });
+});
+
+describe('setItemPriceSchema', () => {
+  it('rejects a negative price', () => {
+    expect(setItemPriceSchema.safeParse({ unitPrice: -1 }).success).toBe(false);
   });
 });
 
@@ -86,7 +165,8 @@ describe('setBundleComponentsSchema', () => {
     const r = setBundleComponentsSchema.safeParse({
       components: [
         { componentItemId: '11111111-1111-1111-1111-111111111111', quantity: 2, showOnInvoice: true, revenueAllocation: 10 }
-      ]
+      ],
+      allocationCurrency: 'USD'
     });
     expect(r.success).toBe(true);
   });
@@ -151,6 +231,10 @@ describe('listCatalogQuerySchema boolean params', () => {
     const r = listCatalogQuerySchema.parse({});
     expect(r.isActive).toBeUndefined();
     expect(r.isBundle).toBeUndefined();
+  });
+
+  it('accepts and normalizes a currencyCode filter', () => {
+    expect(listCatalogQuerySchema.parse({ currencyCode: 'eur' }).currencyCode).toBe('EUR');
   });
 });
 
@@ -293,5 +377,37 @@ describe('createCatalogItemSchema attributes.enrichment shape', () => {
       itemType: 'service', name: 'Onsite hour', unitPrice: 150,
     });
     expect(r.attributes).toEqual({});
+  });
+});
+
+describe('setBundleComponentsSchema — allocationCurrency (#3775 review #7)', () => {
+  const id = '11111111-1111-1111-1111-111111111111';
+  it('requires allocationCurrency when any component carries a revenueAllocation', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: id, quantity: 1, revenueAllocation: 10 }]
+    });
+    expect(r.success).toBe(false);
+    expect(r.success ? '' : JSON.stringify(r.error.issues)).toContain('allocationCurrency');
+  });
+  it('accepts allocations with a supported allocationCurrency (normalized to uppercase)', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: id, quantity: 1, revenueAllocation: 10 }],
+      allocationCurrency: 'eur'
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.allocationCurrency).toBe('EUR');
+  });
+  it('rejects an unsupported allocationCurrency', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: id, quantity: 1, revenueAllocation: 10 }],
+      allocationCurrency: 'XXX'
+    });
+    expect(r.success).toBe(false);
+  });
+  it('does not require allocationCurrency when no component carries an allocation', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: id, quantity: 1 }, { componentItemId: '22222222-2222-2222-2222-222222222222', quantity: 1, revenueAllocation: null }]
+    });
+    expect(r.success).toBe(true);
   });
 });

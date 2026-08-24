@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+const { captureExceptionMock, resolveLlmConfigMock, checkBudgetMock } = vi.hoisted(() => ({
+  captureExceptionMock: vi.fn(),
+  resolveLlmConfigMock: vi.fn(),
+  checkBudgetMock: vi.fn(),
+}));
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
@@ -79,7 +85,7 @@ vi.mock('../../services/screenshotStorage', () => ({
 }));
 
 vi.mock('../../services/aiCostTracker', () => ({
-  checkBudget: vi.fn(),
+  checkBudget: (...args: unknown[]) => checkBudgetMock(...args),
   getRemainingBudgetUsd: vi.fn(),
 }));
 
@@ -92,6 +98,14 @@ vi.mock('../../services/aiAgentSdk', () => ({
   createSessionPreToolUse: vi.fn(),
   createSessionPostToolUse: vi.fn(),
   settleBlockedTurnForNewMessage: vi.fn(() => Promise.resolve('not_blocked_on_approvals')),
+}));
+
+vi.mock('../../services/llm/llmConfigResolver', () => ({
+  resolveLlmConfig: (...args: unknown[]) => resolveLlmConfigMock(...args),
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...args),
 }));
 
 // Keep the real declaration schema + name helpers (used at route-construction
@@ -153,6 +167,14 @@ describe('helper routes permission derivation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resolveLlmConfigMock.mockResolvedValue({
+      source: 'partner',
+      partnerId: 'partner-1',
+      apiKey: 'partner-key',
+      model: 'claude-opus-4-6',
+      configId: 'config-1',
+      configVersion: 5,
+    });
     app = new Hono();
     app.route('/helper', helperRoutes);
   });
@@ -185,6 +207,48 @@ describe('helper routes permission derivation', () => {
     }));
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
     expect((insertedValues?.contextSnapshot as Record<string, unknown>).permissionLevel).toBe('standard');
+    expect(insertedValues?.model).toBe('claude-opus-4-6');
+    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+  });
+
+  it('returns ai_unavailable as 503 before inserting a helper session', async () => {
+    mockHelperAuthDevice();
+    resolveLlmConfigMock.mockResolvedValue({
+      source: 'unavailable',
+      partnerId: 'partner-1',
+      reason: 'key_error',
+    });
+
+    const res = await app.request('/helper/chat/sessions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ partnerId: 'attacker-partner' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+  });
+
+  it('captures resolver throws and returns a generic retryable 503 when creating a session', async () => {
+    mockHelperAuthDevice();
+    const resolverError = new Error('database driver detail');
+    resolveLlmConfigMock.mockRejectedValueOnce(resolverError);
+
+    const res = await app.request('/helper/chat/sessions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
+    expect(captureExceptionMock).toHaveBeenCalledWith(resolverError, expect.anything(), {
+      service: 'helperRoutes',
+      orgId: 'org-1',
+    });
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('returns helper config with server-derived permissionLevel', async () => {
@@ -258,15 +322,88 @@ describe('helper routes permission derivation', () => {
 
     const getOrCreateCall = vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0];
     const systemPrompt = getOrCreateCall?.[4];
-    const allowedTools = getOrCreateCall?.[6] as string[] | undefined;
+    const allowedTools = getOrCreateCall?.[7] as string[] | undefined;
 
     expect(systemPrompt).toBe('helper system prompt');
     expect(allowedTools).toContain('mcp__breeze__file_operations');
     expect(allowedTools).not.toContain('mcp__breeze__execute_command');
     // Isolation: sessions without client tools pass NO mcpServerFactory — the
     // default breeze MCP path is byte-identical to today.
-    expect(getOrCreateCall?.[7]).toBeUndefined();
+    expect(getOrCreateCall?.[6]).toEqual(expect.objectContaining({
+      source: 'partner',
+      configId: 'config-1',
+      configVersion: 5,
+    }));
+    expect(getOrCreateCall?.[8]).toBeUndefined();
+    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+    expect(checkBudgetMock).toHaveBeenCalledWith('org-1', 'partner_key');
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
+  });
+
+  it('returns ai_unavailable as 503 before touching the SDK manager on a turn', async () => {
+    mockHelperAuthDevice();
+    resolveLlmConfigMock.mockResolvedValue({
+      source: 'unavailable',
+      partnerId: 'partner-1',
+      reason: 'key_error',
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1',
+            orgId: 'org-1',
+            deviceId: 'device-1',
+            status: 'active',
+            maxTurns: 50,
+            turnCount: 0,
+            createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello', partnerId: 'attacker-partner' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+  });
+
+  it('captures resolver throws and returns a generic retryable 503 on a turn', async () => {
+    mockHelperAuthDevice();
+    resolveLlmConfigMock.mockRejectedValueOnce(new Error('decrypt subsystem failed'));
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1',
+            orgId: 'org-1',
+            deviceId: 'device-1',
+            status: 'active',
+            maxTurns: 50,
+            turnCount: 0,
+            createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
+    expect(captureExceptionMock).toHaveBeenCalledOnce();
+    expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
   });
 });
 
@@ -275,6 +412,14 @@ describe('helper client-declared session tools', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resolveLlmConfigMock.mockResolvedValue({
+      source: 'partner',
+      partnerId: 'partner-1',
+      apiKey: 'partner-key',
+      model: 'claude-opus-4-6',
+      configId: 'config-1',
+      configVersion: 5,
+    });
     app = new Hono();
     app.route('/helper', helperRoutes);
   });
@@ -362,10 +507,10 @@ describe('helper client-declared session tools', () => {
 
     expect(res.status).toBe(200);
     const call = vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0];
-    const allowedTools = call?.[6] as string[] | undefined;
+    const allowedTools = call?.[7] as string[] | undefined;
     expect(allowedTools).toEqual(['mcp__client_tools__search_files']);
     // The client-declared MCP factory is passed (a function), replacing the default.
-    expect(typeof call?.[7]).toBe('function');
+    expect(typeof call?.[8]).toBe('function');
   });
 
   it('resolves a client tool result (200) and persists a tool_result row with the posted output', async () => {

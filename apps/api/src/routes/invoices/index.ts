@@ -10,7 +10,7 @@ import { invoiceBulkRoutes } from './bulk';
 export const invoiceRoutes = new Hono();
 invoiceRoutes.use('*', authMiddleware);
 invoiceRoutes.route('/', invoiceBulkRoutes);       // bulk-* before /:id
-invoiceRoutes.route('/', invoiceLifecycleRoutes);  // /:id/issue, /:id/send, /:id/void
+invoiceRoutes.route('/', invoiceLifecycleRoutes);  // /:id/issue, /:id/send, /:id/resend, /:id/void
 invoiceRoutes.route('/', invoicePaymentRoutes);    // /:id/payments...
 invoiceRoutes.route('/', invoiceStripeRoutes);     // /:id/pay-link
 invoiceRoutes.route('/', invoicePdfRoutes);        // /:id/pdf (Phase 5)

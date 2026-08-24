@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { authRef, getScopedTicketOr404Mock, moveTicketOrgMock } = vi.hoisted(() => ({
+const { authRef, permsRef, getScopedTicketOr404Mock, moveTicketOrgMock } = vi.hoisted(() => ({
+  // Resolved permission set the real requirePermission middleware stores on the
+  // context (middleware/auth.ts) — the route's invoices:write gate reads it.
+  permsRef: { current: { permissions: [{ resource: '*', action: '*' }] } as { permissions: { resource: string; action: string }[] } },
   authRef: {
     current: {
       scope: 'partner' as string,
@@ -20,6 +23,7 @@ vi.mock('../../middleware/auth', async () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
     if (!authRef.current) return c.json({ error: 'Not authenticated' }, 401);
     c.set('auth', authRef.current);
+    c.set('permissions', permsRef.current);
     await next();
   }),
   requireScope: () => async (c: any, next: any) => {
@@ -90,6 +94,7 @@ vi.mock('../../db/schema', () => ({
 
 import { ticketsRoutes } from './index';
 import { TicketServiceError } from '../../services/ticketService';
+import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const ORG_B_ID  = 'aaaabbbb-cccc-dddd-eeee-ffff00001111';
@@ -108,6 +113,7 @@ function jsonHeaders() {
 
 function resetAuth() {
   vi.clearAllMocks();
+  permsRef.current = { permissions: [{ resource: '*', action: '*' }] };
   authRef.current = {
     scope: 'partner',
     user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
@@ -139,6 +145,7 @@ describe('POST /tickets/:id/move-org', () => {
       TICKET_ID,
       ORG_B_ID,
       expect.objectContaining({ userId: 'u-1' }),
+      { acceptCurrencyMismatch: false },
     );
   });
 
@@ -187,5 +194,81 @@ describe('POST /tickets/:id/move-org', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body).toHaveProperty('error');
+  });
+
+  // ── Multi-currency guard (#3776, Task 13) ──────────────────────────────────
+  it('409s with code + details when the service blocks a cross-currency move', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 2, accepted: false, blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 1, parts: 2 }] };
+    moveTicketOrgMock.mockRejectedValue(new TicketMoveCurrencyBlockedError('Cannot move: stranded money', details));
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/move-org`, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ orgId: ORG_B_ID }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Cannot move: stranded money',
+      code: 'TICKET_MOVE_CURRENCY_BLOCKED',
+      details,
+    });
+  });
+
+  it('403s acceptCurrencyMismatch:true without invoices:write and never calls the service', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    permsRef.current = { permissions: [{ resource: 'tickets', action: 'write' }, { resource: 'organizations', action: 'write' }] };
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/move-org`, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ orgId: ORG_B_ID, acceptCurrencyMismatch: true }),
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/invoices:write/);
+    expect(moveTicketOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('acceptCurrencyMismatch:false never needs invoices:write', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    permsRef.current = { permissions: [{ resource: 'tickets', action: 'write' }, { resource: 'organizations', action: 'write' }] };
+    moveTicketOrgMock.mockResolvedValue({ id: TICKET_ID, orgId: ORG_B_ID, deviceId: null });
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/move-org`, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ orgId: ORG_B_ID, acceptCurrencyMismatch: false }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(moveTicketOrgMock).toHaveBeenCalledWith(TICKET_ID, ORG_B_ID, expect.anything(), { acceptCurrencyMismatch: false });
+  });
+
+  it('passes acceptCurrencyMismatch:true through when the caller has invoices:write', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    permsRef.current = { permissions: [{ resource: 'tickets', action: 'write' }, { resource: 'organizations', action: 'write' }, { resource: 'invoices', action: 'write' }] };
+    moveTicketOrgMock.mockResolvedValue({ id: TICKET_ID, orgId: ORG_B_ID, deviceId: null });
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/move-org`, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ orgId: ORG_B_ID, acceptCurrencyMismatch: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(moveTicketOrgMock).toHaveBeenCalledWith(TICKET_ID, ORG_B_ID, expect.anything(), { acceptCurrencyMismatch: true });
+  });
+
+  it('400s a non-boolean acceptCurrencyMismatch', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/move-org`, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ orgId: ORG_B_ID, acceptCurrencyMismatch: 'yes' }),
+    });
+    expect(res.status).toBe(400);
+    expect(moveTicketOrgMock).not.toHaveBeenCalled();
   });
 });

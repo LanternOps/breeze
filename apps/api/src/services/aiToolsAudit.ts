@@ -57,7 +57,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           action: { type: 'string', description: 'Filter by action (e.g., "agent.command.script")' },
           resourceType: { type: 'string', description: 'Filter by resource type (e.g., "device")' },
           resourceId: { type: 'string', description: 'Filter by resource UUID' },
-          actorType: { type: 'string', enum: ['user', 'api_key', 'agent', 'system'], description: 'Filter by actor type' },
+          actorType: { type: 'string', enum: ['user', 'api_key', 'agent', 'system', 'ai_agent'], description: 'Filter by actor type' },
           hoursBack: { type: 'number', description: 'How many hours back to search (default: 24, max: 168)' },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' }
         }

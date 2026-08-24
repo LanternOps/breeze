@@ -351,6 +351,175 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
   });
 });
 
+// #3409 PR4c-2: the claim-time secret gate ALREADY wrote the failed
+// script_executions row and ALREADY spent the batch's devicesFailed slot
+// before dispatch returned. The fan-out must report the device as failed
+// without writing a SECOND row or double-counting the batch.
+describe('executeScriptOnDevices — dispatch codes the gate already recorded', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.insert).mockReturnValue(insertReturning([{ id: 'inserted-1' }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+  });
+
+  const twoDeviceSelect = () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+      ]) as any);
+  };
+
+  const okDispatch = (suffix: string) => ({
+    ok: true as const,
+    commandId: `cmd-${suffix}`,
+    executionId: `exec-${suffix}`,
+    delivered: false,
+    deliveryOutcome: 'no_agent' as const,
+    executedAt: null,
+    ignoredParameters: [],
+  });
+
+  it('reports agent_upgrade_required_recorded in failures without a second execution insert or batch increment', async () => {
+    twoDeviceSelect();
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce(okDispatch('a'))
+      .mockResolvedValueOnce({
+        ok: false,
+        code: 'agent_upgrade_required_recorded',
+        error: 'Agent upgrade required: ...; script not executed',
+      });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The operator still learns the device failed and why.
+    expect(result.failures).toEqual([
+      { deviceId: 'device-b', code: 'agent_upgrade_required_recorded', error: expect.any(String) },
+    ]);
+    expect(result.executions.map((e) => e.deviceId)).toEqual(['device-a']);
+    expect(result.devicesTargeted).toBe(2);
+
+    // db.insert's chain is a single shared mock: call 0 is the batch insert.
+    // A second `.values(...)` call would be the duplicate failed-execution row.
+    const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
+    expect(insertChain.values.mock.calls).toHaveLength(1);
+    // The only db.update left is the final batch-status write — no
+    // devicesFailed increment (the gate already spent that slot).
+    const updateCalls = vi.mocked(db.update).mock.results;
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]!.value.set.mock.calls[0][0]).not.toHaveProperty('devicesFailed');
+  });
+
+  // #3409 PR4c-2 review finding 3 — THE regression this split exists for.
+  // 'agent_upgrade_required' is overwhelmingly the ENQUEUE preflight's
+  // refusal, which returns BEFORE any script_executions row is written. While
+  // it shared a code with the claim-time gate it was suppressed here, so a
+  // batch of 10 devices with 3 pre-PR4b agents showed 7 accounted rows and
+  // `devicesCompleted + devicesFailed >= devicesTargeted` never held — the
+  // batch could never finalize.
+  it('DOES write the row and increment the batch for the ENQUEUE agent_upgrade_required refusal', async () => {
+    twoDeviceSelect();
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce(okDispatch('a'))
+      .mockResolvedValueOnce({
+        ok: false,
+        code: 'agent_upgrade_required',
+        error: 'Agent upgrade required: ...; script not executed',
+      });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.failures).toEqual([
+      { deviceId: 'device-b', code: 'agent_upgrade_required', error: expect.any(String) },
+    ]);
+
+    const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
+    expect(insertChain.values.mock.calls).toHaveLength(2);
+    expect(insertChain.values.mock.calls[1][0]).toMatchObject({
+      deviceId: 'device-b',
+      orgId: 'org-b',
+      status: 'failed',
+    });
+    const updateCalls = vi.mocked(db.update).mock.results;
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[0]!.value.set.mock.calls[0][0]).toHaveProperty('devicesFailed');
+  });
+
+  // The claim gate's infrastructure-fault path writes NOTHING (it cannot know
+  // whether the gate's terminal write landed), so its refusal must also take
+  // the ordinary per-device failure row.
+  it('DOES write the row and increment the batch for secret_gate_unavailable', async () => {
+    twoDeviceSelect();
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce(okDispatch('a'))
+      .mockResolvedValueOnce({
+        ok: false,
+        code: 'secret_gate_unavailable',
+        error: 'The server could not verify ...; script not executed',
+      });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
+    expect(insertChain.values.mock.calls).toHaveLength(2);
+    const updateCalls = vi.mocked(db.update).mock.results;
+    expect(updateCalls[0]!.value.set.mock.calls[0][0]).toHaveProperty('devicesFailed');
+  });
+
+  it('still writes the row and increments the batch for a code the gate did NOT record', async () => {
+    twoDeviceSelect();
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce(okDispatch('a'))
+      .mockResolvedValueOnce({
+        ok: false,
+        code: 'secret_delivery_unavailable',
+        error: 'Secret delivery is not configured on this server',
+      });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.failures).toEqual([
+      { deviceId: 'device-b', code: 'secret_delivery_unavailable', error: expect.any(String) },
+    ]);
+
+    const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
+    expect(insertChain.values.mock.calls).toHaveLength(2);
+    expect(insertChain.values.mock.calls[1][0]).toMatchObject({
+      deviceId: 'device-b',
+      orgId: 'org-b',
+      status: 'failed',
+    });
+    const updateCalls = vi.mocked(db.update).mock.results;
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[0]!.value.set.mock.calls[0][0]).toHaveProperty('devicesFailed');
+  });
+});
+
 describe('executeScriptOnDevices — ignored bound parameters (#3409 PR3 §2.2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

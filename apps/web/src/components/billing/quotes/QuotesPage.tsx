@@ -16,6 +16,7 @@ import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from '../bulk/useBulkSelection';
 import { BulkActionBar } from '../bulk/BulkActionBar';
 import { SortableTh } from '../shared/SortableTh';
+import { ApproximateMoneyLine } from '../shared/ApproximateMoneyLine';
 import {
   type Quote,
   type QuoteStatus,
@@ -39,7 +40,10 @@ interface Site {
   name: string;
 }
 
-const STATUS_OPTION_VALUES: ('' | QuoteStatus)[] = ['', 'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted'];
+// Every QuoteStatus plus '' (all). Deep-linked #status=<v> is validated against
+// this list and silently reset to '' when absent, so a status missing here is
+// invisible rather than loud — keep it exhaustive.
+const STATUS_OPTION_VALUES: ('' | QuoteStatus)[] = ['', 'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded'];
 
 type SortKey = 'created' | 'total';
 interface Sort { key: SortKey; dir: 'asc' | 'desc' }
@@ -396,6 +400,8 @@ export function QuotesPage() {
               label={t('quotes.page.stats.outForSignature')}
               value={outForSignatureDisplay}
               hint={t('quotes.page.stats.awaiting', { count: summary.awaitingCount })}
+              detail={<ApproximateMoneyLine byCurrency={summary.byCurrency} testId="quotes-signature-approx" />}
+              testId="quotes-signature-card"
             />
           )}
           {summary.draftCount > 0 && (
@@ -643,7 +649,9 @@ export function QuotesPage() {
               </span>
               <span
                 className={`shrink-0 tabular-nums ${Number(q.total) === 0 ? 'font-medium text-warning-foreground dark:text-warning' : 'text-muted-foreground'}`}
-                title={Number(q.total) === 0 ? t('quotes.actions.sendConfirm.zeroTotalWarning') : undefined}
+                title={Number(q.total) === 0
+                  ? t('quotes.actions.sendConfirm.zeroTotalWarning', { zero: formatMoney(0, q.currencyCode) })
+                  : undefined}
               >
                 {formatMoney(q.total, q.currencyCode)}
                 {(Number(q.monthlyRecurringTotal) > 0 || Number(q.annualRecurringTotal) > 0) && (

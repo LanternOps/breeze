@@ -2,7 +2,13 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { runOutsideDbContext } from '../../db';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
 import type {
+  AccountingCustomerPayload,
+  AccountingEntityMapping,
+  AccountingInvoiceLineMapping,
+  AccountingInvoicePayload,
+  AccountingItemPayload,
   AccountingProvider,
+  AccountingVoidInvoicePayload,
   ChangeSet,
   ConnectionTokens,
   RemoteAddress,
@@ -17,6 +23,19 @@ const QBO_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer
 const QBO_SCOPE = 'com.intuit.quickbooks.accounting';
 const QBO_API_MINOR_VERSION = '70';
 const QBO_CUSTOMER_PAGE_SIZE = 1000; // QBO hard cap per query page
+
+/**
+ * Abort budget for the OPTIONAL home-currency capture. It is awaited inline in
+ * the OAuth callback, before the state cookie is cleared and the browser is
+ * redirected, so undici's ~300s headers timeout would park the connecting user
+ * on a blank /callback for five minutes over a capture that is non-fatal by
+ * design. It stays inline rather than fire-and-forget so the compare-and-set
+ * still runs against the generation the callback just wrote (a queued job would
+ * have to re-derive it), which means the budget has to be short enough that a
+ * hung Intuit is invisible: a few seconds beyond a normal Preferences round-trip
+ * (sub-second) and well inside a user's patience for a redirect.
+ */
+export const QBO_PREFERENCES_TIMEOUT_MS = 8_000;
 
 function qboApiBase(environment: 'sandbox' | 'production'): string {
   return environment === 'production'
@@ -40,6 +59,49 @@ interface QboRawCustomer {
   Active?: boolean;
   BillAddr?: QboRawAddress;
   ShipAddr?: QboRawAddress;
+}
+
+/**
+ * Builds the DELIBERATELY sanitized preferences error (multi-currency §11).
+ * This error is handed to captureException by the OAuth callback and a QBO
+ * fault body — or a proxy's HTML error page — can carry realm/company/customer
+ * detail, so only the status and the operation ever travel.
+ */
+function preferencesError(status: number | null, reason: string): Error & { status?: number; operation: string } {
+  const err = new Error(
+    status === null
+      ? `QuickBooks preferences request ${reason}`
+      : `QuickBooks preferences request ${reason} (status ${status})`,
+  ) as Error & { status?: number; operation: string };
+  if (status !== null) err.status = status;
+  err.operation = 'fetchHomeCurrency';
+  return err;
+}
+
+/**
+ * QBO Preferences response. `HomeCurrency` is a REFERENCE object, so the code
+ * lives at `.value` — and it comes from Preferences, never CompanyInfo
+ * (multi-currency §11).
+ */
+export interface QboRawPreferences {
+  Preferences?: {
+    CurrencyPrefs?: {
+      HomeCurrency?: { value?: string | null } | null;
+    } | null;
+  };
+}
+
+/**
+ * Normalizes the realm's home currency to an uppercase three-letter code.
+ * Deliberately NOT validated against Breeze's curated supported-currency list:
+ * a realm may legitimately run a currency Breeze cannot bill in, and that must
+ * stay connectable — the invoice-push guard blocks it later instead.
+ */
+export function mapQboHomeCurrency(raw: QboRawPreferences): string | null {
+  const value = raw.Preferences?.CurrencyPrefs?.HomeCurrency?.value;
+  if (typeof value !== 'string') return null;
+  const code = value.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(code) ? code : null;
 }
 
 export function mapQboAddress(raw: QboRawAddress | undefined): RemoteAddress | undefined {
@@ -147,19 +209,86 @@ export class QuickbooksProvider implements AccountingProvider {
     throw new Error('NotImplemented: Phase B');
   }
 
-  async upsertCustomer(..._args: unknown[]): Promise<RemoteRef> {
+  // NOTE: like listRemoteCustomers, this assumes `conn.accessToken` is already
+  // valid and issues no DB queries. The fetch runs OUTSIDE any DB context so a
+  // QBO round-trip never holds a pooled connection (#1105 class).
+  async fetchHomeCurrency(conn: AccountingConnection): Promise<string | null> {
+    if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
+    if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
+
+    const url = `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/preferences?minorversion=${QBO_API_MINOR_VERSION}`;
+    // An explicit controller rather than AbortSignal.timeout so the timer is
+    // cleared on the normal path and the abort reason is a sanitized error.
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(preferencesError(null, 'timed out')),
+      QBO_PREFERENCES_TIMEOUT_MS,
+    );
+    let response: Response;
+    try {
+      response = await runOutsideDbContext(() =>
+        fetch(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${conn.accessToken}`,
+            Accept: 'application/json',
+          },
+          signal: controller.signal,
+        })
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!response.ok) {
+      // Sanitized, unlike listRemoteCustomers. The body is never read — but it
+      // must still be discarded, or undici holds the connection open until GC.
+      await response.body?.cancel().catch(() => {});
+      throw preferencesError(response.status, 'failed');
+    }
+
+    // Guarded: a proxy/WAF can answer 200 with an HTML page, and the SyntaxError
+    // from an unguarded .json() embeds a snippet of that body in its message —
+    // which the OAuth callback would hand straight to captureException, defeating
+    // the sanitization above.
+    let parsed: QboRawPreferences;
+    try {
+      parsed = await response.json() as QboRawPreferences;
+    } catch {
+      throw preferencesError(response.status, 'returned a non-JSON body');
+    }
+    return mapQboHomeCurrency(parsed);
+  }
+
+  async upsertCustomer(
+    _conn: AccountingConnection,
+    _customer: AccountingCustomerPayload,
+    _mapping: AccountingEntityMapping | null,
+  ): Promise<RemoteRef> {
     throw new Error('NotImplemented: Phase B');
   }
 
-  async upsertItem(..._args: unknown[]): Promise<RemoteRef> {
+  async upsertItem(
+    _conn: AccountingConnection,
+    _item: AccountingItemPayload,
+    _mapping: AccountingEntityMapping | null,
+  ): Promise<RemoteRef> {
     throw new Error('NotImplemented: Phase B');
   }
 
-  async pushInvoice(..._args: unknown[]): Promise<RemoteRef> {
+  async pushInvoice(
+    _conn: AccountingConnection,
+    _invoice: AccountingInvoicePayload,
+    _lineMappings: readonly AccountingInvoiceLineMapping[],
+  ): Promise<RemoteRef> {
     throw new Error('NotImplemented: Phase C');
   }
 
-  async voidInvoice(..._args: unknown[]): Promise<void> {
+  async voidInvoice(
+    _conn: AccountingConnection,
+    _invoice: AccountingVoidInvoicePayload,
+    _mapping: AccountingEntityMapping,
+  ): Promise<void> {
     throw new Error('NotImplemented: Phase C');
   }
 

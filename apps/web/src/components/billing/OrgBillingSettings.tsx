@@ -3,13 +3,58 @@ import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { ActionError, runAction, handleActionError } from '../../lib/runAction';
 import { isValidEmail } from '@/lib/email';
+import { currencyLabel, currencyOptions } from '@/lib/currencies';
 import { pctFromFraction } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
+/** Mirror of the API's `OrgCurrencyImpact` (apps/api/src/services/orgCurrencyService.ts).
+ *  Every group is keyed on the ROW's own stamped currency — amounts are never
+ *  summed across currencies, and nothing here is ever converted. */
+interface OrgCurrencyImpactGroup {
+  currencyCode: string;
+  documents: { draftInvoices: number; draftQuotes: number; sentQuotes: number; viewedQuotes: number };
+  contracts: { draft: number; active: number; paused: number };
+  billables: {
+    monetaryTimeSnapshots: number; readyTimeEntries: number; runningTimeEntries: number;
+    currentlyNonBillableTimeEntries: number; missingRateTimeEntries: number; laborAmount: string | null;
+    monetaryPartSnapshots: number; readyParts: number; currentlyNonBillableParts: number; partAmount: string;
+  };
+  recovery: { kind: 'assemble_draft'; currencyCode: string };
+}
+
+interface OrgCurrencyImpact {
+  orgId: string;
+  currentCurrencyCode: string;
+  targetCurrencyCode: string;
+  changeRequired: boolean;
+  impactsByCurrency: OrgCurrencyImpactGroup[];
+  configurationWarnings: {
+    orgDefaultRate: { configured: boolean; rateCurrency: string | null; willStopApplying: boolean };
+    categoryRatesSkipped: number;
+    orgCatalogOverridesSkipped: number;
+    /** Unbilled time with hours but no hourly rate, stamped in the TARGET
+     *  currency or unstamped — NOT stranded by the change, so it is reported on
+     *  its own line and never as a "assemble a draft in X" group (#3778). */
+    rateLessTimeEntries: number;
+  };
+}
+
+/** Body of a 409 ORG_CURRENCY_CHANGED — the optimistic precondition lost a race
+ *  with another writer, and the server hands back the CURRENT code plus a fresh
+ *  summary so the user re-confirms against reality instead of blind-retrying. */
+function staleCurrencyDetails(err: unknown): { currentCurrencyCode: string; impact: OrgCurrencyImpact } | null {
+  if (!(err instanceof ActionError) || err.status !== 409 || err.code !== 'ORG_CURRENCY_CHANGED') return null;
+  const details = (err.body as { details?: unknown } | undefined)?.details as
+    { currentCurrencyCode?: unknown; impact?: unknown } | undefined;
+  if (!details || typeof details.currentCurrencyCode !== 'string' || !details.impact) return null;
+  return { currentCurrencyCode: details.currentCurrencyCode, impact: details.impact as OrgCurrencyImpact };
+}
+
 interface OrgBilling {
+  currencyCode: string | null;
   taxId: string | null;
   taxExempt: boolean;
   taxRate: string | null;
@@ -27,10 +72,23 @@ interface Props {
 }
 
 export default function OrgBillingSettings({ orgId }: Props) {
-  const { t } = useTranslation('billing');
+  const { t, i18n } = useTranslation('billing');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Multi-currency wave 6 (#3778). `currencyCode` is the STORED value (the
+  // optimistic precondition sent back to the server); `selectedCurrency` is what
+  // the <select> shows. They diverge only while the confirmation panel is open —
+  // selecting a code previews, it never mutates.
+  const [currencyCode, setCurrencyCode] = useState('');
+  const [selectedCurrency, setSelectedCurrency] = useState('');
+  const [impact, setImpact] = useState<OrgCurrencyImpact | null>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState(false);
+  const [currencyPanelOpen, setCurrencyPanelOpen] = useState(false);
+  const [currencyStale, setCurrencyStale] = useState(false);
+  const [changingCurrency, setChangingCurrency] = useState(false);
 
   const [taxId, setTaxId] = useState('');
   const [taxExempt, setTaxExempt] = useState(false);
@@ -52,6 +110,8 @@ export default function OrgBillingSettings({ orgId }: Props) {
       if (res.status === 401) return UNAUTHORIZED();
       if (!res.ok) throw new Error('load failed');
       const o = (await res.json()) as OrgBilling;
+      setCurrencyCode(o.currencyCode ?? '');
+      setSelectedCurrency(o.currencyCode ?? '');
       setTaxId(o.taxId ?? '');
       setTaxExempt(Boolean(o.taxExempt));
       setTaxPercent(pctFromFraction(o.taxRate));
@@ -71,6 +131,95 @@ export default function OrgBillingSettings({ orgId }: Props) {
   }, [orgId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const closeCurrencyPanel = useCallback(() => {
+    setCurrencyPanelOpen(false);
+    setImpact(null);
+    setImpactError(false);
+    setCurrencyStale(false);
+  }, []);
+
+  /** Advisory, read-only preview. Never a blocker and never a promise — rows can
+   *  be created between this preview and the change (the server-side org SHARE
+   *  barrier, not this count, is what makes the cutover exact). */
+  const previewCurrency = useCallback(async (code: string) => {
+    setCurrencyPanelOpen(true);
+    setCurrencyStale(false);
+    setImpact(null);
+    setImpactError(false);
+    setImpactLoading(true);
+    try {
+      const res = await fetchWithAuth(
+        `/orgs/${orgId}/billing-settings/currency-impact?currencyCode=${encodeURIComponent(code)}`,
+        // The org is already in the PATH, and the query schema is `.strict()` —
+        // letting fetchWithAuth append the org-switcher's `orgId` (which need
+        // not even be this org) 400s the request and the panel degrades to
+        // "summary could not be loaded". Caught by the wave-6 browser slice
+        // (e2e-tests/tests/multi-currency.spec.ts); unit tests mock
+        // fetchWithAuth and cannot see the injection.
+        { skipOrgIdInjection: true });
+      if (res.status === 401) return UNAUTHORIZED();
+      if (!res.ok) throw new Error('impact failed');
+      const body = (await res.json()) as { data: OrgCurrencyImpact };
+      setImpact(body.data);
+    } catch {
+      setImpactError(true);
+    } finally {
+      setImpactLoading(false);
+    }
+  }, [orgId]);
+
+  /** Cancel reverts the <select> to the STORED code — an abandoned preview must
+   *  not leave the form showing a currency the organization does not have. */
+  const cancelCurrencyChange = useCallback(() => {
+    setSelectedCurrency(currencyCode);
+    closeCurrencyPanel();
+  }, [currencyCode, closeCurrencyPanel]);
+
+  const onSelectCurrency = useCallback((code: string) => {
+    setSelectedCurrency(code);
+    if (code === currencyCode) { closeCurrencyPanel(); return; }
+    void previewCurrency(code);
+  }, [currencyCode, closeCurrencyPanel, previewCurrency]);
+
+  /** The ONLY mutation on this panel. Payload is currency-ONLY: the service
+   *  rejects any other field alongside `currencyCode` (wave-6 plan, Task 11). */
+  const confirmCurrencyChange = useCallback(async () => {
+    if (changingCurrency || !selectedCurrency || selectedCurrency === currencyCode) return;
+    setChangingCurrency(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/orgs/${orgId}/billing-settings`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            currencyCode: selectedCurrency,
+            expectedCurrentCurrencyCode: currencyCode,
+            confirmSnapshotRetention: true,
+          }),
+        }),
+        errorFallback: t('orgBillingSettings.currency.changeError'),
+        successMessage: t('orgBillingSettings.currency.changeSuccess'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      closeCurrencyPanel();
+      void load();
+    } catch (err) {
+      const stale = staleCurrencyDetails(err);
+      if (stale) {
+        // Keep the panel OPEN against the server's fresh summary and re-arm the
+        // precondition with the code the server says is current — confirming
+        // again is a deliberate second decision, not a silent retry.
+        setCurrencyCode(stale.currentCurrencyCode);
+        setImpact(stale.impact);
+        setImpactError(false);
+        setCurrencyStale(true);
+        return;
+      }
+      handleActionError(err, t('orgBillingSettings.currency.changeError'));
+    } finally {
+      setChangingCurrency(false);
+    }
+  }, [changingCurrency, selectedCurrency, currencyCode, orgId, t, closeCurrencyPanel, load]);
 
   // Contact email is optional (blank clears it), but a non-empty value must be a
   // valid address. Guard client-side so the Save button reflects it pre-submit;
@@ -125,8 +274,164 @@ export default function OrgBillingSettings({ orgId }: Props) {
 
   const inputCls = 'mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm';
 
+  const countRow = (code: string, key: string, label: string, value: number) => (
+    <div className="flex items-baseline justify-between gap-4 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums" data-testid={`org-billing-impact-${code}-${key}`}>{value}</span>
+    </div>
+  );
+
   return (
     <div className="space-y-6" data-testid="org-billing-settings">
+      {/* Multi-currency wave 6 (#3778). Selecting a code previews; only the
+          confirmation panel below mutates, with a currency-ONLY payload. */}
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
+        <h2 className="text-lg font-semibold">{t('orgBillingSettings.currency.title')}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{t('orgBillingSettings.currency.description')}</p>
+        <div className="mt-4 sm:max-w-xs">
+          <label className="text-sm font-medium" htmlFor="ob-currency">{t('orgBillingSettings.currency.label')}</label>
+          {/* An already-stored off-list code stays selectable via currencyOptions
+              so an existing setting is never silently reset (#3204 precedent). */}
+          <select
+            id="ob-currency" value={selectedCurrency}
+            onChange={(e) => onSelectCurrency(e.target.value)}
+            data-testid="org-billing-currency"
+            className={inputCls}
+          >
+            {currencyOptions(currencyCode).map((code) => (
+              <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
+            ))}
+          </select>
+        </div>
+
+        {currencyPanelOpen && (
+          <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/5 p-4" data-testid="org-billing-currency-panel">
+            <h3 className="text-sm font-semibold">
+              {t('orgBillingSettings.currency.panelTitle', { currency: selectedCurrency })}
+            </h3>
+
+            {currencyStale && (
+              <p className="mt-2 text-sm font-medium text-amber-700 dark:text-amber-400" data-testid="org-billing-currency-stale">
+                {t('orgBillingSettings.currency.stale', { currency: currencyCode })}
+              </p>
+            )}
+
+            {impactLoading && (
+              <p className="mt-2 text-sm text-muted-foreground" data-testid="org-billing-currency-loading">
+                {t('orgBillingSettings.currency.loading', { currency: selectedCurrency })}
+              </p>
+            )}
+            {impactError && (
+              <p className="mt-2 text-sm text-destructive" data-testid="org-billing-currency-error">
+                {t('orgBillingSettings.currency.error')}
+              </p>
+            )}
+
+            {impact && (
+              <div className="mt-3 space-y-4">
+                {impact.impactsByCurrency.length === 0 && (
+                  <p className="text-sm text-muted-foreground" data-testid="org-billing-currency-none">
+                    {t('orgBillingSettings.currency.none')}
+                  </p>
+                )}
+                {impact.impactsByCurrency.map((g) => (
+                  <div key={g.currencyCode} className="rounded-md border bg-background p-3" data-testid={`org-billing-currency-group-${g.currencyCode}`}>
+                    <h4 className="text-sm font-semibold">
+                      {t('orgBillingSettings.currency.groupTitle', { currency: g.currencyCode })}
+                    </h4>
+                    <div className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2">
+                      {countRow(g.currencyCode, 'draftInvoices', t('orgBillingSettings.currency.counts.draftInvoices'), g.documents.draftInvoices)}
+                      {countRow(g.currencyCode, 'draftQuotes', t('orgBillingSettings.currency.counts.draftQuotes'), g.documents.draftQuotes)}
+                      {countRow(g.currencyCode, 'sentQuotes', t('orgBillingSettings.currency.counts.sentQuotes'), g.documents.sentQuotes)}
+                      {countRow(g.currencyCode, 'viewedQuotes', t('orgBillingSettings.currency.counts.viewedQuotes'), g.documents.viewedQuotes)}
+                      {countRow(g.currencyCode, 'draftContracts', t('orgBillingSettings.currency.counts.draftContracts'), g.contracts.draft)}
+                      {countRow(g.currencyCode, 'activeContracts', t('orgBillingSettings.currency.counts.activeContracts'), g.contracts.active)}
+                      {countRow(g.currencyCode, 'pausedContracts', t('orgBillingSettings.currency.counts.pausedContracts'), g.contracts.paused)}
+                      {countRow(g.currencyCode, 'timeEntries', t('orgBillingSettings.currency.counts.timeEntries'), g.billables.monetaryTimeSnapshots)}
+                      {countRow(g.currencyCode, 'parts', t('orgBillingSettings.currency.counts.parts'), g.billables.monetaryPartSnapshots)}
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {t('orgBillingSettings.currency.timeDetail', {
+                        ready: g.billables.readyTimeEntries, running: g.billables.runningTimeEntries,
+                        nonBillable: g.billables.currentlyNonBillableTimeEntries, missingRate: g.billables.missingRateTimeEntries,
+                      })}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {t('orgBillingSettings.currency.partsDetail', {
+                        ready: g.billables.readyParts, nonBillable: g.billables.currentlyNonBillableParts,
+                      })}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {t('orgBillingSettings.currency.amounts', {
+                        labor: `${g.billables.laborAmount ?? '0.00'} ${g.currencyCode}`,
+                        parts: `${g.billables.partAmount} ${g.currencyCode}`,
+                      })}
+                    </p>
+                    {/* The spec §7 recovery path: an explicit same-currency
+                        assembly, never a conversion or a restamp. */}
+                    <p className="mt-2 text-sm" data-testid={`org-billing-currency-recovery-${g.currencyCode}`}>
+                      {t('orgBillingSettings.currency.recovery', { currency: g.currencyCode })}
+                    </p>
+                  </div>
+                ))}
+
+                {impact.configurationWarnings.rateLessTimeEntries > 0 && (
+                  <p className="text-sm text-muted-foreground" data-testid="org-billing-currency-rate-less">
+                    {t('orgBillingSettings.currency.rateLess', { count: impact.configurationWarnings.rateLessTimeEntries })}
+                  </p>
+                )}
+
+                <div>
+                  <h4 className="text-sm font-semibold">{t('orgBillingSettings.currency.warningsTitle')}</h4>
+                  <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                    {impact.configurationWarnings.orgDefaultRate.willStopApplying && (
+                      <li data-testid="org-billing-currency-warning-rate">
+                        {t('orgBillingSettings.currency.warningRate', {
+                          currency: impact.configurationWarnings.orgDefaultRate.rateCurrency ?? '',
+                        })}
+                      </li>
+                    )}
+                    {impact.configurationWarnings.categoryRatesSkipped > 0 && (
+                      <li data-testid="org-billing-currency-warning-categories">
+                        {t('orgBillingSettings.currency.warningCategories', { count: impact.configurationWarnings.categoryRatesSkipped })}
+                      </li>
+                    )}
+                    {impact.configurationWarnings.orgCatalogOverridesSkipped > 0 && (
+                      <li data-testid="org-billing-currency-warning-overrides">
+                        {t('orgBillingSettings.currency.warningOverrides', { count: impact.configurationWarnings.orgCatalogOverridesSkipped })}
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            <p className="mt-3 text-sm" data-testid="org-billing-currency-retention">
+              {t('orgBillingSettings.currency.retention')}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="org-billing-currency-advisory">
+              {t('orgBillingSettings.currency.advisory')}
+            </p>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button" onClick={cancelCurrencyChange} data-testid="org-billing-currency-cancel"
+                className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+              >
+                {t('orgBillingSettings.currency.cancel')}
+              </button>
+              <button
+                type="button" onClick={() => void confirmCurrencyChange()} disabled={changingCurrency}
+                data-testid="org-billing-currency-confirm"
+                className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {changingCurrency ? t('orgBillingSettings.currency.changing') : t('orgBillingSettings.currency.confirm')}
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
       <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">{t('orgBillingSettings.tax.title')}</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">

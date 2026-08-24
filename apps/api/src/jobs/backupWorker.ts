@@ -53,6 +53,7 @@ import {
   type QueueActorMeta,
   withQueueMeta,
 } from './queueSchemas';
+import { jobSchedule } from './scheduleRegistry';
 
 // Re-export enqueue functions for backward compatibility
 export const getBackupQueue = backupEnqueue.getBackupQueue;
@@ -818,7 +819,8 @@ export async function initializeBackupWorker(): Promise<void> {
         withQueueMeta({ type: 'expire-recovery-tokens' as const }, BACKUP_REPEATABLE_META)
       ),
       {
-        repeat: { every: 60 * 60 * 1000 },
+        // Hourly at a registry-allocated minute (jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('backup-recovery-token-expiry') },
         attempts: 1,
         removeOnComplete: { count: 10 },
         removeOnFail: { count: 20 },
@@ -831,7 +833,8 @@ export async function initializeBackupWorker(): Promise<void> {
         withQueueMeta({ type: 'cleanup-expired-snapshots' as const }, BACKUP_REPEATABLE_META)
       ),
       {
-        repeat: { every: 6 * 60 * 60 * 1000 },
+        // Every 6h at a registry-allocated slot (jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('backup-expired-snapshot-cleanup') },
         attempts: 1,
         removeOnComplete: { count: 10 },
         removeOnFail: { count: 20 },

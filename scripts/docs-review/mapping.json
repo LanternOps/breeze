@@ -2261,6 +2261,66 @@
         "backup/overview.mdx",
         "deploy/binaries.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/tenantVariables.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/tenantVariableResolution.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/officeAddin/**",
+      "docs": [
+        "features/ai-for-office.mdx",
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/outlook-addin/**",
+      "docs": [
+        "features/ai-for-office.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/utils/currency.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "features/quotes.mdx",
+        "features/contracts.mdx",
+        "reference/regional-settings.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/invoiceLinkToken.ts",
+      "docs": [
+        "features/online-payments.mdx",
+        "features/invoices.mdx",
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/snmppoll/**",
+      "docs": [
+        "features/snmp.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/metrics.ts",
+      "docs": [
+        "monitoring/stack.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/mobile/**",
+      "docs": [
+        "features/mobile.mdx"
+      ]
     }
   ]
 }

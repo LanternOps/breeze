@@ -5,6 +5,9 @@ export * from './permissions';
 // by api, agent helpers, and the web layer). See ./configFeatureTypes.ts (#2004).
 export * from './configFeatureTypes';
 
+// Canonical in-app notification types shared by API filters and web UI.
+export * from './notificationTypes';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 

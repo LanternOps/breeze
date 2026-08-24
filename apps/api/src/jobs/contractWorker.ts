@@ -21,9 +21,11 @@ import { generateDueInvoice } from '../services/contractService';
 import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
 import { sendInvoiceEmail } from '../services/invoicePdf';
+import { jobSchedule } from './scheduleRegistry';
 
 const CONTRACT_QUEUE = 'contract-jobs';
-const BILLING_SWEEP_CRON = '0 5 * * *'; // daily 05:00, before the invoice overdue sweep (06:00)
+// Daily, before the invoice overdue sweep in the same hour lane.
+const BILLING_SWEEP_CRON = jobSchedule('contract-billing-sweep');
 
 let contractQueue: Queue | null = null;
 let contractWorker: Worker | null = null;
@@ -65,6 +67,15 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         withSystemDbAccessContext(() => generateDueInvoice(row.id, asOf))
       );
       if (res.generated) billed++;
+      // Wave 3 (#3775): a catalog line billed at the contract snapshot because
+      // the price book has no row in the contract's currency is never silent —
+      // one structured warning per gap so ops can fill the book.
+      for (const gap of res.priceBookGaps) {
+        console.warn(
+          '[contract-billing] price-book gap: contract %s line %s item %s has no %s price — billed at the contract snapshot',
+          row.id, gap.contractLineId, gap.catalogItemId, gap.currencyCode
+        );
+      }
     } catch (err) {
       failed++;
       console.error('[ContractWorker] generation failed', `contractId=${row.id}`, err instanceof Error ? err.message : err);

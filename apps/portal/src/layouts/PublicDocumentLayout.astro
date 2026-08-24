@@ -8,12 +8,23 @@
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import { withBase } from '../lib/basePath';
+import { buildDocAccentCss } from '../lib/docAccent';
 
 interface Props {
   title: string;
+  /** Partner brand accent for the document on this page, delivered as a nonced
+   *  <style> element (lib/docAccent.ts). */
+  docAccent?: string | null;
+  /** Support contact, so a prospect reading a proposal can reach the company
+   *  asking them to sign it. The public page previously offered no way. */
+  supportEmail?: string | null;
+  supportPhone?: string | null;
+  partnerName?: string | null;
 }
 
-const { title } = Astro.props;
+const { title, docAccent, supportEmail, supportPhone, partnerName } = Astro.props;
+const accentCss = buildDocAccentCss(docAccent);
+const cspNonce = Astro.locals.cspNonce;
 ---
 
 <!DOCTYPE html>
@@ -24,11 +35,29 @@ const { title } = Astro.props;
     <meta name="robots" content="noindex" />
     <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
     <title>{title}</title>
+    {accentCss && <style nonce={cspNonce} set:html={accentCss}></style>}
     <ClientRouter />
   </head>
-  <body class="min-h-screen bg-background antialiased">
+  <body class="min-h-dvh bg-background antialiased">
     <main class="mx-auto w-full max-w-5xl px-4 py-10 sm:py-14">
       <slot />
+
+      {(supportEmail || supportPhone) && (
+        <footer class="mx-auto mt-8 max-w-3xl px-2 text-center text-sm text-muted-foreground">
+          <p>
+            Questions about this document? Contact
+            {partnerName ? ` ${partnerName}` : ' us'}:
+          </p>
+          <p class="mt-1 flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+            {supportEmail && (
+              <a href={`mailto:${supportEmail}`} class="font-medium text-primary-on-tint hover:underline">{supportEmail}</a>
+            )}
+            {supportPhone && (
+              <a href={`tel:${supportPhone}`} class="font-medium text-primary-on-tint hover:underline">{supportPhone}</a>
+            )}
+          </p>
+        </footer>
+      )}
     </main>
   </body>
 </html>

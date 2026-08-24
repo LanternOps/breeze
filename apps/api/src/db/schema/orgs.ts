@@ -35,6 +35,10 @@ export const partners = pgTable('partners', {
   billingEmail: varchar('billing_email', { length: 255 }),
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature: text('email_signature'),
+  // Auto-email the issued invoice (with its public pay link) when a quote is
+  // accepted. Dedicated column, not settings JSONB — the settings cards replace
+  // sub-objects wholesale (#3597), and a column keeps gate === read-back.
+  autoEmailInvoiceOnQuoteAccept: boolean('auto_email_invoice_on_quote_accept').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),
@@ -130,6 +134,11 @@ export const organizations = pgTable('organizations', {
   billingAddressRegion: varchar('billing_address_region', { length: 120 }),
   billingAddressPostalCode: varchar('billing_address_postal_code', { length: 40 }),
   billingAddressCountry: char('billing_address_country', { length: 2 }),
+  // Multi-currency (spec §5): the org's billing currency, inherited from the
+  // partner at creation. Deliberately NO .default() — every creation path must
+  // stamp it explicitly, so a missed path is a loud insert failure, never a
+  // silent USD document. Editing is NOT exposed until wave 6.
+  currencyCode: char('currency_code', { length: 3 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull(),

@@ -32,6 +32,7 @@ import {
   HardDrive,
   BarChart3,
   BrainCircuit,
+  Bot,
   Activity,
   Layers,
   ScrollText,
@@ -143,7 +144,7 @@ type NavItem = {
   labelKey?: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
-  badgeKind?: 'deletion-requests';
+  badgeKind?: 'deletion-requests' | 'approvals';
   // Hidden unless the current user is a platform admin. Keeps cross-tenant
   // platform-operator nav (and its badge fetch) out of ordinary users' UI.
   platformAdminOnly?: boolean;
@@ -174,6 +175,7 @@ export const topLevelNav: NavItem[] = [
   { name: 'Dashboard', labelKey: 'nav.dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Devices', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
   { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
   { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
@@ -294,6 +296,7 @@ export const navSections: NavSection[] = [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
       { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
       { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
+      { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       { name: 'Custom Fields', labelKey: 'nav.customFields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
       { name: 'Variables', labelKey: 'nav.variables', href: '/settings/variables', icon: Braces, requiredPermission: { resource: 'variables', action: 'read' } },
       { name: 'Saved Filters', labelKey: 'nav.savedFilters', href: '/settings/filters', icon: Filter },
@@ -374,8 +377,8 @@ function sectionForHref(href: string): string | null {
 // Component
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Badge counts (admin-only nav signals). Returns undefined while loading or
-// disabled. Only fetched when `enabled` (= platform admin) — the endpoint
+// Badge counts. Returns undefined while loading or disabled. The deletion
+// request count is only fetched when `enabled` (= platform admin) — the endpoint
 // requires platform-admin access, so firing it for ordinary users 403s on
 // every page load and spams the console.
 // ---------------------------------------------------------------------------
@@ -400,6 +403,50 @@ function useDeletionRequestsBadge(enabled: boolean): number | undefined {
       .catch(() => { /* network error — leave badge hidden */ });
     return () => { cancelled = true; };
   }, [enabled]);
+  return count;
+}
+
+// Warn once per session when the approvals badge fetch fails. The badge only
+// hides itself on failure, so without a trace the failure is invisible — but
+// the 30s poll means warning every time would spam the console.
+let approvalsBadgeFailureWarned = false;
+function warnApprovalsBadgeFailureOnce(detail: unknown): void {
+  if (approvalsBadgeFailureWarned) return;
+  approvalsBadgeFailureWarned = true;
+  console.warn('[sidebar] pending-approvals badge fetch failed', detail);
+}
+
+function usePendingApprovalsBadge(): number | undefined {
+  const [count, setCount] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await fetchWithAuth('/approvals/pending/count');
+        if (!response.ok) return;
+        let data: unknown;
+        try {
+          data = await response.json();
+        } catch (err) {
+          // Malformed body: keep the previously shown count. Coercing a parse
+          // failure to 0 would affirmatively claim "nothing pending".
+          warnApprovalsBadgeFailureOnce(err);
+          return;
+        }
+        const nextCount = (data as { count?: unknown } | null | undefined)?.count;
+        if (!cancelled) setCount(typeof nextCount === 'number' ? nextCount : 0);
+      } catch (err) {
+        // The inbox remains reachable; a badge fetch failure only hides its count.
+        warnApprovalsBadgeFailureOnce(err);
+      }
+    };
+    void load();
+    const interval = window.setInterval(() => void load(), 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
   return count;
 }
 
@@ -604,6 +651,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   }, [expandedSections, activeSectionId]);
 
   const deletionRequestsCount = useDeletionRequestsBadge(isPlatformAdmin);
+  const pendingApprovalsCount = usePendingApprovalsBadge();
 
   // --- Render a single nav item -------------------------------------------
   // Whether a nav item passes all visibility gates (feature flag, platform
@@ -631,7 +679,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const isActive = item.href === activeHref;
     const labels = forMobileOverlay ? true : showLabels;
     const narrow = forMobileOverlay ? false : isNarrow;
-    const badgeCount = item.badgeKind === 'deletion-requests' ? deletionRequestsCount : undefined;
+    const badgeCount =
+      item.badgeKind === 'deletion-requests'
+        ? deletionRequestsCount
+        : item.badgeKind === 'approvals'
+          ? pendingApprovalsCount
+          : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
     const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
     return (
@@ -652,7 +705,11 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         {labels && showBadge && (
           <span
             className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500/20 px-1.5 chart-legend-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
-            aria-label={`${badgeCount} pending`}
+            aria-label={
+              item.badgeKind === 'approvals'
+                ? t('nav.pendingApprovals', { count: badgeCount })
+                : `${badgeCount} pending`
+            }
           >
             {badgeCount! > 99 ? '99+' : badgeCount}
           </span>

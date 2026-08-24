@@ -4,6 +4,10 @@
     "dashboard": "Dashboard",
     "devices": "Geräte",
     "alerts": "Warnmeldungen",
+    "approvals": "Genehmigungen",
+    "pendingApprovals": "{{count}} ausstehende Genehmigungen",
+    "pendingApprovals_one": "{{count}} ausstehende Genehmigung",
+    "pendingApprovals_other": "{{count}} ausstehende Genehmigungen",
     "tickets": "Tickets",
     "incidents": "Vorfälle",
     "remoteAccess": "Fernzugriff",
@@ -46,6 +50,7 @@
     "partner": "Partner",
     "organizations": "Organisationen",
     "aiUsageBudget": "KI-Nutzung und Budget",
+    "aiAgents": "KI-Agenten",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "users": "Benutzer",
@@ -699,7 +704,20 @@
       "recently": "Kürzlich",
       "markUnread": "Als ungelesen markieren",
       "markRead": "Als gelesen markieren",
-      "preferences": "Benachrichtigungseinstellungen"
+      "preferences": "Benachrichtigungseinstellungen",
+      "types": {
+        "alert": "Warnmeldung",
+        "device": "Gerät",
+        "script": "Skript",
+        "automation": "Automatisierung",
+        "system": "Systemmeldung",
+        "user": "Benutzer",
+        "security": "Sicherheit",
+        "ticket": "Vorgang",
+        "approval": "Genehmigung",
+        "ai": "KI",
+        "unknown": "Benachrichtigung"
+      }
     },
     "sidebar": {
       "autoHide": "Seitenleiste automatisch ausblenden",
@@ -745,7 +763,8 @@
           "service": "Dienstleistung"
         },
         "noResults": "Keine passenden Katalogartikel.",
-        "placeholder": "Katalog nach Name oder SKU durchsuchen"
+        "placeholder": "Katalog nach Name oder SKU durchsuchen",
+        "noPriceInCurrency": "Kein Preis in {{currency}}"
       },
       "PolishButton": {
         "actions": {
@@ -2380,5 +2399,8 @@
     "later": "Später anzeigen",
     "learnMore": "Mehr erfahren",
     "link": "Neuigkeiten"
+  },
+  "money": {
+    "approximateTotal": "≈ {{amount}} ungefähr · Kurse vom {{rateDate}}"
   }
 }

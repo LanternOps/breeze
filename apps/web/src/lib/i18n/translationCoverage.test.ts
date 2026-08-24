@@ -17,6 +17,7 @@ const namespaceDuplicateBaselines = {
     'admin.json': 19,
     'ai.json': 1,
     'alerts.json': 43,
+    'approvals.json': 0,
     'auth.json': 14,
     'backup.json': 52,
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
@@ -30,7 +31,14 @@ const namespaceDuplicateBaselines = {
     // "{{count}} item" spell identically to English in pt-BR.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 51,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
+    // identically in pt-BR.
+    'billing.json': 55,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -61,13 +69,18 @@ const namespaceDuplicateBaselines = {
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
     'settings.json': 112,
-    'tickets.json': 13,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 13,
   },
   'es-419': {
     'admin.json': 16,
     'ai.json': 4,
     'alerts.json': 39,
+    'approvals.json': 0,
     'auth.json': 14,
     'backup.json': 30,
     // +3: contract-template format strings ("v{{number}} · {{status}}",
@@ -82,7 +95,12 @@ const namespaceDuplicateBaselines = {
     // ISO 216 paper size code, identical in every catalog.
     // 41 -> 40: `contracts.contractPax8Drawer.priceEach` is no longer a
     // duplicate; its "/ea" was genuinely untranslated, not a literal.
-    'billing.json': 40,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 43,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -115,13 +133,18 @@ const namespaceDuplicateBaselines = {
     'security.json': 114,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
     'settings.json': 115,
-    'tickets.json': 13,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
     'admin.json': 27,
     'ai.json': 9,
     'alerts.json': 58,
+    'approvals.json': 0,
     'auth.json': 13,
     'backup.json': 59,
     // +7: contract-template format strings + French cognates ("v{{number}} ·
@@ -138,7 +161,12 @@ const namespaceDuplicateBaselines = {
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 52,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 55,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -176,14 +204,21 @@ const namespaceDuplicateBaselines = {
     // +1: officeAddinBindings.actions — "Actions" is the same word in French
     // and is already the reviewed value for the eight other table
     // action-column headers in this namespace.
-    'settings.json': 151,
-    'tickets.json': 21,
+    // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
+    // in French.
+    'settings.json': 153,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 23,
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
     'admin.json': 27,
     'ai.json': 9,
     'alerts.json': 59,
+    'approvals.json': 0,
     'auth.json': 13,
     'backup.json': 60,
     // Contract-template format strings, French cognates, and locale-invariant
@@ -194,7 +229,12 @@ const namespaceDuplicateBaselines = {
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 52,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 55,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -232,14 +272,21 @@ const namespaceDuplicateBaselines = {
     // +1: officeAddinBindings.actions — "Actions" is the same word in French
     // and is already the reviewed value for the other table action-column
     // headers in this namespace.
-    'settings.json': 156,
-    'tickets.json': 20,
+    // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
+    // in French.
+    'settings.json': 158,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 22,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
     'admin.json': 23,
     'ai.json': 5,
     'alerts.json': 46,
+    'approvals.json': 0,
     'auth.json': 15,
     'backup.json': 63,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
@@ -251,7 +298,14 @@ const namespaceDuplicateBaselines = {
     // the loanword the quote editor already uses in de-DE.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 38,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
+    // identically in de-DE.
+    'billing.json': 42,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -279,14 +333,20 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 54,
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
-    'settings.json': 167,
-    'tickets.json': 13,
+    // +1: aiAgentsPage.fields.name — "Name" is the German word too.
+    'settings.json': 168,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 15,
     'vulnerabilities.json': 20,
   },
   'it-IT': {
     'admin.json': 31,
     'ai.json': 12,
     'alerts.json': 57,
+    'approvals.json': 0,
     'auth.json': 21,
     'backup.json': 45,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
@@ -294,7 +354,12 @@ const namespaceDuplicateBaselines = {
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 32,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 35,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -319,13 +384,18 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 59,
     'security.json': 163,
     'settings.json': 156,
-    'tickets.json': 6,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
+    // interpolations plus the SI hour symbol — no wording to translate (#3776).
+    'tickets.json': 8,
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
     'admin.json': 14,
     'ai.json': 1,
     'alerts.json': 25,
+    'approvals.json': 0,
     'auth.json': 14,
     'backup.json': 25,
     // +1: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
@@ -334,7 +404,12 @@ const namespaceDuplicateBaselines = {
     // which is why the PR was green on its base and this baseline was short on
     // main. 18 -> 17 because `contracts.contractPax8Drawer.priceEach` is no
     // longer a duplicate: it was genuinely untranslated, not a literal.
-    'billing.json': 17,
+    // +2: invoice send composer — "Cc" (label + toggle) is locale-invariant,
+    // the same exemption the quote composer's Cc pair already carries.
+    // +1: contracts.currencyMismatches.currencyPair — the value is pure
+    // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
+    // necessarily identical in every catalog.
+    'billing.json': 20,
     'common.json': 48,
     'devices.json': 77,
     'discovery.json': 9,
@@ -354,7 +429,9 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 38,
     'security.json': 86,
     'settings.json': 64,
-    'tickets.json': 11,
+    // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
+    // no amount is locale-invariant punctuation, identical in every catalog.
+    'tickets.json': 12,
     'vulnerabilities.json': 11,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;

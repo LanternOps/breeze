@@ -154,7 +154,7 @@ Search the catalog by name or enter an ID directly (for example `Google.Chrome` 
 A package can be scoped to **All organizations** (partner-wide) or to a single organization. Partner-wide packages let you define software once and deploy it to every customer you manage, which is usually what you want for standard applications.
 
 <Aside>
-  Variables work here too — reference values like `{{org.name}}` in a URL or install arguments and Breeze resolves them per organization at deploy time. See [Variables](/features/scripts/#variables).
+  Variables work here too — reference values like `{{org.name}}` in a URL or install arguments and Breeze resolves them per organization at deploy time. See [Variables](/features/scripts/#variables). Secret variables are the exception — deployment templates cannot use them, and a template that references a secret key fails the deployment with an explicit error.
 </Aside>
 
 ---

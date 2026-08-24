@@ -27,7 +27,7 @@ The Script Library displays your scripts in a searchable list with columns for n
 
 A script is owned either by a **single organization** or **partner-wide** — available to every organization you manage. Partner-scope users with more than one organization see an **Available to** picker on the script form: choose **All my organizations** to make the script partner-wide, or **A specific organization** to scope it down. An existing script can be re-scoped the same way — moved between organizations or promoted to partner-wide.
 
-Creating, editing, or re-scoping a **partner-wide** script requires an account with access to **all** of the partner's organizations — the same rule as other partner-wide policies. A technician restricted to selected organizations can still *see and run* partner-wide scripts, but the form marks them read-only and the partner-wide option is unavailable when they create scripts.
+Creating, editing, or re-scoping a **partner-wide** script requires a partner account with full organization access (org access set to **"all"**) — the same rule as other partner-wide policies. Selecting every organization individually is not enough: the capability is the "all organizations" setting itself, because a partner-wide script also reaches organizations created later. A technician restricted to selected organizations can still *see and run* partner-wide scripts, but the form marks them read-only and the partner-wide option is unavailable when they create scripts.
 
 ### Importing from the system library
 
@@ -357,6 +357,18 @@ Parameters let you create reusable scripts with configurable values. Define para
 }
 ```
 
+### Parameter sources
+
+Every parameter has a **source** that decides where its value comes from. By default the value is asked for at run time; the other sources resolve it automatically, per device, when the script is dispatched — nobody is prompted for them.
+
+| Source | Resolves to |
+|---|---|
+| **Asked at run time** | A value supplied by whoever starts the run (or by the automation/schedule that triggers it). |
+| **From a variable** | A non-secret [variable](#variables) for the target device's organization. |
+| **From a secret variable (environment variable)** | A [secret variable](#secret-variables-in-scripts), delivered to the script only as an environment variable. |
+| **From a device custom field** | A custom field value on the target device. |
+| **From a device property** | A built-in device property, such as hostname or OS type. |
+
 ### Using parameters in script content
 
 The agent substitutes parameter placeholders before execution. Two placeholder formats are supported:
@@ -396,7 +408,7 @@ Each variable has:
 | **Key** | Lowercase letters, digits and underscores. This is the name scripts reference. |
 | **Value** | The value substituted at run time |
 | **Description** | Optional note for your team |
-| **Secret** | See below |
+| **Secret** | Store the value write-once and masked. See [Secret variables](#secret-variables). |
 
 An organization-scoped variable overrides a partner-wide one with the same key, so you can set a sensible default for everyone and special-case individual customers.
 
@@ -413,10 +425,70 @@ Breeze resolves each reference **per device at dispatch**, using the variable th
 
 ### Secret variables
 
-Tick **Secret** and the value becomes write-once: it is never displayed again after saving — the list shows `••••••••` and the API returns no value at all. Secrets are delivered to the script as an environment variable rather than pasted into the script body, and are redacted from captured output.
+Tick **Secret** and the value becomes write-once: it is never displayed again after saving — the list shows `••••••••` and the API returns no value at all. Secret values must be at least four characters long. Secrets are never pasted into a script body: a script binds one through a parameter and reads it as an environment variable. See [Secret variables in scripts](#secret-variables-in-scripts).
 
 <Aside type="caution">
   A secret cannot be recovered through the UI or the API once saved. To change it, overwrite it with a new value.
+</Aside>
+
+### Secret variables in scripts
+
+A secret is never pasted into script text. `{{var.key}}` pointing at a secret is rejected when the script is saved. A script reaches a secret through a **parameter** instead:
+
+<Steps>
+
+1. In the script editor, add a parameter and set its **source** to **From a secret variable (environment variable)**.
+2. Bind it to a secret variable key. Non-secret variables are not offered for this source.
+3. Name the parameter using lowercase letters, digits and underscores — the name becomes the environment variable the script reads.
+
+</Steps>
+
+At dispatch, Breeze resolves the secret for each target device's organization and delivers it as the environment variable `BREEZE_VAR_<NAME>`, where `<NAME>` is the parameter name in uppercase. A parameter named `api_token` arrives as `BREEZE_VAR_API_TOKEN`:
+
+<Tabs>
+  <TabItem label="PowerShell">
+    ```powershell
+    Invoke-RestMethod -Uri $Url -Headers @{ Authorization = "Bearer $env:BREEZE_VAR_API_TOKEN" }
+    ```
+  </TabItem>
+  <TabItem label="Bash">
+    ```bash
+    curl -H "Authorization: Bearer $BREEZE_VAR_API_TOKEN" "$URL"
+    ```
+  </TabItem>
+</Tabs>
+
+The value is never substituted into the script body, never mirrored into `BREEZE_PARAM_*`, and never written to the execution record.
+
+**Binding rules**
+
+- Binding a secret through the plain **From a variable** source is rejected when the script is saved. So is binding a non-secret variable through the secret source.
+- A script may bind a secret **at or below its own ownership tier, never above**.
+  - A **partner-wide** script may bind a partner-wide secret — and may equally bind an *organization-owned* one, which resolves to each target device's own organization at run time. That per-organization resolution is the point: one partner-wide script, and every customer supplies their own value for the same key — a per-org site key, vendor token, or tenant identifier — without a copy of the script per customer.
+  - An **organization-scoped** script may bind only that organization's own secrets. A partner-wide secret is refused when the script is saved, with a message naming the parameter, and refused again at dispatch. The second check is what makes the rule airtight: a script cannot be re-scoped or re-pointed into reaching a secret above its own tier.
+- Where an organization defines a secret with the same key as a partner-wide one, the organization's value wins — the same org-over-partner precedence as ordinary variables. This is what makes the per-organization pattern work: set the partner-wide secret as the default, and override it only for the customers that need their own value.
+- A script can declare at most **32** secret parameters.
+- At run time, a target organization where the bound key resolves to a non-secret variable — or has no variable with that key — fails on that device with a message naming the parameter and the variable key. Devices whose organizations do resolve the secret still run.
+
+**Requirements**
+
+| Requirement | If it is not met |
+|---|---|
+| System-context execution | A script set to **Run as user**, or a run targeted at a specific user session, is refused: *"This script uses secret variables, which require system-context execution; ... was not executed."* |
+| An agent that supports secure secret delivery — **agent v0.106.0 or later** | The device fails with *"Agent upgrade required: ... script not executed."* This is checked both when the run is queued and again when the agent picks the command up, so a script never runs with its secret environment variable unset. |
+
+While the command waits for the device, the value is held in an encrypted envelope bound to that specific command, and it is erased from the command record once the run completes.
+
+**Output redaction.** Exact occurrences of the secret value in stdout, stderr and error text are replaced with `[REDACTED]` — on the agent before the result is sent, and again on the server before the result is stored.
+
+<Aside type="caution" title="Redaction is accidental-leak protection, not DLP">
+  Only the exact value is matched. A script that dumps its environment (`env`, `printenv`, `Get-ChildItem Env:`), traces itself (`bash -x`), or emits the value transformed in any way — base64, URL-encoded, split across lines — will disclose it. Treat permission to run a script as permission to use every secret that script binds — which is why a script can only bind secrets at or below its own ownership tier, and an organization-scoped script can never reach a partner-wide secret.
+</Aside>
+
+<Aside type="note">
+  [Software deployment](/features/software-inventory/#software-deployments) templates cannot use secret variables. A template that references a secret key fails the deployment with an explicit error rather than silently omitting the value.
+
+  Fleet remediation cannot run a script that declares **any** server-resolved parameter — secret, variable, device field, or device property. That path resolves nothing per device, so such a script is rejected when the remediation run is created rather than executed with the values missing.
 </Aside>
 
 ### Variables and approvals

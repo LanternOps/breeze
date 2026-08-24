@@ -52,7 +52,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  organizations: { id: 'id', deletedAt: 'deletedAt' },
+  organizations: { id: 'id', deletedAt: 'deletedAt', currencyCode: 'currencyCode' },
 }));
 
 vi.mock('../services/ticketConfigService', () => ({
@@ -94,7 +94,7 @@ describe('GET /organizations/:id/ticket-settings', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
   it('returns the org ticket settings', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID, currencyCode: 'CAD' }]);
     serviceMocks.getOrgTicketSettings.mockResolvedValue({
       orgId: ORG_ID, slaOverrides: { high: { responseMinutes: 30 } }, defaultHourlyRate: '125.00', defaultBillable: true,
     });
@@ -136,7 +136,7 @@ describe('PATCH /organizations/:id/ticket-settings', () => {
     });
 
   it('upserts and fires an audit event', async () => {
-    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID, currencyCode: 'CAD' }]);
     serviceMocks.upsertOrgTicketSettings.mockResolvedValue({
       orgId: ORG_ID, slaOverrides: {}, defaultHourlyRate: '90.00', defaultBillable: true,
     });
@@ -144,7 +144,12 @@ describe('PATCH /organizations/:id/ticket-settings', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.orgId).toBe(ORG_ID);
-    expect(serviceMocks.upsertOrgTicketSettings).toHaveBeenCalledWith(ORG_ID, expect.objectContaining({ defaultHourlyRate: 90, defaultBillable: true }));
+    // #3778: the route no longer passes a currency — the service resolves it
+    // inside its own transaction, under the org SHARE barrier.
+    expect(serviceMocks.upsertOrgTicketSettings).toHaveBeenCalledWith(
+      ORG_ID,
+      expect.objectContaining({ defaultHourlyRate: 90, defaultBillable: true }),
+    );
     expect(auditSpy).toHaveBeenCalledTimes(1);
     const event = auditSpy.mock.calls[0]?.[1];
     expect(event.action).toBe('organization.ticket_settings.update');

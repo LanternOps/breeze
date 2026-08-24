@@ -28,4 +28,14 @@ describe('computeChargeNow', () => {
     expect(computeChargeNow({ depositDue: '9000.00', amountPaid: '8000.00', balance: '2000.00' }))
       .toEqual({ amount: '1000.00', isDeposit: true });
   });
+  it('JPY deposit remainder rounds to a whole unit', () => {
+    // depositDue 1000.50 can only exist from pre-fix data; the charge amount
+    // must still come out representable: 1000.50 - 0 → 1001 (half-up), clamped by balance.
+    const r = computeChargeNow({ depositDue: '1000.50', amountPaid: '0.00', balance: '2000.00' }, 'JPY');
+    expect(r).toEqual({ amount: '1001.00', isDeposit: true });
+  });
+  it('omitted currency keeps 2-decimal behavior', () => {
+    const r = computeChargeNow({ depositDue: '10.50', amountPaid: '0.00', balance: '20.00' });
+    expect(r).toEqual({ amount: '10.50', isDeposit: true });
+  });
 });

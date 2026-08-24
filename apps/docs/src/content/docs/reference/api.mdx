@@ -827,6 +827,12 @@ Selected catalog and billing operations. Resource CRUD follows the standard REST
 | `POST` | `/quotes/bulk-send` | Send multiple draft quotes |
 | `POST` | `/quotes/bulk-delete` | Delete multiple draft quotes |
 | `GET` | `/quotes/:id` | Get quote detail, blocks, lines, branding, and any staged Pax8 order summary (`pax8OrderId`, `pax8OrderLineCount`) |
+| `POST` | `/invoices/:id/resend` | Re-email an issued invoice without restamping its number, dates, or sent timestamp |
+| `GET` | `/invoices/:id/public-link` | Return the invoice's durable customer view-and-pay link |
+| `POST` | `/invoices/:id/reset-link` | Revoke every customer link issued for the invoice and mint a new one |
+| `POST` | `/invoices/:id/currency` | Change a **draft** invoice's currency. Requires `clearLines` or `reprice` when monetary lines exist; never converts at an exchange rate |
+| `POST` | `/quotes/:id/currency` | Change a **draft** quote's currency (same rules as above) |
+| `POST` | `/contracts/:id/currency` | Change a **draft** contract's currency (same rules as above) |
 | `POST` | `/contracts/bulk-cancel` | Cancel multiple contracts |
 | `POST` | `/contracts/bulk-delete` | Delete multiple draft contracts |
 

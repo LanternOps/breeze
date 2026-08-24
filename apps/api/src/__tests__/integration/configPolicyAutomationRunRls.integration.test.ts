@@ -57,12 +57,12 @@ beforeEach(async () => {
     .returning({ id: partners.id });
   const [o] = await tdb
     .insert(organizations)
-    .values({ partnerId: p!.id, name: 'CP Run Org', slug: `cp-run-org-${sfx}` })
+    .values({ currencyCode: 'USD', partnerId: p!.id, name: 'CP Run Org', slug: `cp-run-org-${sfx}` })
     .returning({ id: organizations.id });
   orgId = o!.id;
   const [fo] = await tdb
     .insert(organizations)
-    .values({ partnerId: p!.id, name: 'CP Run Foreign Org', slug: `cp-run-forg-${sfx}` })
+    .values({ currencyCode: 'USD', partnerId: p!.id, name: 'CP Run Foreign Org', slug: `cp-run-forg-${sfx}` })
     .returning({ id: organizations.id });
   foreignOrgId = fo!.id;
 

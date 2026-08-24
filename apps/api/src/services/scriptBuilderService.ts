@@ -13,14 +13,13 @@ import type { AuthContext } from '../middleware/auth';
 import type { ScriptBuilderContext } from '@breeze/shared/types/ai';
 import { buildScriptBuilderSystemPrompt } from './scriptBuilderPrompt';
 
-const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
-
 /**
  * Create a script builder session in the database.
  */
 export async function createScriptBuilderSession(
   auth: AuthContext,
   options: { context?: ScriptBuilderContext; title?: string },
+  model: string,
 ): Promise<{ id: string; orgId: string }> {
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) throw new Error('Organization context required');
@@ -32,7 +31,7 @@ export async function createScriptBuilderSession(
     .values({
       orgId,
       userId: auth.user.id,
-      model: DEFAULT_MODEL,
+      model,
       title: options.title ?? 'Script Builder',
       contextSnapshot: options.context ?? null,
       systemPrompt,

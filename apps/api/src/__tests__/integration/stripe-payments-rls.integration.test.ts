@@ -111,7 +111,7 @@ async function seed() {
     // fail (a 42501, never an incidental 23503 FK error).
     const [invoiceA] = await db
       .insert(invoices)
-      .values({ partnerId: partnerA.id, orgId: orgA.id, status: 'draft' })
+      .values({ partnerId: partnerA.id, orgId: orgA.id, status: 'draft', currencyCode: 'USD' })
       .returning({ id: invoices.id });
     if (!invoiceA) throw new Error('failed to seed invoice A');
 

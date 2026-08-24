@@ -29,6 +29,12 @@ vi.mock('../db/schema', () => ({
     partnerId: 'ci.partner_id',
     attributes: 'ci.attributes',
   },
+  catalogItemPrices: {
+    itemId: 'cip.item_id',
+    partnerId: 'cip.partner_id',
+    currencyCode: 'cip.currency_code',
+    unitPrice: 'cip.unit_price',
+  },
   catalogItemOrgPricing: { id: 'cop.id' },
   catalogBundleComponents: {
     id: 'cbc.id',
@@ -36,6 +42,7 @@ vi.mock('../db/schema', () => ({
     quantity: 'cbc.quantity',
     showOnInvoice: 'cbc.show_on_invoice',
     revenueAllocation: 'cbc.revenue_allocation',
+    allocationCurrency: 'cbc.allocation_currency',
     bundleItemId: 'cbc.bundle_item_id',
     partnerId: 'cbc.partner_id',
   },
@@ -105,7 +112,10 @@ function flattenConditions(token: any): any[] {
   return [token];
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(db.select).mockReset().mockReturnValue(makeChain([], {}) as any);
+});
 
 describe('aiToolsCatalog: search_catalog', () => {
   it('returns a partner-scoped JSON error when there is no partner in context', async () => {
@@ -129,6 +139,31 @@ describe('aiToolsCatalog: search_catalog', () => {
     expect(conds).toContainEqual({ _op: 'eq', a: 'ci.is_active', b: true });
     // with no search/itemType supplied, those are the only two conditions
     expect(conds).toHaveLength(2);
+  });
+
+  it('selects the per-currency price book as string values instead of the deprecated unitPrice mirror', async () => {
+    vi.mocked(db.select).mockReturnValue(makeChain([], {}) as any);
+
+    await tools().get('search_catalog')!.handler({}, partnerAuth());
+
+    const selectMap = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, any>;
+    expect(selectMap).not.toHaveProperty('unitPrice');
+    expect(selectMap.prices).toMatchObject({ _op: 'sql' });
+    expect(selectMap.prices.strings.join('?')).toContain('p.unit_price::text');
+  });
+
+  it('normalizes currencyCode and only returns items with a price in that currency', async () => {
+    const capture: WhereCapture = {};
+    vi.mocked(db.select).mockReturnValue(makeChain([], capture) as any);
+
+    await tools().get('search_catalog')!.handler({ currencyCode: ' eur ' }, partnerAuth());
+
+    const currencyCondition = flattenConditions(capture.where).find(
+      (condition) => condition._op === 'sql'
+        && condition.strings.join('?').includes('catalog_item_prices'),
+    );
+    expect(currencyCondition).toBeDefined();
+    expect(currencyCondition.vals).toContain('EUR');
   });
 
   it('adds an itemType and an (escaped) search filter when supplied', async () => {
@@ -202,16 +237,20 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(conds).toContainEqual({ _op: 'eq', a: 'ci.partner_id', b: PARTNER_ID });
   });
 
-  it('returns NO components for a non-bundle item (single select call only)', async () => {
+  it('returns prices but no components for a non-bundle item', async () => {
     const itemCapture: WhereCapture = {};
-    vi.mocked(db.select).mockReturnValueOnce(makeChain([{ id: ITEM_ID, isBundle: false, name: 'Plain' }], itemCapture) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeChain([{ id: ITEM_ID, isBundle: false, name: 'Plain' }], itemCapture) as any)
+      .mockReturnValueOnce(makeChain([{ currencyCode: 'EUR', unitPrice: '10.00' }], {}) as any);
 
     const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, partnerAuth());
     const parsed = JSON.parse(out);
     expect(parsed.item).toMatchObject({ id: ITEM_ID, isBundle: false });
+    expect(parsed.prices).toEqual([{ currencyCode: 'EUR', unitPrice: '10.00' }]);
+    expect(typeof parsed.prices[0].unitPrice).toBe('string');
     expect(parsed.components).toBeUndefined();
-    // Only the item lookup ran — the components query is gated on isBundle.
-    expect(db.select).toHaveBeenCalledTimes(1);
+    // The item and price-book lookups ran; the components query is gated on isBundle.
+    expect(db.select).toHaveBeenCalledTimes(2);
   });
 
   it('strips internal IDs and attributes.distributor.raw, keeping normalized distributor fields', async () => {
@@ -222,6 +261,7 @@ describe('aiToolsCatalog: get_catalog_item', () => {
       name: 'SPL Dock',
       isBundle: false,
       costBasis: '100.00',
+      costCurrency: 'USD',
       markupPercent: '20.00',
       unitPrice: '120.00',
       attributes: {
@@ -265,7 +305,9 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(parsed.item.attributes.category).toBe('docks');
     // Partner scope keeps cost/margin fields.
     expect(parsed.item.costBasis).toBe('100.00');
+    expect(parsed.item.costCurrency).toBe('USD');
     expect(parsed.item.markupPercent).toBe('20.00');
+    expect(parsed.item).not.toHaveProperty('unitPrice');
   });
 
   it('drops unknown/future top-level columns and unknown distributor sub-fields by construction (allowlist)', async () => {
@@ -303,7 +345,7 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(parsed.item).not.toHaveProperty('internalNotes');
     // Known allowlisted fields still present.
     expect(parsed.item.name).toBe('SPL Dock');
-    expect(parsed.item.unitPrice).toBe('120.00');
+    expect(parsed.item).not.toHaveProperty('unitPrice');
     // Unknown distributor sub-fields (and the raw blob) are dropped; normalized survive.
     expect(parsed.item.attributes.distributor).not.toHaveProperty('raw');
     expect(parsed.item.attributes.distributor).not.toHaveProperty('dealerCost');
@@ -321,6 +363,7 @@ describe('aiToolsCatalog: get_catalog_item', () => {
       name: 'SPL Dock',
       isBundle: false,
       costBasis: '100.00',
+      costCurrency: 'USD',
       markupPercent: '20.00',
       unitPrice: '120.00',
       attributes: { distributor: { synnexSku: '14703953', cost: 100, msrp: 150, raw: {} } },
@@ -341,14 +384,16 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(parsed.item).not.toHaveProperty('markupPercent');
     expect(parsed.item.attributes.distributor).not.toHaveProperty('cost');
     expect(parsed.item.attributes.distributor).not.toHaveProperty('raw');
-    // Sell-side fields remain visible.
-    expect(parsed.item.unitPrice).toBe('120.00');
+    // Cost currency alone is not secret; the deprecated price mirror is never exposed.
+    expect(parsed.item.costCurrency).toBe('USD');
+    expect(parsed.item).not.toHaveProperty('unitPrice');
     expect(parsed.item.attributes.distributor.msrp).toBe(150);
   });
 
   it('redacts revenueAllocation from bundle components for org-scoped callers', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(makeChain([{ id: ITEM_ID, isBundle: true, attributes: {} }], {}) as any)
+      .mockReturnValueOnce(makeChain([], {}) as any)
       .mockReturnValueOnce(
         makeChain(
           [{ id: 'comp-row', componentItemId: 'c1', quantity: '2', showOnInvoice: false, revenueAllocation: '60.00' }],
@@ -386,13 +431,14 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     const compCapture: WhereCapture = {};
     vi.mocked(db.select)
       .mockReturnValueOnce(makeChain([{ id: ITEM_ID, isBundle: true, name: 'Bundle' }], itemCapture) as any)
+      .mockReturnValueOnce(makeChain([], {}) as any)
       .mockReturnValueOnce(makeChain([{ id: 'comp-row', componentItemId: 'c1', quantity: '2' }], compCapture) as any);
 
     const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, partnerAuth());
     const parsed = JSON.parse(out);
     expect(parsed.item).toMatchObject({ id: ITEM_ID, isBundle: true });
     expect(parsed.components).toEqual([{ id: 'comp-row', componentItemId: 'c1', quantity: '2' }]);
-    expect(db.select).toHaveBeenCalledTimes(2);
+    expect(db.select).toHaveBeenCalledTimes(3);
 
     // The components query is scoped to the bundle id AND the partner.
     const conds = flattenConditions(compCapture.where);

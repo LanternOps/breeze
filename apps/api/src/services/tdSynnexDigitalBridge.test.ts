@@ -252,6 +252,18 @@ describe('tdSynnexDigitalBridge service', () => {
     });
   });
 
+  it('leaves an omitted provider currency unset', () => {
+    const [product] = normalizeTdSynnexProducts([{ id: 'p-1', name: 'Dock' }]);
+
+    expect(product).toMatchObject({ currency: null });
+  });
+
+  it('passes provider currency casing through normalization', () => {
+    const [product] = normalizeTdSynnexProducts([{ id: 'p-1', name: 'Dock', currencyCode: 'cad' }]);
+
+    expect(product).toMatchObject({ currency: 'cad' });
+  });
+
   it('detects products across array/products/items/results/data shapes', () => {
     const one = { id: 'a', name: 'A' };
     expect(normalizeTdSynnexProducts([one])).toHaveLength(1);
@@ -433,11 +445,15 @@ describe('tdSynnexDigitalBridge service', () => {
       product: {
         source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
         manufacturerPartNumber: 'MPN-1', vendor: 'Lenovo', name: 'Dock', description: 'desc',
-        cost: '100.00', currency: 'USD', availability: 4, warehouses: [{ code: 'A' }],
+        cost: '100.00', currency: 'cad', availability: 4, warehouses: [{ code: 'A' }],
         raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
       },
       item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, taxable: true },
     }, actor, dbCtx);
+    expect(mocks.createCatalogItem).toHaveBeenCalledWith(
+      expect.objectContaining({ costCurrency: 'CAD' }),
+      actor,
+    );
     const input = mocks.createCatalogItem.mock.calls[0]![0];
     expect(input.attributes.distributor).toMatchObject({
       provider: 'td_synnex_digital_bridge', sourceProductId: 'td-1', vendor: 'Lenovo',
@@ -445,6 +461,43 @@ describe('tdSynnexDigitalBridge service', () => {
     // raw provider blob must NOT be persisted into the catalog item
     expect(input.attributes.distributor).not.toHaveProperty('raw');
     expect(mocks.enrichDistributorListing).not.toHaveBeenCalled(); // aiCleanup unset → no AI
+  });
+
+  it('stores the cost as NULL (not partner currency) when the provider product has no currency (#3775 review #2)', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([enabledRow]));
+    mocks.createCatalogItem.mockResolvedValueOnce({ id: 'catalog-1' });
+    await importTdSynnexCatalogItem({
+      product: {
+        source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+        manufacturerPartNumber: 'MPN-1', vendor: 'Lenovo', name: 'Dock', description: 'desc',
+        cost: '100.00', currency: null, availability: 4, warehouses: [{ code: 'A' }],
+        raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
+      },
+      item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, costBasis: 100, taxable: true },
+    }, actor, dbCtx);
+
+    expect(mocks.createCatalogItem).toHaveBeenCalledWith(
+      expect.not.objectContaining({ costCurrency: expect.anything() }),
+      actor,
+    );
+    expect(mocks.createCatalogItem.mock.calls[0]![0].costBasis).toBeNull();
+  });
+
+  it('stores a sell price entered in a document currency as that price-book row', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([enabledRow]));
+    mocks.createCatalogItem.mockResolvedValueOnce({ id: 'catalog-1' });
+    await importTdSynnexCatalogItem({
+      product: {
+        source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+        manufacturerPartNumber: 'MPN-1', vendor: 'Lenovo', name: 'Dock', description: 'desc',
+        cost: '100.00', currency: 'USD', availability: 4, warehouses: [{ code: 'A' }],
+        raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
+      },
+      item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, sellCurrency: 'EUR', taxable: true },
+    }, actor, dbCtx);
+    const input = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(input.prices).toEqual([{ currencyCode: 'EUR', unitPrice: 125 }]);
+    expect(input).not.toHaveProperty('unitPrice');
   });
 
   it('web-enriches name + description when aiCleanup is set, anchoring on the MPN', async () => {

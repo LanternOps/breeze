@@ -14,6 +14,7 @@ import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from './bulk/useBulkSelection';
 import { BulkActionBar } from './bulk/BulkActionBar';
 import { SortableTh } from './shared/SortableTh';
+import { ApproximateMoneyLine } from './shared/ApproximateMoneyLine';
 import { DataCard, CardField } from '../shared/ResponsiveTable';
 import AccessDenied from '../shared/AccessDenied';
 import {
@@ -28,6 +29,7 @@ import { StatusPill } from './shared/StatusPill';
 import { StatCard } from './shared/StatCard';
 import { ROW_LINK_CLASS, writeHashFilters } from './shared/listChrome';
 import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
+import { currencyLabel, currencyOptions } from '../../lib/currencies';
 
 interface Organization {
   id: string;
@@ -39,6 +41,12 @@ interface Site {
 }
 
 const STATUS_OPTION_VALUES: ('' | InvoiceStatus)[] = ['', ...INVOICE_STATUSES];
+
+/** Mirrors the API's BlockedCurrencySummary (invoiceService.ts, #3776). */
+interface BlockedCurrencyGroup { currencyCode: string; count: number; amount: string }
+interface AssembleResult {
+  data: { id?: string; invoice?: { id?: string }; blockedByCurrency?: BlockedCurrencyGroup[] };
+}
 
 type SortKey = 'issued' | 'due' | 'total' | 'balance';
 interface Sort { key: SortKey; dir: 'asc' | 'desc' }
@@ -87,7 +95,7 @@ function invoiceDepositBadge(inv: InvoiceSummary): 'unpaid' | 'paid' | null {
 }
 
 export function InvoicesPage() {
-  const { t } = useTranslation('billing');
+  const { t, i18n } = useTranslation('billing');
   const { can } = usePermissions();
   const bulk = useBulkSelection();
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
@@ -125,6 +133,13 @@ export function InvoicesPage() {
   const [assembleTo, setAssembleTo] = useState('');
   const [assembleSites, setAssembleSites] = useState<Site[]>([]);
   const [assembling, setAssembling] = useState(false);
+  // Multi-currency (#3776): '' = the organization's current currency. Set
+  // explicitly to assemble a draft in an OLD currency — the only way rows
+  // stamped before an org currency change can ever be billed (no conversion).
+  const [assembleCurrency, setAssembleCurrency] = useState('');
+  // Groups the API refused to assemble (409 ALL_BLOCKED_BY_CURRENCY); each
+  // becomes an "assemble in <code>" shortcut. Cleared on every submit.
+  const [blockedGroups, setBlockedGroups] = useState<BlockedCurrencyGroup[]>([]);
 
   const orgName = useCallback(
     (id: string) => orgs.find((o) => o.id === id)?.name ?? id.slice(0, 8),
@@ -216,21 +231,28 @@ export function InvoicesPage() {
     const monthAgo = new Date(today.getTime() - 30 * 86400000);
     setAssembleFrom(monthAgo.toISOString().slice(0, 10));
     setAssembleTo(today.toISOString().slice(0, 10));
+    setAssembleCurrency('');
+    setBlockedGroups([]);
     setAssembleOpen(true);
     if (contextOrgId) void loadAssembleSites(contextOrgId);
   }, [loadAssembleSites]);
 
-  const submitDialog = useCallback(async () => {
+  // `currencyOverride` lets the blocked-group shortcut re-submit in the same
+  // tick it sets the select — the state write alone would not be visible to
+  // this closure yet.
+  const submitDialog = useCallback(async (currencyOverride?: string) => {
     if (assembling || !assembleOrgId) return;
     if (mode === 'assemble' && (!assembleFrom || !assembleTo)) return;
+    const currencyCode = (currencyOverride ?? assembleCurrency) || undefined;
     setAssembling(true);
+    setBlockedGroups([]);
     try {
-      const result = await runAction<{ data: { id?: string; invoice?: { id?: string } } }>({
+      const result = await runAction<AssembleResult>({
         request: () =>
           mode === 'assemble'
             ? fetchWithAuth(`/orgs/${assembleOrgId}/invoices/assemble`, {
                 method: 'POST',
-                body: JSON.stringify({ siteId: assembleSiteId || undefined, from: assembleFrom, to: assembleTo }),
+                body: JSON.stringify({ siteId: assembleSiteId || undefined, from: assembleFrom, to: assembleTo, currencyCode }),
               })
             : fetchWithAuth('/invoices', {
                 method: 'POST',
@@ -243,16 +265,29 @@ export function InvoicesPage() {
         onUnauthorized: UNAUTHORIZED,
       });
       setAssembleOpen(false);
+      // Work in another currency was left out of this draft — say so before
+      // leaving the page, since the draft itself gives no hint.
+      for (const g of result?.data?.blockedByCurrency ?? []) {
+        showToast({ type: 'warning', message: t('invoicesPage.dialog.blockedByCurrency', { count: g.count, code: g.currencyCode }) });
+      }
       // assemble nests under data.invoice.id; blank create returns the row at data.id.
       const newId = result?.data?.invoice?.id ?? result?.data?.id;
       if (newId) void navigateTo(`/billing/invoices/${newId}`);
       else void loadInvoices(filters);
     } catch (err) {
+      if (err instanceof ActionError && err.code === 'ALL_BLOCKED_BY_CURRENCY') {
+        // runAction already toasted the server's explanation; keep the dialog
+        // open and surface the per-currency shortcuts.
+        const groups = (err.body as { details?: { blockedByCurrency?: BlockedCurrencyGroup[] } } | undefined)
+          ?.details?.blockedByCurrency ?? [];
+        setBlockedGroups(groups);
+        return;
+      }
       handleActionError(err, t('invoicesPage.dialog.createGenericError'));
     } finally {
       setAssembling(false);
     }
-  }, [assembling, mode, assembleOrgId, assembleSiteId, assembleFrom, assembleTo, filters, loadInvoices, t]);
+  }, [assembling, mode, assembleOrgId, assembleSiteId, assembleFrom, assembleTo, assembleCurrency, filters, loadInvoices, t]);
 
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
@@ -372,7 +407,13 @@ export function InvoicesPage() {
       {/* Outstanding summary */}
       {!loading && !error && invoices.length > 0 && (
         <div className="flex flex-wrap gap-3" data-testid="invoices-outstanding-strip">
-          <StatCard label={t('invoicesPage.stats.outstanding')} value={outstandingDisplay} hint={t('invoicesPage.stats.open', { count: summary.openCount })} />
+          <StatCard
+            label={t('invoicesPage.stats.outstanding')}
+            value={outstandingDisplay}
+            hint={t('invoicesPage.stats.open', { count: summary.openCount })}
+            detail={<ApproximateMoneyLine byCurrency={summary.byCurrency} testId="invoices-outstanding-approx" />}
+            testId="invoices-outstanding-card"
+          />
           {summary.draftCount > 0 && (
             <StatCard
               label={t('invoicesPage.stats.drafts')}
@@ -826,6 +867,49 @@ export function InvoicesPage() {
                   className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </label>
+            </div>
+          )}
+
+          {mode === 'assemble' && (
+            <label className="flex flex-col gap-1 text-sm">
+              {t('invoicesPage.dialog.currency')}
+              <select
+                value={assembleCurrency}
+                onChange={(e) => setAssembleCurrency(e.target.value)}
+                data-testid="invoices-assemble-currency"
+                className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+              >
+                <option value="">{t('invoicesPage.dialog.currencyOrgDefault')}</option>
+                {currencyOptions(assembleCurrency).map((code) => (
+                  <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {mode === 'assemble' && blockedGroups.length > 0 && (
+            <div
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+              data-testid="invoices-assemble-blocked"
+              role="status"
+            >
+              <p>{t('invoicesPage.dialog.allBlockedByCurrency')}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {blockedGroups.map((g) => (
+                  <button
+                    key={g.currencyCode}
+                    type="button"
+                    onClick={() => { setAssembleCurrency(g.currencyCode); void submitDialog(g.currencyCode); }}
+                    disabled={assembling}
+                    data-testid={`invoices-assemble-in-${g.currencyCode}`}
+                    className="rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    {t('invoicesPage.dialog.assembleIn', {
+                      code: g.currencyCode, count: g.count, amount: formatMoney(g.amount, g.currencyCode),
+                    })}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

@@ -8,7 +8,7 @@ import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
 import { OutputSection } from './ExecutionDetails';
 import type { OSType } from './ScriptList';
-import type { ScriptParameter } from './ScriptFormSchema';
+import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
 
 export type TestDevice = {
   id: string;
@@ -212,14 +212,24 @@ export default function ScriptTestRunner({
     onTestDeviceChange?.(deviceId || null);
   };
 
+  // Runtime parameters only (#3409 PR3/PR4c-2). A BOUND parameter is resolved
+  // per target device by the server, so a `required` one with no default is not
+  // missing anything the author can supply here — and a `tenantSecret` row is
+  // forced `required: true` with a `defaultValue` the shared schema REJECTS, so
+  // gating on the whole list disabled Test Run forever and asked the author for
+  // something the schema forbids.
   const missingRequiredParams = useMemo(
-    () => (parameters ?? []).filter(p => p.required && !p.defaultValue).map(p => p.name),
+    () => runtimeParameters(parameters).filter(p => p.required && !p.defaultValue).map(p => p.name),
     [parameters]
   );
 
+  // Same reason on the submit side: a bound parameter's `defaultValue` is the
+  // SERVER's fallback (resolved value -> definition default -> missing), so
+  // sending it as a runtime value would be ignored and reported back in
+  // `ignoredParameters`.
   const defaultParameters = useMemo(() => {
     const result: Record<string, string | number | boolean> = {};
-    for (const p of parameters ?? []) {
+    for (const p of runtimeParameters(parameters)) {
       if (p.defaultValue === undefined || p.defaultValue === '') continue;
       if (p.type === 'number') result[p.name] = Number(p.defaultValue);
       else if (p.type === 'boolean') result[p.name] = p.defaultValue === 'true';

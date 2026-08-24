@@ -1,7 +1,10 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, bigserial, bigint } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 
-export const actorTypeEnum = pgEnum('actor_type', ['user', 'api_key', 'agent', 'system']);
+// 'agent' is the Go device agent; 'ai_agent' is the autonomous AI agent
+// principal (wave 3). They are different actors and must stay distinguishable
+// in the audit trail.
+export const actorTypeEnum = pgEnum('actor_type', ['user', 'api_key', 'agent', 'system', 'ai_agent']);
 export const auditResultEnum = pgEnum('audit_result', ['success', 'failure', 'denied']);
 export const initiatedByEnum = pgEnum('initiated_by_type', ['manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration']);
 

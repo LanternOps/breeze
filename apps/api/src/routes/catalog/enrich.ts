@@ -43,7 +43,11 @@ catalogEnrichRoutes.post('/enrich', scopes, writePerm, zValidator('json', enrich
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   try {
     const style = await loadPartnerStyle(auth);
-    const data = await enrichCatalogItem(query, hint, { userId: auth.user.id, orgId }, style);
+    const data = await enrichCatalogItem(query, hint, {
+      userId: auth.user.id,
+      orgId,
+      partnerId: auth.partnerId ?? null,
+    }, style);
     return c.json({ data });
   } catch (err) {
     if (err instanceof EnrichmentError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -65,7 +69,11 @@ catalogEnrichRoutes.post('/polish', scopes, zValidator('json', polishTextRequest
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   try {
     const style = await loadPartnerStyle(auth);
-    const data = await polishCatalogText({ name, description }, { userId: auth.user.id, orgId }, style);
+    const data = await polishCatalogText({ name, description }, {
+      userId: auth.user.id,
+      orgId,
+      partnerId: auth.partnerId ?? null,
+    }, style);
     return c.json({ data });
   } catch (err) {
     if (err instanceof EnrichmentError) return c.json({ error: err.message, code: err.code }, err.status);

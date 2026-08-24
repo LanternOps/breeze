@@ -15,6 +15,7 @@ export * from './reliability';
 export * from './businessEmail';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
+export * from './currency';
 export * from './remoteAccessInlineSettings';
 export * from './safeRelativePath';
 export * from './authenticator';
@@ -498,7 +499,7 @@ export * from './filters';
 
 export const auditQuerySchema = paginationSchema.merge(dateRangeSchema).extend({
   actorId: z.string().guid().optional(),
-  actorType: z.enum(['user', 'api_key', 'agent', 'system']).optional(),
+  actorType: z.enum(['user', 'api_key', 'agent', 'system', 'ai_agent']).optional(),
   action: z.string().optional(),
   resourceType: z.string().optional(),
   resourceId: z.string().guid().optional(),
@@ -1019,6 +1020,7 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().g
 // ============================================
 
 export * from './ai';
+export * from './aiAgents';
 
 // ============================================
 // Tenant Variable Validators (#3409)

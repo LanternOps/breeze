@@ -1,3 +1,4 @@
+import { multiplyToCurrency, roundToCurrency } from '@breeze/shared';
 import type { InvoiceStatus } from './invoiceTypes';
 
 // Cents helpers (same contract as catalogPricing.ts). Exported so the money
@@ -15,12 +16,11 @@ function roundHalfUp(n: number): number {
   return Math.floor(n + 0.5);
 }
 
-export function computeLineTotal(quantity: string, unitPrice: string): string {
-  // quantity * unitPrice in full precision, then a single round-half-up at the
-  // cent boundary. (Rounding unitPrice to cents first would lose sub-cent unit
-  // prices like 0.335 — 3 * 0.335 = 1.005 must round half-up to 1.01, not 1.02.)
-  const fractionalCents = Number(quantity) * Number(unitPrice) * 100;
-  return fromCents(roundHalfUp(fractionalCents));
+export function computeLineTotal(quantity: string, unitPrice: string, currencyCode = 'USD'): string {
+  // Exact decimal product (scaled integers — never a double, review #2), then
+  // ONE half-up round at the currency's minor-unit boundary (cents for 2-decimal
+  // currencies; whole units for JPY). Matches SQL ROUND(quantity * price, scale).
+  return multiplyToCurrency(quantity, unitPrice, currencyCode);
 }
 
 export interface TotalsLine {
@@ -31,7 +31,8 @@ export interface TotalsLine {
 
 export function computeInvoiceTotals(
   lines: TotalsLine[],
-  taxRate: string | null
+  taxRate: string | null,
+  currencyCode = 'USD'
 ): { subtotal: string; taxTotal: string; total: string } {
   let subtotalCents = 0;
   let taxableCents = 0;
@@ -42,9 +43,18 @@ export function computeInvoiceTotals(
     if (l.taxable) taxableCents += c;
   }
   const rate = taxRate ? Number(taxRate) : 0;
+  // Tax is computed at the classic cent boundary first — `roundHalfUp(cents * rate)`
+  // is kept verbatim so 2-decimal results stay bit-identical to the historical
+  // integer-cents path (rounding the major-unit float instead loses ties to FP
+  // noise: 145¢ × 0.10 → 0.14499999999999998 → 0.14, and ¥400 × 7.125% →
+  // 28.499999999999996 → 28). The CURRENCY then decides the final rounding
+  // boundary of each persisted figure (spec §4: persisted amounts must be
+  // representable in the currency's minor unit; JPY → whole units).
   const taxCents = roundHalfUp(taxableCents * rate);
-  const totalCents = subtotalCents + taxCents;
-  return { subtotal: fromCents(subtotalCents), taxTotal: fromCents(taxCents), total: fromCents(totalCents) };
+  const subtotal = roundToCurrency(subtotalCents / 100, currencyCode);
+  const taxTotal = roundToCurrency(taxCents / 100, currencyCode);
+  const total = roundToCurrency(Number(subtotal) + Number(taxTotal), currencyCode);
+  return { subtotal, taxTotal, total };
 }
 
 export function resolveEffectiveTaxRate(input: {

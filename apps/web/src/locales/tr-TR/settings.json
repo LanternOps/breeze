@@ -128,6 +128,39 @@
       "hybridPlan": "Hibrit Plan"
     }
   },
+  "partnerAiProvider": {
+    "title": "Yapay Zeka Sağlayıcısı",
+    "subtitle": "Breeze yapay zekasını platform anahtarı yerine kendi Anthropic API anahtarınızla çalıştırın.",
+    "platformKey": "Platform anahtarı",
+    "platformKeyDescription": "Yapay zeka özellikleri Breeze'in Anthropic anahtarını kullanır ve Breeze yapay zeka kredisi olarak faturalandırılır.",
+    "yourKey": "Anahtarınız •••• {{last4}}",
+    "verifiedAt": "{{date}} tarihinde doğrulandı",
+    "notVerifiedYet": "Henüz doğrulanmadı",
+    "defaultModelValue": "Varsayılan model: {{model}}",
+    "platformDefault": "Platform varsayılanı",
+    "keyErrorTitle": "Anthropic anahtarınız çalışmıyor",
+    "reconnectHint": "Aşağıya çalışan bir anahtar kaydedene kadar yapay zeka özellikleri kuruluşlarınız için kullanılamaz.",
+    "connectKeyTitle": "Anthropic anahtarınızı bağlayın",
+    "replaceKeyTitle": "Anthropic anahtarınızı değiştirin",
+    "keyLabel": "Anthropic API anahtarı",
+    "writeOnlyHint": "Anahtar kaydedilirken doğrulanır ve bir daha asla gösterilmez.",
+    "saveKey": "Anahtarı kaydet",
+    "keySaved": "Anthropic anahtarı kaydedildi ve doğrulandı.",
+    "keySaveFailed": "Anthropic anahtarı kaydedilemedi.",
+    "defaultModelLabel": "Varsayılan model",
+    "defaultModelHint": "Tüm kuruluşlarınızdaki yeni yapay zeka oturumlarında kullanılır.",
+    "modelUpdated": "Varsayılan model güncellendi.",
+    "modelUpdateFailed": "Varsayılan model güncellenemedi.",
+    "disconnectTitle": "Platform anahtarına geri dön",
+    "disconnectDescription": "Anthropic anahtarınızı kaldırır. Yapay zeka kullanımı yeniden Breeze yapay zeka kredisi olarak faturalandırılır.",
+    "disconnect": "Bağlantıyı kes",
+    "disconnectConfirm": "Anthropic anahtarınızın bağlantısı kesilsin mi? Yapay zeka özellikleri platform anahtarına ve Breeze yapay zeka kredilerine geri döner.",
+    "disconnected": "Anthropic anahtarı kaldırıldı. Yapay zeka özellikleri artık platform anahtarını kullanıyor.",
+    "disconnectFailed": "Anthropic anahtarının bağlantısı kesilemedi.",
+    "permissionDenied": "Yapay zeka sağlayıcısını yönetmek için faturalama izinleri ve tüm kuruluşlara erişim gerekir.",
+    "loadFailed": "Yapay zeka sağlayıcısı yapılandırması yüklenemedi.",
+    "workspaceDisclosure": "Workspace içerik zenginleştirme şu anda platform anahtarını kullanıyor."
+  },
   "partnerDefaults": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
     "updatePolicy": "Temsilci Güncelleme Politikası",
@@ -417,6 +450,10 @@
         "label": "Yapay Zeka Bütçeleri",
         "description": "AI harcama sınırları"
       },
+      "aiProvider": {
+        "label": "Yapay Zeka Sağlayıcısı",
+        "description": "Kendi Anthropic anahtarınızı kullanın"
+      },
       "branding": {
         "label": "Markalama",
         "description": "Logo ve renkler"
@@ -452,7 +489,7 @@
     "loadFailed": "Mevcut markanız yüklenemedi; kaydetmeden önce sayfayı yeniden yükleyin, aksi takdirde mevcut ayarların üzerine yazabilirsiniz.",
     "logoUrl": "Logo URL'si",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "Logonuzun <code>https://</code> URL'si. Logo olmaması durumunda boş bırakın.",
+    "logoHelp": "SVG veya PNG. Geniş logolar en iyi sonucu verir: portal logoyu sabit yükseklikte gösterir, bu yüzden yaklaşık 4:1 oran ve en az 320px genişlik hedefleyin.",
     "accentColor": "Vurgu rengi",
     "colorPicker": "Vurgu rengi seçici",
     "colorHelp": "A <code>#rrggbb</code> onaltılık renk.",
@@ -1271,7 +1308,100 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI, çok adımlı bir plan önerir. Kullanıcı tüm planı bir kerede onaylar ve ardından otomatik yürütme adımlarını atar.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 araçları, denetim günlüğüyle otomatik olarak yürütülür. 3. Katman araçlarının hâlâ onaylanması gerekiyor.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Eylem Planını beğenin, artı adımlar arasında canlı ekran görüntüleri ve kalıcı Durdur düğmesi.",
-    "untitled": "Başlıksız"
+    "untitled": "Başlıksız",
+    "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
+  },
+  "aiAgentsPage": {
+    "title": "Yapay Zeka Aracıları",
+    "description": "Bir politikaya sahip, adlandırılmış yapay zeka çalışanları. Temel çizgiyi iş ortakları belirler; kuruluşlar yalnızca daraltabilir.",
+    "empty": "Henüz aracı yok.",
+    "allOrgs": "Tüm kuruluşlar",
+    "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
+    "stateEnabled": "Etkin",
+    "stateDisabled": "Devre dışı",
+    "errors": {
+      "load": "Aracılar yüklenemedi.",
+      "kindExists": "Bu sahip için bu türde bir aracı zaten var. Var olanı düzenleyin veya önce devre dışı bırakın.",
+      "modeNotSupported": "Bu mod henüz kullanılamıyor. Aracılar şimdilik inceleyip önerebilir, ancak uygulayamaz."
+    },
+    "actions": {
+      "add": "Yeni aracı",
+      "edit": "Düzenle",
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "disable": "Devre dışı bırak",
+      "confirmDisable": "Devre dışı bırakmayı onayla"
+    },
+    "toasts": {
+      "saved": "Aracı kaydedildi",
+      "saveFailed": "Aracı kaydedilemedi.",
+      "disabled": "Aracı devre dışı bırakıldı",
+      "disableFailed": "Aracı devre dışı bırakılamadı."
+    },
+    "issues": {
+      "name": "Aracıya bir ad verin.",
+      "severities": "En az bir uyarı önem derecesi seçin.",
+      "org": "Kuruluşa ait bir aracı oluşturmadan önce bir kuruluş seçin.",
+      "allKindsTaken": "Bu sahip için her aracı türünün zaten bir aracısı var. Bunun yerine var olan bir aracıyı düzenleyin."
+    },
+    "editor": {
+      "newTitle": "Yeni aracı",
+      "editTitle": "Aracıyı düzenle",
+      "scopeLegend": "Şunun için geçerli",
+      "allOrgs": "Tüm kuruluşlar",
+      "allOrgsHint": "(iş ortağı genelinde temel çizgi)",
+      "thisOrg": "Yalnızca bu kuruluş"
+    },
+    "sections": {
+      "scope": "Ne zaman çalışır",
+      "permissions": "İzinler",
+      "limits": "Sınırlar",
+      "notifications": "Bildirimler",
+      "instructions": "Yönergeler"
+    },
+    "kinds": {
+      "triage": "Uyarı önceliklendirme",
+      "patch": "Yama yönetimi",
+      "helpdesk": "Yardım masası"
+    },
+    "modes": {
+      "off": "Kapalı",
+      "shadow": "Gölge — yalnızca inceler ve önerir",
+      "act": "Uygula — sonraki bir sürümde kullanılabilir"
+    },
+    "severities": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi"
+    },
+    "fields": {
+      "kind": "Tür",
+      "kindImmutable": "Bir aracının türü oluşturulduktan sonra değiştirilemez.",
+      "name": "Ad",
+      "mode": "Mod",
+      "enabled": "Etkin",
+      "respectMaintenanceWindows": "Bakım pencerelerine uy",
+      "toolAllowlist": "İzin verilen araçlar",
+      "toolAllowlistHint": "Yalnızca okuyan araçlar her zaman kullanılabilir. Bu aracının önerebileceği değişiklik yapan araçları her satıra bir tane olacak şekilde yazın.",
+      "protectedHint": "Aracı ne önerirse önersin bunlara asla dokunulmaz. Her satıra bir giriş.",
+      "protectedServices": "Korunan hizmetler",
+      "protectedPaths": "Korunan yollar",
+      "protectedRegistryKeys": "Korunan kayıt defteri anahtarları",
+      "maxDevicesPerRun": "Çalıştırma başına en fazla cihaz",
+      "maxRunsPerHour": "Saat başına en fazla çalıştırma",
+      "maxBudgetCentsPerDay": "Günlük bütçe (sent)",
+      "wallClockSeconds": "En uzun çalışma süresi (saniye)",
+      "maxFleetPercentPerDay": "Gün başına en fazla filo payı (%)",
+      "cooldownSeconds": "Cihaz başına bekleme (saniye)",
+      "recipientRolesHint": "Bu aracı bir öneride bulunduğunda bilgilendirilecek roller.",
+      "recipientRolesEmpty": "Kullanılabilir rol yok.",
+      "instructionsHint": "Yalnızca yönlendirme — üslup, önce neyin denetleneceği, kurum içi teamüller. Asla izin vermez.",
+      "charactersLeft": "{{count}} karakter kaldı",
+      "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor."
+    },
+    "loading": "Aracılar yükleniyor…"
   },
   "apiKeyForm": {
     "devicesRead": "Cihazlar: Okuma",
@@ -1542,7 +1672,20 @@
     "saving": "Kaydediliyor…",
     "saveChanges": "Değişiklikleri kaydet",
     "createItem": "Öğe oluştur",
-    "unknownItem": "Bilinmeyen öğe"
+    "unknownItem": "Bilinmeyen öğe",
+    "priceBook": "Fiyat listesi",
+    "addCurrencyPrice": "Başka bir para biriminde fiyat ekle…",
+    "removePrice": "{{currency}} fiyatını kaldır",
+    "priceCurrency": "Fiyat para birimi",
+    "costCurrency": "Maliyet para birimi",
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+    "overrideCurrency": "Özel fiyat para birimi",
+    "noPricesYet": "Henüz fiyat yok. En az bir para birimi ekleyin.",
+    "loadingPartnerCurrency": "İş ortağı para birimi yükleniyor…",
+    "partnerCurrencyUnavailable": "İş ortağınızın para birimi yüklenemedi.",
+    "retry": "Yeniden dene",
+    "priceCouldNotBeSavedRetry": "{{currency}} fiyatı kaydedilemedi. Yeniden deneyin.",
+    "priceCouldNotBeRemovedRetry": "{{currency}} fiyatı kaldırılamadı. Yeniden deneyin."
   },
   "catalogItemsTab": {
     "itemArchived": "Öğe arşivlendi",
@@ -1589,7 +1732,12 @@
     "margin": "Marj",
     "unknownItem": "Bilinmeyen öğe",
     "collapseBundle": "Paketi daralt",
-    "expandBundle": "Paketi genişlet"
+    "expandBundle": "Paketi genişlet",
+    "nMoreCurrencies_one": "+{{count}} para birimi",
+    "nMoreCurrencies_other": "+{{count}} para birimi",
+    "incompletePriceBook": "Eksik fiyat listesi",
+    "marginUnavailable": "Marj kullanılamıyor",
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor"
   },
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",
@@ -1723,6 +1871,7 @@
     "close": "Kapat",
     "imported": "\"{{name}}\" kataloğa aktarıldı",
     "importedWithoutCleanup": "İçe aktarıldı \"{{name}}\" — Yapay zeka temizleme kullanılamıyordu, orijinal ad korundu.",
+    "importedPricePreserved": "\"{{name}}\" içe aktarıldı — mevcut {{currencies}} fiyatınız korundu; yalnızca maliyet Pax8'den güncellendi.",
     "couldNotImportThePax8Product": "Pax8 ürünü içe aktarılamadı."
   },
   "profilePage": {
@@ -2042,6 +2191,7 @@
     "saveChanges": "Değişiklikleri kaydet"
   },
   "tdSynnexCatalogPanel": {
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
     "tDSYNNEXSettingsFailedToLoad": "TD SYNNEX ayarları yüklenemedi.",
     "tDSYNNEXSettingsSaved": "TD SYNNEX ayarları kaydedildi",
     "tDSYNNEXConnectionTestSucceeded": "TD SYNNEX bağlantı testi başarılı oldu",
@@ -2107,6 +2257,7 @@
     "notConfigured": "Yapılandırılmadı"
   },
   "tdSynnexEcExpressPanel": {
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
     "tDSYNNEXPricingSettingsSaved": "TD SYNNEX Fiyatlandırma ayarları kaydedildi",
     "tDSYNNEXPricingConnectionTestSucceeded": "TD SYNNEX Fiyatlandırma bağlantı testi başarılı oldu",
     "enterAValidSellPrice": "Geçerli bir satış fiyatı girin.",
@@ -2251,7 +2402,7 @@
     "responseSLAMinutes": "Yanıt SLA (dakika)",
     "resolutionSLAMinutes": "Çözünürlük SLA (dakika)",
     "billableByDefault": "Varsayılan olarak faturalandırılabilir",
-    "defaultHourlyRate": "Varsayılan saatlik ücret ($)",
+    "defaultHourlyRate": "Varsayılan saatlik ücret ({{currency}})",
     "save": "Kaydet",
     "cancel": "İptal",
     "responseMinutes": "{{count}}m yanıt",
@@ -2752,7 +2903,8 @@
     "billing": {
       "title": "Faturalandırma varsayılanları",
       "description": "Bu kuruluş için biletlerdeki zaman girişlerine ilişkin varsayılan faturalandırma ayarları.",
-      "hourlyRate": "Varsayılan saatlik ücret ($)",
+      "hourlyRate": "Varsayılan saatlik ücret ({{currency}})",
+      "currencyNudge": "Bu kuruluş, iş ortağı varsayılanınız olan {{partnerCurrency}} yerine {{orgCurrency}} ile faturalandırıyor. Buraya girilen ücretler {{orgCurrency}} olarak saklanır ve asla dönüştürülmez.",
       "billable": "Varsayılan faturalandırılabilir",
       "inherit": "Devral",
       "billableOption": "Faturalandırılabilir",

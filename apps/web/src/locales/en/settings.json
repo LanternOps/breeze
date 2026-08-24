@@ -128,6 +128,39 @@
       "hybridPlan": "Hybrid Plan"
     }
   },
+  "partnerAiProvider": {
+    "title": "AI Provider",
+    "subtitle": "Run Breeze AI on your own Anthropic API key instead of the platform key.",
+    "platformKey": "Platform key",
+    "platformKeyDescription": "AI features run on Breeze's Anthropic key and are billed as Breeze AI credits.",
+    "yourKey": "Your key •••• {{last4}}",
+    "verifiedAt": "Verified {{date}}",
+    "notVerifiedYet": "Not verified yet",
+    "defaultModelValue": "Default model: {{model}}",
+    "platformDefault": "Platform default",
+    "keyErrorTitle": "Your Anthropic key is not working",
+    "reconnectHint": "AI features are unavailable for your organizations until you save a working key below.",
+    "connectKeyTitle": "Connect your Anthropic key",
+    "replaceKeyTitle": "Replace your Anthropic key",
+    "keyLabel": "Anthropic API key",
+    "writeOnlyHint": "The key is verified when you save it and is never shown again.",
+    "saveKey": "Save key",
+    "keySaved": "Anthropic key saved and verified.",
+    "keySaveFailed": "Could not save the Anthropic key.",
+    "defaultModelLabel": "Default model",
+    "defaultModelHint": "Used for new AI sessions across all your organizations.",
+    "modelUpdated": "Default model updated.",
+    "modelUpdateFailed": "Could not update the default model.",
+    "disconnectTitle": "Switch back to the platform key",
+    "disconnectDescription": "Removes your Anthropic key. AI usage is billed as Breeze AI credits again.",
+    "disconnect": "Disconnect",
+    "disconnectConfirm": "Disconnect your Anthropic key? AI features will switch back to the platform key and Breeze AI credits.",
+    "disconnected": "Anthropic key removed. AI features now use the platform key.",
+    "disconnectFailed": "Could not disconnect the Anthropic key.",
+    "permissionDenied": "Managing the AI provider requires billing permissions and access to all organizations.",
+    "loadFailed": "Could not load the AI provider configuration.",
+    "workspaceDisclosure": "Workspace content enrichment currently uses the platform key."
+  },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
     "updatePolicy": "Agent Update Policy",
@@ -417,6 +450,10 @@
         "label": "AI Budgets",
         "description": "AI spending limits"
       },
+      "aiProvider": {
+        "label": "AI Provider",
+        "description": "Bring your own Anthropic key"
+      },
       "branding": {
         "label": "Branding",
         "description": "Logo and colors"
@@ -452,7 +489,7 @@
     "loadFailed": "Couldn't load your current branding — reload the page before saving, or you may overwrite existing settings.",
     "logoUrl": "Logo URL",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "An <code>https://</code> URL to your logo. Leave blank for no logo.",
+    "logoHelp": "SVG or PNG. Wide logos work best: the portal shows it at a fixed height, so aim for roughly 4:1 and at least 320px wide.",
     "accentColor": "Accent color",
     "colorPicker": "Accent color picker",
     "colorHelp": "A <code>#rrggbb</code> hex color.",
@@ -1271,7 +1308,100 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits"
+  },
+  "aiAgentsPage": {
+    "title": "AI Agents",
+    "description": "Named AI workers with a policy. Partners set the baseline; organizations can only tighten it.",
+    "empty": "No agents yet.",
+    "allOrgs": "All orgs",
+    "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
+    "stateEnabled": "Enabled",
+    "stateDisabled": "Disabled",
+    "errors": {
+      "load": "Could not load agents.",
+      "kindExists": "An agent of this kind already exists for this owner. Edit the existing one, or disable it first.",
+      "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act."
+    },
+    "actions": {
+      "add": "New agent",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "disable": "Disable",
+      "confirmDisable": "Confirm disable"
+    },
+    "toasts": {
+      "saved": "Agent saved",
+      "saveFailed": "Could not save the agent.",
+      "disabled": "Agent disabled",
+      "disableFailed": "Could not disable the agent."
+    },
+    "issues": {
+      "name": "Give the agent a name.",
+      "severities": "Select at least one alert severity.",
+      "org": "Select an organization before creating an org-owned agent.",
+      "allKindsTaken": "Every agent kind already has an agent for this owner. Edit an existing agent instead."
+    },
+    "editor": {
+      "newTitle": "New agent",
+      "editTitle": "Edit agent",
+      "scopeLegend": "Applies to",
+      "allOrgs": "All organizations",
+      "allOrgsHint": "(partner-wide baseline)",
+      "thisOrg": "This organization only"
+    },
+    "sections": {
+      "scope": "When it runs",
+      "permissions": "Permissions",
+      "limits": "Limits",
+      "notifications": "Notifications",
+      "instructions": "Instructions"
+    },
+    "kinds": {
+      "triage": "Alert triage",
+      "patch": "Patching",
+      "helpdesk": "Help desk"
+    },
+    "modes": {
+      "off": "Off",
+      "shadow": "Shadow — investigate and propose only",
+      "act": "Act — available in a later release"
+    },
+    "severities": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Informational"
+    },
+    "fields": {
+      "kind": "Kind",
+      "kindImmutable": "An agent's kind cannot be changed after it is created.",
+      "name": "Name",
+      "mode": "Mode",
+      "enabled": "Enabled",
+      "respectMaintenanceWindows": "Respect maintenance windows",
+      "toolAllowlist": "Tool allowlist",
+      "toolAllowlistHint": "Read-only tools are always available. List the mutating tools this agent may propose, one per line.",
+      "protectedHint": "Never touched, whatever the agent proposes. One entry per line.",
+      "protectedServices": "Protected services",
+      "protectedPaths": "Protected paths",
+      "protectedRegistryKeys": "Protected registry keys",
+      "maxDevicesPerRun": "Max devices per run",
+      "maxRunsPerHour": "Max runs per hour",
+      "maxBudgetCentsPerDay": "Daily budget (cents)",
+      "wallClockSeconds": "Max run duration (seconds)",
+      "maxFleetPercentPerDay": "Max fleet share per day (%)",
+      "cooldownSeconds": "Per-device cooldown (seconds)",
+      "recipientRolesHint": "Roles notified when this agent proposes something.",
+      "recipientRolesEmpty": "No roles available.",
+      "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
+      "charactersLeft": "{{count}} characters left",
+      "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now."
+    },
+    "loading": "Loading agents…"
   },
   "apiKeyForm": {
     "devicesRead": "Devices: Read",
@@ -1542,7 +1672,20 @@
     "saving": "Saving…",
     "saveChanges": "Save changes",
     "createItem": "Create item",
-    "unknownItem": "Unknown item"
+    "unknownItem": "Unknown item",
+    "priceBook": "Price book",
+    "addCurrencyPrice": "Add a price in another currency…",
+    "removePrice": "Remove {{currency}} price",
+    "priceCurrency": "Price currency",
+    "costCurrency": "Cost currency",
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
+    "overrideCurrency": "Override currency",
+    "noPricesYet": "No prices yet. Add at least one currency.",
+    "loadingPartnerCurrency": "Loading partner currency…",
+    "partnerCurrencyUnavailable": "Could not load your partner currency.",
+    "retry": "Retry",
+    "priceCouldNotBeSavedRetry": "The {{currency}} price could not be saved. Retry.",
+    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry."
   },
   "catalogItemsTab": {
     "itemArchived": "Item archived",
@@ -1589,7 +1732,12 @@
     "margin": "Margin",
     "unknownItem": "Unknown item",
     "collapseBundle": "Collapse bundle",
-    "expandBundle": "Expand bundle"
+    "expandBundle": "Expand bundle",
+    "nMoreCurrencies_one": "+{{count}} currency",
+    "nMoreCurrencies_other": "+{{count}} currencies",
+    "incompletePriceBook": "Incomplete price book",
+    "marginUnavailable": "Margin unavailable",
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable"
   },
   "catalogSettingsPage": {
     "productCatalog": "Product Catalog",
@@ -1723,6 +1871,7 @@
     "close": "Close",
     "imported": "Imported \"{{name}}\" to the catalog",
     "importedWithoutCleanup": "Imported \"{{name}}\" — AI clean-up was unavailable, kept the original name.",
+    "importedPricePreserved": "Imported \"{{name}}\" — kept your existing {{currencies}} price; only the cost was updated from Pax8.",
     "couldNotImportThePax8Product": "Could not import the Pax8 product."
   },
   "profilePage": {
@@ -2042,6 +2191,7 @@
     "saveChanges": "Save changes"
   },
   "tdSynnexCatalogPanel": {
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
     "tDSYNNEXSettingsFailedToLoad": "TD SYNNEX settings failed to load.",
     "tDSYNNEXSettingsSaved": "TD SYNNEX settings saved",
     "tDSYNNEXConnectionTestSucceeded": "TD SYNNEX connection test succeeded",
@@ -2107,6 +2257,7 @@
     "notConfigured": "Not configured"
   },
   "tdSynnexEcExpressPanel": {
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
     "tDSYNNEXPricingSettingsSaved": "TD SYNNEX Pricing settings saved",
     "tDSYNNEXPricingConnectionTestSucceeded": "TD SYNNEX Pricing connection test succeeded",
     "enterAValidSellPrice": "Enter a valid sell price.",
@@ -2251,7 +2402,7 @@
     "responseSLAMinutes": "Response SLA (minutes)",
     "resolutionSLAMinutes": "Resolution SLA (minutes)",
     "billableByDefault": "Billable by default",
-    "defaultHourlyRate": "Default hourly rate ($)",
+    "defaultHourlyRate": "Default hourly rate ({{currency}})",
     "save": "Save",
     "cancel": "Cancel",
     "responseMinutes": "{{count}}m response",
@@ -2752,7 +2903,8 @@
     "billing": {
       "title": "Billing defaults",
       "description": "Default billing settings for time entries on tickets for this organization.",
-      "hourlyRate": "Default hourly rate ($)",
+      "hourlyRate": "Default hourly rate ({{currency}})",
+      "currencyNudge": "This organization bills in {{orgCurrency}}, not your partner default {{partnerCurrency}}. Rates entered here are stored in {{orgCurrency}} and are never converted.",
       "billable": "Default billable",
       "inherit": "Inherit",
       "billableOption": "Billable",

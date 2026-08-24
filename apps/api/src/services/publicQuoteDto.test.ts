@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { PublicQuoteHeader } from '@breeze/shared';
 import type { QuoteTotals } from './quoteMath';
+import { QuoteServiceError } from './quoteTypes';
 import { toPublicQuoteHeader, toPublicQuotePresentation } from './publicQuoteDto';
 
 const HEADER_KEYS = [
@@ -164,6 +165,20 @@ describe('toPublicQuoteHeader', () => {
       expect(toPublicQuoteHeader(sourceRow({ status }) as never, TOTALS).status).toBe(status);
     },
   );
+
+  it('fails closed if a superseded row ever reaches the public mapper', () => {
+    // Serving a superseded quote would mean rendering withdrawn prices. The
+    // error is TYPED so the public route answers 410 rather than a generic 500
+    // (quotesPublic.ts catches QuoteServiceError) — assert the status and code,
+    // not just that something threw.
+    let caught: unknown;
+    try {
+      toPublicQuoteHeader(sourceRow({ status: 'superseded' }) as never, TOTALS);
+    } catch (err) { caught = err; }
+    expect(caught).toBeInstanceOf(QuoteServiceError);
+    expect((caught as QuoteServiceError).status).toBe(410);
+    expect((caught as QuoteServiceError).code).toBe('QUOTE_SUPERSEDED');
+  });
 
   it('fails closed if a draft row ever reaches the public mapper', () => {
     expect(() => toPublicQuoteHeader(sourceRow({ status: 'draft' }) as never, TOTALS))

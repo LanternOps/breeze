@@ -5,11 +5,12 @@ import { requireScope, requirePermission, type AuthContext } from '../../middlew
 import { PERMISSIONS } from '../../services/permissions';
 import {
   createManualInvoiceSchema, updateInvoiceSchema, manualLineSchema, catalogLineSchema,
-  bundleLineSchema, updateLineSchema, listInvoicesQuerySchema
+  bundleLineSchema, updateLineSchema, listInvoicesQuerySchema, changeCurrencySchema
 } from '@breeze/shared';
 import {
   createManualInvoice, getInvoice, listInvoices, addManualLine, addCatalogLine, addBundleLine,
-  updateLine, removeLine, deleteDraftInvoice, updateInvoice, updateIssuedDueDate
+  updateLine, removeLine, deleteDraftInvoice, updateInvoice, updateIssuedDueDate,
+  changeInvoiceCurrency
 } from '../../services/invoiceService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { InvoiceServiceError, type InvoiceActor } from '../../services/invoiceTypes';
@@ -43,7 +44,9 @@ export function invoiceActorFrom(c: { get: (k: string) => unknown }): InvoiceAct
   return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds, allowedSiteIds: auth.allowedSiteIds };
 }
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  if (err instanceof InvoiceServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof InvoiceServiceError) {
+    return c.json({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) }, err.status);
+  }
   throw err;
 }
 
@@ -88,6 +91,13 @@ invoiceCrudRoutes.post('/:id/lines/catalog', scopes, writePerm, zValidator('para
 });
 invoiceCrudRoutes.post('/:id/lines/bundle', scopes, writePerm, zValidator('param', idParam), zValidator('json', bundleLineSchema), async (c) => {
   try { const b = c.req.valid('json'); return c.json({ data: await addBundleLine(c.req.valid('param').id, b.bundleId, b.quantity, invoiceActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+// Draft-only atomic change-currency op (#3774) — the ONLY mutation path for a
+// document's stamped currency. CURRENCY_LOCKED (409) when monetary lines exist
+// and clearLines wasn't passed; clearLines deletes lines + restamps atomically.
+invoiceCrudRoutes.post('/:id/currency', scopes, writePerm, zValidator('param', idParam), zValidator('json', changeCurrencySchema), async (c) => {
+  try { return c.json({ data: await changeInvoiceCurrency(c.req.valid('param').id, c.req.valid('json'), invoiceActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.patch('/:id/due-date', scopes, writePerm, zValidator('param', idParam), zValidator('json', dueDateSchema), async (c) => {

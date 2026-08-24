@@ -2,14 +2,17 @@ import { describe, expect, it } from 'vitest';
 import {
   DEVICE_CUSTOM_FIELD_KEY_PATTERN,
   MAX_SCRIPT_PARAMETER_OPTIONS_LENGTH,
+  MAX_SECRET_SCRIPT_PARAMETERS,
   SCRIPT_BUILTIN_PARAMETER_KEYS,
   SCRIPT_PARAMETER_SOURCES,
+  canonicalizeScriptParameterDefinitions,
   normalizeScriptParameterDefinitions,
   scriptParameterDefinitionSchema,
   scriptParameterDefinitionsEqual,
   scriptParameterDefinitionsSchema,
   scriptParameterEnvName,
   scriptParameterEnvSuffix,
+  scriptSecretEnvName,
 } from './scriptParameterDefinitions';
 import { MAX_SCRIPT_PARAMETERS, MAX_SCRIPT_PARAMETER_VALUE_LENGTH } from './scriptParameters';
 
@@ -53,8 +56,14 @@ describe('scriptParameterDefinitionSchema — source default', () => {
     expect(scriptParameterDefinitionSchema.safeParse({ name: 'x', type: 'string', source: 'magic' }).success).toBe(false);
   });
 
-  it('enumerates exactly the four supported sources', () => {
-    expect([...SCRIPT_PARAMETER_SOURCES]).toEqual(['runtime', 'tenantVariable', 'deviceCustomField', 'builtin']);
+  it('enumerates exactly the five supported sources, tenantSecret last (web <select> order)', () => {
+    expect([...SCRIPT_PARAMETER_SOURCES]).toEqual([
+      'runtime',
+      'tenantVariable',
+      'deviceCustomField',
+      'builtin',
+      'tenantSecret',
+    ]);
   });
 });
 
@@ -173,6 +182,118 @@ describe('scriptParameterDefinitionSchema — tenantVariable arm', () => {
     });
     expect(result.success).toBe(true);
     expect(result.data).not.toHaveProperty('fieldKey');
+  });
+});
+
+describe('scriptParameterDefinitionSchema — tenantSecret arm (#3409 PR4c-2)', () => {
+  const secretDefinition = { name: 'api_token', source: 'tenantSecret' as const, variableKey: 'vendor_token' };
+
+  it('accepts a minimal secret binding, defaulting type to string and required to true', () => {
+    const result = scriptParameterDefinitionSchema.safeParse(secretDefinition);
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual({
+      name: 'api_token',
+      source: 'tenantSecret',
+      variableKey: 'vendor_token',
+      type: 'string',
+      required: true,
+    });
+  });
+
+  it('forces required to true regardless of input', () => {
+    const result = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, required: false });
+    // A secret that is missing fails the device closed — there is no optional
+    // secret, so `required:false` is not a thing a definition can say.
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['required']);
+    const explicit = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, required: true });
+    expect(explicit.success && explicit.data.required).toBe(true);
+  });
+
+  it('requires variableKey at the arm path', () => {
+    const result = scriptParameterDefinitionSchema.safeParse({ name: 'api_token', source: 'tenantSecret' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['variableKey']);
+  });
+
+  it.each(['Uppercase', '9leading', 'has-hyphen', '', 'a'.repeat(65)])(
+    'rejects variableKey %j (tenant-variable key grammar)',
+    (variableKey) => {
+      expect(scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, variableKey }).success).toBe(false);
+    }
+  );
+
+  // The secretEnv wire key IS the env-var name source on the agent
+  // (`BREEZE_VAR_` + ToUpper(key), no `-` folding) and the agent's
+  // ParseSecretEnv validates it against the tenant-key grammar, so a name the
+  // ordinary parameter grammar would accept must already be rejected here.
+  it.each(['Api-Token', 'API_TOKEN', 'api-token', '_leading', '9leading', 'a'.repeat(65)])(
+    'rejects name %j outside the tenant-variable key grammar at [name]',
+    (name) => {
+      const result = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, name });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['name']);
+    }
+  );
+
+  it('rejects a defaultValue — it would be a plaintext credential in the definition', () => {
+    const result = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, defaultValue: 'hunter22' });
+    expect(result.success).toBe(false);
+    const issue = result.error?.issues.find((candidate) => candidate.path[0] === 'defaultValue');
+    expect(issue?.message).toMatch(/cannot carry a default/i);
+  });
+
+  it('rejects options', () => {
+    const result = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, options: 'a,b' });
+    expect(result.success).toBe(false);
+    const issue = result.error?.issues.find((candidate) => candidate.path[0] === 'options');
+    expect(issue?.message).toMatch(/cannot declare options/i);
+  });
+
+  it.each(['select', 'number', 'boolean'])('rejects type %j', (type) => {
+    const result = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, type });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['type']);
+  });
+
+  it('still collides with a runtime parameter of the same name', () => {
+    // The suffix rule keys on `name` for every arm. A secret and a runtime
+    // parameter sharing a name is a duplicate even though they land in
+    // different env vars (BREEZE_VAR_ vs BREEZE_PARAM_) — do not "fix" this.
+    const result = scriptParameterDefinitionsSchema.safeParse([
+      runtimeDefinition('token'),
+      { name: 'token', source: 'tenantSecret', variableKey: 'vendor_token' },
+    ]);
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual([1, 'name']);
+    expect(result.error?.issues[0]?.message).toMatch(/Duplicate parameter name "token"/);
+  });
+
+  it('canonicalizes stably, including source and variableKey', () => {
+    const canonical = canonicalizeScriptParameterDefinitions([secretDefinition]);
+    expect(canonical).toBe(
+      JSON.stringify([
+        JSON.stringify([
+          ['name', 'api_token'],
+          ['required', true],
+          ['source', 'tenantSecret'],
+          ['type', 'string'],
+          ['variableKey', 'vendor_token'],
+        ]),
+      ])
+    );
+    expect(
+      canonicalizeScriptParameterDefinitions([
+        { variableKey: 'vendor_token', source: 'tenantSecret', name: 'api_token', required: true, type: 'string' },
+      ])
+    ).toBe(canonical);
+  });
+});
+
+describe('scriptSecretEnvName', () => {
+  it('mirrors the agent: BREEZE_VAR_ + ToUpper(name), no separator folding', () => {
+    expect(scriptSecretEnvName('api_token')).toBe('BREEZE_VAR_API_TOKEN');
+    expect(scriptSecretEnvName('a1_b2')).toBe('BREEZE_VAR_A1_B2');
   });
 });
 
@@ -331,6 +452,55 @@ describe('scriptParameterDefinitionsSchema — array', () => {
 
   it('rejects a non-array', () => {
     expect(scriptParameterDefinitionsSchema.safeParse({ name: 'x', type: 'string' }).success).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------
+  // Secret-parameter cap (#3409 PR4c-2, finding 3).
+  //
+  // MAX_SCRIPT_PARAMETERS (64) is twice MAX_SECRET_SCRIPT_PARAMETERS (32), so
+  // without this rule a script declaring 33+ tenantSecret parameters SAVES
+  // cleanly and then blows up at dispatch inside the envelope builder — which
+  // rethrows, taking the whole fan-out down with a 500 instead of failing one
+  // device. The cap has to be a SAVE-time rule for that reason.
+  // ---------------------------------------------------------------------
+  const secretDefinition = (name: string) => ({
+    name,
+    source: 'tenantSecret' as const,
+    variableKey: name,
+  });
+
+  it(`accepts exactly ${MAX_SECRET_SCRIPT_PARAMETERS} tenantSecret definitions`, () => {
+    const definitions = Array.from({ length: MAX_SECRET_SCRIPT_PARAMETERS }, (_, i) => secretDefinition(`s${i}`));
+    expect(scriptParameterDefinitionsSchema.safeParse(definitions).success).toBe(true);
+  });
+
+  it(`rejects ${MAX_SECRET_SCRIPT_PARAMETERS + 1} tenantSecret definitions`, () => {
+    const definitions = Array.from({ length: MAX_SECRET_SCRIPT_PARAMETERS + 1 }, (_, i) => secretDefinition(`s${i}`));
+    const result = scriptParameterDefinitionsSchema.safeParse(definitions);
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain(
+      `A script cannot declare more than ${MAX_SECRET_SCRIPT_PARAMETERS} secret parameters`
+    );
+  });
+
+  // The cap counts ONLY tenantSecret rows — a script may still declare up to
+  // MAX_SCRIPT_PARAMETERS parameters overall, and non-secret sources never
+  // reach the secretEnv envelope.
+  it('counts only tenantSecret rows, not the whole definition list', () => {
+    const definitions = [
+      ...Array.from({ length: MAX_SECRET_SCRIPT_PARAMETERS }, (_, i) => secretDefinition(`s${i}`)),
+      ...Array.from({ length: MAX_SCRIPT_PARAMETERS - MAX_SECRET_SCRIPT_PARAMETERS }, (_, i) => runtimeDefinition(`p${i}`)),
+    ];
+    expect(definitions).toHaveLength(MAX_SCRIPT_PARAMETERS);
+    expect(scriptParameterDefinitionsSchema.safeParse(definitions).success).toBe(true);
+  });
+
+  it('reports the secret cap on the first over-limit element, not the whole array', () => {
+    const definitions = Array.from({ length: MAX_SECRET_SCRIPT_PARAMETERS + 2 }, (_, i) => secretDefinition(`s${i}`));
+    const result = scriptParameterDefinitionsSchema.safeParse(definitions);
+    expect(result.success).toBe(false);
+    const paths = result.error?.issues.map((issue) => issue.path.join('.')) ?? [];
+    expect(paths).toContain(`${MAX_SECRET_SCRIPT_PARAMETERS}.source`);
   });
 
   it('does not mutate when a caller applies a tighter cap', () => {

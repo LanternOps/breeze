@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const insertMock = vi.fn();
 const updateMock = vi.fn();
+const resolveLlmConfigForOrgMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
@@ -28,6 +29,17 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base' }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue(null) }));
+vi.mock('./llm/llmConfigResolver', () => ({
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    readonly status = 503;
+    readonly code = 'ai_unavailable';
+    constructor() {
+      super('AI unavailable');
+      this.name = 'LlmUnavailableError';
+    }
+  },
+  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
+}));
 
 import { createSession, handleApproval } from './aiAgent';
 
@@ -50,7 +62,53 @@ const auth: any = {
 };
 
 describe('createSession device binding', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resolveLlmConfigForOrgMock.mockResolvedValue({
+      source: 'partner',
+      partnerId: 'partner-1',
+      apiKey: 'partner-key',
+      model: 'claude-opus-4-6',
+      configId: 'config-1',
+      configVersion: 2,
+    });
+  });
+
+  it('resolves the provider before insert and stores the partner default model', async () => {
+    const valuesSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });
+    insertMock.mockReturnValueOnce({ values: valuesSpy });
+
+    await createSession(auth, {});
+
+    expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith('org-111');
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'claude-opus-4-6',
+      billingSource: 'partner_key',
+    }));
+  });
+
+  it('preserves an explicit model over the resolved partner default', async () => {
+    const valuesSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });
+    insertMock.mockReturnValueOnce({ values: valuesSpy });
+
+    await createSession(auth, { model: 'claude-haiku-4-5' });
+
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-haiku-4-5' }));
+  });
+
+  it('throws ai_unavailable before insert when the org partner key is broken', async () => {
+    resolveLlmConfigForOrgMock.mockResolvedValueOnce({
+      source: 'unavailable',
+      partnerId: 'partner-1',
+      reason: 'key_error',
+    });
+
+    await expect(createSession(auth, {})).rejects.toMatchObject({
+      name: 'LlmUnavailableError',
+      code: 'ai_unavailable',
+    });
+    expect(insertMock).not.toHaveBeenCalled();
+  });
 
   it('rejects a device belonging to a different org', async () => {
     selectMock.mockReturnValueOnce(devSelect([{ id: DEVICE_ID, orgId: 'org-OTHER' }]));

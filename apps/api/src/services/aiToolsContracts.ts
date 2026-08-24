@@ -88,7 +88,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_contracts',
       description:
-        'List recurring contracts for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
+        'List recurring contracts for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.' +
+        ' Every contract carries a 3-letter currencyCode; its line unitPrice values, per-period totals and the invoices it generates are all in that currency. NEVER add amounts from contracts with different currencyCode values — group by currencyCode first and report one total per currency.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -129,7 +130,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_contract',
       description:
-        'Get the full view of one recurring contract (header, lines, and billing-period history) by id. Read-only.',
+        'Get the full view of one recurring contract (header, lines, and billing-period history) by id. Read-only.' +
+        ' Every contract carries a 3-letter currencyCode; its line unitPrice values, per-period totals and the invoices it generates are all in that currency. NEVER add amounts from contracts with different currencyCode values — group by currencyCode first and report one total per currency.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -157,7 +159,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       name: 'manage_contracts',
       description:
         'Create and manage recurring contracts for orgs the caller can access: draft edits, lines, and lifecycle actions. ' +
-        'Activate, pause, resume, and cancel actions change contract lifecycle state and require approval.',
+        'Activate, pause, resume, and cancel actions change contract lifecycle state and require approval.' +
+        ' Contract line prices and totals are in the contract\'s currencyCode.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -179,7 +182,14 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           lineId: { type: 'string', description: 'Contract line UUID' },
           input: { type: 'object', description: 'Full create-contract payload including orgId, name, and schedule fields' },
           patch: { type: 'object', description: 'Contract update patch fields' },
-          line: { type: 'object', description: 'Contract line input fields' },
+          line: {
+            type: 'object',
+            description:
+              'Contract line input fields. With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
+              'price book in the CONTRACT\'s currency (any supplied values are ignored) and add_line fails with ' +
+              'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency — never converted; add a ' +
+              'non-catalog line with an explicit unitPrice instead. Without catalogItemId, unitPrice is required.',
+          },
         },
         required: ['action'],
       },

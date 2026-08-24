@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { isSoftwareFileType } from '@breeze/shared';
+import { findVariableTokens, isSoftwareFileType, variableToken } from '@breeze/shared';
 import { db } from '../db';
 import {
   deploymentResults,
@@ -540,12 +540,20 @@ export async function buildAndDispatchSoftwareInstalls(
   const siteNames = new Map<string, string>();
   // Tenant variables (#3409 PR2): flattened KEY -> non-secret VALUE map for
   // the `var.<key>` arm of installerVariables.ts's resolveKey. Secret
-  // variables are omitted entirely here — not merely left unresolved — so a
-  // template referencing one falls through to the pre-existing `unresolved`
-  // failure branch below with no new failure code or counter (dispatch's own
-  // per-device secret check, wired separately, is the actual security gate;
-  // this omission is a defense-in-depth belt on the deploy path too).
+  // variables never enter this map — a deploy template is substituted into a
+  // download URL / install args that ride the command payload in the clear.
+  //
+  // #3409 PR4c-2: a template that references a secret is an EXPLICIT failure,
+  // not a silent omission. Before PR4c-2 the secret was merely left out of
+  // the map so the token fell through to the generic `unresolved` branch,
+  // which read as "unknown variable" and sent the author looking for a typo.
+  // `secretTemplateKeys` holds the secret KEYS the templates reference (keys
+  // only — never values); when non-empty every device fails through the same
+  // per-device channel the `unresolved` branch uses, with a message that
+  // names the rule instead. The script path's declared-delivery arm
+  // (`source: 'tenantSecret'`) has no deploy-template equivalent by design.
   const tenantVars: Record<string, string> = {};
+  const secretTemplateKeys: string[] = [];
   if (templatesUseVariables) {
     const [org] = await db
       .select({ name: organizations.name })
@@ -559,10 +567,19 @@ export async function buildAndDispatchSoftwareInstalls(
       .where(eq(sites.orgId, orgId));
     for (const s of siteRows) siteNames.set(s.id, s.name);
 
+    const referencedTemplateKeys = new Set([
+      ...findVariableTokens(finalDownloadUrl ?? ''),
+      ...findVariableTokens(finalSilentInstallArgs ?? ''),
+    ]);
     const variableScope = await loadTenantVariableScope([orgId]);
     for (const [key, variable] of resolveForOrg(variableScope, orgId)) {
-      if (!variable.isSecret) tenantVars[key] = variable.value;
+      if (variable.isSecret) {
+        if (referencedTemplateKeys.has(key)) secretTemplateKeys.push(key);
+      } else {
+        tenantVars[key] = variable.value;
+      }
     }
+    secretTemplateKeys.sort();
   }
 
   // Detection rules (#2022) and the force-reinstall toggle ride along with the
@@ -618,6 +635,29 @@ export async function buildAndDispatchSoftwareInstalls(
     let deviceDownloadUrl = finalDownloadUrl;
     let deviceSilentInstallArgs = finalSilentInstallArgs;
     if (templatesUseVariables) {
+      // Secret-referencing templates fail every device identically (the
+      // check is template-level, not device-level) through the same
+      // deployment_results write + counter as an unresolvable token, so the
+      // batch-level outcome below is unchanged. Keys only in the message.
+      if (secretTemplateKeys.length > 0) {
+        await db
+          .update(deploymentResults)
+          .set({
+            status: 'failed',
+            errorMessage:
+              'Software deployment templates cannot use secret variable(s) ' +
+              secretTemplateKeys.map(variableToken).join(', '),
+            completedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(deploymentResults.deploymentId, deploymentId),
+              eq(deploymentResults.deviceId, device.id),
+            ),
+          );
+        variableFailureCount++;
+        continue;
+      }
       const ctx: InstallerVariableContext = {
         org: { id: orgId, name: orgName },
         site: { id: device.siteId, name: siteNames.get(device.siteId) ?? '' },

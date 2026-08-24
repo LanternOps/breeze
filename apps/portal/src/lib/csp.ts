@@ -68,6 +68,9 @@ export function resolvePortalCspHeader(opts: {
   isDev: boolean;
   strictDev: boolean;
   fallback: string;
+  /** Per-request nonce allowing the one runtime-themed `<style>` element the
+   *  documents need (partner accent colour). See `styleNonce` note below. */
+  styleNonce?: string;
 }): { action: 'delete' } | { action: 'set'; value: string } {
   if (opts.isDev && !opts.strictDev) {
     return { action: 'delete' };
@@ -81,6 +84,25 @@ export function resolvePortalCspHeader(opts: {
   }
   if (!/\bstyle-src-attr\b/i.test(patchedCsp)) {
     patchedCsp = `${patchedCsp}; style-src-attr 'none'`;
+  }
+  // `style-src-attr 'none'` (above) is deliberate and stays — but it also killed
+  // the partner-brand accent, which is a RUNTIME value and so cannot be a
+  // build-time Astro hash. The documents carried it on a `style` attribute, so in
+  // production the accent rule, the eyebrow and the hero currency figures all
+  // rendered unstyled while dev (which drops CSP entirely) looked perfect.
+  // Allowing one nonced `<style>` ELEMENT restores runtime theming without
+  // reopening inline style attributes — strictly narrower than 'unsafe-inline'.
+  //
+  // CRITICAL: `style-src-elem` does NOT inherit from `style-src` — it REPLACES it
+  // for `<style>` elements and `<link rel=stylesheet>`. Emitting a bare
+  // `style-src-elem 'self' 'nonce-…'` therefore silently drops the per-page
+  // sha256 hashes Astro puts in `style-src` for its OWN inline styles, and the
+  // ClientRouter's styles start getting refused. So carry the existing
+  // `style-src` sources over verbatim and only ADD the nonce.
+  if (opts.styleNonce && !/\bstyle-src-elem\b/i.test(patchedCsp)) {
+    const styleSrc = /(?:^|;)\s*style-src\s+([^;]+)/i.exec(patchedCsp)?.[1]?.trim();
+    const sources = styleSrc && styleSrc.length > 0 ? styleSrc : "'self'";
+    patchedCsp = `${patchedCsp}; style-src-elem ${sources} 'nonce-${opts.styleNonce}'`;
   }
   return { action: 'set', value: patchedCsp };
 }

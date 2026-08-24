@@ -4,11 +4,19 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
-import { formatMinutes, formatMoney } from '../../lib/timeFormat';
+import { formatMinutes } from '../../lib/timeFormat';
+import { formatMoney } from '../billing/shared/format';
+import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
+
+/** Mirrors the API's `CurrencyAmount` — money is reported per currency, never summed across. */
+interface CurrencyAmount {
+  currencyCode: string;
+  amount: string;
+}
 
 interface BillingSummary {
-  time: { totalMinutes: number; billableMinutes: number; billableAmount: string };
-  parts: { partsCount: number; billableTotal: string };
+  time: { totalMinutes: number; billableMinutes: number; billableAmounts: CurrencyAmount[] };
+  parts: { partsCount: number; billableTotals: CurrencyAmount[] };
 }
 
 interface EntryRow {
@@ -18,6 +26,28 @@ interface EntryRow {
   isBillable: boolean;
   userName: string | null;
   endedAt: string | null;
+}
+
+/** One chip per currency; an empty list renders a dash rather than a zero in
+ *  some assumed currency (spec §2: never label an amount with a currency it
+ *  was not stamped in). */
+function CurrencyAmounts({ amounts, testIdPrefix, empty }: { amounts: CurrencyAmount[]; testIdPrefix: string; empty: string }) {
+  if (amounts.length === 0) return <>{empty}</>;
+  return (
+    <span className="flex flex-wrap justify-end gap-x-2">
+      {amounts.map((a) => (
+        <span key={a.currencyCode} data-testid={`${testIdPrefix}-${a.currencyCode}`}>
+          {formatMoney(a.amount, a.currencyCode)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** `CurrencyAmount` (API shape) → the `{ code, amount }` shape every reporting
+ *  helper consumes. Mapped explicitly rather than widening either type. */
+function toReportingGroups(amounts: CurrencyAmount[]): { code: string; amount: string }[] {
+  return amounts.map((a) => ({ code: a.currencyCode, amount: a.amount }));
 }
 
 export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
@@ -122,11 +152,21 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           </div>
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.timeAmount')}</dt>
-            <dd data-testid="ticket-billing-amount">{formatMoney(summary.time.billableAmount)}</dd>
+            <dd data-testid="ticket-billing-amount">
+              <CurrencyAmounts amounts={summary.time.billableAmounts ?? []} testIdPrefix="ticket-billing-amount" empty={t('ticketTimeBilling.noAmount')} />
+            </dd>
+          </div>
+          <div className="flex justify-end">
+            <ApproximateMoneyLine byCurrency={toReportingGroups(summary.time.billableAmounts ?? [])} testId="ticket-labor-approx" />
           </div>
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.partsCount', { count: summary.parts.partsCount })}</dt>
-            <dd data-testid="ticket-billing-parts-total">{formatMoney(summary.parts.billableTotal)}</dd>
+            <dd data-testid="ticket-billing-parts-total">
+              <CurrencyAmounts amounts={summary.parts.billableTotals ?? []} testIdPrefix="ticket-billing-parts-total" empty={t('ticketTimeBilling.noAmount')} />
+            </dd>
+          </div>
+          <div className="flex justify-end">
+            <ApproximateMoneyLine byCurrency={toReportingGroups(summary.parts.billableTotals ?? [])} testId="ticket-parts-approx" />
           </div>
         </dl>
       )}

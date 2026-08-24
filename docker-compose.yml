@@ -307,6 +307,7 @@ services:
       # deployment switches them on (default off). Workspace additionally needs
       # a pgvector-capable Postgres — see POSTGRES_IMAGE_REF in .env.example.
       BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-false}
+      BREEZE_AI_AGENTS_ENABLED: ${BREEZE_AI_AGENTS_ENABLED:-false}
       # MCP OAuth (off by default, opt-in via env)
       MCP_OAUTH_ENABLED: ${MCP_OAUTH_ENABLED:-false}
       OAUTH_ISSUER: ${OAUTH_ISSUER:-}
@@ -426,6 +427,10 @@ services:
       BREEZE_BILLING_API_KEY: ${BREEZE_BILLING_API_KEY:-}
       BILLING_SERVICE_URL: ${BILLING_SERVICE_URL:-}
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
+      # Reporting-only FX (#3779). Empty === unset for both readers, so the
+      # `${VAR:-}` form keeps the code defaults (feed ON, public Frankfurter).
+      EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}
+      FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}
       # Startup + agent-fleet behaviour
       AUTO_MIGRATE: ${AUTO_MIGRATE:-}
       AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}

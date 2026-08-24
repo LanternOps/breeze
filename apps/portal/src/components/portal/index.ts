@@ -1,8 +1,3 @@
-// Portal Components
-export { BrandingProvider, useBranding } from './BrandingProvider';
-export { PortalHeader } from './PortalHeader';
-export { PortalSidebar } from './PortalSidebar';
-
 // Auth Components
 export { LoginForm } from './LoginForm';
 export { ForgotPasswordForm } from './ForgotPasswordForm';

@@ -2,18 +2,24 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import '@/lib/i18n';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { Dialog } from '../shared/Dialog';
+import { currencyLabel, currencyOptions } from '@/lib/currencies';
 import {
+  changeContractCurrency,
   contractTransition,
   deleteContract,
   generateContractInvoice,
   getContractEstimate,
+  type ContractCurrencyBlockerDetails,
   type ContractDetail as ContractDetailData,
   type ContractEstimate,
   type ContractLineType,
   type ContractStatus,
   type ContractTransition,
+  type PriceBookGap,
 } from '../../lib/api/contracts';
 import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
@@ -50,8 +56,46 @@ const TRANSITION_LABELS: Record<ContractTransition, string> = {
   cancel: 'contracts.shared.transition.cancel',
 };
 
+
+/**
+ * Multi-currency wave 6 (#3778), Task 16 — the ACTIVE-contract currency restamp.
+ *
+ * The server is the authority: `POST /contracts/:id/currency` re-checks
+ * `contracts:manage`, the explicit confirmation and eligibility under the
+ * contract's row lock, so this dialog is a convenience, never a gate. What it
+ * DOES owe the operator is the reason: each 409 names the exact rows that block
+ * the restamp, keyed by the error code, and those ids are rendered as an
+ * actionable list instead of being flattened into a generic toast.
+ */
+type CurrencyMode = 'clear' | 'reprice';
+
+const BLOCKER_ID_KEYS: Record<string, keyof ContractCurrencyBlockerDetails> = {
+  UNBILLED_MONETARY_ROWS: 'draftInvoiceIds',
+  ORPHANED_BILLING_PERIOD: 'billingPeriodIds',
+  ORPHANED_CONTRACT_SOURCE: 'lineIds',
+  BROKEN_CONTRACT_LINEAGE: 'invoiceIds',
+};
+
+/** Codes whose blocking ids are invoices, so the row can link to one. */
+const INVOICE_BLOCKER_CODES = new Set(['UNBILLED_MONETARY_ROWS', 'BROKEN_CONTRACT_LINEAGE']);
+
+interface CurrencyBlockers { code: string; ids: string[] }
+
+/** Reads the blocking row ids off a rejected change-currency call. Returns null
+ *  for anything that is not a structured blocker (network error, 401, a 409 with
+ *  no details) — those stay with runAction's toast. */
+function blockersFrom(err: unknown): CurrencyBlockers | null {
+  if (!(err instanceof ActionError) || err.status !== 409 || !err.code) return null;
+  const key = BLOCKER_ID_KEYS[err.code];
+  if (!key) return null;
+  const body = err.body as { details?: ContractCurrencyBlockerDetails } | null | undefined;
+  const ids = body?.details?.[key];
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+  return { code: err.code, ids: ids.filter((id): id is string => typeof id === 'string') };
+}
+
 export default function ContractDetail({ detail, onChanged }: Props) {
-  const { t } = useTranslation('billing');
+  const { t, i18n } = useTranslation('billing');
   const { can } = usePermissions();
   const { contract, lines, periods } = detail;
   const currency = contract.currencyCode;
@@ -63,6 +107,12 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   // reversible and fire immediately.
   const [cancelOpen, setCancelOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
+  // Currency restamp (ACTIVE contracts only, manage-gated, #3778).
+  const [currencyOpen, setCurrencyOpen] = useState(false);
+  const [targetCurrency, setTargetCurrency] = useState(currency);
+  const [currencyMode, setCurrencyMode] = useState<CurrencyMode | null>(null);
+  const [currencyConfirmed, setCurrencyConfirmed] = useState(false);
+  const [currencyBlockers, setCurrencyBlockers] = useState<CurrencyBlockers | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,13 +148,28 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await runAction<{ data?: { invoiceId?: string } }>({
+      const result = await runAction<{ data?: { invoiceId?: string; priceBookGaps?: PriceBookGap[] } }>({
         request: () => generateContractInvoice(contract.id),
         errorFallback: t('contracts.contractDetail.errors.generateInvoice'),
         successMessage: t('contracts.contractDetail.toast.invoiceGenerated'),
         onUnauthorized: UNAUTHORIZED,
       });
       const invoiceId = result?.data?.invoiceId;
+      // Multi-currency wave 3 (#3775): a catalog line with no price in the
+      // contract's currency was still billed — at the contract's stamped
+      // snapshot. That fallback is permitted but never silent: name the lines
+      // and the currency so the operator can fix the catalog (review #10).
+      const gaps = result?.data?.priceBookGaps ?? [];
+      if (gaps.length > 0) {
+        showToast({
+          type: 'warning',
+          message: t('contracts.contractDetail.toast.priceBookGaps', {
+            count: gaps.length,
+            currency: gaps[0]!.currencyCode,
+            lines: gaps.map((g) => g.itemName).join(', '),
+          }),
+        });
+      }
       if (invoiceId) {
         void navigateTo(`/billing/invoices/${invoiceId}`);
       } else {
@@ -116,6 +181,44 @@ export default function ContractDetail({ detail, onChanged }: Props) {
       setBusy(false);
     }
   }, [busy, contract.id, refresh, t]);
+
+  const openCurrencyDialog = useCallback(() => {
+    setTargetCurrency(currency);
+    setCurrencyMode(null);
+    setCurrencyConfirmed(false);
+    setCurrencyBlockers(null);
+    setCurrencyOpen(true);
+  }, [currency]);
+
+  const submitCurrency = useCallback(async () => {
+    if (busy || !currencyMode || !currencyConfirmed || targetCurrency === currency) return;
+    setBusy(true);
+    // A retry starts from a clean slate — a stale blocker list would read as a
+    // fresh rejection.
+    setCurrencyBlockers(null);
+    try {
+      await runAction({
+        request: () => changeContractCurrency(contract.id, {
+          currencyCode: targetCurrency,
+          ...(currencyMode === 'clear' ? { clearLines: true } : { reprice: true }),
+          confirmActiveChange: true,
+        }),
+        errorFallback: t('contracts.currency.errors.change'),
+        successMessage: t('contracts.currency.toast.changed', { currency: targetCurrency }),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setCurrencyOpen(false);
+      refresh();
+    } catch (err) {
+      // A structured 409 names the rows that block the restamp: keep the dialog
+      // open and show them, so the operator can go issue or delete them.
+      const blockers = blockersFrom(err);
+      if (blockers) setCurrencyBlockers(blockers);
+      else handleActionError(err, t('contracts.currency.errors.change'));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, contract.id, currency, currencyConfirmed, currencyMode, refresh, t, targetCurrency]);
 
   const remove = useCallback(async () => {
     if (busy) return;
@@ -138,6 +241,10 @@ export default function ContractDetail({ detail, onChanged }: Props) {
 
   const availableTransitions = TRANSITIONS_FOR_STATUS[contract.status] ?? [];
   const canGenerate = contract.status === 'active';
+  // Draft contracts keep today's behaviour: their currency is changed through the
+  // editor's draft path, which this action deliberately does not touch.
+  const canChangeCurrency = can('contracts', 'manage') && contract.status === 'active';
+  const currencySubmittable = !!currencyMode && currencyConfirmed && targetCurrency !== currency;
 
   return (
     <div className="space-y-6" data-testid="contract-detail">
@@ -354,6 +461,20 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             </button>
           )}
 
+          {/* Change stamped currency (ACTIVE only, #3778). The server re-checks
+              permission, confirmation and eligibility under the row lock. */}
+          {canChangeCurrency && (
+            <button
+              type="button"
+              onClick={openCurrencyDialog}
+              disabled={busy}
+              data-testid="contract-currency-open"
+              className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {t('contracts.currency.actions.change')}
+            </button>
+          )}
+
           {/* Delete draft (write-gated, draft-only) */}
           {can('contracts', 'write') && contract.status === 'draft' && (
             <button
@@ -367,6 +488,125 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={currencyOpen}
+        onClose={() => setCurrencyOpen(false)}
+        title={t('contracts.currency.dialog.title')}
+        maxWidth="lg"
+        className="p-6"
+      >
+        <div className="space-y-4" data-testid="contract-currency-dialog">
+          <div>
+            <h3 className="text-base font-semibold">{t('contracts.currency.dialog.title')}</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t('contracts.currency.dialog.description', { currency })}
+            </p>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium" htmlFor="ct-currency">
+              {t('contracts.currency.dialog.currencyLabel')}
+            </label>
+            <select
+              id="ct-currency"
+              value={targetCurrency}
+              onChange={(e) => setTargetCurrency(e.target.value)}
+              data-testid="contract-currency-select"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+            >
+              {currencyOptions(currency).map((code) => (
+                <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* clearLines and reprice are mutually exclusive server-side, so the UI
+              models them as one radio group rather than two checkboxes that could
+              be sent together. */}
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">{t('contracts.currency.dialog.modeLegend')}</legend>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="radio" name="contract-currency-mode" value="clear"
+                checked={currencyMode === 'clear'}
+                onChange={() => setCurrencyMode('clear')}
+                data-testid="contract-currency-mode-clear"
+                className="mt-1"
+              />
+              <span>
+                <span className="font-medium">{t('contracts.currency.dialog.modeClear')}</span>
+                <span className="block text-muted-foreground">{t('contracts.currency.dialog.modeClearHint')}</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="radio" name="contract-currency-mode" value="reprice"
+                checked={currencyMode === 'reprice'}
+                onChange={() => setCurrencyMode('reprice')}
+                data-testid="contract-currency-mode-reprice"
+                className="mt-1"
+              />
+              <span>
+                <span className="font-medium">{t('contracts.currency.dialog.modeReprice')}</span>
+                <span className="block text-muted-foreground">{t('contracts.currency.dialog.modeRepriceHint')}</span>
+              </span>
+            </label>
+          </fieldset>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={currencyConfirmed}
+              onChange={(e) => setCurrencyConfirmed(e.target.checked)}
+              data-testid="contract-currency-confirm-check"
+              className="mt-1"
+            />
+            <span>{t('contracts.currency.dialog.confirm')}</span>
+          </label>
+
+          {currencyBlockers && (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm"
+              data-testid="contract-currency-blockers"
+            >
+              <p className="font-medium text-destructive">
+                {t(/* i18n-dynamic */ `contracts.currency.blockers.${currencyBlockers.code}`)}
+              </p>
+              <ul className="mt-2 space-y-1">
+                {currencyBlockers.ids.map((id) => (
+                  <li key={id} data-testid={`contract-currency-blocker-${id}`}>
+                    {INVOICE_BLOCKER_CODES.has(currencyBlockers.code) ? (
+                      <a href={`/billing/invoices/${id}`} className="text-primary hover:underline">{id}</a>
+                    ) : (
+                      <span className="font-mono text-xs">{id}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setCurrencyOpen(false)}
+              className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+            >
+              {t('common:actions.cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void submitCurrency()}
+              disabled={busy || !currencySubmittable}
+              data-testid="contract-currency-submit"
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {t('contracts.currency.dialog.submit')}
+            </button>
+          </div>
+        </div>
+      </Dialog>
 
       <ConfirmDialog
         open={cancelOpen}

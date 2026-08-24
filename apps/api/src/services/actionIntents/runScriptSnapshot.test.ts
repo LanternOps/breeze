@@ -404,6 +404,38 @@ describe('runScriptDigestMaterial drift sensitivity', () => {
 });
 
 describe('buildRunScriptSnapshot variable references', () => {
+  // #3409 PR4c-2: the declared-delivery arm is a reference like any other.
+  // The snapshot pins the secret's IDENTITY so a rotation between approval and
+  // release is detected, and the digest material must never carry its value.
+  it('pins a tenantSecret-bound parameter by identity and keeps its value out of the material', async () => {
+    const plaintext = 'hunter2-super-secret-value';
+    const built = await builtOf({
+      script: scriptRow({
+        content: 'echo "$BREEZE_VAR_TOKEN"',
+        parameters: [{ name: 'token', type: 'string', source: 'tenantSecret', variableKey: 'api_token' }],
+      }),
+      scope: fakeScope([
+        {
+          orgId: 'org-1',
+          present: [variable({ key: 'api_token', value: plaintext, variableId: 'var-s', version: 4, isSecret: true })],
+        },
+      ]),
+    });
+    expect(built.snapshot.variableReferences).toEqual([
+      {
+        orgId: 'org-1',
+        key: 'api_token',
+        state: 'present',
+        variableId: 'var-s',
+        version: 4,
+        isSecret: true,
+        ownerScope: 'organization',
+      },
+    ]);
+    expect(runScriptDigestMaterial(built.snapshot)).not.toContain(plaintext);
+    expect(JSON.stringify(built.snapshot)).not.toContain(plaintext);
+  });
+
   it('references the union of content tokens and parameter variableKeys', async () => {
     const snapshot = await snapshotOf({
       script: scriptRow({

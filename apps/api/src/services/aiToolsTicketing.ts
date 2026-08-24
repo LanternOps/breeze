@@ -36,6 +36,7 @@ import {
   TimeEntryServiceError
 } from './timeEntryService';
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
+import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
 
 type ParseResult<T> = { value: T } | { error: string };
@@ -47,6 +48,11 @@ function actorFrom(auth: AuthContext) {
 function serviceErrorToJson(err: unknown): string | null {
   if (err instanceof TicketServiceError) {
     return JSON.stringify({ error: err.message, code: err.code });
+  }
+  // Cross-currency move block (#3776). The AI never passes
+  // acceptCurrencyMismatch — a human accepts a mismatch, with invoices:write.
+  if (err instanceof TicketMoveCurrencyBlockedError) {
+    return JSON.stringify({ error: err.message, code: err.code, details: err.details });
   }
   return null;
 }
@@ -60,6 +66,15 @@ function timeEntryActorFrom(auth: AuthContext) {
     // AI tools always operate on the calling user's own entries — never admin-manage others'.
     manageAll: false as const
   };
+}
+
+/**
+ * The currency an entry's money is expressed in — the row's own snapshot
+ * (`time_entries.currency_code`, stamped once at creation / first money;
+ * null only for a standalone entry that carries no rate).
+ */
+function entryCurrency(entry: { currencyCode?: string | null }): string | null {
+  return entry.currencyCode ?? null;
 }
 
 /**
@@ -353,7 +368,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           hourlyRate: {
             type: 'number',
-            description: 'Override hourly rate in currency units (log_time_entry; defaults from ticket category)'
+            description: 'Override hourly rate in the ticket organization\'s currency (log_time_entry; defaults from org/category settings only when their rate currency matches the org)'
           }
         },
         required: ['action']
@@ -681,7 +696,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry });
+          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });
@@ -705,7 +720,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry });
+          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });
@@ -724,7 +739,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             },
             timeEntryActorFrom(auth)
           );
-          return JSON.stringify({ timeEntry: entry });
+          return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {
           if (err instanceof TimeEntryServiceError) {
             return JSON.stringify({ error: err.message });

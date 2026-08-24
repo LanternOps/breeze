@@ -29,7 +29,8 @@ vi.mock('../db/schema', () => ({
   approvalRequests: { id: 'id' },
 }));
 
-vi.mock('drizzle-orm', () => ({
+vi.mock('drizzle-orm', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('drizzle-orm')>()),
   eq: vi.fn((...args: unknown[]) => ({ _eq: args })),
   and: vi.fn((...args: unknown[]) => ({ _and: args })),
   isNull: vi.fn((...args: unknown[]) => ({ _isNull: args })),

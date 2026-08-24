@@ -81,7 +81,10 @@ describe('helperAuth middleware', () => {
       deviceId: device.id,
       orgId: auth.orgId,
       helperDeviceId: auth.helperDeviceId,
+      helperDevicePartnerId: auth.helperDevicePartnerId,
       scope: auth.scope,
+      partnerId: auth.partnerId,
+      tokenPartnerId: auth.token?.partnerId,
     });
   });
 
@@ -132,7 +135,10 @@ describe('helperAuth middleware', () => {
       deviceId: 'dev-1',
       orgId: 'org-1',
       helperDeviceId: 'dev-1',
+      helperDevicePartnerId: 'partner-1',
       scope: 'organization',
+      partnerId: null,
+      tokenPartnerId: null,
     });
     expect(withDbAccessContext).toHaveBeenCalledWith(
       expect.objectContaining({

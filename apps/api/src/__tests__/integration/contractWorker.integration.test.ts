@@ -31,6 +31,7 @@ describe('runContractBillingSweep', () => {
         }).returning({ id: partners.id });
 
         const [o] = await db.insert(organizations).values({
+          currencyCode: 'USD',
           partnerId: p!.id, name: 'O', slug: `o-${sfx}`
         }).returning({ id: organizations.id });
 
@@ -42,7 +43,8 @@ describe('runContractBillingSweep', () => {
           billingTiming: 'advance',
           intervalMonths: 1,
           startDate: '2026-07-01',
-          nextBillingAt: '2026-07-01'
+          nextBillingAt: '2026-07-01',
+          currencyCode: 'USD'
         }).returning({ id: contracts.id });
         contractId = ctr!.id;
 
@@ -94,6 +96,7 @@ describe('runContractBillingSweep', () => {
         const partnerId = p!.id;
 
         const [o] = await db.insert(organizations).values({
+          currencyCode: 'USD',
           partnerId, name: 'AIOrg', slug: `aio-${sfx}`
         }).returning({ id: organizations.id });
         const orgId = o!.id;

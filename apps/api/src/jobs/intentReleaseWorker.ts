@@ -1,12 +1,16 @@
 import { Job, Worker } from 'bullmq';
+import type { AiAgentRecipients } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
+import { aiAgentRuns, aiAgents } from '../db/schema/aiAgents';
 import { approvalRequests } from '../db/schema/approvals';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
+import { createNotification } from '../services/userNotifications';
+import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
@@ -616,18 +620,282 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
 }
 
 /**
+ * The run + agent behind an agent-originated intent, loaded under GENUINE
+ * system scope. `runOutsideDbContext` first is load-bearing: a bare system
+ * wrapper inside an ambient context is a passthrough (db/index.ts), and while
+ * this worker normally runs contextless, the notify path must stay correct if
+ * it is ever invoked from inside a request transaction.
+ */
+async function loadRunAndAgent(runId: string): Promise<{
+  run: {
+    id: string;
+    agentId: string;
+    /**
+     * The MERGED recipient set from the run's immutable snapshot — the only
+     * correct source. `ai_agents.recipients` on the row `run.agent_id` points
+     * at is always the PARTNER BASELINE (resolveEffectiveAgentSystem pins
+     * `agentId: partnerRow.id`), so using it silently drops every recipient an
+     * organization added through its override, and notifies nobody at all when
+     * only the override configured any. `mergeAgentPolicies` already unions
+     * the two sets into `effective.recipients`.
+     */
+    recipients: Partial<AiAgentRecipients>;
+  } | null;
+  agent: {
+    id: string;
+    orgId: string | null;
+    partnerId: string | null;
+    recipients: Partial<AiAgentRecipients>;
+  } | null;
+}> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [run] = await db
+        .select({
+          id: aiAgentRuns.id,
+          agentId: aiAgentRuns.agentId,
+          policySnapshot: aiAgentRuns.policySnapshot,
+        })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, runId))
+        .limit(1);
+      if (!run) return { run: null, agent: null };
+      const [agent] = await db
+        .select({
+          id: aiAgents.id,
+          orgId: aiAgents.orgId,
+          partnerId: aiAgents.partnerId,
+          recipients: aiAgents.recipients,
+        })
+        .from(aiAgents)
+        .where(eq(aiAgents.id, run.agentId))
+        .limit(1);
+      return {
+        run: {
+          id: run.id,
+          agentId: run.agentId,
+          recipients: run.policySnapshot?.effective?.recipients ?? {},
+        },
+        agent: agent ?? null,
+      };
+    }));
+}
+
+/**
+ * Same status switch the requester path uses below — the copy MUST derive
+ * from the freshly re-read `intent.status`, never the outbox event (see the
+ * long rationale in notifyRequesterOfOutcome) — but worded for a recipient
+ * who never asked for anything: an AGENT proposed this, a human decided it.
+ */
+function agentOutcomeCopy(intent: { targetSummary: string; status: string }): {
+  title: string;
+  message: string;
+  priority: 'normal' | 'high';
+} {
+  const summary = intent.targetSummary;
+  switch (intent.status) {
+    case 'approved':
+    case 'executing':
+      return { title: 'Agent action approved', message: `${summary} was approved and is now running.`, priority: 'normal' };
+    case 'completed':
+      return { title: 'Agent action completed', message: `${summary} was approved and has finished.`, priority: 'normal' };
+    case 'failed':
+      // Approved but did not run. The distinction matters most here.
+      return { title: 'Agent action failed', message: `${summary} was approved but could not run.`, priority: 'high' };
+    case 'rejected':
+      return { title: 'Agent proposal denied', message: `${summary} was denied and will not run.`, priority: 'normal' };
+    case 'cancelled':
+      return { title: 'Agent proposal cancelled', message: `${summary} was cancelled and will not run.`, priority: 'normal' };
+    case 'expired':
+      return { title: 'Agent proposal expired', message: `${summary} expired before anyone decided and will not run.`, priority: 'normal' };
+    default:
+      return { title: 'Agent proposal update', message: `${summary} changed state.`, priority: 'normal' };
+  }
+}
+
+/**
+ * Tell the requester how their intent ended.
+ *
+ * The point of doing this from the outbox rather than inline at decide time:
+ * the requester's chat turn is usually long over by then
+ * (aiAgentSdk.ts:1030-1040), which is exactly why they never learned the
+ * outcome before wave 2.
+ *
+ * Reads the intent fresh instead of trusting the job payload. Outbox rows are
+ * delivered at-least-once and can be processed well after the fact, so the
+ * status on the row is the truth and the event is only a nudge to go look.
+ */
+async function notifyRequesterOfOutcome(
+  intentId: string,
+  eventType: 'intent_approved' | 'intent_rejected' | 'intent_expired',
+): Promise<void> {
+  const [intent] = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        id: actionIntents.id,
+        orgId: actionIntents.orgId,
+        requestedByUserId: actionIntents.requestedByUserId,
+        targetSummary: actionIntents.targetSummary,
+        status: actionIntents.status,
+        approvalScope: actionIntents.approvalScope,
+        requestingAgentRunId: actionIntents.requestingAgentRunId,
+        requestingClientLabel: actionIntents.requestingClientLabel,
+      })
+      .from(actionIntents)
+      .where(eq(actionIntents.id, intentId))
+      .limit(1));
+
+  if (!intent) {
+    // Outboxed and then deleted: a genuine anomaly, not an expected case.
+    captureException(new Error(`intent ${intentId} not found for outcome notification`));
+    return;
+  }
+  // Agent-originated intent (wave 3b): a headless proposal has NO requester,
+  // so "the requester was watching" is false at every approval scope — this
+  // branch must run BEFORE both the four_eyes early-out and the
+  // no-human-requester guard below, either of which would swallow it. Notify
+  // the agent's validated recipients, resolved against LIVE membership
+  // (resolveRecipientUserIds), never the raw stored ids. Copy derives from
+  // the re-read intent.status exactly like the requester path, because the
+  // outbox event may be late or release may have failed after approval.
+  if (!intent.requestedByUserId && intent.requestingAgentRunId) {
+    const { run, agent } = await loadRunAndAgent(intent.requestingAgentRunId);
+    if (!run || !agent) return;
+    // Merged set from the run snapshot, not the baseline agent row's column
+    // (see loadRunAndAgent). resolveRecipientUserIds ignores the owner fields
+    // of its first argument and re-derives membership against the intent org.
+    const userIds = await resolveRecipientUserIds(
+      { orgId: agent.orgId, partnerId: agent.partnerId, recipients: run.recipients },
+      intent.orgId,
+    );
+    const { title, message, priority } = agentOutcomeCopy(intent);
+    for (const userId of userIds) {
+      // runOutsideDbContext first — a bare system wrapper inside an ambient
+      // request context is a passthrough, and this is a cross-user insert.
+      await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          createNotification({
+            userId,
+            orgId: intent.orgId,
+            type: 'ai',
+            priority,
+            title,
+            message: `${intent.requestingClientLabel ?? 'AI agent'}: ${message}`,
+            link: '/approvals',
+            metadata: { intentId: intent.id, agentId: agent.id, agentRunId: run.id, status: intent.status },
+            // Status-scoped: a later, MORE ACCURATE status (approved -> failed)
+            // must not be suppressed by the earlier notification's dedupe row.
+            dedupeKey: `agent-intent-outcome:${intent.id}:${intent.status}`,
+          })));
+    }
+    return;
+  }
+
+  // Defensive today: no creation path sets requestingApiKeyId yet —
+  // createActionIntent attributes every intent to auth.user.id (see
+  // actorContext.ts). When API-key-owned MCP intents land (Plan 2), those rows
+  // have no human requester and correctly stay silent; agent-originated
+  // intents (wave 3b) were routed to recipients above, before this early
+  // return. org_id is NOT NULL in the schema, so it is deliberately not
+  // checked here.
+  if (!intent.requestedByUserId) return;
+
+  // A SUPERVISED intent's requester is also its only approver. Every
+  // supervised intent today is chat-sourced, so the requester was watching the
+  // chat stream that created it — the inline timeout already told them.
+  // Notifying here would put a bell row on every abandoned 5-minute chat
+  // intent, which is easily the highest-volume producer of this new type, and
+  // would train people to ignore the bell. Only four-eyes has a requester who
+  // genuinely could not see the outcome. Mirrors the same scope gate the push
+  // path uses at intentService.ts. Revisit when supervised mcp_api intents
+  // exist: those get a 24h window with NO inline channel (computeExpiresAt,
+  // intentService.ts), so the "they were watching" rationale won't hold there.
+  if (intent.approvalScope !== 'four_eyes') return;
+
+  // Copy comes from the intent's CURRENT status, not from the event type.
+  //
+  // This is the whole reason the status column is selected. `releaseApprovedIntent`
+  // returns void and has around a dozen early-return paths that mean it did NOT
+  // run — revalidation stopped it, the release_by deadline had passed, it lost
+  // the approved->executing CAS, the tool threw. Deriving the copy from
+  // `eventType` told the requester "was approved and is now running" in every
+  // one of those cases. For an intent that was failed closed because the
+  // approver's permission had been revoked, that is an outright false statement
+  // about a privileged action.
+  //
+  // Outbox delivery is also at-least-once and can land minutes late, by which
+  // time an approved intent may well have completed, failed or expired.
+  const summary = intent.targetSummary;
+  const copy = ((): { title: string; message: string } => {
+    switch (intent.status) {
+      case 'approved':
+      case 'executing':
+        return { title: 'Approval granted', message: `${summary} was approved and is now running.` };
+      case 'completed':
+        return { title: 'Approval granted', message: `${summary} was approved and has finished.` };
+      case 'failed':
+        // Approved but did not run. The distinction matters most here.
+        return { title: 'Action failed', message: `${summary} was approved but could not run.` };
+      case 'rejected':
+        return { title: 'Approval denied', message: `${summary} was denied and will not run.` };
+      case 'cancelled':
+        return { title: 'Request cancelled', message: `${summary} was cancelled and will not run.` };
+      case 'expired':
+        return { title: 'Approval expired', message: `${summary} expired before it was decided and will not run.` };
+      default:
+        // pending_approval, or a status added later: say only what is certain.
+        return { title: 'Approval update', message: `${summary} changed state.` };
+    }
+  })();
+
+  await withSystemDbAccessContext(() =>
+    createNotification({
+      userId: intent.requestedByUserId!,
+      orgId: intent.orgId,
+      type: 'approval',
+      title: copy.title,
+      message: copy.message,
+      link: '/approvals',
+      metadata: { intentId: intent.id, outcome: eventType, status: intent.status },
+      // Scoped to the STATUS, not just the intent. A per-intent key meant that
+      // once a premature "is now running" had been written, the later truthful
+      // notification deduped to null and the person was never corrected.
+      dedupeKey: `intent-outcome:${intent.id}:${intent.status}`,
+    }));
+}
+
+/**
  * One job's worth of dispatch logic, factored out of the Worker processor so
- * it can be unit tested without spinning up a real BullMQ Worker. Only
- * `intent_approved` is a release trigger — `intent_created` (also published
- * to this same queue by intentOutboxPublisher.ts, which this worker shares
- * a queue with but not a consumer role) is acknowledged as a no-op rather
- * than thrown on, so it doesn't retry forever.
+ * it can be unit tested without spinning up a real BullMQ Worker.
+ *
+ * `intent_approved` is the release trigger AND an outcome to report.
+ * `intent_rejected` / `intent_expired` are outcome-only. `intent_created` is
+ * acknowledged as a no-op rather than thrown on, so it doesn't retry forever
+ * (intentOutboxPublisher.ts shares this queue but not this consumer role).
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
+  if (data.eventType === 'intent_rejected' || data.eventType === 'intent_expired') {
+    await notifyRequesterOfOutcome(data.intentId, data.eventType);
+    return { released: false };
+  }
+
   if (data.eventType !== 'intent_approved') {
     return { released: false };
   }
+
   await releaseApprovedIntent(data.intentId);
+
+  // AFTER the release, and deliberately not allowed to undo it. The release
+  // already committed; throwing here would retry the whole job and re-run
+  // releaseApprovedIntent, which is why the notification is swallowed and the
+  // CAS inside the release path is what makes a retry safe.
+  try {
+    await notifyRequesterOfOutcome(data.intentId, 'intent_approved');
+  } catch (err) {
+    console.error(`[IntentReleaseWorker] outcome notification failed for intent ${data.intentId}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+
   return { released: true };
 }
 

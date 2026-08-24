@@ -22,6 +22,9 @@ function sqlNumberPresent(t: { invoiceNumber: unknown }): SQL {
 function sqlOpenForOverdue(t: { status: unknown }): SQL {
   return sql`${t.status} IN ('sent','partially_paid')`;
 }
+function sqlPublicLinkHashPresent(t: { publicLinkTokenHash: unknown }): SQL {
+  return sql`${t.publicLinkTokenHash} IS NOT NULL`;
+}
 
 export const invoices = pgTable('invoices', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -31,7 +34,11 @@ export const invoices = pgTable('invoices', {
   siteId: uuid('site_id'),
   invoiceNumber: varchar('invoice_number', { length: 40 }),
   status: invoiceStatusEnum('status').notNull().default('draft'),
-  currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
+  // Multi-currency (spec §5): stamped from the org (or copied from the source
+  // document) at creation and immutable once monetary lines exist. Deliberately
+  // NO .default() — every creation path must stamp it explicitly, so a missed
+  // path is a loud insert failure, never a silent USD document.
+  currencyCode: char('currency_code', { length: 3 }).notNull(),
   issueDate: date('issue_date'),
   dueDate: date('due_date'),
   subtotal: numeric('subtotal', { precision: 12, scale: 2 }).notNull().default('0'),
@@ -49,6 +56,8 @@ export const invoices = pgTable('invoices', {
   notes: text('notes'),
   terms: text('terms'),
   sellerSnapshot: jsonb('seller_snapshot'),
+  // Render-locale snapshot, stamped once at issue/send (#3777). NULL = resolve from partner at render.
+  documentLocale: varchar('document_locale', { length: 16 }),
   termsAndConditions: text('terms_and_conditions'),
   sentAt: timestamp('sent_at'),
   firstViewedAt: timestamp('first_viewed_at'),
@@ -60,6 +69,13 @@ export const invoices = pgTable('invoices', {
   // self-FKs created in SQL (ON DELETE SET NULL) to keep drizzle types simple
   replacesInvoiceId: uuid('replaces_invoice_id'),
   replacedByInvoiceId: uuid('replaced_by_invoice_id'),
+  // Public view-and-pay link (2026-08-21 spec): SHA-256 hex of the opaque bearer
+  // token (the lookup key — replacing it revokes every issued link), the token
+  // encrypted at rest (row-bound AAD via encryptedColumnRegistry, so copy-link
+  // reproduces the same url), and the expiry persisted at mint.
+  publicLinkTokenHash: char('public_link_token_hash', { length: 64 }),
+  publicLinkTokenCt: text('public_link_token_ct'),
+  publicLinkExpiresAt: timestamp('public_link_expires_at'),
   pdfDocumentRef: text('pdf_document_ref'),
   pdfSha256: char('pdf_sha256', { length: 64 }),
   createdBy: uuid('created_by').references(() => users.id),
@@ -74,7 +90,9 @@ export const invoices = pgTable('invoices', {
   // Composite-FK target for the child (invoice_id, org_id) FKs and the
   // invoices(org_id, partner_id) → organizations dual-axis FK. Created in SQL
   // migration 2026-06-15-b; declared here so db:check-drift stays clean.
-  uniqueIndex('invoices_id_org_uq').on(t.id, t.orgId)
+  uniqueIndex('invoices_id_org_uq').on(t.id, t.orgId),
+  // Public-link lookup key + cross-invoice collision guard (2026-08-21).
+  uniqueIndex('invoices_public_link_hash_uq').on(t.publicLinkTokenHash).where(sqlPublicLinkHashPresent(t))
 ]);
 
 export const invoiceLines = pgTable('invoice_lines', {
@@ -84,6 +102,13 @@ export const invoiceLines = pgTable('invoice_lines', {
   sourceType: invoiceLineSourceTypeEnum('source_type').notNull(),
   // sourceId is polymorphic (time_entries|ticket_parts) — FK-by-convention, no DB FK.
   sourceId: uuid('source_id'),
+  // Durable contract lineage (#3778, wave 6). Unlike the polymorphic sourceId,
+  // this survives contract_lines deletion (removeContractLine is permitted on
+  // ACTIVE contracts) and is same-tenant-enforced by the composite FK
+  // (source_contract_id, org_id) -> contracts(id, org_id) ON DELETE SET NULL
+  // (source_contract_id), created in SQL migration 2026-09-02-a. It is the ONLY
+  // predicate the ACTIVE-contract currency restamp keys on.
+  sourceContractId: uuid('source_contract_id'),
   // catalog_item_id + ticket_id FKs created in SQL (ON DELETE SET NULL) to avoid coupling
   // issued-invoice history to catalog/ticket deletion and dodge import cycles.
   catalogItemId: uuid('catalog_item_id'),

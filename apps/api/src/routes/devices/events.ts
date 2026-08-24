@@ -290,8 +290,13 @@ eventsRoutes.get(
   }
 );
 
-function resolveActorLabel(actorType: string, actorId: string): string {
+export function resolveActorLabel(actorType: string, actorId: string): string {
   if (actorType === 'agent') return 'Agent';
+  if (actorType === 'ai_agent') {
+    // Autonomous AI-agent principal (wave 3, #3824), distinct from 'agent'
+    // (the Go device agent).
+    return 'AI Agent';
+  }
   if (actorType === 'api_key') return 'API Key';
   if (actorType === 'system') return 'System';
   return 'Unknown';

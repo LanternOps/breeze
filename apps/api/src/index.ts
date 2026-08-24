@@ -35,6 +35,7 @@ import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { quoteRoutes } from './routes/quotes';
 import { quotesPublicRoutes } from './routes/quotesPublic';
+import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
@@ -129,6 +130,8 @@ import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './routes/tunne
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
+import { aiProviderRoutes } from './routes/aiProvider';
+import { aiAgentsRoutes } from './routes/aiAgents';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -216,6 +219,14 @@ import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
 import {
+  initializeStripeAccountCacheRefreshWorker,
+  shutdownStripeAccountCacheRefreshWorker,
+} from './jobs/stripeAccountCacheRefresh';
+import {
+  initializeExchangeRateSyncWorker,
+  shutdownExchangeRateSyncWorker,
+} from './jobs/exchangeRateSync';
+import {
   initializeOAuthRevocationRetryWorker,
   shutdownOAuthRevocationRetryWorker,
 } from './jobs/oauthRevocationRetryWorker';
@@ -285,6 +296,11 @@ import { initializeWingetIndexSyncWorker, shutdownWingetIndexSyncWorker } from '
 import { initializeVulnerabilityJobs, shutdownVulnerabilityJobs } from './jobs/vulnerabilityJobs';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
+// AI agents wave 3c: importing this module also REGISTERS the run enqueuer with
+// services/aiAgents/runService at module scope, so the manual-trigger route can
+// enqueue even in a process whose background workers never booted.
+import { initializeAiAgentRunner, shutdownAiAgentRunner } from './jobs/aiAgentRunner';
+
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
@@ -506,7 +522,8 @@ app.use('*', securityMiddleware());
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
-    capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+    capture: (message, tags) =>
+      captureMessage(message, { eventCode: 'body_limit_rejected', tags }),
   })
 );
 app.use('*', globalRateLimit());
@@ -966,6 +983,10 @@ api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets/mailbox', mailboxRoutes);
 api.route('/tickets', ticketsRoutes);
 api.route('/catalog', catalogRoutes);
+// Public, token-gated invoice view-and-pay (no auth) — MUST precede the
+// auth-gated /invoices router so the unauthenticated /invoices/public/* sub-path
+// isn't swallowed by invoiceRoutes' auth middleware (mirrors /quotes/public).
+api.route('/invoices/public', invoicesPublicRoutes);
 api.route('/invoices', invoiceRoutes);
 // Public, token-gated quote acceptance (no auth) — MUST precede the auth-gated
 // /quotes router so the unauthenticated /quotes/public/* sub-path isn't swallowed
@@ -1119,6 +1140,8 @@ api.route('/metrics', metricsRoutes);
 api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/viewers', viewerRoutes);
+api.route('/ai/provider', aiProviderRoutes);
+api.route('/ai/agents', aiAgentsRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
@@ -1404,6 +1427,8 @@ async function initializeWorkers(): Promise<void> {
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
     ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
     ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
+    // initializeAiAgentRunner is synchronous (returns void), so wrap it.
+    ['aiAgentRunner', async () => { initializeAiAgentRunner(); }],
     ['auditBaselineJobs', initializeAuditBaselineJobs],
     ['cisJobs', initializeCisJobs],
     ['automationWorker', initializeAutomationWorker],
@@ -1424,6 +1449,12 @@ async function initializeWorkers(): Promise<void> {
     ['serviceProcessCheckRetention', initializeServiceProcessCheckRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
+    // #3777 review F6: bootstrap/refresh the Stripe account currency cache for
+    // connections that predate it (boot one-shot + daily sweep).
+    ['stripeAccountCacheRefresh', initializeStripeAccountCacheRefreshWorker],
+    // Wave 7 (#3779): daily ECB reference-rate feed for reporting-only FX
+    // (boot one-shot + 17:15 UTC cron, after the ECB's ~16:00 CET publication).
+    ['exchangeRateSync', initializeExchangeRateSyncWorker],
     ['oauthRevocationRetryWorker', async () => { initializeOAuthRevocationRetryWorker(); }],
     // Wave 5 Task 3: durable/idempotent provider certificate revocation
     // (worker + 5-minute sweep for due retries and expired pending-activation
@@ -1659,6 +1690,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownServiceProcessCheckRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
+    shutdownStripeAccountCacheRefreshWorker,
+    shutdownExchangeRateSyncWorker,
     shutdownOAuthRevocationRetryWorker,
     shutdownMtlsCertificateRevocationWorker,
     shutdownAuthEmailWorker,
@@ -1680,6 +1713,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAbuseSignalsWorker,
     shutdownUserRiskRetention,
     shutdownAutomationWorker,
+    shutdownAiAgentRunner,
     shutdownSoftwareRemediationWorker,
     shutdownSoftwareComplianceWorker,
     shutdownAuditBaselineJobs,
@@ -1853,7 +1887,8 @@ async function bootstrap(): Promise<void> {
   const eventLoopMonitor = startEventLoopMonitor({
     onSample: createStarvationReporter({
       thresholdMs: getEventLoopStarvationThresholdMs,
-      capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+      capture: (message, tags) =>
+        captureMessage(message, { eventCode: 'event_loop_starvation', tags }),
     }),
   });
   // Say whether the instance can see its own loop, and at what settings. Without

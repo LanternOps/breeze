@@ -8,6 +8,8 @@
 // first. These helpers are intentionally self-contained (no invoice-status / DB
 // coupling) so the module is safe to import into the browser bundle.
 
+import { multiplyToCurrency, roundToCurrency } from '../utils/currency';
+
 /** Money string/number → integer cents (round-half-up — `Math.round` ties toward
  *  +∞ — on the ×100 product). Null/empty/non-finite → 0, so a stray NaN can't
  *  propagate to a literal "NaN" on the totals rail (this module is browser-safe
@@ -23,17 +25,17 @@ export function fromCents(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
-/** Round-half-up of a fractional-cent amount. */
-function roundHalfUp(n: number): number {
-  return Math.floor(n + 0.5);
-}
-
-/** quantity × unitPrice in full precision, then a single round-half-up at the
- *  cent boundary. (Rounding unitPrice to cents first would lose sub-cent unit
- *  prices like 0.335 — 3 × 0.335 = 1.005 must round half-up to 1.01.) */
-export function computeLineTotal(quantity: string | number, unitPrice: string | number): string {
-  const fractionalCents = Number(quantity) * Number(unitPrice) * 100;
-  return fromCents(roundHalfUp(fractionalCents));
+/** quantity × unitPrice in EXACT decimal (scaled integers), then a single
+ *  round-half-up at the currency's minor unit. (Rounding unitPrice to cents first
+ *  would lose sub-cent unit prices like 0.335 — 3 × 0.335 = 1.005 must round
+ *  half-up to 1.01; and going through a double would turn 0.02 × 7.25 = 0.145
+ *  into 0.14 — review #2.) */
+export function computeLineTotal(
+  quantity: string | number,
+  unitPrice: string | number,
+  currencyCode = 'USD',
+): string {
+  return multiplyToCurrency(quantity, unitPrice, currencyCode);
 }
 
 /**
@@ -119,6 +121,7 @@ export function computeQuoteTotals(
   lines: QuoteLineForMath[],
   taxRate: number | null,
   deposit?: QuoteDepositConfig | null,
+  currencyCode = 'USD',
 ): QuoteTotals {
   let oneTime = 0, monthly = 0, annual = 0, taxableBasis = 0, oneTimeTaxableBasis = 0;
   let eligibleCents = 0, eligibleTaxableCents = 0;
@@ -128,7 +131,7 @@ export function computeQuoteTotals(
     if (!l.customerVisible) continue;
     // Route per-line cents through computeLineTotal so they equal the persisted
     // line_total (rounded to cents) and match invoices exactly.
-    const lineCents = toCents(computeLineTotal(l.quantity, l.unitPrice));
+    const lineCents = toCents(computeLineTotal(l.quantity, l.unitPrice, currencyCode));
     if (l.recurrence === 'monthly') monthly += lineCents;
     else if (l.recurrence === 'annual') annual += lineCents;
     else oneTime += lineCents;
@@ -170,23 +173,28 @@ export function computeQuoteTotals(
   // guard agree with the documented contract, rather than storing a bogus "0.00".
   // validateQuoteDeposit still hard-blocks these before a quote can be sent.
   if (depositCents !== null && depositCents <= 0) depositCents = null;
+  // The zero-collapse must hold AFTER currency rounding too: a positive
+  // fractional-cent deposit can round to zero at a coarse exponent (30% of
+  // ¥1 = ¥0.30 → ¥0), and that rounded zero is still "no deposit".
+  const depositDueTotal = depositCents !== null ? roundToCurrency(depositCents / 100, currencyCode) : null;
+  const depositDue = depositDueTotal !== null && Number(depositDueTotal) > 0 ? depositDueTotal : null;
 
   return {
-    subtotal: fromCents(subtotal),
-    taxTotal: fromCents(taxCents),
-    total: fromCents(subtotal + taxCents),
-    oneTimeTotal: fromCents(oneTime),
-    monthlyRecurringTotal: fromCents(monthly),
-    annualRecurringTotal: fromCents(annual),
-    dueOnAcceptanceTotal: fromCents(dueOnAcceptanceCents),
-    depositDueTotal: depositCents !== null ? fromCents(depositCents) : null,
+    subtotal: roundToCurrency(subtotal / 100, currencyCode),
+    taxTotal: roundToCurrency(taxCents / 100, currencyCode),
+    total: roundToCurrency((subtotal + taxCents) / 100, currencyCode),
+    oneTimeTotal: roundToCurrency(oneTime / 100, currencyCode),
+    monthlyRecurringTotal: roundToCurrency(monthly / 100, currencyCode),
+    annualRecurringTotal: roundToCurrency(annual / 100, currencyCode),
+    dueOnAcceptanceTotal: roundToCurrency(dueOnAcceptanceCents / 100, currencyCode),
+    depositDueTotal: depositDue,
     categoryBreakdown: CATEGORY_ORDER
       .filter((k) => cat[k])
       .map((k) => ({
         category: k,
-        oneTimeTotal: fromCents(cat[k]!.oneTime),
-        monthlyTotal: fromCents(cat[k]!.monthly),
-        annualTotal: fromCents(cat[k]!.annual),
+        oneTimeTotal: roundToCurrency(cat[k]!.oneTime / 100, currencyCode),
+        monthlyTotal: roundToCurrency(cat[k]!.monthly / 100, currencyCode),
+        annualTotal: roundToCurrency(cat[k]!.annual / 100, currencyCode),
       })),
   };
 }
@@ -201,9 +209,10 @@ export function validateQuoteDeposit(
   lines: QuoteLineForMath[],
   taxRate: number | null,
   deposit: QuoteDepositConfig,
+  currencyCode?: string,
 ): QuoteDepositValidation {
   if (deposit.type === 'none') return { ok: true, depositDueTotal: null };
-  const totals = computeQuoteTotals(lines, taxRate, deposit);
+  const totals = computeQuoteTotals(lines, taxRate, deposit, currencyCode);
   if (toCents(totals.dueOnAcceptanceTotal) <= 0) {
     return { ok: false, code: 'DEPOSIT_REQUIRES_ONE_TIME_LINES',
       message: 'A deposit needs at least one one-time, customer-visible line' };
@@ -238,10 +247,10 @@ export function markupPct(price: string | number, cost: string | number | null |
 }
 
 /** Unit price from a target markup% on cost, cent-rounded (round-half-up). */
-export function priceFromMarkup(cost: string | number, markupPctValue: number): string {
+export function priceFromMarkup(cost: string | number, markupPctValue: number, currencyCode = 'USD'): string {
   const c = Number(cost);
   if (!Number.isFinite(c) || !Number.isFinite(markupPctValue)) return '0.00';
-  return fromCents(roundHalfUp(c * (1 + markupPctValue / 100) * 100));
+  return roundToCurrency(c * (1 + markupPctValue / 100), currencyCode);
 }
 
 export interface QuoteProfit {

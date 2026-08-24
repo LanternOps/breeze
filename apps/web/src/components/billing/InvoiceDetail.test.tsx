@@ -195,9 +195,9 @@ describe('InvoiceDetail', () => {
     expect(screen.getByTestId('invoice-void-submit')).not.toBeDisabled();
   });
 
-  it('shows "Send payment link" when Stripe is connected and POSTs pay-link', async () => {
-    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
-      if (input.endsWith('/pay-link') && opts?.method === 'POST') return json({ data: { url: 'https://checkout.stripe.com/x' } });
+  it('copies the durable public link via GET /public-link when Stripe is connected', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/public-link')) return json({ data: { url: 'https://portal.test/portal/invoice/tok-abc' } });
       if (input.endsWith('/payments')) return json({ data: [] });
       return json({ data: {} });
     });
@@ -207,15 +207,17 @@ describe('InvoiceDetail', () => {
     expect(screen.queryByTestId('invoice-stripe-nudge')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('invoice-pay-link'));
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/pay-link') && (c[1] as RequestInit)?.method === 'POST')).toBe(true);
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/public-link'))).toBe(true);
     });
   });
 
-  it('shows a connect-Stripe nudge (no pay-link) when not connected', async () => {
+  it('shows the connect-Stripe nudge but KEEPS the copy-link action when not connected', async () => {
+    // The public page degrades to view+PDF without Stripe, so the durable link
+    // stays copyable — unlike the retired one-shot Stripe checkout copy.
     render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
     expect(screen.getByTestId('invoice-stripe-nudge')).toBeInTheDocument();
-    expect(screen.queryByTestId('invoice-pay-link')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-pay-link')).toBeInTheDocument();
   });
 
   it('shows a dashed empty state with an Editor CTA on an empty draft (no CTA once issued)', async () => {
@@ -265,5 +267,98 @@ describe('InvoiceDetail', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-payment-p1')).toBeInTheDocument());
     expect(screen.getByTestId('invoice-payment-online-p1')).toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-void-p1')).not.toBeInTheDocument();
+  });
+});
+
+describe('InvoiceDetail — Stripe currency-mismatch warning (#3777)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    _resetShowMarginMemoryForTests();
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [] });
+      return json({ data: {} });
+    });
+  });
+
+  it('renders the warn-don\'t-block copy when the API reports a currency mismatch', async () => {
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          invoice: { ...issued.invoice, currencyCode: 'EUR' },
+          stripeConnected: true,
+          stripeAccountCurrency: 'USD',
+          currencyWarning: {
+            code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
+            documentCurrency: 'EUR',
+            accountCurrency: 'USD',
+            message: 'server copy',
+          },
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    const warning = screen.getByTestId('invoice-stripe-currency-warning');
+    expect(warning.textContent).toContain('EUR');
+    expect(warning.textContent).toContain('USD');
+    // Never blocks the pay-link action.
+    expect(screen.getByTestId('invoice-pay-link')).not.toBeDisabled();
+  });
+
+  it('renders the "currency not cached — refresh" warning for STRIPE_ACCOUNT_CURRENCY_UNKNOWN (review F6)', async () => {
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          stripeConnected: true,
+          stripeAccountCurrency: null,
+          currencyWarning: {
+            code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN',
+            documentCurrency: 'EUR',
+            accountCurrency: null,
+            message: 'server copy',
+          },
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    const warning = screen.getByTestId('invoice-stripe-currency-warning');
+    expect(warning.textContent).toMatch(/not (been )?cached|refresh/i);
+    expect(warning.textContent).not.toContain('null');
+    expect(screen.getByTestId('invoice-pay-link')).not.toBeDisabled();
+  });
+
+  it('renders nothing when the currencies match (warning null)', async () => {
+    render(
+      <InvoiceDetail
+        detail={{ ...issued, stripeConnected: true, stripeAccountCurrency: 'USD', currencyWarning: null }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-stripe-currency-warning')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when Stripe is not connected, even if a stale warning is present', async () => {
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          stripeConnected: false,
+          currencyWarning: {
+            code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT',
+            documentCurrency: 'EUR',
+            accountCurrency: 'USD',
+            message: 'server copy',
+          },
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-stripe-currency-warning')).not.toBeInTheDocument();
   });
 });

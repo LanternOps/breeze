@@ -80,17 +80,37 @@ describe('InvoiceDetail deposit + due-date + request payment', () => {
     });
   });
 
-  it('labels the re-send action "Request payment" once partially paid; POSTs /send', async () => {
+  // The email action lives in InvoiceActions (rendered in this rail) — these
+  // assert the label logic the invoice-vs-quote parity work folded in there.
+  it('labels the email action "Request payment" once partially paid; composes to /send', async () => {
     render(<InvoiceDetail detail={detail({ status: 'partially_paid', amountPaid: '300.00', balance: '700.00', depositDue: '300.00' })} onChanged={vi.fn()} />);
-    const btn = await screen.findByTestId('invoice-request-payment');
+    const btn = await screen.findByTestId('invoice-resend');
     expect(btn).toHaveTextContent('Request payment');
     fireEvent.click(btn);
+    // The composer is the confirm step: fill a recipient, then send. sentAt is
+    // null on this fixture, so the FIRST email still goes through /send (which
+    // stamps sent_at); only a later one is a /resend.
+    fireEvent.change(await screen.findByTestId('invoice-send-to'), { target: { value: 'ap@acme.test' } });
+    fireEvent.click(screen.getByTestId('invoice-send-confirm'));
     await waitFor(() => expect(fetchMock.mock.calls.some((c) => c[0] === '/invoices/inv-1/send')).toBe(true));
   });
 
-  it('labels the re-send action "Send invoice" when nothing is paid yet', async () => {
+  it('labels the email action "Send invoice" when nothing is paid yet', async () => {
     render(<InvoiceDetail detail={detail()} onChanged={vi.fn()} />);
-    const btn = await screen.findByTestId('invoice-request-payment');
+    const btn = await screen.findByTestId('invoice-resend');
     expect(btn).toHaveTextContent('Send invoice');
+  });
+
+  // Once the invoice HAS been emailed, the same control re-sends — and must hit
+  // /resend, which pins sent_at rather than restamping it.
+  it('reads "Re-send" and POSTs /resend once sent_at is stamped', async () => {
+    render(<InvoiceDetail detail={detail({ sentAt: '2026-06-02T00:00:00Z' })} onChanged={vi.fn()} />);
+    const btn = await screen.findByTestId('invoice-resend');
+    expect(btn).toHaveTextContent('Re-send');
+    fireEvent.click(btn);
+    fireEvent.change(await screen.findByTestId('invoice-send-to'), { target: { value: 'ap@acme.test' } });
+    fireEvent.click(screen.getByTestId('invoice-send-confirm'));
+    await waitFor(() => expect(fetchMock.mock.calls.some((c) => c[0] === '/invoices/inv-1/resend')).toBe(true));
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/invoices/inv-1/send')).toBe(false);
   });
 });

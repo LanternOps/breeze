@@ -4,6 +4,10 @@
     "dashboard": "Tableau de bord",
     "devices": "Dispositifs",
     "alerts": "Alertes",
+    "approvals": "Approbations",
+    "pendingApprovals": "{{count}} approbations en attente",
+    "pendingApprovals_one": "{{count}} approbation en attente",
+    "pendingApprovals_other": "{{count}} approbations en attente",
     "tickets": "Tickets",
     "incidents": "Incidents",
     "remoteAccess": "Accès à distance",
@@ -46,6 +50,7 @@
     "partner": "Partenaire",
     "organizations": "Organisations",
     "aiUsageBudget": "Utilisation et budget de l’IA",
+    "aiAgents": "Agents IA",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "users": "Utilisateurs",
@@ -699,7 +704,20 @@
       "recently": "Récemment",
       "markUnread": "Marquer comme non lue",
       "markRead": "Marquer comme lu",
-      "preferences": "Préférences de notifications"
+      "preferences": "Préférences de notifications",
+      "types": {
+        "alert": "Alerte",
+        "device": "Appareil",
+        "script": "Scénario",
+        "automation": "Automatisation",
+        "system": "Système",
+        "user": "Utilisateur",
+        "security": "Sécurité",
+        "ticket": "Demande",
+        "approval": "Approbation",
+        "ai": "IA",
+        "unknown": "Avis"
+      }
     },
     "sidebar": {
       "autoHide": "Cache automatique dans la barre latérale",
@@ -745,7 +763,8 @@
           "service": "Service"
         },
         "noResults": "Aucun article de catalogue assorti.",
-        "placeholder": "Rechercher dans le catalogue par nom ou SKU"
+        "placeholder": "Rechercher dans le catalogue par nom ou SKU",
+        "noPriceInCurrency": "Aucun prix en {{currency}}"
       },
       "PolishButton": {
         "actions": {
@@ -2380,5 +2399,8 @@
     "later": "Afficher plus tard",
     "learnMore": "En savoir plus",
     "link": "Nouveautés"
+  },
+  "money": {
+    "approximateTotal": "≈ {{amount}} approximatif · taux du {{rateDate}}"
   }
 }

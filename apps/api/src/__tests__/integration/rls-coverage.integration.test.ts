@@ -89,6 +89,8 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'software_product_resolutions', // Global DisplayName→product resolution cache/log (#2290). Forced RLS, system-only policy → only system context.
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
+  'supported_currencies', // Global ISO-4217 allowlist (multi-currency spec §4). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read it), system-only writes. Mirrors winget_package_index.
+  'exchange_rates', // Global reporting-only FX reference data (multi-currency spec §8). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read rates to render an approximate total), system-only writes. Mirrors supported_currencies. Proven by exchangeRates.integration.test.ts.
   'winget_package_index', // Platform-global mirror of the public microsoft/winget-pkgs manifest tree (no tenant axis, no tenant data). Forced RLS with a permissive `USING (true)` SELECT policy — the /software/package-search route reads it from an ordinary org-scoped request context — plus a system-only FOR ALL policy so only the winget-index-sync worker can write.
   'partner_abuse_signals', // Operator abuse signals ABOUT partners. Forced RLS, system-only policy — partners must never see their own risk signals.
   'abuse_script_hosts', // Cross-partner download-host corpus for the script-content abuse detector. Carries partner_id but is deliberately operator-only (mirrors partner_abuse_signals). Forced RLS, system-only policy.
@@ -202,9 +204,16 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // denormalizes partner_id (rather than join through the bundle item) to
   // avoid the #1016 nested-EXISTS bound-param bug. catalog_item_org_pricing
   // is NOT here — it carries a direct org_id column and is auto-discovered
-  // as an ordinary shape-1 org-tenant table.
+  // as an ordinary shape-1 org-tenant table. Since wave 3 (#3775) it also
+  // carries a denormalized partner_id, but ONLY for the composite
+  // same-partner FKs (item_partner_fk / org_partner_fk) — the RLS axis stays
+  // org_id; it is NOT dual-axis and must not be promoted here.
+  // catalog_item_prices (wave 3, #3775) — per-currency price book, composite
+  // FK to catalog_items(id, partner_id). Functional proof:
+  // catalogItemPricesPartnerRls.integration.test.ts.
   ['catalog_items', 'partner_id'],
   ['catalog_item_images', 'partner_id'],
+  ['catalog_item_prices', 'partner_id'],
   ['catalog_bundle_components', 'partner_id'],
   ['td_synnex_digital_bridge_integrations', 'partner_id'],
   ['td_synnex_ec_express_integrations', 'partner_id'],
@@ -232,6 +241,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // auto-discovered as an ordinary shape-1 org-tenant table — not listed here.
   // Functional cross-partner forge proof: stripe-payments-rls.integration.test.ts.
   ['stripe_connect_accounts', 'partner_id'],
+  ['partner_llm_configs', 'partner_id'],
   // authenticator_policies: per-MSP approval-security policy (Shape 3). One row
   // per partner; policy gates on breeze_has_partner_access(partner_id) with a
   // system-scope OR branch. Functional forge: authenticatorRls.integration.test.ts.
@@ -279,6 +289,15 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'users',
   'deployment_invites',
   'access_reviews',
+  // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR
+  // partner-wide (partner_id set, org_id NULL). Created dual-axis from day one
+  // in 2026-09-02-ai-agents. Same blindspot as configuration_policies: the
+  // org_id column means org-tenant auto-discovery already asserts the
+  // breeze_has_org_access branch, so this entry is what asserts the
+  // breeze_has_partner_access (partner-wide) branch. CHECK
+  // ai_agents_one_owner_chk enforces exactly one axis. Functional cross-partner
+  // forge proof: aiAgentsPartnerRls.integration.test.ts.
+  'ai_agents',
   // custom_field_definitions: a field is org-scoped (org_id set) OR
   // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
   // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
@@ -607,6 +626,14 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // m365ConnectionsRls.integration.test.ts. Do not read a green run here as coverage of
   // the user axis.
   'm365_connections',
+  // Dual-axis as of 2026-09-04 (wave 2, #3823): user_id AND org access, where
+  // the four baseline policies were org-only with no user predicate at all.
+  // Auto-discovery keys on org_id and so only ever proved the org half; this
+  // entry pins the user half. As with m365_connections, a green run here proves
+  // the policy MENTIONS breeze_current_user_id and nothing more — the
+  // behavioural proof that one org member cannot read another's notifications
+  // is userNotificationsRls.integration.test.ts.
+  'user_notifications',
   'user_sso_identities',
   'push_notifications',
   'mobile_devices',
@@ -2596,8 +2623,8 @@ describe('automation_runs RLS — cross-org forge enforcement (Shape 7)', () => 
       const [orgA, orgB] = await db
         .insert(organizations)
         .values([
-          { partnerId: partner.id, name: 'RLS AutoRuns Org A', slug: `rls-autoruns-a-${runSuffix}` },
-          { partnerId: partner.id, name: 'RLS AutoRuns Org B', slug: `rls-autoruns-b-${runSuffix}` },
+          { currencyCode: 'USD', partnerId: partner.id, name: 'RLS AutoRuns Org A', slug: `rls-autoruns-a-${runSuffix}` },
+          { currencyCode: 'USD', partnerId: partner.id, name: 'RLS AutoRuns Org B', slug: `rls-autoruns-b-${runSuffix}` },
         ])
         .returning({ id: organizations.id });
       if (!orgA || !orgB) throw new Error('failed to seed orgs for automation_runs forge');
@@ -2832,8 +2859,8 @@ describe('script_execution_batches RLS — denormalized org_id', () => {
       const [orgA, orgB] = await db
         .insert(organizations)
         .values([
-          { partnerId: partner.id, name: 'RLS Batches Org A', slug: `rls-batches-a-${runSuffix}` },
-          { partnerId: partner.id, name: 'RLS Batches Org B', slug: `rls-batches-b-${runSuffix}` },
+          { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Batches Org A', slug: `rls-batches-a-${runSuffix}` },
+          { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Batches Org B', slug: `rls-batches-b-${runSuffix}` },
         ])
         .returning({ id: organizations.id });
       if (!orgA || !orgB) throw new Error('failed to seed orgs for batches forge');
@@ -2955,6 +2982,7 @@ describe('scripts RLS — partner-wide cross-partner forge enforcement (dual-axi
       partnerBId = seeded[1]!.id;
 
       const [org] = await db.insert(organizations).values({
+        currencyCode: 'USD',
         partnerId: partnerAId,
         name: `RLS Scripts Org ${runSuffix}`,
         slug: `rls-scripts-org-${runSuffix}`,
@@ -3116,8 +3144,8 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
       if (!partner) throw new Error('failed to seed partner for invoices forge');
       partnerId = partner.id;
       const [orgA, orgB] = await db.insert(organizations).values([
-        { partnerId: partner.id, name: 'RLS Invoices Org A', slug: `rls-inv-a-${runSuffix}` },
-        { partnerId: partner.id, name: 'RLS Invoices Org B', slug: `rls-inv-b-${runSuffix}` }
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Invoices Org A', slug: `rls-inv-a-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Invoices Org B', slug: `rls-inv-b-${runSuffix}` }
       ]).returning({ id: organizations.id });
       if (!orgA || !orgB) throw new Error('failed to seed orgs for invoices forge');
       orgAId = orgA.id; orgBId = orgB.id;
@@ -3129,7 +3157,7 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
     let caught: unknown;
     try {
       await withDbAccessContext(orgContext(orgBId), async () =>
-        db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' })
+        db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft', currencyCode: 'USD' })
       );
     } catch (err) { caught = err; }
     expect(caught).toBeDefined();
@@ -3142,7 +3170,7 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
     await ensureFixtures();
     let createdId = '';
     await withSystemDbAccessContext(async () => {
-      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft', currencyCode: 'USD' }).returning({ id: invoices.id });
       createdId = inv!.id;
     });
     const visible = await withDbAccessContext(orgContext(orgBId), async () =>
@@ -3161,7 +3189,7 @@ describe('invoices RLS forge (shape 1, org-axis)', () => {
     // it is committed before we attempt the forged line.
     let invoiceId = '';
     await withSystemDbAccessContext(async () => {
-      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft', currencyCode: 'USD' }).returning({ id: invoices.id });
       invoiceId = inv!.id;
     });
     // The FK violation aborts the surrounding transaction, so postgres.js may
@@ -3213,15 +3241,15 @@ describe('contracts RLS forge (shape 1, org-axis)', () => {
       if (!partner) throw new Error('failed to seed partner for contracts forge');
       partnerId = partner.id;
       const [orgA, orgB] = await db.insert(organizations).values([
-        { partnerId: partner.id, name: 'RLS Contracts Org A', slug: `rls-ctr-a-${runSuffix}` },
-        { partnerId: partner.id, name: 'RLS Contracts Org B', slug: `rls-ctr-b-${runSuffix}` }
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Contracts Org A', slug: `rls-ctr-a-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Contracts Org B', slug: `rls-ctr-b-${runSuffix}` }
       ]).returning({ id: organizations.id });
       if (!orgA || !orgB) throw new Error('failed to seed orgs for contracts forge');
       orgAId = orgA.id; orgBId = orgB.id;
       // Seed an org-A contract so we can hang line/period cross-org attempts on it.
       const [c] = await db.insert(contracts).values({
         partnerId: partner.id, orgId: orgAId, name: 'forge-seed',
-        intervalMonths: 1, startDate: '2026-07-01'
+        intervalMonths: 1, startDate: '2026-07-01', currencyCode: 'USD'
       }).returning({ id: contracts.id });
       if (!c) throw new Error('failed to seed contract for contracts forge');
       contractAId = c.id;
@@ -3244,7 +3272,7 @@ describe('contracts RLS forge (shape 1, org-axis)', () => {
       await withDbAccessContext(orgContext(orgBId), async () =>
         db.insert(contracts).values({
           partnerId, orgId: orgAId, name: 'forge-crossorg',
-          intervalMonths: 1, startDate: '2026-07-01'
+          intervalMonths: 1, startDate: '2026-07-01', currencyCode: 'USD'
         })
       );
     } catch (err) { caught = err; }
@@ -3325,12 +3353,12 @@ describe('invoice_documents RLS forge (shape 1, org-axis)', () => {
       if (!partner) throw new Error('failed to seed partner for invoice_documents forge');
       partnerId = partner.id;
       const [orgA, orgB] = await db.insert(organizations).values([
-        { partnerId: partner.id, name: 'RLS InvDocs Org A', slug: `rls-invdocs-a-${runSuffix}` },
-        { partnerId: partner.id, name: 'RLS InvDocs Org B', slug: `rls-invdocs-b-${runSuffix}` }
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS InvDocs Org A', slug: `rls-invdocs-a-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS InvDocs Org B', slug: `rls-invdocs-b-${runSuffix}` }
       ]).returning({ id: organizations.id });
       if (!orgA || !orgB) throw new Error('failed to seed orgs for invoice_documents forge');
       orgAId = orgA.id; orgBId = orgB.id;
-      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft' }).returning({ id: invoices.id });
+      const [inv] = await db.insert(invoices).values({ partnerId, orgId: orgAId, status: 'draft', currencyCode: 'USD' }).returning({ id: invoices.id });
       invoiceAId = inv!.id;
     });
   }
@@ -3393,8 +3421,8 @@ describe('ml_feedback_events RLS forge (shape 1, org-axis)', () => {
       if (!partner) throw new Error('failed to seed partner for ml_feedback_events forge');
       partnerId = partner.id;
       const [orgA, orgB] = await db.insert(organizations).values([
-        { partnerId: partner.id, name: 'RLS ML Feedback Org A', slug: `rls-ml-feedback-a-${runSuffix}` },
-        { partnerId: partner.id, name: 'RLS ML Feedback Org B', slug: `rls-ml-feedback-b-${runSuffix}` }
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS ML Feedback Org A', slug: `rls-ml-feedback-a-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS ML Feedback Org B', slug: `rls-ml-feedback-b-${runSuffix}` }
       ]).returning({ id: organizations.id });
       if (!orgA || !orgB) throw new Error('failed to seed orgs for ml_feedback_events forge');
       orgAId = orgA.id; orgBId = orgB.id;
@@ -3585,8 +3613,8 @@ describe('unifi_devices RLS — cross-org forge enforcement (Shape 1)', () => {
       const [orgA, orgB] = await db
         .insert(organizations)
         .values([
-          { partnerId: partner.id, name: 'RLS UniFi Devices Org A', slug: `rls-unifi-dev-a-${runSuffix}` },
-          { partnerId: partner.id, name: 'RLS UniFi Devices Org B', slug: `rls-unifi-dev-b-${runSuffix}` },
+          { currencyCode: 'USD', partnerId: partner.id, name: 'RLS UniFi Devices Org A', slug: `rls-unifi-dev-a-${runSuffix}` },
+          { currencyCode: 'USD', partnerId: partner.id, name: 'RLS UniFi Devices Org B', slug: `rls-unifi-dev-b-${runSuffix}` },
         ])
         .returning({ id: organizations.id });
       if (!orgA || !orgB) throw new Error('failed to seed orgs for unifi_devices forge test');

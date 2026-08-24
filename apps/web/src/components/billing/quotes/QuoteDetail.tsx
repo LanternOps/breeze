@@ -1,9 +1,11 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { quoteImageUrl } from '../../../lib/api/quotes';
+import { useReviseQuote } from './useReviseQuote';
+import { navigateTo } from '@/lib/navigation';
 import { useAuthedImage } from './useQuoteImage';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
 import QuoteOrderBreakdown, { orderableLines } from './QuoteOrderBreakdown';
@@ -111,6 +113,8 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
           (draft) or a committed send whose email never went out (sent). Toasts
           alone are race-dependent — these survive reload/return visits. */}
       <QuoteSendOutcomeBanners quote={quote} orgName={orgName} />
+      <QuoteDeclinedBanner quote={quote} canWrite={can('quotes', 'write')} />
+      <QuoteLineageBanner detail={detail} />
       {/* xl (not lg): matches the editor tab — below xl the rail stacks under the
           content so the line tables aren't starved into sideways scrolling. */}
       <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
@@ -453,6 +457,107 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
         </tbody>
       </table>
       </div>
+    </div>
+  );
+}
+
+/** Declined-outcome banner (decline-completion spec §B/§D): the one destructive
+ *  outcome, surfaced at the top with the customer's verbatim note — previously
+ *  `decline_reason` was stored but rendered nowhere — and the recovery path
+ *  (declined is a settled state; revision is a NEW document via clone, so the
+ *  audit trail of the declined quote stays intact). */
+function QuoteDeclinedBanner({ quote, canWrite }: { quote: QuoteDetailData['quote']; canWrite: boolean }) {
+  const { t } = useTranslation('billing');
+  // This button used to CLONE, which produced an unlinked quote and left the
+  // declined original live — the same word meaning something different from the
+  // Revise action in the toolbar. It now creates the linked revision, which is
+  // what "revise a declined quote" actually means: sending it retires the
+  // original. (A declined quote is in the server's supersedable set.)
+  const { revise, revising: cloning } = useReviseQuote(quote.id);
+  if (quote.status !== 'declined') return null;
+  const reason = quote.declineReason?.trim();
+
+
+  return (
+    <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4" data-testid="quote-declined-banner">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-destructive">
+            {t('quotes.detail.declinedBanner.title', { date: quote.declinedAt ? new Date(quote.declinedAt).toLocaleDateString() : '' })}
+          </p>
+          {reason && (
+            <p className="mt-1 text-sm text-foreground/90" data-testid="quote-declined-reason">
+              {t('quotes.detail.declinedBanner.reasonLabel')}{' '}
+              <span className="whitespace-pre-wrap">“{reason}”</span>
+            </p>
+          )}
+        </div>
+        {canWrite && (
+          <button
+            type="button"
+            onClick={() => void revise()}
+            disabled={cloning}
+            data-testid="quote-declined-revise"
+            className="inline-flex shrink-0 items-center justify-center rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {cloning ? t('quotes.detail.declinedBanner.revising') : t('quotes.detail.declinedBanner.revise')}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Lineage banner: where this quote sits in a revision chain.
+ *
+ * Three distinct situations, each with a different urgency, so they get
+ * different treatment rather than one generic "related quote" line:
+ *  - This quote HAS BEEN replaced (status superseded) — terminal. The customer's
+ *    link is dead; the replacement is where the conversation now lives.
+ *  - This quote IS a revision of an earlier one — orienting context.
+ *  - A revision of this quote is being DRAFTED — a warning, because sending that
+ *    draft will retire THIS quote and revoke the link the customer is holding.
+ *
+ * Links are plain in-app hrefs by id; the server already scoped `revisionOf` and
+ * `successor` to what this viewer may see (site scope), so an id present here is
+ * one they are allowed to open.
+ */
+function QuoteLineageBanner({ detail }: { detail: QuoteDetailData }) {
+  const { t } = useTranslation('billing');
+  const { quote, revisionOf, successor } = detail;
+  const supersededBy = quote.status === 'superseded' ? successor : null;
+  const pendingRevision = successor && successor.status === 'draft' && quote.status !== 'superseded'
+    ? successor
+    : null;
+  if (!supersededBy && !revisionOf && !pendingRevision) return null;
+
+  return (
+    <div className="space-y-2" data-testid="quote-lineage-banner">
+      {supersededBy && (
+        <div className="rounded-md border border-muted-foreground/30 bg-muted/40 p-4 text-sm" data-testid="quote-lineage-superseded">
+          <span className="font-medium">{t('quotes.detail.lineage.supersededTitle')}</span>{' '}
+          <a className="underline" href={`/billing/quotes/${supersededBy.id}`} data-testid="quote-lineage-successor-link">
+            {supersededBy.quoteNumber ?? t('quotes.detail.lineage.untitled')}
+          </a>
+        </div>
+      )}
+      {pendingRevision && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm" data-testid="quote-lineage-in-progress">
+          <span className="font-medium">{t('quotes.detail.lineage.inProgressTitle')}</span>{' '}
+          <a className="underline" href={`/billing/quotes/${pendingRevision.id}`} data-testid="quote-lineage-draft-link">
+            {pendingRevision.quoteNumber ?? t('quotes.detail.lineage.untitled')}
+          </a>
+        </div>
+      )}
+      {revisionOf && (
+        <div className="rounded-md border bg-card p-4 text-sm" data-testid="quote-lineage-parent">
+          <span className="font-medium">{t('quotes.detail.lineage.revisionOfTitle')}</span>{' '}
+          <a className="underline" href={`/billing/quotes/${revisionOf.id}`} data-testid="quote-lineage-parent-link">
+            {revisionOf.quoteNumber ?? t('quotes.detail.lineage.untitled')}
+          </a>
+        </div>
+      )}
     </div>
   );
 }

@@ -5,7 +5,7 @@ import AcceptInviteForm from '../components/portal/AcceptInviteForm';
 const token = Astro.url.searchParams.get('token') || '';
 ---
 
-<AuthLayout title="Accept Invite">
+<AuthLayout title="Accept invite">
   <AcceptInviteForm client:load token={token} />
   <!-- The island keeps the submit button disabled until it hydrates (#2868),
        so without JavaScript the form is intentionally inert. Explain why. -->

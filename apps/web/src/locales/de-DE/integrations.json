@@ -804,7 +804,17 @@
     "working": "Arbeiten…",
     "disconnect": "Trennen",
     "saving": "Speichern…",
-    "saveKey": "Schlüssel speichern"
+    "saveKey": "Schlüssel speichern",
+    "defaultCurrency": "Abrechnung in {{currency}}",
+    "accountCountry": "Land {{country}}",
+    "refreshedAt": "Aktualisiert {{when}}",
+    "refresh": "Aktualisieren",
+    "refreshing": "Wird aktualisiert…",
+    "refreshed": "Stripe-Kontodaten aktualisiert",
+    "couldNotRefresh": "Stripe-Kontodaten konnten nicht aktualisiert werden.",
+    "notCached": "Währung noch nicht zwischengespeichert – aktualisieren, um sie von Stripe abzurufen.",
+    "staleCache": "Stripe war nicht erreichbar – es werden die zuletzt zwischengespeicherten Kontodaten angezeigt.",
+    "reconnectRequired": "Ihr gespeicherter Stripe-Schlüssel (•••• {{last4}}) funktioniert nicht mehr: {{reason}} Fügen Sie einen neuen Schlüssel ein, um die Verbindung wiederherzustellen; Online-Zahlungen schlagen bis dahin fehl."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Standort-Zuordnungen konnten nicht gespeichert werden.",

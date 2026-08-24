@@ -93,6 +93,14 @@ function getTool(name = 'manage_quotes'): AiTool {
 describe('manage_quotes', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('documents that quote money inputs and response totals use currencyCode', () => {
+    const tool = getTool();
+    const properties = tool.definition.input_schema.properties as Record<string, { description?: string }>;
+
+    expect(tool.definition.description).toContain('currencyCode');
+    expect(properties.line?.description).toContain("unitPrice (in the quote's currencyCode)");
+  });
+
   it('create_draft calls createQuote with input payload and actor built from auth', async () => {
     const input = {
       orgId: ORG_UUID,
@@ -406,6 +414,13 @@ describe('manage_quotes input validation (#2362)', () => {
 
 describe('list_quotes / get_quote read tools (#2361)', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it.each(['list_quotes', 'get_quote'])('%s documents per-currency grouping', (name) => {
+    const description = getTool(name).definition.description;
+
+    expect(description).toContain('currencyCode');
+    expect(description).toContain('group by currencyCode');
+  });
 
   it('list_quotes with no filters lists quotes with the default limit', async () => {
     const out = await getTool('list_quotes').handler({}, auth);

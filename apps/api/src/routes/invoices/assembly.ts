@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { assembleFromOrgSchema } from '@breeze/shared';
+import { assembleFromOrgSchema, assembleFromTicketQuerySchema } from '@breeze/shared';
 import { assembleDraftFromOrg, assembleDraftFromTicket } from '../../services/invoiceService';
 import { invoiceActorFrom, handleServiceError } from './invoices';
 
@@ -28,7 +28,11 @@ invoiceAssemblyRoutes.post('/orgs/:orgId/invoices/assemble', authMiddleware, sco
   });
 invoiceAssemblyRoutes.post('/tickets/:ticketId/invoice', authMiddleware, scopes, writePerm,
   zValidator('param', z.object({ ticketId: z.string().guid() })),
+  zValidator('query', assembleFromTicketQuerySchema),
   async (c) => {
-    try { return c.json({ data: await assembleDraftFromTicket(c.req.valid('param').ticketId, invoiceActorFrom(c)) }); }
+    try {
+      const { currencyCode } = c.req.valid('query');
+      return c.json({ data: await assembleDraftFromTicket(c.req.valid('param').ticketId, invoiceActorFrom(c), { currencyCode }) });
+    }
     catch (err) { return handleServiceError(c, err); }
   });

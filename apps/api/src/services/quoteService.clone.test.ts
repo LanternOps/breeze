@@ -9,7 +9,9 @@ const state = vi.hoisted(() => ({
 vi.mock('../db', () => {
   const makeSelectChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const method of ['from', 'where', 'limit', 'orderBy']) {
+    // `.for('share'|'update')` terminates the chain the same way — the org SHARE
+    // barrier (readOrgStampingDefaults, #3778) ends on it.
+    for (const method of ['from', 'where', 'limit', 'orderBy', 'for']) {
       chain[method] = vi.fn(() => chain);
     }
     (chain as { then: unknown }).then = (resolve: (value: unknown) => unknown) =>
@@ -31,7 +33,7 @@ vi.mock('../db', () => {
     return chain;
   };
 
-  const tx = { insert: vi.fn(() => makeInsertChain()) };
+  const tx = { insert: vi.fn(() => makeInsertChain()), select: vi.fn(() => makeSelectChain()) };
   return {
     db: {
       select: vi.fn(() => makeSelectChain()),
@@ -98,6 +100,7 @@ describe('cloneQuote', () => {
       // here means "no staged order", which short-circuits the pax8OrderLineSummary
       // query below it so no extra select is consumed from this queue.
       [],
+      [], // no successor revision
       [], // getQuote: listQuoteOrders — order headers
       [], // getQuote: listQuoteOrders — order lines
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
@@ -140,13 +143,15 @@ describe('cloneQuote', () => {
       [{ id: 'block-lines', quoteId: 'quote-1', orgId: 'org-1', blockType: 'line_items', content: { label: 'Services' }, sortOrder: 0, createdAt: new Date() }],
       [{ id: 'line-1', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: 'Server', description: null, quantity: '1.00', unitPrice: '100.00', taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: null, depositEligible: true, itemType: 'hardware', sku: null, partNumber: null, imageId: 'image-1', sortOrder: 0, createdAt: new Date() }],
       [], // no staged Pax8 order
+      [], // no successor revision
       [], // getQuote: listQuoteOrders — order headers
       [], // getQuote: listQuoteOrders — order lines
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
-      [{ id: 'org-2' }], // target org same-partner membership check
+      [{ id: 'org-2', currencyCode: 'USD' }], // target org same-partner membership check (currency matches the source stamp)
       // resolveQuoteTaxRate for the NEW org: 8% org rate, no partner default
       [{ taxExempt: false, taxRate: '0.08000' }],
       [{ defaultTaxRate: null }],
+      [{ currencyCode: 'USD' }], // org SHARE barrier inside the clone tx (#3778)
     );
 
     const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2', title: 'Beta rollout' });
@@ -188,6 +193,45 @@ describe('cloneQuote', () => {
     state.selectResults.push([sourceQuote()], [], [], [], []);
 
     await expect(cloneQuote('quote-1', actor, { orgId: 'org-2' })).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+    expect(state.transactionCalls).toBe(0);
+    expect(state.insertedValues).toEqual([]);
+  });
+
+  it('copies the source quote currency verbatim on a same-org clone (no org re-resolution)', async () => {
+    state.selectResults.push(
+      [{ ...sourceQuote(), currencyCode: 'EUR' }],
+      [], // no blocks
+      [], // no lines
+      [], // no staged Pax8 order
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
+      [], // no images
+    );
+
+    await cloneQuote('quote-1', actor);
+
+    const [quoteInsert] = state.insertedValues as [Record<string, unknown>];
+    // The clone carries the SOURCE document's stamp — never the org's (or
+    // partner's) current setting, which may have changed since the source
+    // was minted (spec §5: snapshots rule).
+    expect(quoteInsert.currencyCode).toBe('EUR');
+  });
+
+  it('rejects a cross-org retarget onto an org billed in another currency (CURRENCY_MISMATCH, nothing created)', async () => {
+    state.selectResults.push(
+      [{ ...sourceQuote(), currencyCode: 'EUR' }],
+      [], // no blocks
+      [], // no lines
+      [], // no staged Pax8 order
+      [], // no successor revision
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
+      [], // no images
+      [{ id: 'org-2', currencyCode: 'USD' }], // target org bills USD — mismatch with the EUR stamp
+    );
+
+    await expect(cloneQuote('quote-1', retargetActor, { orgId: 'org-2' }))
+      .rejects.toMatchObject({ code: 'CURRENCY_MISMATCH', status: 400 });
     expect(state.transactionCalls).toBe(0);
     expect(state.insertedValues).toEqual([]);
   });
@@ -244,10 +288,11 @@ describe('cloneQuote', () => {
       [{ id: 'block-contract', quoteId: 'quote-1', orgId: 'org-1', blockType: 'contract', content: contractContent, sortOrder: 0, createdAt: new Date() }],
       [], // no lines
       [], // no staged Pax8 order
+      [], // no successor revision
       [], // getQuote: listQuoteOrders — order headers
       [], // getQuote: listQuoteOrders — order lines
       [], // no images
-      [{ id: 'org-2' }], // target org same-partner membership check
+      [{ id: 'org-2', currencyCode: 'USD' }], // target org same-partner membership check (currency matches the source stamp)
       // assertContractBlockValid: version published + matching template
       [{ templateId: 'tpl-1', status: 'published' }],
       // template is OWNED BY THE SOURCE ORG (org-1) — invalid for target org-2
@@ -267,15 +312,17 @@ describe('cloneQuote', () => {
       [{ id: 'block-contract', quoteId: 'quote-1', orgId: 'org-1', blockType: 'contract', content: contractContent, sortOrder: 0, createdAt: new Date() }],
       [], // no lines
       [], // no staged Pax8 order
+      [], // no successor revision
       [], // getQuote: listQuoteOrders — order headers
       [], // getQuote: listQuoteOrders — order lines
       [], // no images
-      [{ id: 'org-2' }], // target org same-partner membership check
+      [{ id: 'org-2', currencyCode: 'USD' }], // target org same-partner membership check (currency matches the source stamp)
       [{ templateId: 'tpl-1', status: 'published' }], // version published
       [{ status: 'active', orgId: null, partnerId: 'partner-1' }], // PARTNER-WIDE template — visible to every org of the partner
       // resolveQuoteTaxRate for the new org
       [{ taxExempt: false, taxRate: '0.08000' }],
       [{ defaultTaxRate: null }],
+      [{ currencyCode: 'USD' }], // org SHARE barrier inside the clone tx (#3778)
     );
 
     const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2' });
@@ -294,6 +341,7 @@ describe('cloneQuote', () => {
       [], // no blocks
       [], // no lines
       [], // no staged Pax8 order
+      [], // no successor revision
       [], // getQuote: listQuoteOrders — order headers
       [], // getQuote: listQuoteOrders — order lines
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],

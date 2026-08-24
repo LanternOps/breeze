@@ -1,11 +1,13 @@
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
+import { sendComposerSchema as sendBodySchema, parseComposerBody } from '../../lib/sendComposer';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { sendQuote, resendQuote, getQuoteShareLink } from '../../services/quoteLifecycle';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { supersededAuditEvent } from '../../services/quoteSupersedeAudit';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { getQuote } from '../../services/quoteService';
 import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
@@ -38,59 +40,36 @@ function remoteImageStatus(reason: RemoteImageFailureReason): 413 | 415 | 502 | 
   }
 }
 
-// Composer options for the customer email. `.strict()` so a mis-keyed field
-// (e.g. {"mesage":"hi"}) is a 400, not a silently dropped note.
-const sendEmailField = z.string().trim().email().max(255);
-const sendBodySchema = z.object({
-  message: z.string().trim().max(2000).optional(),
-  // Composer fields (all optional — an empty body reproduces the classic send):
-  // explicit recipients override the org billing-contact fallback.
-  to: z.array(sendEmailField).min(1).max(10).optional(),
-  cc: z.array(sendEmailField).max(10).optional(),
-  subject: z.string().trim().max(200).optional(),
-  includePdf: z.boolean().optional(),
-}).strict();
-
-/**
- * Read the optional composer body shared by /send, /schedule-send and /resend.
- *
- * Distinguishes an ABSENT body (most callers — bulk-send/MCP/tests POST nothing,
- * yet fetchWithAuth still stamps a JSON content-type) from a PRESENT-but-broken
- * one. An empty body degrades to "no options"; a non-empty body that fails to
- * parse/validate is rejected rather than silently swallowing recipients or a
- * note the sender intended. A body-READ failure (stream aborted mid-request) is
- * likewise an error, not an absent body.
- *
- * Returns the parsed options, or an `error` the caller returns verbatim.
- */
-async function parseComposerBody<T extends z.ZodTypeAny>(
-  c: Context,
-  schema: T,
-): Promise<{ ok: true; data: Partial<z.infer<T>> } | { ok: false; error: string }> {
-  if (!(c.req.header('content-type') ?? '').includes('application/json')) return { ok: true, data: {} };
-  const raw = await c.req.text().catch(() => null);
-  if (raw === null) return { ok: false, error: 'Could not read request body' };
-  if (!raw.trim()) return { ok: true, data: {} };
-  let json: unknown;
-  try { json = JSON.parse(raw); } catch { return { ok: false, error: 'Invalid JSON body' }; }
-  const parsed = schema.safeParse(json);
-  if (!parsed.success) return { ok: false, error: 'Invalid send options' };
-  return { ok: true, data: parsed.data };
-}
-
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.
 quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
   const body = await parseComposerBody(c, sendBodySchema);
   if (!body.ok) return c.json({ error: body.error }, 400);
   const emailOpts = body.data;
   try {
-    return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c), {
+    const id = c.req.valid('param').id;
+    const result = await sendQuote(id, quoteActorFrom(c), {
       message: emailOpts.message || undefined,
       to: emailOpts.to,
       cc: emailOpts.cc,
       subject: emailOpts.subject || undefined,
       includePdf: emailOpts.includePdf,
-    }) });
+    });
+    // Retiring a quote the customer could previously accept is a separate,
+    // independently-auditable act from sending the revision — record it against
+    // the PARENT, which is the row whose status actually changed.
+    if (result.superseded) {
+      // writeRouteAudit (not writeAuditEvent) so the acting tech is attributed;
+      // the payload itself is shared with the worker/bulk/AI paths.
+      writeRouteAudit(c, supersededAuditEvent({
+        childQuoteId: id,
+        orgId: result.quote.orgId,
+        parentQuoteId: result.superseded.parentQuoteId,
+        previousStatus: result.superseded.previousStatus,
+        revisionNumber: result.quote.revisionNumber,
+        emailed: result.emailed,
+      }));
+    }
+    return c.json({ data: result });
   } catch (err) { return handleServiceError(c, err); }
 });
 

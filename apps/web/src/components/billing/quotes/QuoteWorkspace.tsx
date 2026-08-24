@@ -235,6 +235,19 @@ export default function QuoteWorkspace({ id }: Props) {
           />
         </div>
       )}
+      {/* A revision draft looks exactly like any other draft in the editor, and
+          the consequence of sending it — the original is retired and the link
+          the customer already has stops working — is invisible until the send
+          dialog. Drafts open on the Editor tab, so this rides above every tab
+          rather than living in QuoteDetail. */}
+      {detail.revisionOf && detail.quote.status === 'draft' && (
+        <div
+          className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+          data-testid="quote-workspace-revision-banner"
+        >
+          {t('quotes.workspace.revisionBanner', { number: detail.revisionOf.quoteNumber ?? '' })}
+        </div>
+      )}
       {/* The editor stays MOUNTED across tab switches (hidden, not unmounted):
           unmounting discarded any half-typed add-line/add-section input the
           moment a tech flipped to Preview "just to check" — brutal mid-flow

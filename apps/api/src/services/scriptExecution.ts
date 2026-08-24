@@ -50,7 +50,9 @@ type ExecuteScriptOnDevicesSuccess = {
   // devices are excluded from `executions` but still counted in
   // `devicesTargeted` — they were targeted, just failed to dispatch. Each one
   // gets its own 'failed' script_executions row (see the dispatch loop below)
-  // so `devicesTargeted` never outlives the rows a caller can find.
+  // so `devicesTargeted` never outlives the rows a caller can find — except
+  // for the codes in DISPATCH_CODES_ALREADY_RECORDED, whose row the dispatch
+  // core's own gate already wrote.
   failures: Array<{ deviceId: string; code: string; error: string }>;
   // Bound parameter keys the caller supplied a value for, unioned across the
   // fan-out and de-duplicated (#3409 PR3 §2.2). The binding is authoritative,
@@ -76,6 +78,39 @@ type ExecuteScriptOnDevicesSuccess = {
 };
 
 export type ExecuteScriptOnDevicesResult = ExecuteScriptOnDevicesSuccess | ExecuteScriptOnDevicesFailure;
+
+/**
+ * Dispatch failure codes whose `script_executions` row and `devicesFailed`
+ * batch increment were ALREADY written before `dispatchScriptToDevice`
+ * returned — so this fan-out must record the device in `failures` but must
+ * NOT write its own duplicate row or double-spend the batch slot.
+ *
+ * Exactly one code qualifies: the claim-time secret gate's refusal (#3409
+ * PR4c-2). `failClaimedSecretCommandsForUnsupportedAgent` drives the command
+ * AND its linked execution row to 'failed' and bumps the batch itself before
+ * dispatch turns that into an 'agent_upgrade_required_recorded' refusal.
+ *
+ * Membership must be argued per code, not inferred from the message. The
+ * three neighbours that look similar and are NOT members:
+ *
+ * - 'agent_upgrade_required' — the ENQUEUE preflight, which refuses before
+ *   any row exists. It is the ORDINARY outcome for any pre-PR4b agent, and
+ *   it originally shared a code with the claim-time gate: on 10 devices with
+ *   3 old agents the batch showed 7 accounted rows and
+ *   `devicesCompleted + devicesFailed >= devicesTargeted` never held, so the
+ *   batch could never finalize. That is why the claim-time path carries a
+ *   code of its own.
+ * - 'secret_gate_unavailable' — the claim gate FAULTED rather than returning
+ *   a verdict, so it wrote nothing.
+ * - 'secrets_unsupported_run_as' / 'secret_delivery_unavailable' — enqueue
+ *   refusals, likewise nothing written.
+ *
+ * A named set rather than an inline `===` so a future code is added here
+ * deliberately, with that ownership question answered.
+ */
+const DISPATCH_CODES_ALREADY_RECORDED: ReadonlySet<string> = new Set([
+  'agent_upgrade_required_recorded',
+]);
 
 function ensureOrgAccess(orgId: string, auth: Pick<ScriptExecutionAuth, 'canAccessOrg'>) {
   return auth.canAccessOrg(orgId);
@@ -264,15 +299,30 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       variableScope,
     });
     if (!dispatch.ok) {
-      // 'insert_failed' means queueCommand/the execution insert itself broke
-      // — a programming error, not a per-device condition. Every other code
-      // ('unresolved_variables' from PR2's content substitution,
-      // 'unresolved_parameters' from PR3's sourced parameters, plus the
-      // device-state codes) is a condition specific to this device and must
-      // not truncate the rest of the fan-out — see
-      // softwareDeployment.ts:399-414 for the pattern this mirrors.
+      // Three-way branch on the code, by ROW OWNERSHIP:
+      //
+      //   1. 'insert_failed' — queueCommand/the execution insert itself broke.
+      //      A programming error, not a per-device condition: throw and abort
+      //      the run rather than recording N identical device failures.
+      //   2. a DISPATCH_CODES_ALREADY_RECORDED code — a per-device condition
+      //      whose failure row and batch slot the dispatch core's own gate
+      //      already wrote. Report it, write nothing.
+      //   3. everything else ('unresolved_variables' from PR2's content
+      //      substitution, 'unresolved_parameters' from PR3's sourced
+      //      parameters, the enqueue secret refusals, and the device-state
+      //      codes) — a per-device condition that owns no rows yet, so this
+      //      loop writes the failure row and spends the batch slot. It must
+      //      not truncate the rest of the fan-out; `dispatchManagerInstalls`
+      //      (softwareDeployment.ts) is the pattern this mirrors — named
+      //      rather than cited by line number so the reference cannot rot.
       if (dispatch.code === 'insert_failed') {
         throw new Error(dispatch.error);
+      }
+      // The device still lands in `failures` — the operator must see it — but
+      // its row and batch slot are already spent by whoever owns this code.
+      if (DISPATCH_CODES_ALREADY_RECORDED.has(dispatch.code)) {
+        failures.push({ deviceId: device.id, code: dispatch.code, error: dispatch.error });
+        continue;
       }
       await db.insert(scriptExecutions).values({
         scriptId: input.scriptId,

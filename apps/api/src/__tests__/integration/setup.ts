@@ -213,6 +213,11 @@ async function cleanupAppendOnlyMlFeedbackEvents() {
 // redundant entries are harmless in a single TRUNCATE, and belt-and-braces if
 // an FK is ever dropped. Don't prune the list to "just roots".
 const CLEANUP_TABLES = [
+  // Mutable GLOBAL reference data (multi-currency spec §8, #3779). Not tenant
+  // data and not reached by any cascade, so it must be named explicitly or FX
+  // rows survive between tests. supported_currencies is NOT here on purpose —
+  // it is seeded reference data every suite depends on.
+  'exchange_rates',
   'device_commands',
   'device_group_memberships',
   'device_groups',

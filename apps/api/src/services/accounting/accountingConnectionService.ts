@@ -61,6 +61,15 @@ export type DbExecutor = {
   delete: (...args: any[]) => any;
 };
 
+/**
+ * DbExecutor plus the transaction handle. Declared separately so the existing
+ * mock-injecting callers of DbExecutor are untouched; production passes the real
+ * request-scoped `db`, which has `.transaction`.
+ */
+export type DbTransactor = DbExecutor & {
+  transaction: <T>(fn: (tx: DbExecutor) => Promise<T>) => Promise<T>;
+};
+
 type AccountingConnectionRow = typeof accountingConnections.$inferSelect;
 
 function decryptNullable(value: string | null | undefined): string | null {
@@ -210,6 +219,106 @@ export async function updateTokens(
   if (updated.length === 0) {
     throw new Error(`updateTokens matched no accounting_connections row (id=${connectionId}); refusing to drop rotated token silently`);
   }
+}
+
+/**
+ * Persists the provider-reported home currency (multi-currency §11, bug B8).
+ *
+ * Narrow UPDATE, never a second upsertConnection: an upsert would resurrect a
+ * disconnected row with default settings and no usable credentials.
+ *
+ * REALM-GENERATION compare-and-set, under a row lock. The unique
+ * (partner_id, provider) index means a reconnect to a DIFFERENT realm reuses this
+ * row id, so a slow Preferences response from the previous realm must not
+ * overwrite the new one. `updated_at` alone cannot decide that: upsertConnection
+ * stamps an APPLICATION timestamp, so two reconnects in the same millisecond can
+ * share it. The realm id is the real identity — it is compared after decryption
+ * under FOR UPDATE (the ciphertext uses a random IV, so SQL cannot compare it),
+ * with the timestamp kept as a second barrier against a same-realm double capture.
+ *
+ * The value is a cache of an EXTERNAL fact — it is not validated against
+ * supported_currencies and carries no FK, because a realm may legitimately run
+ * a currency Breeze cannot bill in. The only shape rule is ISO-4217-looking.
+ *
+ * Lock note: this is the only row lock wave 8 takes. It is a single leaf-table
+ * row, held across no other lock and no network call.
+ */
+/**
+ * A lost compare-and-set on the home-currency capture: the row was reconnected
+ * (same realm or another) between the capture starting and the write. That is an
+ * EXPECTED race on a normal user action — double connect, concurrent reconnect —
+ * not a defect, so callers report it as a warning rather than an exception.
+ * Callers MUST branch on the code, never on message text.
+ */
+export const ACCOUNTING_HOME_CURRENCY_CAS_ABORT = 'ACCOUNTING_HOME_CURRENCY_CAS_ABORT';
+
+export class AccountingHomeCurrencyCasAbortError extends Error {
+  readonly code = ACCOUNTING_HOME_CURRENCY_CAS_ABORT;
+  constructor(message: string) {
+    super(message);
+    this.name = 'AccountingHomeCurrencyCasAbortError';
+  }
+}
+
+export function isHomeCurrencyCasAbort(err: unknown): boolean {
+  return typeof err === 'object'
+    && err !== null
+    && (err as { code?: unknown }).code === ACCOUNTING_HOME_CURRENCY_CAS_ABORT;
+}
+
+export async function updateHomeCurrency(
+  db: DbTransactor,
+  connectionId: string,
+  partnerId: string,
+  expected: { updatedAt: Date; realmId: string | null },
+  homeCurrency: string
+): Promise<void> {
+  const normalized = homeCurrency.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(normalized)) {
+    throw new Error(`Refusing to persist a malformed accounting home currency: ${JSON.stringify(homeCurrency)}`);
+  }
+
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(accountingConnections)
+      .where(and(
+        eq(accountingConnections.id, connectionId),
+        eq(accountingConnections.partnerId, partnerId)
+      ))
+      .limit(1)
+      .for('update');
+
+    // Zero rows means deleted underneath the capture OR hidden by RLS — both are
+    // "do not write", and both must be loud (the updateTokens/markStatus
+    // precedent at :193-195: a silent no-op hides an RLS-context mistake).
+    if (!row) {
+      throw new Error(`updateHomeCurrency matched no accounting_connections row (id=${connectionId}); it was deleted underneath the capture or the DB context is wrong`);
+    }
+
+    if (decryptNullable(row.realmIdEncrypted) !== expected.realmId) {
+      throw new AccountingHomeCurrencyCasAbortError(`updateHomeCurrency aborted: connection ${connectionId} now points at a different realm than the capture started for`);
+    }
+
+    if (row.updatedAt === null || row.updatedAt.getTime() !== expected.updatedAt.getTime()) {
+      throw new AccountingHomeCurrencyCasAbortError(`updateHomeCurrency matched no accounting_connections row (id=${connectionId}) at the expected generation; the connection changed underneath the capture`);
+    }
+
+    const updated = await tx
+      .update(accountingConnections)
+      .set({
+        homeCurrency: normalized,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(accountingConnections.id, connectionId),
+        eq(accountingConnections.partnerId, partnerId)
+      ))
+      .returning({ id: accountingConnections.id });
+    if (updated.length === 0) {
+      throw new Error(`updateHomeCurrency matched no accounting_connections row (id=${connectionId}) on write; the DB context is wrong`);
+    }
+  });
 }
 
 export async function markStatus(

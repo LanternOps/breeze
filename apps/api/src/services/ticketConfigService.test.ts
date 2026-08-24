@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { SQL } from 'drizzle-orm';
 
 const { dbMocks } = vi.hoisted(() => ({
   dbMocks: {
@@ -18,10 +19,8 @@ const { dbMocks } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  db: {
+vi.mock('../db', () => {
+  const dbObj: any = {
     select: vi.fn(() => ({
       from: vi.fn(() => {
         const result = () => dbMocks.selectResults.shift() ?? [];
@@ -35,14 +34,21 @@ vi.mock('../db', () => ({
               // …and also exposes .limit().offset() for the paginated queue read.
               { limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve(r)) })) },
             );
+            // .limit() is awaitable AND exposes .for('share'/'update') — the org
+            // SHARE barrier (readOrgStampingDefaults, #3778) terminates on .for().
+            const limitResult: any = Object.assign(
+              Promise.resolve(r),
+              { for: vi.fn(() => Promise.resolve(r)) },
+            );
             return {
-              limit: vi.fn(() => Promise.resolve(r)),
+              limit: vi.fn(() => limitResult),
               orderBy: vi.fn(() => orderByResult),
               then: (res: (v: unknown) => unknown, rej: (e?: unknown) => unknown) =>
                 Promise.resolve(r).then(res, rej),
             };
           }),
         };
+        chain.leftJoin = vi.fn(() => chain);
         return chain;
       }),
     })),
@@ -89,8 +95,16 @@ vi.mock('../db', () => ({
         return { where: vi.fn(where) };
       }),
     })),
-  },
-}));
+  };
+  // db.transaction hands the SAME mock back, so a service that opens its own
+  // transaction (upsertOrgTicketSettings, #3778) exercises the identical queue.
+  dbObj.transaction = vi.fn((fn: (tx: unknown) => unknown) => fn(dbObj));
+  return {
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    db: dbObj,
+  };
+});
 
 // Mock the drizzle-orm comparison operators so .where() predicates are plain,
 // introspectable JSON sentinels. The schema mock below uses string column names
@@ -123,10 +137,10 @@ vi.mock('../db/schema', () => ({
   orgTicketSettings: {
     id: 'id', orgId: 'orgId', slaOverrides: 'slaOverrides',
     defaultHourlyRate: 'defaultHourlyRate', defaultBillable: 'defaultBillable',
-    updatedAt: 'updatedAt',
+    rateCurrency: 'rateCurrency', updatedAt: 'updatedAt',
   },
   partners: {
-    id: 'id', slug: 'slug', settings: 'settings',
+    id: 'id', slug: 'slug', settings: 'settings', currencyCode: 'partnerCurrencyCode',
   },
   ticketEmailInbound: {
     id: 'id', partnerId: 'partnerId', fromAddress: 'fromAddress', toAddress: 'toAddress',
@@ -134,7 +148,7 @@ vi.mock('../db/schema', () => ({
     raw: 'raw', createdAt: 'createdAt',
   },
   organizations: {
-    id: 'id', partnerId: 'partnerId',
+    id: 'id', partnerId: 'partnerId', currencyCode: 'orgCurrencyCode',
   },
   customerEmailDomains: {
     id: 'id', partnerId: 'partnerId', orgId: 'orgId', domain: 'domain',
@@ -217,6 +231,17 @@ function whereHasInArray(predicate: unknown, column: string, expected: string[])
       (c.values as unknown[]).length === expected.length &&
       expected.every((v) => (c.values as unknown[]).includes(v)),
   );
+}
+
+function sqlText(fragment: SQL): string {
+  return fragment.queryChunks.map((chunk: unknown) => {
+    if (chunk && typeof chunk === 'object' && 'value' in chunk) {
+      const value = (chunk as { value: unknown }).value;
+      if (Array.isArray(value)) return value.join('');
+    }
+    if (chunk instanceof SQL) return sqlText(chunk);
+    return String(chunk);
+  }).join('');
 }
 
 describe('getTicketConfig', () => {
@@ -484,15 +509,54 @@ describe('upsertPrioritySettings', () => {
 
 describe('getOrgTicketSettings', () => {
   it('returns defaults when no row exists', async () => {
-    dbMocks.selectResults.push([]);
+    dbMocks.selectResults.push([{
+      partnerId: 'p-1',
+      orgCurrency: 'USD',
+      slaOverrides: null,
+      defaultHourlyRate: null,
+      defaultBillable: null,
+      rateCurrency: null,
+    }]); // (1) organizations ⟕ org_ticket_settings (caller RLS)
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]); // (2) partners (system context)
     const res = await getOrgTicketSettings(ORG);
-    expect(res).toEqual({ orgId: ORG, slaOverrides: {}, defaultHourlyRate: null, defaultBillable: null });
+    expect(res).toEqual({
+      orgId: ORG,
+      slaOverrides: {},
+      defaultHourlyRate: null,
+      defaultBillable: null,
+      rateCurrency: null,
+      orgCurrency: 'USD',
+      partnerCurrency: 'USD',
+    });
+  });
+
+  it('reports org and partner currencies separately after an org currency change', async () => {
+    dbMocks.selectResults.push([{
+      partnerId: 'p-1',
+      orgCurrency: 'EUR',
+      slaOverrides: {},
+      defaultHourlyRate: '100.00',
+      defaultBillable: true,
+      rateCurrency: 'USD',
+    }]);
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    const res = await getOrgTicketSettings(ORG);
+    expect(res).toMatchObject({ rateCurrency: 'USD', orgCurrency: 'EUR', partnerCurrency: 'USD' });
+    // The partner lookup is keyed by the org's partner id, not by the caller's
+    // accessible-partner list (org-scoped tokens have none).
+    expect(JSON.stringify(dbMocks.whereArgs.at(-1))).toContain('p-1');
   });
 });
 
 describe('upsertOrgTicketSettings', () => {
-  it('replaces slaOverrides wholesale and converts the rate to a string', async () => {
-    dbMocks.insertResult = [{ slaOverrides: { high: { responseMinutes: 30 } }, defaultHourlyRate: '125.50', defaultBillable: true }];
+  it('stamps the org currency and restamps it on conflict only when the stored rate changes', async () => {
+    dbMocks.insertResult = [{
+      slaOverrides: { high: { responseMinutes: 30 } },
+      defaultHourlyRate: '125.50',
+      defaultBillable: true,
+      rateCurrency: 'EUR',
+    }];
+    dbMocks.selectResults.push([{ currencyCode: 'EUR' }]); // org SHARE barrier read
     const res = await upsertOrgTicketSettings(ORG, {
       slaOverrides: { high: { responseMinutes: 30 } },
       defaultHourlyRate: 125.5,
@@ -502,19 +566,68 @@ describe('upsertOrgTicketSettings', () => {
     expect(vals.slaOverrides).toEqual({ high: { responseMinutes: 30 } });
     expect(vals.defaultHourlyRate).toBe('125.5');
     expect(vals.defaultBillable).toBe(true);
+    expect(vals.rateCurrency).toBe('EUR');
     const conflict = dbMocks.conflictArgs[0]!;
     expect(conflict.target).toBe('orgId');
-    expect((conflict.set as Record<string, unknown>).slaOverrides).toEqual({ high: { responseMinutes: 30 } });
-    expect((conflict.set as Record<string, unknown>).updatedAt).toBeInstanceOf(Date);
-    expect(res).toEqual({ orgId: ORG, slaOverrides: { high: { responseMinutes: 30 } }, defaultHourlyRate: '125.50', defaultBillable: true });
+    const set = conflict.set as Record<string, unknown>;
+    expect(set.slaOverrides).toEqual({ high: { responseMinutes: 30 } });
+    expect(set.updatedAt).toBeInstanceOf(Date);
+    expect(set.rateCurrency).toBeInstanceOf(SQL);
+    expect(sqlText(set.rateCurrency as SQL)).toContain('IS DISTINCT FROM excluded.default_hourly_rate');
+    expect(res).toEqual({
+      orgId: ORG,
+      slaOverrides: { high: { responseMinutes: 30 } },
+      defaultHourlyRate: '125.50',
+      defaultBillable: true,
+      rateCurrency: 'EUR',
+    });
+  });
+
+  it('does not include rateCurrency in the conflict update when the rate is omitted', async () => {
+    dbMocks.insertResult = [{
+      slaOverrides: {},
+      defaultHourlyRate: null,
+      defaultBillable: true,
+      rateCurrency: 'EUR',
+    }];
+    dbMocks.selectResults.push([{ currencyCode: 'EUR' }]);
+    await upsertOrgTicketSettings(ORG, { defaultBillable: true });
+    expect(dbMocks.insertedValues[0]!.rateCurrency).toBe('EUR');
+    expect(dbMocks.conflictArgs[0]!.set).not.toHaveProperty('rateCurrency');
   });
 
   it('passes null through for an explicitly cleared rate', async () => {
-    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: null, defaultBillable: null }];
+    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: null, defaultBillable: null, rateCurrency: 'USD' }];
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
     await upsertOrgTicketSettings(ORG, { defaultHourlyRate: null });
     expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBeNull();
     // slaOverrides not provided => not in values
     expect(dbMocks.insertedValues[0]!).not.toHaveProperty('slaOverrides');
+  });
+
+  // Wave-6 release gate (W6-G4-1): the rate is stamped with `orgCurrencyCode`,
+  // so it must be representable in it. The shared validator's multipleOf(0.01)
+  // is only the outer bound — the currency exponent is knowable only here.
+  it('rejects a fractional rate under a zero-decimal org currency (RATE_NOT_REPRESENTABLE 400)', async () => {
+    dbMocks.selectResults.push([{ currencyCode: 'JPY' }]);
+    await expect(upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100.5 }))
+      .rejects.toMatchObject({ code: 'RATE_NOT_REPRESENTABLE', status: 400 });
+    expect(dbMocks.insertedValues.length).toBe(0);
+  });
+
+  it('accepts a whole-unit rate under a zero-decimal org currency', async () => {
+    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: '100.00', defaultBillable: null, rateCurrency: 'JPY' }];
+    dbMocks.selectResults.push([{ currencyCode: 'JPY' }]);
+    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100 });
+    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBe('100');
+    expect(dbMocks.insertedValues[0]!.rateCurrency).toBe('JPY');
+  });
+
+  it('leaves a 2-decimal currency unchanged — 100.50 USD is accepted', async () => {
+    dbMocks.insertResult = [{ slaOverrides: {}, defaultHourlyRate: '100.50', defaultBillable: null, rateCurrency: 'USD' }];
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    await upsertOrgTicketSettings(ORG, { defaultHourlyRate: 100.5 });
+    expect(dbMocks.insertedValues[0]!.defaultHourlyRate).toBe('100.5');
   });
 });
 

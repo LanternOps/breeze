@@ -27,6 +27,26 @@ const routeMocks = vi.hoisted(() => ({
   createTimeEntryMock: vi.fn(),
   deviceInSiteScopeMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
+  getAnthropicClientForPartnerMock: vi.fn(),
+  anthropicClient: { messages: { create: vi.fn() } },
+}));
+
+const configRef = vi.hoisted(() => ({
+  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
+}));
+
+vi.mock('../config/validate', () => ({
+  getConfig: vi.fn(() => ({ MCP_LLM_PROVIDER: configRef.provider })),
+}));
+
+vi.mock('../services/llm/llmConfigResolver', () => ({
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    constructor() {
+      super('AI is unavailable for this partner.');
+      this.name = 'LlmUnavailableError';
+    }
+  },
+  getAnthropicClientForPartner: routeMocks.getAnthropicClientForPartnerMock,
 }));
 
 vi.mock('../db', () => ({
@@ -87,6 +107,7 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: 'organizations.id',
     name: 'organizations.name',
+    partnerId: 'organizations.partnerId',
   },
   devices: {
     id: 'devices.id',
@@ -185,11 +206,12 @@ vi.mock('../services/effectiveSettings', () => ({
   assertNotLocked: vi.fn(),
 }));
 
-import { aiRoutes } from './ai';
+import { aiRoutes, isOpenAICompatibleProvider } from './ai';
 import { db } from '../db';
 import { getSessionMessages } from '../services/aiAgent';
 import { recordUsage } from '../services/aiCostTracker';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
+import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { TicketServiceError } from '../services/ticketService';
 
 const partnerAuth = authHarness.partnerAuth;
@@ -217,11 +239,27 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    configRef.provider = 'anthropic';
     authHarness.currentAuth.value = partnerAuth;
     app = new Hono();
     app.route('/ai', aiRoutes);
 
-    vi.mocked(db.select).mockReturnValue(selectRows([{ name: 'Acme Co' }]) as any);
+    routeMocks.getAnthropicClientForPartnerMock.mockResolvedValue({
+      client: routeMocks.anthropicClient,
+      resolved: {
+        source: 'partner',
+        partnerId: 'partner-from-session-org',
+        apiKey: 'partner-key',
+        model: 'claude-sonnet-4-6',
+        configId: 'config-1',
+        configVersion: 2,
+      },
+    });
+
+    vi.mocked(db.select).mockReturnValue(selectRows([{
+      name: 'Acme Co',
+      partnerId: 'partner-from-session-org',
+    }]) as any);
   });
 
   function postDraft(sessionId: string, auth: any = partnerAuth) {
@@ -277,14 +315,29 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
         contextSnapshot: null,
         elapsedMinutes: expect.any(Number),
         model: 'claude-test',
+        partnerId: 'partner-from-session-org',
+        client: routeMocks.anthropicClient,
       })
     );
-    expect(recordUsage).toHaveBeenCalledWith('s1', 'org1', 'claude-test', 10, 5, false);
+    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledTimes(1);
+    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-from-session-org');
+    expect(recordUsage).toHaveBeenCalledWith(
+      's1',
+      'org1',
+      'claude-test',
+      10,
+      5,
+      false,
+      'partner_key',
+    );
   });
 
   it('enriches a draft with the session device hostname', async () => {
     vi.mocked(db.select)
-      .mockReturnValueOnce(selectRows([{ name: 'Acme Co' }]) as any)
+      .mockReturnValueOnce(selectRows([{
+        name: 'Acme Co',
+        partnerId: 'partner-from-session-org',
+      }]) as any)
       .mockReturnValueOnce(selectRows([{ hostname: 'WKS-04' }]) as any);
     vi.mocked(getSessionMessages).mockResolvedValueOnce({
       session: { id: 's1', orgId: 'org1', deviceId: 'dev1', model: null, createdAt: new Date(), contextSnapshot: null },
@@ -322,6 +375,25 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     expect(res.status).toBe(404);
   });
 
+  it('503s when the session organization is missing without constructing a client or recording usage', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectRows([]) as any);
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(routeMocks.getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
   it('422 on a thin transcript', async () => {
     vi.mocked(getSessionMessages).mockResolvedValueOnce({
       session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
@@ -347,6 +419,33 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     const res = await postDraft('s1', partnerAuth);
 
     expect(res.status).toBe(502);
+  });
+
+  it('503s with ai_unavailable when the partner LLM config is unavailable', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+    routeMocks.getAnthropicClientForPartnerMock.mockRejectedValueOnce(new LlmUnavailableError());
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+  });
+});
+
+describe('isOpenAICompatibleProvider', () => {
+  it.each([
+    ['openai-compatible', true],
+    ['anthropic', false],
+  ] as const)('returns %s only for the openai-compatible config', (provider, expected) => {
+    configRef.provider = provider;
+    expect(isOpenAICompatibleProvider()).toBe(expected);
   });
 });
 

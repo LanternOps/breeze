@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { db } from '../../db';
 
 // Service-layer mocks — the route is a thin org-scoped consumer.
 const { getCustomerInvoiceMock, markViewedMock } = vi.hoisted(() => ({
@@ -106,6 +107,17 @@ function app(orgId = ORG_ID, authMethod: 'bearer' | 'cookie' = 'bearer') {
   return a;
 }
 
+// Drizzle SQL objects are circular (column → table → column), so JSON.stringify
+// can't walk them. Collect Param values by descending queryChunks instead.
+function boundParams(node: unknown, out: unknown[] = [], seen = new Set<unknown>()): unknown[] {
+  if (!node || typeof node !== 'object' || seen.has(node)) return out;
+  seen.add(node);
+  const n = node as { queryChunks?: unknown[]; value?: unknown; encoder?: unknown };
+  if ('encoder' in n && 'value' in n) out.push(n.value);
+  for (const c of n.queryChunks ?? []) boundParams(c, out, seen);
+  return out;
+}
+
 describe('portal invoices routes', () => {
   beforeEach(() => { vi.clearAllMocks(); dbResults.length = 0; insertValuesMock.mockReset(); });
 
@@ -143,6 +155,21 @@ describe('portal invoices routes', () => {
     expect(body.pagination.total).toBe(2);
   });
 
+  it('derived title subselects correlate on a QUALIFIED outer column', async () => {
+    // Drizzle renders an interpolated column (`${invoices.id}`) as bare `"id"`,
+    // which inside a correlated subselect resolves to the SUBQUERY's own table
+    // and correlates it with itself — always false, title always null, and the
+    // mocked db chain here can't see it. Pin the source: the correlation must
+    // be the hand-qualified `invoices.id`.
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./invoices.ts', import.meta.url), 'utf8');
+    const start = src.indexOf('invoiceDerivedTitleSql = sql');
+    const fragment = src.slice(start, src.indexOf(')`;', start));
+    expect(fragment).toContain('q.converted_invoice_id = invoices.id');
+    expect(fragment).toContain('il.invoice_id = invoices.id');
+    expect(fragment).not.toContain('${invoices.id}');
+  });
+
   it('GET /invoices/:id returns the customer view + stamps viewed', async () => {
     getCustomerInvoiceMock.mockResolvedValue({ invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [{ id: 'l1' }] });
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
@@ -175,6 +202,35 @@ describe('portal invoices routes', () => {
     // the assertion the stubbed serializer used to make vacuous.
     expect(body.lines[0].name).toBe('Support retainer');
     expect(body.lines[0].description).toBe('Support');
+  });
+
+  it('GET /invoices/:id resolves branding from the OUT-OF-HEADER partnerId', async () => {
+    // The shipped bug read `result.invoice.partnerId` (stripped by the
+    // serialization boundary) and sent undefined into the partners query.
+    getCustomerInvoiceMock.mockResolvedValue({
+      invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [], partnerId: 'partner-7',
+    });
+    dbResults.push([{ name: 'Lantern IT' }]);                                          // partners (system ctx)
+    dbResults.push([{ logoUrl: 'https://cdn/logo.png', primaryColor: '#123456' }]);    // portal_branding
+    const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.branding).toEqual({ partnerName: 'Lantern IT', logoUrl: 'https://cdn/logo.png', primaryColor: '#123456' });
+    // Walk the bound params of the partners where(): undefined must never reach postgres.js.
+    const whereArg = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[0]![0];
+    const params = boundParams(whereArg);
+    expect(params).toContain('partner-7');
+    expect(params).not.toContain(undefined);
+  });
+
+  it('GET /invoices/:id still renders with null branding when the lookups return nothing', async () => {
+    getCustomerInvoiceMock.mockResolvedValue({
+      invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [], partnerId: 'partner-7',
+    });
+    dbResults.push([]); dbResults.push([]);
+    const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).branding).toEqual({ partnerName: null, logoUrl: null, primaryColor: null });
   });
 
   it('GET /invoices/:id maps a cross-tenant 404 from the service', async () => {
@@ -394,6 +450,41 @@ describe('portal invoices routes', () => {
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(500);
     expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /invoices/:id/pay maps a Stripe currency rejection to a customer-safe 409 STRIPE_CURRENCY_UNSUPPORTED', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'CHF', invoiceNumber: 'INV-CHF',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
+    sessionsCreateMock.mockRejectedValue(Object.assign(new Error('Invalid currency: chf'), {
+      type: 'StripeInvalidRequestError', code: 'currency_not_supported',
+    }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Online payment is not available for this invoice — please contact the sender.',
+      code: 'STRIPE_CURRENCY_UNSUPPORTED',
+    });
+    expect(insertValuesMock).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith('[portal/invoices] Stripe rejected currency', expect.objectContaining({ invoiceId: INV_ID, currency: 'CHF' }));
+    errSpy.mockRestore();
+  });
+
+  it('POST /invoices/:id/pay never surfaces the partner currency-mismatch warning to the customer', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_eur', url: 'https://checkout.stripe.com/c/cs_eur', payment_intent: 'pi_eur' });
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ url: 'https://checkout.stripe.com/c/cs_eur' });
   });
 
   // ---- verify-on-return settle ----

@@ -11,14 +11,22 @@ import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 vi.mock('../../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('../../../stores/orgStore', () => ({ useOrgStore: (sel: (s: { organizations: unknown[] }) => unknown) => sel({ organizations: [] }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+// Controllable tokens: opening the composer reads scope claims (Stripe-status
+// gate) via useAuthStore.getState().tokens — null keeps it quiet; the
+// currency-mismatch tests flip it to partner scope to unlock the fetch.
+const authState = vi.hoisted(() => ({ tokens: null as { accessToken: string } | null }));
 vi.mock('../../../stores/auth', () => ({
   fetchWithAuth: vi.fn().mockResolvedValue(
     { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
   ),
-  // Opening the composer reads scope claims (Stripe-status gate) via
-  // useAuthStore.getState().tokens — a null-token store keeps it quiet.
-  useAuthStore: Object.assign(() => null, { getState: () => ({ tokens: null }) }),
+  useAuthStore: Object.assign(() => null, { getState: () => ({ tokens: authState.tokens }) }),
 }));
+import { fetchWithAuth } from '../../../stores/auth';
+/** Access token whose (unverified) payload claims partner scope — enough for
+ *  the composer's client-side getJwtClaims() gate on the support fetches. */
+const PARTNER_TOKENS = {
+  accessToken: `x.${btoa(JSON.stringify({ scope: 'partner', partnerId: 'p-1' }))}.y`,
+};
 vi.mock('../../../lib/api/quotes', () => ({ sendQuote: vi.fn(), deleteQuote: vi.fn(), quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf') }));
 vi.mock('../../shared/ConfirmDialog', () => ({ ConfirmDialog: () => null }));
 const showToastMock = vi.fn();
@@ -55,7 +63,7 @@ function sendable(): QuoteDetailData {
   };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); authState.tokens = null; });
 
 describe('QuoteActions — header variant', () => {
   it('an empty draft disables Send and ties it to a visible, per-variant hint', async () => {
@@ -95,6 +103,17 @@ describe('QuoteActions — header variant', () => {
     expect(send).not.toBeDisabled();
     expect(send).not.toHaveAttribute('aria-describedby');
     expect(screen.queryByTestId('quote-send-empty-hint')).not.toBeInTheDocument();
+  });
+
+  it('formats the zero-total warning in the quote currency', async () => {
+    const detail = sendable();
+    detail.quote.currencyCode = 'EUR';
+    render(<QuoteActions detail={detail} onChanged={vi.fn()} variant="header" />);
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-send'));
+
+    expect(await screen.findByTestId('quote-send-zero-warning')).toHaveTextContent('€0.00');
   });
 
   it('savePending keeps Send ENABLED; a click queues the composer to open on quiescence', async () => {
@@ -224,5 +243,97 @@ describe('QuoteActions — header variant', () => {
 
     fireEvent.click(send); // now something WILL complete
     expect(send.querySelector('.animate-spin')).not.toBeNull();
+  });
+});
+
+describe('QuoteActions — Stripe currency-mismatch warning (#3777)', () => {
+  const resp = (payload: unknown): Response =>
+    ({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
+
+  /** The warning arrives PRECOMPUTED on the detail payload (GET /quotes/:id).
+   *  The composer must never call the BILLING_MANAGE-only
+   *  /partner/stripe-connect endpoint for it: `quotes:send` is independently
+   *  grantable, and a sender without billing admin got a silent 403 and no
+   *  warning (review F5). The mock below 403s that endpoint to prove it. */
+  function mockSenderWithoutBillingManage() {
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url === '/partner/stripe-connect') {
+        return { ok: false, status: 403, statusText: 'Forbidden', json: vi.fn().mockResolvedValue({ error: 'Forbidden' }) } as unknown as Response;
+      }
+      if (url === '/orgs/partners/me') return resp({ emailSignature: null });
+      return resp({ data: {} });
+    });
+  }
+
+  function withStripe(detail: QuoteDetailData, accountCurrency: string | null): QuoteDetailData {
+    const doc = detail.quote.currencyCode;
+    const currencyWarning: QuoteDetailData['currencyWarning'] = accountCurrency === null
+      ? { code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN', documentCurrency: doc, accountCurrency: null, message: 'not cached — refresh' }
+      : accountCurrency === doc
+        ? null
+        : { code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT', documentCurrency: doc, accountCurrency, message: 'differs' };
+    return { ...detail, stripeConnected: true, stripeAccountCurrency: accountCurrency, currencyWarning };
+  }
+
+  async function openComposer(detail: QuoteDetailData) {
+    render(<QuoteActions detail={detail} onChanged={vi.fn()} variant="header" />);
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-send'));
+    await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
+  }
+
+  beforeEach(() => { mockSenderWithoutBillingManage(); });
+
+  it('warns when the quote currency differs from the Stripe account default — for a quotes:send-only user, without calling /partner/stripe-connect', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    await openComposer(withStripe({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } }, 'USD'));
+    const warning = await screen.findByTestId('quote-stripe-currency-warning');
+    expect(warning.textContent).toContain('EUR');
+    expect(warning.textContent).toContain('USD');
+    // Warn, never block: the connected note still renders and Send stays armed.
+    expect(screen.getByTestId('quote-send-payment-enabled')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-send-confirm')).not.toBeDisabled();
+    expect(vi.mocked(fetchWithAuth).mock.calls.map(([u]) => u)).not.toContain('/partner/stripe-connect');
+  });
+
+  it('stays silent when the currencies match', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    await openComposer(withStripe(sendable(), 'USD'));
+    await screen.findByTestId('quote-send-payment-enabled');
+    expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-stripe-currency-unknown')).not.toBeInTheDocument();
+  });
+
+  it('account currency not cached (null): shows an explicit "refresh required" note instead of silence (review F6)', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    await openComposer(withStripe({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } }, null));
+    await screen.findByTestId('quote-send-payment-enabled');
+    expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
+    const note = screen.getByTestId('quote-stripe-currency-unknown');
+    expect(note.textContent).toMatch(/refresh/i);
+    // Warn, never block.
+    expect(screen.getByTestId('quote-send-confirm')).not.toBeDisabled();
+  });
+
+  it('does not render the warning for an org-scoped token either — the payload decides, not the token', async () => {
+    authState.tokens = null;
+    await openComposer(withStripe({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } }, 'USD'));
+    expect(await screen.findByTestId('quote-stripe-currency-warning')).toBeInTheDocument();
+  });
+
+  it('stripeConnected unknown (null / omitted): neither the connected note nor a warning, even if a stale warning is present', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    const stale = withStripe({ ...sendable(), quote: { ...sendable().quote, currencyCode: 'EUR' } }, 'USD');
+    await openComposer({ ...stale, stripeConnected: null });
+    expect(screen.queryByTestId('quote-send-payment-enabled')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-send-payment-note')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
+  });
+
+  it('stripeConnected false: the disconnected note renders and no currency warning can', async () => {
+    authState.tokens = PARTNER_TOKENS;
+    await openComposer({ ...sendable(), stripeConnected: false, currencyWarning: null });
+    expect(await screen.findByTestId('quote-send-payment-note')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-stripe-currency-warning')).not.toBeInTheDocument();
   });
 });

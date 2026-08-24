@@ -11,6 +11,7 @@ import { agentLogs } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -92,14 +93,15 @@ export async function initializeAgentLogRetention(): Promise<void> {
       await queue.removeRepeatableByKey(job.key);
     }
 
-    // Schedule cleanup every 24 hours (runs at interval from worker start, not at a fixed time)
+    // Daily at a registry-allocated slot (jobs/scheduleRegistry.ts).
     await queue.add(
       'cleanup',
       { retentionDays: DEFAULT_RETENTION_DAYS },
       {
-        repeat: {
-          every: 24 * 60 * 60 * 1000 // Every 24 hours
-        },
+        // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+        // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+        // together (see jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('agent-log-retention') },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 }
       }

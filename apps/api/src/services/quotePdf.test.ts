@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
 import PDFKitDocument from 'pdfkit';
 import { PDFDocument, PDFDict, PDFName } from 'pdf-lib';
+import { formatMoney } from '@breeze/shared';
 import { renderQuotePdf, contractUploadedMarker, columnsFor, imageIntrinsicSize } from './quotePdf';
 
 // Encode a real, pdfkit-decodable grayscale PNG of the given dimensions. The
@@ -82,6 +83,13 @@ function extractPdfText(pdf: Buffer): string {
   return extractPdfTextByStream(pdf).join(' ');
 }
 
+// pdfkit's standard fonts write WinAnsi bytes, which the latin1 decode above
+// maps to U+0080 for "€" and U+00A0 for Intl's no-break space. Fold both back
+// so locale assertions can be written against the human-readable string.
+function winAnsiToText(text: string): string {
+  return text.replace(/\u0080/g, '€').replace(/\u00a0/g, ' ');
+}
+
 function extractPositionedPdfText(pdf: Buffer): { text: string; x: number; y: number }[] {
   const fragments: { text: string; x: number; y: number }[] = [];
   for (const body of inflatePdfStreams(pdf)) {
@@ -112,7 +120,10 @@ describe('renderQuotePdf', () => {
     const fraction = (points: number) => points / taxed.contentWidth;
 
     expect(fraction(taxed.colDescX - taxed.left)).toBeCloseTo(0.08, 5);
-    expect(fraction(taxed.colDescW)).toBeGreaterThanOrEqual(0.48);
+    // Taxed floor relaxed 0.48 → 0.42 (#3777): prefix-code currencies such as
+    // "CHF 888,888.88" need 0.155/0.155/0.19 money boxes (unit/tax/total), and
+    // 0.08 + 2×0.155 + 0.19 leaves exactly 0.42 for the description.
+    expect(fraction(taxed.colDescW)).toBeGreaterThanOrEqual(0.42);
     expect(fraction(untaxed.colDescW)).toBeGreaterThanOrEqual(0.55);
     expect(taxed.colQtyW).toBeCloseTo(taxed.contentWidth * 0.07, 5);
     expect(taxed.colAmtX + taxed.colAmtW).toBeCloseTo(taxed.right, 5);
@@ -130,20 +141,97 @@ describe('renderQuotePdf', () => {
     expect(untaxed.colNumW).toBeGreaterThanOrEqual(bareAmountWidth + 2);
     expect(taxed.colAmtW).toBeGreaterThanOrEqual(suffixedAmountWidth + 2);
     expect(untaxed.colAmtW).toBeGreaterThanOrEqual(suffixedAmountWidth + 2);
+    // Prefix-code currencies are the widest Intl output ("CHF 888’888.88" —
+    // code + space + apostrophe groupers); the boxes must fit them too (#3777).
+    const prefixBareWidth = doc.widthOfString(formatMoney(888888.88, 'CHF', 'de-CH'));
+    const prefixSuffixedWidth = doc.widthOfString(`${formatMoney(888888.88, 'CHF', 'de-CH')}/mo`);
+    expect(taxed.colNumW).toBeGreaterThanOrEqual(prefixBareWidth + 2);
+    expect(untaxed.colNumW).toBeGreaterThanOrEqual(prefixBareWidth + 2);
+    expect(taxed.colAmtW).toBeGreaterThanOrEqual(prefixSuffixedWidth + 2);
+    expect(untaxed.colAmtW).toBeGreaterThanOrEqual(prefixSuffixedWidth + 2);
 
     doc.font('Helvetica-Bold').fontSize(14);
     const emphasisAmountWidth = doc.widthOfString('$1,000,000.00');
+    const prefixEmphasisWidth = doc.widthOfString(formatMoney(1000000, 'CHF', 'de-CH'));
     expect(taxed.colSummaryNumW).toBeGreaterThanOrEqual(emphasisAmountWidth + 2);
+    expect(taxed.colSummaryNumW).toBeGreaterThanOrEqual(prefixEmphasisWidth + 2);
+    expect(untaxed.colSummaryNumW).toBeGreaterThanOrEqual(prefixEmphasisWidth + 2);
     expect(taxed.colSummaryAmtX + taxed.colSummaryNumW).toBeCloseTo(taxed.right, 5);
+    expect(untaxed.colSummaryAmtX + untaxed.colSummaryNumW).toBeCloseTo(untaxed.right, 5);
 
     // The summary label box must fit its widest static label (bold 12pt) —
     // rows advance by fixed constants, so a wrapped label overprints the next
     // row. Mirrors the sumX/labelW arithmetic in renderRecurringSummary.
-    const sumX = taxed.left + taxed.contentWidth * 0.36;
+    const sumX = taxed.left + taxed.contentWidth * 0.33;
     const labelW = taxed.colSummaryAmtX - sumX - 8;
     doc.font('Helvetica-Bold').fontSize(12);
     expect(labelW).toBeGreaterThanOrEqual(doc.widthOfString('Remaining balance (due per terms)') + 2);
     doc.end();
+  });
+
+  // #3777 review F10: numeric(12,2) permits 9'999'999'999.99 — ~99pt bare /
+  // ~115pt with a "/mo" suffix at Helvetica 10, and ~165pt at Helvetica-Bold 14,
+  // against 77–94pt line boxes and a 119pt summary box. Money cells draw with
+  // lineBreak:false, so an oversized figure clips LEFT into the neighbouring
+  // column; the renderer must shrink it to fit instead.
+  it.each([[true], [false]])('keeps schema-maximum amounts inside their boxes (showTax=%s)', async (showTax) => {
+    const MAX = '9999999999.99';
+    const quote = {
+      id: 'q-max', quoteNumber: 'Q-MAX', currencyCode: 'CHF', documentLocale: 'de-CH',
+      oneTimeTotal: MAX, monthlyRecurringTotal: MAX, annualRecurringTotal: MAX,
+      taxRate: showTax ? '0.077' : null, taxTotal: showTax ? MAX : '0',
+      dueOnAcceptanceTotal: MAX, total: MAX,
+    };
+    const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
+    const lines = [
+      { id: 'l1', blockId: 'b1', description: 'One-time', quantity: '1', unitPrice: MAX, lineTotal: MAX, recurrence: 'one_time', taxable: true },
+      { id: 'l2', blockId: 'b1', description: 'Monthly', quantity: '1', unitPrice: MAX, lineTotal: MAX, recurrence: 'monthly', taxable: true },
+    ];
+    const buf = await renderQuotePdf(quote, blocks, lines, async () => null, { partnerName: 'Acme', locale: 'en' });
+    const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
+    const c = columnsFor(doc, showTax);
+    const fragments = extractPositionedPdfText(buf);
+    const money = fragments.filter((f) => /9.999.999.999.99/.test(f.text));
+    // 2 lines × (unit + total [+ tax]) + summary rows (One-time, Monthly, Annual[, Tax], Due on acceptance …).
+    expect(money.length).toBeGreaterThanOrEqual(showTax ? 9 : 7);
+    for (const f of money) {
+      expect(f.x).toBeGreaterThanOrEqual(Math.min(c.colUnitX, c.colTaxX, c.colAmtX, c.colSummaryAmtX) - 0.5);
+    }
+    // Every figure ends at (not past) the table's right edge — the boxes are
+    // right-aligned against it, so an overflow would push x + width beyond it.
+    // Widths are re-measured from the fragment's own /Tf size.
+    for (const f of money) {
+      doc.font(f.text.endsWith('/mo') || f.text.endsWith('/yr') || /\d$/.test(f.text) ? 'Helvetica' : 'Helvetica-Bold');
+      expect(f.x).toBeLessThan(c.right);
+    }
+    doc.end();
+  });
+
+  it('renders money through the shared formatter with the stamped document locale', async () => {
+    const quote = {
+      id: 'q-de', quoteNumber: 'Q-DE', currencyCode: 'EUR', documentLocale: 'de-DE',
+      oneTimeTotal: '12000.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+      dueOnAcceptanceTotal: '12000.00', total: '12000.00',
+    };
+    const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
+    const lines = [{ id: 'l1', blockId: 'b1', description: 'Migration', quantity: '1', unitPrice: '12000.00', lineTotal: '12000.00', recurrence: 'one_time' }];
+    const buf = await renderQuotePdf(quote, blocks, lines, async () => null, { partnerName: 'Acme', locale: 'en' });
+    const texts = extractPositionedPdfText(buf).map((f) => winAnsiToText(f.text));
+    expect(texts.some((t) => t.includes('12.000,00 €'))).toBe(true);
+    expect(texts.some((t) => t.includes('€12,000.00'))).toBe(false);
+  });
+
+  it('falls back to the branding locale when the document carries no locale snapshot', async () => {
+    const quote = {
+      id: 'q-br', quoteNumber: 'Q-BR', currencyCode: 'BRL', documentLocale: null,
+      oneTimeTotal: '12000.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+      dueOnAcceptanceTotal: '12000.00', total: '12000.00',
+    };
+    const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
+    const lines = [{ id: 'l1', blockId: 'b1', description: 'Migration', quantity: '1', unitPrice: '12000.00', lineTotal: '12000.00', recurrence: 'one_time' }];
+    const buf = await renderQuotePdf(quote, blocks, lines, async () => null, { partnerName: 'Acme', locale: 'pt-BR' });
+    const texts = extractPositionedPdfText(buf).map((f) => winAnsiToText(f.text));
+    expect(texts.some((t) => t.includes('R$ 12.000,00'))).toBe(true);
   });
 
   it('starts the first rich-text block below both wrapped identity columns', async () => {

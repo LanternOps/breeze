@@ -38,9 +38,13 @@ describe('quoteMath (shared)', () => {
   });
 
   it('rounds at the cent boundary without rounding unitPrice first', () => {
-    // 0.05 * 0.70 = 0.035 → 3.4999.. cents → floor(+0.5) = 3 → 0.03 (not 0.04).
-    expect(computeLineTotal('0.05', '0.70')).toBe('0.03');
-    expect(computeQuoteTotals([line({ quantity: '0.05', unitPrice: '0.70' })], null).subtotal).toBe('0.03');
+    // 0.05 * 0.70 = 0.035 exactly → half-up → 0.04. The product is computed in
+    // scaled-integer space, so the binary double (0.034999…) can't drag it to 0.03
+    // (review #2) — this now agrees with Postgres ROUND(quantity * unit_price, 2).
+    expect(computeLineTotal('0.05', '0.70')).toBe('0.04');
+    expect(computeQuoteTotals([line({ quantity: '0.05', unitPrice: '0.70' })], null).subtotal).toBe('0.04');
+    // 1 minute at 7.25/h: 0.02 × 7.25 = 0.145 → 0.15 (the double is just below the tie).
+    expect(computeLineTotal('0.02', '7.25')).toBe('0.15');
     // sub-cent unit prices survive: 3 * 0.335 = 1.005 → round half-up → 1.01.
     expect(computeLineTotal('3', '0.335')).toBe('1.01');
   });
@@ -254,3 +258,36 @@ describe('quoteMath (shared)', () => {
     });
   });
 }
+
+describe('currency-aware quote rounding (multi-currency wave 1)', () => {
+  const jpyLine = { quantity: '3', unitPrice: '333.50', taxable: true, customerVisible: true, recurrence: 'one_time' as const };
+
+  it('line and quote totals are whole-unit for JPY', () => {
+    expect(computeLineTotal('3', '333.50', 'JPY')).toBe('1001.00');
+    const t = computeQuoteTotals([jpyLine], 0.105, undefined, 'JPY');
+    expect(t.subtotal).toBe('1001.00');
+    expect(t.taxTotal).toBe('105.00');       // 105.105 → whole yen
+    expect(t.total).toBe('1106.00');
+    expect(t.dueOnAcceptanceTotal).toBe('1106.00');
+  });
+
+  it('percent deposits round to the currency exponent', () => {
+    const t = computeQuoteTotals([jpyLine], null, { type: 'percent', percent: 30 }, 'JPY');
+    // 30% of 1001 = 300.3 → JPY deposit must be 300.00, not 300.30
+    expect(t.depositDueTotal).toBe('300.00');
+  });
+
+  it('percent deposits that round to zero at the currency exponent collapse to null', () => {
+    const t = computeQuoteTotals(
+      [{ ...jpyLine, quantity: '1', unitPrice: '1.00', taxable: false }],
+      null,
+      { type: 'percent', percent: 30 },
+      'JPY',
+    );
+    expect(t.depositDueTotal).toBeNull();
+  });
+
+  it('omitted currency keeps the historical 2-decimal behavior', () => {
+    expect(computeLineTotal('3', '0.335')).toBe('1.01');
+  });
+});

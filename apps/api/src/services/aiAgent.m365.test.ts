@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // through the real service logic without a live database.
 const selectMock = vi.fn();
 const insertMock = vi.fn();
+const resolveLlmConfigForOrgMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
@@ -28,6 +29,10 @@ vi.mock('../db/schema', () => ({
 vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base' }));
 vi.mock('./brainDeviceContext', () => ({
   getActiveDeviceContext: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('./llm/llmConfigResolver', () => ({
+  LlmUnavailableError: class LlmUnavailableError extends Error {},
+  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 
 import { createSession, listM365Connections } from './aiAgent';
@@ -55,6 +60,11 @@ const auth: any = {
 describe('createSession M365 binding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resolveLlmConfigForOrgMock.mockResolvedValue({
+      source: 'platform',
+      apiKey: 'platform-key',
+      model: 'claude-sonnet-4-6',
+    });
   });
 
   it('rejects a connection belonging to a different org', async () => {
@@ -115,7 +125,10 @@ describe('createSession M365 binding', () => {
     // no connection lookup performed
     expect(selectMock).not.toHaveBeenCalled();
     expect(valuesSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ delegantM365ConnectionId: null })
+      expect.objectContaining({
+        delegantM365ConnectionId: null,
+        billingSource: 'platform',
+      })
     );
   });
 });

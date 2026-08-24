@@ -534,7 +534,7 @@ export interface RemoteSession {
 // Audit Types
 // ============================================
 
-export type ActorType = 'user' | 'api_key' | 'agent' | 'system';
+export type ActorType = 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
 export type AuditResult = 'success' | 'failure' | 'denied';
 
 export interface AuditLog {
@@ -775,6 +775,7 @@ export * from './filters';
 // ============================================
 
 export * from './ai';
+export * from './aiAgents';
 
 // ============================================
 // Billing Enum SSOT
@@ -814,3 +815,9 @@ export * from './publicQuote';
 // ============================================
 
 export * from './officeAddin';
+
+// ============================================
+// Stripe account / multi-currency checkout (#3777)
+// ============================================
+
+export * from './stripeAccount';

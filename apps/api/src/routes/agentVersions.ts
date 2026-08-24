@@ -17,9 +17,25 @@ import { syncFromGitHub } from "../services/binarySync";
 import { getBinaryEdition } from "../services/binaryEdition";
 import { getGithubReleaseVersion } from "../services/binarySource";
 import { PERMISSIONS } from "../services/permissions";
-import { verifyReleaseArtifactManifestAsset } from "../services/releaseArtifactManifest";
+import {
+  verifyReleaseArtifactManifestAsset,
+  ReleaseAssetNotDistributableError,
+  ReleaseManifestAssetLookupError,
+  ReleaseManifestSignatureError,
+  verifyManifestSignatureAgainstOfficialKeysOnly,
+} from "../services/releaseArtifactManifest";
 import { EDITION_HOSTED, EDITION_SELF_HOST } from "../services/releaseAssetTrust";
-import { getActivePublicKeys as getActiveDeploymentSigningPubKeys } from "../services/manifestSigning";
+import {
+  getActivePublicKeys as getActiveDeploymentSigningPubKeys,
+  getActiveTrustKeyset,
+} from "../services/manifestSigning";
+
+// The one key ID hard-bound in every agent build to the embedded LanternOps
+// release-signing public key (agent/internal/updater/updater.go, ~line 395).
+// Any OTHER signingKeyId value is either a `deploy-*` per-deployment key
+// (manifest_signing_keys) or unrecognized/absent (legacy normalized rows
+// predating signingKeyId).
+const OFFICIAL_MANIFEST_SIGNING_KEY_ID = "release-artifact-manifest-ed25519";
 
 // Map Go GOOS / user-facing platform names to DB platform names
 const PLATFORM_MAP: Record<string, string> = {
@@ -242,6 +258,95 @@ export async function verifyEd25519ManifestSignature(
   });
 }
 
+// Verifies `signature` against exactly ONE raw 32-byte Ed25519 key — the
+// deploy-* single-key-row branch of verifyManifestSignatureForSigningKeyId
+// below. Deliberately duplicates the small signature-bytes check inline
+// (rather than refactoring the well-tested verifyEd25519ManifestSignature
+// above to take a caller-supplied key list) so that function's existing
+// logging/soft-pass semantics — which several tests pin — stay untouched.
+function verifyEd25519SignatureAgainstSingleRawKey(
+  manifest: string,
+  signature: string,
+  rawKey: Buffer,
+): boolean {
+  if (rawKey.length !== 32) return false;
+  let signatureBytes: Buffer;
+  try {
+    signatureBytes = Buffer.from(signature, "base64");
+  } catch {
+    return false;
+  }
+  if (signatureBytes.length !== 64) return false;
+
+  try {
+    const spki = Buffer.concat([
+      Buffer.from("302a300506032b6570032100", "hex"),
+      rawKey,
+    ]);
+    const publicKey = createPublicKey({ key: spki, format: "der", type: "spki" });
+    return verifySignature(
+      null,
+      Buffer.from(manifest, "utf8"),
+      publicKey,
+      signatureBytes,
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Key-ID-aware verification for the LEGACY (non schema-v1) manifest shape —
+// Task 2 (#3836). Mirrors the agent's exact-ID semantics (agent/internal/
+// updater/updater.go verifyManifestSignature, ~line 769): when a key ID is
+// present it binds verification to that ONE key, with no fallback across
+// the rest of the trusted set. This narrows what an EXPLICIT signingKeyId
+// can accept — it never widens acceptance relative to the prior whole-set
+// behavior, and unrecognized/absent IDs keep exactly that prior behavior.
+//
+//  - OFFICIAL_MANIFEST_SIGNING_KEY_ID: the OFFICIAL configured key set
+//    (RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS / getConfiguredPublicKeys via
+//    verifyManifestSignatureAgainstOfficialKeysOnly) ONLY — a DB deployment
+//    key must never satisfy a claim of official provenance.
+//  - `deploy-*`: exactly the one manifest_signing_keys row with that keyId
+//    — env keys and every OTHER deploy key must NOT satisfy it. A missing
+//    row (rotated out, never existed, DB load failure) fails closed.
+//  - absent/unrecognized (legacy normalized rows predating signingKeyId, or
+//    any other value): unchanged whole-set verifyEd25519ManifestSignature
+//    behavior — this task narrows what an explicit ID accepts, it does not
+//    newly require one.
+async function verifyManifestSignatureForSigningKeyId(
+  manifest: string,
+  signature: string,
+  signingKeyId: string | null | undefined,
+): Promise<boolean> {
+  const id = signingKeyId?.trim();
+
+  if (id === OFFICIAL_MANIFEST_SIGNING_KEY_ID) {
+    return verifyManifestSignatureAgainstOfficialKeysOnly(manifest, signature);
+  }
+
+  if (id && id.startsWith("deploy-")) {
+    let keyset: { keyId: string; publicKeyB64: string }[];
+    try {
+      keyset = await getActiveTrustKeyset();
+    } catch (err) {
+      console.warn(
+        `[agentVersions] Failed to load manifest_signing_keys for signingKeyId=${id} lookup (failing closed):`,
+        err,
+      );
+      return false;
+    }
+    const row = keyset.find((k) => k.keyId === id);
+    if (!row) return false;
+    const rawKey = Buffer.from(row.publicKeyB64, "base64");
+    return verifyEd25519SignatureAgainstSingleRawKey(manifest, signature, rawKey);
+  }
+
+  return verifyEd25519ManifestSignature(manifest, signature, {
+    allowEmptyKeysetSoftPass: true,
+  });
+}
+
 function assetNameFromDownloadUrl(downloadUrl: string): string | null {
   try {
     const parsed = new URL(downloadUrl);
@@ -251,6 +356,74 @@ function assetNameFromDownloadUrl(downloadUrl: string): string | null {
   } catch {
     return null;
   }
+}
+
+// D1 (issue #3836): canonical asset-name resolution for schema-v1
+// release-artifact manifests.
+//
+// validateReleaseManifest's schema-v1 branch used to derive the manifest
+// asset name to look up SOLELY from assetNameFromDownloadUrl(downloadUrl) —
+// the URL's last path segment. That is correct for a GitHub-sourced
+// downloadUrl (".../releases/download/v1.0.0/breeze-agent-linux-amd64") but
+// wrong for a BINARY_SOURCE=local row: registerFromOfficialManifest
+// (services/binarySync.ts) stores a server-relative downloadUrl
+// (".../api/v1/agents/download/{os}/{arch}" — see
+// buildServerRelativeAgentDownloadUrl above), whose last path segment is the
+// ARCH, not an asset name. Every local-mode row's schema-v1 lookup therefore
+// searched the manifest for e.g. "amd64", never found it, and the failure
+// collapsed into invalid_release_manifest_signature — a fleet-wide 409 on
+// every agent heartbeat for a correctly-signed row.
+//
+// This function reproduces EXACTLY the filenames binarySync.ts's
+// scanBinaryDir/parseBinaryFilename (agent/watchdog/backup) and
+// USER_HELPER_TARGETS (user-helper) produce for every (component, platform,
+// arch) triple this server can register locally — see the cross-check list
+// in the D1 unit tests. It is the preferred source of truth for those
+// shapes; assetNameFromDownloadUrl(downloadUrl) remains the fallback for
+// every other (component, platform) combination, INCLUDING component=
+// "helper" (see that branch below for why it always falls through) and the
+// GitHub-sourced case, so behavior for BINARY_SOURCE=github rows is
+// unchanged.
+export function canonicalReleaseAssetName(
+  component: string,
+  platform: string,
+  architecture: string,
+): string | null {
+  // DB / manifest platform values use "macos"; on-disk/release asset
+  // filenames use Go's GOOS naming, "darwin".
+  const goos = platform === "macos" ? "darwin" : platform;
+  const isKnownArch = architecture === "amd64" || architecture === "arm64";
+  if (!isKnownArch) return null;
+
+  if (component === "agent" || component === "watchdog" || component === "backup") {
+    if (goos !== "windows" && goos !== "linux" && goos !== "darwin") return null;
+    const suffix = goos === "windows" ? ".exe" : "";
+    return `breeze-${component}-${goos}-${architecture}${suffix}`;
+  }
+
+  // breeze-user-helper (#816/#1878): Windows-only GUI-subsystem sibling of
+  // breeze-agent.
+  if (component === "user-helper") {
+    if (goos !== "windows") return null;
+    return `breeze-user-helper-windows-${architecture}.exe`;
+  }
+
+  // component="helper" (the Tauri Helper app) has NO canonical raw-binary
+  // name here: its real registration is HELPER_TARGETS
+  // (services/binarySync.ts, ~line 59) — windows -> breeze-helper-windows.msi,
+  // darwin (amd64 AND arm64, same file) -> breeze-helper-macos.dmg, linux ->
+  // breeze-helper-linux.AppImage. That shape is per-OS, not per-arch, and
+  // isn't derivable from (component, platform, arch) alone (darwin/amd64 and
+  // darwin/arm64 both resolve to the SAME asset name). An earlier version of
+  // this function returned "breeze-desktop-helper-darwin-<arch>" for
+  // component="helper" — that is a DIFFERENT artifact (the raw Mach-O binary
+  // bundled inside the agent .pkg, never its own agentVersions row) and,
+  // being non-null, wrongly WON over the correct URL-basename fallback for
+  // real BINARY_SOURCE=github helper rows, which would have 409'd them.
+  // Falling through to the final `return null` below lets
+  // assetNameFromDownloadUrl(downloadUrl) resolve "helper" instead, which is
+  // correct for every helper row that exists today.
+  return null;
 }
 
 // Server-origin discovery for handing agents a download URL that matches
@@ -338,6 +511,7 @@ export async function validateReleaseManifest(args: {
   downloadUrl: string;
   checksum: string;
   fileSize?: number | bigint | null;
+  signingKeyId?: string | null;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (!args.manifest || !args.signature) {
     return { ok: false, reason: "signed_release_manifest_required" };
@@ -352,7 +526,33 @@ export async function validateReleaseManifest(args: {
   }
 
   if (parsed.schemaVersion === 1 && Array.isArray(parsed.assets)) {
-    const assetName = assetNameFromDownloadUrl(args.downloadUrl);
+    // Task 2 (#3836) key-ID-aware guard: verifyReleaseArtifactManifestAsset
+    // below only ever trusts the OFFICIAL configured key set
+    // (getConfiguredPublicKeys) — it has no DB-deployment-key code path, so
+    // a schema-v1 row can only ever validly prove OFFICIAL provenance. A
+    // `deploy-*` (or other non-official) signingKeyId reaching this branch
+    // can never be honestly satisfied: an official signature wouldn't
+    // verify against an agent's TOFU-pinned deploy key either, so accepting
+    // it here would just be a claim the agent itself would reject. Reject
+    // before even asking whether the signature verifies, since no outcome
+    // of that check could make the ID claim true. No row
+    // registerFromOfficialManifest/getReleaseAssetMetadata (binarySync.ts)
+    // produces today hits this — it's defense in depth against a
+    // future/corrupted row.
+    const claimedKeyId = args.signingKeyId?.trim();
+    if (claimedKeyId && claimedKeyId !== OFFICIAL_MANIFEST_SIGNING_KEY_ID) {
+      return { ok: false, reason: "invalid_release_manifest_signature" };
+    }
+
+    // D1 (#3836): canonical resolution wins when the (component, platform,
+    // arch) shape is known — the URL basename stays only as a fallback for
+    // shapes canonicalReleaseAssetName doesn't recognize (e.g. a genuine
+    // GitHub-sourced downloadUrl). See canonicalReleaseAssetName's own
+    // comment for why the URL-basename-only approach was wrong for
+    // BINARY_SOURCE=local rows.
+    const assetName =
+      canonicalReleaseAssetName(args.component, args.platform, args.arch) ??
+      assetNameFromDownloadUrl(args.downloadUrl);
     if (!assetName) {
       return { ok: false, reason: "release_manifest_metadata_mismatch" };
     }
@@ -373,7 +573,42 @@ export async function validateReleaseManifest(args: {
         return { ok: false, reason: "release_manifest_metadata_mismatch" };
       }
       return { ok: true };
-    } catch {
+    } catch (err) {
+      // D3 (#3836): verifyReleaseArtifactManifestAsset verifies the Ed25519
+      // signature FIRST, unconditionally, before it ever attempts an asset
+      // lookup or a distributability check (releaseArtifactManifest.ts) — so
+      // reaching either typed branch below already implies a signature that
+      // verified. That preserves the #641 anti-probing property: a reason
+      // more specific than "signature invalid" is only ever returned after a
+      // real signature check passed. Never leak `err.message` to the agent
+      // response body — log it server-side only.
+      if (err instanceof ReleaseAssetNotDistributableError) {
+        console.error(
+          "[agentVersions] Release asset not distributable:",
+          err.message,
+        );
+        return { ok: false, reason: "release_asset_not_distributable" };
+      }
+      if (err instanceof ReleaseManifestAssetLookupError) {
+        console.error(
+          "[agentVersions] Release manifest asset lookup failed:",
+          err.message,
+        );
+        return { ok: false, reason: "release_manifest_asset_lookup_failed" };
+      }
+      if (err instanceof ReleaseManifestSignatureError) {
+        console.error(
+          "[agentVersions] Release manifest signature verification failed:",
+          err.message,
+        );
+        return { ok: false, reason: "invalid_release_manifest_signature" };
+      }
+      // Any unrecognized error shape — fail closed to the least-specific
+      // reason rather than assume it's safe to be more specific.
+      console.error(
+        "[agentVersions] Unrecognized error verifying release manifest asset, failing closed:",
+        err instanceof Error ? err.message : err,
+      );
       return { ok: false, reason: "invalid_release_manifest_signature" };
     }
   }
@@ -382,10 +617,17 @@ export async function validateReleaseManifest(args: {
   // specific `release_manifest_metadata_mismatch` reason to a caller whose
   // signature was forged, we let attackers probe which DB-row field would
   // have mismatched without ever holding a valid signing key (#641).
+  //
+  // Task 2 (#3836): key-ID-aware dispatch replaces the unconditional
+  // whole-set verifyEd25519ManifestSignature call — see
+  // verifyManifestSignatureForSigningKeyId's own comment for the exact
+  // binding this enforces.
   if (
-    !(await verifyEd25519ManifestSignature(args.manifest, args.signature, {
-      allowEmptyKeysetSoftPass: true,
-    }))
+    !(await verifyManifestSignatureForSigningKeyId(
+      args.manifest,
+      args.signature,
+      args.signingKeyId,
+    ))
   ) {
     return { ok: false, reason: "invalid_release_manifest_signature" };
   }
@@ -533,6 +775,7 @@ agentVersionRoutes.get(
       downloadUrl: versionInfo.downloadUrl,
       checksum: versionInfo.checksum,
       fileSize: versionInfo.fileSize,
+      signingKeyId: versionInfo.signingKeyId,
     });
     if (!manifestCheck.ok) {
       return c.json(
@@ -626,6 +869,7 @@ agentVersionRoutes.post(
       downloadUrl: data.downloadUrl,
       checksum: data.checksum,
       fileSize: data.fileSize,
+      signingKeyId: data.signingKeyId,
     });
     if (!createManifestCheck.ok) {
       return c.json(
@@ -891,6 +1135,7 @@ agentVersionRoutes.post(
         fileSize: agentVersions.fileSize,
         releaseManifest: agentVersions.releaseManifest,
         manifestSignature: agentVersions.manifestSignature,
+        signingKeyId: agentVersions.signingKeyId,
       })
       .from(agentVersions)
       .where(
@@ -947,6 +1192,7 @@ agentVersionRoutes.post(
         downloadUrl: row.downloadUrl,
         checksum: row.checksum,
         fileSize: row.fileSize,
+        signingKeyId: row.signingKeyId,
       });
       if (!check.ok) {
         invalidTargets.push({

@@ -1,6 +1,7 @@
 import {
   bigserial,
   char,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -15,6 +16,7 @@ import { AI_APPROVAL_SCOPES, type AiApprovalScope, type AssuranceLevel } from '@
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { apiKeys } from './apiKeys';
+import { aiAgentRuns } from './aiAgents';
 
 // Action intents & durable approval layer (spec
 // docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md).
@@ -46,7 +48,12 @@ export const actionIntentStatusEnum = [
 ] as const;
 export type ActionIntentStatus = (typeof actionIntentStatusEnum)[number];
 
-export const actionIntentSourceEnum = ['chat', 'mcp_api'] as const;
+// 'ai_agent' (wave 3, #3824): a headless agent proposal. Distinct from 'chat'
+// because nobody is watching a chat pane — supervised agent intents must be
+// notified. computeExpiresAt (intentService.ts) gives it an explicit
+// AGENT_INTENT_EXPIRY_MS branch (wave 3b) — deliberately 24h, no longer
+// inherited from the MCP window by accident.
+export const actionIntentSourceEnum = ['chat', 'mcp_api', 'ai_agent'] as const;
 export type ActionIntentSource = (typeof actionIntentSourceEnum)[number];
 
 /**
@@ -59,6 +66,10 @@ export const actionIntentOriginPrincipalKindEnum = [
   'api_key',
   'oauth_grant',
   'agent',
+  // The AI agent principal (wave 3). NOT the same as 'agent', which is the Go
+  // device agent — see actorContext.ts, where the two must map to different
+  // AuthContexts.
+  'ai_agent',
   'helper',
   'system',
   'unknown',
@@ -66,7 +77,16 @@ export const actionIntentOriginPrincipalKindEnum = [
 export type ActionIntentOriginPrincipalKind =
   (typeof actionIntentOriginPrincipalKindEnum)[number];
 
-export const intentOutboxEventEnum = ['intent_created', 'intent_approved'] as const;
+// Widened in wave 2 (#3823): a DENIED or EXPIRED intent previously wrote no
+// outbox row at all, so a requester whose chat turn had ended could never be
+// told the outcome. Pinned by a CHECK in SQL — see
+// 2026-09-04-ai-agent-notifications.sql.
+export const intentOutboxEventEnum = [
+  'intent_created',
+  'intent_approved',
+  'intent_rejected',
+  'intent_expired',
+] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
 
 /**
@@ -96,22 +116,49 @@ export const actionIntents = pgTable(
     orgId: uuid('org_id').notNull().references(() => organizations.id),
     partnerId: uuid('partner_id').references(() => partners.id),
 
-    // Identity / attribution. Exactly one of requestedByUserId /
-    // requestingApiKeyId is set — enforced by action_intents_one_actor_chk
-    // (migration only; not modeled here, mirrors elevations.ts precedent).
+    // Identity / attribution. Exactly ONE of requestedByUserId /
+    // requestingApiKeyId / requestingAgentRunId is set — enforced by
+    // action_intents_one_actor_chk (migration only; not modeled here, mirrors
+    // elevations.ts precedent).
     requestedByUserId: uuid('requested_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
     requestingApiKeyId: uuid('requesting_api_key_id').references(() => apiKeys.id, {
       onDelete: 'set null',
     }),
+    /**
+     * The ai_agent_runs row that produced this intent (wave 3, #3824). Set iff
+     * origin_principal_kind = 'ai_agent' — paired by
+     * action_intents_agent_origin_chk, and `source` is paired to both by
+     * action_intents_agent_source_chk.
+     *
+     * This is the requester's replacement, not a breadcrumb: release
+     * revalidation (PR 3b) will reconstruct the agent AuthContext from this
+     * run's immutable policy_snapshot and re-check it against the agent's
+     * CURRENT effective policy, so a flipped kill switch or a tightened
+     * allowlist vetoes an already-approved proposal. Until then
+     * buildAuthContextForIntent (actorContext.ts) fails closed on any intent
+     * that carries this column.
+     *
+     * FK declared as a COMPOSITE (requesting_agent_run_id, org_id) →
+     * ai_agent_runs(id, org_id) in the table-options block below. No
+     * single-column .references() here — the composite FK is the only DB-level
+     * tie, and it is what stops an intent in one org from being attributed to
+     * an agent run in another (mirrors elevation_audit, elevations.ts:197).
+     *
+     * ON DELETE RESTRICT — agents and their runs are never hard-deleted
+     * (ai-agents spec, 2026-08-22-ai-agents-program-and-wave1-design.md §2 —
+     * NOT this file's action-intents spec) and attribution must survive.
+     * Immutable, covered by action_intents_immutable_trg.
+     */
+    requestingAgentRunId: uuid('requesting_agent_run_id'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
      * fact rather than derived at release time.
      *
-     * `source` is a lossy proxy: it has only 'chat' | 'mcp_api', while an
-     * AuthContext principal can be user_session/client_user/api_key/
+     * `source` is a lossy proxy: it has only 'chat' | 'mcp_api' | 'ai_agent',
+     * while an AuthContext principal can be user_session/client_user/api_key/
      * oauth_grant/agent/helper/system. And the actor columns cannot stand in
      * for it either — `requested_by_user_id` is written for EVERY intent
      * (holding the key's CREATOR for API-key callers) and
@@ -221,6 +268,26 @@ export const actionIntents = pgTable(
     // below / elevations.ts's elevation_requests_org_pending_idx et al). The
     // matching partial predicate is passed to onConflictDoNothing's `where`
     // in intentService.ts's createActionIntent — see the comment there.
+
+    // Composite FK: (requesting_agent_run_id, org_id) → ai_agent_runs(id, org_id).
+    // Structural guarantee that an agent proposal can never be filed under a
+    // different tenant than the run that produced it — RLS on action_intents
+    // checks only action_intents.org_id and would not catch it.
+    // ON DELETE RESTRICT: runs are never hard-deleted; attribution survives.
+    //
+    // COUPLING (wave 3b resolves it): ai_agent_runs is currently in
+    // CORE_DEVICE_ORG_DENORMALIZED_TABLES (routes/devices/core.ts), so a
+    // device move-org rewrites the run's org_id — which this FK (ON UPDATE
+    // NO ACTION) turns into a 23503 the moment an agent intent exists.
+    // Unreachable while createActionIntent rejects the ai_agent principal;
+    // PR 3b removes ai_agent_runs from the re-stamp list (owner decision
+    // 2026-08-23: agent history stays with the source org) BEFORE lifting
+    // that guard. If 3b is reordered or dropped, this note is the tripwire.
+    requestingAgentRunOrgFk: foreignKey({
+      columns: [table.requestingAgentRunId, table.orgId],
+      foreignColumns: [aiAgentRuns.id, aiAgentRuns.orgId],
+      name: 'action_intents_requesting_agent_run_id_org_id_fkey',
+    }).onDelete('restrict'),
   }),
 );
 

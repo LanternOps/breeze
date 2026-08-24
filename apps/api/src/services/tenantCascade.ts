@@ -67,6 +67,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'action_intents',
   'agent_logs',
   'ai_action_plans',
+  'ai_agent_runs',
+  'ai_agents',
   'ai_budgets',
   'ai_cost_usage',
   'ai_screenshots',

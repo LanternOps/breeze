@@ -8,7 +8,8 @@ import { partners } from '../../db/schema/orgs';
 import { portalBranding } from '../../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
-import { acceptQuote, emitAcceptInvoiceIssued } from '../../services/quoteAcceptService';
+import { acceptQuote, emitAcceptInvoiceIssued, autoEmailAcceptedInvoice } from '../../services/quoteAcceptService';
+import { notifyQuoteOutcome } from '../../services/quoteOutcomeNotify';
 import { createQuotePayLink } from '../../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage, loadCustomerLineImage } from '../../services/quoteImageStorage';
@@ -18,9 +19,11 @@ import { loadContractBlockRenderData, renderContractBlocksForClient, loadContrac
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from '../../services/documentThemes';
+import { resolvePartnerDocumentLocale } from '../../services/documentLocale';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { normalizeEmail, portalFinancialMutationGuard } from './helpers';
 
@@ -36,7 +39,7 @@ quoteRoutes.get('/quotes', async (c) => {
   const auth = c.get('portalAuth');
   const conditions = and(eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'));
   const data = await db.select({
-    id: quotes.id, quoteNumber: quotes.quoteNumber, status: quotes.status, currencyCode: quotes.currencyCode,
+    id: quotes.id, quoteNumber: quotes.quoteNumber, title: quotes.title, status: quotes.status, currencyCode: quotes.currencyCode,
     issueDate: quotes.issueDate, expiryDate: quotes.expiryDate, total: quotes.total,
   }).from(quotes).where(conditions).orderBy(desc(quotes.issueDate), desc(quotes.createdAt)).limit(200);
   return c.json({ data, pagination: { page: 1, limit: 200, total: data.length } });
@@ -53,14 +56,15 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   // Derive the amount accept actually invoices (one-time only) so the customer
   // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
   // plus the deposit due + per-category subtotals for the summary panel.
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
   // Branding parity with the public token view (quotesPublic.ts): partners is a
   // partner-axis RLS table invisible to this org scope (#1375 class — 0 rows, no
   // error), so the name reads under SYSTEM scope like the /pdf route below;
   // portal_branding is org-scoped and reads fine here.
   const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
-  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+    db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
+  // Support contact rides along for branding parity with the public token view.
+  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, supportEmail: portalBranding.supportEmail, supportPhone: portalBranding.supportPhone }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
   // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
   // sent quote's frozen presentation always wins over the partner's live
   // theme/pageSize columns.
@@ -69,12 +73,21 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     // Resolves every `contract` block's pinned template version (system context,
     // ahead of the response we're about to build below) and replaces its raw
     // authoring content with the render contract the portal understands.
-    const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`);
+    // Portal serves sent (stamped) quotes: quote.documentLocale is the render
+    // locale; null only for pre-wave-5 sends, which resolve to the partner's
+    // language — the SAME fallback the /pdf route below uses, so contract
+    // clauses and the downloadable PDF never disagree on a legacy quote.
+    const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`, quote.documentLocale ?? resolvePartnerDocumentLocale(partner));
     const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
     const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
     const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
-    return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
+    // Draft successors stay private until sent; customers must not learn that a
+    // revision is still being prepared for them.
+    const [successor] = await db.select({ id: quotes.id }).from(quotes)
+      .where(and(eq(quotes.revisionOfQuoteId, quote.id), ne(quotes.status, 'draft'))).limit(1);
+    return c.json({ data: { quote: { ...quote, supersededByQuoteId: successor?.id ?? null, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
       partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+      supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
       theme, pageSize,
     }, presentation: { theme, pageSize } } });
   } catch (err) {
@@ -96,7 +109,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   // "Remaining balance" line matches the portal detail view instead of falling
   // back to renderQuotePdf's oneTimeTotal default (tax-exclusive on taxed
   // deposit quotes).
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
   // partners is a partner-axis RLS table — the portal request runs in ORG scope,
   // where breeze_has_partner_access is false. A bare read returns 0 rows with NO
   // error (the #1375 class), causing buildSellerSnapshot(undefined) to produce an
@@ -119,6 +132,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
       currencyCode: partners.currencyCode,
       documentTheme: partners.documentTheme,
       documentPageSize: partners.documentPageSize,
+      settings: partners.settings,
     }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)
   ));
   const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
@@ -144,7 +158,6 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   // from the same overlaid fields the page renderer uses — the portal only serves
   // frozen (sent+) quotes today, but the admin draft-PDF route shipped exactly
   // this raw-vs-overlaid split as a blank {{client.name}} in contract text.
-  const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender);
   // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
   // sent quote's frozen presentation always wins over the partner's live
   // theme/pageSize columns.
@@ -154,7 +167,12 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
     footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
     theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
     pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
+    // Send-time locale snapshot → partner language → 'en' (#3777).
+    locale: quote.documentLocale ?? resolvePartnerDocumentLocale(partner),
   };
+  // Same `branding.locale` the page renderer uses, so contract totals and the
+  // quote summary on the same PDF never disagree (#3777).
+  const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender, branding.locale);
   const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, undefined, contractRenderData);
   const { mergeUploadedContractPdfs } = await import('../../services/pdfMerge');
   const finalPdf = await mergeUploadedContractPdfs(pdf, uploads);
@@ -249,6 +267,12 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
     // render, matching invoiceService.issueInvoice. Fire-and-forget; never fails the
     // accept the customer already completed.
     await emitAcceptInvoiceIssued(res, auth.user.id);
+    // Auto-email the issued invoice (public-link CTA) — same recovery/record
+    // email the public accept path sends; partner-gated inside, best-effort.
+    // UNAWAITED with notifyQuoteOutcome below: both end in SMTP round trips
+    // and must never delay the accept response; both swallow their own errors.
+    void autoEmailAcceptedInvoice(res);
+    void notifyQuoteOutcome({ quoteId: id, outcome: 'accepted', source: 'customer', signerName });
     return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -275,7 +299,7 @@ quoteRoutes.post('/quotes/:id/decline', zValidator('param', idParam), zValidator
   // inline update here previously let an authed portal user decline an
   // expired-but-not-yet-swept quote, diverging from "expired is terminal".
   try {
-    const updated = await declineQuoteByActor(id, reason ?? undefined, { userId: auth.user.id, partnerId: null, accessibleOrgIds: [auth.user.orgId] });
+    const updated = await declineQuoteByActor(id, reason ?? undefined, { userId: auth.user.id, partnerId: null, accessibleOrgIds: [auth.user.orgId] }, 'customer');
     return c.json({ data: { status: updated.status } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {
@@ -287,20 +311,35 @@ quoteRoutes.post('/quotes/:id/decline', zValidator('param', idParam), zValidator
 });
 
 // POST /quotes/:id/pay — mint a Stripe checkout link for an accepted (converted)
-// quote's invoice. Runs in a system sub-context: createQuotePayLink →
-// createInvoicePayLink reads the partner-axis stripe connection, which this org
-// scope would RLS-filter to 0 rows (#1375). Org access stays enforced by the
-// org-scoped quote lookup below + the actor's accessibleOrgIds.
+// quote's invoice.
+//
+// #1448 — this route opts out of the auth middleware's auto request-transaction
+// (see selfManagedDbContextRoutes.ts), so there is NO ambient DB context here,
+// exactly like POST /portal/invoices/:id/pay. The ownership read below runs in
+// its own short system context (org isolation is the explicit `auth.user.orgId`
+// filter, not RLS scope), and createQuotePayLink is called with NO enclosing
+// context: it and createInvoicePayLink open short system contexts around each
+// DB step (quote read, invoice read, partner-axis Stripe key read, mapping
+// write) and run checkout.sessions.create truly outside any transaction. Never
+// wrap the call in withSystemDbAccessContext — that pins a pooled connection
+// idle-in-transaction across the Stripe round-trip (#1105 class; #3777 review F2).
 quoteRoutes.post('/quotes/:id/pay', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
-  const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
+  const [quote] = await withSystemDbAccessContext(() =>
+    db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1));
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
   try {
-    const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      createQuotePayLink(id, { userId: null, partnerId: null, accessibleOrgIds: [auth.user.orgId] })));
+    const link = await createQuotePayLink(id, { userId: null, partnerId: null, accessibleOrgIds: [auth.user.orgId] });
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof QuoteServiceError || err instanceof InvoiceServiceError) {
+      // Customer-facing path (spec §10): the partner-facing message names their
+      // Stripe account setup — answer with the customer-safe wording instead,
+      // exactly like POST /portal/invoices/:id/pay and the public link.
+      if (err.code === 'STRIPE_CURRENCY_UNSUPPORTED') {
+        console.error('[portal/quotes] Stripe rejected currency', { quoteId: id, message: err.message });
+        return c.json({ error: CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE, code: err.code }, 409);
+      }
       return c.json({ error: err.message, code: err.code }, err.status);
     }
     throw err;

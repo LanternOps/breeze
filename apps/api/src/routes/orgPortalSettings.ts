@@ -17,7 +17,7 @@ import { updatePortalSettingsSchema } from '@breeze/shared';
 
 const PORTAL_SETTINGS_DEFAULTS = {
   enableTickets: true,
-  enableAssetCheckout: true,
+  enableAssetCheckout: false, // parked — see schema/portal.ts
   enableSelfService: true,
   enablePasswordReset: true,
   supportEmail: null,

@@ -96,6 +96,7 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Fatura gerada",
+        "priceBookGaps": "{{count}} linha(s) de catálogo faturada(s) pelo preço salvo no contrato — sem preço em {{currency}} no catálogo: {{lines}}",
         "draftDeleted": "Rascunho excluído"
       },
       "cancelConfirm": {
@@ -141,7 +142,8 @@
         "saveContract": "Não foi possível salvar o contrato.",
         "addLine": "Não foi possível adicionar a linha.",
         "removeLine": "Não foi possível remover a linha.",
-        "activateContract": "Não foi possível ativar o contrato."
+        "activateContract": "Não foi possível ativar o contrato.",
+        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou limpe o vínculo do catálogo."
       },
       "toast": {
         "contractCreated": "Contrato criado",
@@ -198,7 +200,13 @@
         "taxable": "Tributável",
         "quantityResolvedAutomatically": "Quantidade resolvida automaticamente no momento da cobrança.",
         "lineTotal": "Total da linha: {{total}}",
-        "addLine": "Adicionar linha"
+        "addLine": "Adicionar linha",
+        "noPriceInCurrency": "Este item não tem preço em {{currency}} — adicione um no catálogo, ou limpe o vínculo do catálogo e insira uma linha manual.",
+        "priceFromCatalog": "Preço unitário (do catálogo, em {{currency}})",
+        "resolvingPrice": "Consultando o preço em {{currency}}…",
+        "priceLookupFailed": "Não foi possível consultar o preço em {{currency}}.",
+        "priceNotRepresentable": "O preço em {{currency}} salvo para este item não é válido em {{currency}} — corrija-o no catálogo ou remova o vínculo com o catálogo e informe uma linha manual.",
+        "priceSourceOrgOverride": "Preço específico da organização {{org}}"
       },
       "estimate": {
         "title": "Estimado neste período",
@@ -315,7 +323,65 @@
     "tabs": {
       "contracts": "Contratos",
       "templates": "Modelos",
-      "documents": "Documentos"
+      "documents": "Documentos",
+      "currencyMismatches": "Divergências de moeda"
+    },
+    "currencyMismatches": {
+      "title": "Divergências de moeda",
+      "description": "Contratos ainda registrados em uma moeda que a organização não fatura mais. Abra um contrato para revisá-lo — nada é alterado em massa aqui.",
+      "loading": "Carregando…",
+      "loadError": "Não foi possível carregar o relatório de divergências de moeda.",
+      "loadMore": "Carregar mais",
+      "emptyTitle": "Nenhuma divergência de moeda",
+      "emptyBody": "Todos os contratos estão registrados na moeda de faturamento da sua organização.",
+      "eligible": "Pronto para reregistrar",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} faturas em rascunho",
+      "blockingDrafts_one": "{{count}} fatura em rascunho",
+      "columns": {
+        "contract": "Contrato",
+        "organization": "Organização",
+        "status": "Status",
+        "currencies": "Contrato → organização",
+        "nextBilling": "Próximo faturamento",
+        "eligibility": "Elegibilidade para reregistro"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Não ativo — apenas contratos ativos podem ser reregistrados",
+        "ORPHANED_CONTRACT_SOURCE": "Linhas de fatura originadas de contratos não podem ser atribuídas",
+        "ORPHANED_BILLING_PERIOD": "Um período de faturamento não tem fatura acessível",
+        "BROKEN_CONTRACT_LINEAGE": "A verificação de origem da fatura falhou",
+        "UNBILLED_MONETARY_ROWS": "Faturas em rascunho ainda retêm valores faturados neste contrato"
+      }
+    },
+    "currency": {
+      "actions": {
+        "change": "Alterar moeda"
+      },
+      "dialog": {
+        "title": "Alterar a moeda do contrato",
+        "description": "Este contrato é faturado em {{currency}}. A nova marcação afeta apenas faturas futuras — faturas já emitidas e períodos de faturamento anteriores nunca são alterados.",
+        "currencyLabel": "Nova moeda",
+        "modeLegend": "O que acontece com as linhas do contrato",
+        "modeClear": "Remover todas as linhas do contrato",
+        "modeClearHint": "As linhas são excluídas e recriadas manualmente na nova moeda. Obrigatório quando alguma linha é manual.",
+        "modeReprice": "Reprecificar as linhas de catálogo",
+        "modeRepriceHint": "Cada linha de catálogo é resolvida pela tabela de preços da nova moeda. Só é possível quando todas as linhas vêm do catálogo.",
+        "confirm": "Entendo que isto remarca um contrato ativo e não pode ser desfeito em massa.",
+        "submit": "Alterar moeda"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Emita ou exclua primeiro estes rascunhos de fatura — eles ainda carregam valores deste contrato:",
+        "ORPHANED_BILLING_PERIOD": "Estes períodos de faturamento não têm fatura acessível. Resolva-os antes de remarcar:",
+        "ORPHANED_CONTRACT_SOURCE": "Estas linhas de fatura originadas de contrato não podem ser atribuídas a um contrato. Resolva-as antes de remarcar:",
+        "BROKEN_CONTRACT_LINEAGE": "A verificação de linhagem falhou para estas faturas. Resolva-as antes de remarcar:"
+      },
+      "toast": {
+        "changed": "Moeda do contrato alterada para {{currency}}."
+      },
+      "errors": {
+        "change": "Não foi possível alterar a moeda do contrato."
+      }
     },
     "templatesTab": {
       "title": "Modelos de contrato",
@@ -627,7 +693,8 @@
         "updateDeposit": "Não foi possível atualizar o depósito.",
         "updateLine": "Não foi possível atualizar a linha.",
         "updateSection": "Não foi possível atualizar a seção.",
-        "uploadImage": "Não foi possível enviar a imagem."
+        "uploadImage": "Não foi possível enviar a imagem.",
+        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -853,6 +920,11 @@
       "cloneError": "Não foi possível clonar a cotação.",
       "cloneQuote": "Clonar cotação",
       "cloneSavingTitle": "Aguarde até que as alterações sejam salvas antes de clonar.",
+      "reviseQuote": "Revisar orçamento",
+      "revising": "Criando revisão…",
+      "reviseSuccess": "Revisão criada.",
+      "reviseError": "Não foi possível criar uma revisão.",
+      "reviseInProgress": "Já há uma revisão em andamento — abrindo.",
       "cloneSuccess": "Cotação clonada.",
       "cloning": "Clonando…",
       "deleteConfirm": {
@@ -887,8 +959,9 @@
         "toLabel": "Para",
         "toPlaceholder": "Adicionar destinatário…",
         "tooManyRecipients": "Use no máximo {{max}} endereços.",
-        "zeroTotalWarning": "Este orçamento totaliza $0.00 — verifique se os itens têm preço antes de enviar.",
-        "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>."
+        "zeroTotalWarning": "Este orçamento totaliza {{zero}} — verifique se os itens têm preço antes de enviar.",
+        "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>.",
+        "revisionWarning": "Enviar substitui {{number}} e desativa o link que o cliente já possui."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização e envie novamente.",
@@ -931,7 +1004,9 @@
       "resendNewLinkOriginalLive": "Proposta reenviada, mas com um link NOVO. Esta proposta é anterior ao rastreamento de links, então o link que o cliente já tinha não pôde ser reutilizado; ele continua funcionando junto com o novo.",
       "resendNewLinkOriginalDead": "Proposta reenviada, mas com um link NOVO. O link anterior não pode mais ser aberto, então quem o tiver precisa usar o novo.",
       "shareLinkNewLinkOriginalLive": "Um link NOVO foi copiado. Esta proposta é anterior ao rastreamento de links, então o link que o cliente já tinha não pôde ser reutilizado; ele continua funcionando junto com este.",
-      "shareLinkNewLinkOriginalDead": "Um link NOVO foi copiado. O link anterior não pode mais ser aberto, então quem o tiver precisa usar este."
+      "shareLinkNewLinkOriginalDead": "Um link NOVO foi copiado. O link anterior não pode mais ser aberto, então quem o tiver precisa usar este.",
+      "currencyMismatch": "Este orçamento está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta.",
+      "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com este orçamento em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "detail": {
       "addContentInEditor": "Adicionar conteúdo no Editor",
@@ -1044,9 +1119,23 @@
         "title": "Totais"
       },
       "viewInvoice": "Ver fatura",
-      "sentTo": "Enviado para"
+      "sentTo": "Enviado para",
+      "declinedBanner": {
+        "title": "Recusado em {{date}}",
+        "reasonLabel": "Observação do cliente:",
+        "revise": "Duplicar e revisar",
+        "revising": "Duplicando…"
+      },
+      "lineage": {
+        "supersededTitle": "Este orçamento foi substituído por",
+        "inProgressTitle": "Uma revisão deste orçamento está sendo preparada — enviá-la substituirá este orçamento e desativará o link do cliente:",
+        "revisionOfTitle": "Revisão de",
+        "untitled": "uma versão mais recente"
+      }
     },
     "distributorLookup": {
+      "feedPriceCurrencyUnknown": "Moeda do preço do feed desconhecida — informe um preço em {{currency}}",
+      "feedPriceIn": "O preço do feed está em {{feedCurrency}} — informe um preço em {{currency}}",
       "available": "{{count}} disponíveis",
       "cost": "custo {{currency}} {{amount}}",
       "endOfLife": "Fim de vida",
@@ -1214,6 +1303,8 @@
       "tryAgain": "Tentar novamente"
     },
     "pax8ProductLookup": {
+      "feedPriceCurrencyUnknown": "Moeda do preço do feed desconhecida — informe um preço em {{currency}}",
+      "feedPriceIn": "O preço do feed está em {{feedCurrency}} — informe um preço em {{currency}}",
       "cost": "custo {{currency}} {{amount}}",
       "importAndAdd": "Importar e adicionar",
       "option": "Opção {{number}}",
@@ -1243,7 +1334,8 @@
         "preview": "Visualização",
         "detail": "Detalhes"
       },
-      "loading": "Carregando orçamento…"
+      "loading": "Carregando orçamento…",
+      "revisionBanner": "Esta é uma revisão de {{number}}. Enviá-la substituirá o original e desativará o link que o cliente já possui."
     },
     "status": {
       "draft": "Rascunho",
@@ -1252,7 +1344,8 @@
       "accepted": "Aceito",
       "declined": "Recusado",
       "expired": "Expirado",
-      "converted": "Convertido"
+      "converted": "Convertido",
+      "superseded": "Substituído"
     }
   },
   "billingUi": {
@@ -1324,7 +1417,8 @@
       "removeLine": "Não foi possível remover a linha.",
       "saveNotes": "Não foi possível salvar as observações.",
       "saveTerms": "Não foi possível salvar os termos.",
-      "updateLine": "Não foi possível atualizar a linha."
+      "updateLine": "Não foi possível atualizar a linha.",
+      "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual."
     },
     "fields": {
       "descriptionOptional": "Descrição (opcional)",
@@ -1393,6 +1487,27 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "Para",
+      "toPlaceholder": "financeiro@example.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Assunto",
+      "subjectPlaceholder": "Fatura {{number}} do seu fornecedor",
+      "subjectPlaceholderNoNumber": "Sua fatura",
+      "messageLabel": "Mensagem (opcional)",
+      "messagePlaceholder": "Adicione uma breve nota para o cliente…",
+      "includePdfLabel": "Anexar o PDF da fatura",
+      "signaturePreviewLabel": "Sua assinatura será adicionada:",
+      "invalidEmail": "Endereço de e-mail inválido: {{addresses}}",
+      "tooManyRecipients": "Até {{max}} endereços.",
+      "recipientRequired": "Adicione pelo menos um destinatário.",
+      "noBillingContactHint": "Esta empresa ainda não tem contato de faturamento — <orgLink>adicione um</orgLink> ou digite um endereço acima.",
+      "payLinkNote": "O e-mail inclui um link seguro para o cliente ver, baixar e pagar esta fatura — sem login."
+    },
+    "copyInvoiceLink": "Copiar link da fatura",
+    "copyInvoiceLinkTitle": "Copia o link do cliente para ver e pagar — sem login",
+    "copyingPaymentLink": "Copiando…",
     "deleteConfirm": {
       "message": "Esta ação exclui permanentemente a fatura em rascunho. Não é possível desfazê-la.",
       "title": "Excluir fatura em rascunho"
@@ -1404,6 +1519,9 @@
     "downloadPdfError": "Não foi possível baixar o PDF da fatura.",
     "issue": "Emitir",
     "issueAndSend": "Emitir e enviar",
+    "issueBlockedUnsaved": "“{{field}}” tem uma alteração não salva. Corrija-a e depois emita.",
+    "issueCanceledSaveFailed": "Uma alteração não pôde ser salva, então a emissão foi cancelada. Corrija o campo destacado e tente novamente.",
+    "issueCanceledStillSaving": "Suas alterações ainda estão sendo salvas — a emissão foi cancelada. Tente novamente quando tudo estiver salvo.",
     "issueError": "Não foi possível emitir a fatura.",
     "issueNoEmailWarning": "Fatura emitida — mas nenhum e-mail foi enviado (contato de cobrança/e-mail não configurado)",
     "issueSendConfirm": {
@@ -1416,12 +1534,21 @@
     "issueSuccess": "Fatura emitida",
     "issuing": "Emitindo…",
     "noVisibleLineHint": "Adicione pelo menos uma linha visível ao cliente para emitir.",
+    "paymentLinkCopyFailed": "Não foi possível copiar automaticamente. Link de pagamento: {{url}}",
     "preparing": "Preparando…",
+    "resend": "Reenviar",
+    "resendConfirm": {
+      "title": "Reenviar esta fatura?",
+      "message": "Outra cópia de {{amount}} será enviada para {{customer}}. Nada muda na fatura — mesmo número, mesmas datas, mesmos valores."
+    },
+    "resendSuccess": "Fatura reenviada",
+    "resending": "Enviando…",
     "savingHint": "Salvando alterações… A emissão será liberada quando tudo estiver salvo.",
     "savingTitle": "Salvando suas alterações — a emissão será liberada quando tudo estiver salvo.",
-    "issueCanceledSaveFailed": "Uma alteração não pôde ser salva, então a emissão foi cancelada. Corrija o campo destacado e tente novamente.",
-    "issueCanceledStillSaving": "Suas alterações ainda estão sendo salvas — a emissão foi cancelada. Tente novamente quando tudo estiver salvo.",
-    "issueBlockedUnsaved": "“{{field}}” tem uma alteração não salva. Corrija-a e depois emita.",
+    "sendConfirm": {
+      "title": "Enviar esta fatura?",
+      "message": "A fatura de {{amount}} será enviada por e-mail para {{customer}}."
+    },
     "unsavedHint": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva.",
     "unsavedTitle": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva."
   },
@@ -1460,6 +1587,7 @@
       "amount": "Valor",
       "amountRequired": "Informe um valor de pagamento para registrá-lo",
       "connectStripe": "Conecte o Stripe para aceitar pagamentos online.",
+      "currencyMismatch": "Esta fatura está em {{documentCurrency}}, mas sua conta Stripe liquida em {{accountCurrency}}. O Stripe apresentará {{documentCurrency}} ao cliente e converterá na liquidação — o spread cambial e qualquer taxa de conversão ficam por sua conta.",
       "date": "Data do pagamento",
       "draftHint": "Emita esta fatura para registrar pagamentos.",
       "empty": "Nenhum pagamento registrado.",
@@ -1492,7 +1620,8 @@
       "shareLinkPrompt": "Compartilhe este link de pagamento com o cliente:",
       "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
       "title": "Pagamentos",
-      "viaStripe": "via Stripe"
+      "viaStripe": "via Stripe",
+      "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {
       "invoiceSent": "Fatura enviada",
@@ -1522,7 +1651,15 @@
     },
     "empty": "Esta fatura ainda não tem linhas.",
     "addContentInEditor": "Adicionar linhas no Editor",
-    "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas"
+    "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas",
+    "resetLink": {
+      "button": "Redefinir link do cliente",
+      "title": "Redefinir o link do cliente?",
+      "description": "Quem tiver o link atual perderá o acesso, inclusive o link dos e-mails já enviados. O próximo envio ou cópia criará um novo link.",
+      "confirm": "Redefinir link",
+      "success": "Link redefinido — os links anteriores não funcionam mais",
+      "error": "Não foi possível redefinir o link"
+    }
   },
   "invoiceDocument": {
     "billTo": "Faturar para",
@@ -1598,16 +1735,21 @@
       "unpaid": "Entrada não paga"
     },
     "dialog": {
+      "allBlockedByCurrency": "Todo o trabalho não faturado neste período está precificado em outra moeda, então nada pôde ser montado. Em vez disso, monte um rascunho nessa moeda:",
       "allSites": "Todos os sites",
       "assemble": "Montar",
       "assembleError": "Não foi possível montar uma fatura para esse período.",
       "assembleFromWork": "Montar a partir do trabalho",
+      "assembleIn": "Montar em {{code}} ({{count}} itens, {{amount}})",
       "assembleSuccess": "Fatura em rascunho montada",
       "blankInvoice": "Fatura em branco",
+      "blockedByCurrency": "{{count}} itens não faturados precificados em {{code}} ficaram de fora: monte um rascunho separado em {{code}} para faturá-los.",
       "createDraft": "Criar rascunho",
       "createError": "Não foi possível criar uma fatura em rascunho.",
       "createGenericError": "Não foi possível criar a fatura.",
       "createSuccess": "Fatura em rascunho criada",
+      "currency": "Moeda",
+      "currencyOrgDefault": "Padrão da organização",
       "description": "Monte o trabalho não faturado em um rascunho ou inicie uma fatura em branco.",
       "from": "De",
       "selectOrganization": "Selecione uma organização…",
@@ -1676,6 +1818,44 @@
       "name": "Nome do contato",
       "title": "Contato de cobrança"
     },
+    "currency": {
+      "title": "Moeda",
+      "description": "Novos orçamentos, faturas, contratos, apontamentos de tempo e peças desta organização são carimbados com esta moeda. Nada do que já existe é alterado.",
+      "label": "Moeda de faturamento",
+      "loading": "Verificando o que uma mudança para {{currency}} afetaria…",
+      "error": "Não foi possível carregar o resumo da mudança de moeda.",
+      "panelTitle": "Alterar a moeda de faturamento para {{currency}}?",
+      "none": "Nada nesta organização está carimbado em outra moeda.",
+      "groupTitle": "Carimbado em {{currency}}",
+      "counts": {
+        "draftInvoices": "Faturas em rascunho",
+        "draftQuotes": "Orçamentos em rascunho",
+        "sentQuotes": "Orçamentos enviados",
+        "viewedQuotes": "Orçamentos visualizados",
+        "draftContracts": "Contratos em rascunho",
+        "activeContracts": "Contratos ativos",
+        "pausedContracts": "Contratos pausados",
+        "timeEntries": "Apontamentos de tempo não faturados",
+        "parts": "Peças não faturadas"
+      },
+      "timeDetail": "{{ready}} prontos para faturar, {{running}} em andamento, {{nonBillable}} não facturáveis, {{missingRate}} sem taxa",
+      "partsDetail": "{{ready}} prontas para faturar, {{nonBillable}} não facturáveis",
+      "amounts": "Mão de obra {{labor}} · Peças {{parts}}",
+      "warningsTitle": "Configurações que deixarão de valer",
+      "warningRate": "A taxa horária padrão da organização está em {{currency}} e não se aplicará mais a novos apontamentos de tempo.",
+      "warningCategories": "{{count}} taxas de categoria de chamados em outra moeda serão ignoradas.",
+      "warningOverrides": "{{count}} substituições de preço de catálogo da organização em outra moeda serão ignoradas.",
+      "recovery": "Para faturar os itens em {{currency}} acima, monte um rascunho em {{currency}}.",
+      "rateLess": "{{count}} lançamentos de tempo não faturados têm horas, mas nenhum valor por hora. Defina um valor — a mudança de moeda não os afeta.",
+      "retention": "Apenas documentos, apontamentos de tempo e peças futuros mudam. Nenhum valor é convertido, e rascunhos, contratos e itens não faturados existentes mantêm a moeda com que foram carimbados.",
+      "advisory": "Estas contagens são uma prévia, não uma promessa — nada criado depois está incluído.",
+      "stale": "A moeda de faturamento mudou para {{currency}} enquanto você revisava. Confira o resumo atualizado e confirme novamente.",
+      "confirm": "Alterar moeda",
+      "changing": "Alterando…",
+      "cancel": "Cancelar",
+      "changeError": "Falha ao alterar a moeda de faturamento da organização.",
+      "changeSuccess": "Moeda de faturamento da organização atualizada"
+    },
     "loadError": "Falha ao carregar as configurações de cobrança.",
     "loading": "Carregando configurações de cobrança…",
     "saveButton": "Salvar configurações de cobrança",
@@ -1711,6 +1891,8 @@
       "aiStylePlaceholder": "Padrão: o nome do item é um nome curto, genérico e adequado ao cliente (\"Ponto de acesso sem fio\"); a descrição começa com o nome completo do produto, seguido de especificações em tópicos, detalhadas o suficiente para conferir um pedido. Descreva aqui seu próprio estilo para substituí-lo.",
       "autoTaxHardware": "Aplicar imposto automaticamente a itens de hardware",
       "autoTaxHardwareHelp": "Itens de hardware recém-importados são marcados como tributáveis por padrão.",
+      "autoEmailInvoice": "Enviar a fatura por e-mail automaticamente quando um orçamento for aceito",
+      "autoEmailInvoiceHelp": "Quando um cliente aceita uma proposta, a fatura emitida é enviada imediatamente por e-mail com um link seguro para ver e pagar — sem login.",
       "currencyCode": "Código da moeda",
       "defaultMarkup": "Margem padrão (%)",
       "defaultTaxRate": "Alíquota de imposto padrão (%)",

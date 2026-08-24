@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mockResolveDefaultModel = vi.hoisted(() => vi.fn(() => 'claude-resolved-model'));
+
+vi.mock('./aiAgent', () => ({
+  resolveDefaultModel: mockResolveDefaultModel,
+}));
+
 describe('runWingetReleaseTest validation', () => {
   it('throws ValidationError for invalid packageId', async () => {
     const mod = await import('./aiPatchTestRunner');
@@ -152,5 +158,21 @@ describe('runWingetReleaseTest outcomes', () => {
 
     expect(result.result).toBe('inconclusive');
     expect(result.notes).toMatch(/Claude analysis failed/i);
+  });
+
+  it('uses the centrally resolved default model for Claude analysis', async () => {
+    mockExecFile.mockImplementation(execCallback({ stdout: 'upgrade ok' }));
+    mockMessagesCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"result":"pass","notes":"upgrade succeeded"}' }],
+    });
+
+    const { runWingetReleaseTest } = await import('./aiPatchTestRunner');
+    const result = await runWingetReleaseTest({ packageId: 'Mozilla.Firefox', version: '121.0' });
+
+    expect(result.result).toBe('pass');
+    expect(mockMessagesCreate).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'claude-resolved-model',
+    }));
+    expect(mockMessagesCreate.mock.calls[0]?.[0]?.model).not.toBe('claude-sonnet-4-5-20250929');
   });
 });

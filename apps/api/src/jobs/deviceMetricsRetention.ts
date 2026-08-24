@@ -21,6 +21,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -140,7 +141,14 @@ export async function initializeDeviceMetricsRetention(): Promise<void> {
     await queue.add(
       'cleanup',
       { retentionDays: DEFAULT_RETENTION_DAYS },
-      { repeat: { every: 24 * 60 * 60 * 1000 }, removeOnComplete: { count: 5 }, removeOnFail: { count: 10 } }
+      // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+      // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+      // together (see jobs/scheduleRegistry.ts).
+      {
+        repeat: { pattern: jobSchedule('device-metrics-retention') },
+        removeOnComplete: { count: 5 },
+        removeOnFail: { count: 10 }
+      }
     );
 
     console.log('[DeviceMetricsRetention] Retention worker initialized');

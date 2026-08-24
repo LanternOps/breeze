@@ -89,12 +89,12 @@ import * as dbModule from '../db';
 import { wingetPackageIndex } from '../db/schema';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 
 const QUEUE_NAME = 'winget-index-sync';
 const JOB_NAME = 'sync';
-const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const GITHUB_API = 'https://api.github.com';
 const REPO = 'microsoft/winget-pkgs';
@@ -574,7 +574,10 @@ export async function initializeWingetIndexSyncWorker(): Promise<void> {
       JOB_NAME,
       {} as WingetIndexSyncJobData,
       {
-        repeat: { every: DEFAULT_INTERVAL_MS },
+        // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+        // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+        // together (see jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('winget-index-sync') },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 },
       },

@@ -15,12 +15,14 @@ import { and, asc, eq, ilike, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   createCatalogItemSchema,
+  currencyCodeSchema,
   updateCatalogItemSchema,
   orgPriceOverrideSchema,
+  setItemPriceSchema,
   setBundleComponentsSchema
 } from '@breeze/shared';
 import { db } from '../db';
-import { catalogItems, catalogBundleComponents } from '../db/schema';
+import { catalogItems, catalogItemPrices, catalogBundleComponents } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
@@ -28,8 +30,10 @@ import {
   CatalogServiceError,
   createCatalogItem,
   escapeLikePattern,
+  removeItemPrice,
   removeOrgPriceOverride,
   setBundleComponents,
+  setItemPrice,
   setOrgPriceOverride,
   updateCatalogItem,
   type CatalogActor
@@ -46,6 +50,8 @@ const MANAGE_CATALOG_REQUIRED: Record<string, readonly string[]> = {
   create_item: ['item'],
   update_item: ['catalogId', 'item'],
   archive_item: ['catalogId'],
+  set_price: ['catalogId', 'currencyCode', 'price'],
+  remove_price: ['catalogId', 'currencyCode'],
   set_org_price: ['catalogId', 'orgId', 'override'],
   remove_org_price: ['catalogId', 'orgId'],
   set_bundle_components: ['catalogId', 'components'],
@@ -75,6 +81,8 @@ function serviceErrorToJson(err: unknown): string | null {
 // VALIDATION_ERROR the model could act on.
 const createItemPayload = z.object({ item: createCatalogItemSchema });
 const updateItemPayload = z.object({ item: updateCatalogItemSchema });
+const pricePayload = z.object({ price: setItemPriceSchema });
+const currencyParam = currencyCodeSchema;
 const overridePayload = z.object({ override: orgPriceOverrideSchema });
 
 type CatalogItemRow = typeof catalogItems.$inferSelect;
@@ -95,8 +103,8 @@ const AI_ITEM_FIELDS = [
   'billingType',
   'billingFrequency',
   'commitmentTermMonths',
-  'unitPrice',
   'costBasis',
+  'costCurrency',
   'markupPercent',
   'unitOfMeasure',
   'taxable',
@@ -214,7 +222,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'search_catalog',
       description:
-        'Search the partner product catalog (hardware, software, services, and bundles). The search term matches item name, SKU, and distributor part numbers (manufacturer part number / SYNNEX SKU). Optional filters: item type, bundle flag. Read-only.',
+        'Search the partner product catalog (hardware, software, services, and bundles). The search term matches item name, SKU, and distributor part numbers (manufacturer part number / SYNNEX SKU). Optional filters: item type, bundle flag, currency. Each item lists `prices` per currency (no conversion); an item with no price in a document\'s currency needs a manual line. Read-only.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -230,6 +238,10 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
           isBundle: {
             type: 'boolean',
             description: 'Filter to bundles only (true) or non-bundles only (false)'
+          },
+          currencyCode: {
+            type: 'string',
+            description: 'Only return items that have a price in this currency'
           },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' }
         },
@@ -249,6 +261,12 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       }
       if (typeof input.isBundle === 'boolean') {
         conditions.push(eq(catalogItems.isBundle, input.isBundle));
+      }
+      if (input.currencyCode) {
+        const code = String(input.currencyCode).trim().toUpperCase();
+        conditions.push(
+          sql`EXISTS (SELECT 1 FROM catalog_item_prices p WHERE p.item_id = ${catalogItems.id} AND p.currency_code = ${code})`
+        );
       }
       if (input.search) {
         const pattern = `%${escapeLikePattern(String(input.search))}%`;
@@ -270,7 +288,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
           name: catalogItems.name,
           itemType: catalogItems.itemType,
           sku: catalogItems.sku,
-          unitPrice: catalogItems.unitPrice,
+          prices: sql<Array<{ currencyCode: string; unitPrice: string }>>`COALESCE((SELECT json_agg(json_build_object('currencyCode', p.currency_code, 'unitPrice', p.unit_price::text) ORDER BY p.currency_code) FROM catalog_item_prices p WHERE p.item_id = ${catalogItems.id}), '[]'::json)`,
           isBundle: catalogItems.isBundle
         })
         .from(catalogItems)
@@ -371,8 +389,21 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Catalog item not found' });
       }
       const sanitized = sanitizeCatalogItemForAi(item, auth);
+      const prices = await db
+        .select({
+          currencyCode: catalogItemPrices.currencyCode,
+          unitPrice: catalogItemPrices.unitPrice
+        })
+        .from(catalogItemPrices)
+        .where(
+          and(
+            eq(catalogItemPrices.itemId, item.id),
+            eq(catalogItemPrices.partnerId, partnerId)
+          )
+        )
+        .orderBy(asc(catalogItemPrices.currencyCode));
       if (!item.isBundle) {
-        return JSON.stringify({ item: sanitized });
+        return JSON.stringify({ item: sanitized, prices });
       }
       const components = await db
         .select({
@@ -380,7 +411,8 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
           componentItemId: catalogBundleComponents.componentItemId,
           quantity: catalogBundleComponents.quantity,
           showOnInvoice: catalogBundleComponents.showOnInvoice,
-          revenueAllocation: catalogBundleComponents.revenueAllocation
+          revenueAllocation: catalogBundleComponents.revenueAllocation,
+          allocationCurrency: catalogBundleComponents.allocationCurrency
         })
         .from(catalogBundleComponents)
         .where(
@@ -393,9 +425,9 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       // revenueAllocation is the partner's internal revenue split.
       const sanitizedComponents =
         auth.scope === 'organization'
-          ? components.map(({ revenueAllocation: _ra, ...rest }) => rest)
+          ? components.map(({ revenueAllocation: _ra, allocationCurrency: _ac, ...rest }) => rest)
           : components;
-      return JSON.stringify({ item: sanitized, components: sanitizedComponents });
+      return JSON.stringify({ item: sanitized, prices, components: sanitizedComponents });
     }
   });
 
@@ -405,7 +437,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_catalog',
       description:
-        'Create and manage partner catalog items, organization price overrides, and bundle components.',
+        'Create and manage partner catalog items, per-currency price-book entries (set_price / remove_price), organization price overrides (with currency), and bundle components.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -415,19 +447,27 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
               'create_item',
               'update_item',
               'archive_item',
+              'set_price',
+              'remove_price',
               'set_org_price',
               'remove_org_price',
               'set_bundle_components',
             ],
           },
           catalogId: { type: 'string', description: 'Catalog item UUID' },
+          currencyCode: { type: 'string', description: 'ISO-4217 currency code for set_price / remove_price' },
           orgId: { type: 'string', description: 'Organization UUID for org-specific pricing' },
           item: { type: 'object', description: 'Catalog item create input or update patch' },
+          price: { type: 'object', description: 'Price-book fields for set_price: { unitPrice }' },
           override: { type: 'object', description: 'Organization price override fields' },
           components: {
             type: 'array',
             description: 'Bundle component rows for set_bundle_components',
             items: { type: 'object' as const },
+          },
+          allocationCurrency: {
+            type: 'string',
+            description: 'ISO-4217 currency the component revenueAllocation amounts are authored in (set_bundle_components; required when any component carries a revenueAllocation). Allocations are only used in this currency — never converted.',
           },
         },
         required: ['action'],
@@ -459,6 +499,19 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
             ));
           case 'archive_item':
             return JSON.stringify(await archiveCatalogItem(String(input.catalogId), actor));
+          case 'set_price':
+            return JSON.stringify(await setItemPrice(
+              String(input.catalogId),
+              currencyParam.parse(input.currencyCode),
+              pricePayload.parse({ price: input.price }).price,
+              actor
+            ));
+          case 'remove_price':
+            return JSON.stringify(await removeItemPrice(
+              String(input.catalogId),
+              currencyParam.parse(input.currencyCode),
+              actor
+            ));
           case 'set_org_price':
             return JSON.stringify(await setOrgPriceOverride(
               String(input.catalogId),
@@ -472,12 +525,18 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
               String(input.orgId),
               actor
             ));
-          case 'set_bundle_components':
+          case 'set_bundle_components': {
+            const parsed = setBundleComponentsSchema.parse({
+              components: input.components ?? [],
+              ...(input.allocationCurrency != null ? { allocationCurrency: input.allocationCurrency } : {}),
+            });
             return JSON.stringify(await setBundleComponents(
               String(input.catalogId),
-              setBundleComponentsSchema.parse({ components: input.components ?? [] }).components,
-              actor
+              parsed.components,
+              actor,
+              parsed.allocationCurrency
             ));
+          }
           default:
             return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
         }

@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { dbSelectResults } = vi.hoisted(() => ({
+  dbSelectResults: [] as Array<Array<{ currencyCode: string }>>,
+}));
+
 // Mock the service layer — routes are thin; we assert wiring, validation, error mapping.
 vi.mock('../../services/catalogService', () => ({
   createCatalogItem: vi.fn(),
@@ -7,13 +11,29 @@ vi.mock('../../services/catalogService', () => ({
   archiveCatalogItem: vi.fn(),
   listCatalogItems: vi.fn(),
   getCatalogItem: vi.fn(),
+  setItemPrice: vi.fn(),
+  removeItemPrice: vi.fn(),
+  listItemPrices: vi.fn(),
   setOrgPriceOverride: vi.fn(),
   removeOrgPriceOverride: vi.fn(),
+  resolvePrice: vi.fn(),
   setBundleComponents: vi.fn(),
   computeBundleEconomics: vi.fn(),
   CatalogServiceError: class CatalogServiceError extends Error {
     constructor(msg: string, public status = 400, public code?: string) { super(msg); }
   }
+}));
+
+vi.mock('../../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve(dbSelectResults.shift() ?? [])),
+        })),
+      })),
+    })),
+  },
 }));
 
 vi.mock('../../services/catalogImageStorage', () => ({
@@ -66,7 +86,7 @@ vi.mock('../../services/tdSynnexEcExpress', () => ({
 // Mock auth middleware to inject a partner-scoped actor with catalog perms.
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
-    c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', accessibleOrgIds: null });
+    c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', partnerOrgAccess: 'all', accessibleOrgIds: null });
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
@@ -87,6 +107,10 @@ import * as svc from '../../services/catalogService';
 import * as imgSvc from '../../services/catalogImageStorage';
 import * as tdSvc from '../../services/tdSynnexDigitalBridge';
 import * as ecSvc from '../../services/tdSynnexEcExpress';
+
+beforeEach(() => {
+  dbSelectResults.length = 0;
+});
 
 function app() {
   // catalogRoutes already applies authMiddleware internally
@@ -478,6 +502,84 @@ describe('catalog pricing routes', () => {
     expect(res.status).toBe(400);
     expect(svc.removeOrgPriceOverride).not.toHaveBeenCalled();
   });
+
+  it('PUT /:id/prices/:currencyCode sets an item price with normalized currency', async () => {
+    (svc.setItemPrice as any).mockResolvedValue({ itemId: ITEM_ID, currencyCode: 'EUR', unitPrice: '10.00' });
+    const res = await app().request(`/${ITEM_ID}/prices/eur`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ unitPrice: 10 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: { itemId: ITEM_ID, currencyCode: 'EUR', unitPrice: '10.00' },
+    });
+    expect(svc.setItemPrice).toHaveBeenCalledWith(
+      ITEM_ID,
+      'EUR',
+      { unitPrice: 10 },
+      expect.anything(),
+    );
+  });
+
+  it('PUT /:id/prices/:currencyCode rejects an unsupported currency', async () => {
+    const res = await app().request(`/${ITEM_ID}/prices/zzz`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ unitPrice: 10 }),
+    });
+    expect(res.status).toBe(400);
+    expect(svc.setItemPrice).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /:id/prices/:currencyCode removes an item price', async () => {
+    (svc.removeItemPrice as any).mockResolvedValue(undefined);
+    const res = await app().request(`/${ITEM_ID}/prices/eur`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { ok: true } });
+    expect(svc.removeItemPrice).toHaveBeenCalledWith(ITEM_ID, 'EUR', expect.anything());
+  });
+
+  it('GET /:id/prices lists item prices', async () => {
+    const rows = [{ itemId: ITEM_ID, currencyCode: 'USD', unitPrice: '12.00' }];
+    (svc.listItemPrices as any).mockResolvedValue(rows);
+    const res = await app().request(`/${ITEM_ID}/prices`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: rows });
+    expect(svc.listItemPrices).toHaveBeenCalledWith(ITEM_ID, expect.anything());
+  });
+
+  // Post-merge review #6: the contract editor gates Add / previews the price on
+  // the SERVER's resolution (org override → price book), never on item.prices.
+  it('GET /:id/resolve returns the resolver result for an org + normalized currency', async () => {
+    const resolved = { unitPrice: '37.00', currencyCode: 'EUR', costBasis: null, costCurrency: 'USD', marginAvailable: false, taxable: true, taxCategory: null, source: 'org_override' };
+    (svc.resolvePrice as any).mockResolvedValue(resolved);
+    const res = await app().request(`/${ITEM_ID}/resolve?currencyCode=eur&orgId=${ORG_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: resolved });
+    expect(svc.resolvePrice).toHaveBeenCalledWith(ITEM_ID, 'EUR', ORG_ID, expect.anything());
+  });
+
+  it('GET /:id/resolve without orgId resolves the base price book', async () => {
+    (svc.resolvePrice as any).mockResolvedValue({ unitPrice: '42.00', source: 'price_book' });
+    const res = await app().request(`/${ITEM_ID}/resolve?currencyCode=EUR`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(svc.resolvePrice).toHaveBeenCalledWith(ITEM_ID, 'EUR', null, expect.anything());
+  });
+
+  it('GET /:id/resolve maps a price-book gap to the typed 409', async () => {
+    (svc.resolvePrice as any).mockRejectedValue(new (svc as any).CatalogServiceError('No price', 409, 'NO_PRICE_FOR_CURRENCY'));
+    const res = await app().request(`/${ITEM_ID}/resolve?currencyCode=EUR&orgId=${ORG_ID}`, { method: 'GET' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('NO_PRICE_FOR_CURRENCY');
+  });
+
+  it('GET /:id/resolve requires a supported currencyCode and a UUID orgId (400, no service call)', async () => {
+    expect((await app().request(`/${ITEM_ID}/resolve`, { method: 'GET' })).status).toBe(400);
+    expect((await app().request(`/${ITEM_ID}/resolve?currencyCode=zzz`, { method: 'GET' })).status).toBe(400);
+    expect((await app().request(`/${ITEM_ID}/resolve?currencyCode=EUR&orgId=nope`, { method: 'GET' })).status).toBe(400);
+    expect(svc.resolvePrice).not.toHaveBeenCalled();
+  });
 });
 
 describe('catalog bundle routes', () => {
@@ -496,7 +598,30 @@ describe('catalog bundle routes', () => {
     expect(svc.setBundleComponents).toHaveBeenCalledWith(
       ITEM_ID,
       [{ componentItemId: ORG_ID, quantity: 2, showOnInvoice: false }],
-      expect.anything()
+      expect.anything(),
+      undefined
+    );
+  });
+
+  it('PUT /:id/components forwards allocationCurrency and 400s when an allocation has no currency (#3775 review #7)', async () => {
+    (svc.setBundleComponents as any).mockResolvedValue({ item: { id: ITEM_ID }, components: [], overrides: [] });
+    const components = [{ componentItemId: ORG_ID, quantity: 2, revenueAllocation: 10 }];
+    const missing = await app().request(`/${ITEM_ID}/components`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ components })
+    });
+    expect(missing.status).toBe(400);
+    expect(svc.setBundleComponents).not.toHaveBeenCalled();
+
+    const res = await app().request(`/${ITEM_ID}/components`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ components, allocationCurrency: 'eur' })
+    });
+    expect(res.status).toBe(200);
+    expect(svc.setBundleComponents).toHaveBeenCalledWith(
+      ITEM_ID,
+      [{ componentItemId: ORG_ID, quantity: 2, showOnInvoice: false, revenueAllocation: 10 }],
+      expect.anything(),
+      'EUR'
     );
   });
 
@@ -525,19 +650,35 @@ describe('catalog bundle routes', () => {
   });
 
   it('GET /:id/economics returns the economics payload', async () => {
+    dbSelectResults.push([{ currencyCode: 'USD' }]);
     (svc.computeBundleEconomics as any).mockResolvedValue({ headlinePrice: '100.00', totalCost: '75.00', margin: '25.00' });
     const res = await app().request(`/${ITEM_ID}/economics`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.margin).toBe('25.00');
-    expect(svc.computeBundleEconomics).toHaveBeenCalledWith(ITEM_ID, null, expect.anything());
+    expect(svc.computeBundleEconomics).toHaveBeenCalledWith(ITEM_ID, 'USD', null, expect.anything());
   });
 
   it('GET /:id/economics forwards a valid orgId query param', async () => {
+    dbSelectResults.push([{ currencyCode: 'CAD' }]);
     (svc.computeBundleEconomics as any).mockResolvedValue({ headlinePrice: '100.00' });
     const res = await app().request(`/${ITEM_ID}/economics?orgId=${ORG_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
-    expect(svc.computeBundleEconomics).toHaveBeenCalledWith(ITEM_ID, ORG_ID, expect.anything());
+    expect(svc.computeBundleEconomics).toHaveBeenCalledWith(ITEM_ID, 'CAD', ORG_ID, expect.anything());
+  });
+
+  it('GET /:id/economics uses an explicit normalized currencyCode', async () => {
+    (svc.computeBundleEconomics as any).mockResolvedValue({ headlinePrice: '100.00' });
+    const res = await app().request(`/${ITEM_ID}/economics?currencyCode=eur&orgId=${ORG_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(svc.computeBundleEconomics).toHaveBeenCalledWith(ITEM_ID, 'EUR', ORG_ID, expect.anything());
+  });
+
+  it('GET /:id/economics returns 404 when the default currency owner is missing', async () => {
+    dbSelectResults.push([]);
+    const res = await app().request(`/${ITEM_ID}/economics`, { method: 'GET' });
+    expect(res.status).toBe(404);
+    expect(svc.computeBundleEconomics).not.toHaveBeenCalled();
   });
 
   it('GET /:id/economics rejects a non-UUID orgId query param (400)', async () => {

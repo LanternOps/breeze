@@ -44,7 +44,7 @@ async function seedTenant(sfx: string): Promise<void> {
     .returning({ id: partners.id });
   const [o] = await db
     .insert(organizations)
-    .values({ partnerId: p!.id, name: `PromptOrg ${sfx}`, slug: `promptorg-${sfx}` })
+    .values({ currencyCode: 'USD', partnerId: p!.id, name: `PromptOrg ${sfx}`, slug: `promptorg-${sfx}` })
     .returning({ id: organizations.id });
   orgId = o!.id;
   const [s] = await db

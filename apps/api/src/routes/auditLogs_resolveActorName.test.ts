@@ -8,7 +8,7 @@ function row(opts: {
   userName?: string | null;
   deviceHostname?: string | null;
   deviceDisplayName?: string | null;
-  actorType: 'user' | 'api_key' | 'agent' | 'system';
+  actorType: 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
   actorEmail?: string | null;
 }): DbRow {
   return {
@@ -88,5 +88,27 @@ describe('resolveActorName', () => {
         rawActorId: 'deadbeef1234',
       })
     ).toBe('API Key deadbeef');
+  });
+
+  it('returns "AI Agent <slice>" for an ai_agent action with details.agentId', () => {
+    expect(
+      resolveActorName(row({ actorType: 'ai_agent' }), {
+        agentId: 'a1b2c3d4-0000-0000-0000-000000000000',
+      })
+    ).toBe('AI Agent a1b2c3d4');
+  });
+
+  it('falls back to "AI Agent" for an ai_agent action with no agentId in details', () => {
+    expect(resolveActorName(row({ actorType: 'ai_agent' }))).toBe('AI Agent');
+  });
+
+  it('does not use the device-agent rawActorId slug for an ai_agent action', () => {
+    // ai_agent and agent are different principals — an ai_agent row must
+    // never be labeled from the device-agent rawActorId fallback.
+    const result = resolveActorName(row({ actorType: 'ai_agent' }), {
+      rawActorId: 'deadbeef1234',
+    });
+    expect(result).toBe('AI Agent');
+    expect(result).not.toContain('deadbeef');
   });
 });

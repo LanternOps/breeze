@@ -1,10 +1,17 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { formatMoney } from '@breeze/shared';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from '../db/schema/quotes';
 import { organizations, partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { getQuote, toCustomerLines } from './quoteService';
-import { QuoteServiceError, type QuoteActor } from './quoteTypes';
+import {
+  QuoteServiceError,
+  REVISABLE_STATUSES,
+  isSupersedable,
+  type QuoteActor,
+  type SupersedableStatus,
+} from './quoteTypes';
 import { validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { createQuoteAcceptToken, regenerateQuoteAcceptToken, type QuoteAcceptTokenIdentity } from './quoteAcceptToken';
@@ -14,9 +21,11 @@ import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from './documentThemes';
+import { resolvePartnerDocumentLocale } from './documentLocale';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
+import { notifyQuoteOutcome } from './quoteOutcomeNotify';
 import { captureException } from './sentry';
 
 export { portalBase };
@@ -26,12 +35,6 @@ type QuoteRow = typeof quotes.$inferSelect;
 /** Build the public accept link emailed to the prospect: `<portalBase>/quote/<token>`. */
 export function buildPublicQuoteAcceptUrl(token: string): string {
   return `${portalBase()}/quote/${encodeURIComponent(token)}`;
-}
-
-/** Light money formatter for the email body (invoicePdf's formatMoney is module-private). */
-function formatMoneyish(n: string | null | undefined, currency: string): string {
-  const v = Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return currency === 'USD' ? `$${v}` : `${v} ${currency}`;
 }
 
 /** Why the best-effort email did not go out (mirrors invoicePdf's SendInvoiceResult
@@ -58,16 +61,66 @@ export interface SendQuoteEmailOptions {
   includePdf?: boolean;
 }
 
-/** Issue (if draft) + send: assign number, status→sent, sentAt, mint token, best-effort email. */
+export interface QuoteSupersedeResult {
+  parentQuoteId: string;
+  previousStatus: SupersedableStatus;
+}
+
+export interface SendQuoteResult {
+  quote: QuoteRow;
+  emailed: boolean;
+  emailReason?: SendQuoteEmailReason;
+  acceptUrl: string;
+  superseded?: QuoteSupersedeResult;
+}
+
+/**
+ * Issue (if draft) + send: assign number, status→sent, sentAt, mint token,
+ * best-effort email. When the quote is a revision, its parent is retired to
+ * 'superseded' atomically with the draft→sent claim.
+ */
 export async function sendQuote(
   id: string,
   actor: QuoteActor,
   opts: SendQuoteEmailOptions = {},
-): Promise<{ quote: QuoteRow; emailed: boolean; emailReason?: SendQuoteEmailReason; acceptUrl: string }> {
+): Promise<SendQuoteResult> {
+  // Lock the CHILD first, before reading its content: a concurrent draft edit
+  // (now blocked on loadDraft's FOR UPDATE) must not land between the content
+  // read below and the draft→sent claim, or we email a PDF that no longer
+  // matches the stored quote. Locking before the access check is harmless — an
+  // inaccessible id 404s at getQuote and the lock dies with the transaction.
+  await db.select({ id: quotes.id }).from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
   const { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
     throw new QuoteServiceError(`Cannot send a quote in status ${quote.status}`, 409, 'INVALID_STATE');
+  }
+
+  // ---- Revision supersede, part 1: lock + validate the parent -------------
+  // Runs INSIDE the ambient request/system transaction so the parent flip and
+  // the child's draft→sent claim commit or roll back together. This locks the
+  // child first and then its parent; acceptQuote locks exactly one row, and the
+  // revision chain is acyclic, so concurrent accept/send operations serialize
+  // without forming a lock cycle.
+  let parentToSupersede: { id: string; status: SupersedableStatus } | null = null;
+  if (quote.revisionOfQuoteId) {
+    const [parent] = await db.select({ id: quotes.id, status: quotes.status })
+      .from(quotes)
+      .where(and(eq(quotes.id, quote.revisionOfQuoteId), eq(quotes.orgId, quote.orgId)))
+      .limit(1)
+      .for('update');
+    if (!parent) throw new QuoteServiceError('Original quote not found', 409, 'INVALID_STATE');
+    if (parent.status === 'converted' || parent.status === 'accepted') {
+      throw new QuoteServiceError(
+        'The original quote was accepted while this revision was being drafted — it can no longer be sent',
+        409, 'PARENT_CONVERTED');
+    }
+    // Parent statuses a revision send may retire deliberately exclude the
+    // settled accepted/converted outcomes with an invoice or contract behind them.
+    if (!isSupersedable(parent.status)) {
+      throw new QuoteServiceError(`Cannot supersede a quote in status ${parent.status}`, 409, 'INVALID_STATE');
+    }
+    parentToSupersede = { id: parent.id, status: parent.status };
   }
 
   // Send-time contract-variable gate (Task 12): a contract block's declared
@@ -105,6 +158,7 @@ export async function sendQuote(
       lines as QuoteLineForMath[],
       quote.taxRate ? parseFloat(quote.taxRate) : null,
       toQuoteDepositConfig(quote.depositType, quote.depositPercent),
+      quote.currencyCode,
     );
     if (!check.ok) {
       throw new QuoteServiceError(`Cannot send: ${check.message}`, 409, 'DEPOSIT_INVALID');
@@ -164,8 +218,19 @@ export async function sendQuote(
   // allowed to accept/decline this quote. Persist a canonical set at send time;
   // CC recipients are informational and intentionally do not gain signer power.
   const billingRecipient = resolveBillingEmail(org?.billingContact);
+  // A revision goes back to whoever received the original, not to the org's
+  // billing contact — the people already in the conversation. Explicitly
+  // org-filtered: this also runs under the send worker's SYSTEM context, where
+  // getQuoteRecipients' unfiltered read would be cross-tenant.
+  const parentRecipients = parentToSupersede
+    ? (await db.select({ email: quoteRecipients.email }).from(quoteRecipients)
+        .where(and(eq(quoteRecipients.quoteId, parentToSupersede.id), eq(quoteRecipients.orgId, quote.orgId)))
+        .orderBy(quoteRecipients.createdAt)).map((r) => r.email)
+    : [];
   const recipientEmails = Array.from(new Set(
-    (opts.to && opts.to.length > 0 ? opts.to : (billingRecipient ? [billingRecipient] : []))
+    (opts.to && opts.to.length > 0 ? opts.to
+      : parentRecipients.length > 0 ? parentRecipients
+      : (billingRecipient ? [billingRecipient] : []))
       .map((email) => email.trim().toLowerCase())
       .filter((email) => email.length > 0),
   ));
@@ -190,6 +255,7 @@ export async function sendQuote(
     pageSize: resolvePageSize(partnerRow?.documentPageSize),
   };
 
+  const documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow);
   const claimed = await db
     .update(quotes)
     .set({
@@ -207,11 +273,40 @@ export async function sendQuote(
       termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
       terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
       presentationSnapshot,
+      // Render-locale snapshot (#3777): stamped ONCE at first send from the
+      // partner's language, never restamped (resendQuote does not write it);
+      // `??` keeps a locale the draft already carries.
+      documentLocale,
     })
     .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
     .returning({ id: quotes.id });
   if (claimed.length === 0) {
     throw new QuoteServiceError('Quote was already sent', 409, 'INVALID_STATE');
+  }
+
+  // ---- Revision supersede, part 2: retire the parent ----------------------
+  // The predicate re-asserts the allowed set even under the lock (belt to the
+  // FOR UPDATE strap). public_link_revoked_at is the DB-authoritative
+  // revocation for the parent's public link — deliberately NO Redis revoke:
+  // Redis cannot join this transaction. GET /:token re-reads the row and refuses
+  // a superseded quote. NOTE: the public asset routes do not yet check status or
+  // publicLinkRevokedAt; closing that gap is W04's asset-closure scope.
+  // Columns left untouched on purpose: declinedAt, declineReason, expiryDate,
+  // viewedAt are the parent's historical record.
+  let supersededResult: QuoteSupersedeResult | undefined;
+  if (parentToSupersede) {
+    const flipped = await db.update(quotes)
+      .set({ status: 'superseded', publicLinkRevokedAt: now, updatedAt: now })
+      .where(and(
+        eq(quotes.id, parentToSupersede.id),
+        eq(quotes.orgId, quote.orgId),
+        inArray(quotes.status, [...REVISABLE_STATUSES]),
+      ))
+      .returning({ id: quotes.id });
+    if (flipped.length === 0) {
+      throw new QuoteServiceError('The original quote settled while sending the revision', 409, 'PARENT_CONVERTED');
+    }
+    supersededResult = { parentQuoteId: parentToSupersede.id, previousStatus: parentToSupersede.status };
   }
 
   if (recipientEmails.length > 0) {
@@ -238,10 +333,20 @@ export async function sendQuote(
     billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
     sellerSnapshot,
     presentationSnapshot,
+    // The just-stamped locale, so the same-request PDF + email render with it.
+    documentLocale,
   };
 
+  // A revision arrives in the same thread as the original, so the default
+  // subject says it replaces something rather than reading as a duplicate
+  // first-time proposal. An explicit opts.subject always wins.
+  const effectiveOpts = parentToSupersede && !opts.subject
+    ? { ...opts, subject: `Updated proposal ${quoteNumber} from ${partnerRow?.name ?? 'your provider'}` }
+    : opts;
+
   const { emailed, emailReason } = await deliverQuoteEmail({
-    quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient, opts,
+    quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient,
+    opts: effectiveOpts,
   });
 
   // Persist THIS attempt's outcome, matching resendQuote and the scheduled-send
@@ -272,7 +377,7 @@ export async function sendQuote(
   }
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
-  return { quote: updated!, emailed, emailReason, acceptUrl };
+  return { quote: updated!, emailed, emailReason, acceptUrl, superseded: supersededResult };
 }
 
 /** The `quotes` column patch that persists a freshly-minted token's identity. */
@@ -394,7 +499,6 @@ async function deliverQuoteEmail(
           // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
           // per authored contract block + any uploaded contract PDFs to append after
           // rendering, so the emailed attachment matches the on-demand download.
-          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
           const { renderQuotePdf } = await import('./quotePdf');
           // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding):
           // frozenQuote.presentationSnapshot is the send-stamped value on a first
@@ -406,7 +510,12 @@ async function deliverQuoteEmail(
             footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
             theme: resolveThemeId(presentationSnap?.theme ?? partnerRow?.documentTheme),
             pageSize: resolvePageSize(presentationSnap?.pageSize ?? partnerRow?.documentPageSize),
+            // Send-time locale snapshot → partner language → 'en' (#3777).
+            locale: frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow),
           };
+          // Same `emailBranding.locale` the page renderer uses, so contract totals
+          // and the quote summary on the same PDF never disagree (#3777).
+          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote, emailBranding.locale);
           const rawPdf = await renderQuotePdf(
             frozenQuote,
             blocks, customerLines, loadImage, emailBranding, undefined, contractRenderData);
@@ -422,7 +531,7 @@ async function deliverQuoteEmail(
       if (!pdfBuildFailed) {
         const template = buildQuoteTemplate({
           quoteNumber, partnerName: partnerName ?? 'your provider',
-          total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
+          total: formatMoney(quote.total, quote.currencyCode, frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow)), acceptUrl,
           expiryDate: quote.expiryDate ?? undefined,
           message: opts.message,
           subject: opts.subject,
@@ -609,7 +718,16 @@ export async function getQuoteShareLink(
   id: string, actor: QuoteActor,
 ): Promise<{ acceptUrl: string; origin: AcceptUrlOrigin; reissued: boolean; recipients: string[]; orgId: string }> {
   const { quote } = await getQuote(id, actor); // enforces org-access (404)
-  assertLinkableQuote(quote, 'share');
+  // Re-read the status under a row lock and gate on the FRESH value: getQuote's
+  // snapshot can be stale by the time we mint or reproduce a link, and handing
+  // out a live link to a just-superseded quote is exactly what supersede exists
+  // to prevent. This also serializes against the parent-flip lock in sendQuote.
+  // 'superseded' is already outside RESENDABLE_STATUSES, so assertLinkableQuote
+  // refuses it with no change needed there.
+  const [freshShare] = await db.select({ status: quotes.status })
+    .from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
+  if (!freshShare) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  assertLinkableQuote({ ...quote, status: freshShare.status }, 'share');
   const { acceptUrl, origin } = await resolveAcceptUrl(quote);
   return {
     acceptUrl, origin, reissued: origin !== 'reproduced',
@@ -638,7 +756,14 @@ export async function resendQuote(
   id: string, actor: QuoteActor, opts: SendQuoteEmailOptions = {},
 ): Promise<{ quote: QuoteRow; emailed: boolean; emailReason?: SendQuoteEmailReason; acceptUrl: string; origin: AcceptUrlOrigin; reissued: boolean }> {
   const { quote, blocks, lines } = await getQuote(id, actor); // enforces org-access (404)
-  assertLinkableQuote(quote, 're-send');
+  // Same fresh-status gate as getQuoteShareLink: re-mailing a link for a quote
+  // that was superseded between the read and here would put a dead document
+  // back in the customer's inbox. The lock serializes against sendQuote's
+  // parent flip.
+  const [freshResend] = await db.select({ status: quotes.status })
+    .from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
+  if (!freshResend) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  assertLinkableQuote({ ...quote, status: freshResend.status }, 're-send');
   if (!quote.quoteNumber) {
     // A sent quote always has a number (sendQuote allocates one on the way
     // through). Missing here means the row was tampered with or half-migrated.
@@ -733,15 +858,32 @@ export async function markQuoteViewed(quoteId: string, orgId: string): Promise<v
     const set: Record<string, unknown> = { viewedAt: now, updatedAt: now };
     if (!q.firstViewedAt) set.firstViewedAt = now;
     if (q.status === 'sent') set.status = 'viewed';
-    await db.update(quotes).set(set).where(eq(quotes.id, quoteId));
+    // CAS on the status we actually read. `q` is an unlocked snapshot, so a
+    // supersede can commit between that read and this write — an unguarded
+    // `WHERE id = ?` would then resurrect a retired quote to 'viewed' or stamp
+    // a superseded row. Matching zero rows is the correct outcome here, not an
+    // error: someone settled the quote first, and this is a cosmetic stamp, so
+    // the caller still succeeds. The event cannot lose with the write, though:
+    // emitting it without a committed stamp would describe a view that did not happen.
+    const viewed = await db.update(quotes).set(set).where(and(
+      eq(quotes.id, quoteId),
+      q.status === 'sent' ? eq(quotes.status, 'sent') : ne(quotes.status, 'superseded'),
+    )).returning({ id: quotes.id });
     // First view only (invoice.viewed parity): the sales-timing signal a future
     // notification worker cares about. Fire-and-forget — never fails the view.
-    if (!q.firstViewedAt) await emitQuoteEvent({ type: 'quote.viewed', quoteId, orgId: q.orgId, partnerId: q.partnerId });
+    if (viewed.length > 0 && !q.firstViewedAt) await emitQuoteEvent({ type: 'quote.viewed', quoteId, orgId: q.orgId, partnerId: q.partnerId });
   }));
 }
 
 /** Internal/portal decline. */
-export async function declineQuoteByActor(id: string, reason: string | undefined, actor: QuoteActor): Promise<QuoteRow> {
+export async function declineQuoteByActor(
+  id: string, reason: string | undefined, actor: QuoteActor,
+  // Attribution for the outcome notification: 'customer' (portal decline on the
+  // customer's behalf) emails the quote creator; 'msp' (a tech marking their own
+  // quote declined — AI tool / internal route) only emits the bus event, so an
+  // internal action is never misattributed to the customer.
+  source: 'customer' | 'msp' = 'msp',
+): Promise<QuoteRow> {
   const { quote } = await getQuote(id, actor);
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot decline a quote in status ${quote.status}`, 409, 'INVALID_STATE');
@@ -752,7 +894,21 @@ export async function declineQuoteByActor(id: string, reason: string | undefined
     throw new QuoteServiceError('This quote has expired', 410, 'QUOTE_EXPIRED');
   }
   const now = new Date();
-  await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, id));
+  // CAS on the status guard above: `quote` is an unlocked read, so a supersede
+  // (or a concurrent accept/decline) can land in between. Unlike markQuoteViewed
+  // this is NOT cosmetic — declining is a real customer-visible outcome, so zero
+  // rows matched must surface rather than silently pretend to succeed.
+  const declined = await db.update(quotes)
+    .set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now })
+    .where(and(eq(quotes.id, id), inArray(quotes.status, ['sent', 'viewed'])))
+    .returning({ id: quotes.id });
+  if (declined.length === 0) {
+    throw new QuoteServiceError('This quote can no longer be declined', 409, 'INVALID_STATE');
+  }
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
+  // Tell the tech who sent it (decline-completion spec §A). Deliberately
+  // UNAWAITED: it emails over SMTP and must never add latency to (or fail)
+  // the decline the caller already committed; it swallows its own errors.
+  void notifyQuoteOutcome({ quoteId: id, outcome: 'declined', source });
   return updated!;
 }

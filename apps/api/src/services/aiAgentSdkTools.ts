@@ -1406,7 +1406,7 @@ export function createBreezeMcpServer(
         action: z.string().max(100).optional(),
         resourceType: z.string().max(100).optional(),
         resourceId: uuid.optional(),
-        actorType: z.enum(['user', 'api_key', 'agent', 'system']).optional(),
+        actorType: z.enum(['user', 'api_key', 'agent', 'system', 'ai_agent']).optional(),
         hoursBack: z.number().int().min(1).max(168).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
@@ -2208,7 +2208,7 @@ export function createBreezeMcpServer(
       'List quotes/proposals for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
       {
         orgId: uuid.optional(),
-        status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']).optional(),
+        status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('list_quotes', getAuth, onPreToolUse, onPostToolUse)

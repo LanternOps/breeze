@@ -4,6 +4,10 @@
     "dashboard": "Painel",
     "devices": "Dispositivos",
     "alerts": "Alertas",
+    "approvals": "Aprovações",
+    "pendingApprovals": "{{count}} aprovações pendentes",
+    "pendingApprovals_one": "{{count}} aprovação pendente",
+    "pendingApprovals_other": "{{count}} aprovações pendentes",
     "tickets": "Chamados",
     "incidents": "Incidentes",
     "remoteAccess": "Acesso Remoto",
@@ -46,6 +50,7 @@
     "partner": "Parceiro",
     "organizations": "Organizações",
     "aiUsageBudget": "Uso e Orçamento de IA",
+    "aiAgents": "Agentes de IA",
     "customFields": "Campos Personalizados",
     "savedFilters": "Filtros Salvos",
     "users": "Usuários",
@@ -699,7 +704,20 @@
       "recently": "Recentemente",
       "markUnread": "Marcar como não lida",
       "markRead": "Marcar como lida",
-      "preferences": "Preferências de notificações"
+      "preferences": "Preferências de notificações",
+      "types": {
+        "alert": "Alerta",
+        "device": "Dispositivo",
+        "script": "Rotina",
+        "automation": "Automação",
+        "system": "Sistema",
+        "user": "Usuário",
+        "security": "Segurança",
+        "ticket": "Chamado",
+        "approval": "Aprovação",
+        "ai": "IA",
+        "unknown": "Notificação"
+      }
     },
     "sidebar": {
       "autoHide": "Ocultar barra lateral automaticamente",
@@ -745,7 +763,8 @@
           "service": "Serviço"
         },
         "noResults": "Nenhum item de catálogo correspondente.",
-        "placeholder": "Pesquisar catálogo por nome ou SKU"
+        "placeholder": "Pesquisar catálogo por nome ou SKU",
+        "noPriceInCurrency": "Sem preço em {{currency}}"
       },
       "PolishButton": {
         "actions": {
@@ -2380,5 +2399,8 @@
     "later": "Mostrar mais tarde",
     "learnMore": "Saiba mais",
     "link": "Novidades"
+  },
+  "money": {
+    "approximateTotal": "≈ {{amount}} aproximado · taxas de {{rateDate}}"
   }
 }

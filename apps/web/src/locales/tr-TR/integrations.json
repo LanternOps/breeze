@@ -804,7 +804,17 @@
     "working": "Çalışıyor…",
     "disconnect": "Bağlantıyı kes",
     "saving": "Kaydediliyor…",
-    "saveKey": "Kaydetme tuşu"
+    "saveKey": "Kaydetme tuşu",
+    "defaultCurrency": "{{currency}} olarak ödenir",
+    "accountCountry": "Ülke {{country}}",
+    "refreshedAt": "{{when}} tarihinde yenilendi",
+    "refresh": "Yenile",
+    "refreshing": "Yenileniyor…",
+    "refreshed": "Stripe hesap bilgileri yenilendi",
+    "couldNotRefresh": "Stripe hesap bilgileri yenilenemedi.",
+    "notCached": "Para birimi henüz önbelleğe alınmadı — Stripe'tan almak için yenileyin.",
+    "staleCache": "Stripe'a ulaşılamadı — önbelleğe alınan son hesap ayrıntıları gösteriliyor.",
+    "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Site eşlemeleri kaydedilemedi.",

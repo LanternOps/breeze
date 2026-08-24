@@ -15,7 +15,7 @@ runDb('reactivates only past timed suppressions; leaves future, forever, and non
 
   const ids = await withSystemDbAccessContext(async () => {
     const [partner] = await db.insert(partners).values({ name: `SR Partner ${unique}`, slug: `sr-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
-    const [org] = await db.insert(organizations).values({ partnerId: partner!.id, name: `SR Org ${unique}`, slug: `sr-org-${unique}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
+    const [org] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: partner!.id, name: `SR Org ${unique}`, slug: `sr-org-${unique}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
     const [site] = await db.insert(sites).values({ orgId: org!.id, name: `SR Site ${unique}` }).returning({ id: sites.id });
     const [device] = await db.insert(devices).values({ orgId: org!.id, siteId: site!.id, agentId: `sr-agent-${unique}`, hostname: `sr-host-${unique}`, osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'offline' }).returning({ id: devices.id });
 

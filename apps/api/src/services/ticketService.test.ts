@@ -8,7 +8,7 @@ const selectWhereMock = vi.fn();
 const orderByMock = vi.fn();
 const selectLimitMock = vi.fn();
 
-const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, configMocks, formMocks } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -19,6 +19,7 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, conf
     emitTriageFeedbackMock: vi.fn().mockResolvedValue(undefined),
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
+    guardMock: vi.fn().mockResolvedValue(null),
     dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
     configMocks: {
       getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
@@ -41,6 +42,13 @@ vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: emitTriageFeedbackMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
+// Task 13 (#3776): the locked currency guard is unit-tested on its own
+// (ticketMoveCurrencyGuard.test.ts); here it is a mock so moveTicketOrg's
+// orchestration (order, rewrites, feed, audit) can be asserted in isolation.
+vi.mock('./ticketMoveCurrencyGuard', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMoveCurrencyGuard')>('./ticketMoveCurrencyGuard');
+  return { ...actual, assertTicketMoveCurrencyCompatible: guardMock };
+});
 vi.mock('./ticketConfigService', () => ({
   getOrgSlaOverride: (...args: unknown[]) => configMocks.getOrgSlaOverride(...args),
   getPartnerPrioritySla: (...args: unknown[]) => configMocks.getPartnerPrioritySla(...args),
@@ -131,6 +139,23 @@ vi.mock('../db', () => ({
           })
         })),
         execute: vi.fn((...args) => dbMocks.txExecuteMock(...args)),
+        // #3778: moveTicketOrg reads the org SHARE barrier and the org metadata
+        // INSIDE the transaction, so the tx stub needs a select chain that also
+        // terminates on `.for('share')`.
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn((w: unknown) => {
+              selectWhereMock(w);
+              return {
+                limit: vi.fn((l: unknown) => {
+                  selectLimitMock(l);
+                  const r = dbMocks.selectResult();
+                  return Object.assign(Promise.resolve(r), { for: vi.fn(() => Promise.resolve(r)) });
+                }),
+              };
+            }),
+          })),
+        })),
       };
       return fn(tx);
     })
@@ -155,7 +180,7 @@ vi.mock('../db/schema', () => ({
   ticketComments: {},
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId' },
   ticketParts: { ticketId: 'ticketId', orgId: 'orgId' },
-  organizations: { id: 'id', partnerId: 'partnerId', name: 'name' },
+  organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode' },
   alerts: { id: 'id', orgId: 'orgId' },
   devices: { id: 'id', orgId: 'orgId' },
   users: { id: 'id', partnerId: 'partnerId' },
@@ -172,6 +197,7 @@ import {
   moveTicketOrg, softDeleteTicket, restoreTicket, listOrgTicketsForAddin,
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
+import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 
 const actor = { userId: 'u-1', name: 'Tess Tech' };
 
@@ -2508,6 +2534,8 @@ describe('moveTicketOrg', () => {
     whereMock.mockClear();
     dbMocks.txExecuteMock.mockClear();
     dbMocks.txUpdateReturning.mockClear();
+    guardMock.mockReset();
+    guardMock.mockResolvedValue(null);
   });
 
   it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 3 tables', async () => {
@@ -2515,9 +2543,11 @@ describe('moveTicketOrg', () => {
     // Target org { id:'oB', partnerId:'p1', name:'Beta Corp' }
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }]) // getTicketOrThrow
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oB
       .mockResolvedValueOnce([                                                               // org lookup (IN clause)
-        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp' },
-        { id: 'oB', partnerId: 'p1', name: 'Beta Corp' }
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
       ]);
     // txUpdateReturning returns the updated ticket row from the tx.update() call
     dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
@@ -2567,16 +2597,19 @@ describe('moveTicketOrg', () => {
     // Ticket in org oA (partner p1), target org oX (partner p2)
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }]) // ticket
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oX
       .mockResolvedValueOnce([
-        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp' },
-        { id: 'oX', partnerId: 'p2', name: 'Cross Corp' }  // different partner!
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oX', partnerId: 'p2', name: 'Cross Corp', currencyCode: 'USD' }  // different partner!
       ]);
 
     const err = await moveTicketOrg('t1', 'oX', { userId: 'admin' }).catch(e => e);
     expect(err).toBeInstanceOf(TicketServiceError);
     expect(err.status).toBe(400);
     expect(err.message).toMatch(/same partner/i);
-    // No transaction started
+    // The transaction opens (the org SHARE barrier is its first statement, #3778)
+    // but rolls back: nothing is written.
     expect(setMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
     expect(auditMock).not.toHaveBeenCalled();
@@ -2600,13 +2633,113 @@ describe('moveTicketOrg', () => {
     // Org lookup returns only the source org — target is missing
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
-      .mockResolvedValueOnce([{ id: 'oA', partnerId: 'p1', name: 'Alpha Corp' }]); // no oB row
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([])                          // org SHARE barrier: oB — absent, tolerated
+      .mockResolvedValueOnce([{ id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' }]); // no oB row
 
     const err = await moveTicketOrg('t1', 'oB', { userId: 'admin' }).catch(e => e);
     expect(err).toBeInstanceOf(TicketServiceError);
     expect(err.status).toBe(404);
     expect(err.message).toMatch(/target organization not found/i);
     expect(setMock).not.toHaveBeenCalled();
+  });
+
+  // ── Multi-currency guard (#3776, Task 13) ──────────────────────────────────
+  function seedCrossCurrencyMove() {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([{ currencyCode: 'EUR' }])  // org SHARE barrier: oB
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'EUR' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+  }
+
+  it('(a) rejects with the guard error, runs no child rewrites, writes no feed/audit when the guard blocks', async () => {
+    seedCrossCurrencyMove();
+    const blocked = new TicketMoveCurrencyBlockedError('blocked', {
+      sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 1, unbilledParts: 0, accepted: false,
+      blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 1, parts: 0 }]
+    });
+    guardMock.mockRejectedValueOnce(blocked);
+
+    const err = await moveTicketOrg('t1', 'oB', { userId: 'admin' }).catch((e) => e);
+    expect(err).toBe(blocked);
+    expect(guardMock).toHaveBeenCalledWith(expect.anything(), {
+      ticketIds: ['t1'], sourceCurrency: 'USD', targetCurrency: 'EUR', targetOrgName: 'Beta Corp', acceptCurrencyMismatch: false
+    });
+    expect(dbMocks.txExecuteMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('(b) an accepted mismatch proceeds: rewrites run, feed says how many items stay in USD, audit carries currencyMismatchAccepted', async () => {
+    seedCrossCurrencyMove();
+    const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 2, unbilledParts: 0, accepted: true };
+    guardMock.mockResolvedValueOnce(details);
+
+    const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' }, { acceptCurrencyMismatch: true });
+    expect(result.orgId).toBe('oB');
+    expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(3);
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      commentType: 'system',
+      content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
+    }));
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ticket.move_org.source',
+      details: expect.objectContaining({ currencyMismatchAccepted: details })
+    }));
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ticket.move_org.target',
+      details: expect.objectContaining({ currencyMismatchAccepted: details })
+    }));
+  });
+
+  it('(b2) an accepted mismatch with nothing stranded keeps the plain feed comment and no audit flag', async () => {
+    seedCrossCurrencyMove();
+    guardMock.mockResolvedValueOnce({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: true });
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' }, { acceptCurrencyMismatch: true });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
+    const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
+    expect(sourceAudit.details).toEqual({ fromOrgId: 'oA', toOrgId: 'oB', detachedDeviceId: null, currencyMismatchAccepted: expect.objectContaining({ accepted: true }) });
+  });
+
+  it('(c) a same-currency move calls the guard with matching currencies (it short-circuits) and changes nothing else', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oA (#3778)
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])  // org SHARE barrier: oB
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+    expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(3);
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
+    const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
+    expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
+  });
+
+  it('(d) the guard runs AFTER tx.update(tickets) and BEFORE the child rewrites (lock order tickets → time_entries → ticket_parts)', async () => {
+    seedCrossCurrencyMove();
+    guardMock.mockResolvedValueOnce({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+    const updateOrder = setMock.mock.invocationCallOrder[0]!;
+    const guardOrder = guardMock.mock.invocationCallOrder[0]!;
+    const firstRewriteOrder = dbMocks.txExecuteMock.mock.invocationCallOrder[0]!;
+    expect(updateOrder).toBeLessThan(guardOrder);
+    expect(guardOrder).toBeLessThan(firstRewriteOrder);
   });
 });
 

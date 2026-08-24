@@ -27,6 +27,11 @@ vi.mock('../../services/quoteTypes', () => ({
   }
 }));
 
+// GET /:id precomputes the Stripe currency warning from the partner's cached
+// connection row (#3777 review F5). Mocked so the default (no connection) never
+// consumes a row from the branding `dbRows` queue below.
+vi.mock('../../services/stripeConnectService', () => ({ getConnection: vi.fn() }));
+
 // Contract-block serialization has its own unit tests (contractTemplateRender.test.ts);
 // here we only assert the route's WIRING — it calls renderContractBlocksForClient
 // with the right args and threads the result into the response. Default identity
@@ -102,6 +107,7 @@ import * as svc from '../../services/quoteService';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { renderContractBlocksForClient, loadContractBlockAuthoring, loadContractPdfInputs } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
+import { getConnection } from '../../services/stripeConnectService';
 
 function app() {
   // quoteRoutes already applies authMiddleware internally
@@ -120,6 +126,7 @@ describe('quote crud + lines routes', () => {
     // Reset the db row queue (branding selects) consumed per request.
     dbRows.next = [];
     dbRows.i = 0;
+    vi.mocked(getConnection).mockResolvedValue(null);
   });
 
   it('GET / lists quotes', async () => {
@@ -285,16 +292,25 @@ describe('quote crud + lines routes', () => {
     });
     const renderedContent = { templateName: 'MSA', versionNumber: 2, sourceType: 'authored', renderedHtml: '<p>Acme Co</p>', fileUrl: null };
     (renderContractBlocksForClient as any).mockResolvedValueOnce([{ ...rawContractBlock, content: renderedContent }]);
+    // Branding selects: partner row (language de-DE → resolved locale for an
+    // unstamped draft), then portal_branding row. The contract totals must be
+    // rendered with the SAME locale the quote's own branding resolved (#3777).
+    dbRows.next = [
+      [{ name: 'Acme MSP', settings: { language: 'de-DE' } }],
+      [{ logoUrl: null, primaryColor: null }],
+    ];
 
     const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.blocks[0].content).toEqual(renderedContent);
+    expect(body.data.branding.locale).toBe('de-DE');
 
     expect(renderContractBlocksForClient).toHaveBeenCalledWith(
       [rawContractBlock],
       expect.objectContaining({ id: QUOTE_ID }),
       expect.any(Function),
+      'de-DE',
     );
     const fileUrlFor = (renderContractBlocksForClient as any).mock.calls[0][2] as (blockId: string) => string;
     expect(fileUrlFor(BLOCK_ID)).toBe(`/quotes/${QUOTE_ID}/contract-file/${BLOCK_ID}`);
@@ -678,6 +694,67 @@ describe('quote crud + lines routes', () => {
       const body = await res.json();
       expect(body.code).toBe('QUOTE_NOT_FOUND');
       expect(pdf.render).not.toHaveBeenCalled();
+    });
+  });
+
+  // Multi-currency (#3777, review F5): `quotes:send` is grantable WITHOUT
+  // `billing:manage`, so the send composer cannot learn the connected account's
+  // settlement currency from the BILLING_MANAGE-only /partner/stripe-connect
+  // endpoint (a sender without billing admin got a silent 403 and no FX-spread
+  // warning). The detail payload carries the precomputed warning instead.
+  describe('GET /:id — precomputed Stripe currency warning (#3777 review F5)', () => {
+    const detail = (currencyCode: string) => ({
+      quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1', currencyCode }, blocks: [], lines: [],
+    });
+
+    it('connected + differing account currency → CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT', async () => {
+      (svc.getQuote as any).mockResolvedValue(detail('EUR'));
+      vi.mocked(getConnection).mockResolvedValue({ partnerId: 'p1', status: 'connected', defaultCurrency: 'USD' } as any);
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(getConnection).toHaveBeenCalledWith('p1');
+      expect(body.data.stripeConnected).toBe(true);
+      expect(body.data.stripeAccountCurrency).toBe('USD');
+      expect(body.data.currencyWarning).toMatchObject({
+        code: 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT', documentCurrency: 'EUR', accountCurrency: 'USD',
+      });
+    });
+
+    it('connected + matching currency → no warning', async () => {
+      (svc.getQuote as any).mockResolvedValue(detail('EUR'));
+      vi.mocked(getConnection).mockResolvedValue({ partnerId: 'p1', status: 'connected', defaultCurrency: 'eur' } as any);
+      const body = await (await app().request(`/${QUOTE_ID}`, { method: 'GET' })).json();
+      expect(body.data.stripeConnected).toBe(true);
+      expect(body.data.currencyWarning).toBeNull();
+    });
+
+    it('connected but account currency never cached → explicit UNKNOWN warning (review F6)', async () => {
+      (svc.getQuote as any).mockResolvedValue(detail('EUR'));
+      vi.mocked(getConnection).mockResolvedValue({ partnerId: 'p1', status: 'connected', defaultCurrency: null } as any);
+      const body = await (await app().request(`/${QUOTE_ID}`, { method: 'GET' })).json();
+      expect(body.data.stripeConnected).toBe(true);
+      expect(body.data.stripeAccountCurrency).toBeNull();
+      expect(body.data.currencyWarning).toMatchObject({ code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN', accountCurrency: null });
+    });
+
+    it('no connection row / disconnected row → stripeConnected false, no warning', async () => {
+      (svc.getQuote as any).mockResolvedValue(detail('EUR'));
+      vi.mocked(getConnection).mockResolvedValue({ partnerId: 'p1', status: 'disconnected', defaultCurrency: 'USD' } as any);
+      const body = await (await app().request(`/${QUOTE_ID}`, { method: 'GET' })).json();
+      expect(body.data.stripeConnected).toBe(false);
+      expect(body.data.stripeAccountCurrency).toBeNull();
+      expect(body.data.currencyWarning).toBeNull();
+    });
+
+    it('connection lookup failure → stripeConnected null (unknown, not "disconnected") and the quote still loads', async () => {
+      (svc.getQuote as any).mockResolvedValue(detail('EUR'));
+      vi.mocked(getConnection).mockRejectedValue(new Error('boom'));
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.stripeConnected).toBeNull();
+      expect(body.data.currencyWarning).toBeNull();
     });
   });
 });

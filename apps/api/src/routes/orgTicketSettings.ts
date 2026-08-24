@@ -59,6 +59,10 @@ export function registerOrgTicketSettingsRoutes(orgRoutes: Hono) {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
 
+      // #3778: the service resolves the org currency itself, inside its own
+      // transaction under the org SHARE barrier. `resolveAccessibleOrg` stays
+      // for the 404 / authorization check ONLY — its currency read was a
+      // pre-transaction stale read that could stamp `rate_currency` wrong.
       const data = await upsertOrgTicketSettings(org.id, body);
 
       writeRouteAudit(c, {

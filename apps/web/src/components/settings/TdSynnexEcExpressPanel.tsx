@@ -8,7 +8,7 @@ import { isApiFailure, extractApiError } from '../../lib/apiError';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
-import { computeMarginBreakdown, priceFromCostMarkup, formatMarginSummary } from './marginMath';
+import { computeMarginBreakdown, priceFromCostMarkup, formatMarginSummary, feedCurrencyCode, marginGuard } from './marginMath';
 import { formatNumber } from '@/lib/i18n/format';
 
 const MASKED = '********';
@@ -108,6 +108,10 @@ function TdSynnexEcExpressPanel() {
   const [importingSku, setImportingSku] = useState<string | null>(null);
   // Partner-level default markup % used to pre-fill sell prices.
   const [defaultMarkupPct, setDefaultMarkupPct] = useState<number | null>(null);
+  // Partner billing currency (`partners.currency_code`) — gates the margin
+  // preview: cost in another currency is never compared against the sell
+  // price (no conversion). No 'USD' fallback; null = unknown → no preview.
+  const [partnerCurrency, setPartnerCurrency] = useState<string | null>(null);
   // Partner policy: do newly imported (hardware) items default to taxable?
   const [autoTaxHardware, setAutoTaxHardware] = useState(true);
 
@@ -146,13 +150,14 @@ function TdSynnexEcExpressPanel() {
       try {
         const res = await fetchWithAuth('/orgs/partners/me');
         if (!res.ok) return;
-        const p = (await res.json()) as { defaultMarkupPercent?: string | number | null; autoTaxHardware?: boolean };
+        const p = (await res.json()) as { defaultMarkupPercent?: string | number | null; autoTaxHardware?: boolean; currencyCode?: unknown };
         if (cancelled) return;
         if (p.defaultMarkupPercent != null) {
           const pct = Number(p.defaultMarkupPercent);
           if (Number.isFinite(pct)) setDefaultMarkupPct(pct);
         }
         if (typeof p.autoTaxHardware === 'boolean') setAutoTaxHardware(p.autoTaxHardware);
+        setPartnerCurrency(feedCurrencyCode(typeof p.currencyCode === 'string' ? p.currencyCode : null));
       } catch {
         // Non-fatal: sell price just falls back to MSRP/cost.
       }
@@ -259,7 +264,9 @@ function TdSynnexEcExpressPanel() {
         request: () => fetchWithAuth('/catalog/distributors/td-synnex-ec/import', {
           method: 'POST',
           body: JSON.stringify({
-            product,
+            // Feed currency is sent as trimmed uppercase ISO, or an explicit
+            // null — never coerced to USD. The API derives cost_currency from it.
+            product: { ...product, currency: feedCurrencyCode(product.currency) },
             item: {
               name: product.name,
               sku: product.synnexSku || product.mfgPartNo || null,
@@ -483,14 +490,21 @@ function TdSynnexEcExpressPanel() {
                 </div>
                 {(() => {
                   const breakdown = computeMarginBreakdown(product.cost, toMoney(sellPrices[product.synnexSku] ?? ''));
-                  if (!breakdown) return null;
+                  if (!breakdown || partnerCurrency === null) return null;
+                  if (!marginGuard(product.currency, partnerCurrency)) {
+                    return (
+                      <p className="text-xs font-medium text-muted-foreground" data-testid={`td-synnex-ec-margin-unavailable-${product.synnexSku}`}>
+                        {t('tdSynnexEcExpressPanel.marginUnavailableCostIn', { currency: feedCurrencyCode(product.currency) })}
+                      </p>
+                    );
+                  }
                   const negative = breakdown.profit < 0;
                   return (
                     <p
                       className={`text-xs font-medium ${negative ? 'text-red-600' : 'text-muted-foreground'}`}
                       data-testid={`td-synnex-ec-margin-${product.synnexSku}`}
                     >
-                      {formatMarginSummary(breakdown, product.currency ?? t('tdSynnexEcExpressPanel.uSD'))}
+                      {formatMarginSummary(breakdown, partnerCurrency)}
                       {negative ? ' — selling below cost' : ''}
                     </p>
                   );

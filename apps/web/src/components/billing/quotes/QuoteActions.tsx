@@ -3,20 +3,21 @@ import { Trans, useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
+import { parseAddressList, MAX_RECIPIENTS } from '../shared/addressList';
 import { scheduleQuoteSend, cancelScheduledSend } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { fetchWithAuth } from '../../../stores/auth';
 import { getJwtClaims } from '../../../lib/authScope';
-import { isValidEmail } from '@/lib/email';
-import { cloneQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
+import { cloneQuote, reviseQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { useShowMargin } from '../billingUi';
+import { useReviseQuote, isRevisable } from './useReviseQuote';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type Quote, type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
@@ -172,27 +173,6 @@ function linkOriginNotice(
   }
 }
 
-/** Mirrors the send route's `.max(10)` on both `to` and `cc`. */
-const MAX_RECIPIENTS = 10;
-
-/** Split a comma/semicolon/newline-separated address list into valid + invalid
- *  entries (case-insensitively deduped, first-seen order kept). The server
- *  re-validates every address; this only powers the pre-submit UX guard. */
-function parseAddressList(raw: string): { emails: string[]; invalid: string[] } {
-  const emails: string[] = [];
-  const invalid: string[] = [];
-  const seen = new Set<string>();
-  for (const part of raw.split(/[,;\n]+/)) {
-    const addr = part.trim();
-    if (!addr) continue;
-    const key = addr.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    (isValidEmail(addr) ? emails : invalid).push(addr);
-  }
-  return { emails, invalid };
-}
-
 interface Props {
   detail: QuoteDetailData;
   onChanged?: () => void;
@@ -232,7 +212,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
-  const { quote, lines } = detail;
+  const { quote, lines, revisionOf } = detail;
   const recipients = useMemo(() => detail.recipients ?? [], [detail.recipients]);
   const currency = quote.currencyCode;
 
@@ -255,10 +235,17 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const [sendSubject, setSendSubject] = useState('');
   const [includePdf, setIncludePdf] = useState(true);
   // Partner-scope support data, loaded when the composer opens: the partner's
-  // email signature (preview only — the server appends it) and Stripe-connect
-  // status (drives the deposit-can't-be-paid warning). null = unknown/not loaded.
+  // email signature (preview only — the server appends it). null = unknown.
   const [signature, setSignature] = useState<string | null>(null);
-  const [stripeStatus, setStripeStatus] = useState<'connected' | 'disconnected' | null>(null);
+  // Stripe-connect status (drives the deposit-can't-be-paid warning) and the
+  // warn-don't-block currency warning come PRECOMPUTED on the detail payload
+  // (GET /quotes/:id). Never fetched from /partner/stripe-connect here: that
+  // endpoint is BILLING_MANAGE-only while `quotes:send` is independently
+  // grantable, so a sender without billing admin got a silent 403 and no
+  // FX-spread warning (#3777 review F5). null = unknown → show neither note.
+  const stripeStatus: 'connected' | 'disconnected' | null =
+    detail.stripeConnected === true ? 'connected' : detail.stripeConnected === false ? 'disconnected' : null;
+  const currencyWarning = stripeStatus === 'connected' ? detail.currencyWarning ?? null : null;
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [cloning, setCloning] = useState(false);
@@ -366,7 +353,6 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setSendSubject('');
     setIncludePdf(true);
     setSignature(null);
-    setStripeStatus(null);
     setToPrefillMissing(false);
     setSendOpen(true);
     if (opts.prefillTo.length === 0) {
@@ -388,11 +374,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         } catch { /* leave To empty — the user types the recipient */ }
       })();
     }
-    // Signature + Stripe status are partner-level support data. The endpoints
-    // aren't scope-gated (they gate on permission + a non-null partnerId, not a
-    // partner-vs-org token), but an org-scoped session has no partner context
-    // worth previewing here — so gate the round-trips on partner scope
-    // client-side (see lib/authScope.ts) rather than fire doomed/irrelevant GETs.
+    // The signature is partner-level support data. The endpoint isn't
+    // scope-gated (it gates on a non-null partnerId, not a partner-vs-org
+    // token), but an org-scoped session has no partner context worth
+    // previewing here — so gate the round-trip on partner scope client-side
+    // (see lib/authScope.ts) rather than fire a doomed/irrelevant GET.
     if (getJwtClaims().scope === 'partner') {
       void (async () => {
         try {
@@ -402,18 +388,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           setSignature(partner.emailSignature?.trim() || null);
         } catch { /* no preview — the server still appends the signature */ }
       })();
-      void (async () => {
-        try {
-          const res = await fetchWithAuth('/partner/stripe-connect');
-          if (!res.ok) return;
-          const body = (await res.json()) as { status?: string };
-          setStripeStatus(body.status === 'connected' ? 'connected' : 'disconnected');
-        } catch { /* unknown status — show neither the warning nor the note */ }
-      })();
     }
   }, [quote.orgId]);
 
-  const openSend = useCallback(() => openComposer({ resend: false, prefillTo: [] }), [openComposer]);
+  // A revision prefills the addresses the ORIGINAL went to. The server already
+  // falls back to the parent's recipients when To is empty, so this is display
+  // honesty — showing the tech who is about to receive it — rather than
+  // correctness. Falls through to the billing-contact lookup when the parent
+  // has no recorded recipients.
+  const openSend = useCallback(
+    () => openComposer({ resend: false, prefillTo: revisionOf?.recipients ?? [] }),
+    [openComposer, revisionOf],
+  );
   const openResend = useCallback(() => {
     setMenuOpen(false);
     openComposer({ resend: true, prefillTo: recipients });
@@ -737,6 +723,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }
   }, [cloning, quote.id, cloneOrgId, cloneTitle, savePending, t]);
 
+  // Revise: create a linked draft that will REPLACE this quote when sent.
+  // Distinct from Clone, which starts an unrelated quote and leaves this one
+  // live. Shared with the declined banner's Revise via useReviseQuote so both
+  // entry points mean the same thing.
+  const { revise, revising } = useReviseQuote(quote.id, { onStart: () => setMenuOpen(false) });
+
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
   // sit in a row. The class fragments below are the only thing the variant changes.
@@ -835,6 +827,10 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
 
   const canSend = can('quotes', 'send') && isDraft;
   const canClone = can('quotes', 'write');
+  // Exactly the statuses the server will supersede (SUPERSEDABLE in
+  // services/quoteLifecycle.ts). A draft has nothing to replace; accepted and
+  // converted are settled; superseded is already retired.
+  const canRevise = can('quotes', 'write') && isRevisable(quote.status);
   const canDelete = can('quotes', 'write') && isDraft;
   // Resend and share-link share one gate (see quoteShareLinkAvailable above,
   // which mirrors assertLinkableQuote in services/quoteLifecycle.ts).
@@ -973,6 +969,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {copyingLink ? t('quotes.actions.copyingShareLink') : t('quotes.actions.copyShareLink')}
           </button>
         )}
+        {!header && canRevise && (
+          <button
+            type="button"
+            onClick={() => void revise()}
+            disabled={revising || savePending}
+            title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+            data-testid="quote-revise"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {revising ? t('quotes.actions.revising') : t('quotes.actions.reviseQuote')}
+          </button>
+        )}
         {!header && canClone && (
           <button
             type="button"
@@ -1042,6 +1050,20 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                     className="block w-full px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-50"
                   >
                     {copyingLink ? t('quotes.actions.copyingShareLink') : t('quotes.actions.copyShareLink')}
+                  </button>
+                )}
+                {canRevise && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    onClick={() => void revise()}
+                    disabled={revising || savePending}
+                    title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+                    data-testid="quote-revise"
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-50"
+                  >
+                    {revising ? t('quotes.actions.revising') : t('quotes.actions.reviseQuote')}
                   </button>
                 )}
                 {canClone && (
@@ -1134,9 +1156,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 amount: formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency),
               })}
         </p>
+        {/* A revision send is not an ordinary send: it retires the parent and
+            revokes the link the customer is currently holding. Nothing else in
+            this dialog says so, and it is not undoable. */}
+        {!resendMode && revisionOf && (
+          <p className="mt-2 flex items-start gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-revision-warning">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>{t('quotes.actions.sendConfirm.revisionWarning', { number: revisionOf.quoteNumber ?? '' })}</span>
+          </p>
+        )}
         {zeroTotal && (
           <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
-            {t('quotes.actions.sendConfirm.zeroTotalWarning')}
+            {t('quotes.actions.sendConfirm.zeroTotalWarning', { zero: formatMoney(0, quote.currencyCode) })}
           </p>
         )}
         {/* Non-blocking: an incomplete profit estimate never disables Send (a
@@ -1315,6 +1346,36 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           <p className="mt-2 text-xs text-muted-foreground" data-testid="quote-send-payment-enabled">
             {t('quotes.actions.sendConfirm.paymentEnabled')}
           </p>
+        )}
+        {/* Warn-don't-block (#3777): the quote's currency differs from the
+            account's cached settlement currency. Amber info only — Send stays
+            armed; the warning is precomputed by the API from its own cache. */}
+        {/* Unknown is NOT "matches" (#3777 review F6): a connection that predates
+            the currency cache, or an account Stripe reports no default for, gets
+            an explicit "refresh required" note rather than silence. */}
+        {currencyWarning?.code === 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN' && (
+          <p
+            className="mt-2 text-xs text-muted-foreground"
+            role="status"
+            data-testid="quote-stripe-currency-unknown"
+          >
+            {t('quotes.actions.currencyUnknown', { documentCurrency: currencyWarning.documentCurrency })}
+          </p>
+        )}
+        {currencyWarning?.code === 'CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT' && (
+          <div
+            className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300"
+            role="status"
+            data-testid="quote-stripe-currency-warning"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              {t('quotes.actions.currencyMismatch', {
+                documentCurrency: currencyWarning.documentCurrency,
+                accountCurrency: currencyWarning.accountCurrency,
+              })}
+            </span>
+          </div>
         )}
 
         <div className="mt-6 flex justify-end gap-3">

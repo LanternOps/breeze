@@ -52,6 +52,7 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/settings\/organizations$/, kind: 'partner-settings' },
   { pattern: /^\/settings\/organization$/, kind: 'partner-settings' },
   { pattern: /^\/settings\/profile$/, kind: 'self' },
+  { pattern: /^\/approvals$/, kind: 'self' },
   { pattern: /^\/account\/inactive$/, kind: 'auth' },
   { pattern: /^\/account(\/.*)?$/, kind: 'self' },
 

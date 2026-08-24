@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { BULK_ID_LIMIT } from '../constants';
+import { currencyCodeSchema } from './currency';
 
 // Bounded to numeric(12,2) (max 9,999,999,999.99) so out-of-range inputs fail
 // fast with a 400 rather than overflowing at insert (DB-layer 500). Mirrors the
@@ -13,7 +14,7 @@ const nonnegativeQty = z.number().nonnegative().max(9_999_999_999.99).multipleOf
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
 const taxRate = z.number().min(0).max(1);
 
-export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']);
+export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']);
 export const quoteLineRecurrenceSchema = z.enum(['one_time', 'monthly', 'annual']);
 export const quoteLineSourceTypeSchema = z.enum(['catalog', 'bundle', 'manual']);
 export const quoteBlockTypeSchema = z.enum(['heading', 'rich_text', 'image', 'line_items', 'contract', 'table', 'callout']);
@@ -145,7 +146,7 @@ export const createQuoteSchema = z.object({
   title: z.string().max(200).optional(),
   // Omit to inherit the partner's configured currency (resolved server-side in
   // createQuote); the DB column still defaults to 'USD' as a backstop (#3200).
-  currencyCode: z.string().length(3).optional(),
+  currencyCode: currencyCodeSchema.optional(),
   expiryDate: isoDate.optional(),
   introNotes: z.string().max(5000).optional(),
   terms: z.string().max(20_000).optional(),

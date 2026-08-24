@@ -7,8 +7,10 @@ import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
 import { resolveSlaTargets } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
+import { readOrgStampingDefaultsMany } from './orgCurrencyCore';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
+import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -1334,35 +1336,70 @@ const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_
  * - Emits ticket.updated.
  * Rejects cross-partner moves with 400; unknown target with 404; same-org is a no-op.
  */
-export async function moveTicketOrg(ticketId: string, targetOrgId: string, actor: TicketActor): Promise<typeof tickets.$inferSelect> {
+export interface MoveTicketOrgOptions {
+  /**
+   * Multi-currency (#3776): allow a cross-currency move even though unbilled
+   * monetary time entries / parts will keep their OLD-currency snapshot under
+   * the new org. Route-gated on invoices:write; AI tools never set it.
+   */
+  acceptCurrencyMismatch?: boolean;
+}
+
+export async function moveTicketOrg(
+  ticketId: string,
+  targetOrgId: string,
+  actor: TicketActor,
+  opts: MoveTicketOrgOptions = {}
+): Promise<typeof tickets.$inferSelect> {
   const ticket = await getTicketOrThrow(ticketId);
   if (ticket.orgId === targetOrgId) return ticket;
 
-  const orgRows = await db
-    .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
-    .from(organizations)
-    .where(sql`${organizations.id} IN (${ticket.orgId}::uuid, ${targetOrgId}::uuid)`)
-    .limit(2);
-  const sourceOrg = orgRows.find((r) => r.id === ticket.orgId);
-  const targetOrg = orgRows.find((r) => r.id === targetOrgId);
-  if (!targetOrg) throw new TicketServiceError('Target organization not found', 404);
-  if (!sourceOrg || sourceOrg.partnerId !== targetOrg.partnerId) {
-    throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
-  }
-
   let updated: typeof tickets.$inferSelect | undefined;
+  let guard: MoveCurrencyGuardDetails | null = null;
   await db.transaction(async (tx) => {
+    // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
+    // UUID so two concurrent moves between the same pair cannot deadlock) →
+    // tickets → time_entries → ticket_parts. The org lock is the FIRST statement
+    // of this transaction and is held to commit, so the source/target currency
+    // pair the guard compares cannot be restamped mid-move.
+    const lockedOrgs = await readOrgStampingDefaultsMany(tx, [ticket.orgId, targetOrgId]);
+    const orgRows = await tx
+      .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
+      .from(organizations)
+      .where(sql`${organizations.id} IN (${ticket.orgId}::uuid, ${targetOrgId}::uuid)`)
+      .limit(2);
+    const sourceMeta = orgRows.find((r) => r.id === ticket.orgId);
+    const targetMeta = orgRows.find((r) => r.id === targetOrgId);
+    if (!targetMeta) throw new TicketServiceError('Target organization not found', 404);
+    if (!sourceMeta || sourceMeta.partnerId !== targetMeta.partnerId) {
+      throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
+    }
+    // Present by construction: the metadata rows above resolved, so the locks did too.
+    const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
+    const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };
+    // The UPDATE takes the ticket row lock; the currency guard then locks the
+    // unbilled monetary children, and the org_id rewrites follow. A throw here
+    // rolls this UPDATE back — nothing moves on a block.
     const [row] = await tx
       .update(tickets)
       .set({ orgId: targetOrgId, deviceId: null, updatedAt: new Date() })
       .where(eq(tickets.id, ticketId))
       .returning();
     updated = row;
+    guard = await assertTicketMoveCurrencyCompatible(tx, {
+      ticketIds: [ticketId],
+      sourceCurrency: sourceOrg.currencyCode,
+      targetCurrency: targetOrg.currencyCode,
+      targetOrgName: targetOrg.name,
+      acceptCurrencyMismatch: opts.acceptCurrencyMismatch === true
+    });
+    // SET org_id only — currency_code snapshots are never touched by a move.
     for (const table of TICKET_ORG_DENORMALIZED_TABLES) {
       await tx.execute(
         sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
       );
     }
+    const strandedCount = guard?.accepted ? guard.unbilledTimeEntries + guard.unbilledParts : 0;
     // System feed entry on the moved ticket.
     await tx.insert(ticketComments).values({
       ticketId,
@@ -1370,7 +1407,9 @@ export async function moveTicketOrg(ticketId: string, targetOrgId: string, actor
       authorName: actor.name ?? null,
       authorType: 'internal',
       commentType: 'system',
-      content: `Moved to ${targetOrg.name}`,
+      content: `Moved to ${targetOrg.name}` + (strandedCount > 0
+        ? ` — ${strandedCount} unbilled items stay in ${sourceOrg.currencyCode}`
+        : ''),
       isPublic: false
     });
   });
@@ -1385,7 +1424,14 @@ export async function moveTicketOrg(ticketId: string, targetOrgId: string, actor
     payload: { changed: ['orgId'] }
   });
   // Audit on BOTH orgs so the move shows in source and target feeds (device precedent).
-  const details = { fromOrgId: ticket.orgId, toOrgId: targetOrgId, detachedDeviceId: ticket.deviceId ?? null };
+  // (Cast: TS narrows the closure-assigned `let` to its initial null.)
+  const accepted = guard as MoveCurrencyGuardDetails | null;
+  const details = {
+    fromOrgId: ticket.orgId,
+    toOrgId: targetOrgId,
+    detachedDeviceId: ticket.deviceId ?? null,
+    ...(accepted?.accepted ? { currencyMismatchAccepted: accepted } : {})
+  };
   await createAuditLogAsync({ orgId: ticket.orgId, actorId: actor.userId, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
   await createAuditLogAsync({ orgId: targetOrgId, actorId: actor.userId, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
   return updated;

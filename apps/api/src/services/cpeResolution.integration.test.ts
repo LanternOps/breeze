@@ -16,7 +16,7 @@ async function seedDeviceAndInventory(name: string, vendor: string | null): Prom
   await withSystemDbAccessContext(async () => {
     const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const [p] = await db.insert(partners).values({ name: `P ${u}`, slug: `p-${u}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
-    const [o] = await db.insert(organizations).values({ partnerId: p!.id, name: `O ${u}`, slug: `o-${u}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
+    const [o] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: p!.id, name: `O ${u}`, slug: `o-${u}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
     const [s] = await db.insert(sites).values({ orgId: o!.id, name: `S ${u}` }).returning({ id: sites.id });
     const [d] = await db.insert(devices).values({ orgId: o!.id, siteId: s!.id, agentId: `a-${u}`, hostname: `h-${u}`, osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'offline' }).returning({ id: devices.id });
     await db.insert(softwareInventory).values({ orgId: o!.id, deviceId: d!.id, name, vendor, version: '1.0' });

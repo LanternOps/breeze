@@ -17,7 +17,29 @@ import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
 import TicketPartsCard from './TicketPartsCard';
+import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
+
+/** Mirrors the API's BlockedCurrencySummary (invoiceService.ts, #3776). */
+interface BlockedCurrencyGroup { currencyCode: string; count: number; amount: string }
+/** Mirrors MissingRateEntry (invoiceService.ts, #3776 review #1): a billable time
+ *  entry with no hourly rate. Never billed at zero — set a rate and assemble again. */
+interface MissingRateEntry { timeEntryId: string; ticketId: string | null; description: string; hours: string }
+/** POST /tickets/:id/invoice success body. `blockedByCurrency` / `missingRate`
+ *  are non-empty on a PARTIAL success: the draft exists but those rows were
+ *  left out of it (review #3). */
+interface AssembleInvoiceResponse {
+  data: { invoice: { id: string }; blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[] };
+}
+/** Mirrors MoveCurrencyGuardDetails (ticketMoveCurrencyGuard.ts, #3776). */
+interface MoveBlockedDetails {
+  sourceCurrency: string;
+  targetCurrency: string;
+  unbilledTimeEntries: number;
+  unbilledParts: number;
+  /** Real per-snapshot groups (rows whose currency ≠ target); optional for older API builds. */
+  blockedByCurrency?: Array<{ currencyCode: string; timeEntries: number; parts: number }>;
+}
 import { fetchTicketConfig, activeStatusesByCore, type TicketConfig } from '../../lib/ticketConfigApi';
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -134,14 +156,30 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
   const [railOpen] = useState(true);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
+  // Multi-currency (#3776): 409 ALL_BLOCKED_BY_CURRENCY groups from the last
+  // create-invoice attempt — each becomes an "assemble in <code>" shortcut.
+  const [invoiceBlocked, setInvoiceBlocked] = useState<BlockedCurrencyGroup[]>([]);
+  const [invoiceMissingRate, setInvoiceMissingRate] = useState<MissingRateEntry[]>([]);
+  // Set on a partial success: the draft that WAS created while rows were left
+  // out. We stay on the ticket so the left-out rows are visible; this links to it.
+  const [partialInvoiceId, setPartialInvoiceId] = useState<string | null>(null);
   const [moveOrgOpen, setMoveOrgOpen] = useState(false);
   const [moveOrgTargetId, setMoveOrgTargetId] = useState('');
+  // 409 TICKET_MOVE_CURRENCY_BLOCKED details from the last move attempt; the
+  // form stays mounted so this can render, and "move anyway" is gated on an
+  // explicit checkbox (spec §7: bill first, or deliberately accept).
+  const [moveBlocked, setMoveBlocked] = useState<MoveBlockedDetails | null>(null);
+  const [acceptCurrency, setAcceptCurrency] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
-  const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
+  // GET /orgs/organizations returns the full org row for partner/system scope,
+  // which carries currency_code (wave 1); the parts card needs it for catalog
+  // prefill (#3775). Org-scoped callers get a name-only projection → undefined.
+  const [orgs, setOrgs] = useState<Array<{ id: string; name: string; currencyCode?: string }>>([]);
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
@@ -314,10 +352,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       .then(async (r) => (r.ok ? r.json() : null))
       .then((body) => {
         if (cancelled || !body) return;
-        const rows = (body as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> }).data
-          ?? (body as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> }).organizations
+        type OrgRow = { id: string; name: string; currencyCode?: string };
+        const rows = (body as { data?: OrgRow[]; organizations?: OrgRow[] }).data
+          ?? (body as { data?: OrgRow[]; organizations?: OrgRow[] }).organizations
           ?? [];
-        if (Array.isArray(rows)) setOrgs((rows as Array<{ id: string; name: string }>).filter((o) => o.id && o.name));
+        if (Array.isArray(rows)) setOrgs((rows as OrgRow[]).filter((o) => o.id && o.name));
       })
       .catch(() => { /* degrade gracefully */ });
     return () => { cancelled = true; };
@@ -395,31 +434,84 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   }, [ticketId, afterMutation]);
 
   // Assemble a draft invoice from this ticket's billable work, then jump to it.
-  const createInvoice = useCallback(async () => {
+  // `currencyCode` is the explicit old-currency path (#3776): the endpoint is
+  // body-less, so the override travels as a query param.
+  const createInvoice = useCallback(async (currencyCode?: string) => {
     if (creatingInvoice) return;
     setCreatingInvoice(true);
+    setInvoiceBlocked([]);
+    setInvoiceMissingRate([]);
+    setPartialInvoiceId(null);
+    const path = currencyCode
+      ? `/tickets/${ticketId}/invoice?currencyCode=${encodeURIComponent(currencyCode)}`
+      : `/tickets/${ticketId}/invoice`;
     try {
-      const result = await runAction<{ data: { invoice: { id: string } } }>({
-        request: () => fetchWithAuth(`/tickets/${ticketId}/invoice`, { method: 'POST' }),
+      const result = await runAction<AssembleInvoiceResponse>({
+        request: () => fetchWithAuth(path, { method: 'POST' }),
         errorFallback: t('ticketWorkbench.invoice.createFailed'),
         successMessage: t('ticketWorkbench.invoice.created'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       const newId = result?.data?.invoice?.id;
-      if (newId) void navigateTo(`/billing/invoices/${newId}`);
+      const blocked = result?.data?.blockedByCurrency ?? [];
+      const missing = result?.data?.missingRate ?? [];
+      if (blocked.length === 0 && missing.length === 0) {
+        if (newId) void navigateTo(`/billing/invoices/${newId}`);
+        return;
+      }
+      // Partial success (review #3): the draft exists, but rows in another
+      // currency and/or without a rate were left out. Navigating now would hide
+      // that — stay here, show the same recovery controls as the all-blocked
+      // path, and link to the draft instead.
+      setInvoiceBlocked(blocked);
+      setInvoiceMissingRate(missing);
+      setPartialInvoiceId(newId ?? null);
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
+      // Already toasted by runAction; offer the per-currency shortcuts and
+      // list the rate-less entries. ALL_BLOCKED_BY_CURRENCY details also carry
+      // missingRate; ALL_MISSING_RATE carries only missingRate.
+      if (err.code === 'ALL_BLOCKED_BY_CURRENCY' || err.code === 'ALL_MISSING_RATE') {
+        const details = (err.body as { details?: { blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[] } } | undefined)?.details;
+        setInvoiceBlocked(details?.blockedByCurrency ?? []);
+        setInvoiceMissingRate(details?.missingRate ?? []);
+      }
     } finally {
       setCreatingInvoice(false);
     }
   }, [ticketId, creatingInvoice, t]);
 
-  const handleMoveOrg = useCallback((targetOrgId: string) => {
-    void runAction({
-      request: () => fetchWithAuth(`/tickets/${ticketId}/move-org`, { method: 'POST', body: JSON.stringify({ orgId: targetOrgId }) }),
-      errorFallback: t('ticketWorkbench.move.failed'),
-      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-    }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  // Returns true on success so the caller decides whether to close the form.
+  // A 409 TICKET_MOVE_CURRENCY_BLOCKED keeps it open with guidance; every other
+  // ActionError was already toasted by runAction.
+  const handleMoveOrg = useCallback(async (
+    targetOrgId: string,
+    opts: { acceptCurrencyMismatch?: boolean } = {}
+  ): Promise<boolean> => {
+    setMoving(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/move-org`, {
+          method: 'POST',
+          body: JSON.stringify({ orgId: targetOrgId, ...(opts.acceptCurrencyMismatch ? { acceptCurrencyMismatch: true } : {}) })
+        }),
+        errorFallback: t('ticketWorkbench.move.failed'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setMoveBlocked(null);
+      setAcceptCurrency(false);
+      void load({ background: true });
+      return true;
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+      if (err.code === 'TICKET_MOVE_CURRENCY_BLOCKED') {
+        const details = (err.body as { details?: MoveBlockedDetails } | undefined)?.details;
+        if (details) setMoveBlocked(details);
+      }
+      return false;
+    } finally {
+      setMoving(false);
+    }
   }, [ticketId, load, t]);
 
   // Soft-delete this ticket (tickets:manage). Confirm-gated by the ConfirmDialog
@@ -827,6 +919,53 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </button>
           )}
         </div>
+        {(invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
+          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-testid="ticket-invoice-blocked" role="status">
+            {partialInvoiceId ? (
+              <p>
+                {t('ticketWorkbench.invoice.partialLeftOut')}{' '}
+                <a href={`/billing/invoices/${partialInvoiceId}`} className="font-medium underline" data-testid="ticket-invoice-open-draft">
+                  {t('ticketWorkbench.invoice.openDraft')}
+                </a>
+              </p>
+            ) : invoiceBlocked.length > 0 ? (
+              <p>{t('ticketWorkbench.invoice.allBlockedByCurrency')}</p>
+            ) : (
+              <p>{t('ticketWorkbench.invoice.allMissingRate')}</p>
+            )}
+            {invoiceBlocked.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-2">
+                {invoiceBlocked.map((g) => (
+                  <button
+                    key={g.currencyCode}
+                    type="button"
+                    disabled={creatingInvoice}
+                    onClick={() => void createInvoice(g.currencyCode)}
+                    data-testid={`ticket-assemble-in-${g.currencyCode}`}
+                    className="rounded-md border bg-background px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    {t('ticketWorkbench.invoice.assembleIn', { code: g.currencyCode, count: g.count, amount: formatMoney(g.amount, g.currencyCode) })}
+                  </button>
+                ))}
+              </div>
+            )}
+            {invoiceMissingRate.length > 0 && (
+              <div className="mt-1.5" data-testid="ticket-invoice-missing-rate">
+                <p className="font-medium">{t('ticketWorkbench.invoice.missingRateHeading')}</p>
+                <ul className="mt-1 list-disc pl-4">
+                  {invoiceMissingRate.map((m) => (
+                    <li key={m.timeEntryId} data-testid={`ticket-invoice-missing-rate-${m.timeEntryId}`}>
+                      {t('ticketWorkbench.invoice.missingRateEntry', { description: m.description, hours: m.hours })}
+                    </li>
+                  ))}
+                </ul>
+                <a href="/timesheet" className="mt-1 inline-block font-medium underline" data-testid="ticket-invoice-set-rate">
+                  {t('ticketWorkbench.invoice.setRate')}
+                </a>
+              </div>
+            )}
+          </div>
+        )}
         {moveOrgOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-move-org-form">
             <label className="text-xs font-medium" htmlFor="move-org-select">{t('ticketWorkbench.move.label')}</label>
@@ -834,7 +973,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               id="move-org-select"
               data-testid="ticket-workbench-move-org-select"
               value={moveOrgTargetId}
-              onChange={(e) => setMoveOrgTargetId(e.target.value)}
+              onChange={(e) => { setMoveOrgTargetId(e.target.value); setMoveBlocked(null); setAcceptCurrency(false); }}
               className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-xs"
             >
               <option value="">{t('ticketWorkbench.move.selectOrganization')}</option>
@@ -842,11 +981,34 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 <option key={o.id} value={o.id}>{o.name}</option>
               ))}
             </select>
+            {moveBlocked && (
+              <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" role="status">
+                <p data-testid="ticket-move-blocked-currency">
+                  {t('ticketWorkbench.move.blockedCurrency', {
+                    timeCount: moveBlocked.unbilledTimeEntries,
+                    partCount: moveBlocked.unbilledParts,
+                    sourceCurrency: moveBlocked.sourceCurrency,
+                    targetCurrency: moveBlocked.targetCurrency,
+                    targetOrg: orgs.find((o) => o.id === moveOrgTargetId)?.name ?? moveOrgTargetId,
+                  })}
+                </p>
+                <label className="mt-1.5 flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    data-testid="ticket-move-accept-currency"
+                    checked={acceptCurrency}
+                    onChange={(e) => setAcceptCurrency(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>{t('ticketWorkbench.move.acceptCurrency', { sourceCurrency: moveBlocked.sourceCurrency })}</span>
+                </label>
+              </div>
+            )}
             <div className="mt-1.5 flex justify-end gap-2">
               <button
                 type="button"
                 data-testid="ticket-workbench-move-org-cancel"
-                onClick={() => setMoveOrgOpen(false)}
+                onClick={() => { setMoveOrgOpen(false); setMoveBlocked(null); setAcceptCurrency(false); }}
                 className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
               >
                 {t('common:actions.cancel')}
@@ -854,12 +1016,30 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               <button
                 type="button"
                 data-testid="ticket-workbench-move-org-confirm"
-                disabled={!moveOrgTargetId}
-                onClick={() => { if (moveOrgTargetId) { handleMoveOrg(moveOrgTargetId); setMoveOrgOpen(false); } }}
+                disabled={!moveOrgTargetId || moving}
+                onClick={() => {
+                  if (!moveOrgTargetId) return;
+                  // Close only on success — the 409 guidance renders inside this form.
+                  void handleMoveOrg(moveOrgTargetId).then((ok) => { if (ok) setMoveOrgOpen(false); });
+                }}
                 className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
               >
                 {t('ticketWorkbench.move.confirm')}
               </button>
+              {moveBlocked && (
+                <button
+                  type="button"
+                  data-testid="ticket-workbench-move-org-accept"
+                  disabled={!acceptCurrency || moving || !moveOrgTargetId}
+                  onClick={() => {
+                    if (!moveOrgTargetId) return;
+                    void handleMoveOrg(moveOrgTargetId, { acceptCurrencyMismatch: true }).then((ok) => { if (ok) setMoveOrgOpen(false); });
+                  }}
+                  className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                >
+                  {t('ticketWorkbench.move.moveAnyway')}
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -1048,7 +1228,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
               <TicketTimeBilling ticketId={ticket.id} />
-              <TicketPartsCard ticketId={ticket.id} />
+              <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} />
               <dl className="space-y-3">
                 <div>
                   <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.requester.label')}</dt>

@@ -9,20 +9,20 @@ import { portalBranding } from '../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
-import { acceptQuote, emitAcceptInvoiceIssued } from '../services/quoteAcceptService';
+import { acceptQuote, emitAcceptInvoiceIssued, resolveAcceptInvoiceUrl, autoEmailAcceptedInvoice } from '../services/quoteAcceptService';
+import { notifyQuoteOutcome } from '../services/quoteOutcomeNotify';
 import { readQuoteImage, loadCustomerLineImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
 import { toCustomerLines, attachCustomerLineImages, sanitizeQuoteBlocksForRead } from '../services/quoteService';
 import { loadContractBlockRenderData, renderContractBlocksForClient } from '../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../services/contractTemplateService';
-import { InvoiceServiceError } from '../services/invoiceTypes';
 import { isQuoteExpired } from '../services/quoteExpiry';
-import { createQuotePayLink } from '../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { toPublicQuoteHeader, toPublicQuotePresentation } from '../services/publicQuoteDto';
 import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
+import { resolvePartnerDocumentLocale } from '../services/documentLocale';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -49,6 +49,35 @@ async function resolve(c: { req: { valid: (k: 'param') => { token: string } } })
   return claims;
 }
 
+/** The columns every token route needs to judge whether the link is still live. */
+const publicLinkColumns = {
+  id: quotes.id,
+  status: quotes.status,
+  publicLinkRevokedAt: quotes.publicLinkRevokedAt,
+};
+
+/**
+ * A replaced quote's public link is dead: the revision that superseded it revoked
+ * it in the same statement that flipped its status. Both are checked because
+ * publicLinkRevokedAt is the DB-authoritative revocation and must keep working for
+ * any future standalone link-revoke that does not change status.
+ *
+ * ONE predicate, used by every token route, so adding a route cannot silently
+ * reopen a revoked link. quotesPublic.superseded.test.ts enumerates the routes and
+ * fails if a new one skips this.
+ */
+function isPublicLinkDead(q: { status: string; publicLinkRevokedAt: Date | null }): boolean {
+  return q.status === 'superseded' || q.publicLinkRevokedAt != null;
+}
+
+/** Load the token's quote for an asset route, or null when the link is dead. */
+async function loadLiveAssetQuote(claims: { quoteId: string; orgId: string }) {
+  const [quote] = await db.select(publicLinkColumns).from(quotes)
+    .where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
+  if (!quote || isPublicLinkDead(quote)) return null;
+  return quote;
+}
+
 // GET /:token — view. Stamps first_viewed_at + sent→viewed. Customer-visible content only.
 quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => {
   const { token } = c.req.valid('param');
@@ -58,20 +87,32 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
     const data = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
       if (!quote || quote.status === 'draft') return null;
+      if (isPublicLinkDead(quote)) {
+        const [p] = await db.select({ name: partners.name }).from(partners)
+          .where(eq(partners.id, quote.partnerId)).limit(1);
+        return { superseded: true as const, partnerName: p?.name ?? 'your provider' };
+      }
       const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder));
       const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
-      const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
-      const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+      const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+      // supportEmail/supportPhone travel with the branding so the public
+      // proposal page can tell a prospect how to reach the company asking them
+      // to sign. Both are the MSP's own published contact details, already
+      // surfaced to signed-in customers by /portal/branding.
+      const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, supportEmail: portalBranding.supportEmail, supportPhone: portalBranding.supportPhone }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
       // Cosmetic view-stamping only — must never fail the render. Mirrors the
       // authenticated counterpart at portal/quotes.ts:48.
       try { await markQuoteViewed(quote.id, quote.orgId); } catch (err) { console.error('[quotesPublic] quote markViewed failed', { id: quote.id, err }); }
       // Derive the amount accept actually invoices (one-time only) so the prospect
       // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
       // plus the deposit due + per-category subtotals for the summary panel.
-      const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
+      const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
       // Resolves every `contract` block's pinned template version (system context)
       // and replaces its raw authoring content with the token-gated render contract.
-      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);
+      // Public link serves sent (stamped) quotes: quote.documentLocale is the
+      // render locale; null only for pre-wave-5 sends, which resolve to the
+      // partner's language — the same fallback the quote PDF uses.
+      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`, quote.documentLocale ?? resolvePartnerDocumentLocale(partner));
       const serializedLines = attachCustomerLineImages(lines, (lineId) => `/quotes/public/${encodeURIComponent(token)}/line-image/${lineId}`);
       // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
       // sent quote's frozen presentation always wins over the partner's live
@@ -81,13 +122,25 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
       return { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
         partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+        supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
         theme, pageSize,
       }, presentation: toPublicQuotePresentation(theme, pageSize) };
     }));
+    if (data && 'superseded' in data) {
+      // Deliberately withhold the successor: the latest email is the customer's
+      // authorization path, and exposing it here would reveal an unsent document.
+      return c.json({
+        error: 'This proposal has been replaced by an updated version — please use the link in the latest email.',
+        code: 'QUOTE_SUPERSEDED',
+        data: { branding: { partnerName: data.partnerName } },
+      }, 410);
+    }
     if (!data) return c.json({ error: 'Quote not found' }, 404);
     return c.json({ data });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    // Fail-closed floor for any retired status that reaches serialization.
+    if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
   }
 });
@@ -97,7 +150,7 @@ quotesPublicRoutes.get('/:token/images/:imageId', zValidator('param', tokenImage
   const claims = await resolve(c); const { imageId } = c.req.valid('param');
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
   const img = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
+    const quote = await loadLiveAssetQuote(claims);
     if (!quote) return null;
     return readQuoteImage(imageId, quote.id);
   }));
@@ -115,7 +168,7 @@ quotesPublicRoutes.get('/:token/line-image/:lineId', zValidator('param', tokenLi
   const claims = await resolve(c); const { lineId } = c.req.valid('param');
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
   const img = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
+    const quote = await loadLiveAssetQuote(claims);
     if (!quote) return null;
     return loadCustomerLineImage(quote.id, lineId);
   }));
@@ -131,7 +184,7 @@ quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tok
   const claims = await resolve(c); const { blockId } = c.req.valid('param');
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
   const block = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
+    const quote = await loadLiveAssetQuote(claims);
     if (!quote) return null;
     const [b] = await db.select().from(quoteBlocks).where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quote.id), eq(quoteBlocks.blockType, 'contract'))).limit(1);
     return b ?? null;
@@ -167,30 +220,22 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     // Post-commit: emit invoice.issued + enqueue the PDF render (matches issueInvoice).
     // Fire-and-forget; a public accepter has no user id.
     await emitAcceptInvoiceIssued(res, null);
-    // Phase 3 accept→pay: mint a Stripe checkout link for the just-issued invoice and
-    // return it (the accept token is now revoked, so the URL must come back in THIS
-    // response). Runs in its own context AFTER the accept committed — it must never
-    // fail (or roll back) the accept. Distinguish EXPECTED no-pay outcomes (a $0 quote
-    // → NOTHING_TO_PAY/NOT_PAYABLE, or the partner hasn't connected Stripe) — surfaced
-    // quietly as payUrl:null — from an UNEXPECTED failure (Stripe outage, DB), which we
-    // flag as payDeferred + capture so a silently-lost payment CTA is observable rather
-    // than looking identical to "nothing to pay".
-    let payUrl: string | null = null;
-    let payDeferred = false;
-    try {
-      const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-        createQuotePayLink(claims.quoteId, { userId: null, partnerId: null, accessibleOrgIds: [claims.orgId] })));
-      payUrl = link.url;
-    } catch (err) {
-      const benign = err instanceof InvoiceServiceError
-        && (err.code === 'NOT_PAYABLE' || err.code === 'NOTHING_TO_PAY' || err.code === 'STRIPE_NOT_CONNECTED');
-      if (!benign) {
-        payDeferred = true;
-        console.error('[quotesPublic] pay-link mint failed after accept', err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
-      }
-    }
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
+    // Retired the one-shot Stripe payUrl (2026-08-21 spec §8): the response now
+    // carries the invoice's DURABLE public url — the confirmation page
+    // location.replace()s onto it, and it offers payment (and keeps working
+    // after the tab closes). payDeferred survives only for the mint-failure
+    // edge on an ISSUED invoice (a $0 recurring-only quote issues nothing and
+    // legitimately gets invoiceUrl:null without the flag).
+    const invoiceUrl = await resolveAcceptInvoiceUrl(res);
+    const payDeferred = res.invoiceIssued && invoiceUrl == null;
+    // Auto-email the issued invoice (public link CTA) so closing the tab is
+    // harmless, and tell the tech who sent the quote (decline-completion spec
+    // §A) — before this, acceptance was only visible as an invoice quietly
+    // appearing. Both UNAWAITED: they end in SMTP round trips and must never
+    // delay the accept response; both swallow their own errors.
+    void autoEmailAcceptedInvoice(res);
+    void notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'accepted', source: 'customer', signerName: body.signerName });
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {
       if (err.code === 'RESPONSE_CONSUMED') {
@@ -222,6 +267,7 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
     // public_token_version=1): a version-1 row may only be consumed by the jti
     // it was issued with. Inert for today's version-0 rows.
     if ((quote.publicTokenVersion ?? 0) !== 0 && quote.publicResponseJti !== claims.jti) return 'consumed' as const;
+    if (isPublicLinkDead(quote)) return 'superseded' as const;
     if (quote.status !== 'sent' && quote.status !== 'viewed') return 'bad_state' as const;
     // Read-time expiry guard (Phase 3): an expired quote is terminal — mirror the
     // acceptQuote / declineQuoteByActor 410 so the sub-sweep window is covered here too.
@@ -248,6 +294,7 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
     return 'ok' as const;
   }));
   if (result === 'expired') return c.json({ error: 'This quote has expired', code: 'QUOTE_EXPIRED' }, 410);
+  if (result === 'superseded') return c.json({ error: 'This quote has been replaced by a newer version', code: 'QUOTE_SUPERSEDED' }, 410);
   if (result === 'consumed') {
     // Re-arm the lost Redis marker so repeat replays die at the cheap
     // resolve() gate instead of re-reading the row each time; the durable
@@ -259,5 +306,9 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
   // Consume the single-use token post-commit so a declined link can't be replayed.
   // A failed revoke leaves the link replayable (security-relevant) → capture.
   try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
+  // Post-commit: tell the tech who sent it (with the customer's verbatim note)
+  // — before this, a decline wrote the row and nobody was ever told. UNAWAITED:
+  // SMTP latency must not delay the customer's response; errors are swallowed.
+  void notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'declined', source: 'customer' });
   return c.json({ data: { status: 'declined' } });
 });

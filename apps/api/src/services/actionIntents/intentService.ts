@@ -1,24 +1,39 @@
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { createNotification } from '../userNotifications';
+import { captureException } from '../sentry';
 import {
   actionIntents,
   intentOutbox,
   type ActionIntent,
   type ActionIntentApprovalScope,
+  type ActionIntentOriginPrincipalKind,
   type ActionIntentSource,
   type ActionIntentStatus,
 } from '../../db/schema/actionIntents';
 import { approvalRequests } from '../../db/schema/approvals';
+import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
+import { devices } from '../../db/schema/devices';
 import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth';
 import { aiTools, resolveWritableToolOrgId } from '../aiTools';
-import { checkGuardrails, type GuardrailCheck } from '../aiGuardrails';
+import {
+  checkAgentGuardrails,
+  checkGuardrails,
+  type AgentGuardrailPolicy,
+  type GuardrailCheck,
+} from '../aiGuardrails';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
-import { resolveIntentApprovers } from './intentApprovers';
+import {
+  resolveAgentIntentApprovers,
+  resolveIntentApprovers,
+  resolveIntentTargetScope,
+  type IntentTargetScope,
+} from './intentApprovers';
 import { computeEffectDigestOutcome, type EffectDigestOutcome } from './effectDigest';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
@@ -74,7 +89,14 @@ export interface CreateActionIntentInput {
   toolName: string;
   input: Record<string, unknown>;
   reason?: string;
-  source: 'chat' | 'mcp_api';
+  /**
+   * 'ai_agent' (wave 3b) is valid ONLY for an ai_agent principal — and
+   * required for one: createActionIntent enforces the pairing in both
+   * directions (agent_source_mismatch). Kept as an explicit literal union
+   * (not ActionIntentSource) so a future source value is opted into this
+   * public input on purpose, never inherited.
+   */
+  source: 'chat' | 'mcp_api' | 'ai_agent';
   requestingClientLabel?: string;
   /** MCP callers pass this explicitly; derived deterministically for chat. */
   idempotencyKey?: string;
@@ -144,6 +166,11 @@ export interface ActionIntentTransitionPatch {
 const CHAT_EXPIRY_MS = 5 * 60 * 1000;
 const FOUR_EYES_CHAT_EXPIRY_MS = 60 * 60 * 1000;
 const MCP_EXPIRY_MS = 24 * 60 * 60 * 1000;
+// Headless agent proposals have no human watching a chat pane; give
+// reviewers a working day. Deliberate, not inherited from the MCP window
+// (which it happens to equal today) — change one without silently changing
+// the other.
+const AGENT_INTENT_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Fixed release lease (tier3-supervised-four-eyes design §4.2): how long an
@@ -224,6 +251,7 @@ function deriveIdempotencyKey(actorId: string, actionName: string, digest: strin
 }
 
 function computeExpiresAt(source: ActionIntentSource, approvalScope: ActionIntentApprovalScope): Date {
+  if (source === 'ai_agent') return new Date(Date.now() + AGENT_INTENT_EXPIRY_MS);
   if (source !== 'chat') return new Date(Date.now() + MCP_EXPIRY_MS);
   const ms = approvalScope === 'supervised' ? CHAT_EXPIRY_MS : FOUR_EYES_CHAT_EXPIRY_MS;
   return new Date(Date.now() + ms);
@@ -273,6 +301,27 @@ export async function createActionIntent(
   auth: AuthContext,
   input: CreateActionIntentInput,
 ): Promise<ActionIntentSnapshot> {
+  // Mutual source/principal consistency (wave 3b): an ai_agent principal may
+  // ONLY write source='ai_agent' rows, and nothing else may claim that
+  // source. The requester-less attribution facts (requestedByUserId NULL +
+  // requestingAgentRunId) key off this pairing, so a mismatch is rejected
+  // outright rather than recorded as whatever synthetic user the agent's
+  // attribution record carries — or, in the other direction, as a human
+  // intent masquerading as an agent proposal.
+  const isAgentIntent = auth.principal.kind === 'ai_agent';
+  if (isAgentIntent !== (input.source === 'ai_agent')) {
+    throw new ActionIntentError(
+      isAgentIntent
+        ? `AI agent principals must create intents with source 'ai_agent' (got '${input.source}')`
+        : `source 'ai_agent' is reserved for ai_agent principals (got principal '${auth.principal.kind}')`,
+      'agent_source_mismatch',
+    );
+  }
+  // Captured here, at the top level, on purpose: TypeScript discards property
+  // narrowing inside the transaction closure below, so reading
+  // `auth.principal.kind` at the insert site would widen the type back out.
+  const originPrincipalKind: ActionIntentOriginPrincipalKind = auth.principal.kind;
+
   const guardrail = checkGuardrails(input.toolName, input.input);
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
@@ -314,14 +363,102 @@ export async function createActionIntent(
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Agent-originated intents (wave 3b): load + verify the run, then re-verify
+  // the guardrail verdict INSIDE the service. The caller's claimed verdict is
+  // never trusted (spec §5.3) — a compromised or buggy runner must not be able
+  // to smuggle a proposal past the run's own policy snapshot.
+  // -------------------------------------------------------------------------
+  let agentRun: {
+    id: string;
+    agentId: string;
+    orgId: string;
+    deviceId: string | null;
+  } | null = null;
+  let agentRow: { id: string; name: string } | null = null;
+  if (auth.principal.kind === 'ai_agent') {
+    const principal = auth.principal;
+    // runOutsideDbContext is load-bearing: a bare system wrapper inside an
+    // ambient request context is a passthrough (db/index.ts ~440) and the
+    // run/agent/device reads below must not silently run under whatever org
+    // context the caller happens to hold.
+    const loaded = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [run] = await db
+          .select({
+            id: aiAgentRuns.id,
+            agentId: aiAgentRuns.agentId,
+            orgId: aiAgentRuns.orgId,
+            deviceId: aiAgentRuns.deviceId,
+            policySnapshot: aiAgentRuns.policySnapshot,
+          })
+          .from(aiAgentRuns)
+          .where(eq(aiAgentRuns.id, principal.runId))
+          .limit(1);
+        if (!run || run.agentId !== principal.agentId || run.orgId !== orgId) return null;
+        const [agent] = await db
+          .select({ id: aiAgents.id, name: aiAgents.name })
+          .from(aiAgents)
+          .where(eq(aiAgents.id, run.agentId))
+          .limit(1);
+        if (!agent) return null;
+        let deviceSiteId: string | null = null;
+        if (run.deviceId) {
+          const [device] = await db
+            .select({ siteId: devices.siteId })
+            .from(devices)
+            .where(eq(devices.id, run.deviceId))
+            .limit(1);
+          deviceSiteId = device?.siteId ?? null;
+        }
+        return { run, agent, deviceSiteId };
+      }),
+    );
+    if (!loaded) {
+      throw new ActionIntentError(
+        'AI agent run is missing, belongs to another agent, or targets another org',
+        'agent_run_invalid',
+      );
+    }
+    agentRun = loaded.run;
+    agentRow = loaded.agent;
+
+    // Re-verify the verdict from the run's own policy snapshot. deviceId and
+    // deviceSiteId come from the RUN row, never from tool input (Task 3:
+    // isAgentGuardrailPolicy rejects an absent deviceId, so it must be
+    // populated explicitly — a malformed snapshot fails validation inside
+    // checkAgentGuardrails and denies, which is the fail-closed shape we
+    // want, hence the cast instead of a hand-rolled validator here).
+    const effective = loaded.run.policySnapshot?.effective;
+    const verdict = checkAgentGuardrails(input.toolName, input.input, {
+      enabled: effective?.enabled,
+      mode: effective?.mode,
+      toolAllowlist: effective?.toolAllowlist,
+      protectedResources: effective?.protectedResources,
+      deviceId: loaded.run.deviceId ?? null,
+      deviceSiteId: loaded.deviceSiteId,
+    } as AgentGuardrailPolicy);
+    if (verdict.disposition === 'deny') {
+      throw new ActionIntentError(
+        `Agent policy denies "${input.toolName}": ${verdict.reason ?? 'denied'}`,
+        'agent_policy_denied',
+      );
+    }
+  }
+
   const canonical = canonicalizeArguments(input.input);
   const argumentDigest = computeArgumentDigest(canonical);
-  const idempotencyKey = input.idempotencyKey ?? deriveIdempotencyKey(requesterId, input.toolName, argumentDigest);
+  // Agent default key is RUN-scoped (run id, not the synthetic agent user
+  // id): two runs of the same agent proposing identical arguments must
+  // yield DISTINCT intents — an intent is immutably attributed to one run,
+  // whose policy snapshot the release path evaluates (review major 4).
+  const idempotencyKey = input.idempotencyKey
+    ?? deriveIdempotencyKey(agentRun ? agentRun.id : requesterId, input.toolName, argumentDigest);
   const targetSummary = buildTargetSummary(input.toolName, input.input);
   const impactSummary = buildImpactSummary(input.toolName, guardrail);
   const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
-    ?? (input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
+    ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
   // Tier → riskTier mapping mirrors aiAgentSdk.ts's mobile-approval bridge.
   // Tier is always 3 by the time we reach here (T4 refused, T<=2 rejected
   // above), but computed generically for forward-compat.
@@ -349,6 +486,39 @@ export async function createActionIntent(
   const eligibleAll = await resolveIntentApprovers(orgId);
   const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId);
   const requesterEligible = eligibleAll.includes(requesterId);
+
+  // Agent action-and-target eligibility (Task 3), resolved OUTSIDE the
+  // transaction for the same connection-hold reasons as
+  // resolveIntentApprovers above — both helpers manage their own
+  // system-scoped contexts internally (runOutsideDbContext inside the
+  // creation transaction would be actively wrong). Resolved for EVERY agent
+  // intent, not just supervised ones, so a proposal citing a nonexistent
+  // device is refused before anything is written, regardless of scope.
+  let agentEligibleApprovers: string[] = [];
+  if (agentRun) {
+    let targetScope: IntentTargetScope;
+    try {
+      // orgId pins the device resolution to the intent's org (review finding
+      // 1): a cross-tenant device id must fail exactly like a nonexistent one.
+      targetScope = await resolveIntentTargetScope(
+        input.toolName,
+        input.input,
+        { deviceId: agentRun.deviceId },
+        orgId,
+      );
+    } catch (err) {
+      throw new ActionIntentError(
+        err instanceof Error ? err.message : 'Agent intent target could not be resolved',
+        'agent_target_invalid',
+      );
+    }
+    agentEligibleApprovers = await resolveAgentIntentApprovers({
+      orgId,
+      toolName: input.toolName,
+      input: input.input,
+      targetScope,
+    });
+  }
 
   // ONE system-scoped transaction (durability): insert the intent row (or
   // detect an idempotent replay) AND, in the SAME transaction, fan out the
@@ -412,17 +582,22 @@ export async function createActionIntent(
         .values({
           orgId,
           partnerId: auth.partnerId ?? null,
-          requestedByUserId: requesterId,
+          // Agent intents are requester-less by design (wave 3b): the run is
+          // the attribution record, never the agent's synthetic user id.
+          requestedByUserId: agentRun ? null : requesterId,
+          requestingAgentRunId: agentRun?.id ?? null,
           // Record the ORIGIN principal as a fact, at the one moment it is
           // known for certain. Do NOT derive this later from `source` or from
           // which actor column is populated — see the column's doc comment.
-          originPrincipalKind: auth.principal.kind,
+          originPrincipalKind,
           originPrincipalId:
             auth.principal.kind === 'api_key'
               ? auth.principal.apiKeyId ?? null
               : auth.principal.kind === 'oauth_grant'
                 ? auth.principal.grantId ?? null
-                : null,
+                : agentRow
+                  ? agentRow.id
+                  : null,
           connectionId: input.binding?.connectionId ?? null,
           tenantId: input.binding?.tenantId ?? null,
           source: input.source,
@@ -490,6 +665,27 @@ export async function createActionIntent(
             'idempotency_race',
           );
         }
+        // Review major 4: a key collision is only a replay when it is the
+        // SAME logical request. Action name, source, run attribution, and the
+        // argument digest must all match — otherwise returning the row would
+        // hand this caller an intent belonging to someone else (for agents:
+        // another run, whose immutably-attributed policy snapshot the release
+        // path would then evaluate). The actionName check matters when the
+        // caller supplies an EXPLICIT key: two different tools can share a
+        // key AND a byte-identical canonical argument shape (e.g. both take
+        // only {deviceId}), and treating tool B as a replay of tool A would
+        // silently drop proposal B (review finding 2).
+        if (
+          existing.actionName !== input.toolName ||
+          existing.source !== input.source ||
+          (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null) ||
+          existing.argumentDigest !== argumentDigest
+        ) {
+          throw new ActionIntentError(
+            'Idempotency key already belongs to a different live request (action/source/run/arguments mismatch)',
+            'idempotency_conflict',
+          );
+        }
         const approvalRows = await db
           .select({ id: approvalRequests.id, userId: approvalRequests.userId })
           .from(approvalRequests)
@@ -550,7 +746,24 @@ export async function createActionIntent(
         return { approvalRequestIds: [], requesterApprovalRequestId: null, fanOutUserIds: [] };
       };
 
-      if (approvalScope === 'supervised') {
+      if (agentRun) {
+        // Agent intents have NO requester, so neither the supervised
+        // requester short-circuit nor the sole-operator fallback below can
+        // apply. Supervised fans out to the action-and-target-eligible humans
+        // resolved above (spec §3.4: any human with the action's RBAC AND
+        // access to the concrete target); four_eyes keeps the org-wide
+        // approvals:decide pool unchanged. An empty pool falls through to the
+        // no_eligible_approvers cancellation below.
+        const pool = approvalScope === 'four_eyes' ? eligibleApprovers : agentEligibleApprovers;
+        if (pool.length > 0) {
+          const rows = await db
+            .insert(approvalRequests)
+            .values(pool.map(approvalRowFor))
+            .returning({ id: approvalRequests.id });
+          approvalRequestIds = rows.map((r) => r.id);
+          fanOutUserIds = pool;
+        }
+      } else if (approvalScope === 'supervised') {
         // Supervised short-circuit (tier3-supervised-four-eyes split design
         // §4.2): exactly one approval row, always owned by the requester,
         // BEFORE the eligible-approver branch below — supervised does not
@@ -632,14 +845,57 @@ export async function createActionIntent(
   // Best-effort push AFTER the creation transaction commits (#1105) — never
   // hold a DB transaction open across the push network round-trip. Token
   // reads happen inside a fresh context per approver; the sends happen after.
-  // Supervised intents never push: the sole row belongs to the requester
-  // themselves, who is already looking at the chat/MCP response that created
-  // it — pushing would just notify them about their own pending action.
-  if (creation.isNew && creation.intent.status === 'pending_approval' && creation.intent.approvalScope === 'four_eyes') {
+  // Supervised HUMAN intents never push: the sole row belongs to the
+  // requester themselves, who is already looking at the chat/MCP response
+  // that created it. Agent intents notify at EVERY scope (wave 3b): the
+  // proposal is headless — nobody is watching a chat pane, so without this
+  // widened gate a supervised agent proposal would notify NOBODY (gap 4).
+  if (
+    creation.isNew &&
+    creation.intent.status === 'pending_approval' &&
+    (creation.intent.approvalScope === 'four_eyes' || creation.intent.source === 'ai_agent')
+  ) {
     for (let i = 0; i < creation.approvalRequestIds.length; i++) {
       const approvalId = creation.approvalRequestIds[i];
       const userId = creation.fanOutUserIds[i];
       if (!approvalId || !userId) continue;
+      // In-app FIRST, then push. getUserPushTokens reads mobile_devices
+      // exclusively, so before wave 2 an approver with no enrolled phone was
+      // notified by NOTHING — no row, no email, no event — while the push
+      // failure was swallowed to console.error. The in-app row is the channel
+      // that always exists, so it must not be downstream of the phone lookup.
+      try {
+        // runOutsideDbContext first: a bare system wrapper inside an ambient
+        // request context is a passthrough (db/index.ts ~440), and this
+        // cross-user insert would then 42501 into the catch below.
+        await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+          createNotification({
+            userId,
+            orgId,
+            type: 'approval',
+            priority: 'high',
+            title: 'Approval requested',
+            message: `${requestingClientLabel}: ${targetSummary}`,
+            link: '/approvals',
+            metadata: { approvalId, intentId: creation.intent.id },
+            // Survives outbox/BullMQ redelivery: one approver, one intent, one
+            // row in the bell.
+            dedupeKey: `intent-approval:${creation.intent.id}`,
+          })));
+      } catch (err) {
+        // Sentry, not just console.error. This is the highest-stakes swallow in
+        // the wave: it is the ONLY channel a phoneless approver has, and the
+        // wave exists because the equivalent push failure was console.error-only
+        // and nobody found out for months. Every neighbouring file in this
+        // subsystem pairs the log with captureException; this one must too.
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error(
+          `[intentService] in-app approval notification failed ` +
+            `(intent=${creation.intent.id} approval=${approvalId} user=${userId})`,
+          err,
+        );
+      }
+
       try {
         const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
         await dispatchApprovalPushToTokens(tokens, {
@@ -662,6 +918,16 @@ export async function createActionIntent(
   // surface that quietly stopped being pinnable leaves no trace anywhere.
   // Gated on isNew: a replay recomputes the same outcome for a row that
   // already emitted this once.
+  // Agent creations are audited as the AGENT (actorType 'ai_agent', no
+  // actorId — the synthetic user id must never masquerade as a person),
+  // carrying the agent/run ids in details (gap 13).
+  const auditActor = agentRun
+    ? { actorType: 'ai_agent' as const }
+    : { actorId: requesterId };
+  const agentAuditDetails = agentRun && agentRow
+    ? { agentId: agentRow.id, agentRunId: agentRun.id }
+    : {};
+
   if (creation.isNew && creation.effectDigestOutcome.kind === 'unresolved') {
     recordActionIntentEvent({
       orgId,
@@ -670,10 +936,11 @@ export async function createActionIntent(
       argumentDigest,
       source: input.source,
       outcome: 'effect_digest_unpinned',
-      actorId: requesterId,
+      ...auditActor,
       details: {
         reason: creation.effectDigestOutcome.reason,
         approvalScope,
+        ...agentAuditDetails,
       },
     });
   }
@@ -687,9 +954,9 @@ export async function createActionIntent(
       argumentDigest,
       source: input.source,
       outcome: cancelledForNoApprovers ? 'cancelled' : 'created',
-      actorId: requesterId,
+      ...auditActor,
       details: cancelledForNoApprovers
-        ? { errorCode: creation.intent.errorCode ?? 'no_eligible_approvers' }
+        ? { errorCode: creation.intent.errorCode ?? 'no_eligible_approvers', ...agentAuditDetails }
         : {
           approverCount: creation.approvalRequestIds.length,
           // Gated on four_eyes: supervised intents always have exactly one
@@ -702,6 +969,7 @@ export async function createActionIntent(
             approvalScope === 'four_eyes' &&
             creation.fanOutUserIds.length === 1 &&
             creation.fanOutUserIds[0] === requesterId,
+          ...agentAuditDetails,
         },
     });
   }
@@ -753,7 +1021,10 @@ export async function cancelActionIntent(
     throw new ActionIntentNotFoundError(intentId);
   }
 
-  // Requester-or-approver only (spec §6.2).
+  // Requester-or-approver only (spec §6.2). For an agent-originated intent
+  // requestedByUserId is NULL, so this deliberately collapses to "any
+  // approvals:decide holder in the org" — a human can dismiss an agent
+  // proposal without approving it (owner decision 2026-08-23, wave 3b).
   const isRequester = intent.requestedByUserId === auth.user.id;
   let isApprover = false;
   if (!isRequester) {

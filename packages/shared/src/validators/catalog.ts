@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { currencyCodeSchema } from './currency';
 
 export const catalogItemTypeSchema = z.enum(['hardware', 'software', 'service']);
 export type CatalogItemType = z.infer<typeof catalogItemTypeSchema>;
@@ -39,6 +40,12 @@ export const enrichmentProvenanceSchema = z.object({
 });
 export type EnrichmentProvenance = z.infer<typeof enrichmentProvenanceSchema>;
 
+export const itemPriceInputSchema = z.object({
+  currencyCode: currencyCodeSchema,
+  unitPrice: money,
+});
+export type ItemPriceInput = z.infer<typeof itemPriceInputSchema>;
+
 export const createCatalogItemSchema = z.object({
   itemType: catalogItemTypeSchema,
   name: z.string().min(1).max(255),
@@ -47,8 +54,10 @@ export const createCatalogItemSchema = z.object({
   billingType: catalogBillingTypeSchema.default('one_time'),
   billingFrequency: catalogBillingFrequencySchema.nullable().optional(),
   commitmentTermMonths: z.number().int().min(1).max(120).nullable().optional(),
-  unitPrice: money,
+  unitPrice: money.optional(),
+  prices: z.array(itemPriceInputSchema).max(40).optional(),
   costBasis: money.nullable().optional(),
+  costCurrency: currencyCodeSchema.optional(),
   markupPercent: markupPercent.nullable().optional(),
   unitOfMeasure: z.string().max(50).default('each'),
   taxable: z.boolean().default(true),
@@ -65,6 +74,28 @@ export const createCatalogItemSchema = z.object({
     .catchall(z.unknown())
     .refine((v) => JSON.stringify(v).length <= 60_000, { message: 'attributes payload is too large' })
     .default({})
+}).superRefine((v, ctx) => {
+  if (v.prices) {
+    const currencies = new Set(v.prices.map((price) => price.currencyCode));
+    if (currencies.size !== v.prices.length) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Duplicate currency in prices',
+        path: ['prices'],
+      });
+    }
+  }
+
+  const hasPriceSource = v.unitPrice !== undefined
+    || (v.prices?.length ?? 0) > 0
+    || (v.costBasis != null && v.markupPercent != null);
+  if (!hasPriceSource) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'A price is required: provide unitPrice, prices, or costBasis + markupPercent',
+      path: ['unitPrice'],
+    });
+  }
 });
 export type CreateCatalogItemInput = z.infer<typeof createCatalogItemSchema>;
 
@@ -78,6 +109,7 @@ export const updateCatalogItemSchema = z.object({
   commitmentTermMonths: z.number().int().min(1).max(120).nullable().optional(),
   unitPrice: money.optional(),
   costBasis: money.nullable().optional(),
+  costCurrency: currencyCodeSchema.optional(),
   markupPercent: markupPercent.nullable().optional(),
   unitOfMeasure: z.string().max(50).optional(),
   taxable: z.boolean().optional(),
@@ -88,8 +120,14 @@ export const updateCatalogItemSchema = z.object({
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 export type UpdateCatalogItemInput = z.infer<typeof updateCatalogItemSchema>;
 
-export const orgPriceOverrideSchema = z.object({ unitPrice: money });
+export const orgPriceOverrideSchema = z.object({
+  unitPrice: money,
+  currencyCode: currencyCodeSchema.optional(),
+});
 export type OrgPriceOverrideInput = z.infer<typeof orgPriceOverrideSchema>;
+
+export const setItemPriceSchema = z.object({ unitPrice: money });
+export type SetItemPriceInput = z.infer<typeof setItemPriceSchema>;
 
 export const bundleComponentSchema = z.object({
   componentItemId: z.string().guid(),
@@ -99,9 +137,17 @@ export const bundleComponentSchema = z.object({
 });
 export type BundleComponentInput = z.infer<typeof bundleComponentSchema>;
 
+// A revenueAllocation is money, so the set names the currency it was authored
+// in (#3775 review #7) — the bundle price currency being edited. Required
+// whenever any component carries an allocation; the service stamps it on
+// those rows and only ever uses an allocation in that same currency.
 export const setBundleComponentsSchema = z.object({
-  components: z.array(bundleComponentSchema).max(200)
-});
+  components: z.array(bundleComponentSchema).max(200),
+  allocationCurrency: currencyCodeSchema.optional()
+}).refine(
+  (v) => v.allocationCurrency !== undefined || v.components.every((c) => c.revenueAllocation == null),
+  { message: 'allocationCurrency is required when any component carries a revenueAllocation', path: ['allocationCurrency'] }
+);
 export type SetBundleComponentsInput = z.infer<typeof setBundleComponentsSchema>;
 
 export const listCatalogQuerySchema = z.object({
@@ -113,6 +159,7 @@ export const listCatalogQuerySchema = z.object({
   isActive: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
   isBundle: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
   search: z.string().max(200).optional(),
+  currencyCode: currencyCodeSchema.optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().guid().optional()
 });

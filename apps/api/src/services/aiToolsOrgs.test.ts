@@ -288,6 +288,7 @@ describe('manage_organizations create_org', () => {
   });
 
   it('creates the org under the caller partner with a default Main Office site (system db context)', async () => {
+    selectQueue.push([{ currencyCode: 'CAD' }]); // partner currency read
     selectQueue.push([{ slug: 'existing-org' }]); // slug-uniqueness read
     insertQueue.push([{ id: ORG_1, name: 'Acme Dental', slug: 'acme-dental', status: 'active' }]);
     insertQueue.push([{ id: SITE_1, name: 'Main Office' }]);
@@ -302,6 +303,7 @@ describe('manage_organizations create_org', () => {
     // Org insert pinned to the CALLER's partner, slug derived from the name.
     expect(insertValuesSpy).toHaveBeenNthCalledWith(1, organizations, {
       partnerId: PARTNER_ID,
+      currencyCode: 'CAD',
       name: 'Acme Dental',
       slug: 'acme-dental',
       type: 'customer',
@@ -321,6 +323,7 @@ describe('manage_organizations create_org', () => {
   });
 
   it('suffixes the slug when the base is already taken', async () => {
+    selectQueue.push([{ currencyCode: 'CAD' }]);
     selectQueue.push([{ slug: 'acme-dental' }, { slug: 'acme-dental-2' }]);
     insertQueue.push([{ id: ORG_1, name: 'Acme Dental', slug: 'acme-dental-3', status: 'active' }]);
     insertQueue.push([{ id: SITE_1, name: 'Main Office' }]);

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { getTableColumns } from 'drizzle-orm';
 import { AI_APPROVAL_SCOPES } from '@breeze/shared';
 import {
@@ -28,14 +29,39 @@ describe('actionIntentStatusEnum', () => {
 });
 
 describe('actionIntentSourceEnum', () => {
-  it('has exactly chat and mcp_api', () => {
-    expect(actionIntentSourceEnum).toEqual(['chat', 'mcp_api']);
+  it('has exactly chat, mcp_api, and ai_agent', () => {
+    // 'ai_agent' (wave 3) is the autonomous AI agent principal's source —
+    // NOT the same as 'agent', which is the Go device agent.
+    expect(actionIntentSourceEnum).toEqual(['chat', 'mcp_api', 'ai_agent']);
   });
 });
 
 describe('intentOutboxEventEnum', () => {
-  it('has exactly intent_created and intent_approved', () => {
-    expect(intentOutboxEventEnum).toEqual(['intent_created', 'intent_approved']);
+  it('has exactly the four outbox events', () => {
+    // Widened in wave 2 (#3823): intent_rejected and intent_expired exist so a
+    // requester can be told an outcome their chat turn did not wait for. A
+    // denied intent previously wrote no outbox row at all.
+    expect(intentOutboxEventEnum).toEqual([
+      'intent_created',
+      'intent_approved',
+      'intent_rejected',
+      'intent_expired',
+    ]);
+  });
+
+  it('matches the SQL CHECK that actually admits the rows', () => {
+    // The TS array is advisory; the CHECK constraint is the boundary. They were
+    // written in two different files, so pin them to each other — a value added
+    // here but not in SQL becomes a row that silently fails to insert, and one
+    // added in SQL but not here becomes an event nothing consumes.
+    const migration = readFileSync(
+      join(__dirname, '../../../migrations/2026-09-04-ai-agent-notifications.sql'),
+      'utf8',
+    );
+    const check = migration.slice(migration.indexOf('intent_outbox_event_type_check'));
+    for (const event of intentOutboxEventEnum) {
+      expect(check).toContain(`'${event}'`);
+    }
   });
 });
 
@@ -180,6 +206,7 @@ describe('action_intents schema', () => {
         'originPrincipalKind',
         'originPrincipalId',
         'requestingApiKeyId',
+        'requestingAgentRunId',
         'source',
         'requestingClientLabel',
         'actionName',

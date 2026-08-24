@@ -1,11 +1,14 @@
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+import { getAnthropicClientForPartner } from './llm/llmConfigResolver';
 
 export interface DraftInput {
   messages: Array<{ role: string; content: string | null }>;
   contextSnapshot: unknown;
   elapsedMinutes: number;
   model: string;
+  partnerId: string | null;
+  client?: Anthropic;
 }
 export interface DraftResult {
   subject: string;
@@ -58,7 +61,7 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
   const hasAssistant = input.messages.some((m) => m.role === 'assistant' && m.content && m.content.trim().length > 0);
   if (!hasAssistant) throw new ThinTranscriptError();
 
-  const client = new Anthropic();
+  const client = input.client ?? (await getAnthropicClientForPartner(input.partnerId)).client;
   const userContent = buildUserContent(input);
   let lastErr: unknown;
   let inTok = 0;

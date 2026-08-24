@@ -7,8 +7,11 @@
 // `runAction`. Every catalog route responds with a `{ data: ... }` envelope.
 //
 // Money / quantity fields arrive as numeric(12,2) strings (e.g. '150.00').
-// Catalog items have no per-item currency, so prices render in the app default
-// (USD) via lib/timeFormat.formatMoney.
+// Sell prices live in a per-currency price book (`prices`, multi-currency wave 3,
+// #3775): an item has zero or more `{ currencyCode, unitPrice }` rows and a
+// missing currency is a gap — never converted. Render amounts with the
+// currency-aware `components/billing/shared/format.formatMoney`, never the
+// USD-only lib/timeFormat one.
 
 import { fetchWithAuth } from '../../stores/auth';
 import type { PolishTextResponse } from '@breeze/shared';
@@ -26,8 +29,12 @@ export interface CatalogItem {
   sku: string | null;
   description: string | null;
   billingType: CatalogBillingType;
+  /** @deprecated server mirror of the partner-currency price-book row — web code
+   *  must not read it (Task 19 grep); removed with the cleanup migration. */
   unitPrice: string;
   costBasis: string | null;
+  /** ISO 4217 code `costBasis` is denominated in (NOT NULL server-side). */
+  costCurrency: string;
   markupPercent: string | null;
   unitOfMeasure: string;
   taxable: boolean;
@@ -36,7 +43,21 @@ export interface CatalogItem {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Aggregated price book — list and detail both carry it (ordered by currency).
+   *  The list aggregate carries only the two value columns. */
+  prices: PriceBookEntry[];
 }
+
+/** One price-book row from `GET /catalog/:id/prices` / `PUT /catalog/:id/prices/:code`. */
+export interface ItemPrice {
+  id: string;
+  itemId: string;
+  currencyCode: string;
+  unitPrice: string;
+}
+
+/** The value columns of a price-book row, as aggregated onto list rows. */
+export type PriceBookEntry = Pick<ItemPrice, 'currencyCode' | 'unitPrice'>;
 
 /** AI-enrichment draft returned by `POST /catalog/enrich` (descriptive fields only — never a price). */
 export interface EnrichDraft {
@@ -76,30 +97,59 @@ export interface BundleComponentRow {
   quantity: string;
   showOnInvoice: boolean;
   revenueAllocation: string | null;
+  /** Currency the allocation was authored in; null iff revenueAllocation is null. */
+  allocationCurrency: string | null;
 }
 
 export interface OrgPriceOverride {
   id: string;
   catalogItemId: string;
   orgId: string;
+  currencyCode: string;
   unitPrice: string;
 }
 
-/** Shape of `GET /catalog/:id` — `{ data: { item, overrides, components } }`. */
+/** Shape of `GET /catalog/:id/resolve` — the server's spec-§6 resolution for one
+ *  org + currency: an org override in that currency wins, else the price-book
+ *  row, else the endpoint answers 409 `NO_PRICE_FOR_CURRENCY` (a gap — never a
+ *  converted or other-currency number). Document editors gate on THIS, not on
+ *  `item.prices`, which cannot see org overrides. */
+export interface ResolvedCatalogPrice {
+  unitPrice: string;
+  currencyCode: string;
+  costBasis: string | null;
+  costCurrency: string;
+  marginAvailable: boolean;
+  taxable: boolean;
+  taxCategory: string | null;
+  source: 'org_override' | 'price_book';
+}
+
+/** Shape of `GET /catalog/:id` — `{ data: { item, prices, overrides, components } }`. */
 export interface CatalogItemDetail {
   item: CatalogItem;
+  prices: ItemPrice[];
   overrides: OrgPriceOverride[];
   components: BundleComponentRow[];
 }
 
-/** Shape of `GET /catalog/:id/economics` — `{ data: { ... } }`. */
+/** Shape of `GET /catalog/:id/economics` — `{ data: { ... } }`. Money totals are
+ *  null unless the price book is complete in `currencyCode` AND every component
+ *  cost is in that currency — never a partial sum. */
 export interface BundleEconomics {
-  headlinePrice: string;
-  totalCost: string;
-  margin: string;
-  marginPct: number;
-  allocationTotal: string;
+  currencyCode: string;
+  headlinePrice: string | null;
+  priceBookComplete: boolean;
+  marginAvailable: boolean;
+  totalCost: string | null;
+  margin: string | null;
+  marginPct: number | null;
+  /** false when a component allocation was authored in another currency — the
+   *  split is then unavailable in `currencyCode` (allocationTotal null). */
+  allocationAvailable: boolean;
+  allocationTotal: string | null;
   allocationMatchesHeadline: boolean;
+  missingPriceComponentIds: string[];
 }
 
 /** One component as sent to `PUT /catalog/:id/components`. */
@@ -142,6 +192,19 @@ export function listCatalog(query: ListCatalogQuery = {}): Promise<Response> {
 
 export function getCatalogItem(id: string): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}`);
+}
+
+/** Resolve an item's price for `currencyCode` as `orgId` would be billed (org
+ *  override → price book). `orgId` is sent explicitly — or injection is skipped
+ *  for a partner-level lookup — so the active-org auto-injection can never swap
+ *  in a different org's overrides. 409 `NO_PRICE_FOR_CURRENCY` is the gap. */
+export function resolveCatalogPrice(id: string, currencyCode: string, orgId: string | null): Promise<Response> {
+  const params = new URLSearchParams({ currencyCode: currencyCode.trim().toUpperCase() });
+  if (orgId) {
+    params.set('orgId', orgId);
+    return fetchWithAuth(`/catalog/${id}/resolve?${params.toString()}`);
+  }
+  return fetchWithAuth(`/catalog/${id}/resolve?${params.toString()}`, { skipOrgIdInjection: true });
 }
 
 export function createCatalogItem(body: unknown): Promise<Response> {
@@ -211,27 +274,60 @@ export function deleteCatalogItemImageRequest(id: string): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}/image`, { method: 'DELETE' });
 }
 
-export function setBundleComponents(id: string, components: BundleComponentInput[]): Promise<Response> {
+/** `allocationCurrency` names the currency any `revenueAllocation` amounts are
+ *  authored in (required by the server when one is present). */
+export function setBundleComponents(id: string, components: BundleComponentInput[], allocationCurrency?: string): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}/components`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ components }),
+    body: JSON.stringify({ components, ...(allocationCurrency ? { allocationCurrency } : {}) }),
   });
 }
 
-export function getBundleEconomics(id: string, orgId?: string): Promise<Response> {
-  const qs = orgId ? `?orgId=${orgId}` : '';
-  return fetchWithAuth(`/catalog/${id}/economics${qs}`);
+// Economics are computed in ONE currency: `currencyCode` when given, else the
+// org's currency (with orgId), else the partner's — the server never converts.
+export function getBundleEconomics(
+  id: string,
+  opts: { orgId?: string; currencyCode?: string } = {},
+): Promise<Response> {
+  const params = new URLSearchParams();
+  if (opts.orgId) params.set('orgId', opts.orgId);
+  if (opts.currencyCode) params.set('currencyCode', opts.currencyCode);
+  const qs = params.toString();
+  return fetchWithAuth(`/catalog/${id}/economics${qs ? `?${qs}` : ''}`);
+}
+
+// Price book (multi-currency wave 3). One row per currency; PUT upserts.
+export function listItemPrices(id: string): Promise<Response> {
+  return fetchWithAuth(`/catalog/${id}/prices`);
+}
+
+export function setItemPrice(id: string, currencyCode: string, unitPrice: number): Promise<Response> {
+  return fetchWithAuth(`/catalog/${id}/prices/${currencyCode}`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ unitPrice }),
+  });
+}
+
+export function removeItemPrice(id: string, currencyCode: string): Promise<Response> {
+  return fetchWithAuth(`/catalog/${id}/prices/${currencyCode}`, { method: 'DELETE' });
 }
 
 // Per-org price overrides (#1368). The route is partner/system-scoped: an MSP
 // sets a customer-specific price distinct from the catalog base. unitPrice is a
-// number (money) to match orgPriceOverrideSchema.
-export function setOrgPriceOverride(id: string, orgId: string, unitPrice: number): Promise<Response> {
+// number (money) to match orgPriceOverrideSchema. `currencyCode` is the currency
+// the override is written in (defaults server-side to the org's currency).
+export function setOrgPriceOverride(
+  id: string,
+  orgId: string,
+  unitPrice: number,
+  currencyCode?: string,
+): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}/pricing/${orgId}`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ unitPrice }),
+    body: JSON.stringify({ unitPrice, ...(currencyCode ? { currencyCode } : {}) }),
   });
 }
 
@@ -257,12 +353,31 @@ export const CATALOG_TYPE_CHIP: Record<CatalogItemType, string> = {
   service: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
 };
 
-/** Gross margin percent from price vs cost, or null when cost is absent / price ≤ 0. */
+/** The item's price-book row for `currencyCode` (case-insensitive), or null when
+ *  the book has no row in that currency. Never falls back to another currency
+ *  or to the deprecated `unitPrice` mirror — a gap is a gap (no conversion, ever). */
+export function priceFor(
+  item: Pick<CatalogItem, 'prices'> | { prices?: PriceBookEntry[] | null },
+  currencyCode: string | null | undefined,
+): string | null {
+  if (!currencyCode) return null;
+  const code = currencyCode.trim().toUpperCase();
+  const row = (item.prices ?? []).find((p) => p.currencyCode.toUpperCase() === code);
+  return row ? row.unitPrice : null;
+}
+
+/** Gross margin percent from price vs cost. Null when cost is absent, price ≤ 0,
+ *  OR the price and cost currencies differ — margin is never computed across
+ *  currencies (no conversion, ever). */
 export function computeMargin(
   unitPrice: string | number | null | undefined,
   costBasis: string | number | null | undefined,
+  priceCurrency: string | null | undefined,
+  costCurrency: string | null | undefined,
 ): number | null {
   if (costBasis == null || costBasis === '') return null;
+  if (!priceCurrency || !costCurrency) return null;
+  if (priceCurrency.trim().toUpperCase() !== costCurrency.trim().toUpperCase()) return null;
   const price = Number(unitPrice);
   const cost = Number(costBasis);
   if (!Number.isFinite(price) || !Number.isFinite(cost) || price <= 0) return null;
