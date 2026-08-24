@@ -31,7 +31,8 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { inArray } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
+import { getTestDb } from './setup';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configurationPolicies,
@@ -241,6 +242,47 @@ describe('update-ring device count — partner-level assignment fan-out (#3954)'
 
     // orgA1's single non-ephemeral device only — NOT orgA2's.
     expect(counts.get(f.ringA.id)).toBe(1);
+  });
+
+  runDb('SYSTEM scope: a target org under another partner is clamped out', async () => {
+    // The ring-partner clamp is defense-in-depth against a subset assignment
+    // whose target org has been reparented to a different partner. Normally the
+    // DB forbids reaching that state (config_policy_assignment_target_integrity
+    // rejects the write, and a_config_policy_assignment_target_update rejects
+    // the reparent), so we FORGE it with triggers disabled — the same idiom the
+    // cross-tenant forge suites use.
+    //
+    // This runs under SYSTEM scope deliberately: accessible_org_ids is
+    // unrestricted there, so RLS contributes NO org clamp. If this passes, the
+    // SQL clamp is doing the work, not the caller's RLS context.
+    const f = await seedFixture();
+    const policyId = await linkPolicyToRing({
+      ringId: f.ringA.id,
+      partnerId: f.partnerA.id,
+      level: 'organization',
+      targetId: f.orgA2.id, // legal: orgA2 belongs to partner A
+    });
+
+    const admin = getTestDb();
+    // DISABLE TRIGGER USER rather than naming one: the integrity trigger has
+    // already been renamed once (2026-07-29-serialize-config-policy-assignment-integrity.sql
+    // split it into a_config_policy_assignment_integrity_{insert,update,delete}),
+    // and a name-specific ALTER would silently rot into a 42704 on the next rename.
+    await admin.execute(sql`ALTER TABLE config_policy_assignments DISABLE TRIGGER USER`);
+    try {
+      // Repoint at partner B's org — the state a reparent would have produced.
+      await admin.execute(
+        sql`UPDATE config_policy_assignments SET target_id = ${f.orgB1.id}
+            WHERE config_policy_id = ${policyId} AND level = 'organization'`
+      );
+    } finally {
+      await admin.execute(sql`ALTER TABLE config_policy_assignments ENABLE TRIGGER USER`);
+    }
+
+    const counts = await withSystemDbAccessContext(() => resolveRingDeviceCounts([f.ringA.id]));
+
+    // partnerB's device must NOT be attributed to partnerA's ring.
+    expect(counts.get(f.ringA.id) ?? 0).toBe(0);
   });
 
   runDb('non-vacuity probe: system scope sees the seeded partner devices', async () => {
