@@ -62,23 +62,30 @@ func nudgeSecureDesktop() {
 	}
 }
 
-// forceProbeRepaint shakes a frame out of an idle desktop for the startup
-// capture probe (see probeCapture). It runs the same warm-up pair the capture
-// loop uses on a static display — nudgeSecureDesktop followed by
-// forceDesktopRepaint (session_capture.go). Both are needed: InvalidateRect has
-// no HWND to target on a windowless desktop, and the SendInput jiggle is what
-// makes the DWM compositor produce dirty rects there.
+// newProbeRepainter returns the repaint callback for the startup capture probe
+// (see probeCapture) plus a release func the caller MUST invoke once the probe
+// returns — on the failure path too.
 //
-// It pins and re-attaches the calling thread to the input desktop first.
-// Unlike the capture loop, the probe does not run on a prepareCaptureThread
-// goroutine: newPlatformCapturer releases its OS-thread lock once DXGI is
-// initialized, so Go may have migrated StartSession onto a thread that is not
-// on the input desktop — and SendInput, InvalidateRect and RedrawWindow all
-// act on the calling thread's desktop.
-func forceProbeRepaint() {
+// The repaint itself is the same warm-up pair the capture loop uses on a static
+// display: nudgeSecureDesktop followed by forceDesktopRepaint (session_capture.go).
+// Both are needed — InvalidateRect has no HWND to target on a windowless
+// desktop, and the SendInput jiggle is what makes the DWM compositor emit dirty
+// rects there.
+//
+// The thread is pinned and attached to the input desktop ONCE, around the whole
+// probe rather than per attempt, for two reasons. First, SendInput,
+// InvalidateRect and RedrawWindow all act on the *calling thread's* desktop, and
+// unlike the capture loop the probe does not run on a prepareCaptureThread
+// goroutine — newPlatformCapturer releases its OS-thread lock once initDXGI
+// succeeds, so Go may have migrated StartSession onto a thread that is not on
+// the input desktop. Second, switchThreadToInputDesktop deliberately leaves its
+// HDESK open (closing it would detach the thread), so calling it per attempt
+// would leak one desktop handle per attempt.
+func newProbeRepainter() (repaint func(), release func()) {
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 	switchThreadToInputDesktop()
-	nudgeSecureDesktop()
-	forceDesktopRepaint()
+	return func() {
+		nudgeSecureDesktop()
+		forceDesktopRepaint()
+	}, runtime.UnlockOSThread
 }
