@@ -29,6 +29,7 @@ import { customFieldValuesRoutes } from './customFieldValues';
 import { linksRoutes } from './links';
 import { statsRoutes } from './stats';
 import { postureRoutes } from './posture';
+import { optionsRoutes } from './options';
 
 export const deviceRoutes = new Hono();
 
@@ -39,6 +40,10 @@ export const deviceRoutes = new Hono();
 // JWT-only `authMiddleware` and resurrect the 401. Mounting first keeps them
 // clear of every later wildcard auth middleware.
 deviceRoutes.route('/', customFieldValuesRoutes);
+
+// Mount the server-backed selector before coreRoutes so the static `/options`
+// path cannot be consumed by core's `GET /:id` matcher.
+deviceRoutes.route('/', optionsRoutes);
 
 // Mount provision routes FIRST — `/provision` is a static path under /devices
 // that must NOT be eaten by the `/:id` matcher in coreRoutes.
