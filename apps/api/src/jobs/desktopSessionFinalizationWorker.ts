@@ -1,4 +1,4 @@
-import { UnrecoverableError, Worker, type Job } from 'bullmq';
+import { Worker, type Job } from 'bullmq';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
@@ -32,10 +32,20 @@ const JOB_NAME = 'finalize-desktop-session';
  * a successful compare-delete, so this means the inline WS close path or the
  * 30s orphan-recovery scanner already finalized this session and released the
  * intent before this job got its turn. Nothing is lost and no retry can bring
- * the intent back, hence `UnrecoverableError`: burning four more attempts on a
- * race we already lost adds only Sentry volume.
+ * the intent back, so the handler calls `job.discard()` before throwing this —
+ * burning four more attempts on a race we already lost adds only Sentry volume.
+ *
+ * `discard()` rather than BullMQ's `UnrecoverableError`, for two reasons.
+ * BullMQ decides "unrecoverable" by `instanceof UnrecoverableError || err.name
+ * === 'UnrecoverableError'`, and Sentry's scrubber only lets `err.name` through
+ * — so inheriting the marker means either the retry stops or the event says
+ * which condition fired, never both. And importing an UnrecoverableError VALUE
+ * here would reach ~92 suites that stub `bullmq` with a partial `vi.mock`
+ * (this module is pulled in transitively via routes/desktopWs), breaking each
+ * one at collection time. `discard()` is an instance method already on the job
+ * this handler is holding, so it costs neither.
  */
-export class DesktopFinalizationIntentAbsentError extends UnrecoverableError {
+export class DesktopFinalizationIntentAbsentError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'DesktopFinalizationIntentAbsentError';
@@ -159,6 +169,10 @@ export async function processDesktopSessionFinalizationJob(job: Job): Promise<{
   );
   const persisted = await getDesktopFinalizationIntent(data.sessionId);
   if (!persisted) {
+    // Stop BullMQ retrying a race that is already lost (see the error's docs).
+    // Optional call: the job is BullMQ's, but this handler is also driven
+    // directly from tests with a plain job-shaped literal.
+    job.discard?.();
     throw new DesktopFinalizationIntentAbsentError(
       'desktop finalization intent already released by another finalizer',
     );

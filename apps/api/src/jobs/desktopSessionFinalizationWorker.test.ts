@@ -32,7 +32,6 @@ vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
 }));
 
-import { UnrecoverableError } from 'bullmq';
 import {
   classifyDesktopFinalizationFailure,
   DesktopFinalizationIntentAbsentError,
@@ -130,17 +129,28 @@ describe('desktop finalization failure shapes (BREEZE-1J)', () => {
     data: { version: 1, sessionId: SESSION_ID, finalizationId: FINALIZATION_ID },
   } as any;
 
-  it('treats an already-released intent as an unrecoverable lost race, not a retryable fault', async () => {
+  it('discards the job on an already-released intent instead of retrying a lost race', async () => {
     // The only writer that removes the intent is a successful compare-delete, so
     // an absent intent means another finalizer already finished this session.
-    // Retrying four more times cannot bring it back.
+    // Retrying four more times cannot bring it back — BullMQ's shouldRetryJob
+    // honours `discarded` exactly like UnrecoverableError, without this module
+    // needing a bullmq VALUE import that would break ~92 partial `vi.mock`s.
     getDesktopFinalizationIntentMock.mockResolvedValue(null);
+    const discard = vi.fn();
 
-    const error = await processDesktopSessionFinalizationJob(job).catch((e) => e);
+    const error = await processDesktopSessionFinalizationJob({ ...job, discard } as any)
+      .catch((e) => e);
 
     expect(error).toBeInstanceOf(DesktopFinalizationIntentAbsentError);
-    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect(discard).toHaveBeenCalledTimes(1);
     expect(finalizeDesktopSessionOnceMock).not.toHaveBeenCalled();
+  });
+
+  it('still throws when the job has no discard method (direct invocation)', async () => {
+    getDesktopFinalizationIntentMock.mockResolvedValue(null);
+
+    await expect(processDesktopSessionFinalizationJob(job))
+      .rejects.toBeInstanceOf(DesktopFinalizationIntentAbsentError);
   });
 
   it('keeps a mismatched intent identity as a full-severity, retryable anomaly', async () => {
@@ -154,10 +164,13 @@ describe('desktop finalization failure shapes (BREEZE-1J)', () => {
       payloadSha256: 'a'.repeat(64),
     });
 
-    const error = await processDesktopSessionFinalizationJob(job).catch((e) => e);
+    const discard = vi.fn();
+    const error = await processDesktopSessionFinalizationJob({ ...job, discard } as any)
+      .catch((e) => e);
 
     expect(error).toBeInstanceOf(DesktopFinalizationIntentMismatchError);
-    expect(error).not.toBeInstanceOf(UnrecoverableError);
+    // A genuine identity anomaly keeps its retries — only the lost race is discarded.
+    expect(discard).not.toHaveBeenCalled();
     // Not classified → keeps the default error-level report on every attempt.
     expect(classifyDesktopFinalizationFailure(undefined, error)).toBeNull();
   });
