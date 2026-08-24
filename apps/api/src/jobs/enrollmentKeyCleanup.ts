@@ -65,13 +65,14 @@ import { enrollmentKeys } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { hasNoLiveUnexhaustedBootstrapToken } from '../services/enrollmentKeyPurgeGuards';
 import { getBullMQConnection } from '../services/redis';
+import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'enrollment-key-cleanup';
 const JOB_NAME = 'enrollment-key-cleanup';
 const REPEAT_JOB_ID = 'enrollment-key-cleanup';
 // Daily at 04:00 UTC — off-peak, and staggered from the other 03:00/02:00
 // cron jobs (oauthCleanup, reliabilityWorker) to avoid contention.
-const DAILY_CRON = '0 4 * * *';
+const DAILY_CRON = jobSchedule('enrollment-key-cleanup');
 const DEFAULT_PURGE_AFTER_DAYS = 7;
 
 function isCleanupEnabled(): boolean {

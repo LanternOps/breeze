@@ -11,7 +11,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
-import { jobSchedule } from './scheduleRegistry';
+import { cronFromEnv } from './scheduleRegistry';
 
 const { db } = dbModule;
 
@@ -23,7 +23,11 @@ const BATCH_SIZE = parsePositiveIntEnv('ML_OUTPUT_RETENTION_BATCH_SIZE', 5000);
 const MAX_BATCHES = parsePositiveIntEnv('ML_OUTPUT_RETENTION_MAX_BATCHES', 50);
 // Daily cron slot, not an interval: `every: 24h` is epoch-anchored and piles
 // every daily job onto 00:00:00.000 UTC (see jobs/scheduleRegistry.ts).
-const RETENTION_CRON = process.env.ML_OUTPUT_RETENTION_CRON || jobSchedule('ml-output-retention');
+const RETENTION_CRON = cronFromEnv(
+  'ML_OUTPUT_RETENTION_CRON',
+  'ml-output-retention',
+  'ML_OUTPUT_RETENTION_INTERVAL_MS',
+);
 
 type RetentionJobData = {
   retentionDays?: number;

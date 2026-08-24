@@ -11,7 +11,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
-import { jobSchedule } from './scheduleRegistry';
+import { cronFromEnv } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -39,7 +39,11 @@ function parsePositiveIntEnv(name: string, defaultValue: number): number {
 const DEFAULT_RETENTION_DAYS = Math.max(30, parsePositiveIntEnv('USER_RISK_RETENTION_DAYS', 90));
 // Daily cron slot, not an interval: `every: 24h` is epoch-anchored and piles
 // every daily job onto 00:00:00.000 UTC (see jobs/scheduleRegistry.ts).
-const RETENTION_CRON = process.env.USER_RISK_RETENTION_CRON || jobSchedule('user-risk-retention');
+const RETENTION_CRON = cronFromEnv(
+  'USER_RISK_RETENTION_CRON',
+  'user-risk-retention',
+  'USER_RISK_RETENTION_INTERVAL_MS',
+);
 
 type RetentionJobData = {
   retentionDays?: number;

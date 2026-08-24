@@ -44,12 +44,13 @@ import {
   fetchLatestEcbRates,
 } from '../services/frankfurterClient';
 import { upsertFeedRates } from '../services/exchangeRateService';
+import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'exchange-rate-sync';
 const JOB_NAME = 'exchange-rate-sync';
 const REPEAT_JOB_ID = 'exchange-rate-sync-daily';
 const BOOT_JOB_ID = 'exchange-rate-sync-boot';
-const DAILY_CRON = '15 17 * * *';
+const DAILY_CRON = jobSchedule('exchange-rate-sync');
 
 /** Default ON. `EXCHANGE_RATE_SYNC_ENABLED=false` is the air-gapped/self-hosted
  *  switch. Compose maps this as `${EXCHANGE_RATE_SYNC_ENABLED:-}`, so an

@@ -17,37 +17,52 @@
  * (CONNECTION_CLOSED / ECONNRESET around 00:01–00:02 UTC) is that pile-up
  * plus the 60-second tick jobs landing on an already-saturated pool.
  *
- * The fix is to give every coarse schedule an explicit cron slot. This module
- * is the allocator: one entry per coarse repeatable schedule in the API,
- * including the ones whose defining file still spells the pattern inline.
- * `scheduleRegistry.contract.test.ts` proves, against real source and a real
- * cron parser, that:
+ * This module is the allocator: one entry per coarse repeatable schedule in
+ * the API, including the ones whose defining file still spells the pattern
+ * inline. `scheduleRegistry.contract.test.ts` proves, against real source and
+ * a real cron parser, that no coarse `every:` survives, that every coarse
+ * pattern is allocated here exactly once, and that no two coarse schedules
+ * ever fire in the same minute.
  *
- *   1. no repeatable job uses `repeat: { every: N }` with N >= 1 hour;
- *   2. every coarse `repeat: { pattern }` in the API resolves to a value in
- *      this map (a brand-new hardcoded pattern fails — allocate a slot here);
- *   3. every key here is actually registered, exactly once (no dead slots);
- *   4. no two daily-or-coarser schedules ever fire in the same minute;
- *   5. no two sub-daily coarse schedules share a minute-of-hour.
+ * MINUTE LANES
+ * ------------
+ * Minutes are allocated in lanes mod 5, because the *uncontrolled* schedules —
+ * the 43 sub-hourly `every:` ticks this registry deliberately does not manage
+ * (5s/30s/60s/2m/5m/10m/15m/30m sweeps) plus the every-5-minute and
+ * every-10-minute cron ticks —
+ * all land on minutes ≡ 0 (mod 5).
+ *
+ *   ≡ 3 (mod 5)  daily tier — the heavy batched-DELETE retention jobs
+ *   ≡ 2 (mod 5)  sub-daily tier — cheap hourly / 6-hourly sweeps
+ *   ≡ 0 (mod 5)  left to the unmanaged fine-grained ticks
+ *
+ * Three legacy sub-daily slots (:00, :15, :35) predate the lanes and are not
+ * worth churning; they are collision-checked like everything else.
+ *
+ * HONEST SCOPE — what this does NOT fix
+ * -------------------------------------
+ * The 43 sub-hourly `every:` registrations are exempt by design: a 60-second
+ * tick has to fire every 60 seconds, and re-anchoring it buys nothing. They
+ * are still epoch-aligned, so the 5/10/15/30-minute jobs *do* all converge on
+ * 00:00:00.000 alongside each other. The production ZRANGE that motivated this
+ * work was taken mid-day and structurally could not show them. Midnight is
+ * therefore quieter, not empty — what changed is that the heavy daily batch
+ * deletes are no longer part of the convergence.
  *
  * ALLOCATING A NEW SLOT
  * ---------------------
  * Add a key below with a cron pattern, then use `jobSchedule('<key>')` in the
- * `repeat: { pattern }` of the registration. Pick a free (hour, minute) for a
- * daily job or a free minute-of-hour for an hourly/6-hourly job — the contract
- * test tells you if you collided. Do NOT reach for `every:` for anything an
- * hour or coarser.
+ * `repeat: { pattern }` of the registration. Pick a free minute in the lane for
+ * your tier — the contract test tells you if you collided. Do NOT reach for
+ * `every:` for anything an hour or coarser.
  *
  * All patterns are interpreted in the container's local timezone, which is UTC
- * on every Breeze deployment.
- *
- * KNOWN, DELIBERATE LIMITATION: overlap *between* the daily tier and the
- * sub-daily tier is not asserted. `vulnerabilityJobs.ts` owns minute 0 for both
- * its hourly risk-score refresh and its six daily feed syncs, and those cannot
- * be separated without splitting that file's schedule. Every slot allocated
- * here since keeps daily jobs off the minutes used by sub-daily jobs by
- * convention.
+ * on every Breeze deployment. (`repeat.tz` is not pinned; a self-hoster who
+ * sets a non-UTC `TZ` shifts the whole grid coherently, so the collision
+ * guarantees hold, but absolute times move.)
  */
+
+import { captureException } from '../services/sentry';
 
 /** A repeatable interval at or above this is epoch-aligned enough to matter. */
 export const COARSE_REPEAT_INTERVAL_MS = 60 * 60 * 1000;
@@ -61,48 +76,48 @@ export const DAILY_REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
  */
 export const JOB_SCHEDULES = {
   // ---------------------------------------------------------------- daily tier
-  'device-metrics-retention': '5 0 * * *',
-  'process-sample-retention': '25 0 * * *',
-  'service-process-check-retention': '45 0 * * *',
+  // Minutes ≡ 3 (mod 5). The six `vulnerability-*` slots below sit on minute 0
+  // instead — see VULNERABILITY_JOBS_MINUTE_ZERO_DEBT.
+  'device-metrics-retention': '3 0 * * *',
+  'process-sample-retention': '23 0 * * *',
+  'service-process-check-retention': '43 0 * * *',
   'vulnerability-accept-expiry': '0 1 * * *',
-  'reliability-scoring': '0 2 * * *',
-  'backup-readiness-score': '20 2 * * *',
-  'oauth-cleanup': '0 3 * * *',
-  'audit-policy-collection': '10 3 * * *',
-  'metric-rollup-maintenance': '15 3 * * *',
-  'audit-retention': '30 3 * * *',
-  'backup-weekly-test-restore': '40 3 * * 0',
-  'stripe-account-cache-refresh': '45 3 * * *',
-  'enrollment-key-cleanup': '0 4 * * *',
-  'audit-chain-verify': '15 4 * * *',
-  'pax8-sync': '25 4 * * *',
-  'audit-chain-anchor': '45 4 * * *',
-  'contract-billing-sweep': '0 5 * * *',
-  'tdsynnex-sftp-sync': '40 5 * * *',
-  'invoice-overdue-sweep': '0 6 * * *',
-  'event-log-retention': '5 7 * * *',
-  'agent-log-retention': '25 7 * * *',
-  'change-log-retention': '45 7 * * *',
-  'ip-history-retention': '5 8 * * *',
-  'ml-output-retention': '25 8 * * *',
-  'user-risk-retention': '45 8 * * *',
+  'reliability-scoring': '8 2 * * *',
+  'backup-readiness-score': '18 2 * * *',
+  'oauth-cleanup': '8 3 * * *',
+  'metric-rollup-maintenance': '13 3 * * *',
+  'audit-policy-collection': '18 3 * * *',
+  'audit-retention': '28 3 * * *',
+  'backup-weekly-test-restore': '38 3 * * 0',
+  'stripe-account-cache-refresh': '48 3 * * *',
+  'enrollment-key-cleanup': '8 4 * * *',
+  'audit-chain-verify': '13 4 * * *',
+  'pax8-sync': '28 4 * * *',
+  'audit-chain-anchor': '48 4 * * *',
+  'contract-billing-sweep': '8 5 * * *',
+  'tdsynnex-sftp-sync': '38 5 * * *',
+  'invoice-overdue-sweep': '8 6 * * *',
+  'event-log-retention': '3 7 * * *',
+  'agent-log-retention': '23 7 * * *',
+  'change-log-retention': '43 7 * * *',
+  'ip-history-retention': '3 8 * * *',
+  'ml-output-retention': '23 8 * * *',
+  'user-risk-retention': '43 8 * * *',
   'vulnerability-msrc-sync': '0 9 * * *',
-  'abuse-signals-digest': '20 9 * * 1',
+  'abuse-signals-digest': '18 9 * * 1',
   'vulnerability-nvd-sync': '0 10 * * *',
   'vulnerability-kev-epss-sync': '0 11 * * *',
   'vulnerability-sofa-sync': '0 12 * * *',
   'vulnerability-correlate': '0 13 * * *',
-  'reliability-history-retention': '5 14 * * *',
-  'playbook-execution-retention': '25 14 * * *',
-  'cve-enrichment': '45 14 * * *',
-  'winget-index-sync': '5 16 * * *',
-  'sso-domain-recheck': '25 16 * * *',
-  'exchange-rate-sync': '15 17 * * *',
+  'reliability-history-retention': '3 14 * * *',
+  'playbook-execution-retention': '23 14 * * *',
+  'cve-enrichment': '43 14 * * *',
+  'winget-index-sync': '3 16 * * *',
+  'sso-domain-recheck': '23 16 * * *',
+  'exchange-rate-sync': '13 17 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
-  // One distinct minute-of-hour each, so the hourly and 6-hourly sweeps never
-  // land together (they used to pile on :00 the same way the daily jobs piled
-  // on 00:00).
+  // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35.
   'vulnerability-risk-score-refresh': '0 * * * *',
   'security-posture-scan': '7 * * * *',
   'snmp-retention': '12 1,7,13,19 * * *',
@@ -121,9 +136,145 @@ export const JOB_SCHEDULES = {
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;
 
 /**
+ * The one remaining set of same-minute collisions, and why it is still here.
+ *
+ * `vulnerability-risk-score-refresh` fires on minute 0 of every hour, and the
+ * six daily `vulnerability-*` feed/expiry jobs all sit on minute 0 too, so each
+ * of them co-fires with the hourly refresh once a day. The 13:00 pair
+ * (`vulnerability-correlate` + the refresh) is the one recorded in the PR #3793
+ * pool-alert investigation as holding pool connections for 128 seconds.
+ *
+ * These are NOT structurally inseparable — `RISK_SCORE_REFRESH_CRON` and the
+ * daily constants are independent one-liners in `jobs/vulnerabilityJobs.ts`
+ * driving independent `queue.add` calls on separate queues. Moving the six
+ * daily jobs into the ≡ 3 (mod 5) lane is a six-line edit.
+ *
+ * It is not done in this PR only because `jobs/vulnerabilityJobs.ts` is owned by
+ * concurrent work on another branch and editing it here would collide. The
+ * contract test enforces cross-tier collision-freedom for everything else and
+ * fails on any NEW entry added to this list.
+ */
+export const VULNERABILITY_JOBS_MINUTE_ZERO_DEBT: readonly JobScheduleKey[] = [
+  'vulnerability-accept-expiry',
+  'vulnerability-msrc-sync',
+  'vulnerability-nvd-sync',
+  'vulnerability-kev-epss-sync',
+  'vulnerability-sofa-sync',
+  'vulnerability-correlate',
+];
+
+/**
  * Resolve an allocated slot. Prefer this over an inline pattern string so the
  * slot map stays the single place a schedule is chosen.
  */
 export function jobSchedule(key: JobScheduleKey): string {
   return JOB_SCHEDULES[key];
+}
+
+// ---------------------------------------------------------------------------
+// Operator overrides
+// ---------------------------------------------------------------------------
+
+const CRON_FIELD_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0, 59], // minute
+  [0, 23], // hour
+  [1, 31], // day of month
+  [1, 12], // month
+  [0, 7], // day of week (7 == Sunday)
+];
+
+const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+function isValidCronField(field: string, index: number): boolean {
+  const [min, max] = CRON_FIELD_RANGES[index]!;
+  const names = index === 3 ? MONTH_NAMES : index === 4 ? DAY_NAMES : [];
+
+  const readValue = (token: string): number | null => {
+    const named = names.indexOf(token.toLowerCase());
+    if (named >= 0) return index === 3 ? named + 1 : named;
+    if (!/^\d+$/.test(token)) return null;
+    const value = Number(token);
+    return value >= min && value <= max ? value : null;
+  };
+
+  return field.split(',').every((listItem) => {
+    if (listItem === '') return false;
+    const [rangePart, stepPart, ...extra] = listItem.split('/');
+    if (extra.length > 0) return false;
+    if (stepPart !== undefined && !/^[1-9]\d*$/.test(stepPart)) return false;
+    if (rangePart === '*') return true;
+    const bounds = rangePart!.split('-');
+    if (bounds.length > 2) return false;
+    const parsed = bounds.map(readValue);
+    if (parsed.some((value) => value === null)) return false;
+    if (parsed.length === 2 && parsed[0]! > parsed[1]!) return false;
+    return true;
+  });
+}
+
+/**
+ * Structural validation of an operator-supplied cron pattern.
+ *
+ * Deliberately does NOT use `cron-parser` — that is a devDependency, and this
+ * module is loaded by the production API. This checks field count and per-field
+ * token/range validity, which is what catches the realistic operator mistake
+ * (a two-field value such as star-slash-five, which looks fine and is not).
+ * `scheduleRegistry.contract.test.ts`
+ * cross-checks this function against the real parser over a corpus.
+ */
+export function isStructurallyValidCron(pattern: string): boolean {
+  const fields = pattern.trim().split(/\s+/);
+  // 6 fields = the optional leading seconds field BullMQ also accepts.
+  if (fields.length !== 5 && fields.length !== 6) return false;
+  const fiveFields = fields.length === 6 ? fields.slice(1) : fields;
+  if (fields.length === 6 && !isValidCronField(fields[0]!, 0)) return false;
+  return fiveFields.every((field, index) => isValidCronField(field, index));
+}
+
+/**
+ * Read an operator cron override, falling back LOUDLY to the allocated slot.
+ *
+ * Why the fallback rather than a throw: BullMQ's `getNextMillis` calls
+ * `parseExpression` outside its try/catch, so an invalid pattern rejects
+ * `queue.add`, which propagates to the initializer catch in `index.ts` — and
+ * that pins `/ready` to not-ready for the process lifetime. A self-hoster
+ * typo'ing a two-field `USER_RISK_SCAN_CRON` would boot an API that serves 503s to
+ * every agent and browser. A stale cadence plus a loud error is strictly better
+ * than a dead API.
+ *
+ * `legacyEnvName` names the pre-stagger `*_INTERVAL_MS` knob this replaced, so
+ * a self-hoster still setting it is told it is now inert instead of silently
+ * getting a different cadence.
+ */
+export function cronFromEnv(
+  envName: string,
+  key: JobScheduleKey,
+  legacyEnvName?: string,
+): string {
+  const fallback = jobSchedule(key);
+
+  if (legacyEnvName && process.env[legacyEnvName]) {
+    console.warn(
+      `[ScheduleRegistry] ${legacyEnvName} is no longer read and has no effect. `
+      + `Repeatable job cadences are cron patterns now — set ${envName} instead `
+      + `(current schedule: '${fallback}'). See UPGRADING.md.`,
+    );
+  }
+
+  const override = process.env[envName];
+  if (!override) return fallback;
+
+  if (!isStructurallyValidCron(override)) {
+    const error = new Error(
+      `[ScheduleRegistry] ${envName}='${override}' is not a valid cron pattern; `
+      + `falling back to '${fallback}'. A cron pattern has 5 fields `
+      + `(minute hour day-of-month month day-of-week), e.g. '*/5 * * * *'.`,
+    );
+    console.error(error.message);
+    captureException(error);
+    return fallback;
+  }
+
+  return override;
 }

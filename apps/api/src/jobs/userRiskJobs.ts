@@ -16,7 +16,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 import { captureException } from '../services/sentry';
-import { jobSchedule } from './scheduleRegistry';
+import { cronFromEnv } from './scheduleRegistry';
 
 const { db } = dbModule;
 // #1105: withSystemDbAccessContext holds a DB transaction (pins a pooled
@@ -45,7 +45,11 @@ function parsePositiveIntEnv(name: string, defaultValue: number): number {
 
 // 6-hourly cron slot, not an interval: `every` is epoch-anchored, so every
 // divisor-of-24h job also lands on 00:00:00.000 UTC (jobs/scheduleRegistry.ts).
-const SCAN_CRON = process.env.USER_RISK_SCAN_CRON || jobSchedule('user-risk-scan');
+const SCAN_CRON = cronFromEnv(
+  'USER_RISK_SCAN_CRON',
+  'user-risk-scan',
+  'USER_RISK_SCAN_INTERVAL_MS',
+);
 const USER_RISK_WORKER_CONCURRENCY = parsePositiveIntEnv('USER_RISK_WORKER_CONCURRENCY', 3);
 const USER_RISK_ON_DEMAND_DEDUPE_WINDOW_MS = parsePositiveIntEnv('USER_RISK_ON_DEMAND_DEDUPE_WINDOW_MS', 30 * 1000);
 const USER_RISK_EVENT_TYPE_MAX_LEN = 128;
