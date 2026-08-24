@@ -14,6 +14,20 @@ vi.mock('./automationReferenceAuthorization', () => ({
   resolveOwnedAutomationReferences: resolveOwnedAutomationReferencesMock,
 }));
 
+// Keep this service suite focused on its storage ordering. Loading the full
+// runtime through configurationPolicy's lazy import can exceed Vitest's
+// per-case timeout when this file runs with the runtime suites.
+vi.mock('./automationRuntime', () => ({
+  normalizeAutomationActions: vi.fn((actions: unknown) => {
+    if (!Array.isArray(actions)) throw new Error('actions must be an array');
+    return actions;
+  }),
+  resolveAutomationReferencesForOwner: vi.fn(
+    (tx: unknown, owner: unknown, actions: unknown) =>
+      resolveOwnedAutomationReferencesMock(tx, owner, [], actions, []),
+  ),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
