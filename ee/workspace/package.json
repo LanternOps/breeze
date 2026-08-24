@@ -17,7 +17,7 @@
     "@breeze/extension-sdk": "workspace:*",
     "@breeze/extension-web-sdk": "workspace:*",
     "drizzle-orm": "0.45.2",
-    "hono": "4.13.2",
+    "hono": "4.13.3",
     "mailparser": "^3.9.14",
     "v9u-smb2": "^1.0.6",
     "zod": "4.4.3"
@@ -32,6 +32,6 @@
     "tsup": "8.5.1",
     "tsx": "^4.23.12",
     "typescript": "5.9.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }
