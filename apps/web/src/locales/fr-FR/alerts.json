@@ -366,6 +366,7 @@
   "alertRuleList": {
     "editRule": "Modifier la règle",
     "deleteRule": "Supprimer la règle",
+    "testRule": "Tester la règle",
     "alertRules": "Règles d’alerte",
     "of": "de",
     "rules": "Règles",
@@ -406,7 +407,23 @@
     "deletionCancelled": "Suppression de la règle d’alerte annulée",
     "testing": "Essais",
     "runningTest": "En cours de test...",
-    "close": "Fermer"
+    "close": "Fermer",
+    "failedToLoadDevices": "Échec du chargement des appareils",
+    "failedToTestRule": "Échec du test de la règle",
+    "anErrorOccurred": "Une erreur s’est produite",
+    "testVerdictMissing": "Le serveur n’a pas renvoyé de résultat de test, cette règle n’a donc pas été vérifiée.",
+    "testAgainstDevice": "Tester sur un appareil",
+    "loadingDevices": "Chargement des appareils...",
+    "selectADevice": "Sélectionner un appareil...",
+    "noDevicesAvailable": "Aucun appareil n’est disponible pour tester cette règle.",
+    "runTest": "Exécuter le test",
+    "testFailed": "Échec du test",
+    "ruleWouldFire": "La règle se déclencherait",
+    "ruleWouldNotFire": "La règle ne se déclencherait pas",
+    "ruleIsDisabled": "Cette règle est désactivée ; elle ne se déclenchera donc pas tant que vous ne l’activerez pas.",
+    "conditionMet": "Remplie : {{condition}}",
+    "conditionNotMet": "Non remplie : {{condition}}",
+    "noConditionsEvaluated": "Aucune condition n’a été évaluée pour cette règle."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Chargement du modèle d’alerte...",

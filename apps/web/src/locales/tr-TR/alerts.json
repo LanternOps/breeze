@@ -366,6 +366,7 @@
   "alertRuleList": {
     "editRule": "Kuralı düzenle",
     "deleteRule": "Kuralı sil",
+    "testRule": "Kuralı test et",
     "alertRules": "Uyarı Kuralları",
     "of": "arasında",
     "rules": "kuralları",
@@ -406,7 +407,23 @@
     "deletionCancelled": "Uyarı kuralının silinmesi iptal edildi",
     "testing": "Test ediliyor",
     "runningTest": "Test çalıştırılıyor...",
-    "close": "Kapat"
+    "close": "Kapat",
+    "failedToLoadDevices": "Cihazlar yüklenemedi",
+    "failedToTestRule": "Kural test edilemedi",
+    "anErrorOccurred": "Bir hata oluştu",
+    "testVerdictMissing": "Sunucu bir test sonucu döndürmedi, bu nedenle bu kural doğrulanmadı.",
+    "testAgainstDevice": "Cihaza karşı test et",
+    "loadingDevices": "Cihazlar yükleniyor...",
+    "selectADevice": "Bir cihaz seçin...",
+    "noDevicesAvailable": "Bu kuralı test etmek için kullanılabilir cihaz yok.",
+    "runTest": "Testi Çalıştır",
+    "testFailed": "Test Başarısız",
+    "ruleWouldFire": "Kural tetiklenir",
+    "ruleWouldNotFire": "Kural tetiklenmez",
+    "ruleIsDisabled": "Bu kural devre dışı, bu nedenle siz etkinleştirene kadar tetiklenmeyecek.",
+    "conditionMet": "Karşılandı: {{condition}}",
+    "conditionNotMet": "Karşılanmadı: {{condition}}",
+    "noConditionsEvaluated": "Bu kural için hiçbir koşul değerlendirilmedi."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Uyarı şablonu yükleniyor...",

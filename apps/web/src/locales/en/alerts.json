@@ -366,6 +366,7 @@
   "alertRuleList": {
     "editRule": "Edit rule",
     "deleteRule": "Delete rule",
+    "testRule": "Test rule",
     "alertRules": "Alert Rules",
     "of": "of",
     "rules": "rules",
@@ -406,7 +407,23 @@
     "deletionCancelled": "Alert rule deletion cancelled",
     "testing": "Testing",
     "runningTest": "Running test...",
-    "close": "Close"
+    "close": "Close",
+    "failedToLoadDevices": "Failed to load devices",
+    "failedToTestRule": "Failed to test rule",
+    "anErrorOccurred": "An error occurred",
+    "testVerdictMissing": "The server did not return a test verdict, so this rule was not verified.",
+    "testAgainstDevice": "Test against device",
+    "loadingDevices": "Loading devices...",
+    "selectADevice": "Select a device...",
+    "noDevicesAvailable": "No devices are available to test this rule against.",
+    "runTest": "Run Test",
+    "testFailed": "Test Failed",
+    "ruleWouldFire": "Rule would fire",
+    "ruleWouldNotFire": "Rule would not fire",
+    "ruleIsDisabled": "This rule is disabled, so it will not fire until you enable it.",
+    "conditionMet": "Met: {{condition}}",
+    "conditionNotMet": "Not met: {{condition}}",
+    "noConditionsEvaluated": "No conditions were evaluated for this rule."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Loading alert template...",
