@@ -30,7 +30,8 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     applyDlp: vi.fn(),
     draftTicketFromEmail: vi.fn(),
     recordUsage: vi.fn(),
-    resolveLlmConfig: vi.fn(),
+    getAnthropicClientForPartner: vi.fn(),
+    anthropicClient: { messages: { create: vi.fn() } },
   },
 }));
 
@@ -152,11 +153,18 @@ vi.mock('../../services/aiAgent', () => ({
 }));
 
 vi.mock('../../services/llm/llmConfigResolver', () => ({
-  resolveLlmConfig: hoisted.resolveLlmConfig,
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    constructor() {
+      super('AI is unavailable for this partner.');
+      this.name = 'LlmUnavailableError';
+    }
+  },
+  getAnthropicClientForPartner: hoisted.getAnthropicClientForPartner,
 }));
 
 import { officeAddinTicketRoutes } from './tickets';
 import { EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
+import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 
 // --- db chain mock -----------------------------------------------------------
 // `select(...).from(tickets).where(...).limit(1)` drains a queue of canned rows;
@@ -275,11 +283,17 @@ beforeEach(() => {
   hoisted.insertEmailAuthoredComment.mockResolvedValue({ commentId: 'comment-1' });
   hoisted.addTicketComment.mockResolvedValue({ comment: { id: 'comment-1' }, firstResponseStamped: false });
   process.env.ANTHROPIC_API_KEY = 'test-key';
-  hoisted.resolveLlmConfig.mockImplementation(async () => ({
-    source: 'platform',
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: 'claude-x',
-  }));
+  hoisted.getAnthropicClientForPartner.mockImplementation(async () => {
+    if (!process.env.ANTHROPIC_API_KEY) throw new LlmUnavailableError();
+    return {
+      client: hoisted.anthropicClient,
+      resolved: {
+        source: 'platform',
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        model: 'claude-x',
+      },
+    };
+  });
   hoisted.getOrgPolicy.mockResolvedValue({ dlpConfig: {} });
   hoisted.applyDlp.mockResolvedValue({ action: 'allow', text: 'redacted body', redactions: [] });
   hoisted.draftTicketFromEmail.mockResolvedValue({
@@ -753,10 +767,25 @@ describe('POST /tickets/draft', () => {
       outputTokens: 50,
     });
     expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ subject: draftBody.subject, bodyText: 'redacted body', model: 'claude-x', partnerId: PARTNER_ID })
+      expect.objectContaining({
+        subject: draftBody.subject,
+        bodyText: 'redacted body',
+        model: 'claude-x',
+        partnerId: PARTNER_ID,
+        client: hoisted.anthropicClient,
+      })
     );
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
     // Usage accounting: sessionless (null session id), org-scoped, real token counts.
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(null, ORG_A, 'claude-x', 100, 50, false);
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null,
+      ORG_A,
+      'claude-x',
+      100,
+      50,
+      false,
+      'platform',
+    );
   });
 
   it('403s when the partner has no AI-for-Office entitlement, before the key/DLP/model', async () => {
@@ -797,13 +826,16 @@ describe('POST /tickets/draft', () => {
 
   it('proceeds with a partner BYOK config when no platform API key exists', async () => {
     delete process.env.ANTHROPIC_API_KEY;
-    hoisted.resolveLlmConfig.mockResolvedValueOnce({
-      source: 'partner',
-      partnerId: PARTNER_ID,
-      apiKey: 'partner-key',
-      model: 'claude-partner-model',
-      configId: 'config-1',
-      configVersion: 1,
+    hoisted.getAnthropicClientForPartner.mockResolvedValueOnce({
+      client: hoisted.anthropicClient,
+      resolved: {
+        source: 'partner',
+        partnerId: PARTNER_ID,
+        apiKey: 'partner-key',
+        model: 'claude-partner-model',
+        configId: 'config-1',
+        configVersion: 1,
+      },
     });
 
     const res = await postDraft(draftBody);
@@ -812,15 +844,13 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
       partnerId: PARTNER_ID,
       model: 'claude-partner-model',
+      client: hoisted.anthropicClient,
     }));
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
   });
 
   it('503s before DLP when the partner LLM config is unavailable', async () => {
-    hoisted.resolveLlmConfig.mockResolvedValueOnce({
-      source: 'unavailable',
-      partnerId: PARTNER_ID,
-      reason: 'key_error',
-    });
+    hoisted.getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
 
     const res = await postDraft(draftBody);
 
@@ -834,10 +864,12 @@ describe('POST /tickets/draft', () => {
     const res = await postDraft(draftBody);
 
     expect(res.status).toBe(200);
-    expect(hoisted.resolveLlmConfig).toHaveBeenCalledWith(PARTNER_ID);
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledWith(PARTNER_ID);
     expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
       partnerId: PARTNER_ID,
       model: 'claude-x',
+      client: hoisted.anthropicClient,
     }));
   });
 
@@ -870,7 +902,48 @@ describe('POST /tickets/draft', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(null, ORG_A, 'claude-x', 180, 90, false);
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null,
+      ORG_A,
+      'claude-x',
+      180,
+      90,
+      false,
+      'platform',
+    );
+    errSpy.mockRestore();
+  });
+
+  it('meters failed BYOK draft spend against the exact client source', async () => {
+    hoisted.getAnthropicClientForPartner.mockResolvedValueOnce({
+      client: hoisted.anthropicClient,
+      resolved: {
+        source: 'partner',
+        partnerId: PARTNER_ID,
+        apiKey: 'partner-key',
+        model: 'claude-partner-model',
+        configId: 'config-1',
+        configVersion: 1,
+      },
+    });
+    hoisted.draftTicketFromEmail.mockRejectedValue(
+      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: nope', 18, 9),
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(503);
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null,
+      ORG_A,
+      'claude-partner-model',
+      18,
+      9,
+      false,
+      'partner_key',
+    );
     errSpy.mockRestore();
   });
 

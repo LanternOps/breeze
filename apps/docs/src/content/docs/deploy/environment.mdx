@@ -321,7 +321,7 @@ Both API and web Sentry integrations are off by default. Leave the DSN variables
 | Variable | Default | Description |
 |---|---|---|
 | `SENTRY_DSN` | — | API Sentry DSN. Leave blank to disable server-side error tracking. |
-| `SENTRY_ENVIRONMENT` | `production` | Sentry environment tag |
+| `SENTRY_ENVIRONMENT` | `production` | Sentry environment tag. In a **multi-region** deployment use a region-qualified value (`production-us`, `production-eu`) — a bare `production` on every region makes them indistinguishable in Sentry, and `server_name` is a per-deploy container hash, so nothing else can attribute an error to a region. |
 | `SENTRY_RELEASE` | — | Sentry release tag (e.g. git SHA) |
 | `SENTRY_TRACES_SAMPLE_RATE` | `0.1` | Sentry performance trace sample rate (0.0-1.0) |
 | `SENTRY_PROFILES_SAMPLE_RATE` | — | API performance-profiling sample rate (0.0-1.0). Leave blank to disable profiling. |

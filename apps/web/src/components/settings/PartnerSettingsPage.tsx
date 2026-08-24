@@ -3,6 +3,7 @@ import {
   Bell,
   Building2,
   Globe,
+  KeyRound,
   Loader2,
   LogIn,
   MonitorSmartphone,
@@ -27,6 +28,7 @@ import PartnerDefaultsTab from './PartnerDefaultsTab';
 import type { PinnableVersions } from './AgentVersionPinSelectors';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
+import PartnerAiProviderTab from './PartnerAiProviderTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
 import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
@@ -54,7 +56,7 @@ import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'remoteAccess' | 'ticketing';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing';
 
 type Partner = {
   id: string;
@@ -106,6 +108,7 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
       { key: 'notifications', hash: 'notifications', label: 'partnerSettingsPage.tabs.notifications.label', description: 'partnerSettingsPage.tabs.notifications.description', icon: Bell, enforced: true },
       { key: 'ticketing', hash: 'ticketing', label: 'partnerSettingsPage.tabs.ticketing.label', description: 'partnerSettingsPage.tabs.ticketing.description', icon: Ticket, selfSaving: true },
       { key: 'aiBudgets', hash: 'ai-budgets', label: 'partnerSettingsPage.tabs.aiBudgets.label', description: 'partnerSettingsPage.tabs.aiBudgets.description', icon: Wallet, enforced: true },
+      { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
     ],
   },
   {
@@ -145,7 +148,7 @@ function getTabFromHash(): TabKey | null {
 // The per-tab keys whose form state participates in dirty tracking. Self-saving
 // tabs (Ticketing, Login Branding) persist independently and are never "dirty"
 // from this page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'aiProvider'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -653,6 +656,14 @@ export default function PartnerSettingsPage() {
           {activeTab === 'aiBudgets' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} />
+            </section>
+          )}
+
+          {/* AI Provider: self-contained BYOK card with its own load/save (the
+              top-level "Save Settings" button does not apply here). */}
+          {activeTab === 'aiProvider' && (
+            <section className="rounded-lg border bg-card p-6 shadow-xs">
+              <PartnerAiProviderTab />
             </section>
           )}
 

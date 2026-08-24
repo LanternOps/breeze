@@ -48,6 +48,23 @@ describe('draftTicketFromEmail', () => {
     expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1');
   });
 
+  it('uses an injected resolved client without resolving a second time', async () => {
+    createMock.mockResolvedValueOnce(
+      reply({
+        subject: 'Outlook crashes on launch',
+        summary: 'The customer reports Outlook crashes whenever it opens and needs support.',
+        suggestedTimeMinutes: 20,
+      }),
+    );
+
+    await draftTicketFromEmail({
+      ...baseInput,
+      client: { messages: { create: createMock } } as any,
+    });
+
+    expect(getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+  });
+
   it('recovers when the retry returns valid JSON', async () => {
     createMock
       .mockResolvedValueOnce({ content: [{ type: 'text', text: 'not json' }], usage: {} })

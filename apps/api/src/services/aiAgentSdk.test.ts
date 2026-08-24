@@ -396,10 +396,18 @@ describe('runPreFlightChecks', () => {
     const sessionOrg = 'org-session-99';
     mockGetSession.mockResolvedValue(makeSession({ orgId: sessionOrg }));
     mockCheckBudget.mockResolvedValue(null);
+    mockResolveLlmConfigForOrg.mockResolvedValue({
+      source: 'partner',
+      partnerId: 'partner-1',
+      apiKey: 'partner-key',
+      model: 'claude-sonnet-4-6',
+      configId: 'config-1',
+      configVersion: 2,
+    });
 
     await runPreFlightChecks('session-1', 'hello', auth);
 
-    expect(mockCheckBudget).toHaveBeenCalledWith(sessionOrg);
+    expect(mockCheckBudget).toHaveBeenCalledWith(sessionOrg, 'partner_key');
   });
 
   it('returns error when budget is exceeded', async () => {

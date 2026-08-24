@@ -128,6 +128,39 @@
       "hybridPlan": "Plan hybride"
     }
   },
+  "partnerAiProvider": {
+    "title": "Fournisseur d'IA",
+    "subtitle": "Exécutez l'IA de Breeze avec votre propre clé d'API Anthropic au lieu de la clé de la plateforme.",
+    "platformKey": "Clé de la plateforme",
+    "platformKeyDescription": "Les fonctionnalités d'IA utilisent la clé Anthropic de Breeze et sont facturées en crédits d'IA Breeze.",
+    "yourKey": "Votre clé •••• {{last4}}",
+    "verifiedAt": "Vérifiée le {{date}}",
+    "notVerifiedYet": "Pas encore vérifiée",
+    "defaultModelValue": "Modèle par défaut : {{model}}",
+    "platformDefault": "Valeur par défaut de la plateforme",
+    "keyErrorTitle": "Votre clé Anthropic ne fonctionne pas",
+    "reconnectHint": "Les fonctionnalités d'IA sont indisponibles pour vos organisations tant que vous n'avez pas enregistré une clé valide ci-dessous.",
+    "connectKeyTitle": "Connecter votre clé Anthropic",
+    "replaceKeyTitle": "Remplacer votre clé Anthropic",
+    "keyLabel": "Clé d'API Anthropic",
+    "writeOnlyHint": "La clé est vérifiée à l'enregistrement et n'est plus jamais affichée.",
+    "saveKey": "Enregistrer la clé",
+    "keySaved": "Clé Anthropic enregistrée et vérifiée.",
+    "keySaveFailed": "Impossible d'enregistrer la clé Anthropic.",
+    "defaultModelLabel": "Modèle par défaut",
+    "defaultModelHint": "Utilisé pour les nouvelles sessions d'IA dans toutes vos organisations.",
+    "modelUpdated": "Modèle par défaut mis à jour.",
+    "modelUpdateFailed": "Impossible de mettre à jour le modèle par défaut.",
+    "disconnectTitle": "Revenir à la clé de la plateforme",
+    "disconnectDescription": "Supprime votre clé Anthropic. L'utilisation de l'IA est de nouveau facturée en crédits d'IA Breeze.",
+    "disconnect": "Déconnecter",
+    "disconnectConfirm": "Déconnecter votre clé Anthropic ? Les fonctionnalités d'IA reviendront à la clé de la plateforme et aux crédits d'IA Breeze.",
+    "disconnected": "Clé Anthropic supprimée. Les fonctionnalités d'IA utilisent désormais la clé de la plateforme.",
+    "disconnectFailed": "Impossible de déconnecter la clé Anthropic.",
+    "permissionDenied": "La gestion du fournisseur d'IA nécessite des autorisations de facturation et l'accès à toutes les organisations.",
+    "loadFailed": "Impossible de charger la configuration du fournisseur d'IA.",
+    "workspaceDisclosure": "L'enrichissement de contenu Workspace utilise actuellement la clé de la plateforme."
+  },
   "partnerDefaults": {
     "notSet": "Non défini — les organisations se configurent individuellement",
     "updatePolicy": "Politique de mise à jour de l’agent",
@@ -416,6 +449,10 @@
       "aiBudgets": {
         "label": "Budgets IA",
         "description": "Limites de dépenses en IA"
+      },
+      "aiProvider": {
+        "label": "Fournisseur d'IA",
+        "description": "Utilisez votre propre clé Anthropic"
       },
       "branding": {
         "label": "Image de marque",
@@ -1271,7 +1308,8 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "L’IA propose un plan en plusieurs étapes. L’utilisateur approuve tout le plan d’un coup, puis s’exécute automatiquement par procédés.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Les outils de niveau 2 s’exécutent automatiquement avec des journaux d’audit. Les outils de niveau 3 nécessitent toujours une approbation.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Comme Action Plan, plus des captures d’écran en direct entre les étapes et un bouton Stop persistant.",
-    "untitled": "Sans titre"
+    "untitled": "Sans titre",
+    "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze"
   },
   "aiAgentsPage": {
     "title": "Agents IA",

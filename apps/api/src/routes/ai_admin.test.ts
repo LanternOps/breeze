@@ -164,6 +164,7 @@ describe('AI routes', () => {
         daily: { inputTokens: 100, outputTokens: 200, totalCostCents: 50, messageCount: 5 },
         monthly: { inputTokens: 1000, outputTokens: 2000, totalCostCents: 500, messageCount: 50 },
         budget: null,
+        billedTo: 'partner_key',
       } as any);
 
       const res = await app.request('/ai/usage', {
@@ -175,6 +176,7 @@ describe('AI routes', () => {
       const body = await res.json();
       expect(body.daily.inputTokens).toBe(100);
       expect(body.monthly.messageCount).toBe(50);
+      expect(body.billedTo).toBe('partner_key');
     });
 
     it('returns 403 when accessing other org', async () => {

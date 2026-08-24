@@ -1146,7 +1146,12 @@ export class StreamingSessionManager {
               try {
                 await withDbAccessContext(
                   { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-                  () => recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
+                  () => recordUsageFromSdkResult(
+                    session.breezeSessionId,
+                    orgId,
+                    usageData,
+                    session.llmConfigSnapshot.source === 'partner' ? 'partner_key' : 'platform',
+                  ),
                 );
               } catch (err) {
                 captureException(err);
@@ -1167,7 +1172,12 @@ export class StreamingSessionManager {
               try {
                 await withDbAccessContext(
                   { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-                  () => recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
+                  () => recordUsageFromSdkResult(
+                    session.breezeSessionId,
+                    orgId,
+                    usageData,
+                    session.llmConfigSnapshot.source === 'partner' ? 'partner_key' : 'platform',
+                  ),
                 );
               } catch (err) {
                 captureException(err);
@@ -1240,18 +1250,23 @@ export class StreamingSessionManager {
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-            () => recordUsageFromSdkResult(session.breezeSessionId, session.orgId, {
-              total_cost_usd: 0,
-              usage: {
-                input_tokens: abandoned.inputTokens,
-                output_tokens: abandoned.outputTokens,
-                cache_read_input_tokens: abandoned.cacheReadInputTokens,
-                cache_creation_input_tokens: abandoned.cacheCreationInputTokens,
+            () => recordUsageFromSdkResult(
+              session.breezeSessionId,
+              session.orgId,
+              {
+                total_cost_usd: 0,
+                usage: {
+                  input_tokens: abandoned.inputTokens,
+                  output_tokens: abandoned.outputTokens,
+                  cache_read_input_tokens: abandoned.cacheReadInputTokens,
+                  cache_creation_input_tokens: abandoned.cacheCreationInputTokens,
+                },
+                num_turns: 1,
+                model: session.model,
+                toolExecutionCount: abandonedToolExecutionCount,
               },
-              num_turns: 1,
-              model: session.model,
-              toolExecutionCount: abandonedToolExecutionCount,
-            })
+              session.llmConfigSnapshot.source === 'partner' ? 'partner_key' : 'platform',
+            ),
           );
         } catch (err) {
           captureException(err);
