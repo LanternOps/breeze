@@ -100,8 +100,10 @@ function ownedCatalogItem(overrides: Record<string, unknown> = {}) {
  */
 function drizzleWrapped(code: string, message: string, extra: Record<string, unknown> = {}) {
   const pgError = Object.assign(new Error(message), { code, severity: 'ERROR', ...extra });
+  // NB: no `name` override — the real DrizzleQueryError never sets `this.name`,
+  // so a genuine instance reports `name === 'Error'`. Keeping the fixture
+  // faithful here matters: it is the whole point of this builder.
   const wrapper = Object.assign(new Error('Failed query: insert into "software_install_methods" ...'), {
-    name: 'DrizzleQueryError',
     cause: pgError,
   });
   return wrapper;
