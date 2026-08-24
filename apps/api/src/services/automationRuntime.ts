@@ -25,6 +25,11 @@ import { scriptNeedsVariableScope } from './sourcedParameters';
 import { publishEvent } from './eventBus';
 import { captureException } from './sentry';
 import {
+  createAndEnqueueAgentRun,
+  type AgentRunSkipReason,
+  type CreateAgentRunInput,
+} from './aiAgents/runService';
+import {
   getEmailRecipients,
   sendEmailNotification,
   sendWebhookNotification,
@@ -943,6 +948,34 @@ type ActionExecutionResult = {
   log: AutomationLogEntry;
 };
 
+/**
+ * Which admission-gate skips are POLICY outcomes (cooldown, filters, kill
+ * switch → the automation run stays green and the reason is logged) and which
+ * are genuine integrity failures. `ownership_mismatch` and `device_not_in_org`
+ * both mean the (org, device) pair we handed the gate does not hold — a data
+ * bug or a cross-tenant move mid-flight, never an operator policy choice.
+ *
+ * Typed as a total Record over AgentRunSkipReason ON PURPOSE: when 3c adds a
+ * new skip reason, this table stops compiling until someone classifies it. An
+ * unclassified reason must never silently default to "green".
+ */
+const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> = Object.freeze({
+  kill_switch_off: false,
+  no_effective_agent: false,
+  agent_disabled: false,
+  mode_off: false,
+  trigger_filter_mismatch: false,
+  maintenance_window: false,
+  cooldown: false,
+  max_concurrent_runs: false,
+  max_runs_per_hour: false,
+  org_budget_exceeded: false,
+  agent_daily_budget_exceeded: false,
+  duplicate: false,
+  ownership_mismatch: true,
+  device_not_in_org: true,
+});
+
 // Exported for direct unit coverage of the script_executions correlation
 // (#3162); the run loop still reaches it through executeAction below.
 export async function executeRunScriptAction(
@@ -1354,6 +1387,113 @@ async function executeCreateAlertAction(
   };
 }
 
+/**
+ * AI agents wave 3d (#3824). Hands ONE alert to 3c's admission gate
+ * (`createAndEnqueueAgentRun`) — the single entry point that resolves the
+ * effective policy, applies trigger filters/cooldown/caps/dedupe, inserts the
+ * ledger row and enqueues. This action never touches the ai-agent queue
+ * directly and never runs an agent inline.
+ *
+ * The action carries no config: the agent comes from
+ * `automation.managedByAgentId` and the device from the event-target binding
+ * that `processTriggerEvent` established (`boundDeviceIds: [payload.deviceId]`),
+ * so a managed run is one alert → one device → one agent run, never a fan-out
+ * across the automation's configured target set.
+ *
+ * The loop guard — never triage an alert that an automation itself created —
+ * lives UPSTREAM in `jobs/automationWorker.processTriggerEvent`
+ * (`managed_automation_skips_automation_created_alerts`), because only the raw
+ * event payload still carries `automationId`; `AutomationTriggerContext`
+ * deliberately does not. Do not re-implement it here.
+ */
+async function executeAiTriageAction(
+  _action: AiTriageAction,
+  actionIndex: number,
+  context: ActionExecutionContext,
+): Promise<ActionExecutionResult> {
+  const agentId = context.automation.managedByAgentId;
+  if (!agentId) {
+    return {
+      success: false,
+      log: logEntry('ai_triage action on an unmanaged automation — refusing', 'error', {
+        actionType: 'ai_triage',
+        actionIndex,
+        deviceId: context.device.id,
+      }),
+    };
+  }
+
+  const trigger = context.trigger;
+  // Typed off the frozen 3c input rather than restated structurally, so a
+  // change to the gate's alertContext shape surfaces here as a compile error.
+  // Built ONLY when the trigger carries a severity: `alertContext.severity` is
+  // required by the gate, and the device-tag lookup it needs is not worth a
+  // query on a trigger that cannot populate it.
+  let alertContext: CreateAgentRunInput['alertContext'];
+
+  if (trigger?.severity) {
+    const [deviceRow] = await db
+      .select({ tags: devices.tags })
+      .from(devices)
+      .where(eq(devices.id, context.device.id))
+      .limit(1);
+
+    alertContext = {
+      severity: trigger.severity,
+      ruleId: trigger.ruleId,
+      siteId: context.device.siteId,
+      deviceTags: deviceRow?.tags ?? [],
+    };
+  }
+
+  // managedByAgentId is attribution/bookkeeping. The admission gate resolves
+  // the effective triage agent for the device org; an org override wins over
+  // the managed baseline, while both ids remain traceable through triggerRef.
+  const result = await createAndEnqueueAgentRun({
+    orgId: context.device.orgId,
+    kind: 'triage',
+    triggerKind: 'alert',
+    deviceId: context.device.id,
+    alertId: trigger?.alertId ?? null,
+    triggerEventId: trigger?.eventId ?? null,
+    triggerRef: {
+      automationId: context.automation.id,
+      automationRunId: context.runId,
+      alertRuleId: trigger?.ruleId ?? null,
+      managedByAgentId: agentId,
+    },
+    ...(alertContext ? { alertContext } : {}),
+    dedupeKey: trigger?.alertId
+      ? `alert:${trigger.alertId}`
+      : `event:${trigger?.eventId ?? context.runId}`,
+  });
+
+  if (result.created) {
+    // Like run_script, success means queued, not finished. The agent run
+    // completes out-of-band and reports through ai.agent.run.* events and 3c
+    // recipient notifications.
+    return {
+      success: true,
+      log: logEntry('ai_triage queued agent run', 'info', {
+        actionType: 'ai_triage',
+        actionIndex,
+        deviceId: context.device.id,
+        details: { agentRunId: result.run.id },
+      }),
+    };
+  }
+
+  const hardFailure = AI_TRIAGE_SKIP_IS_FAILURE[result.skipped] ?? true;
+  return {
+    success: !hardFailure,
+    log: logEntry(
+      `ai_triage skipped: ${result.skipped}`,
+      hardFailure ? 'error' : 'info',
+      { actionType: 'ai_triage', actionIndex, deviceId: context.device.id },
+    ),
+  };
+}
+
 async function executeAction(
   action: AutomationAction,
   actionIndex: number,
@@ -1373,6 +1513,10 @@ async function executeAction(
 
   if (action.type === 'create_alert') {
     return executeCreateAlertAction(action, actionIndex, context);
+  }
+
+  if (action.type === 'ai_triage') {
+    return executeAiTriageAction(action, actionIndex, context);
   }
 
   return {
@@ -2638,4 +2782,6 @@ export async function executeConfigPolicyAutomationRun(
 // not part of the runtime's public surface.
 export const __testOnly = {
   buildActionExecutionContext,
+  executeAction,
+  executeAiTriageAction,
 };
