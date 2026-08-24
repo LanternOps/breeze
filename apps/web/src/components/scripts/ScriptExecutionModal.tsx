@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Search, Play, Loader2, CheckCircle, AlertCircle, Filter } from 'lucide-react';
+import { X, Play, Loader2, CheckCircle, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
 import ProgressBar, { ProgressItemList, type ProgressItem } from '../shared/ProgressBar';
@@ -10,6 +10,8 @@ import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
 import ScriptParametersForm, { validateParameters as validateParamsHelper } from './ScriptParametersForm';
+import { useDeviceOptions, type UseDeviceOptionsResult } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 
 export type Device = {
   id: string;
@@ -27,7 +29,7 @@ export type Site = {
 
 type ScriptExecutionModalProps = {
   script: Script & { parameters?: ScriptParameter[]; content?: string };
-  devices: Device[];
+  devices?: Device[];
   sites?: Site[];
   isOpen: boolean;
   onClose: () => void;
@@ -74,6 +76,57 @@ export default function ScriptExecutionModal({
     return new Set(filterPreview.devices.map(d => d.id));
   }, [showAdvancedFilter, filterPreview]);
 
+  const fetchedDeviceOptions = useDeviceOptions({
+    search: query,
+    status: statusFilter === 'all' ? undefined : statusFilter,
+    siteId: siteFilter === 'all' ? undefined : siteFilter,
+    osType: script.osTypes.length === 1 ? script.osTypes[0] : undefined,
+    includeIds: [...selectedDeviceIds],
+    enabled: devices === undefined && isOpen,
+    limit: 100,
+  });
+
+  const providedDeviceOptions = useMemo<UseDeviceOptionsResult | null>(() => {
+    if (!devices) return null;
+    const normalizedQuery = query.trim().toLowerCase();
+    const options = devices
+      .filter((device) => script.osTypes.includes(device.os))
+      .filter((device) => advancedFilterIds === null || advancedFilterIds.has(device.id) || selectedDeviceIds.has(device.id))
+      .filter((device) => !normalizedQuery || device.hostname.toLowerCase().includes(normalizedQuery) || selectedDeviceIds.has(device.id))
+      .filter((device) => siteFilter === 'all' || device.siteId === siteFilter || selectedDeviceIds.has(device.id))
+      .filter((device) => statusFilter === 'all' || device.status === statusFilter || selectedDeviceIds.has(device.id))
+      .map((device) => ({
+        id: device.id,
+        hostname: device.hostname,
+        displayName: null,
+        osType: device.os,
+        status: device.status,
+        siteId: device.siteId || null,
+        siteName: device.siteName || null,
+      }));
+    const resolved = new Set(options.map((option) => option.id));
+    const unresolved = [...selectedDeviceIds].some((id) => !resolved.has(id));
+    return {
+      options,
+      page: { nextCursor: null, returned: options.length, total: options.length, hasMore: false, observedAt: '' },
+      state: unresolved ? 'truncated' : options.length > 0 ? 'ready' : 'empty',
+      error: null,
+      canSubmit: !unresolved,
+      loadMore: async () => {},
+      retry: () => {},
+    };
+  }, [advancedFilterIds, devices, query, script.osTypes, selectedDeviceIds, siteFilter, statusFilter]);
+
+  const deviceOptions = useMemo<UseDeviceOptionsResult>(() => {
+    const source = providedDeviceOptions ?? fetchedDeviceOptions;
+    if (providedDeviceOptions || script.osTypes.length === 1) return source;
+    const allowed = new Set(script.osTypes);
+    return {
+      ...source,
+      options: source.options.filter((option) => allowed.has(option.osType as Device['os']) || selectedDeviceIds.has(option.id)),
+    };
+  }, [fetchedDeviceOptions, providedDeviceOptions, script.osTypes, selectedDeviceIds]);
+
   // Initialize parameters with defaults. Runtime parameters only (#3409 PR3):
   // a bound parameter is resolved per target device by the server, so it is
   // neither prompted for nor seeded — a value supplied for one is ignored and
@@ -101,45 +154,6 @@ export default function ScriptExecutionModal({
   useEffect(() => {
     setRunAs(script.runAs === 'user' ? 'user' : 'system');
   }, [script.id, script.runAs, isOpen]);
-
-  // Filter devices based on script OS requirements
-  const compatibleDevices = useMemo(() => {
-    return devices.filter(device => script.osTypes.includes(device.os));
-  }, [devices, script.osTypes]);
-
-  const filteredDevices = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-
-    return compatibleDevices.filter(device => {
-      // Apply advanced filter if active
-      if (advancedFilterIds !== null && !advancedFilterIds.has(device.id)) {
-        return false;
-      }
-
-      const matchesQuery = normalizedQuery.length === 0
-        ? true
-        : device.hostname.toLowerCase().includes(normalizedQuery);
-      const matchesSite = siteFilter === 'all' ? true : device.siteId === siteFilter;
-      const matchesStatus = statusFilter === 'all' ? true : device.status === statusFilter;
-
-      return matchesQuery && matchesSite && matchesStatus;
-    });
-  }, [compatibleDevices, query, siteFilter, statusFilter, advancedFilterIds]);
-
-  const handleDeviceToggle = (deviceId: string) => {
-    const newSet = new Set(selectedDeviceIds);
-    if (newSet.has(deviceId)) {
-      newSet.delete(deviceId);
-    } else {
-      newSet.add(deviceId);
-    }
-    setSelectedDeviceIds(newSet);
-  };
-
-  const handleSelectAll = () => {
-    const onlineDevices = filteredDevices.filter(d => d.status === 'online');
-    setSelectedDeviceIds(new Set(onlineDevices.map(d => d.id)));
-  };
 
   const handleClearSelection = () => {
     setSelectedDeviceIds(new Set());
@@ -289,13 +303,6 @@ export default function ScriptExecutionModal({
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold">{t('scriptExecutionModal.sections.selectDevices')}</h3>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSelectAll}
-                  className="text-xs text-primary hover:underline"
-                >
-                  {t('scriptExecutionModal.actions.selectAllOnline')}
-                </button>
                 {selectedDeviceIds.size > 0 && (
                   <button
                     type="button"
@@ -310,16 +317,6 @@ export default function ScriptExecutionModal({
 
             {/* Filters */}
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  type="search"
-                  placeholder={t('scriptExecutionModal.searchPlaceholder')}
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-              </div>
               {sites.length > 0 && (
                 <select
                   value={siteFilter}
@@ -376,52 +373,14 @@ export default function ScriptExecutionModal({
               )}
             </div>
 
-            {/* Device List */}
-            <div className="rounded-md border max-h-60 overflow-y-auto">
-              {filteredDevices.length === 0 ? (
-                <div className="p-4 text-center text-sm text-muted-foreground">
-                  {t('scriptExecutionModal.empty.noCompatibleDevices', {
-                    os: script.osTypes.map(os => t(/* i18n-dynamic */ `scriptExecutionModal.os.${os}`)).join(t('scriptExecutionModal.orSeparator'))
-                  })}
-                </div>
-              ) : (
-                <div className="divide-y">
-                  {filteredDevices.map(device => (
-                    <label
-                      key={device.id}
-                      className={cn(
-                        'flex items-center gap-3 px-4 py-3 cursor-pointer transition',
-                        device.status !== 'online' && 'opacity-50',
-                        selectedDeviceIds.has(device.id) && 'bg-primary/5'
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedDeviceIds.has(device.id)}
-                        onChange={() => handleDeviceToggle(device.id)}
-                        disabled={device.status !== 'online'}
-                        className="h-4 w-4 rounded border-border"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{device.hostname}</p>
-                        <p className="text-xs text-muted-foreground">{device.siteName}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground capitalize">{device.os}</span>
-                        <span className={cn(
-                          'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-                          device.status === 'online' && 'bg-success/15 text-success',
-                          device.status === 'offline' && 'bg-destructive/15 text-destructive',
-                          device.status === 'maintenance' && 'bg-warning/15 text-warning'
-                        )}>
-                          {device.status === 'maintenance' ? t('scriptExecutionModal.status.maintenance') : t(/* i18n-dynamic */ `common:states.${device.status}`)}
-                        </span>
-                      </div>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
+            <DeviceOptionPicker
+              result={deviceOptions}
+              selectedIds={[...selectedDeviceIds]}
+              onSelectedIdsChange={(ids) => setSelectedDeviceIds(new Set(ids))}
+              search={query}
+              onSearchChange={setQuery}
+              showSelectAll
+            />
           </div>
 
           {/* Execution Progress */}
@@ -437,12 +396,12 @@ export default function ScriptExecutionModal({
               />
               <ProgressItemList
                 items={Array.from(selectedDeviceIds).map((id): ProgressItem => {
-                  const device = devices.find(d => d.id === id);
+                  const device = deviceOptions.options.find(d => d.id === id);
                   return {
                     id,
-                    label: device?.hostname ?? id,
+                    label: device?.displayName ?? device?.hostname ?? id,
                     status: executionState === 'success' ? 'success' : 'running',
-                    detail: device?.siteName,
+                    detail: device?.siteName ?? undefined,
                   };
                 })}
                 maxVisible={8}
@@ -491,7 +450,7 @@ export default function ScriptExecutionModal({
             <button
               type="button"
               onClick={handleExecute}
-              disabled={executionState === 'executing' || executionState === 'success' || selectedDeviceIds.size === 0}
+              disabled={executionState === 'executing' || executionState === 'success' || selectedDeviceIds.size === 0 || !deviceOptions.canSubmit}
               className={cn(
                 'inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
                 executionState === 'success'

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Play } from 'lucide-react';
 import ExecutionHistory, { type ScriptExecution } from './ExecutionHistory';
 import ExecutionDetails from './ExecutionDetails';
-import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
+import ScriptExecutionModal, { type Site } from './ScriptExecutionModal';
 import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
@@ -29,7 +29,6 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
   const { t } = useTranslation('scripts');
   const [script, setScript] = useState<ScriptWithDetails | null>(null);
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -74,18 +73,6 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     }
   }, [scriptId, t]);
 
-  const fetchDevices = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/devices');
-      if (response.ok) {
-        const data = await response.json();
-        setDevices(asList(data, 'devices'));
-      }
-    } catch {
-      // Silently fail
-    }
-  }, []);
-
   const fetchSites = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/orgs/sites');
@@ -101,9 +88,8 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
   useEffect(() => {
     fetchScript();
     fetchExecutions();
-    fetchDevices();
     fetchSites();
-  }, [fetchScript, fetchExecutions, fetchDevices, fetchSites]);
+  }, [fetchScript, fetchExecutions, fetchSites]);
 
   const handleViewDetails = (execution: ScriptExecution) => {
     // Open immediately with the list row, then upgrade with the full record —
@@ -276,7 +262,6 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       {showExecuteModal && script && (
         <ScriptExecutionModal
           script={script}
-          devices={devices}
           sites={sites}
           isOpen={true}
           onClose={() => setShowExecuteModal(false)}

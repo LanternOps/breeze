@@ -62,8 +62,11 @@ describe('DRExecutionView', () => {
           },
         });
       }
-      if (url === '/devices?limit=500') {
-        return makeJsonResponse({ data: [{ id: 'device-1', hostname: 'srv-01' }] });
+      if (url.startsWith('/devices/options?')) {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', hostname: 'srv-01', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null }],
+          page: { nextCursor: null, returned: 1, total: 1, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+        });
       }
       return makeJsonResponse({}, false, 404);
     });
@@ -72,6 +75,7 @@ describe('DRExecutionView', () => {
 
     expect(await screen.findByText('Group Tier 1 failed')).toBeTruthy();
     expect(screen.getByText('VM restore target is offline')).toBeTruthy();
-    expect(screen.getByText('srv-01')).toBeTruthy();
+    expect(await screen.findByText('srv-01')).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input]) => /^\/devices(?:\?|$)/.test(String(input)))).toBe(false);
   });
 });
