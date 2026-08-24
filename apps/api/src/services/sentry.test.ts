@@ -463,6 +463,11 @@ describe('scrubEvent', () => {
         binary_component: 'agent',
         release_asset_name: 'breeze-agent-darwin-arm64',
         manifest_refusal_reason: 'not-distributable',
+        worker: 'patchScheduler',
+        worker_failure_reason: 'desktop_stop_pending',
+        patch_reconcile_stage: 'enqueue_failed',
+        patch_reconcile_repeat: '2-4',
+        jobId: 'bull-job-918273',
         path: '/public/quotes/raw-capability',
         arbitrary: 'raw-capability',
       },
@@ -531,6 +536,19 @@ describe('scrubEvent', () => {
       binary_component: 'agent',
       release_asset_name: 'breeze-agent-darwin-arm64',
       manifest_refusal_reason: 'not-distributable',
+      // #1379/BREEZE-9: attachWorkerObservability sets this on all 38 workers
+      // and the scrubber has been discarding it the whole time, which is why
+      // ~12k held-context events carry an empty `worker`. Dropped here, no
+      // worker-attributed triage is possible at all.
+      worker: 'patchScheduler',
+      // #3912's tags. Inert until that PR lands, but asserted now so a future
+      // edit to ALLOWED_TAG_NAMES cannot quietly un-allowlist them.
+      worker_failure_reason: 'desktop_stop_pending',
+      patch_reconcile_stage: 'enqueue_failed',
+      patch_reconcile_repeat: '2-4',
+      // NB: `jobId` was in the input bag and is deliberately absent here — a
+      // BullMQ per-job counter is unbounded by construction, so allowlisting it
+      // would inflate Sentry's tag index without making anything triageable.
     });
     expect(out.exception).toEqual({
       values: [{

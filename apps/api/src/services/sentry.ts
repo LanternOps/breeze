@@ -130,6 +130,43 @@ const ALLOWED_TAG_NAMES = new Set([
   'binary_component',
   'release_asset_name',
   'manifest_refusal_reason',
+  // #1379/BREEZE-9: `attachWorkerObservability` has been setting this tag on
+  // every one of the 38 workers ALL ALONG — twice, in fact: on the per-job
+  // isolation scope (so anything captured DURING a job inherits it) and again
+  // on the `failed` listener. `pickAllowedTags` then dropped it on the way out,
+  // every time. That is the same defect as the contentless captureMessage
+  // events above, and it invalidates the diagnosis recorded in
+  // jobs/workerObservability.ts: BREEZE-9's ~12k held-context events with an
+  // empty `worker` tag were blamed on the listener firing outside job
+  // execution, and the fix (patching Worker.processFn) could never have worked
+  // while the scrubber deleted the tag regardless of where it was set.
+  // Attributing events by worker is the stated entire point of that
+  // integration. Closed set of 38 hardcoded worker-name literals passed to
+  // attachWorkerObservability; carries no tenant, device or host identifier.
+  //
+  // Its two neighbours there are deliberately NOT allowlisted: `jobName` is
+  // bounded but redundant with `worker` for triage, and `jobId` is a BullMQ
+  // per-job counter — unbounded by construction, exactly the high-cardinality
+  // tag the captureMessage doc comment warns against.
+  'worker',
+  // Set by fix/sentry-worker-job-failures (#3912), which deliberately does not
+  // touch this file. Inert until that lands — an allowlist entry only ever
+  // preserves a tag something else sets, so listing it early cannot leak
+  // anything. `worker_failure_reason` is a closed set of hardcoded labels from
+  // a classifier function (`desktop_stop_pending`,
+  // `desktop_intent_already_released` today), never derived from job data; it
+  // is what separates "the agent was offline for a second" from a real fault.
+  'worker_failure_reason',
+  // Also #3912. `patch_reconcile_stage` is a closed 4-value set
+  // (recovered | stalled | enqueue_failed | sweep_failed) written as string
+  // literals at four call sites in enqueueScanResults
+  // (jobs/patchSchedulerWorker.ts) — without it those four captures are
+  // distinguishable only by bundle line number, which changes every build.
+  // `patch_reconcile_repeat` is a BUCKETED streak length (1 | 2-4 | 5-9 | 10+),
+  // bucketed precisely so a long-running reconcile loop cannot turn a counter
+  // into unbounded tag cardinality. Neither carries a tenant, device or job id.
+  'patch_reconcile_stage',
+  'patch_reconcile_repeat',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
