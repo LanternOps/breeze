@@ -70,6 +70,18 @@ func isRecursiveDeleteBoundaryFor(cleanPath string, windows bool) bool {
 			// \\server\share\... — the host and share are the volume.
 			volumeComponents = 2
 		}
+
+		// Past the volume specifier a colon is not legal in a Windows path
+		// component, and it is not a separator either — so it would survive as a
+		// component of its own and inflate the depth. "C::\Windows" would
+		// otherwise strip "C:", split ":\Windows" into [":", "Windows"] and read
+		// as depth 2, allowing a recursive delete of a path one stray colon away
+		// from a volume-root child. Alternate-data-stream suffixes
+		// ("C:\Temp\x:stream") land here too and are equally refused: the file
+		// browser has no reason to address either shape.
+		if strings.ContainsRune(rest, ':') {
+			return true
+		}
 	}
 
 	depth := 0

@@ -35,6 +35,11 @@ func TestIsRecursiveDeleteBoundary_POSIX(t *testing.T) {
 		{name: "backslash in posix filename stays one component", path: `/data\evil`, deny: true},
 		{name: "backslash filename nested", path: `/data\evil/sub`, deny: false},
 
+		// A colon is a legal POSIX filename character, so the Windows
+		// colon-fails-closed rule must not leak across.
+		{name: "colon in posix filename", path: "/home/user/back:up", deny: false},
+		{name: "colon in posix top-level directory", path: "/back:up", deny: true},
+
 		// A Windows-shaped path handed to a POSIX agent is one strange relative
 		// file name, and stays refused.
 		{name: "windows path on posix host", path: `C:\ProgramData\SOTIKS\BreezePilot`, deny: true},
@@ -85,6 +90,15 @@ func TestIsRecursiveDeleteBoundary_Windows(t *testing.T) {
 		{name: "top-level trailing separator", path: `C:\Temp\`, deny: true},
 		{name: "bare separator", path: `\`, deny: true},
 		{name: "rooted single component", path: `\Windows`, deny: true},
+		{name: "rooted two-character first component", path: `\Go\src\pkg`, deny: false},
+
+		// A colon past the volume specifier is neither legal in a component nor a
+		// separator, so counting it as one would inflate depth: "C::\Windows"
+		// must not read as depth 2.
+		{name: "doubled drive colon", path: `C::\Windows`, deny: true},
+		{name: "doubled drive colon nested", path: `C::\Temp\build`, deny: true},
+		{name: "alternate data stream", path: `C:\Temp\build:stream`, deny: true},
+		{name: "colon in relative path", path: `foo:bar\baz`, deny: true},
 
 		// Drive-relative paths resolve against the drive's working directory,
 		// which is at minimum the volume root, so depth is a lower bound.
