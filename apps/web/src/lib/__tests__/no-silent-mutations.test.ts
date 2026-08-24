@@ -32,6 +32,7 @@ const TARGET_GLOBS = [
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
+  'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
   'src/components/settings/LoginBrandingCard.tsx',
   'src/components/settings/ConnectSsoCard.tsx',
@@ -349,7 +350,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(95);
+    expect(absoluteFiles.length).toBe(96);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

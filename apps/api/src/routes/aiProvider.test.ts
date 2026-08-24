@@ -47,6 +47,10 @@ vi.mock('../services/sentry', () => ({
   captureException: captureExceptionMock,
 }));
 
+vi.mock('../services/aiCostTracker', () => ({
+  OFFERABLE_AI_MODELS: Object.freeze(['claude-sonnet-4-6', 'claude-haiku-4-5']),
+}));
+
 vi.mock('../services/partnerLlmConfig', () => {
   class PartnerLlmError extends Error {
     constructor(message: string, readonly status: 400 | 409 | 500 | 503) {
@@ -241,7 +245,16 @@ describe('AI provider routes', () => {
       status: 'active',
       verifiedAt: '2026-08-23T12:00:00.000Z',
       lastError: null,
+      supportedModels: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
     });
+  });
+
+  it('GET / returns supportedModels from the cost-tracker registry for the model select', async () => {
+    const response = await aiProviderRoutes.request('/', { method: 'GET' });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.supportedModels).toEqual(['claude-sonnet-4-6', 'claude-haiku-4-5']);
   });
 
   it('POST /key maps PartnerLlmError to its typed HTTP status', async () => {

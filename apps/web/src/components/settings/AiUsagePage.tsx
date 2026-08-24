@@ -10,6 +10,8 @@ import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
   monthly: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
+  /** Who pays for LLM calls: the platform key or the partner's own Anthropic key (BYOK). */
+  billedTo?: 'platform' | 'partner_key';
   budget: {
     enabled: boolean;
     monthlyBudgetCents: number | null;
@@ -177,6 +179,11 @@ export default function AiUsagePage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t('aiUsagePage.aIUsageBudget')}</h1>
         <p className="text-muted-foreground">{t('aiUsagePage.monitorAIAssistantUsageAndConfigureBudgetLimits')}</p>
+        {usage?.billedTo === 'partner_key' && (
+          <p className="mt-1 text-sm text-muted-foreground" data-testid="ai-usage-billed-to-note">
+            {t('aiUsagePage.billedToPartnerKey')}
+          </p>
+        )}
       </div>
 
       {error && (
