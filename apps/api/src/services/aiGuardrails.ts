@@ -1190,6 +1190,15 @@ export type GuardrailCheck =
       approvalScope: AiApprovalScope;
     });
 
+export type GuardrailDisposition = 'allow' | 'propose' | 'deny';
+
+/**
+ * checkAgentGuardrails' verdict. `allowed` stays false for 'propose' on
+ * purpose: a consumer that only reads `allowed` (every pre-3b consumer)
+ * fails CLOSED rather than executing a proposal.
+ */
+export type AgentGuardrailCheck = GuardrailCheck & { disposition: GuardrailDisposition };
+
 /**
  * Check guardrails for a tool invocation.
  * Returns the effective tier and whether approval is needed.
@@ -1301,6 +1310,14 @@ export interface AgentGuardrailPolicy {
   protectedResources: AiAgentProtectedResources;
   /** Resolved from the run device, not from caller-controlled tool input. */
   deviceSiteId?: string | null;
+  /**
+   * The run's device id, resolved from the run row (never from tool input).
+   * null = device-less run. A device-less run skips the site gate entirely
+   * (buildAgentAuthContext only pins allowedSiteIds when a device exists), so
+   * mutating tools are denied outright for it — there is no site scope to
+   * bound the blast radius.
+   */
+  deviceId: string | null;
 }
 
 const SERVICE_INPUT_KEYS = ['serviceName', 'service', 'name'];
@@ -1476,6 +1493,7 @@ function isAgentGuardrailPolicy(
 ): policy is AgentGuardrailPolicy {
   if (!policy || !Array.isArray(policy.toolAllowlist)) return false;
   if (typeof policy.enabled !== 'boolean') return false;
+  if (policy.deviceId !== null && typeof policy.deviceId !== 'string') return false;
   if (policy.mode !== 'off' && policy.mode !== 'shadow' && policy.mode !== 'act') return false;
   if (!policy.toolAllowlist.every((toolName) => typeof toolName === 'string')) return false;
 
@@ -1521,10 +1539,10 @@ export function checkAgentGuardrails(
   toolName: string,
   input: Record<string, unknown>,
   policy: AgentGuardrailPolicy | null | undefined,
-): GuardrailCheck {
+): AgentGuardrailCheck {
   const base = checkGuardrails(toolName, input);
-  const deny = (reason: string): GuardrailCheck =>
-    ({ ...base, allowed: false, requiresApproval: false, reason });
+  const deny = (reason: string): AgentGuardrailCheck =>
+    ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 
   // envFlag reads process.env at CALL time and shares its normalization with
   // config/env, so the two readers of this flag cannot disagree (a module-level
@@ -1569,10 +1587,14 @@ export function checkAgentGuardrails(
   const readOnly = base.tier === 1
     || (base.tier === 2 && (base.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
 
-  // shadow mode proposes; it never mutates. Read-only tools stay available.
-  if (policy.mode === 'shadow' && !readOnly) {
-    return deny(`Tool "${toolName}" mutates; the agent is in shadow mode`);
+  // A device-less run has no site scope (buildAgentAuthContext pins
+  // allowedSiteIds only when a device exists), so a mutation from it would be
+  // org-wide. Deny rather than propose: a human approving it could not see
+  // what it is bounded to.
+  if (!readOnly && policy.deviceId === null) {
+    return deny(`Tool "${toolName}" mutates and the run is not device-bound`);
   }
+
   const allowlisted = policy.toolAllowlist.includes(toolName)
     || (action !== undefined && policy.toolAllowlist.includes(`${toolName}:${action}`));
   if (!readOnly && !allowlisted) {
@@ -1582,7 +1604,21 @@ export function checkAgentGuardrails(
   const protectedHit = touchesProtected(input, policy.protectedResources);
   if (protectedHit) return deny(`Denied: ${protectedHit}`);
 
-  return base;
+  // Shadow proposes; it never mutates — and this branch now sits AFTER the
+  // allowlist and protected checks so 'propose' is only reachable for a call
+  // the agent could legitimately make. allowed:false is load-bearing (see
+  // AgentGuardrailCheck).
+  if (policy.mode === 'shadow' && !readOnly) {
+    return {
+      ...base,
+      allowed: false,
+      requiresApproval: false,
+      disposition: 'propose',
+      reason: `Tool "${toolName}" mutates; shadow mode records a proposal instead of executing`,
+    };
+  }
+
+  return { ...base, disposition: 'allow' };
 }
 
 /**
@@ -1648,6 +1684,72 @@ export async function checkPermissionRequirements(
   return null;
 }
 
+type ToolPermissionRequirement = { resource: string; action: string };
+
+type ToolPermissionResolution =
+  | { ok: true; requirements: ToolPermissionRequirement[] }
+  | { ok: false; denial: string };
+
+function resolveToolPermissionRequirements(
+  toolName: string,
+  input: Record<string, unknown>,
+): ToolPermissionResolution {
+  const permDef = TOOL_PERMISSIONS[toolName];
+  if (!permDef) {
+    return { ok: false, denial: `No RBAC permission mapping for tool "${toolName}"` };
+  }
+
+  // Resolve the required permission (may be action-dependent)
+  let required: ToolPermissionRequirement;
+  const action = input.action as string | undefined;
+
+  if ('resource' in permDef && 'action' in permDef) {
+    required = permDef as ToolPermissionRequirement;
+  } else if (action && (permDef as Record<string, ToolPermissionRequirement>)[action]) {
+    required = (permDef as Record<string, ToolPermissionRequirement>)[action]!;
+  } else if (action) {
+    // Unknown action for a mapped tool — deny (fail-closed)
+    // Include redirect hints for tools that have been replaced by policy-based management
+    const redirectHints: Record<string, string> = {
+      manage_service_monitors: 'To add, update, or remove monitoring watches, use manage_policy_feature_link with the existing policy\'s featureLinkId and action "update". First call get_configuration_policy to find the monitoring featureLinkId and current inlineSettings.watches array, then update it with the new watch appended.',
+    };
+    const hint = redirectHints[toolName];
+    return {
+      ok: false,
+      denial: `Unknown action "${action}" for tool "${toolName}".${hint ? ` ${hint}` : ''}`,
+    };
+  } else {
+    // Action-multiplexed tool invoked without an `action` arg — deny (fail-closed).
+    // Each sub-operation has its own RBAC permission; without an action we can't
+    // resolve which one applies, so allowing here would let any caller bypass
+    // per-action checks. Zod schemas require `action` anyway; this is defense in depth.
+    return {
+      ok: false,
+      denial: `Missing required "action" argument for tool "${toolName}"`,
+    };
+  }
+
+  return {
+    ok: true,
+    requirements: [required, ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? [])],
+  };
+}
+
+/**
+ * The RBAC requirements a HUMAN needs for this tool call. Used by wave-3b
+ * approver eligibility (a human approving an agent proposal must hold what
+ * they would need to do it themselves). Returns null when the tool has no
+ * mapping — callers must treat null as "nobody is eligible", mirroring
+ * checkToolPermission's deny.
+ */
+export function requiredPermissionsForTool(
+  toolName: string,
+  input: Record<string, unknown>,
+): Array<{ resource: string; action: string }> | null {
+  const resolution = resolveToolPermissionRequirements(toolName, input);
+  return resolution.ok ? resolution.requirements : null;
+}
+
 /**
  * Check RBAC permissions for a tool invocation.
  * Returns null if allowed, or an error message if denied.
@@ -1673,40 +1775,13 @@ export async function checkToolPermission(
   }
   if (auth.token.roleId === null) return null;
 
-  const permDef = TOOL_PERMISSIONS[toolName];
-  if (!permDef) return `No RBAC permission mapping for tool "${toolName}"`;
-
-  // Resolve the required permission (may be action-dependent)
-  let required: { resource: string; action: string };
-  const action = input.action as string | undefined;
-
-  if ('resource' in permDef && 'action' in permDef) {
-    required = permDef as { resource: string; action: string };
-  } else if (action && (permDef as Record<string, { resource: string; action: string }>)[action]) {
-    required = (permDef as Record<string, { resource: string; action: string }>)[action]!;
-  } else if (action) {
-    // Unknown action for a mapped tool — deny (fail-closed)
-    // Include redirect hints for tools that have been replaced by policy-based management
-    const redirectHints: Record<string, string> = {
-      manage_service_monitors: 'To add, update, or remove monitoring watches, use manage_policy_feature_link with the existing policy\'s featureLinkId and action "update". First call get_configuration_policy to find the monitoring featureLinkId and current inlineSettings.watches array, then update it with the new watch appended.',
-    };
-    const hint = redirectHints[toolName];
-    return `Unknown action "${action}" for tool "${toolName}".${hint ? ` ${hint}` : ''}`;
-  } else {
-    // Action-multiplexed tool invoked without an `action` arg — deny (fail-closed).
-    // Each sub-operation has its own RBAC permission; without an action we can't
-    // resolve which one applies, so allowing here would let any caller bypass
-    // per-action checks. Zod schemas require `action` anyway; this is defense in depth.
-    return `Missing required "action" argument for tool "${toolName}"`;
-  }
+  const resolution = resolveToolPermissionRequirements(toolName, input);
+  if (!resolution.ok) return resolution.denial;
 
   // One getUserPermissions resolution covers the base requirement and every
   // extra permission; denials keep the same first-failure ordering as the
   // old per-requirement loop.
-  return checkPermissionRequirements(auth, [
-    required,
-    ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? []),
-  ]);
+  return checkPermissionRequirements(auth, resolution.requirements);
 }
 
 /**
