@@ -10,9 +10,15 @@
  * cannot reach: the Drizzle enum (a runtime call, verified below) and the
  * OpenAPI document, whose `enum:` arrays are plain JSON and had silently
  * drifted — `actor_type` was missing both `api_key` and `ai_agent`, and
- * `audit_result` was missing `denied` (#3908). The OpenAPI checks walk the
- * whole spec rather than pinning line numbers, so a THIRD hand-written site
- * added later fails here too. Mirrors ticketEnums.test.ts.
+ * `audit_result` was missing `denied` (#3908). The checks walk the document
+ * rather than pinning line numbers, so a THIRD hand-written site added later
+ * fails here too — whole-spec for `actorType`, scoped to the audit subtrees
+ * for the generically-named `result` (see the caveat on that test).
+ *
+ * What this suite does NOT cover: the live Postgres type. `enumValues` is just
+ * the array handed to `pgEnum`, so a widening that updates the constant but
+ * forgets the `ALTER TYPE ... ADD VALUE` migration still passes here.
+ * Mirrors ticketEnums.test.ts.
  */
 import { describe, it, expect } from 'vitest';
 import { auditQuerySchema, ACTOR_TYPES, AUDIT_RESULTS, type ActorType } from '@breeze/shared';
