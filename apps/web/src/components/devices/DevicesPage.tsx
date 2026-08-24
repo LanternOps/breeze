@@ -1421,14 +1421,17 @@ export default function DevicesPage() {
         <ConfirmDialog
           open={true}
           onClose={() => setPendingDecommissionedSkip(null)}
-          // Confirming UNMOUNTS this dialog, which is what makes a double-click
-          // safe — a second click has no button to hit. No isLoading/spinner
-          // here on purpose: that would mean keeping the dialog mounted, and
-          // then neither guard holds — ConfirmDialog's `disabled` and
-          // runBulkAction's `actionInProgress` both read a closure captured at
-          // render, still `false` on the second click, so the fleet reboots
-          // twice. (The set-state/dispatch ORDER below is not what saves us:
-          // React batches both. The unmount is.) DevicesPage.test.tsx pins it.
+          // Double-click safety lives in the shared components now (#3705), not
+          // in this call site. ConfirmDialog holds a synchronous ref latch, so
+          // the fleet cannot reboot twice even if the dialog stayed mounted;
+          // and Dialog swallows the tail of the gesture after its portal is
+          // torn out, so the second press cannot hit-test through to a device
+          // row underneath. Previously only the unmount protected this, and it
+          // protected only the first of those two failures.
+          // (The set-state/dispatch ORDER below is not load-bearing either:
+          // React batches both.) The click-through half is pinned in
+          // DevicesPage.test.tsx; the latch half in ConfirmDialog.test.tsx,
+          // which can hold the dialog mounted the way this call site does not.
           onConfirm={() => {
             const p = pendingDecommissionedSkip;
             setPendingDecommissionedSkip(null);
@@ -1448,9 +1451,8 @@ export default function DevicesPage() {
 
       {/* #3698: mirror of the device-detail confirm gate, reusing the SAME
           deviceActions.confirm.* copy so the two screens read identically and
-          no new locale keys are needed. Confirming UNMOUNTS the dialog, which
-          is what makes a double-click safe — see the decommissioned-skip
-          dialog above for why isLoading is deliberately absent. */}
+          no new locale keys are needed. Double-click safety is the shared
+          components' job (#3705) — see the decommissioned-skip dialog above. */}
       {pendingDeviceAction && (
         <ConfirmDialog
           open={true}
