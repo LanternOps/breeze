@@ -48,7 +48,14 @@ function invoice(over: Record<string, unknown>) {
   };
 }
 
-describe('InvoiceWorkspace', () => {
+// Testing Library's async budget, and the per-test ceiling it must fit inside.
+// The two expiring together is what made #3277's recurrence unreadable — see
+// the note inside the describe.
+const DEFAULT_ASYNC_UTIL_TIMEOUT_MS = 1000;
+const ASYNC_UTIL_TIMEOUT_MS = 5000;
+const TEST_TIMEOUT_MS = 15000;
+
+describe('InvoiceWorkspace', { timeout: TEST_TIMEOUT_MS }, () => {
   // #3219 — the queued-Issue tests assert the END of a multi-hop propagation
   // chain: the PATCH promise settles → the editor reports saved/failed → the
   // workspace clears `savePending` → the header un-gates → the queued Issue
@@ -67,9 +74,17 @@ describe('InvoiceWorkspace', () => {
   // Raised file-wide rather than per-assertion so a future test in this file
   // inherits the headroom instead of re-discovering the flake. Restored
   // afterwards because Testing Library's `configure` is process-global.
-  const DEFAULT_ASYNC_UTIL_TIMEOUT_MS = 1000;
+  //
+  // ASYNC_UTIL_TIMEOUT_MS MUST stay strictly below TEST_TIMEOUT_MS. The first
+  // pass at this set it to 5000ms while vitest's `testTimeout` default is also
+  // 5000ms, so the two expired together: the test died with a bare
+  // "Test timed out in 5000ms" before any `waitFor` could report WHICH element
+  // never arrived. That is how #3277 recurred on main (fe6407861) reading as an
+  // opaque timeout rather than the diagnosable ~1038ms waitFor failure the
+  // earlier sightings gave us. Keep the gap — it is what makes the next flake
+  // legible.
   beforeAll(() => {
-    configure({ asyncUtilTimeout: 5000 });
+    configure({ asyncUtilTimeout: ASYNC_UTIL_TIMEOUT_MS });
   });
   afterAll(() => {
     configure({ asyncUtilTimeout: DEFAULT_ASYNC_UTIL_TIMEOUT_MS });
