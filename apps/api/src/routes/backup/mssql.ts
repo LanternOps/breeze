@@ -10,7 +10,7 @@ import {
   executeCommand,
   CommandTypes,
 } from '../../services/commandQueue';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice, effectiveBackupModes } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
@@ -19,6 +19,10 @@ import {
   applyBackupCommandResultToJob,
   markBackupJobFailedIfInFlight,
 } from '../../services/backupResultPersistence';
+import {
+  authorizeRouteResilienceResources,
+  resolveRouteAuthorizedDeviceIds,
+} from './resilienceAuthorization';
 
 export const mssqlRoutes = new Hono();
 
@@ -51,25 +55,6 @@ const mssqlRestoreSchema = z.object({
   noRecovery: z.boolean().default(false),
 });
 
-async function verifyDeviceAccessForBackup(c: any, deviceId: string, orgId: string) {
-  const [device] = await db
-    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device || device.orgId !== orgId) {
-    return { error: 'Device not found' as const, status: 404 as const };
-  }
-
-  const permissions = c.get('permissions') as UserPermissions | undefined;
-  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
-    return { error: 'Access to this site denied' as const, status: 403 as const };
-  }
-
-  return { device };
-}
-
 // ── GET /mssql/instances — list all discovered instances (org-wide) ──
 
 mssqlRoutes.get('/mssql/instances', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
@@ -79,10 +64,18 @@ mssqlRoutes.get('/mssql/instances', requirePermission(PERMISSIONS.ORGS_READ.reso
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
+  const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+  if (authorizedDeviceIds && authorizedDeviceIds.length === 0) {
+    return c.json({ data: [] });
+  }
+
   const instances = await db
     .select()
     .from(sqlInstances)
-    .where(eq(sqlInstances.orgId, orgId));
+    .where(and(
+      eq(sqlInstances.orgId, orgId),
+      authorizedDeviceIds ? inArray(sqlInstances.deviceId, authorizedDeviceIds) : undefined,
+    ));
 
   return c.json({ data: instances });
 });
@@ -101,11 +94,10 @@ mssqlRoutes.get(
     }
 
     const { deviceId } = c.req.valid('param');
-
-    const access = await verifyDeviceAccessForBackup(c, deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'device', id: deviceId, role: 'source' },
+    ], 'read');
+    if (!authorization.ok) return authorization.response;
 
     const instances = await db
       .select()
@@ -133,12 +125,16 @@ mssqlRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
+    const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
     const assignedDevices = await resolveAllBackupAssignedDevices(orgId);
     const targetDeviceIds = assignedDevices
       .filter((entry) => entry.configId && effectiveBackupModes(entry).includes('mssql'))
       .map((entry) => entry.deviceId);
+    const visibleTargetDeviceIds = authorizedDeviceIds
+      ? targetDeviceIds.filter((deviceId) => authorizedDeviceIds.includes(deviceId))
+      : targetDeviceIds;
 
-    if (targetDeviceIds.length === 0) {
+    if (visibleTargetDeviceIds.length === 0) {
       return c.json({ data: [] });
     }
 
@@ -154,7 +150,7 @@ mssqlRoutes.get(
       .where(and(
         eq(devices.orgId, orgId),
         eq(devices.osType, 'windows'),
-        inArray(devices.id, targetDeviceIds),
+        inArray(devices.id, visibleTargetDeviceIds),
       ));
 
     const data = rows
@@ -188,11 +184,10 @@ mssqlRoutes.post(
     }
 
     const { deviceId } = c.req.valid('param');
-
-    const access = await verifyDeviceAccessForBackup(c, deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'device', id: deviceId, role: 'target' },
+    ], 'verify');
+    if (!authorization.ok) return authorization.response;
 
     const result = await executeCommand(
       deviceId,
@@ -265,11 +260,10 @@ mssqlRoutes.post(
     }
 
     const payload = c.req.valid('json');
-
-    const access = await verifyDeviceAccessForBackup(c, payload.deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'device', id: payload.deviceId, role: 'source' },
+    ], 'verify');
+    if (!authorization.ok) return authorization.response;
 
     const resolvedConfig = await resolveBackupConfigForDevice(payload.deviceId);
     if (!resolvedConfig?.configId) {
@@ -368,10 +362,18 @@ mssqlRoutes.get('/mssql/chains', requirePermission(PERMISSIONS.ORGS_READ.resourc
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
 
+  const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+  if (authorizedDeviceIds && authorizedDeviceIds.length === 0) {
+    return c.json({ data: [] });
+  }
+
   const chains = await db
     .select()
     .from(backupChains)
-    .where(eq(backupChains.orgId, orgId));
+    .where(and(
+      eq(backupChains.orgId, orgId),
+      authorizedDeviceIds ? inArray(backupChains.deviceId, authorizedDeviceIds) : undefined,
+    ));
 
   return c.json({ data: chains });
 });
@@ -393,11 +395,11 @@ mssqlRoutes.post(
     }
 
     const payload = c.req.valid('json');
-
-    const access = await verifyDeviceAccessForBackup(c, payload.deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
+      { kind: 'device', id: payload.deviceId, role: 'target' },
+    ], 'restore');
+    if (!authorization.ok) return authorization.response;
 
     const [snapshot] = await db
       .select({
@@ -488,6 +490,11 @@ mssqlRoutes.post(
 
     const { snapshotId } = c.req.valid('param');
 
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'snapshot', id: snapshotId, role: 'source' },
+    ], 'verify');
+    if (!authorization.ok) return authorization.response;
+
     const [snapshot] = await db
       .select({
         id: backupSnapshots.id,
@@ -506,11 +513,6 @@ mssqlRoutes.post(
 
     if (!snapshot) {
       return c.json({ error: 'Snapshot not found' }, 404);
-    }
-
-    const access = await verifyDeviceAccessForBackup(c, snapshot.deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
     }
 
     const metadata = (snapshot.metadata ?? {}) as Record<string, unknown>;

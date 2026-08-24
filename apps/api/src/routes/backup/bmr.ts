@@ -15,7 +15,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
 import { enqueueRecoveryMediaBuild } from '../../jobs/recoveryMediaWorker';
 import { enqueueRecoveryBootMediaBuild } from '../../jobs/recoveryBootMediaWorker';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
 import { getGithubReleasePageUrl } from '../../services/binarySource';
 import {
   BMR_BOOTSTRAP_VERSION,
@@ -54,6 +54,10 @@ import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { resolveScopedOrgId } from './helpers';
 import {
+  authorizeRouteResilienceResources,
+  resolveRouteAuthorizedDeviceIds,
+} from './resilienceAuthorization';
+import {
   bmrAuthenticateSchema,
   bmrBootMediaCreateSchema,
   bmrBootMediaListSchema,
@@ -77,12 +81,6 @@ const recoveryDownloadQuerySchema = z.object({
   token: z.string().min(1).optional(),
   path: z.string().min(1).max(4096),
 });
-
-async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
-  if (!perms?.allowedSiteIds) return null;
-  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
-  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
-}
 
 async function resolveAllowedSnapshotIds(orgId: string, allowedDeviceIds: string[]): Promise<string[]> {
   if (allowedDeviceIds.length === 0) return [];
@@ -372,13 +370,10 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
-
     const query = c.req.valid('query');
-    const perms = c.get('permissions') as UserPermissions | undefined;
-    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+    const allowedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
     if (query.deviceId && allowedDeviceIds && !allowedDeviceIds.includes(query.deviceId)) {
-      return c.json({ error: 'Device not found or access denied' }, 403);
+      return c.json({ error: 'site_access_denied' }, 403);
     }
     if (allowedDeviceIds && allowedDeviceIds.length === 0) {
       return c.json({
@@ -392,7 +387,7 @@ bmrRoutes.get(
     }
     const allowedSnapshotIds = allowedDeviceIds ? await resolveAllowedSnapshotIds(orgId, allowedDeviceIds) : null;
     if (query.snapshotId && allowedSnapshotIds && !allowedSnapshotIds.includes(query.snapshotId)) {
-      return c.json({ error: 'Device not found or access denied' }, 403);
+      return c.json({ error: 'site_access_denied' }, 403);
     }
     if (allowedSnapshotIds && allowedSnapshotIds.length === 0) {
       return c.json({
@@ -404,6 +399,7 @@ bmrRoutes.get(
         },
       });
     }
+    await expireTokenArtifacts(orgId);
 
     const rows = await db
       .select({
@@ -458,6 +454,11 @@ bmrRoutes.post(
     }
 
     const payload = c.req.valid('json');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
+    ], 'token');
+    if (!authorization.ok) return authorization.response;
+
     const [snapshot] = await db
       .select()
       .from(backupSnapshots)
@@ -540,9 +541,14 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
+    const { id } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'recovery_token', id, role: 'source' },
+      { kind: 'recovery_token', id, role: 'target' },
+    ], 'read');
+    if (!authorization.ok) return authorization.response;
     await expireTokenArtifacts(orgId);
 
-    const { id } = c.req.valid('param');
     const payload = await resolveRecoveryTokenPresentation(orgId, id, c.req.url);
     if (!payload) {
       return c.json({ error: 'Recovery token not found' }, 404);
@@ -566,6 +572,12 @@ bmrRoutes.delete(
     }
 
     const { id } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'recovery_token', id, role: 'source' },
+      { kind: 'recovery_token', id, role: 'target' },
+    ], 'revoke');
+    if (!authorization.ok) return authorization.response;
+
     const [row] = await db
       .update(recoveryTokens)
       .set({ status: 'revoked' })
@@ -641,9 +653,13 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const query = c.req.valid('query');
-    const rows = await listRecoveryMediaArtifacts(orgId, query);
+    const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+    if (authorizedDeviceIds && authorizedDeviceIds.length === 0) {
+      return c.json({ data: [], pagination: { limit: query.limit, offset: query.offset, count: 0 } });
+    }
+    await expireTokenArtifacts(orgId);
+    const rows = await listRecoveryMediaArtifacts(orgId, { ...query, authorizedDeviceIds });
     return c.json({
       data: rows.map(toMediaResponse),
       pagination: {
@@ -668,8 +684,13 @@ bmrRoutes.post(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const payload = c.req.valid('json');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'recovery_token', id: payload.tokenId, role: 'source' },
+      { kind: 'recovery_token', id: payload.tokenId, role: 'target' },
+    ], 'media');
+    if (!authorization.ok) return authorization.response;
+    await expireTokenArtifacts(orgId);
 
     const [token] = await db
       .select()
@@ -780,9 +801,13 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
-
     const { id } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'media_artifact', id, role: 'source' },
+      { kind: 'media_artifact', id, role: 'target' },
+    ], 'read');
+    if (!authorization.ok) return authorization.response;
+    await expireTokenArtifacts(orgId);
     const row = await getRecoveryMediaArtifact(orgId, id);
     if (!row) {
       return c.json({ error: 'Recovery media artifact not found' }, 404);
@@ -802,8 +827,13 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const { id } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'media_artifact', id, role: 'source' },
+      { kind: 'media_artifact', id, role: 'target' },
+    ], 'media');
+    if (!authorization.ok) return authorization.response;
+    await expireTokenArtifacts(orgId);
     const target = await getRecoveryMediaDownloadTarget(orgId, id);
     if (!target) {
       return c.json({ error: 'Recovery media artifact not found' }, 404);
@@ -838,8 +868,13 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const { id } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'media_artifact', id, role: 'source' },
+      { kind: 'media_artifact', id, role: 'target' },
+    ], 'media');
+    if (!authorization.ok) return authorization.response;
+    await expireTokenArtifacts(orgId);
     const target = await getRecoveryMediaSignatureDownloadTarget(orgId, id);
     if (!target) {
       return c.json({ error: 'Recovery media artifact not found' }, 404);
@@ -874,9 +909,13 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const query = c.req.valid('query');
-    const rows = await listRecoveryBootMediaArtifacts(orgId, query);
+    const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+    if (authorizedDeviceIds && authorizedDeviceIds.length === 0) {
+      return c.json({ data: [], pagination: { limit: query.limit, offset: query.offset, count: 0 } });
+    }
+    await expireTokenArtifacts(orgId);
+    const rows = await listRecoveryBootMediaArtifacts(orgId, { ...query, authorizedDeviceIds });
     return c.json({
       data: rows.map(toBootMediaResponse),
       pagination: {
@@ -901,8 +940,13 @@ bmrRoutes.post(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const payload = c.req.valid('json');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'recovery_token', id: payload.tokenId, role: 'source' },
+      { kind: 'recovery_token', id: payload.tokenId, role: 'target' },
+    ], 'media');
+    if (!authorization.ok) return authorization.response;
+    await expireTokenArtifacts(orgId);
 
     const [token] = await db
       .select()
@@ -967,8 +1011,13 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const { id } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'boot_media_artifact', id, role: 'source' },
+      { kind: 'boot_media_artifact', id, role: 'target' },
+    ], 'read');
+    if (!authorization.ok) return authorization.response;
+    await expireTokenArtifacts(orgId);
     const row = await getRecoveryBootMediaArtifact(orgId, id);
     if (!row) {
       return c.json({ error: 'Recovery boot media artifact not found' }, 404);
@@ -988,8 +1037,13 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const { id } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'boot_media_artifact', id, role: 'source' },
+      { kind: 'boot_media_artifact', id, role: 'target' },
+    ], 'media');
+    if (!authorization.ok) return authorization.response;
+    await expireTokenArtifacts(orgId);
     const target = await getRecoveryBootMediaDownloadTarget(orgId, id);
     if (!target) {
       return c.json({ error: 'Recovery boot media artifact not found' }, 404);
@@ -1024,8 +1078,13 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    await expireTokenArtifacts(orgId);
     const { id } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'boot_media_artifact', id, role: 'source' },
+      { kind: 'boot_media_artifact', id, role: 'target' },
+    ], 'media');
+    if (!authorization.ok) return authorization.response;
+    await expireTokenArtifacts(orgId);
     const target = await getRecoveryBootMediaDownloadTarget(orgId, id, 'signature');
     if (!target) {
       return c.json({ error: 'Recovery boot media artifact not found' }, 404);
@@ -1385,6 +1444,7 @@ bmrPublicRoutes.get(
       .select({
         id: recoveryTokens.id,
         orgId: recoveryTokens.orgId,
+        deviceId: recoveryTokens.deviceId,
         snapshotId: recoveryTokens.snapshotId,
         status: recoveryTokens.status,
         authenticatedAt: recoveryTokens.authenticatedAt,

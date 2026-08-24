@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { db } from '../db';
-import { recoveryBootMediaArtifacts, recoveryMediaArtifacts, recoveryTokens } from '../db/schema';
+import { backupSnapshots, recoveryBootMediaArtifacts, recoveryMediaArtifacts, recoveryTokens } from '../db/schema';
 import { asRecord } from './recoveryBootstrap';
 import {
   buildS3Client,
@@ -254,6 +254,7 @@ export async function listRecoveryBootMediaArtifacts(orgId: string, filters: {
   status?: string;
   limit: number;
   offset: number;
+  authorizedDeviceIds?: string[] | null;
 }) {
   return db
     .select({
@@ -280,12 +281,22 @@ export async function listRecoveryBootMediaArtifacts(orgId: string, filters: {
     })
     .from(recoveryBootMediaArtifacts)
     .innerJoin(recoveryTokens, eq(recoveryBootMediaArtifacts.tokenId, recoveryTokens.id))
+    .innerJoin(backupSnapshots, and(
+      eq(recoveryBootMediaArtifacts.snapshotId, backupSnapshots.id),
+      eq(recoveryBootMediaArtifacts.orgId, backupSnapshots.orgId),
+    ))
     .where(
       and(
         eq(recoveryBootMediaArtifacts.orgId, orgId),
         filters.tokenId ? eq(recoveryBootMediaArtifacts.tokenId, filters.tokenId) : undefined,
         filters.snapshotId ? eq(recoveryBootMediaArtifacts.snapshotId, filters.snapshotId) : undefined,
-        filters.status ? eq(recoveryBootMediaArtifacts.status, filters.status as never) : undefined
+        filters.status ? eq(recoveryBootMediaArtifacts.status, filters.status as never) : undefined,
+        filters.authorizedDeviceIds
+          ? inArray(recoveryTokens.deviceId, filters.authorizedDeviceIds)
+          : undefined,
+        filters.authorizedDeviceIds
+          ? inArray(backupSnapshots.deviceId, filters.authorizedDeviceIds)
+          : undefined
       )
     )
     .orderBy(desc(recoveryBootMediaArtifacts.createdAt), desc(recoveryBootMediaArtifacts.id))
