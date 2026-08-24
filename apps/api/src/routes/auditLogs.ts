@@ -8,6 +8,7 @@ import { authMiddleware, requireMfa, requirePermission } from '../middleware/aut
 import { writeRouteAudit } from '../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { csvRow } from '../services/spreadsheetExport';
+import type { ActorType, AuditResult } from '@breeze/shared';
 
 export const auditLogRoutes = new Hono();
 const requireAuditLogRead = requirePermission(
@@ -365,7 +366,7 @@ interface LateralAuditRow extends Record<string, unknown> {
   id: string;
   org_id: string | null;
   timestamp: Date | string;
-  actor_type: 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
+  actor_type: ActorType;
   actor_id: string;
   actor_email: string | null;
   action: string;
@@ -375,7 +376,7 @@ interface LateralAuditRow extends Record<string, unknown> {
   details: unknown;
   ip_address: string | null;
   user_agent: string | null;
-  result: 'success' | 'failure' | 'denied';
+  result: AuditResult;
   error_message: string | null;
   checksum: string | null;
   initiated_by: string | null;
