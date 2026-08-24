@@ -56,9 +56,6 @@ i18next.init({
     // corrupt plain-text subjects and pdfkit text output.
     escapeValue: false,
   },
-  // i18next prints warnings for missing keys by default; keep them visible so
-  // locale gaps surface in server logs rather than silently returning key paths.
-  missingKeyHandler: false,
 });
 
 /**
