@@ -38,7 +38,7 @@
  * DB touch here self-contexts, and the SDK loop itself runs under
  * `runOutsideDbContext` so the SDK's tool handlers never inherit one.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AiAgentKind,
@@ -63,7 +63,7 @@ import { organizations } from '../../db/schema/orgs';
 import { createActionIntent } from '../actionIntents/intentService';
 import { BREEZE_MCP_TOOL_NAMES, createBreezeMcpServer } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
-import { calculateCostCents, recordUsage } from '../aiCostTracker';
+import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
 import type { AiBillingSource } from '../aiCostTracker';
 import {
   checkAgentGuardrails,
@@ -104,9 +104,17 @@ export interface OutcomeProposedAction {
   tool: string;
   action?: string;
   args: Record<string, unknown>;
-  /** Set for Tier-3 proposals that reached `action_intents`. */
+  /**
+   * Set for Tier-3 proposals that reached `action_intents`. Presence alone does
+   * NOT mean a human can still approve it — `createActionIntent` commits and
+   * then cancels an intent nobody is eligible to decide. `intentError` is the
+   * authoritative signal, and `run.intent_ids` only ever lists PENDING ones.
+   */
   intentId?: string;
-  /** Set instead when the intent could not be created (e.g. no eligible approvers). */
+  /**
+   * Set instead of a live approval when the intent could not be created, or was
+   * born terminal (`no_eligible_approvers`).
+   */
   intentError?: string;
 }
 
@@ -138,6 +146,8 @@ export interface AgentRunOutcome {
   toolExecutionCount: number;
   budgetExceeded?: boolean;
   wallClockExceeded?: boolean;
+  /** The SDK stopped because `maxTurns` was reached (`error_max_turns`). */
+  maxTurnsExceeded?: boolean;
 }
 
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
@@ -247,6 +257,15 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
     // The device's CURRENT site, always read here and never taken from tool
     // input: it is what bounds the agent's blast radius (spec §3.2), and a run
     // admitted before a device moved sites must follow the device.
+    //
+    // The `org_id` predicate is NOT redundant with the run row: this select
+    // runs in a SYSTEM context (full RLS bypass), so the tenant boundary has to
+    // be written out by hand. A device can leave this org between admission and
+    // delivery — moveOrg re-stamps the device (and `alerts`, which is in
+    // CORE_DEVICE_ORG_DENORMALIZED_TABLES) into the NEW org while the run
+    // deliberately stays home — and an unpinned read would then feed another
+    // tenant's hostname/OS/site into this org's prompt and run summary. Missing
+    // (moved or deleted) reads as "no device", which the prompt handles.
     let device: RunContext['device'] = null;
     if (run.deviceId) {
       const [row] = await db
@@ -257,9 +276,14 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
           osType: devices.osType,
         })
         .from(devices)
-        .where(eq(devices.id, run.deviceId))
+        .where(and(eq(devices.id, run.deviceId), eq(devices.orgId, run.orgId)))
         .limit(1);
       device = row ?? null;
+      if (!row) {
+        console.warn('[aiAgentRunLoop] run device is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, deviceId: run.deviceId,
+        });
+      }
     }
 
     let alert: RunContext['alert'] = null;
@@ -267,9 +291,14 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       const [row] = await db
         .select({ title: alerts.title, severity: alerts.severity, message: alerts.message })
         .from(alerts)
-        .where(eq(alerts.id, run.alertId))
+        .where(and(eq(alerts.id, run.alertId), eq(alerts.orgId, run.orgId)))
         .limit(1);
       alert = row ?? null;
+      if (!row) {
+        console.warn('[aiAgentRunLoop] run alert is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, alertId: run.alertId,
+        });
+      }
     }
 
     return { run: run as RunRow, agent: agent as AgentRow, orgPartnerId: org.partnerId, device, alert };
@@ -333,7 +362,23 @@ export function createAgentRunPreToolUse(args: {
             reason: `Proposed by ${agentName} for run ${run.id}`,
           });
           entry.intentId = intent.id;
-          intentIds.push(intent.id);
+          // createActionIntent does NOT throw when nobody can approve: it
+          // commits the intent and immediately cancels it with
+          // `no_eligible_approvers`, returning that snapshot. Counting such an
+          // id towards `awaiting_approval` would end the run in a state that
+          // can never resolve, and point the recipients' notification at an
+          // /approvals queue the intent will never appear in. Only a genuinely
+          // pending intent is something a human still owns.
+          if (intent.status === 'pending_approval') {
+            intentIds.push(intent.id);
+          } else {
+            intentError = intent.errorCode ?? `intent ${intent.status}`;
+            entry.intentError = intentError;
+            console.warn('[aiAgentRunLoop] proposal intent was not left pending approval', {
+              runId: run.id, toolName, intentId: intent.id, status: intent.status,
+              errorCode: intent.errorCode,
+            });
+          }
         } catch (error) {
           // no_eligible_approvers, agent_policy_denied, … The PROPOSAL is still
           // recorded — a reviewer needs to see what the agent wanted to do even
@@ -397,6 +442,44 @@ interface SdkUsage {
 }
 
 /**
+ * How a terminal SDK result maps onto this run's outcome.
+ *
+ * `SDKResultMessage` is `SDKResultSuccess | SDKResultError`, and only the
+ * success branch carries a `result` string. Branching on `subtype === 'success'`
+ * alone — and doing nothing else — recorded an Anthropic 500 mid-run as a
+ * `completed` run with a NULL error code and an empty summary: the async
+ * iterator ends normally after an error result, so nothing threw, and the
+ * recipients were told "Agent run finished" about an alert nobody triaged.
+ *
+ * Two of the error subtypes are CEILINGS, not crashes, and reuse the flags the
+ * local guards already set (a run that produced proposals before hitting one
+ * still finishes normally, with the flag in `outcome`). Note that
+ * `error_max_budget_usd` is the PRIMARY budget stop: the SDK halts at
+ * `maxBudgetUsd`, so the local `costCents > maxBudgetCentsPerRun` guard —
+ * strict `>`, evaluated only after a result lands — is the backstop, not the
+ * other way round.
+ *
+ * Anything else, including a subtype added by a future SDK release, is a hard
+ * failure: unknown means "we do not know that this run did its job".
+ */
+type ResultDisposition =
+  | { kind: 'success' }
+  | { kind: 'ceiling'; flag: 'budgetExceeded' | 'maxTurnsExceeded' }
+  | { kind: 'failure'; errorCode: string };
+
+const RESULT_DISPOSITIONS: Record<string, ResultDisposition> = {
+  success: { kind: 'success' },
+  error_max_budget_usd: { kind: 'ceiling', flag: 'budgetExceeded' },
+  error_max_turns: { kind: 'ceiling', flag: 'maxTurnsExceeded' },
+  error_during_execution: { kind: 'failure', errorCode: 'sdk_error' },
+  error_max_structured_output_retries: { kind: 'failure', errorCode: 'sdk_output_error' },
+};
+
+export function dispositionForResultSubtype(subtype: string): ResultDisposition {
+  return RESULT_DISPOSITIONS[subtype] ?? { kind: 'failure', errorCode: 'sdk_error' };
+}
+
+/**
  * Same precedence as `recordUsageFromSdkResult`: trust the SDK's self-reported
  * cost, and price the tokens ourselves only when it reports zero against a
  * non-zero token count (issue #1326 — the SDK cannot price a model id newer
@@ -446,8 +529,20 @@ async function notifyRunFinished(
   finished: { status: string; summary: string; intentIds: string[] },
 ): Promise<void> {
   try {
+    // The run's immutable snapshot, NOT `ctx.agent.recipients`. The agent row
+    // loaded by `run.agent_id` is always the PARTNER BASELINE
+    // (resolveEffectiveAgentSystem pins `agentId: partnerRow.id`), so its raw
+    // recipients column silently drops every recipient an organization added
+    // through its override — and notifies nobody at all when only the override
+    // configured any. `mergeAgentPolicies` already unions the two sets into
+    // `effective.recipients`, and `resolveRecipientUserIds` re-derives
+    // membership against the RUN org, so the merged set is the correct input.
     const userIds = await resolveRecipientUserIds(
-      { orgId: ctx.agent.orgId, partnerId: ctx.agent.partnerId, recipients: ctx.agent.recipients },
+      {
+        orgId: ctx.agent.orgId,
+        partnerId: ctx.agent.partnerId,
+        recipients: ctx.run.policySnapshot.effective.recipients,
+      },
       ctx.run.orgId,
     );
     if (userIds.length === 0) return;
@@ -574,6 +669,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
 
   let summary = '';
   let failure: LoopResult['failure'];
+  let maxTurnsExceeded = false;
   let costCents = 0;
   let turnCount = 0;
   const usage: SdkUsage = {
@@ -630,6 +726,32 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             summary = message.result.trim();
           }
 
+          // Exhaustive on purpose — see RESULT_DISPOSITIONS. `is_error` on a
+          // 'success' subtype is treated as a failure too: the SDK's own
+          // is_error flag is the broader signal of the two.
+          const disposition = dispositionForResultSubtype(message.subtype);
+          if (disposition.kind === 'ceiling') {
+            if (disposition.flag === 'budgetExceeded') budgetExceeded = true;
+            else maxTurnsExceeded = true;
+            abortController.abort();
+            break;
+          }
+          if (disposition.kind === 'failure' || message.is_error === true) {
+            const errors = (message as unknown as { errors?: unknown }).errors;
+            const detail = Array.isArray(errors) && errors.length > 0
+              ? errors.map((e) => String(e)).join('; ')
+              : `SDK returned ${message.subtype}`;
+            failure = {
+              errorCode: disposition.kind === 'failure' ? disposition.errorCode : 'sdk_error',
+              message: detail,
+            };
+            console.error('[aiAgentRunLoop] SDK returned a terminal error result', {
+              runId: run.id, subtype: message.subtype, detail,
+            });
+            abortController.abort();
+            break;
+          }
+
           if (costCents > limits.maxBudgetCentsPerRun) {
             budgetExceeded = true;
             abortController.abort();
@@ -647,10 +769,13 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
       }
     });
   } catch (error) {
-    // An abort we asked for is a controlled stop, not a crash.
-    if (wallClockExceeded || budgetExceeded) {
+    // An abort we asked for is a controlled stop, not a crash — including the
+    // abort issued for an SDK error result, whose `failure` is already set and
+    // must not be overwritten by the AbortError it provokes.
+    if (wallClockExceeded || budgetExceeded || maxTurnsExceeded || failure) {
       console.warn('[aiAgentRunLoop] SDK loop aborted', {
-        runId: run.id, wallClockExceeded, budgetExceeded,
+        runId: run.id, wallClockExceeded, budgetExceeded, maxTurnsExceeded,
+        errorCode: failure?.errorCode ?? null,
       });
     } else {
       console.error('[aiAgentRunLoop] SDK loop failed', { runId: run.id, error });
@@ -665,20 +790,30 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
 
   if (wallClockExceeded) outcome.wallClockExceeded = true;
   if (budgetExceeded) outcome.budgetExceeded = true;
+  if (maxTurnsExceeded) outcome.maxTurnsExceeded = true;
 
-  // Org-level AI spend rollup, so `checkBudget` at admission is not blind to
-  // agent traffic. Priced by the shared sessionless helper from plain token
-  // counts; the run row carries the SDK's authoritative figure. Unifying the two
-  // needs `recordUsageFromSdkResult`, which requires an `ai_sessions` row the
-  // run does not have until wave 6. Best-effort: never fails the run.
-  if (usage.input_tokens > 0 || usage.output_tokens > 0) {
-    try {
-      await recordUsage(
-        null, run.orgId, model, usage.input_tokens, usage.output_tokens, false, billingSource,
-      );
-    } catch (error) {
-      console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
-    }
+  // Org-level AI spend accounting, so neither budget gate is blind to agent
+  // traffic. `recordUsage(null, …)` used to stand here and was wrong twice
+  // over: it re-priced from plain input/output counters (dropping the cache
+  // tokens that are most of an agent prompt, and discarding the SDK's
+  // authoritative cost this run row stores), and it deducts NO platform AI
+  // credits — so a platform-billed run was effectively free and `checkBudget`
+  // kept admitting runs after the credits were gone. Best-effort: an accounting
+  // failure never redefines the run's outcome.
+  try {
+    await recordSessionlessSdkUsage(
+      run.orgId,
+      {
+        costCents,
+        usage,
+        numTurns: turnCount,
+        toolExecutionCount: outcome.toolExecutionCount,
+        model,
+      },
+      billingSource,
+    );
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
   }
 
   return {
@@ -723,7 +858,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
   //    switch or the operator's policy may have changed since. This decides
   //    only WHETHER to start — the loop itself runs on the run's immutable
   //    snapshot (see driveSdkLoop).
-  const stopped = await isStoppedBeforeStart(run.orgId, agent.kind);
+  const stopped = await isStoppedBeforeStart(run.orgId, agent.kind, run.agentId);
   if (stopped) {
     await transitionRunStatus(runId, 'running', 'skipped', {
       errorCode: 'policy_revoked_before_start',
@@ -758,9 +893,15 @@ export async function executeAgentRun(runId: string): Promise<void> {
       || outcome.proposedActions.length > 0
       || result.summary.trim().length > 0;
 
-    if (!producedSomething && (outcome.wallClockExceeded || outcome.budgetExceeded)) {
-      const errorCode = outcome.wallClockExceeded ? 'wall_clock_exceeded' : 'budget_exceeded';
-      await finishRun(ctx, 'failed', errorCode, result);
+    const ceiling = outcome.wallClockExceeded
+      ? 'wall_clock_exceeded'
+      : outcome.budgetExceeded
+        ? 'budget_exceeded'
+        : outcome.maxTurnsExceeded
+          ? 'max_turns_exceeded'
+          : null;
+    if (!producedSomething && ceiling) {
+      await finishRun(ctx, 'failed', ceiling, result);
       return;
     }
 
@@ -833,12 +974,36 @@ async function finishRun(
   });
 }
 
-/** Kill switch + current effective policy. True means "do not start". */
-async function isStoppedBeforeStart(orgId: string, kind: AiAgentKind): Promise<boolean> {
+/**
+ * Kill switch + current effective policy. True means "do not start".
+ *
+ * `agentId` is not decoration. `resolveEffectiveAgentSystem` re-resolves by
+ * (org, kind) and always reports the CURRENT partner baseline, so without this
+ * comparison the gate could clear a run using a DIFFERENT agent's live policy:
+ * disable agent A (the intended "stop it now"), create replacement B of the
+ * same kind, and A's queued run sails through the gate and executes minutes
+ * later under A's snapshot and A's wider allowlist. Identity has to match for
+ * "still enabled" to mean anything.
+ *
+ * An org OVERRIDE does not trip this: the resolver reports the baseline id
+ * either way, so ordinary org-level policy edits still reach the run through
+ * the enabled/mode check alone.
+ */
+async function isStoppedBeforeStart(
+  orgId: string,
+  kind: AiAgentKind,
+  agentId: string,
+): Promise<boolean> {
   if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return true;
   try {
     const current = await resolveEffectiveAgentSystem(orgId, kind);
     if (!current) return true;
+    if (current.agentId !== agentId) {
+      console.warn('[aiAgentRunLoop] the run\'s agent is no longer the effective agent', {
+        orgId, kind, runAgentId: agentId, currentAgentId: current.agentId,
+      });
+      return true;
+    }
     return !current.effective.enabled || current.effective.mode === 'off';
   } catch (error) {
     console.error('[aiAgentRunLoop] could not re-resolve the effective policy', { orgId, kind, error });

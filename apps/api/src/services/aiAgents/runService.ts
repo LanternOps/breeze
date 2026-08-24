@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, count, eq, gte, inArray, isNull, sum } from 'drizzle-orm';
+import { and, count, eq, gte, inArray, isNotNull, isNull, lt, or, sql, sum } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type {
   AiAgentKind,
@@ -19,6 +19,7 @@ import {
 // admission gate every trigger path calls, and pulling the barrel would force
 // every partial-mock unit test of those paths to stub the whole schema surface.
 import { aiAgents, aiAgentRuns, type AiAgentRunRow } from '../../db/schema/aiAgents';
+import { devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { checkBudget } from '../aiCostTracker';
 import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
@@ -71,7 +72,8 @@ export type AgentRunSkipReason =
   | 'kill_switch_off' | 'no_effective_agent' | 'agent_disabled' | 'mode_off'
   | 'trigger_filter_mismatch' | 'maintenance_window' | 'cooldown'
   | 'max_concurrent_runs' | 'max_runs_per_hour' | 'org_budget_exceeded'
-  | 'agent_daily_budget_exceeded' | 'duplicate' | 'ownership_mismatch';
+  | 'agent_daily_budget_exceeded' | 'duplicate' | 'ownership_mismatch'
+  | 'device_not_in_org';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -154,7 +156,84 @@ const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'trigger_filter_mismatch', 'maintenance_window', 'cooldown',
   'max_concurrent_runs', 'max_runs_per_hour', 'org_budget_exceeded',
   'agent_daily_budget_exceeded', 'duplicate', 'ownership_mismatch',
+  'device_not_in_org',
 ]);
+
+/**
+ * Advisory-lock namespace for agent-run admission. `pg_advisory_xact_lock` is
+ * a GLOBAL keyspace shared by every lock taker in the database, so the first
+ * (int4, int4) argument namespaces this feature's locks away from anyone
+ * else's. Arbitrary but must never change: a different value would stop
+ * serialising against in-flight admissions during a rolling deploy.
+ */
+const AGENT_RUN_ADMISSION_LOCK_NAMESPACE = 3824;
+
+/**
+ * How long a run may sit in `queued`/`running` before a later admission
+ * declares it dead.
+ *
+ * 1800s is the maximum `wallClockSeconds` the validator accepts, so this
+ * threshold is safe for EVERY policy rather than only the default one; the
+ * extra 900s covers the BullMQ lock (720s), teardown, and clock skew. Too
+ * generous only delays recovery — too aggressive would fail a run that is
+ * still thinking, which is unrecoverable.
+ */
+const STALLED_RUN_AFTER_SECONDS = 1800 + 900;
+
+/**
+ * Fail runs the worker can no longer be executing, scoped to one (agent, org).
+ *
+ * Why this exists: BullMQ's stalled checker re-delivers a job whose worker was
+ * SIGKILLed (deploy, OOM, `docker stop` past the grace period), and the
+ * redelivered job's `transitionRunStatus(runId, 'queued', 'running')` CAS FAILS
+ * against a row already sitting in `running` — `executeAgentRun` logs
+ * "duplicate delivery ignored" and returns, BullMQ marks the job complete, and
+ * the row stays `running` forever. With `maxConcurrentRuns` defaulting to 1 and
+ * the concurrency count covering `('queued','running')`, ONE such crash
+ * permanently refuses every future run for that (agent, org) with
+ * `max_concurrent_runs` — the manual trigger included, which 409s. Recovery
+ * used to require hand-written SQL.
+ *
+ * Reaping HERE rather than on a timer is deliberate: admission is the only
+ * place the wedge can actually be observed, it already holds the (agent, org)
+ * advisory lock and a system context, and it runs exactly when someone is
+ * trying to get past the jam. The transition is a CAS, so a run that IS still
+ * alive and finishes normally between the two statements is not clobbered.
+ */
+export async function reapStalledAgentRuns(scope: {
+  agentId: string;
+  orgId: string;
+}): Promise<string[]> {
+  const cutoff = new Date(Date.now() - STALLED_RUN_AFTER_SECONDS * 1000);
+  return inSystemDbContext(async () => {
+    const rows = await db
+      .update(aiAgentRuns)
+      .set({ status: 'failed', errorCode: 'stalled', finishedAt: new Date() })
+      .where(and(
+        eq(aiAgentRuns.agentId, scope.agentId),
+        eq(aiAgentRuns.orgId, scope.orgId),
+        inArray(aiAgentRuns.status, ['queued', 'running']),
+        // `started_at` is NULL for a run whose job never reached a worker at
+        // all (Redis lost it after the enqueue returned), and that row wedges
+        // the concurrency count identically — fall back to `queued_at`. Two
+        // typed column comparisons rather than one `coalesce(...) < $n`
+        // fragment: a bare Date interpolated into a raw `sql` template is
+        // handed to postgres.js unencoded and throws ERR_INVALID_ARG_TYPE,
+        // because only a column reference carries the timestamp mapper.
+        or(
+          and(isNotNull(aiAgentRuns.startedAt), lt(aiAgentRuns.startedAt, cutoff)),
+          and(isNull(aiAgentRuns.startedAt), lt(aiAgentRuns.queuedAt, cutoff)),
+        ),
+      ))
+      .returning({ id: aiAgentRuns.id });
+    if (rows.length > 0) {
+      console.warn('[aiAgentRunService] reaped stalled agent runs', {
+        agentId: scope.agentId, orgId: scope.orgId, runIds: rows.map((r) => r.id),
+      });
+    }
+    return rows.map((r) => r.id);
+  });
+}
 
 /**
  * The single admission gate for agent runs (spec §7): resolve the effective
@@ -229,12 +308,38 @@ export async function createAndEnqueueAgentRun(
       if (await isDeviceInMaintenanceWindow(deviceId)) return skip('maintenance_window');
     }
 
+    // 4b. Serialize the whole check-then-insert for this (agent, org).
+    //
+    // Every gate below is a plain SELECT taken before a non-atomic insert, and
+    // the manual route mints `manual:${randomUUID()}` per call, so the
+    // (org_id, dedupe_key) unique index cannot collapse concurrent requests
+    // either. Without this lock, N simultaneous POSTs each read zero committed
+    // runs and each insert: 100 concurrent triggers admitted 100 runs against
+    // `maxConcurrentRuns: 1`, `maxRunsPerHour: 20` and a 900s cooldown, at up
+    // to `maxBudgetCentsPerRun` each. The overshoot was bounded by REQUEST
+    // concurrency, not by worker concurrency as the old comment here claimed.
+    //
+    // `pg_advisory_xact_lock` (not the session variant) releases on commit or
+    // rollback of the transaction `inSystemDbContext` already opened, so no
+    // path can leak it; the lock is keyed on the same (agent, org) pair every
+    // counter below is scoped to, so two different orgs never queue behind each
+    // other. `hashtext` is stable within a major version, and a hash collision
+    // between two unrelated pairs would only serialise them — never admit.
+    await db.execute(sql`select pg_advisory_xact_lock(
+      ${AGENT_RUN_ADMISSION_LOCK_NAMESPACE}::int4,
+      hashtext(${`${resolved.agentId}:${orgId}`})
+    )`);
+
     const now = Date.now();
 
     // Scoping note for 5/6/7: every count is pinned to (agentId, orgId), not
     // agentId alone. A partner-wide agent legitimately runs against many orgs,
     // and org A's traffic must not consume org B's caps or cooldown.
     const agentOrgScope = and(eq(aiAgentRuns.agentId, resolved.agentId), eq(aiAgentRuns.orgId, orgId));
+
+    // 4c. Release runs a worker can no longer be executing before counting
+    //     them, or one SIGKILLed replica wedges this (agent, org) forever.
+    await reapStalledAgentRuns({ agentId: resolved.agentId, orgId });
 
     // 5. Cooldown for this exact target.
     if (effective.cooldownSeconds > 0) {
@@ -253,9 +358,9 @@ export async function createAndEnqueueAgentRun(
       if (recent) return skip('cooldown');
     }
 
-    // 6. Concurrency and rate. Count queries, not a distributed lock: for caps
-    //    of 1/20 a race overshoots by at most the worker concurrency, and the
-    //    run-side wall-clock and per-run budget guards still bound the cost.
+    // 6. Concurrency and rate. Plain counts are sufficient BECAUSE step 4b
+    //    serialises every concurrent admission for this (agent, org) — they
+    //    were not before, and the caps were bypassable by an unbounded factor.
     const [concurrent] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
@@ -321,6 +426,24 @@ export async function createAndEnqueueAgentRun(
     } catch (error) {
       if (error instanceof AgentRunOwnershipError) return skip('ownership_mismatch');
       throw error;
+    }
+
+    // 8b. device ∈ org. `assertRunOwnership` covers agent<->org only; the
+    //     (orgId, deviceId) pair arrives from the caller and was inserted
+    //     verbatim. The manual route resolves the org FROM the device, but an
+    //     authorized cross-org move can commit between that read and this
+    //     insert — moveOrg's device-detach pass only NULLs `device_id` on runs
+    //     that already exist, so a later insert would keep a now-foreign
+    //     device on an org-A run. Re-read it here, inside the same transaction
+    //     that inserts (and behind the advisory lock), so the pair is checked
+    //     against committed state rather than the caller's snapshot.
+    if (deviceId) {
+      const [deviceRow] = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+        .limit(1);
+      if (!deviceRow) return skip('device_not_in_org');
     }
 
     // 9. Insert the ledger row. `DO NOTHING` targeted at

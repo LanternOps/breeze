@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import {
   AI_AGENT_LIMIT_DEFAULTS,
@@ -106,7 +107,8 @@ vi.mock('../aiAgentSdkTools', () => ({
 }));
 
 const createActionIntent = vi.hoisted(() =>
-  vi.fn<(auth: unknown, input: Record<string, unknown>) => Promise<{ id: string }>>());
+  vi.fn<(auth: unknown, input: Record<string, unknown>) =>
+    Promise<{ id: string; status: string; errorCode?: string | null }>>());
 vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
 
 const resolveRecipientUserIds = vi.hoisted(() =>
@@ -125,10 +127,10 @@ const buildClaudeSdkChildEnv = vi.hoisted(() =>
   vi.fn<(resolved: { source: string }) => Record<string, string>>(() => ({ CI: 'true' })));
 vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 
-const recordUsage = vi.hoisted(() =>
+const recordSessionlessSdkUsage = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
 const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
-vi.mock('../aiCostTracker', () => ({ recordUsage, calculateCostCents }));
+vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCents }));
 
 // checkToolPermission must NEVER be reachable from an agent run. Spying through
 // the real module would require mocking it; instead the contract is asserted by
@@ -170,6 +172,7 @@ function seedRows(options: {
   effective?: AiAgentPolicy;
   deviceId?: string | null;
   alertId?: string | null;
+  /** What the partner-baseline agent ROW carries (never the merged set). */
   recipients?: { userIds: string[]; roleIds: string[] };
   agentOrgId?: string | null;
 } = {}) {
@@ -214,6 +217,11 @@ interface QueryScript {
   assistantText?: string;
   results?: Array<Record<string, unknown>>;
   hangUntilAbort?: boolean;
+}
+
+const dialect = new PgDialect();
+function compiled(cond: SQL | undefined): string {
+  return cond ? dialect.sqlToQuery(cond).sql : '';
 }
 
 const yielded: unknown[] = [];
@@ -291,7 +299,7 @@ beforeEach(() => {
   transitionRunStatus.mockResolvedValue(true);
   resolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: 'sk-test', model: 'claude-fallback' });
   resolveRecipientUserIds.mockResolvedValue([]);
-  createActionIntent.mockResolvedValue({ id: INTENT_ID });
+  createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
   createBreezeMcpServer.mockImplementation((getAuth: () => unknown, pre: Hooks['pre'], post: Hooks['post']) => {
     hooks.getAuth = getAuth;
     hooks.pre = pre;
@@ -620,4 +628,225 @@ describe('executeAgentRun', () => {
     expect(transitionRunStatus).not.toHaveBeenCalled();
     expect(queryMock).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // Review findings (wave 3c)
+  // -------------------------------------------------------------------------
+
+  it('an SDK terminal ERROR result fails the run instead of reporting a silent all-clear', async () => {
+    seedRows();
+    scriptQuery({
+      results: [resultMessage({
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: undefined,
+        errors: ['Anthropic API 500'],
+      })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    // Before the fix this was `completed` with error_code NULL and an empty
+    // summary — indistinguishable from "investigated, found nothing".
+    expect(final.to).toBe('failed');
+    expect(final.patch.errorCode).toBe('sdk_error');
+    expect(publishEvent.mock.calls.map((c) => c[0])).toContain('ai.agent.run.failed');
+    // The cost already burned is still recorded.
+    expect(final.patch.costCents).toBe(25);
+  });
+
+  it('an unknown future result subtype is a failure, not a success', async () => {
+    seedRows();
+    scriptQuery({ results: [resultMessage({ subtype: 'error_brand_new_stop_reason', is_error: true })] });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()!.to).toBe('failed');
+    expect(finalTransition()!.patch.errorCode).toBe('sdk_error');
+  });
+
+  it("the SDK's own budget stop (error_max_budget_usd) lands as budget_exceeded", async () => {
+    seedRows();
+    // Under the local guard's ceiling (25 cents < the 50-cent default), so this
+    // can ONLY come from the subtype: the SDK halts at maxBudgetUsd itself,
+    // which made the `costCents > limit` guard largely dead.
+    scriptQuery({ results: [resultMessage({ subtype: 'error_max_budget_usd', is_error: true })] });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect((final.patch.outcome as { budgetExceeded?: boolean }).budgetExceeded).toBe(true);
+    expect(final.to).toBe('failed');
+    expect(final.patch.errorCode).toBe('budget_exceeded');
+  });
+
+  it('error_max_turns is a ceiling: flagged, and only a failure when nothing was produced', async () => {
+    seedRows();
+    scriptQuery({ results: [resultMessage({ subtype: 'error_max_turns', is_error: true })] });
+    await executeAgentRun(RUN_ID);
+    let final = finalTransition()!;
+    expect((final.patch.outcome as { maxTurnsExceeded?: boolean }).maxTurnsExceeded).toBe(true);
+    expect(final.to).toBe('failed');
+    expect(final.patch.errorCode).toBe('max_turns_exceeded');
+
+    // ...but a run that produced something first still finishes normally.
+    vi.clearAllMocks();
+    transitionRunStatus.mockResolvedValue(true);
+    seedRows();
+    scriptQuery({
+      assistantText: 'Found the cause, ran out of turns writing it up.',
+      results: [resultMessage({ subtype: 'error_max_turns', is_error: true })],
+    });
+    await executeAgentRun(RUN_ID);
+    final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect((final.patch.outcome as { maxTurnsExceeded?: boolean }).maxTurnsExceeded).toBe(true);
+  });
+
+  it('an intent born cancelled (no eligible approvers) does NOT leave the run awaiting_approval', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }) });
+    // createActionIntent does not throw here: it commits the intent and
+    // immediately cancels it, returning that snapshot.
+    createActionIntent.mockResolvedValue({
+      id: INTENT_ID, status: 'cancelled', errorCode: 'no_eligible_approvers',
+    });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
+      assistantText: 'Proposed a print spooler restart.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    // Nothing is waiting in /approvals, so nothing may claim to be.
+    expect(final.patch.intentIds).toEqual([]);
+    const outcome = final.patch.outcome as { proposedActions: Array<Record<string, unknown>> };
+    expect(outcome.proposedActions).toHaveLength(1);
+    expect(outcome.proposedActions[0]!.intentError).toBe('no_eligible_approvers');
+    // The model is told the proposal will not be reviewed.
+    expect(preVerdicts[0]!.error).toContain('no_eligible_approvers');
+    // And the notification does not link to a queue the intent never enters.
+    expect(createNotification).not.toHaveBeenCalled();
+  });
+
+  it('the stop gate rejects a run whose agent is no longer the effective one', async () => {
+    seedRows();
+    // Agent A was disabled and replacement B (same kind) resolved in its place.
+    const replacement = snapshot(policy());
+    replacement.agentId = '00000000-0000-4000-8000-0000000000f1';
+    resolveEffectiveAgentSystem.mockResolvedValue(replacement);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    const final = finalTransition()!;
+    expect(final.to).toBe('skipped');
+    expect(final.patch.errorCode).toBe('policy_revoked_before_start');
+  });
+
+  it('org-pins the RLS-bypassing device and alert reads to the run org', async () => {
+    seedRows();
+
+    await executeAgentRun(RUN_ID);
+
+    const deviceSelect = dbMockState.selects.find((s) => s.table === 'devices');
+    const alertSelect = dbMockState.selects.find((s) => s.table === 'alerts');
+    // Both reads run inside a system context (full RLS bypass), so the tenant
+    // predicate has to be in the WHERE clause by hand.
+    expect(compiled(deviceSelect?.where)).toContain('"org_id"');
+    expect(compiled(alertSelect?.where)).toContain('"org_id"');
+  });
+
+  it('a device that has moved to another org is not fed into the prompt', async () => {
+    seedRows();
+    // The org-pinned read finds nothing after the move.
+    dbMockState.rowQueues.devices = [[]];
+
+    await executeAgentRun(RUN_ID);
+
+    const auth = hooks.getAuth!() as { allowedSiteIds?: string[] };
+    expect(auth.allowedSiteIds).toEqual([]);
+    const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+    expect(prompt).not.toContain('WS-ACCT-04');
+  });
+
+  it('notifies the MERGED recipient set from the run snapshot, not the baseline row', async () => {
+    // Partner baseline row lists only USER_A; the org override added USER_B, so
+    // the run's immutable snapshot carries the union.
+    seedRows({
+      effective: policy({ recipients: { userIds: [USER_A, USER_B], roleIds: [] } }),
+      recipients: { userIds: [USER_A], roleIds: [] },
+    });
+    resolveRecipientUserIds.mockResolvedValue([USER_A, USER_B]);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(resolveRecipientUserIds).toHaveBeenCalledWith(
+      expect.objectContaining({ recipients: { userIds: [USER_A, USER_B], roleIds: [] } }),
+      ORG_ID,
+    );
+  });
+
+  it('records org AI spend from the SDK figure — cache tokens included, credits deducted', async () => {
+    seedRows();
+    scriptQuery({
+      assistantText: 'done',
+      results: [resultMessage({
+        total_cost_usd: 0.4,
+        num_turns: 5,
+        usage: {
+          input_tokens: 10,
+          output_tokens: 20,
+          cache_read_input_tokens: 90_000,
+          cache_creation_input_tokens: 5_000,
+        },
+      })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    // recordUsage(null, …) used to stand here: it re-priced from input/output
+    // alone and deducted no platform credits at all.
+    expect(recordSessionlessSdkUsage).toHaveBeenCalledTimes(1);
+    const [orgId, payload, billingSource] = recordSessionlessSdkUsage.mock.calls[0]!;
+    expect(orgId).toBe(ORG_ID);
+    expect(billingSource).toBe('platform');
+    expect(payload).toMatchObject({
+      costCents: 40,
+      numTurns: 5,
+      usage: expect.objectContaining({
+        cache_read_input_tokens: 90_000,
+        cache_creation_input_tokens: 5_000,
+      }),
+    });
+  });
+
+  it('records a cache-only result that reports no plain input/output tokens', async () => {
+    seedRows();
+    scriptQuery({
+      assistantText: 'done',
+      results: [resultMessage({
+        total_cost_usd: 0.12,
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 200_000 },
+      })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(recordSessionlessSdkUsage).toHaveBeenCalledTimes(1);
+    expect(recordSessionlessSdkUsage.mock.calls[0]![1]).toMatchObject({ costCents: 12 });
+  });
+
+  it('a usage-recording failure never redefines the run outcome', async () => {
+    seedRows();
+    recordSessionlessSdkUsage.mockRejectedValueOnce(new Error('billing service down'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()!.to).toBe('completed');
+  });
 });
+

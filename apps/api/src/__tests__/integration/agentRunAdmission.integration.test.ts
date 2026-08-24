@@ -645,3 +645,123 @@ describe('spec §4.2 cross-table ownership: run.org_id ∈ owner(agent)', () => 
     ).rejects.toThrow();
   });
 });
+
+describe('admission review findings (wave 3c)', () => {
+  it('serialises concurrent admissions: 8 simultaneous triggers, maxConcurrentRuns=1, ONE run', async () => {
+    const t = await seedTenant({ limits: { maxConcurrentRuns: 1, maxRunsPerHour: 50 } });
+
+    // Every gate is a SELECT taken before a non-atomic insert, and the manual
+    // route mints a fresh dedupe key per call, so the unique index cannot
+    // collapse these either. Without the (agent, org) advisory lock all eight
+    // read zero committed runs and all eight insert.
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => createAndEnqueueAgentRun(triggerInput(t))),
+    );
+
+    const created = results.filter((r) => r.created);
+    expect(created).toHaveLength(1);
+    expect(results.filter((r) => !r.created && r.skipped === 'max_concurrent_runs')).toHaveLength(7);
+    expect(await countRunsForOrg(t.org.id)).toBe(1);
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it('the cooldown also holds under concurrency', async () => {
+    const t = await seedTenant({ limits: { maxConcurrentRuns: 5, maxRunsPerHour: 50 }, cooldownSeconds: 3600 });
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => createAndEnqueueAgentRun(triggerInput(t))),
+    );
+
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    expect(results.filter((r) => !r.created && r.skipped === 'cooldown')).toHaveLength(4);
+    expect(await countRunsForOrg(t.org.id)).toBe(1);
+  });
+
+  it('a different org is not blocked behind another org’s admission lock', async () => {
+    const a = await seedTenant({ limits: { maxConcurrentRuns: 1, maxRunsPerHour: 50 } });
+    const b = await seedTenant({ limits: { maxConcurrentRuns: 1, maxRunsPerHour: 50 } });
+
+    const [ra, rb] = await Promise.all([
+      createAndEnqueueAgentRun(triggerInput(a)),
+      createAndEnqueueAgentRun(triggerInput(b)),
+    ]);
+
+    expect(expectCreated(ra).orgId).toBe(a.org.id);
+    expect(expectCreated(rb).orgId).toBe(b.org.id);
+  });
+
+  it('reaps a run stranded in `running` by a killed worker instead of wedging the org forever', async () => {
+    const t = await seedTenant({ limits: { maxConcurrentRuns: 1, maxRunsPerHour: 50 } });
+    const first = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+
+    // The replica was SIGKILLed mid-run: BullMQ redelivers, the redelivered
+    // job's queued->running CAS fails against a row already `running`, the job
+    // completes, and the row stays `running` forever. With maxConcurrentRuns=1
+    // that refuses every future run for this (agent, org) — the manual trigger
+    // included, which 409s — and recovery needed hand-written SQL.
+    await withSystemDbAccessContext(() =>
+      db
+        .update(aiAgentRuns)
+        .set({ status: 'running', startedAt: new Date(Date.now() - 6 * 3600_000) })
+        .where(eq(aiAgentRuns.id, first.id)),
+    );
+
+    const admitted = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+    expect(admitted.id).not.toBe(first.id);
+
+    const reaped = await readRun(first.id);
+    expect(reaped!.status).toBe('failed');
+    expect(reaped!.errorCode).toBe('stalled');
+    expect(reaped!.finishedAt).not.toBeNull();
+  });
+
+  it('reaps a `queued` run whose job never reached a worker (started_at NULL)', async () => {
+    const t = await seedTenant({ limits: { maxConcurrentRuns: 1, maxRunsPerHour: 50 } });
+    const first = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+    expect(await readRun(first.id).then((r) => r!.startedAt)).toBeNull();
+
+    await withSystemDbAccessContext(() =>
+      db
+        .update(aiAgentRuns)
+        .set({ queuedAt: new Date(Date.now() - 6 * 3600_000) })
+        .where(eq(aiAgentRuns.id, first.id)),
+    );
+
+    expect(expectCreated(await createAndEnqueueAgentRun(triggerInput(t))).status).toBe('queued');
+    expect(await readRun(first.id).then((r) => r!.errorCode)).toBe('stalled');
+  });
+
+  it('does NOT reap a run that is still inside its wall-clock ceiling', async () => {
+    const t = await seedTenant({ limits: { maxConcurrentRuns: 1, maxRunsPerHour: 50 } });
+    const first = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+    await withSystemDbAccessContext(() =>
+      db
+        .update(aiAgentRuns)
+        .set({ status: 'running', startedAt: new Date(Date.now() - 60_000) })
+        .where(eq(aiAgentRuns.id, first.id)),
+    );
+
+    // A minute in is a live run: failing it would be unrecoverable.
+    expect(await createAndEnqueueAgentRun(triggerInput(t)))
+      .toEqual({ created: false, skipped: 'max_concurrent_runs' });
+    expect(await readRun(first.id).then((r) => r!.status)).toBe('running');
+  });
+
+  it('refuses a device that belongs to another org, so no foreign row can be read under RLS bypass', async () => {
+    const t = await seedTenant();
+    const other = await seedTenant();
+
+    // The pair (org A, device of org B) — what a cross-org device move
+    // committing between the route's device read and this insert produces.
+    const result = await createAndEnqueueAgentRun(
+      triggerInput(t, { deviceId: other.device.id }),
+    );
+
+    expect(result).toEqual({ created: false, skipped: 'device_not_in_org' });
+    expect(await countRunsForOrg(t.org.id)).toBe(0);
+    // ...and the legitimate pairing still admits, so the skip is about the
+    // boundary and not about the fixture.
+    expect(expectCreated(await createAndEnqueueAgentRun(triggerInput(t))).deviceId)
+      .toBe(t.device.id);
+  });
+});

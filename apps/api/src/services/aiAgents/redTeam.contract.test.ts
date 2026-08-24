@@ -22,7 +22,11 @@ vi.mock('../aiGuardrails', async (importOriginal) => {
   return { ...actual, ...rbacSpies };
 });
 
-const createActionIntentMock = vi.hoisted(() => vi.fn(async () => ({ id: 'intent-1' })));
+// `status` is load-bearing, not fixture noise: the run loop counts an intent
+// towards `awaiting_approval` only while it is genuinely pending — a real
+// createActionIntent returns a CANCELLED snapshot when nobody can approve.
+const createActionIntentMock = vi.hoisted(() =>
+  vi.fn(async () => ({ id: 'intent-1', status: 'pending_approval', errorCode: null })));
 
 vi.mock('../actionIntents/intentService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../actionIntents/intentService')>();

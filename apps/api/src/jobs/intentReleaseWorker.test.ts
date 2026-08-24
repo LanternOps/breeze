@@ -1496,7 +1496,14 @@ describe('agent-originated outcome notifications', () => {
     // did not run before them.
     approvalScope: 'supervised',
   };
-  const RUN_ROW = { id: 'run-1', agentId: 'agent-1' };
+  // The partner baseline row lists only user-a; org-1's override added user-b,
+  // so the run's immutable snapshot carries the merged union. Notifying from
+  // AGENT_ROW.recipients would silently drop the recipient the ORG configured.
+  const RUN_ROW = {
+    id: 'run-1',
+    agentId: 'agent-1',
+    policySnapshot: { effective: { recipients: { userIds: ['user-a', 'user-b'], roleIds: [] } } },
+  };
   const AGENT_ROW = { id: 'agent-1', orgId: 'org-1', partnerId: null, recipients: { userIds: ['user-a'] } };
 
   beforeEach(() => {
@@ -1515,7 +1522,15 @@ describe('agent-originated outcome notifications', () => {
     expect(result).toEqual({ released: false });
     // Live membership resolution, keyed on the INTENT's org (the tenant whose
     // data the notification describes), never the raw stored ids.
-    expect(recipientsMock.resolveRecipientUserIds).toHaveBeenCalledWith(AGENT_ROW, 'org-1');
+    expect(recipientsMock.resolveRecipientUserIds).toHaveBeenCalledWith(
+      {
+        orgId: AGENT_ROW.orgId,
+        partnerId: AGENT_ROW.partnerId,
+        // MERGED, from the run snapshot — not AGENT_ROW.recipients.
+        recipients: { userIds: ['user-a', 'user-b'], roleIds: [] },
+      },
+      'org-1',
+    );
     expect(notifyMock.createNotification).toHaveBeenCalledTimes(2);
     expect(notifyMock.createNotification).toHaveBeenCalledWith(
       expect.objectContaining({

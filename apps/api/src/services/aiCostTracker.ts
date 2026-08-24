@@ -112,11 +112,18 @@ async function deductBillingCredits(orgId: string, costCents: number): Promise<v
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
   if (!billingUrl || !billingKey) return;
 
-  const [org] = await db
+  // Self-contexted (#2190), and deliberately only around the LOOKUP: the
+  // wrapper reuses an ambient request context, so the in-request chat callers
+  // are unchanged, while the contextless headless-run caller
+  // (`recordSessionlessSdkUsage`) gets a context instead of an RLS-filtered
+  // zero-row read that would silently skip every deduction. The fetch below
+  // stays outside it — a pooled connection must never be held across a network
+  // call (#1105).
+  const [org] = await withSystemDbAccessContext(() => db
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, orgId))
-    .limit(1);
+    .limit(1));
 
   if (!org?.partnerId) return;
 
@@ -590,6 +597,137 @@ export async function recordUsageFromSdkResult(
   });
 
   if (billingSource === 'platform') {
+    await deductBillingCredits(orgId, costCents);
+  }
+}
+
+/**
+ * Sessionless variant of `recordUsageFromSdkResult`, for SDK loops that have no
+ * `ai_sessions` row at all — today the headless agent runner (wave 3c).
+ *
+ * `recordUsage(null, …)` is NOT a substitute and using it here was a real gap:
+ * it re-prices from plain input/output counters, so it drops cache-read and
+ * cache-creation tokens (most of a multi-turn agent prompt) and discards the
+ * SDK's authoritative cost entirely, and it contains no `deductBillingCredits`
+ * call — platform-billed agent traffic never touched the org's prepaid credit
+ * balance, leaving BOTH budget gates (`checkBudget` and `checkBillingCredits`)
+ * blind to spend they are supposed to cap.
+ *
+ * Everything a session would have received is still recorded: the org-level
+ * `ai_cost_usage` daily/monthly aggregates, the anomaly check, and the credit
+ * deduction for platform billing. Only the per-session totals are skipped,
+ * because there is no session row to carry them.
+ */
+export async function recordSessionlessSdkUsage(
+  orgId: string,
+  result: {
+    /**
+     * The SDK's authoritative cost, already converted to cents by the caller
+     * (which needs it mid-stream for its own per-run budget guard). Priced from
+     * tokens here only if it is 0 against a non-zero token count — the #1326
+     * "SDK cannot price a model id newer than its bundled table" case.
+     */
+    costCents: number;
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+    /** SDK `num_turns`, summed across the run's result messages. */
+    numTurns: number;
+    /** Tool calls the run actually executed, for the tool_execution_count rollup. */
+    toolExecutionCount?: number;
+    /** Model id, for the token-pricing fallback. */
+    model?: string;
+  },
+  billingSource: AiBillingSource,
+): Promise<void> {
+  if (!orgId) {
+    console.warn('[AI] Skipping recordSessionlessSdkUsage — empty orgId');
+    return;
+  }
+
+  const {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_read_input_tokens: cacheReadTokens = 0,
+    cache_creation_input_tokens: cacheCreationTokens = 0,
+  } = result.usage;
+  const anyTokens =
+    inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0;
+
+  let costCents = result.costCents;
+  if (costCents <= 0 && anyTokens && result.model) {
+    costCents = calculateCostCents(
+      result.model,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+    );
+  }
+
+  // A cache-only turn (every plain input/output counter 0, the whole prompt
+  // served from cache) still COSTS money — gating the write on
+  // input/output alone silently dropped those from the org rollup.
+  if (!anyTokens && costCents <= 0) return;
+
+  // What the `*_input_tokens` COLUMNS store: the three disjoint input slices
+  // summed. Pricing above deliberately keeps them split (different rates).
+  const recordedInputTokens = sumInputTokens(result.usage);
+  const toolExecutionCount = result.toolExecutionCount ?? 0;
+  // One sessionless call covers a whole run, not one message. `num_turns` is
+  // the honest message count for it; 1 keeps the counter monotonic when the SDK
+  // reports no turns.
+  const messageCount = result.numTurns > 0 ? result.numTurns : 1;
+
+  const now = new Date();
+  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+  const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
+    try {
+      // Self-contexted per upsert, same as recordUsage: the caller is a BullMQ
+      // processor holding no ambient context, and a contextless write under
+      // forced RLS matches 0 rows (#2190/#1375).
+      await withSystemDbAccessContext(() => db
+        .insert(aiCostUsage)
+        .values({
+          orgId,
+          period,
+          periodKey,
+          inputTokens: recordedInputTokens,
+          outputTokens,
+          totalCostCents: costCents,
+          sessionCount: 0,
+          messageCount,
+          toolExecutionCount,
+          billingSource,
+        })
+        .onConflictDoUpdate({
+          target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
+          set: {
+            inputTokens: sql`${aiCostUsage.inputTokens} + ${recordedInputTokens}`,
+            outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
+            totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
+            messageCount: sql`${aiCostUsage.messageCount} + ${messageCount}`,
+            toolExecutionCount: sql`${aiCostUsage.toolExecutionCount} + ${toolExecutionCount}`,
+            billingSource,
+            updatedAt: now,
+          },
+        }));
+    } catch (err) {
+      console.error(`[AI] Failed to update ${period} aggregate (sessionless SDK) for org=${orgId}:`, err);
+      // Continue to attempt the other period.
+    }
+  }
+
+  checkCostAnomalies(null, orgId, costCents, dailyKey).catch(err => {
+    console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
+  });
+
+  if (billingSource === 'platform' && costCents > 0) {
     await deductBillingCredits(orgId, costCents);
   }
 }

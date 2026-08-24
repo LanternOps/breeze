@@ -30,6 +30,9 @@ const dbMockState = vi.hoisted(() => ({
   /** FIFO of result arrays, consumed in await order, keyed by table name. */
   rowQueues: {} as Record<string, unknown[][]>,
   selects: [] as CapturedSelect[],
+  /** Ordered trace of every db operation, so "before the counters" is provable. */
+  calls: [] as string[],
+  executed: [] as SQL[],
   insertValues: [] as Record<string, unknown>[],
   insertRows: [] as unknown[],
   insertError: null as unknown,
@@ -57,6 +60,7 @@ vi.mock('../../db', () => {
       const tableName = String((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')]);
       const captured: CapturedSelect = { table: tableName };
       dbMockState.selects.push(captured);
+      dbMockState.calls.push(`select:${tableName}`);
       const builder: Record<string, unknown> = {
         where: vi.fn((cond: SQL) => {
           captured.where = cond;
@@ -76,9 +80,17 @@ vi.mock('../../db', () => {
   return {
     db: {
       select: vi.fn(() => makeSelect()),
+      // The admission gate takes a transaction-scoped advisory lock through
+      // db.execute before it reads any counter.
+      execute: vi.fn(async (statement: SQL) => {
+        dbMockState.executed.push(statement);
+        dbMockState.calls.push('execute');
+        return [] as unknown[];
+      }),
       insert: vi.fn(() => ({
         values: vi.fn((values: Record<string, unknown>) => {
           dbMockState.insertValues.push(values);
+          dbMockState.calls.push('insert:ai_agent_runs');
           dbMockState.contextAtInsert =
             dbMockState.systemContextDepth > 0 ? 'system' : 'none';
           const returning = vi.fn(async () => {
@@ -100,6 +112,7 @@ vi.mock('../../db', () => {
       update: vi.fn(() => ({
         set: vi.fn((values: Record<string, unknown>) => {
           dbMockState.updateSets.push(values);
+          dbMockState.calls.push(`update:${String(values.status ?? '')}`);
           return {
             where: vi.fn((cond: unknown) => {
               dbMockState.updateWheres.push(cond);
@@ -143,6 +156,7 @@ vi.mock('../eventBus', () => ({ publishEvent }));
 import {
   createAndEnqueueAgentRun,
   evaluateAgentTriggerFilters,
+  reapStalledAgentRuns,
   registerAgentRunEnqueuer,
   transitionRunStatus,
   type AgentRunEnqueuer,
@@ -213,6 +227,8 @@ function seedAdmissionReads(options: {
   agentPartnerId?: string | null;
   orgPartnerId?: string | null;
   agentMissing?: boolean;
+  /** The (device, org) ownership probe: false means the device is not in the org. */
+  deviceInOrg?: boolean;
 } = {}): void {
   const {
     cooldownHit = false,
@@ -223,6 +239,7 @@ function seedAdmissionReads(options: {
     agentPartnerId = PARTNER_ID,
     orgPartnerId = PARTNER_ID,
     agentMissing = false,
+    deviceInOrg = true,
   } = options;
 
   dbMockState.rowQueues.ai_agent_runs = [
@@ -239,6 +256,7 @@ function seedAdmissionReads(options: {
       ? []
       : [{ id: AGENT_ID, orgId: agentOrgId, partnerId: agentPartnerId, name: 'Triage', kind: 'triage' }],
   ];
+  dbMockState.rowQueues.devices = [deviceInOrg ? [{ id: DEVICE_ID }] : []];
   dbMockState.insertRows = [
     { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, status: 'queued', deviceId: DEVICE_ID },
   ];
@@ -251,6 +269,8 @@ beforeEach(() => {
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.rowQueues = {};
   dbMockState.selects = [];
+  dbMockState.calls = [];
+  dbMockState.executed = [];
   dbMockState.insertValues = [];
   dbMockState.insertRows = [];
   dbMockState.insertError = null;
@@ -625,7 +645,7 @@ describe('createAndEnqueueAgentRun admission success', () => {
 
     const result = await createAndEnqueueAgentRun(input());
 
-    expect(dbMockState.updateSets[0]).toMatchObject({
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({
       status: 'failed',
       errorCode: 'enqueue_failed',
     });
@@ -638,7 +658,7 @@ describe('createAndEnqueueAgentRun admission success', () => {
     seedAdmissionReads();
     dbMockState.updateRows = [{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }];
     const result = await createAndEnqueueAgentRun(input());
-    expect(dbMockState.updateSets[0]).toMatchObject({ errorCode: 'enqueue_failed' });
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({ errorCode: 'enqueue_failed' });
     expect(result).toMatchObject({ created: true });
   });
 
@@ -647,7 +667,7 @@ describe('createAndEnqueueAgentRun admission success', () => {
     publishEvent.mockRejectedValue(new Error('redis down'));
     dbMockState.updateRows = [{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }];
     await createAndEnqueueAgentRun(input());
-    expect(dbMockState.updateSets[0]).toMatchObject({ errorCode: 'enqueue_failed' });
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({ errorCode: 'enqueue_failed' });
     expect(enqueueAgentRunJob).not.toHaveBeenCalled();
   });
 });
@@ -670,5 +690,94 @@ describe('transitionRunStatus', () => {
     expect(await transitionRunStatus(RUN_ID, ['queued', 'running'], 'failed')).toBe(true);
     const sql = dialect.sqlToQuery(dbMockState.updateWheres[0] as SQL).sql;
     expect(sql).toContain('"status"');
+  });
+});
+
+describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
+  it('serialises the whole check-then-insert on an (agent, org) advisory lock', async () => {
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(input());
+
+    // Exactly one lock, taken BEFORE any counter read and before the insert:
+    // the caps are plain SELECTs, so without this every concurrent request
+    // reads zero committed runs and inserts anyway.
+    expect(dbMockState.executed).toHaveLength(1);
+    const lock = dialect.sqlToQuery(dbMockState.executed[0]!);
+    expect(lock.sql).toContain('pg_advisory_xact_lock');
+    // Transaction-scoped, never the session variant: it must release on commit
+    // or rollback of the context's transaction, with no unlock call to leak.
+    expect(lock.sql).not.toContain('pg_advisory_lock(');
+    // Keyed on the same pair every counter is scoped to — travelling as a bound
+    // param, so two orgs never queue behind each other.
+    expect(lock.params).toContain(`${AGENT_ID}:${ORG_ID}`);
+
+    const lockIndex = dbMockState.calls.indexOf('execute');
+    const firstRunRead = dbMockState.calls.indexOf('select:ai_agent_runs');
+    const insertIndex = dbMockState.calls.indexOf('insert:ai_agent_runs');
+    expect(lockIndex).toBeGreaterThanOrEqual(0);
+    expect(lockIndex).toBeLessThan(firstRunRead);
+    expect(lockIndex).toBeLessThan(insertIndex);
+  });
+
+  it('reaps runs stranded in queued/running before counting them against the caps', async () => {
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(input());
+
+    // A SIGKILLed replica leaves a `running` row that BullMQ's redelivery
+    // cannot clear (the queued->running CAS fails, the job completes), so with
+    // maxConcurrentRuns=1 the org is refused forever until this sweep exists.
+    const reap = dbMockState.updateSets[0]!;
+    expect(reap).toMatchObject({ status: 'failed', errorCode: 'stalled' });
+    expect(reap.finishedAt).toBeInstanceOf(Date);
+
+    const where = dialect.sqlToQuery(dbMockState.updateWheres[0] as SQL).sql;
+    expect(where).toContain('"agent_id"');
+    expect(where).toContain('"org_id"');
+    expect(where).toContain('"status"');
+    // Age is measured from started_at, falling back to queued_at for a run
+    // whose job never reached a worker at all.
+    expect(where).toContain('"started_at"');
+    expect(where).toContain('"queued_at"');
+    expect(where).toContain('is null');
+
+    // ...and it happens before the concurrency count reads those statuses.
+    expect(dbMockState.calls.indexOf('update:failed'))
+      .toBeLessThan(dbMockState.calls.indexOf('select:ai_agent_runs'));
+  });
+
+  it('reapStalledAgentRuns returns the ids it failed', async () => {
+    dbMockState.updateRows = [{ id: RUN_ID }];
+    await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([RUN_ID]);
+  });
+
+  it('device_not_in_org when the device does not belong to the run org', async () => {
+    seedAdmissionReads({ deviceInOrg: false });
+
+    expect(await createAndEnqueueAgentRun(input())).toEqual({
+      created: false,
+      skipped: 'device_not_in_org',
+    });
+    // Nothing is written: the worker reads the device under a system context
+    // (RLS bypass), so a foreign device would leak into this org's prompt.
+    expect(dbMockState.insertValues).toHaveLength(0);
+  });
+
+  it('checks the device against the org inside the same transaction as the insert', async () => {
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(input());
+
+    const deviceSelect = dbMockState.selects.find((sel) => sel.table === 'devices');
+    expect(deviceSelect).toBeDefined();
+    const sql = compiled(deviceSelect!.where);
+    expect(sql).toContain('"id"');
+    expect(sql).toContain('"org_id"');
+    expect(dbMockState.calls.indexOf('select:devices'))
+      .toBeLessThan(dbMockState.calls.indexOf('insert:ai_agent_runs'));
+  });
+
+  it('does not probe the device when the run has none', async () => {
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(input({ deviceId: null }));
+    expect(dbMockState.selects.some((sel) => sel.table === 'devices')).toBe(false);
   });
 });
