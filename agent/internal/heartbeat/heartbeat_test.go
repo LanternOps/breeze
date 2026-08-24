@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
@@ -308,5 +309,58 @@ func TestHeartbeatPayloadSecurityCapabilitiesJSON(t *testing.T) {
 	}
 	if got, want := zeroVersion, float64(0); got != want {
 		t.Fatalf("zero-value scriptSecretEnvVersion = %v, want %v", got, want)
+	}
+}
+
+func TestHeartbeatPayloadHealthStatusUsesTypedImmutableV1WireKey(t *testing.T) {
+	metricsAvailable := true
+	monitor := health.NewMonitor()
+	monitor.Update("metrics", health.Degraded, "disk pressure")
+	snapshot := monitor.Snapshot(health.SnapshotMetadata{
+		DeviceID:         "550e8400-e29b-41d4-a716-446655440000",
+		AgentVersion:     "1.2.3",
+		MetricsAvailable: &metricsAvailable,
+		ObservedAt:       time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC),
+	})
+	payload := HeartbeatPayload{
+		Status:       "ok",
+		AgentVersion: "1.2.3",
+		HealthStatus: &snapshot,
+	}
+
+	body, err := json.Marshal(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	healthStatus, ok := decoded["healthStatus"].(map[string]any)
+	if !ok {
+		t.Fatalf("healthStatus missing or wrong shape: %s", body)
+	}
+	if _, exists := decoded["health_status"]; exists {
+		t.Fatalf("snake_case health key must not be emitted: %s", body)
+	}
+	if _, exists := healthStatus["userHelpers"]; exists {
+		t.Fatalf("unrelated userHelpers data leaked into typed health: %s", body)
+	}
+	if healthStatus["schemaVersion"] != float64(1) || healthStatus["overall"] != "warning" {
+		t.Fatalf("healthStatus = %#v, want v1 warning", healthStatus)
+	}
+}
+
+func TestHeartbeatPayloadOmitsHealthStatusWhenNoMainAgentSnapshotExists(t *testing.T) {
+	body, err := json.Marshal(&HeartbeatPayload{Status: "ok", AgentVersion: "1.2.3"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, exists := decoded["healthStatus"]; exists {
+		t.Fatalf("healthStatus emitted without a main-agent snapshot: %s", body)
 	}
 }
