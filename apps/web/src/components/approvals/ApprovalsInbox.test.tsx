@@ -49,6 +49,8 @@ const pendingApproval = {
   approvalScope: 'four_eyes',
   isRecursive: false,
   createdAt: '2026-08-23T12:00:00.000Z',
+  origin: 'human',
+  agentName: null,
 };
 
 beforeEach(() => {
@@ -71,6 +73,64 @@ describe('ApprovalsInbox', () => {
     expect(row).toHaveTextContent('Restart accounting server');
     expect(row).toHaveTextContent('Helpdesk Copilot');
     expect(row).toHaveTextContent(/high/i);
+  });
+
+  it('marks an agent-originated approval with the agent badge and attribution', async () => {
+    fetchMock.mockResolvedValue(
+      response({
+        approvals: [
+          {
+            ...pendingApproval,
+            id: 'approval-agent',
+            intentId: 'intent-agent',
+            origin: 'ai_agent',
+            agentName: 'Triage',
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+
+    render(<ApprovalsInbox />);
+
+    const row = await screen.findByTestId('approval-row-approval-agent');
+    expect(
+      screen.getByTestId('approval-agent-badge-approval-agent'),
+    ).toBeInTheDocument();
+    expect(row).toHaveTextContent('Proposed by Triage (AI agent)');
+    expect(row).not.toHaveTextContent('Requested by');
+  });
+
+  it('falls back to the requesting client label when the agent name is missing', async () => {
+    fetchMock.mockResolvedValue(
+      response({
+        approvals: [
+          {
+            ...pendingApproval,
+            id: 'approval-agent-2',
+            intentId: 'intent-agent-2',
+            origin: 'ai_agent',
+            agentName: null,
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+
+    render(<ApprovalsInbox />);
+
+    const row = await screen.findByTestId('approval-row-approval-agent-2');
+    expect(row).toHaveTextContent('Proposed by Helpdesk Copilot (AI agent)');
+  });
+
+  it('keeps human attribution and shows no agent badge on human rows', async () => {
+    render(<ApprovalsInbox />);
+
+    const row = await screen.findByTestId('approval-row-approval-1');
+    expect(row).toHaveTextContent('Requested by Helpdesk Copilot');
+    expect(
+      screen.queryByTestId('approval-agent-badge-approval-1'),
+    ).not.toBeInTheDocument();
   });
 
   it('shows a load error and never misrepresents it as an empty inbox', async () => {

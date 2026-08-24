@@ -9,6 +9,7 @@
     "description": "Kararınız gerektiğinde yeni istekler burada görünür."
   },
   "requestedBy": "İsteyen: {{client}}",
+  "proposedByAgent": "{{agent}} tarafından önerildi (yapay zeka temsilcisi)",
   "risk": {
     "low": "Düşük risk",
     "medium": "Orta risk",

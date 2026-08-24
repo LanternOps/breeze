@@ -9,6 +9,7 @@
     "description": "Neue Anfragen erscheinen hier, sobald Ihre Entscheidung erforderlich ist."
   },
   "requestedBy": "Angefordert von {{client}}",
+  "proposedByAgent": "Vorgeschlagen von {{agent}} (KI-Agent)",
   "risk": {
     "low": "Niedriges Risiko",
     "medium": "Mittleres Risiko",
