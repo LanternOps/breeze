@@ -12,7 +12,7 @@ export * from './notificationTypes';
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 
 // Device Status
-export const DEVICE_STATUSES = ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined'] as const;
+export const DEVICE_STATUSES = ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'] as const;
 
 // Alert Severities
 export const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
