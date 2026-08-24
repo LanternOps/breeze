@@ -33,6 +33,7 @@ const dbMockState = vi.hoisted(() => ({
   insertValues: [] as Record<string, unknown>[],
   insertRows: [] as unknown[],
   insertError: null as unknown,
+  insertConflictTargets: [] as unknown[],
   updateSets: [] as Record<string, unknown>[],
   updateWheres: [] as unknown[],
   updateRows: [] as unknown[],
@@ -80,11 +81,19 @@ vi.mock('../../db', () => {
           dbMockState.insertValues.push(values);
           dbMockState.contextAtInsert =
             dbMockState.systemContextDepth > 0 ? 'system' : 'none';
+          const returning = vi.fn(async () => {
+            if (dbMockState.insertError) throw dbMockState.insertError;
+            return dbMockState.insertRows;
+          });
           return {
-            returning: vi.fn(async () => {
-              if (dbMockState.insertError) throw dbMockState.insertError;
-              return dbMockState.insertRows;
+            // The real insert goes through ON CONFLICT DO NOTHING (a caught
+            // 23505 would poison the surrounding postgres.js transaction), so
+            // the mock has to offer the same builder link.
+            onConflictDoNothing: vi.fn((config: unknown) => {
+              dbMockState.insertConflictTargets.push(config);
+              return { returning };
             }),
+            returning,
           };
         }),
       })),
@@ -245,6 +254,7 @@ beforeEach(() => {
   dbMockState.insertValues = [];
   dbMockState.insertRows = [];
   dbMockState.insertError = null;
+  dbMockState.insertConflictTargets = [];
   dbMockState.updateSets = [];
   dbMockState.updateWheres = [];
   dbMockState.updateRows = [];
@@ -493,15 +503,19 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     });
   });
 
-  it('duplicate when the org/dedupe_key unique index rejects the insert', async () => {
+  it('duplicate when the org/dedupe_key ON CONFLICT DO NOTHING swallows the insert', async () => {
     seedAdmissionReads();
-    dbMockState.insertError = Object.assign(new Error('duplicate key'), {
-      cause: { code: '23505', constraint_name: 'ai_agent_runs_org_dedupe_key_uq' },
-    });
+    // DO NOTHING never raises: an empty `returning()` IS the duplicate. A
+    // caught 23505 could not work here — postgres.js latches a failed
+    // statement onto the transaction and rethrows it after the callback
+    // returns, so the skip would never reach the caller (proven live in
+    // agentRunAdmission.integration.test.ts).
+    dbMockState.insertRows = [];
     expect(await createAndEnqueueAgentRun(input())).toEqual({
       created: false,
       skipped: 'duplicate',
     });
+    expect(dbMockState.insertConflictTargets).toHaveLength(1);
     expect(enqueueAgentRunJob).not.toHaveBeenCalled();
   });
 

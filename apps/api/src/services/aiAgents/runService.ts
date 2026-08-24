@@ -108,14 +108,6 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
-/** postgres.js surfaces the SQLSTATE on the error, Drizzle wraps it in `cause`. */
-function sqlStateOf(error: unknown): string | undefined {
-  const direct = (error as { code?: unknown } | null)?.code;
-  if (typeof direct === 'string') return direct;
-  const wrapped = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
-  return typeof wrapped === 'string' ? wrapped : undefined;
-}
-
 /**
  * Spec §5.3 trigger filters.
  *
@@ -331,35 +323,37 @@ export async function createAndEnqueueAgentRun(
       throw error;
     }
 
-    // 9. Insert the ledger row.
-    let run: AiAgentRunRow;
-    try {
-      const [inserted] = await db
-        .insert(aiAgentRuns)
-        .values({
-          agentId: resolved.agentId,
-          orgId,
-          deviceId,
-          alertId: input.alertId ?? null,
-          triggerKind,
-          triggerEventId: input.triggerEventId ?? null,
-          triggerRef: input.triggerRef ?? {},
-          dedupeKey,
-          modeAtStart,
-          policySnapshot: resolved,
-          status: 'queued',
-          correlationId: randomUUID(),
-        })
-        .returning();
-      if (!inserted) throw new Error('agent run insert returned no row');
-      run = inserted;
-    } catch (error) {
-      // ai_agent_runs_org_dedupe_key_uq — the same trigger fired twice.
-      if (sqlStateOf(error) === '23505') return skip('duplicate');
-      throw error;
-    }
+    // 9. Insert the ledger row. `DO NOTHING` targeted at
+    //    ai_agent_runs_org_dedupe_key_uq, NOT a try/catch around a plain
+    //    insert: a 23505 CAUGHT inside the SAME transaction that raised it is
+    //    a documented trap in this repo (quoteOrderService.ts,
+    //    partnerStripe.ts) — postgres.js latches the failed statement on the
+    //    transaction and rethrows it after the callback returns, so the skip
+    //    this function carefully computed never reaches the caller and every
+    //    duplicate trigger surfaces as a 500 instead. `DO NOTHING` never
+    //    raises: an empty `returning()` IS the duplicate.
+    const [inserted] = await db
+      .insert(aiAgentRuns)
+      .values({
+        agentId: resolved.agentId,
+        orgId,
+        deviceId,
+        alertId: input.alertId ?? null,
+        triggerKind,
+        triggerEventId: input.triggerEventId ?? null,
+        triggerRef: input.triggerRef ?? {},
+        dedupeKey,
+        modeAtStart,
+        policySnapshot: resolved,
+        status: 'queued',
+        correlationId: randomUUID(),
+      })
+      .onConflictDoNothing({ target: [aiAgentRuns.orgId, aiAgentRuns.dedupeKey] })
+      .returning();
+    // The same trigger fired twice for this org.
+    if (!inserted) return skip('duplicate');
 
-    return { created: true, run };
+    return { created: true, run: inserted };
   });
 
   if (!admission.created) return admission;
