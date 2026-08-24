@@ -8,6 +8,7 @@ import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   getDeviceOrgDenormalizedTables,
   DEVICE_ORG_DENORMALIZED_TABLES,
+  DEVICE_ORG_FK_CASCADE_TABLES,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 
@@ -137,6 +138,13 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
   it('includes ML output tables so device moves do not strand old-org rows', () => {
     expect(deviceOrgDenormalizedTables).toContain('metric_anomalies');
     expect(deviceOrgDenormalizedTables).toContain('remediation_suggestions');
+  });
+
+  it('keeps database-cascade restamps registered in the complete org-denormalized contract', () => {
+    expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual(['agent_health_observations']);
+    expect(deviceOrgDenormalizedTables).toEqual(
+      expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),
+    );
   });
 });
 
