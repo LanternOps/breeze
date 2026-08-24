@@ -14,10 +14,16 @@ import { isSupportedLocale, type SupportedLocale } from '@breeze/shared';
  *   4. `partnerId`   — `partners.settings.language`
  *   5. `'en'`        — hard fallback
  *
- * The function intentionally takes plain ids and performs narrow SELECT queries
- * so it works under both `withDbAccessContext` (request paths) and
- * `withSystemDbAccessContext` (background workers).  Callers that already have
- * the relevant setting blobs in memory may pass `explicit` and skip DB reads.
+ * The function intentionally takes plain ids and performs narrow SELECT queries.
+ * **Precondition:** callers must have established a DB access context before
+ * calling this function — either `withDbAccessContext` (request paths) or
+ * `withSystemDbAccessContext` (background workers).  The bare `db` pool used
+ * here inherits whatever RLS context the surrounding `withDbAccessContext` /
+ * `withSystemDbAccessContext` call set up, so the queries run under the correct
+ * tenant identity without needing an extra context wrap per call.
+ *
+ * Callers that already have the relevant setting blobs in memory may pass
+ * `explicit` and skip DB reads entirely.
  */
 export async function resolveRecipientLocale(ref: {
   userId?: string;
