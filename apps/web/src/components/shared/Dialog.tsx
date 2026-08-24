@@ -36,40 +36,58 @@ const FOCUSABLE =
  * the hazard is not a duplicate of the action just confirmed; it is an
  * UNRELATED action firing from the second half of the gesture.
  *
- * The discriminator is `MouseEvent.detail`, the platform click counter.
- * Chromium, Gecko and WebKit all derive it from the button, the time and the
- * distance between presses rather than from the DOM target, so the second
- * press still reports `detail === 2` even though it now lands on a different
- * element. (That is consistent de-facto behaviour across the three engines
- * rather than a normative guarantee: UI Events defines the counter but does not
- * say that a change of target must leave it alone. The latch in ConfirmDialog
- * is the belt to this pair of braces.)
+ * The discriminator is `MouseEvent.detail`, the platform click counter. It is
+ * computed from the button, the time and the distance between presses rather
+ * than from the DOM target, so the second press still reports `detail === 2`
+ * even though it now lands on a different element.
+ *
+ * Confidence, honestly graded, because the whole guard leans on this: verified
+ * in Chromium source (`ui/events/event.cc` gates only on matching button flags,
+ * elapsed time and a <=2px position delta) and in WebKit, which on macOS simply
+ * copies `NSEvent.clickCount` and so is even further from the DOM. Gecko is
+ * asserted from observed behaviour, not from source. None of it is normative
+ * either way — UI Events defines the counter but never says a change of target
+ * must leave it alone. The latch in ConfirmDialog is the belt to these braces.
  *
  * A deliberate NEW double-click after the dialog closed begins with a press
  * whose `detail` is 1, which stands the guard down before its own second press
  * arrives — so intentional double-clicks keep working. That is also what bounds
  * the guard's lifetime: it retires on the next fresh press rather than on a
- * timer, because OS double-click intervals are user-configurable (Windows
- * allows up to 5s) and any fixed ceiling would either expire before the second
+ * timer, because OS double-click intervals are configurable (the Win32
+ * double-click-time API clamps at 5s, well past the ~900ms the Windows control
+ * panel exposes) and any fixed ceiling would either expire before the second
  * press or linger well past it.
  *
  * KNOWN TRADE-OFF. The counter cannot distinguish "second half of an
  * accidental double-click" from "deliberate fast click at the same spot right
  * after confirming" — both arrive as `detail >= 2`, and the second one is
- * therefore swallowed until the user pauses long enough for the counter to
- * reset. Because the counter only increments for presses within a few pixels
- * of the last one, that costs at most a repeated click at the coordinates the
- * confirm button just vacated, and it errs on the side of not firing a
- * destructive command the user did not aim at. The place most likely to feel
+ * therefore swallowed. Recovery does not require waiting: any press the
+ * platform counts as fresh clears the guard, so a click anywhere far enough
+ * away — or the same click repeated a moment later — goes straight through.
+ * Because the counter only increments for presses within a few pixels of the
+ * last one, that costs at most a repeated click at the coordinates the confirm
+ * button just vacated, and it errs on the side of not firing a destructive
+ * command the user did not aim at.
+ *
+ * That includes across a client-side route change: the platform counter is not
+ * reset by SPA navigation, so if `onConfirm` navigates and the new screen puts
+ * a control where the confirm button was, the user's first click on it can be
+ * counted as the second of a pair and swallowed. Scoping the guard by
+ * coordinates would not help — a `detail >= 2` event is already, by
+ * construction, within a few pixels of the click that armed it. Clicking again
+ * works, which is the same recovery as every other case above. The place most likely to feel
  * it is the remote FileManager, whose table rows are double-click-to-open and
  * reflow underneath a delete confirm.
  *
  * SCOPE — deliberately narrow. This blocks the mouse/click activation tail and
  * nothing else. Handlers bound to `pointerdown`/`pointerup` are NOT covered:
- * those report `detail === 0`, so the same discriminator cannot classify them,
- * and suppressing them wholesale would eat the opening press of a legitimate
- * new gesture (and interfere with pointer capture and dragging). Keyboard- and
- * AT-synthesised clicks also report 0 and pass through untouched, by design.
+ * those report `detail === 0` in current engines (de-facto again — w3c/pointer
+ * events#98 is still open on whether that is required), so the same
+ * discriminator cannot classify them, and suppressing them wholesale would eat
+ * the opening press of a legitimate new gesture and interfere with pointer
+ * capture and dragging. Keyboard- and AT-synthesised clicks also report 0 and
+ * pass through untouched, by design — that one IS normative, since a click
+ * dispatched with no underlying native event initialises `detail` to 0.
  */
 const GUARDED_EVENTS = ['mousedown', 'mouseup', 'click', 'dblclick'] as const;
 
@@ -104,10 +122,17 @@ function armGestureTailGuard() {
   disarmActiveGestureTailGuard = disarm;
 }
 
-/** How long after a press inside the dialog a teardown still counts as caused
- *  by that press. Only decides whether to ARM; the guard's own lifetime is
- *  bounded by the next fresh press, not by this. */
-const POINTER_CAUSED_CLOSE_MS = 1000;
+/** How long after a COMPLETED click inside the dialog a teardown still counts
+ *  as caused by that click. Only decides whether to ARM; the guard's own
+ *  lifetime is bounded by the next fresh press, not by this.
+ *
+ *  Deliberately keyed on `click`, not `mousedown`: a press that never completes
+ *  a click inside the dialog — starting a text selection, then dismissing with
+ *  Escape — leaves no gesture tail to guard against, and arming there would
+ *  only create the opposite bug. A completed click immediately followed by an
+ *  Escape close inside this window does still arm; that costs one ignored click
+ *  at the vacated coordinates, the same trade-off documented above. */
+const CLICK_CAUSED_CLOSE_MS = 150;
 
 // The portal must be gone before the guard is installed, and the listener must
 // be in place before the browser dispatches the next press. A layout effect's
@@ -175,17 +200,23 @@ export function Dialog({
     };
   }, [open]);
 
-  // #3705: arm the guard as the portal is torn out — but ONLY when a press
-  // inside the dialog could have caused the teardown (confirm, Cancel, a
-  // backdrop click). Escape, an async settle and a route change have no gesture
-  // in flight, and arming after those would let the guard eat a deliberate
-  // click, or leak into whatever screen renders next. StrictMode's extra
-  // setup/cleanup cycle is filtered out by the same test.
-  const lastPointerDownAtRef = useRef(0);
+  // #3705: arm the guard as the portal is torn out — but ONLY when a completed
+  // click inside the dialog could plausibly have caused the teardown (Confirm,
+  // Cancel, a backdrop click). Escape with no completed click, a slow async
+  // settle and a route change all leave the guard off, and arming after those
+  // would let it eat a deliberate click or leak into whatever screen renders
+  // next. StrictMode's extra setup/cleanup cycle is filtered out by the same
+  // test, since `lastClickInsideAtRef` is still 0 at mount.
+  //
+  // "Plausibly" is doing real work here: this is a time window, not causation.
+  // An action that settles and closes the dialog in under CLICK_CAUSED_CLOSE_MS
+  // still arms. That is the conservative direction — the cost is the same one
+  // ignored click documented above, at coordinates the user just clicked.
+  const lastClickInsideAtRef = useRef(0);
   useIsomorphicLayoutEffect(() => {
     if (!open) return;
     return () => {
-      if (Date.now() - lastPointerDownAtRef.current < POINTER_CAUSED_CLOSE_MS) {
+      if (Date.now() - lastClickInsideAtRef.current < CLICK_CAUSED_CLOSE_MS) {
         armGestureTailGuard();
       }
     };
@@ -232,8 +263,8 @@ export function Dialog({
       style={{ animation: 'dialog-backdrop-in 150ms ease-out' }}
       onClick={handleBackdropClick}
       onKeyDown={handleKeyDown}
-      onMouseDownCapture={() => {
-        lastPointerDownAtRef.current = Date.now();
+      onClickCapture={() => {
+        lastClickInsideAtRef.current = Date.now();
       }}
     >
       <div

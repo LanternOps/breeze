@@ -1429,7 +1429,9 @@ export default function DevicesPage() {
           // row underneath. Previously only the unmount protected this, and it
           // protected only the first of those two failures.
           // (The set-state/dispatch ORDER below is not load-bearing either:
-          // React batches both.) DevicesPage.test.tsx pins both halves.
+          // React batches both.) The click-through half is pinned in
+          // DevicesPage.test.tsx; the latch half in ConfirmDialog.test.tsx,
+          // which can hold the dialog mounted the way this call site does not.
           onConfirm={() => {
             const p = pendingDecommissionedSkip;
             setPendingDecommissionedSkip(null);

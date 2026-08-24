@@ -93,11 +93,28 @@ describe('ConfirmDialog — double-click safety (#3705)', () => {
       expect(onConfirm).toHaveBeenCalledTimes(2);
     });
 
-    // NOTE: the matching "onConfirm throws → latch releases" path is covered by
-    // code inspection only. React 19 does not propagate a handler throw back
-    // through dispatchEvent — it reports it as a window error event — so it
-    // cannot be asserted through fireEvent without destabilising the whole
-    // worker. See the try/catch in ConfirmDialog.handleConfirm.
+    // React 19 does not propagate a handler throw back through dispatchEvent —
+    // it re-reports it as a window `error` event. Swallowing that event keeps
+    // the throw from failing the worker while still exercising the real path.
+    it('releases the latch when onConfirm throws, instead of killing the button', () => {
+      const swallow = (e: ErrorEvent) => e.preventDefault();
+      window.addEventListener('error', swallow);
+      try {
+        const onConfirm = vi.fn(() => {
+          throw new Error('boom');
+        });
+        render(<StayOpen onConfirm={onConfirm} />);
+        const confirm = screen.getByTestId('confirm');
+
+        // A synchronous throw never reaches the close or the isLoading toggle,
+        // so a latch left set would make Confirm dead for the rest of its life.
+        firstPress(confirm);
+        firstPress(confirm);
+        expect(onConfirm).toHaveBeenCalledTimes(2);
+      } finally {
+        window.removeEventListener('error', swallow);
+      }
+    });
   });
 
   describe('the tail of the gesture cannot reach what was underneath', () => {
@@ -181,21 +198,51 @@ describe('ConfirmDialog — double-click safety (#3705)', () => {
       expect(underneath).not.toHaveBeenCalled();
     });
 
-    // The guard is scoped to teardowns a press could have caused. An Escape
-    // close has no gesture in flight, so arming there would only create the
-    // opposite bug: eating a deliberate click that the platform happens to
+    // The guard is scoped to teardowns a completed click could have caused. An
+    // Escape close has no gesture in flight, so arming there would only create
+    // the opposite bug: eating a deliberate click that the platform happens to
     // count as the second of a pair. Same reasoning covers an async settle and
     // a route change, and it is what keeps StrictMode's extra cleanup inert.
-    it('does NOT arm after an Escape close — no gesture was in flight', () => {
+    //
+    // The interesting ordering is a press that starts INSIDE the dialog and
+    // never completes a click there — dragging out a text selection, then
+    // dismissing with Escape. Keying the arm condition on `mousedown` would arm
+    // here and eat the user's next click; keying it on `click` does not. A test
+    // that reaches Escape without any preceding press inside the dialog passes
+    // under either rule and so proves nothing, which is why this one presses
+    // first.
+    it('does NOT arm after a press inside the dialog that ends in Escape', () => {
       const underneath = vi.fn();
-      const { container } = render(<Harness underneath={underneath} />);
-      void container;
+      render(<Harness underneath={underneath} />);
 
       const backdrop = document.querySelector('.dialog-backdrop') as HTMLElement;
+      const message = screen.getByText('This reboots host-alpha.');
+      fireEvent.mouseDown(message, { detail: 1 });
+      fireEvent.mouseUp(message, { detail: 1 });
+
       fireEvent.keyDown(backdrop, { key: 'Escape' });
       expect(screen.queryByTestId('confirm')).toBeNull();
 
       secondPress(screen.getByTestId('underneath'));
+      expect(underneath).toHaveBeenCalledTimes(1);
+    });
+
+    // The module keeps a single active guard (`disarmActiveGestureTailGuard`),
+    // so two dialogs closing back to back must not leave a stale listener
+    // behind or double-suppress.
+    it('survives two dialogs closing back to back', () => {
+      const underneath = vi.fn();
+      const { unmount } = render(<Harness underneath={underneath} />);
+      firstPress(screen.getByTestId('confirm'));
+      unmount();
+
+      render(<Harness underneath={underneath} />);
+      firstPress(screen.getByTestId('confirm'));
+
+      secondPress(screen.getByTestId('underneath'));
+      expect(underneath).not.toHaveBeenCalled();
+
+      firstPress(screen.getByTestId('underneath'));
       expect(underneath).toHaveBeenCalledTimes(1);
     });
   });

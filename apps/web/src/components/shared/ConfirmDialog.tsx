@@ -52,18 +52,41 @@ export function ConfirmDialog({
   }, [open, isLoading]);
 
   const handleConfirm = useCallback(() => {
-    if (confirmLatchRef.current) return;
+    if (confirmLatchRef.current) {
+      // The latch releasing depends on the call site either closing the dialog
+      // or driving `isLoading`. Every current call site does one or the other,
+      // but nothing enforces it, and a site that does neither would leave
+      // Confirm permanently dead with no toast, log or console output — the
+      // exact silent failure this component is meant to prevent. A blocked
+      // click while `isLoading` is false is precisely that violation, so say so
+      // in dev rather than letting site #49 discover it in production.
+      if (import.meta.env.DEV && !isLoading) {
+        console.warn(
+          `[ConfirmDialog] "${title}": Confirm was pressed again while the ` +
+            'previous press is still latched, but isLoading is false and the ' +
+            'dialog is still open. onConfirm must either close the dialog or ' +
+            'drive isLoading, otherwise this button is now permanently inert.',
+        );
+      }
+      return;
+    }
     confirmLatchRef.current = true;
     try {
       onConfirm();
     } catch (err) {
-      // A handler that throws synchronously never gets to close the dialog or
-      // toggle isLoading, so the latch would stick and the button would be dead
-      // for the rest of its life. Release it and let the error propagate.
+      // Releases the latch so the BUTTON survives a handler that throws
+      // synchronously — it protects the control, not the user. Two limits worth
+      // knowing: every current call site wraps async work as
+      // `() => void someAsyncFn()`, whose rejection lands after this function
+      // has already returned, so this branch is inert for the failure mode that
+      // actually happens; and React 19 does not propagate a handler throw back
+      // through dispatchEvent, it re-reports it as a window error event. So
+      // rethrowing surfaces nothing to the user. Reporting the outcome of the
+      // action remains the call site's job, via runAction.
       confirmLatchRef.current = false;
       throw err;
     }
-  }, [onConfirm]);
+  }, [onConfirm, isLoading, title]);
 
   return (
     <Dialog open={open} onClose={onClose} title={title} maxWidth="md" className="p-6">

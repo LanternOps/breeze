@@ -1292,11 +1292,15 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     // An impatient double-click on a bulk REBOOT must not reboot the fleet twice.
     //
-    // Two things fence this now (#3705), and the unmount is no longer either of
-    // them: ConfirmDialog holds a synchronous ref latch, so converting this to a
-    // stay-mounted + spinner pattern no longer lets the second click through
-    // (`disabled` and runBulkAction's `actionInProgress` both read a closure
-    // captured at render and still cannot help). It does NOT discriminate the
+    // Be precise about what THIS test fences, because it is narrower than it
+    // looks: it re-dispatches at a stale reference to a button already detached
+    // by the first click, so the second event never reaches React's delegated
+    // listener. The unmount is still the only thing it exercises. It stays
+    // green with the #3705 latch reverted.
+    //
+    // In production the latch is the guard that matters, because it also holds
+    // when the dialog STAYS mounted — see ConfirmDialog.test.tsx, which drives
+    // that case directly. What neither test discriminates is the
     // set-state-before-dispatch ORDER: under React 18 both updates flush
     // together at the end of the handler, so swapping them would still pass.
     fireEvent.click(confirm);
