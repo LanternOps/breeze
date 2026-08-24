@@ -91,6 +91,11 @@ export type RunScheduledBackupVerificationInput = Omit<
   source: 'post-backup-integrity-check' | 'weekly-test-restore';
 };
 
+export type ScheduledVerificationDependencies = {
+  resolveProviderConfig: typeof resolveVerificationProviderConfig;
+  queueCommand: typeof queueCommandForExecution;
+};
+
 function toEpoch(value?: string | Date | null): number {
   if (!value) return 0;
   const asDate = value instanceof Date ? value : new Date(value);
@@ -552,6 +557,10 @@ function scheduledVerificationAuth(orgId: string): AuthContext {
 
 export async function runScheduledBackupVerification(
   input: RunScheduledBackupVerificationInput,
+  deps: ScheduledVerificationDependencies = {
+    resolveProviderConfig: resolveVerificationProviderConfig,
+    queueCommand: queueCommandForExecution,
+  },
 ): Promise<{
   verification: BackupVerification;
   readiness: RecoveryReadiness | null;
@@ -561,19 +570,23 @@ export async function runScheduledBackupVerification(
     input.orgId,
     'verify',
   );
-  return runBackupVerificationInternal(input, subject);
+  return runBackupVerificationInternal(input, subject, deps);
 }
 
 export async function runBackupVerification(input: RunBackupVerificationInput): Promise<{
   verification: BackupVerification;
   readiness: RecoveryReadiness | null;
 }> {
-  return runBackupVerificationInternal(input, null);
+  return runBackupVerificationInternal(input, null, {
+    resolveProviderConfig: resolveVerificationProviderConfig,
+    queueCommand: queueCommandForExecution,
+  });
 }
 
 async function runBackupVerificationInternal(
   input: RunBackupVerificationInput,
   scheduledSubject: CapturedRecoveryAuthorizationSubject | null,
+  deps: ScheduledVerificationDependencies,
 ): Promise<{
   verification: BackupVerification;
   readiness: RecoveryReadiness | null;
@@ -631,15 +644,19 @@ async function runBackupVerificationInternal(
   const agentSnapshotId = snapshot?.providerSnapshotId ?? backupJob.snapshotId ?? snapshot?.id ?? undefined;
 
   if (scheduledSubject && snapshot) {
-    const authorization = await authorizeQueuedRecoveryWork(
-      scheduledSubject,
-      input.orgId,
-      [
-        { kind: 'device', id: input.deviceId, role: 'target' },
-        { kind: 'snapshot', id: snapshot.id, role: 'source' },
-      ],
-      'verify',
-    );
+    const authorizeCurrentLineage = () =>
+      authorizeQueuedRecoveryWork(
+        scheduledSubject,
+        input.orgId,
+        [
+          { kind: 'device', id: input.deviceId, role: 'target' },
+          { kind: 'snapshot', id: snapshot.id, role: 'source' },
+        ],
+        'verify',
+      );
+    const authorization = supportsDbOrg(input.orgId)
+      ? await runWithSystemDbAccess(authorizeCurrentLineage)
+      : await authorizeCurrentLineage();
     const authorizedSnapshot = authorization.resources.resources.find(
       (resource) => resource.kind === 'snapshot' && resource.id === snapshot!.id,
     );
@@ -648,7 +665,7 @@ async function runBackupVerificationInternal(
     }
   }
 
-  const providerConfig = await resolveVerificationProviderConfig(input.orgId, backupJob);
+  const providerConfig = await deps.resolveProviderConfig(input.orgId, backupJob);
   if (!providerConfig) {
     // A backup job with a null configId predates destination tracking: we can't
     // reconstruct where its snapshot was written, and reading the device's
@@ -663,7 +680,7 @@ async function runBackupVerificationInternal(
   }
 
   const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';
-  const dispatchResult = await queueCommandForExecution(
+  const dispatchResult = await deps.queueCommand(
     input.deviceId,
     commandType,
     {
