@@ -123,7 +123,9 @@ export function warnHighSkipRatio(
     + `CVE entries (${(ratio * 100).toFixed(1)}%) were skipped this sync — `
     + 'probable upstream feed quality regression';
   console.error(message);
-  captureMessage(message, 'warning', { tag, skippedCount, entryCount, ratio, trigger, droppedWhat });
+  captureMessage(message, {
+    eventCode: 'cve_feed_high_skip_rate',
+  });
 }
 
 /**

@@ -265,7 +265,9 @@ describe('backup result persistence', () => {
       // that as an error would bury a real cross-tenant miss.
       const messages = captureMessageMock.mock.calls.map((call) => call[0] as string);
       expect(messages.some((m) => m.includes('matched no job row'))).toBe(true);
-      expect(captureMessageMock.mock.calls[0]![1]).toBe('warning');
+      expect(captureMessageMock.mock.calls[0]![1]).toMatchObject({
+        eventCode: 'backup_result_job_not_found',
+      });
       expect(captureExceptionMock).not.toHaveBeenCalled();
     });
 
