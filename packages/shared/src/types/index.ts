@@ -3,6 +3,7 @@
 // ============================================
 
 export * from './auth';
+export * from './deviceOptions';
 
 // ============================================
 // Multi-Tenancy Types
