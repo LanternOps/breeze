@@ -27,6 +27,10 @@ import {
  * here and must match the comment in core.ts.
  */
 const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
+  // Has org_id, but it is intentionally NOT re-stamped on move: agent-run
+  // history stays with the source org (owner decision 2026-08-23) — see the
+  // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
+  'ai_agent_runs',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',

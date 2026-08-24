@@ -158,11 +158,13 @@ describe('ai_agent_runs — org isolation, dedupe scope, immutability', () => {
     );
   });
 
-  it('org_id stays re-stampable so moveOrg can re-tenant the ledger', async () => {
-    // Regression: org_id was in the immutability guard while the table is in
-    // CORE_DEVICE_ORG_DENORMALIZED_TABLES. moveOrg re-stamps org_id in the same
-    // transaction that flips devices.org_id, so the guard rolled the whole move
-    // back with 23000 and permanently stranded any device an agent had touched.
+  it('org_id is immutable — moveOrg no longer re-tenants the ledger', async () => {
+    // Owner decision 2026-08-23 (wave 3b): agent-run history stays with the
+    // source org on a device move; moveOrg detaches device lineage instead of
+    // re-stamping org_id. With no legitimate org_id writer left, the guard now
+    // covers it (2026-09-06-a-agent-runs-org-immutable.sql). This inverts the
+    // pre-3b "org_id stays re-stampable" pin; the full move semantics live in
+    // agentRunMoveSemantics.integration.test.ts.
     const t = await orgWithAgent();
     const target = await createOrganization({ partnerId: t.partner.id });
     const [row] = await withDbAccessContext(orgContext(t.org.id, t.partner.id), () =>
@@ -170,8 +172,8 @@ describe('ai_agent_runs — org isolation, dedupe scope, immutability', () => {
     );
     createdRuns.push(row!.id);
 
-    // moveOrg runs under a context holding BOTH orgs; RLS WITH CHECK is what
-    // fences this, not the trigger.
+    // Even a context holding BOTH orgs (which passes RLS WITH CHECK on the
+    // post-image) is stopped by the trigger now.
     const bothOrgs: DbAccessContext = {
       scope: 'organization',
       orgId: t.org.id,
@@ -180,9 +182,12 @@ describe('ai_agent_runs — org isolation, dedupe scope, immutability', () => {
       userId: null,
       currentPartnerId: t.partner.id,
     };
-    const [moved] = await withDbAccessContext(bothOrgs, () =>
-      db.update(aiAgentRuns).set({ orgId: target.id }).where(inArray(aiAgentRuns.id, [row!.id])).returning(),
+    await expectSqlState(
+      () =>
+        withDbAccessContext(bothOrgs, () =>
+          db.update(aiAgentRuns).set({ orgId: target.id }).where(inArray(aiAgentRuns.id, [row!.id])).returning(),
+        ),
+      '23000',
     );
-    expect(moved!.orgId).toBe(target.id);
   });
 });
