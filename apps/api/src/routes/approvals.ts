@@ -1585,10 +1585,15 @@ async function decideHandler(
                   ),
                 );
 
-              if (status === 'approved') {
+              // Both outcomes are recorded. Before wave 2 only 'approved' was
+              // written, so a DENIED intent produced no outbox row at all and a
+              // requester whose chat turn had already ended could never be told
+              // what happened to it. In the same transaction as the status
+              // change, so the record cannot disagree with the decision.
+              if (status === 'approved' || status === 'denied') {
                 await tx.insert(intentOutbox).values({
                   intentId,
-                  eventType: 'intent_approved',
+                  eventType: status === 'approved' ? 'intent_approved' : 'intent_rejected',
                   // Ids only, no argument content (spec §3.2).
                   payload: { intentId, orgId: linkedIntent.orgId },
                 });

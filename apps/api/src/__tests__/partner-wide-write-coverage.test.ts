@@ -13,8 +13,15 @@
  *
  * The rule, and it is deliberately blunt:
  *
- *   A file under `src/routes/**` or `src/services/aiTools*.ts` that mutates a
- *   PARTNER-AXIS table must mention `canManagePartnerWidePolicies`.
+ *   A file under `src/routes/**` or `src/services/**` that mutates a
+ *   PARTNER-AXIS table must mention `canManagePartnerWidePolicies` or carry a
+ *   documented allowlist exemption.
+ *
+ * The walk originally covered routes + aiTools only; it was extended to all of
+ * services/ on 2026-08-23 after BOTH real instances of this bug class
+ * (partnerLlmConfig.ts, partnerStripe.ts) turned out to live in services the
+ * walk never saw — the mutation sits in a service, the gate in its route, and
+ * the guard read neither.
  *
  * "Partner-axis table" is derived from the live Drizzle schema, never
  * hand-listed: any table with a `partner_id` column whose `org_id` is absent or
@@ -88,6 +95,69 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/alertTemplates/rules.ts': 'alert RULES are org-owned in practice; partner-wide rule ownership is not exposed by this route',
   'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
   'routes/softwareInventory.ts': 'read-oriented inventory surface; its policy writes delegate to softwarePolicies routes',
+
+  // ==========================================================================
+  // services/** (walk extended 2026-08-23 — the aiProvider/stripeConnect gate
+  // gaps both lived in services the original routes-only walk never saw).
+  // Class key: system-context / self-user / org-axis writes have no caller to
+  // gate; "gated at <file>" entries are caller-facing services whose EVERY
+  // mutating route carries the capability check — the gate lives one layer up,
+  // so a NEW ungated route caller of these services will NOT be caught here.
+  // ==========================================================================
+
+  // --- system context / background / bootstrap ------------------------------
+  'services/abuseSignals/persistence.ts': 'abuse-sweep worker persistence (jobs/abuseSignalsSweep); no tenant request writes partner config',
+  'services/abuseSignals/scriptContent.ts': 'abuse-sweep script-host cache, populated only by the system abuse pipeline',
+  'services/inboundEmail/inboundEmailService.ts': 'inbound-mail worker queue state (jobs/inboundEmailWorker); no tenant caller',
+  'services/llm/llmConfigResolver.ts': 'runtime resolver; only write is the system-context version-CASed credential-error stamp',
+  'services/partnerCreate.ts': 'new-partner bootstrap seeds first roles/user/org before any partner capability can exist',
+  'services/platformAdminBootstrap.ts': 'startup-only platform-admin bootstrap (index.ts boot path); no tenant route calls it',
+  'services/policyAlertBridge.ts': 'startup event subscriber creating derived alert artifacts in system context',
+  'services/stripeConnectService.ts': 'Stripe-signed webhook records provider-side disconnect status; no tenant caller',
+  'services/tenantOffboarding.ts': 'offboarding/erasure lifecycle — the documented system-context exemption class',
+  'services/unifi/unifiSyncService.ts': 'UniFi worker sync-run telemetry (jobs/unifiWorker); no tenant route calls the mutator',
+
+  // --- self-user auth/profile columns (authority is "is this you") ----------
+  'services/authLifecycle.ts': 'auth/session epoch columns for the acting user only',
+  'services/avatarStorage.ts': 'acting user\'s own avatar columns via /me/avatar',
+  'services/emailVerification.ts': 'verification-token lifecycle + the authenticating user\'s own columns',
+  'services/officeAddin/officeAddinBindings.ts': 'per-user Entra bindings and revocation state, not partner config',
+  'services/pendingEmail.ts': 'pending-email state and auth epochs for the acting user only',
+
+  // --- org-axis writes reached via org-gated routes -------------------------
+  'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
+  'services/invoiceService.ts': 'org billing settings + time-entry billing status, org-axis authority',
+  'services/orgCurrencyService.ts': 'updates the selected organization\'s currency by org id',
+  'services/orgImport/index.ts': 'org import creates org-axis rows; gated by organizations:write on the route',
+  'services/quickSupportOrg.ts': 'quick-support provisioning creates an org-axis container',
+  'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
+  'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
+  'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
+
+  // --- caller-facing, gated at the route layer (verify the gate when editing
+  //     these services or adding ANY new route caller) -----------------------
+  'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentAdmin), called before every write',
+  'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
+  'services/builtinDeploymentPackages.ts': 'both callers behind requirePartnerManager (routes/huntress.ts, routes/sentinelOne.ts)',
+  'services/partnerLlmConfig.ts': 'gated at routes/aiProvider.ts — canManagePartnerWidePolicies on every handler (#3889)',
+  'services/partnerServicePrincipalKeys.ts': 'gated at routes/partnerServicePrincipals.ts capability check',
+  'services/partnerStripe.ts': 'gated at routes/stripeConnect/index.ts — capability check on every handler (#3916)',
+  'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
+  'services/policyEvaluationService.ts': 'partner-policy writes gated at routes/policyManagement/actions.ts; workers are system context',
+  'services/tdSynnexDigitalBridge.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate; search caches tokens',
+  'services/tdSynnexEcExpress.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate',
+  'services/tdSynnexSftpSync.ts': 'credential config/test/sync gated at routes/catalog/distributors.ts partnerWideGate; worker is system context',
+  'services/ticketConfigService.ts': 'gated by routes/ticketConfig.ts middleware; org/registration bootstrap paths are system-owned',
+  'services/ticketMailbox/connectionService.ts': 'connect/retest/delete gated in routes/tickets/mailboxConnect.ts; polling is worker-owned',
+  'services/ticketMailbox/consentSessionService.ts': 'consent start gated in routes/tickets/mailboxConnect.ts; callback consumes its signed session',
+  'services/unifi/unifiConnectionService.ts': 'every /unifi route passes the global capability middleware in routes/unifi/index.ts',
+
+  // --- catalog/accounting data on their own permission sets (precedent:
+  //     routes/softwareInstallMethods.ts + routes/accounting/index.ts above) --
+  'services/accounting/accountingConnectionService.ts': 'QBO/Xero connection lifecycle, gated by its own admin permission set (recorded exemption)',
+  'services/catalogImageStorage.ts': 'catalog item images on the catalog permission set; partner-scope routes only',
+  'services/catalogService.ts': 'catalog items/prices/bundles on the catalog permission set; partner-scope routes only',
+  'services/pax8CatalogService.ts': 'pax8 catalog-item import on the catalog permission set; credentials live behind /pax8\'s global gate',
 };
 
 /** Table export names whose rows can be partner-owned (org_id absent or nullable). */
@@ -124,11 +194,7 @@ function collectSourceFiles(): string[] {
     }
   };
   walk(join(API_SRC, 'routes'));
-  for (const entry of readdirSync(join(API_SRC, 'services'))) {
-    if (/^aiTools.*\.ts$/.test(entry) && !entry.endsWith('.test.ts')) {
-      files.push(join(API_SRC, 'services', entry));
-    }
-  }
+  walk(join(API_SRC, 'services'));
   return files.sort();
 }
 

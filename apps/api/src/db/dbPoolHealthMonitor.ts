@@ -506,29 +506,34 @@ export async function runDbPoolHealthCheck(
     console.warn(assessment.message);
     const throttleMs = getDbPoolHealthCaptureThrottleMs();
     if (claimDbPoolHealthCaptureSlot(assessment.verdict, assessment.at, throttleMs)) {
+      // NB: takeSuppressedCount also RESETS the counter, so this call must
+      // happen exactly once per capture whether or not anyone reads the value.
       const suppressed = takeSuppressedCount(assessment.verdict);
+      // On the console, not in a Sentry field: this used to ride along in
+      // `extra`, which was never attached to the event and was deleted by
+      // scrubEvent regardless (BREEZE-18). A raw count is also the wrong shape
+      // for a tag — unbounded cardinality. The operator-facing point is that a
+      // storm must not look like a single occurrence, and the console is where
+      // that lands truthfully.
+      if (suppressed > 0) {
+        console.warn(
+          `[db-pool-health] ${suppressed} capture(s) suppressed by the throttle since the last report `
+          + `(verdict=${assessment.verdict}).`,
+        );
+      }
       // Wrapped: a valid assessment has already been stored, and the outer catch
       // now CLEARS `lastAssessment`. Letting a reporter fault fall through to it
       // would erase a real `pool-degraded` verdict from /metrics at the exact
       // moment it fired, and show the operator a reporting error instead.
       try {
         // `db_pool_health_verdict` is the only field that survives — scrubEvent
-        // deletes message/extra from every event — so it carries the actionable
-        // part. The extras are passed anyway (correct shape, and free) and the
-        // full prose is already on console.warn above.
-        captureMessage(assessment.headline, 'warning', {
-          message: assessment.message,
-          verdict: assessment.verdict,
-          timeouts: assessment.stats.timeouts,
-          ratePerMin: assessment.stats.ratePerMin,
-          windowMs: assessment.stats.windowMs,
-          byCause: assessment.stats.byCause,
-          probeMs: assessment.probeMs,
-          probeError: assessment.probeError,
-          // States this event's own sampling rate, so the throttle cannot make a
-          // storm look like a single occurrence.
-          suppressedSinceLastCapture: suppressed,
-        }, { db_pool_health_verdict: assessment.verdict });
+        // deletes message/logentry from every event — so it carries the
+        // actionable part, alongside the required `event_code`. The full prose
+        // and the suppression count are on console.warn above.
+        captureMessage(assessment.headline, {
+          eventCode: 'db_pool_health_degraded',
+          tags: { db_pool_health_verdict: assessment.verdict },
+        });
       } catch (captureErr) {
         console.error('[db-pool-health] failed to report verdict to Sentry:', captureErr);
       }
@@ -555,11 +560,10 @@ export async function runDbPoolHealthCheck(
       )
     ) {
       try {
-        captureMessage('[db-pool-health] watchdog evaluation failed', 'warning', {
-          error: err instanceof Error ? err.message : String(err),
-          checkFailures,
-          suppressedSinceLastCapture: takeSuppressedCount('check-failed'),
-        }, { db_pool_health_verdict: 'check-failed' });
+        captureMessage('[db-pool-health] watchdog evaluation failed', {
+          eventCode: 'db_pool_health_check_failed',
+          tags: { db_pool_health_verdict: 'check-failed' },
+        });
       } catch {
         // The reporter is the thing that failed; the console line above stands.
       }

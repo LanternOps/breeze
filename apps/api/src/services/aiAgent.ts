@@ -128,6 +128,7 @@ export async function createSession(
       orgId,
       userId: auth.user.id,
       model: options.model ?? resolved.model,
+      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
       title: options.title ?? null,
       contextSnapshot: sanitizedPageContext ?? null,
       delegantM365ConnectionId,

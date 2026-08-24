@@ -15,7 +15,10 @@ import {
 import { getBinaryEdition } from "./binaryEdition";
 import {
   isReleaseArtifactManifestVerificationConfigured,
+  ReleaseAssetNotDistributableError,
   ReleaseManifestAssetAbsentError,
+  ReleaseManifestAssetLookupError,
+  ReleaseManifestSignatureError,
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactManifestIntegrity,
 } from "./releaseArtifactManifest";
@@ -508,6 +511,35 @@ function isAssetAbsentFromManifest(err: unknown): boolean {
   return err instanceof ReleaseManifestAssetAbsentError;
 }
 
+// BREEZE-1Z: the descriptive message below is DELETED by `scrubEvent` before
+// the event leaves the process, so the production issue could not say which
+// component, which asset, or why — and the INTENDED refusal (today's unsigned
+// darwin artifacts, see the NOTE on registerFromOfficialManifest) was
+// therefore indistinguishable from a genuine trust regression. These three
+// tags are the whole triage surface, so all three are bounded on purpose.
+//
+// The reason is a CLASS-derived classification, never `err.message`: the
+// underlying messages interpolate the offending platformTrust/edition/sha256
+// values, which is unbounded and would make the tag useless for grouping. The
+// mapping keys off the typed error classes for the same reason
+// `isAssetAbsentFromManifest` does — `.message` text is not a contract.
+export type ManifestRefusalReason =
+  | "checksum-mismatch"
+  | "not-distributable"
+  | "manifest-entry-invalid"
+  | "manifest-signature-invalid"
+  | "unclassified";
+
+export function classifyManifestRefusal(err: unknown): ManifestRefusalReason {
+  if (err instanceof ReleaseAssetNotDistributableError) return "not-distributable";
+  // Checked after the absent subclass is already handled by the caller, so any
+  // lookup error reaching here means "present in the manifest but malformed,
+  // or an identity mismatch".
+  if (err instanceof ReleaseManifestAssetLookupError) return "manifest-entry-invalid";
+  if (err instanceof ReleaseManifestSignatureError) return "manifest-signature-invalid";
+  return "unclassified";
+}
+
 // Reports (console.error + deduped captureException) a manifest asset that
 // was PRESENT but refused, or whose local file disagrees with the manifest's
 // claim for it — the two "fail closed" branches of registerFromOfficialManifest
@@ -518,18 +550,27 @@ function reportRefusedManifestAsset(
   component: string,
   assetName: string,
   err: unknown,
+  // Explicit at the checksum call site, which passes a plain string rather
+  // than a typed error and so cannot be classified from the value alone.
+  reason: ManifestRefusalReason = classifyManifestRefusal(err),
 ): void {
-  const reason = err instanceof Error ? err.message : String(err);
+  const detail = err instanceof Error ? err.message : String(err);
   console.error(
-    `[binarySync] Refusing to register ${component} asset ${assetName} from the official release manifest — fail closed, excluded from the per-deployment fallback too: ${reason}`,
+    `[binarySync] Refusing to register ${component} asset ${assetName} from the official release manifest — fail closed, excluded from the per-deployment fallback too: ${detail}`,
   );
   const key = `${component}:${assetName}`;
   if (warnedRefusedManifestAssets.has(key)) return;
   warnedRefusedManifestAssets.add(key);
   captureException(
     new Error(
-      `[binarySync] Official-manifest asset registration refused (D4, #3836): ${component} asset ${assetName} is present in the manifest but was rejected — ${reason}. Excluded from BOTH the official-manifest path and the per-deployment re-sign fallback (fail closed): registerLocalBinaries has no distributability gate, so falling back would silently serve the very artifact the manifest (or its checksum) refused.`,
+      `[binarySync] Official-manifest asset registration refused (D4, #3836): ${component} asset ${assetName} is present in the manifest but was rejected — ${detail}. Excluded from BOTH the official-manifest path and the per-deployment re-sign fallback (fail closed): registerLocalBinaries has no distributability gate, so falling back would silently serve the very artifact the manifest (or its checksum) refused.`,
     ),
+    undefined,
+    {
+      binary_component: component,
+      release_asset_name: assetName,
+      manifest_refusal_reason: reason,
+    },
   );
 }
 
@@ -609,6 +650,7 @@ async function registerFromOfficialManifest(args: {
           component,
           bin.filename,
           `Checksum mismatch between the local file (${bin.checksum}) and the official release manifest (${verified.sha256}) for ${bin.filename}`,
+          "checksum-mismatch",
         );
         excludedFilenames.add(bin.filename);
         continue;

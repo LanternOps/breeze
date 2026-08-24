@@ -1,3 +1,4 @@
+import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { getAnthropicClientForPartner } from '../llm/llmConfigResolver';
 
@@ -20,6 +21,7 @@ export interface EmailDraftInput {
   threadContext?: string | null;
   model: string;
   partnerId: string | null;
+  client?: Anthropic;
 }
 
 export interface EmailDraftResult {
@@ -84,7 +86,7 @@ export class EmailDraftFailedError extends Error {
 }
 
 export async function draftTicketFromEmail(input: EmailDraftInput): Promise<EmailDraftResult> {
-  const { client } = await getAnthropicClientForPartner(input.partnerId);
+  const client = input.client ?? (await getAnthropicClientForPartner(input.partnerId)).client;
   const userContent = buildUserContent(input);
   const attemptErrors: string[] = [];
   // Accumulated across attempts: a successful retry still reports (and the

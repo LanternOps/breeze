@@ -44,7 +44,10 @@ import {
   generateClientSessionTitle,
   resolveClientLlmConfig,
 } from '../../services/clientAiSessions';
-import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
+import {
+  LlmUnavailableError,
+  type UsableLlmConfig,
+} from '../../services/llm/llmConfigResolver';
 import {
   CLIENT_HOSTS,
   CLIENT_SESSION_TYPES,
@@ -136,19 +139,20 @@ function auditClient(
   });
 }
 
-/** Shared preflight (spec §4 order): rate limits → org budget → partner credits. */
+/** Shared post-resolution preflight: org budget → partner credits. */
 async function runClientPreflight(
   c: Context,
   auth: ClientAiAuthContext,
   policy: ClientAiOrgPolicy,
+  resolved: UsableLlmConfig,
 ): Promise<Response | null> {
-  const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
-  if (rateError) return c.json({ error: rateError }, 429);
-
   const budgetError = await checkClientBudget(policy);
   if (budgetError) return c.json({ error: budgetError }, 402);
 
-  const creditError = await checkBillingCredits(auth.orgId);
+  const creditError = await checkBillingCredits(
+    auth.orgId,
+    resolved.source === 'partner' ? 'partner_key' : 'platform',
+  );
   if (creditError) return c.json({ error: creditError }, 402);
 
   return null;
@@ -166,9 +170,10 @@ async function ensureActiveClientSession(
   sessionRow: ClientSessionRow,
   auth: ClientAiAuthContext,
   policy: ClientAiOrgPolicy,
+  resolvedConfig?: UsableLlmConfig,
 ): Promise<ActiveSession> {
   const maxBudgetUsd = await getRemainingClientBudgetUsd(policy);
-  const resolved = await resolveClientLlmConfig(sessionRow.orgId);
+  const resolved = resolvedConfig ?? await resolveClientLlmConfig(sessionRow.orgId);
   if (resolved.source === 'unavailable') throw new LlmUnavailableError();
 
   // The session's host is encoded in its stored `type` (e.g. 'excel_client').
@@ -253,8 +258,8 @@ clientAiSessionRoutes.post('/', async (c) => {
   }
   const { workbookName, host } = parsed.data;
 
-  const rejection = await runClientPreflight(c, auth, policy);
-  if (rejection) return rejection;
+  const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
+  if (rateError) return c.json({ error: rateError }, 429);
 
   // A host the server can't actually serve (no tool registry / system prompt
   // yet — e.g. word/powerpoint/outlook in Phase 1) is rejected up front so we
@@ -267,6 +272,8 @@ clientAiSessionRoutes.post('/', async (c) => {
   if (resolved.source === 'unavailable') {
     return c.json({ error: 'ai_unavailable' }, 503);
   }
+  const rejection = await runClientPreflight(c, auth, policy, resolved);
+  if (rejection) return rejection;
   const model = policy.allowedModels[0] ?? resolved.model;
   const systemPrompt = buildClientSystemPrompt(host, policy.writeMode);
 
@@ -278,6 +285,7 @@ clientAiSessionRoutes.post('/', async (c) => {
       clientUserId: auth.clientUserId,
       type: clientSessionType(host),
       model,
+      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
       systemPrompt,
       workbookName: workbookName ?? null,
     })
@@ -532,7 +540,14 @@ clientAiSessionRoutes.post(
       return c.json({ error: 'Session is no longer active' }, 410);
     }
 
-    const rejection = await runClientPreflight(c, auth, policy);
+    const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
+    if (rateError) return c.json({ error: rateError }, 429);
+
+    const resolved = await resolveClientLlmConfig(auth.orgId);
+    if (resolved.source === 'unavailable') {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
+    const rejection = await runClientPreflight(c, auth, policy, resolved);
     if (rejection) return rejection;
 
     // ── DLP chokepoint (a): the user prompt (templates ride inside it in v1) ──
@@ -591,7 +606,7 @@ clientAiSessionRoutes.post(
 
     let activeSession: ActiveSession;
     try {
-      activeSession = await ensureActiveClientSession(c, session, auth, policy);
+      activeSession = await ensureActiveClientSession(c, session, auth, policy, resolved);
     } catch (err) {
       if (err instanceof ClientHostUnsupportedError) {
         return c.json({ error: 'unsupported_host' }, 400);

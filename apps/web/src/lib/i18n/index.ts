@@ -45,6 +45,7 @@ const localizedDocumentTitleKeys: Record<string, string> = {
   '/': 'documentTitles.dashboard',
   '/devices': 'nav.devices',
   '/alerts': 'nav.alerts',
+  '/approvals': 'nav.approvals',
   '/tickets': 'nav.tickets',
   '/remote': 'nav.remoteAccess',
   '/scripts': 'nav.scripts',

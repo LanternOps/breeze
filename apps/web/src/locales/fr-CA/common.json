@@ -4,6 +4,10 @@
     "dashboard": "Tableau de bord",
     "devices": "Dispositifs",
     "alerts": "Alertes",
+    "approvals": "Approbations",
+    "pendingApprovals": "{{count}} approbations en attente",
+    "pendingApprovals_one": "{{count}} approbation en attente",
+    "pendingApprovals_other": "{{count}} approbations en attente",
     "tickets": "Tickets",
     "incidents": "Incidents",
     "remoteAccess": "Accès à distance",
@@ -700,7 +704,20 @@
       "recently": "Récemment",
       "markUnread": "Marquer comme non lue",
       "markRead": "Marquer comme lu",
-      "preferences": "Préférences de notifications"
+      "preferences": "Préférences de notifications",
+      "types": {
+        "alert": "Alerte",
+        "device": "Appareil",
+        "script": "Scénario",
+        "automation": "Automatisation",
+        "system": "Système",
+        "user": "Utilisateur",
+        "security": "Sécurité",
+        "ticket": "Billet",
+        "approval": "Approbation",
+        "ai": "IA",
+        "unknown": "Avis"
+      }
     },
     "sidebar": {
       "autoHide": "Cache automatique dans la barre latérale",

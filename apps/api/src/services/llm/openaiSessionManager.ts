@@ -254,7 +254,14 @@ export class OpenAISessionManager {
           const costUsd = this.provider.computeCostUsd(inputTokens, outputTokens);
           await withDbAccessContext(
             { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
-            () => recordOpenAIUsage(breezeSessionId, orgId, inputTokens, outputTokens, costUsd),
+            () => recordOpenAIUsage(
+              breezeSessionId,
+              orgId,
+              inputTokens,
+              outputTokens,
+              costUsd,
+              'platform',
+            ),
           );
         } catch (err) {
           captureException(err);

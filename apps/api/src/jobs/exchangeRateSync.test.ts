@@ -211,7 +211,9 @@ describe('exchangeRateSync worker', () => {
       // ...and the bad row is visible, not swallowed.
       expect(captureMessageMock).toHaveBeenCalledTimes(1);
       expect(String(captureMessageMock.mock.calls[0]![0])).toContain('rejected 1');
-      expect(captureMessageMock.mock.calls[0]![1]).toBe('warning');
+      expect(captureMessageMock.mock.calls[0]![1]).toMatchObject({
+        eventCode: 'exchange_rate_rows_rejected',
+      });
     });
 
     it('rethrows a transient FrankfurterClientError AS-IS so BullMQ retries', async () => {

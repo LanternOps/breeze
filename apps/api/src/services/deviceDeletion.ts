@@ -182,12 +182,10 @@ export async function deleteDeviceCascade(
   const changed = priorMs !== null && (priorMs === 0 || priorMs > DEVICE_LOCK_TIMEOUT_MS);
   const restoreTo = changed ? priorMs : null;
   if (priorMs === null) {
-    captureMessage(
-      'device cascade could not read the prior lock_timeout',
-      'warning',
-      undefined,
-      { device_deletion_warning: 'lock-timeout-unreadable' }
-    );
+    captureMessage('device cascade could not read the prior lock_timeout', {
+      eventCode: 'device_deletion_lock_timeout_unreadable',
+      tags: { device_deletion_warning: 'lock-timeout-unreadable' },
+    });
   }
   const locked = await tx.execute(
     sql`SELECT id FROM devices WHERE id = ${deviceId} FOR UPDATE`
@@ -209,12 +207,10 @@ export async function deleteDeviceCascade(
   // signal that the RLS/absent-row branch actually happened.
   const lockedRows = extractRowCount(locked);
   if (lockedRows === 0) {
-    captureMessage(
-      'device cascade ran without holding the devices row lock',
-      'warning',
-      undefined,
-      { device_deletion_warning: 'parent-lock-missing' }
-    );
+    captureMessage('device cascade ran without holding the devices row lock', {
+      eventCode: 'device_deletion_parent_lock_missing',
+      tags: { device_deletion_warning: 'parent-lock-missing' },
+    });
   }
 
   const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;

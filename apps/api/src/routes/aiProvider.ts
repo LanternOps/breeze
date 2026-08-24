@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { OFFERABLE_AI_MODELS } from '../services/aiCostTracker';
 import {
   deletePartnerLlmConfig,
   getPartnerLlmStatus,
@@ -50,6 +51,10 @@ aiProviderRoutes.get(
       status: status.status,
       verifiedAt: status.verifiedAt?.toISOString() ?? null,
       lastError: status.lastError,
+      // Options for the web UI's default-model select. Sourced from the cost
+      // tracker's pricing registry so the UI can never offer a model we can't
+      // meter.
+      supportedModels: [...OFFERABLE_AI_MODELS],
     });
   },
 );
