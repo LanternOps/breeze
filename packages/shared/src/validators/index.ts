@@ -262,6 +262,16 @@ export const automationActionSchema = z.discriminatedUnion('type', [
     type: z.literal('deploy_software'),
     catalogId: z.string().guid(),
   }),
+  // AI agents wave 3d (#3824): a system-managed action, seeded alongside a
+  // triage agent — never authored in the UI. It carries NO config on
+  // purpose: the agent is resolved through automations.managed_by_agent_id
+  // and the device comes from the triggering event's binding, so severity/
+  // site/tag filtering has exactly one home (the agent policy) and cannot
+  // drift against the automation row. `.strict()` so a caller cannot
+  // smuggle an agentId past that resolution.
+  z.object({
+    type: z.literal('ai_triage'),
+  }).strict(),
 ]);
 
 export const createAutomationSchema = z.object({

@@ -182,12 +182,20 @@ export type DeploySoftwareAction = {
   catalogId: string;
 };
 
+// AI agents wave 3d (#3824). No config by design — see the shared
+// validator arm: the agent comes from automation.managedByAgentId and
+// the device from the event-target binding.
+export type AiTriageAction = {
+  type: 'ai_triage';
+};
+
 export type AutomationAction =
   | RunScriptAction
   | SendNotificationAction
   | CreateAlertAction
   | ExecuteCommandAction
-  | DeploySoftwareAction;
+  | DeploySoftwareAction
+  | AiTriageAction;
 
 export type NotificationTargets = {
   channelIds?: string[];
@@ -443,6 +451,11 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         throw new AutomationValidationError(`actions[${index}] deploy_software requires catalogId`);
       }
       normalized.push({ type: 'deploy_software', catalogId });
+      continue;
+    }
+
+    if (type === 'ai_triage') {
+      normalized.push({ type: 'ai_triage' });
       continue;
     }
 
