@@ -12,9 +12,9 @@ import {
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { recoveryMediaArtifacts, recoveryTokens } from '../db/schema';
+import { backupSnapshots, recoveryMediaArtifacts, recoveryTokens } from '../db/schema';
 import {
   asRecord,
   getStringValue,
@@ -637,6 +637,7 @@ export async function listRecoveryMediaArtifacts(orgId: string, filters: {
   status?: string;
   limit: number;
   offset: number;
+  authorizedDeviceIds?: string[] | null;
 }) {
   const rows = await db
     .select({
@@ -661,12 +662,22 @@ export async function listRecoveryMediaArtifacts(orgId: string, filters: {
     })
     .from(recoveryMediaArtifacts)
     .innerJoin(recoveryTokens, eq(recoveryMediaArtifacts.tokenId, recoveryTokens.id))
+    .innerJoin(backupSnapshots, and(
+      eq(recoveryMediaArtifacts.snapshotId, backupSnapshots.id),
+      eq(recoveryMediaArtifacts.orgId, backupSnapshots.orgId),
+    ))
     .where(
       and(
         eq(recoveryMediaArtifacts.orgId, orgId),
         filters.tokenId ? eq(recoveryMediaArtifacts.tokenId, filters.tokenId) : undefined,
         filters.snapshotId ? eq(recoveryMediaArtifacts.snapshotId, filters.snapshotId) : undefined,
-        filters.status ? eq(recoveryMediaArtifacts.status, filters.status as never) : undefined
+        filters.status ? eq(recoveryMediaArtifacts.status, filters.status as never) : undefined,
+        filters.authorizedDeviceIds
+          ? inArray(recoveryTokens.deviceId, filters.authorizedDeviceIds)
+          : undefined,
+        filters.authorizedDeviceIds
+          ? inArray(backupSnapshots.deviceId, filters.authorizedDeviceIds)
+          : undefined
       )
     )
     .orderBy(desc(recoveryMediaArtifacts.createdAt), desc(recoveryMediaArtifacts.id))
