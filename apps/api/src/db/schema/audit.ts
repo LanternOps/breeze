@@ -1,11 +1,13 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, bigserial, bigint } from 'drizzle-orm/pg-core';
+import { ACTOR_TYPES, AUDIT_RESULTS } from '@breeze/shared';
 import { organizations } from './orgs';
 
 // 'agent' is the Go device agent; 'ai_agent' is the autonomous AI agent
 // principal (wave 3). They are different actors and must stay distinguishable
-// in the audit trail.
-export const actorTypeEnum = pgEnum('actor_type', ['user', 'api_key', 'agent', 'system', 'ai_agent']);
-export const auditResultEnum = pgEnum('audit_result', ['success', 'failure', 'denied']);
+// in the audit trail. Values come from @breeze/shared so the DB enum, the
+// shared union, the validators and the OpenAPI spec cannot drift apart (#3908).
+export const actorTypeEnum = pgEnum('actor_type', ACTOR_TYPES);
+export const auditResultEnum = pgEnum('audit_result', AUDIT_RESULTS);
 export const initiatedByEnum = pgEnum('initiated_by_type', ['manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration']);
 
 export const auditLogs = pgTable('audit_logs', {

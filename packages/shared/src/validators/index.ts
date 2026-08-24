@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import {
+  ACTOR_TYPES,
+  AUDIT_RESULTS,
   OS_TYPES,
   DEVICE_STATUSES,
   ALERT_SEVERITIES,
@@ -499,11 +501,11 @@ export * from './filters';
 
 export const auditQuerySchema = paginationSchema.merge(dateRangeSchema).extend({
   actorId: z.string().guid().optional(),
-  actorType: z.enum(['user', 'api_key', 'agent', 'system', 'ai_agent']).optional(),
+  actorType: z.enum(ACTOR_TYPES).optional(),
   action: z.string().optional(),
   resourceType: z.string().optional(),
   resourceId: z.string().guid().optional(),
-  result: z.enum(['success', 'failure', 'denied']).optional()
+  result: z.enum(AUDIT_RESULTS).optional()
 });
 
 // ============================================

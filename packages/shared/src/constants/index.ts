@@ -38,6 +38,16 @@ export const USER_STATUSES = ['active', 'invited', 'disabled'] as const;
 // Notification Channel Types
 export const NOTIFICATION_CHANNEL_TYPES = ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms', 'pushover'] as const;
 
+// Audit Actor Types — the single runtime source for the `actor_type` Postgres
+// enum, the shared `ActorType` union, the audit query validator and the
+// OpenAPI spec. 'agent' is the Go device agent; 'ai_agent' is the autonomous
+// AI agent principal. Widen HERE, never at a call site (#3908).
+export const ACTOR_TYPES = ['user', 'api_key', 'agent', 'system', 'ai_agent'] as const;
+
+// Audit Results — single runtime source for the `audit_result` Postgres enum,
+// the shared `AuditResult` union, the audit query validator and the OpenAPI spec.
+export const AUDIT_RESULTS = ['success', 'failure', 'denied'] as const;
+
 // Remote Session Types
 export const REMOTE_SESSION_TYPES = ['terminal', 'desktop', 'file_transfer'] as const;
 
