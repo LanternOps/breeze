@@ -189,6 +189,11 @@ export type AutomationAction =
   | ExecuteCommandAction
   | DeploySoftwareAction;
 
+// Normalization is the trust boundary for persisted action JSON. Keep the
+// explicit name for authorization/storage callers while preserving the
+// existing AutomationAction public type for runtime consumers.
+export type NormalizedAutomationAction = AutomationAction;
+
 export type NotificationTargets = {
   channelIds?: string[];
   emails?: string[];
