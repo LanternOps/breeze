@@ -51,7 +51,7 @@
     "@sentry/cli": "2.58.4",
     "@types/react": "~19.2.18",
     "typescript": "~5.9.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "expo": {
     "install": {

@@ -18,6 +18,6 @@
     "@types/semver": "^7.8.0",
     "hono": "^4.13.2",
     "typescript": "^5.7.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.11"
   }
 }
