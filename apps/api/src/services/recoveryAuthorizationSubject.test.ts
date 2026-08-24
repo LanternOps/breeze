@@ -11,6 +11,7 @@ import {
   type RecoveryAuthorizationSubjectDependencies,
   type RecoveryAuthorizationSubjectRow,
 } from './recoveryAuthorizationSubject';
+import { ResilienceAuthorizationError } from './resilienceSiteAuthorization';
 
 const ORG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const USER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -577,6 +578,25 @@ describe('rehydrateRecoveryAuthorizationSubject', () => {
 });
 
 describe('authorizeQueuedRecoveryWork', () => {
+  it.each([
+    [403, 'site_access_denied'],
+    [404, 'resource_not_found'],
+  ] as const)('classifies live lineage %s/%s as a known non-retriable denial', async (status, code) => {
+    const deps = dependencies({
+      authorizeResilienceResources: vi.fn(async () => {
+        throw new ResilienceAuthorizationError(status, code);
+      }),
+    });
+
+    await expect(authorizeQueuedRecoveryWork(
+      stored('user_session', USER_ID),
+      ORG_ID,
+      [{ kind: 'snapshot', id: '22222222-2222-4222-8222-222222222222', role: 'source' }],
+      'media',
+      deps,
+    )).rejects.toMatchObject({ code, retriable: false });
+  });
+
   it('lets an allowlisted system reason reach live lineage without user RBAC grants', async () => {
     const deps = dependencies();
     const subject = await captureRecoveryAuthorizationSubject(

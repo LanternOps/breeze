@@ -203,6 +203,21 @@ vi.mock('../../services/recoveryDownloadService', () => ({
 
 const enqueueRecoveryMediaBuildMock = vi.fn(async () => 'recovery-media:1');
 const enqueueRecoveryBootMediaBuildMock = vi.fn(async () => 'recovery-boot-media:1');
+const capturedAuthorizationSubject = {
+  authorizationPrincipalKind: 'user_session' as const,
+  authorizationPrincipalId: 'user-123',
+  authorizationGrantRevision: `sha256:${'a'.repeat(64)}`,
+  authorizationState: 'pending' as const,
+  authorizationDenialCode: null,
+  authorizationCheckedAt: null,
+};
+const captureRecoveryAuthorizationSubjectMock = vi.fn(async (): Promise<any> => capturedAuthorizationSubject);
+
+vi.mock('../../services/recoveryAuthorizationSubject', () => ({
+  captureRecoveryAuthorizationSubject: (...args: unknown[]) =>
+    captureRecoveryAuthorizationSubjectMock(...(args as [])),
+  RecoveryAuthorizationDeniedError: class extends Error {},
+}));
 
 vi.mock('../../jobs/recoveryMediaWorker', () => ({
   enqueueRecoveryMediaBuild: (...args: unknown[]) => enqueueRecoveryMediaBuildMock(...(args as [])),
@@ -321,6 +336,8 @@ describe('bmr routes', () => {
     });
     getAuthenticatedRecoveryDownloadTargetMock.mockReset();
     enqueueRecoveryBootMediaBuildMock.mockClear();
+    captureRecoveryAuthorizationSubjectMock.mockClear();
+    captureRecoveryAuthorizationSubjectMock.mockResolvedValue(capturedAuthorizationSubject);
     createRecoveryBootMediaRequestMock.mockReset();
     getRecoveryBootMediaArtifactMock.mockReset();
     getRecoveryBootMediaDownloadTargetMock.mockReset();
@@ -1063,6 +1080,115 @@ describe('bmr routes', () => {
     expect(body.id).toBe('media-artifact-1');
     expect(body.status).toBe('pending');
     expect(enqueueRecoveryMediaBuildMock).toHaveBeenCalledWith('media-artifact-1');
+    expect(captureRecoveryAuthorizationSubjectMock).toHaveBeenCalledWith(authState, ORG_ID, 'media');
+    const insertChain = insertMock.mock.results.at(-1)!.value;
+    expect(insertChain.values).toHaveBeenCalledWith(expect.objectContaining(capturedAuthorizationSubject));
+    expect(transactionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('observes an existing pending media build without replacing its authorization subject', async () => {
+    updateMock.mockReturnValueOnce(chainMock([]));
+    selectMock
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal',
+        status: 'active',
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: 'media-artifact-1',
+        orgId: ORG_ID,
+        tokenId: TOKEN_ID,
+        snapshotId: SNAPSHOT_ID,
+        platform: 'linux',
+        architecture: 'amd64',
+        status: 'pending',
+        storageKey: null,
+        checksumSha256: null,
+        metadata: {},
+        createdAt: new Date('2026-03-29T00:00:00.000Z'),
+        completedAt: null,
+        authorizationPrincipalKind: 'oauth_grant',
+        authorizationPrincipalId: 'grant-original',
+        authorizationGrantRevision: 'sha256:original',
+      }]));
+
+    const res = await app.request('/backup/bmr/media', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ tokenId: TOKEN_ID, platform: 'linux', architecture: 'amd64' }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(captureRecoveryAuthorizationSubjectMock).not.toHaveBeenCalled();
+    expect(transactionMock).not.toHaveBeenCalled();
+    expect(enqueueRecoveryMediaBuildMock).not.toHaveBeenCalled();
+  });
+
+  it('atomically replaces the durable subject when a different authorized caller retries failed media', async () => {
+    authState = {
+      ...authState,
+      principal: { kind: 'oauth_grant', grantId: 'grant-new', clientId: 'client-1' } as any,
+    };
+    const replacement = {
+      ...capturedAuthorizationSubject,
+      authorizationPrincipalKind: 'oauth_grant' as const,
+      authorizationPrincipalId: 'grant-new',
+      authorizationGrantRevision: `sha256:${'b'.repeat(64)}`,
+    };
+    captureRecoveryAuthorizationSubjectMock.mockResolvedValueOnce(replacement);
+    updateMock.mockReturnValueOnce(chainMock([]));
+    selectMock
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal',
+        status: 'active',
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: 'media-artifact-1',
+        orgId: ORG_ID,
+        tokenId: TOKEN_ID,
+        snapshotId: SNAPSHOT_ID,
+        platform: 'linux',
+        architecture: 'amd64',
+        status: 'failed',
+        metadata: {},
+        createdAt: new Date('2026-03-29T00:00:00.000Z'),
+        completedAt: new Date('2026-03-29T00:10:00.000Z'),
+      }]));
+    updateMock.mockReturnValueOnce(chainMock([{
+      id: 'media-artifact-1',
+      orgId: ORG_ID,
+      tokenId: TOKEN_ID,
+      snapshotId: SNAPSHOT_ID,
+      platform: 'linux',
+      architecture: 'amd64',
+      status: 'pending',
+      metadata: {},
+      createdAt: new Date('2026-03-29T00:00:00.000Z'),
+      completedAt: null,
+      ...replacement,
+    }]));
+
+    const res = await app.request('/backup/bmr/media', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ tokenId: TOKEN_ID, platform: 'linux', architecture: 'amd64' }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(captureRecoveryAuthorizationSubjectMock).toHaveBeenCalledWith(authState, ORG_ID, 'media');
+    const updateChain = updateMock.mock.results.at(-1)!.value;
+    expect(updateChain.set).toHaveBeenCalledWith(expect.objectContaining(replacement));
+    expect(transactionMock).toHaveBeenCalledTimes(1);
+    expect(enqueueRecoveryMediaBuildMock).toHaveBeenCalledWith('media-artifact-1');
   });
 
   it('lists recovery signing keys', async () => {
@@ -1147,6 +1273,9 @@ describe('bmr routes', () => {
     expect(body.mediaType).toBe('iso');
     expect(body.status).toBe('pending');
     expect(enqueueRecoveryBootMediaBuildMock).toHaveBeenCalledWith('boot-media-1');
+    expect(createRecoveryBootMediaRequestMock).toHaveBeenCalledWith(expect.objectContaining({
+      auth: authState,
+    }));
   });
 });
 

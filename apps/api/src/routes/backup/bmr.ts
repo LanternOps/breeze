@@ -57,6 +57,7 @@ import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
 } from './resilienceAuthorization';
+import { captureRecoveryAuthorizationSubject } from '../../services/recoveryAuthorizationSubject';
 import {
   bmrAuthenticateSchema,
   bmrBootMediaCreateSchema,
@@ -726,9 +727,9 @@ bmrRoutes.post(
         return c.json(toMediaResponse({ ...existing, tokenStatus: token.status }), 200);
       }
 
-      const [reset] = await db
-        .update(recoveryMediaArtifacts)
-        .set({
+      const subject = await captureRecoveryAuthorizationSubject(auth, orgId, 'media');
+      const reset = await db.transaction(async (tx) => {
+        const [row] = await tx.update(recoveryMediaArtifacts).set({
           status: 'pending',
           storageKey: null,
           checksumSha256: null,
@@ -742,17 +743,20 @@ bmrRoutes.post(
             restartedAt: new Date().toISOString(),
           },
           completedAt: null,
+          ...subject,
         })
         .where(eq(recoveryMediaArtifacts.id, existing.id))
         .returning();
+        return row!;
+      });
 
-      await enqueueRecoveryMediaBuild(reset!.id);
-      return c.json(toMediaResponse({ ...reset!, tokenStatus: token.status }), 202);
+      await enqueueRecoveryMediaBuild(reset.id);
+      return c.json(toMediaResponse({ ...reset, tokenStatus: token.status }), 202);
     }
 
-    const [row] = await db
-      .insert(recoveryMediaArtifacts)
-      .values({
+    const subject = await captureRecoveryAuthorizationSubject(auth, orgId, 'media');
+    const row = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(recoveryMediaArtifacts).values({
         orgId,
         tokenId: token.id,
         snapshotId: token.snapshotId,
@@ -764,8 +768,11 @@ bmrRoutes.post(
           requestedAt: new Date().toISOString(),
         },
         createdBy: auth.user?.id ?? null,
+        ...subject,
       })
       .returning();
+      return created;
+    });
 
     if (!row) {
       return c.json({ error: 'Failed to create recovery media job' }, 500);
@@ -966,6 +973,7 @@ bmrRoutes.post(
       row = await createRecoveryBootMediaRequest({
         orgId,
         tokenId: token.id,
+        auth,
         createdBy: auth.user?.id ?? null,
         bundleArtifactId: payload.bundleArtifactId ?? null,
       });
