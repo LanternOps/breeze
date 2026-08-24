@@ -2370,12 +2370,12 @@ async function admitConfigPolicyAutomationRun(
     triggeredBy: string;
     details?: Record<string, unknown>;
   },
-  actions: readonly AutomationAction[],
+  actions: readonly AutomationAction[] | null,
   requireOrgId: boolean,
 ): Promise<{
   run: AutomationRunRow;
   context: { configPolicyId: string; orgId: string | null; partnerId: string | null };
-  resolvedReferences: ResolvedAutomationReferences;
+  resolvedReferences: ResolvedAutomationReferences | null;
 }> {
   return db.transaction(async (tx) => {
     const context = await resolveConfigPolicyAutomationContext(tx, options.automation.featureLinkId);
@@ -2388,11 +2388,13 @@ async function admitConfigPolicyAutomationRun(
       throw new Error(`Could not resolve orgId for config policy automation ${options.automation.id}`);
     }
 
-    const resolvedReferences = await resolveAutomationReferencesForOwner(
-      tx,
-      { orgId: context.orgId, partnerId: context.partnerId },
-      actions,
-    );
+    const resolvedReferences = actions
+      ? await resolveAutomationReferencesForOwner(
+        tx,
+        { orgId: context.orgId, partnerId: context.partnerId },
+        actions,
+      )
+      : null;
     const [run] = await tx
       .insert(automationRuns)
       .values({
@@ -2455,12 +2457,46 @@ export async function executeConfigPolicyAutomationRun(
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
-  const actions = normalizeAutomationActions(automation.actions);
+  let actions: AutomationAction[];
+  try {
+    actions = normalizeAutomationActions(automation.actions);
+  } catch (error) {
+    // Legacy/corrupt rows still produce an observable failed run, matching the
+    // pre-authorization runtime contract. No action can be dispatched because
+    // parsing failed, so this branch deliberately skips reference resolution.
+    const admission = await admitConfigPolicyAutomationRun(
+      { automation, targetDeviceIds, triggeredBy },
+      null,
+      true,
+    );
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    await db
+      .update(automationRuns)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        logs: [
+          ...getExistingLogs(admission.run.logs),
+          logEntry(`Failed to parse automation actions: ${errorMsg}`, 'error'),
+        ],
+      })
+      .where(eq(automationRuns.id, admission.run.id));
+
+    return {
+      runId: admission.run.id,
+      status: 'failed',
+      devicesSucceeded: 0,
+      devicesFailed: targetDeviceIds.length,
+    };
+  }
   const admission = await admitConfigPolicyAutomationRun(
     { automation, targetDeviceIds, triggeredBy },
     actions,
     true,
   );
+  if (!admission.resolvedReferences) {
+    throw new Error('Config policy automation admission did not resolve references');
+  }
   const orgId = admission.context.orgId!;
   const run = admission.run;
 
