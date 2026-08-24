@@ -53,7 +53,7 @@ vi.mock('../permissions', async (importOriginal) => {
 });
 
 import { db } from '../../db';
-import { organizationUsers, partnerUsers, users } from '../../db/schema';
+import { devices, organizationUsers, partnerUsers, users } from '../../db/schema';
 import { requiredPermissionsForTool } from '../aiGuardrails';
 import { getUserPermissions, type UserPermissions } from '../permissions';
 import {
@@ -470,6 +470,7 @@ describe('resolveIntentTargetScope', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['dev-1', 'dev-2'] },
       { deviceId: 'dev-3' },
+      'org-1',
     );
     expect(scope.kind).toBe('devices');
     if (scope.kind !== 'devices') throw new Error('unreachable');
@@ -481,6 +482,7 @@ describe('resolveIntentTargetScope', () => {
       'manage_deployments',
       { targetType: 'all' },
       { deviceId: 'dev-1' },
+      'org-1',
     );
     expect(scope).toEqual({ kind: 'indirect' });
     // Fails closed WITHOUT resolving anything from deviceArgs / the run device.
@@ -491,8 +493,35 @@ describe('resolveIntentTargetScope', () => {
     queueDeviceSiteSelect([{ id: 'dev-1', siteId: 'site-1' }]);
 
     await expect(
-      resolveIntentTargetScope('execute_command', { deviceId: 'dev-404' }, { deviceId: 'dev-1' }),
+      resolveIntentTargetScope('execute_command', { deviceId: 'dev-404' }, { deviceId: 'dev-1' }, 'org-1'),
     ).rejects.toThrow(/dev-404/);
+  });
+
+  it('pins the device read to the intent org so a cross-tenant device id fails like a nonexistent one', async () => {
+    // Review finding 1: the system-scoped devices select MUST carry an org
+    // predicate. Without it, an org-A proposal citing an existing org-B
+    // device UUID would (a) silently pull the foreign device's site into the
+    // fan-out scope and (b) act as a cross-tenant device-UUID existence
+    // oracle (existing foreign id → intent created; nonexistent id → throw).
+    // The queued row simulates Postgres filtering the foreign device out via
+    // the org pin: only the in-org device comes back.
+    const { where } = queueDeviceSiteSelect([{ id: 'dev-1', siteId: 'site-1' }]);
+
+    await expect(
+      resolveIntentTargetScope(
+        'execute_command',
+        { deviceId: 'dev-foreign' },
+        { deviceId: 'dev-1' },
+        'org-1',
+      ),
+    ).rejects.toThrow(/dev-foreign/);
+
+    // Structural pin on the WHERE clause itself: ids restricted AND org
+    // pinned — not just the inArray alone.
+    expect(where).toHaveBeenCalledTimes(1);
+    expect(where).toHaveBeenCalledWith(
+      and(inArray(devices.id as never, ['dev-foreign', 'dev-1']), eq(devices.orgId as never, 'org-1')),
+    );
   });
 
   it('fails closed to indirect when no device id can be resolved at all', async () => {
@@ -500,7 +529,7 @@ describe('resolveIntentTargetScope', () => {
     // AND a detached run (device_id NULL after a device move) must not yield
     // {kind:'devices', siteIds: []} — an empty site list would vacuously pass
     // every candidate's site check.
-    const scope = await resolveIntentTargetScope('execute_command', {}, { deviceId: null });
+    const scope = await resolveIntentTargetScope('execute_command', {}, { deviceId: null }, 'org-1');
     expect(scope).toEqual({ kind: 'indirect' });
     expect(db.select).not.toHaveBeenCalled();
   });
@@ -598,6 +627,24 @@ describe('isAgentIntentDecideAuthorized', () => {
     stubPermsByUser({ 'u-a': makePerms() });
 
     await expect(isAgentIntentDecideAuthorized('u-a', intent)).resolves.toBe(false);
+  });
+
+  it('pins the decide-time device read to the INTENT org (cross-tenant cited device fails closed)', async () => {
+    // Review finding 1, decide-time leg: the device-site resolution must be
+    // scoped to intent.orgId, so a cited device that exists in another tenant
+    // is filtered out by the org pin and behaves exactly like a deleted one.
+    queueDecideSelects({
+      run: [{ orgId: 'org-1', deviceId: null }],
+      org: [{ partnerId: 'partner-1' }],
+    });
+    // dev-1 exists — in ANOTHER org, so the org-pinned select returns nothing.
+    const { where } = queueDeviceSiteSelect([]);
+    stubPermsByUser({ 'u-a': makePerms() });
+
+    await expect(isAgentIntentDecideAuthorized('u-a', intent)).resolves.toBe(false);
+    expect(where).toHaveBeenCalledWith(
+      and(inArray(devices.id as never, ['dev-1']), eq(devices.orgId as never, 'org-1')),
+    );
   });
 });
 

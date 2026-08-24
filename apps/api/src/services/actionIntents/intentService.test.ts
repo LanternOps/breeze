@@ -670,6 +670,9 @@ describe('createActionIntent — ai_agent branch (wave 3b)', () => {
       'manage_services',
       expect.objectContaining({ action: 'restart' }),
       expect.objectContaining({ deviceId: DEVICE_ID }),
+      // The intent org MUST be threaded through so the device resolution is
+      // org-pinned (review finding 1).
+      ORG_ID,
     );
     expect(intentApproversState.resolveAgentIntentApprovers).toHaveBeenCalledWith({
       orgId: ORG_ID,
@@ -761,6 +764,7 @@ describe('createActionIntent — ai_agent branch (wave 3b)', () => {
       makeIntentRow({
         id: 'same-run-intent',
         source: 'ai_agent',
+        actionName: 'manage_services',
         requestedByUserId: null,
         requestingAgentRunId: RUN_ID,
         argumentDigest: computeArgumentDigest(canonicalizeArguments(agentInput().input)),
@@ -777,6 +781,33 @@ describe('createActionIntent — ai_agent branch (wave 3b)', () => {
     expect(snap.requesterApprovalRequestId).toBeNull();
     expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
     expect(metricsMock.recordActionIntentEvent).not.toHaveBeenCalled();
+  });
+
+  it('a replay hit for a DIFFERENT tool under the same explicit key throws idempotency_conflict', async () => {
+    // Review finding 2: the replay check must bind the key to the action
+    // name. With an explicit caller-supplied key, two different tools can
+    // collide with byte-identical canonical arguments (the default key embeds
+    // actionName, an explicit one need not) — same source, same run, same
+    // digest, different tool. Treating tool B as a replay of tool A would
+    // silently drop proposal B: no second intent, no fan-out, no error.
+    supervisedGuardrail();
+    queueAgentContext();
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({
+        id: 'other-tool-intent',
+        source: 'ai_agent',
+        actionName: 'execute_command', // ≠ agentInput().toolName ('manage_services')
+        requestedByUserId: null,
+        requestingAgentRunId: RUN_ID,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(agentInput().input)),
+      }),
+    ]);
+
+    await expect(
+      createActionIntent(makeAgentAuth(), agentInput({ idempotencyKey: 'shared-key' })),
+    ).rejects.toMatchObject({ code: 'idempotency_conflict' });
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
   });
 
   it('audits agent creation as ai_agent with run details', async () => {

@@ -192,12 +192,18 @@ export type IntentTargetScope =
  * targetType all/group/filter with no site check in its handler).
  *
  * Throws on an unknown device id: a proposal citing a nonexistent device must
- * not be fanned out.
+ * not be fanned out. The device read is pinned to `orgId` (the intent's org),
+ * so a cross-tenant device id is indistinguishable from a nonexistent one and
+ * hits the same throw — tool args are LLM/runner-produced, and silently
+ * accepting a foreign device's site into the scope would both violate the
+ * fail-closed fan-out contract and act as a cross-tenant device-UUID
+ * existence oracle (review finding 1).
  */
 export async function resolveIntentTargetScope(
   toolName: string,
   args: Record<string, unknown>,
   run: { deviceId: string | null },
+  orgId: string,
 ): Promise<IntentTargetScope> {
   if (!DEVICE_COMPLETE_TARGET_TOOLS.has(toolName)) return { kind: 'indirect' };
 
@@ -232,7 +238,9 @@ export async function resolveIntentTargetScope(
       db
         .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
-        .where(inArray(devices.id, ids)),
+        // Org pin is load-bearing (review finding 1): without it the
+        // system-scoped read resolves devices from ANY tenant.
+        .where(and(inArray(devices.id, ids), eq(devices.orgId, orgId))),
     ),
   );
 
@@ -400,12 +408,16 @@ export async function isAgentIntentDecideAuthorized(
 
   let targetScope: IntentTargetScope;
   try {
-    targetScope = await resolveIntentTargetScope(intent.actionName, intent.arguments ?? {}, {
-      deviceId: run.deviceId,
-    });
+    targetScope = await resolveIntentTargetScope(
+      intent.actionName,
+      intent.arguments ?? {},
+      { deviceId: run.deviceId },
+      intent.orgId,
+    );
   } catch {
-    // A cited device that has since been deleted: the target can no longer be
-    // verified, so nobody is decide-authorized.
+    // A cited device that has since been deleted (or that never belonged to
+    // the intent's org): the target can no longer be verified, so nobody is
+    // decide-authorized.
     return false;
   }
 

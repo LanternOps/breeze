@@ -498,9 +498,14 @@ export async function createActionIntent(
   if (agentRun) {
     let targetScope: IntentTargetScope;
     try {
-      targetScope = await resolveIntentTargetScope(input.toolName, input.input, {
-        deviceId: agentRun.deviceId,
-      });
+      // orgId pins the device resolution to the intent's org (review finding
+      // 1): a cross-tenant device id must fail exactly like a nonexistent one.
+      targetScope = await resolveIntentTargetScope(
+        input.toolName,
+        input.input,
+        { deviceId: agentRun.deviceId },
+        orgId,
+      );
     } catch (err) {
       throw new ActionIntentError(
         err instanceof Error ? err.message : 'Agent intent target could not be resolved',
@@ -661,18 +666,23 @@ export async function createActionIntent(
           );
         }
         // Review major 4: a key collision is only a replay when it is the
-        // SAME logical request. Source, run attribution, and the argument
-        // digest must all match — otherwise returning the row would hand this
-        // caller an intent belonging to someone else (for agents: another
-        // run, whose immutably-attributed policy snapshot the release path
-        // would then evaluate).
+        // SAME logical request. Action name, source, run attribution, and the
+        // argument digest must all match — otherwise returning the row would
+        // hand this caller an intent belonging to someone else (for agents:
+        // another run, whose immutably-attributed policy snapshot the release
+        // path would then evaluate). The actionName check matters when the
+        // caller supplies an EXPLICIT key: two different tools can share a
+        // key AND a byte-identical canonical argument shape (e.g. both take
+        // only {deviceId}), and treating tool B as a replay of tool A would
+        // silently drop proposal B (review finding 2).
         if (
+          existing.actionName !== input.toolName ||
           existing.source !== input.source ||
           (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null) ||
           existing.argumentDigest !== argumentDigest
         ) {
           throw new ActionIntentError(
-            'Idempotency key already belongs to a different live request (source/run/arguments mismatch)',
+            'Idempotency key already belongs to a different live request (action/source/run/arguments mismatch)',
             'idempotency_conflict',
           );
         }
