@@ -421,6 +421,78 @@ describe('command queue service', () => {
     expect(result).toEqual({ ...completed.result, commandId: completed.id });
   });
 
+  // Wave 3b (#3824): device_commands.created_by FK-references users(id), but
+  // synthetic principals (ai_agent auth carries the agent's ai_agents id as
+  // auth.user.id) reach executeCommand through the same tool handlers as
+  // humans. The chokepoint probes users once and degrades a non-user id to
+  // created_by NULL instead of aborting the dispatch with a 23503 AFTER the
+  // human approval already happened.
+  it('keeps created_by when the caller userId resolves to a real users row', async () => {
+    const device = { id: 'dev-2', status: 'online', orgId: 'org-1', hostname: 'host-a', agentId: null };
+    const completed = { id: 'cmd-user', status: 'completed', result: { status: 'completed' } };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([device]) })
+        })
+      } as any)
+      // users existence probe — the id IS a users row.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: 'user-1' }]) })
+        })
+      } as any)
+      .mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([completed]) })
+        })
+      } as any);
+
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-user' }])
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await executeCommand('dev-2', 'list_services', {}, { userId: 'user-1' });
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ createdBy: 'user-1' }));
+    expect(result.status).toBe('completed');
+  });
+
+  it('nulls created_by when the caller userId is not a users row (synthetic ai_agent id)', async () => {
+    const device = { id: 'dev-2', status: 'online', orgId: 'org-1', hostname: 'host-a', agentId: null };
+    const completed = { id: 'cmd-agent', status: 'completed', result: { status: 'completed' } };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([device]) })
+        })
+      } as any)
+      // users existence probe — no row: the id is an ai_agents id, not a user.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+        })
+      } as any)
+      .mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([completed]) })
+        })
+      } as any);
+
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-agent' }])
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await executeCommand('dev-2', 'list_services', {}, { userId: 'agent-synthetic-1' });
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ createdBy: null }));
+    expect(result.status).toBe('completed');
+  });
+
   // #3112: the agent's helper-IPC path bounded its own wait with a hardcoded
   // per-attempt timeout, so `timeoutMs` governed only how long the SERVER waited
   // while the device gave up underneath on its own schedule. The budget now
