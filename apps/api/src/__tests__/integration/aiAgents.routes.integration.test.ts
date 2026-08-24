@@ -319,8 +319,12 @@ describe('/api/v1/ai/agents', () => {
     // save — silently WIDENING its blast radius. Proven against real jsonb,
     // not a Drizzle mock.
     const app = buildApp();
-    const { partnerAdmin } = await createSamePartnerClients(app);
+    const { partnerAdmin, env } = await createSamePartnerClients(app);
 
+    // Wave 3b validates recipients at write time (services/aiAgents/recipients.ts):
+    // a made-up userId now 400s on create, so the fixture recipient must be a
+    // real active member of the owning partner — the seeded partner admin.
+    const recipientUserId = env.user.id;
     const created = await partnerAdmin.post('/api/v1/ai/agents', {
       ownerScope: 'partner',
       kind: 'triage',
@@ -334,7 +338,7 @@ describe('/api/v1/ai/agents', () => {
         respectMaintenanceWindows: true,
       },
       protectedResources: { services: ['sshd'], paths: ['/etc'], registryKeys: [], deviceTags: ['db'] },
-      recipients: { userIds: ['33333333-3333-4333-8333-333333333333'], roleIds: [] },
+      recipients: { userIds: [recipientUserId], roleIds: [] },
     });
     expect(created.status).toBe(201);
     const agentId = (await created.json() as { data: { id: string } }).data.id;
@@ -364,7 +368,7 @@ describe('/api/v1/ai/agents', () => {
     expect(row.triggers.deviceGroupIds).toEqual(['22222222-2222-4222-8222-222222222222']);
     expect(row.triggers.deviceTags).toEqual(['prod']);
     expect(row.protectedResources.deviceTags).toEqual(['db']);
-    expect(row.recipients.userIds).toEqual(['33333333-3333-4333-8333-333333333333']);
+    expect(row.recipients.userIds).toEqual([recipientUserId]);
   });
 
   it('answers 404 (never 500) for a non-uuid path id', async () => {

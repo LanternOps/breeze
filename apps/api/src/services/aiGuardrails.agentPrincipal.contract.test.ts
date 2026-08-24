@@ -28,7 +28,69 @@ const EMPTY = {
     deviceTags: [],
   },
   deviceSiteId: 'site-a',
+  deviceId: 'dev-1',
 } satisfies AgentGuardrailPolicy;
+
+const policyWith = (
+  overrides: Partial<AgentGuardrailPolicy>,
+): AgentGuardrailPolicy => ({ ...EMPTY, ...overrides });
+
+describe('disposition (wave 3b tri-state)', () => {
+  beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('shadow + mutating + allowlisted => propose, not deny', () => {
+    const check = checkAgentGuardrails('manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      policyWith({ mode: 'shadow', toolAllowlist: ['manage_services:restart'] }));
+    expect(check.disposition).toBe('propose');
+    expect(check.allowed).toBe(false); // propose NEVER executes
+  });
+
+  it('shadow + mutating + NOT allowlisted => deny (ordering: allowlist beats propose)', () => {
+    const check = checkAgentGuardrails('manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      policyWith({ mode: 'shadow', toolAllowlist: [] }));
+    expect(check.disposition).toBe('deny');
+  });
+
+  it('shadow + mutating + protected resource => deny even when allowlisted', () => {
+    const check = checkAgentGuardrails('manage_services',
+      { deviceId: 'dev-1', action: 'stop', serviceName: 'backup-agent' },
+      policyWith({
+        mode: 'shadow',
+        toolAllowlist: ['manage_services:stop'],
+        protectedResources: { services: ['backup-agent'], paths: [], registryKeys: [], deviceTags: [] },
+      }));
+    expect(check.disposition).toBe('deny');
+  });
+
+  it('read-only tool in shadow => allow', () => {
+    const check = checkAgentGuardrails('get_device_details', { deviceId: 'dev-1' },
+      policyWith({ mode: 'shadow' }));
+    expect(check.disposition).toBe('allow');
+    expect(check.allowed).toBe(true);
+  });
+
+  it('device-less run cannot propose a mutation', () => {
+    const check = checkAgentGuardrails('manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      policyWith({ mode: 'shadow', toolAllowlist: ['manage_services:restart'], deviceId: null }));
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/device-bound/);
+  });
+
+  it('every deny keeps disposition deny (kill switch case)', () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+    const check = checkAgentGuardrails('get_device_details', {}, policyWith({}));
+    expect(check.disposition).toBe('deny');
+  });
+});
 
 /**
  * Every tool an agent may call with NO allowlist entry. Deliberately a literal:

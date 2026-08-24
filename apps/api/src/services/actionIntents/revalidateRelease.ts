@@ -4,6 +4,7 @@ import { getToolTier } from '../aiTools';
 import { checkToolPermission } from '../aiGuardrails';
 import { getActiveOrgTenant } from '../tenantStatus';
 import { buildAuthContextForIntent } from './actorContext';
+import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 
 /**
@@ -86,7 +87,21 @@ export async function revalidateApprovedIntentForRelease(
     return { ok: false, errorCode: 'org_inactive' };
   }
 
-  // (e) The actor must STILL hold the specific RBAC permission the tool
+  // (e) Authority re-check. For an AGENT-originated intent there is no user
+  // RBAC to consult — checkToolPermission denies the ai_agent principal as
+  // its first statement, and that deny is deliberately untouched. Release
+  // branches into the STRUCTURAL authority check instead: the stricter
+  // combination of the run's immutable policy_snapshot and the agent's
+  // CURRENT effective policy (agentReleaseAuthority.ts).
+  if (intent.requestingAgentRunId) {
+    const authority = await checkAgentReleaseAuthority(intent);
+    if (!authority.ok) {
+      return authority;
+    }
+    return { ok: true, auth };
+  }
+
+  // The actor must STILL hold the specific RBAC permission the tool
   // requires, checked against the rebuilt `auth` from (c) — not the caller's
   // original, now possibly stale, permission check.
   const permissionDenial = await checkToolPermission(intent.actionName, intent.arguments, auth);

@@ -229,6 +229,20 @@ moveOrgRoutes.post(
           linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
         }
 
+        // Agent-run history stays with the SOURCE org (owner decision 2026-08-23):
+        // runs are not re-stamped (org_id is trigger-immutable, and re-stamping
+        // would 23503 against the action_intents composite tenant FK the moment an
+        // agent proposal exists). Sever ALL device-lineage links, not just
+        // device_id: alerts and ai_sessions ARE re-stamped to the target org by
+        // the loop below, so a retained source-org run keeping alert_id/session_id
+        // would point across tenants (and /ai-agents/:id/runs would serve those
+        // foreign ids to the source org). All three FKs are ON DELETE SET NULL —
+        // nullable by design.
+        await tx.execute(
+          sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL
+              WHERE device_id = ${deviceId}::uuid`,
+        );
+
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
         for (const table of getDeviceOrgDenormalizedTables()) {

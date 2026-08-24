@@ -118,9 +118,15 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  *   device_commands (system-scoped per RLS policy), device_software,
  *   patch_job_results, patch_rollbacks,
  *   psa_ticket_mappings, software_compliance_status
+ *
+ * ai_agent_runs is deliberately ABSENT (wave 3b, owner decision 2026-08-23):
+ * agent-run history stays with the source org on a cross-org move — moveOrg
+ * detaches device_id instead. It is listed in INTENTIONALLY_NO_ORG_ID in
+ * moveOrg.coverage.test.ts. Its org_id is trigger-immutable
+ * (2026-09-06-a-agent-runs-org-immutable.sql).
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
-  'agent_logs', 'ai_agent_runs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
+  'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_sla_events',

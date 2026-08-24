@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   selectWhere: undefined as unknown,
   audit: vi.fn(),
   publish: vi.fn(),
+  validateRecipients: vi.fn(),
 }));
 
 const schema = vi.hoisted(() => ({
@@ -66,6 +67,21 @@ vi.mock('../../db', () => ({
     })),
   },
 }));
+
+// Membership validation has its own suite (recipients.test.ts) against mocked
+// membership queries; here it is stubbed so this suite's fixtures count as
+// valid-membership, and the CONTRACT — called with the owner and exactly the
+// recipients object that will be stored, before any write — is asserted below.
+vi.mock('./recipients', () => {
+  class InvalidAgentRecipientsError extends Error {
+    readonly code = 'invalid_recipients';
+    constructor(public invalidUserIds: string[], public invalidRoleIds: string[]) {
+      super('invalid_recipients');
+      this.name = 'InvalidAgentRecipientsError';
+    }
+  }
+  return { InvalidAgentRecipientsError, validateAgentRecipients: state.validateRecipients };
+});
 
 vi.mock('../auditService', () => ({ createAuditLog: state.audit }));
 vi.mock('../eventBus', () => ({ getEventBus: () => ({ publish: state.publish }) }));
@@ -178,6 +194,7 @@ const createInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  state.validateRecipients.mockResolvedValue(undefined);
   state.currentRow = null;
   state.listRows = [];
   state.returnedRow = null;
@@ -220,6 +237,10 @@ describe('agent mutations', () => {
     await createAgent(auth(), { orgId: 'o1', partnerId: null }, createInput as never);
 
     expect(state.insertedValues).toMatchObject({ orgId: 'o1', partnerId: null, kind: 'alert_triage' });
+    expect(state.validateRecipients).toHaveBeenCalledWith(
+      { orgId: 'o1', partnerId: null },
+      createInput.recipients,
+    );
     expect(state.audit).toHaveBeenCalledWith(expect.objectContaining({
       action: 'ai.agent.created', resourceType: 'ai_agent', resourceId: 'a1', result: 'success',
     }));
@@ -229,6 +250,27 @@ describe('agent mutations', () => {
       expect.objectContaining({ agentId: 'a1', change: 'created' }),
       'ai-agents',
     );
+  });
+
+  it('refuses invalid recipients before anything is written', async () => {
+    const { InvalidAgentRecipientsError } = await import('./recipients');
+    state.validateRecipients.mockRejectedValue(
+      new InvalidAgentRecipientsError(['u-bad'], []),
+    );
+    state.returnedRow = storedRow;
+
+    await expect(createAgent(auth(), { orgId: 'o1', partnerId: null }, createInput as never))
+      .rejects.toBeInstanceOf(InvalidAgentRecipientsError);
+    expect(state.insertedValues).toBeNull();
+    expect(state.audit).not.toHaveBeenCalled();
+    expect(state.publish).not.toHaveBeenCalled();
+
+    // Same contract on update: a recipients patch is validated (as the merged
+    // object) before the UPDATE is issued.
+    state.currentRow = storedRow;
+    await expect(updateAgent(auth(), 'a1', { recipients: { userIds: ['u-bad'] } } as never))
+      .rejects.toBeInstanceOf(InvalidAgentRecipientsError);
+    expect(state.updatedValues).toBeNull();
   });
 
   it('refuses a second active agent of the same kind before the insert runs', async () => {
@@ -317,6 +359,12 @@ describe('agent mutations', () => {
       triggers: { ...storedRow.triggers, respectMaintenanceWindows: false },
       recipients: { ...storedRow.recipients, userIds: ['u2'] },
     });
+    // The validated object IS the merged object that gets stored — validating
+    // only the patch would let a stale-but-stored sibling id survive unchecked.
+    expect(state.validateRecipients).toHaveBeenCalledWith(
+      { orgId: 'o1', partnerId: null },
+      { ...storedRow.recipients, userIds: ['u2'] },
+    );
     expect(state.audit).toHaveBeenCalledWith(expect.objectContaining({
       action: 'ai.agent.updated', resourceId: 'a1', result: 'success',
     }));
@@ -339,6 +387,8 @@ describe('agent mutations', () => {
     expect(state.updatedValues).not.toHaveProperty('ownerScope');
     expect(state.updatedValues).not.toHaveProperty('orgId');
     expect(state.updatedValues).not.toHaveProperty('partnerId');
+    // No recipients in the patch → no membership validation round-trip.
+    expect(state.validateRecipients).not.toHaveBeenCalled();
   });
 
   it('rejects the DB-legal act mode as unsupported', async () => {

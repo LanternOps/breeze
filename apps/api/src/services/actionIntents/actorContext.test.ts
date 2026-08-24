@@ -14,12 +14,31 @@ const { schema, dbState, permState } = vi.hoisted(() => {
     isPlatformAdmin: col('is_platform_admin'),
   };
   const apiKeysTbl = { id: col('id'), status: col('status') };
+  const aiAgentRunsTbl = {
+    id: col('id'),
+    agentId: col('agent_id'),
+    orgId: col('org_id'),
+    deviceId: col('device_id'),
+  };
+  const aiAgentsTbl = {
+    id: col('id'),
+    orgId: col('org_id'),
+    partnerId: col('partner_id'),
+    name: col('name'),
+    kind: col('kind'),
+  };
+  const organizationsTbl = { id: col('id'), partnerId: col('partner_id') };
+  const devicesTbl = { id: col('id'), siteId: col('site_id') };
 
   return {
-    schema: { usersTbl, apiKeysTbl },
+    schema: { usersTbl, apiKeysTbl, aiAgentRunsTbl, aiAgentsTbl, organizationsTbl, devicesTbl },
     dbState: {
       selectUsersResults: [] as unknown[][],
       selectApiKeysResults: [] as unknown[][],
+      selectAgentRunsResults: [] as unknown[][],
+      selectAgentsResults: [] as unknown[][],
+      selectOrgsResults: [] as unknown[][],
+      selectDevicesResults: [] as unknown[][],
     },
     permState: {
       getUserPermissions: vi.fn(),
@@ -44,16 +63,35 @@ vi.mock('../../db', () => ({
           if (table === schema.apiKeysTbl) {
             return resultBox(() => dbState.selectApiKeysResults.shift() ?? []);
           }
+          if (table === schema.aiAgentRunsTbl) {
+            return resultBox(() => dbState.selectAgentRunsResults.shift() ?? []);
+          }
+          if (table === schema.aiAgentsTbl) {
+            return resultBox(() => dbState.selectAgentsResults.shift() ?? []);
+          }
+          if (table === schema.organizationsTbl) {
+            return resultBox(() => dbState.selectOrgsResults.shift() ?? []);
+          }
+          if (table === schema.devicesTbl) {
+            return resultBox(() => dbState.selectDevicesResults.shift() ?? []);
+          }
           throw new Error('unexpected select table in mock');
         }),
       })),
     })),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
 vi.mock('../../db/schema/users', () => ({ users: schema.usersTbl }));
 vi.mock('../../db/schema/apiKeys', () => ({ apiKeys: schema.apiKeysTbl }));
+vi.mock('../../db/schema/aiAgents', () => ({
+  aiAgentRuns: schema.aiAgentRunsTbl,
+  aiAgents: schema.aiAgentsTbl,
+}));
+vi.mock('../../db/schema/orgs', () => ({ organizations: schema.organizationsTbl }));
+vi.mock('../../db/schema/devices', () => ({ devices: schema.devicesTbl }));
 
 vi.mock('../permissions', () => ({
   getUserPermissions: permState.getUserPermissions,
@@ -106,7 +144,7 @@ vi.mock('drizzle-orm', () => ({
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { buildAuthContextForIntent } from './actorContext';
+import { buildAuthContextForIntent, originPrincipalFor } from './actorContext';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 
 function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
@@ -341,21 +379,108 @@ describe('buildAuthContextForIntent — malformed intent (neither actor set)', (
   });
 });
 
-describe('buildAuthContextForIntent — agent-originated intent (wave 3a inert window)', () => {
-  it('fails closed (null) for a requester-less intent that carries a run id', async () => {
-    // Pins that release stays fail-closed for agent intents until PR 3b wires
-    // the requester-less reconstruction: a run-attributed intent must map to
-    // actor_invalid, not to a half-built context.
-    const result = await buildAuthContextForIntent(
-      baseIntent({
-        requestedByUserId: null,
-        requestingApiKeyId: null,
-        requestingAgentRunId: 'run-1',
-        originPrincipalKind: 'ai_agent',
-        originPrincipalId: 'agent-1',
-      }),
-    );
+describe('buildAuthContextForIntent — agent-owned intents (wave 3b)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectAgentRunsResults.length = 0;
+    dbState.selectAgentsResults.length = 0;
+    dbState.selectOrgsResults.length = 0;
+    dbState.selectDevicesResults.length = 0;
+  });
 
-    expect(result).toBeNull();
+  const agentIntent = (overrides: Partial<ActionIntent> = {}) => baseIntent({
+    requestedByUserId: null,
+    requestingApiKeyId: null,
+    requestingAgentRunId: 'run-1',
+    originPrincipalKind: 'ai_agent',
+    originPrincipalId: 'agent-1',
+    source: 'ai_agent',
+    ...overrides,
+  } as Partial<ActionIntent>);
+
+  const runRow = { id: 'run-1', agentId: 'agent-1', orgId: 'org-1', deviceId: 'dev-1' };
+  const agentRow = { id: 'agent-1', orgId: null, partnerId: 'partner-1', name: 'Alert Triage', kind: 'triage' };
+
+  it('builds an ai_agent context pinned to the run org and the device site', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+
+    const result = await buildAuthContextForIntent(agentIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.principal).toEqual({ kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' });
+    expect(result!.orgId).toBe('org-1');
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(result!.canAccessOrg('org-1')).toBe(true);
+    expect(result!.canAccessOrg('org-2')).toBe(false);
+    // Spec §3.2: a device-bound run is pinned to the device's CURRENT site.
+    expect(result!.allowedSiteIds).toEqual(['site-1']);
+    expect(result!.canAccessSite!('site-1')).toBe(true);
+    expect(result!.canAccessSite!('site-2')).toBe(false);
+    // No user token is ever minted for an agent; RBAC paths must keep denying it.
+    expect(result!.token).toBeNull();
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the run is missing', async () => {
+    dbState.selectAgentRunsResults.push([]);
+
+    expect(await buildAuthContextForIntent(agentIntent())).toBeNull();
+  });
+
+  it('returns null when the run targets another org than the intent', async () => {
+    dbState.selectAgentRunsResults.push([{ ...runRow, orgId: 'org-2' }]);
+
+    expect(await buildAuthContextForIntent(agentIntent())).toBeNull();
+  });
+
+  it('returns null when the run agent does not match originPrincipalId', async () => {
+    dbState.selectAgentRunsResults.push([{ ...runRow, agentId: 'agent-9' }]);
+
+    expect(await buildAuthContextForIntent(agentIntent())).toBeNull();
+  });
+
+  it('returns null when the agent row is gone', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([]);
+
+    expect(await buildAuthContextForIntent(agentIntent())).toBeNull();
+  });
+
+  it('returns null when run ownership fails (org agent of another org)', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([{ ...agentRow, orgId: 'org-2', partnerId: null }]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+
+    expect(await buildAuthContextForIntent(agentIntent())).toBeNull();
+  });
+});
+
+describe('originPrincipalFor — ai_agent', () => {
+  it('maps an agent intent to { kind: ai_agent, agentId, runId }', () => {
+    const principal = originPrincipalFor(baseIntent({
+      requestedByUserId: null,
+      requestingAgentRunId: 'run-1',
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: 'agent-1',
+    } as Partial<ActionIntent>));
+
+    expect(principal).toEqual({ kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' });
+  });
+
+  it('falls to unknown when the run id or agent id is missing (corruption stays untrusted)', () => {
+    expect(originPrincipalFor(baseIntent({
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: 'agent-1',
+      requestingAgentRunId: null,
+    } as Partial<ActionIntent>))).toEqual({ kind: 'unknown' });
+    expect(originPrincipalFor(baseIntent({
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: null,
+      requestingAgentRunId: 'run-1',
+    } as Partial<ActionIntent>))).toEqual({ kind: 'unknown' });
   });
 });

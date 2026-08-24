@@ -1,6 +1,6 @@
 import { eq, and, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { deviceCommands, devices, auditLogs } from '../db/schema';
+import { deviceCommands, devices, auditLogs, users } from '../db/schema';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { captureException } from './sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from './backupMetrics';
@@ -858,9 +858,36 @@ export async function executeCommand(
   //    INSERT commits immediately and is visible to the WS handler.
   return runOutsideDbContextSafe(async () => {
     // Validate userId for FK constraint: device_commands.created_by references users.id.
-    // Helper sessions use a synthetic auth where auth.user.id is actually the device ID
-    // (no real user record exists). Detect this by checking if userId equals deviceId.
-    const safeUserId = userId && userId !== deviceId ? userId : null;
+    // Two synthetic-auth classes reach here with a userId that is NOT a users row:
+    //  - Helper sessions: auth.user.id is actually the device ID (detected by
+    //    the equality check below — no DB read needed).
+    //  - ai_agent principals (wave 3b, #3824): auth.user.id is the agent's
+    //    ai_agents id. The intent release worker executes approved agent
+    //    intents through the same tool handlers every human path uses, and
+    //    they all pass auth.user.id verbatim — before this probe, the first
+    //    agent-released device command died on the created_by FK (23503)
+    //    AFTER approval, at execution time (caught by
+    //    agentIntentLifecycle.integration.test.ts).
+    // The handlers cannot cheaply know which ids resolve to users, so settle it
+    // here at executeCommand's own insert: one indexed PK probe per dispatch,
+    // and any id that is not a users row degrades to created_by NULL
+    // (attribution for agent commands lives on the intent/run —
+    // requesting_agent_run_id — not this column). NOTE for PR 3c: queueCommand/
+    // queueCommandForExecution is a SIBLING insert site with the same verbatim
+    // created_by stamp; tools that dispatch through it (hyperv, backup, vault,
+    // mssql, incident, agent-logs) will need the same treatment before the
+    // runner releases agent intents for them.
+    const candidateUserId = userId && userId !== deviceId ? userId : null;
+    const safeUserId = candidateUserId
+      ? await withSystemDbAccessContext(async () => {
+          const [userRow] = await db
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.id, candidateUserId))
+            .limit(1);
+          return userRow ? candidateUserId : null;
+        })
+      : null;
 
     // #3112: the caller's budget has to travel WITH the command, not merely bound
     // the server-side wait below. The agent's helper-IPC path used a hardcoded
