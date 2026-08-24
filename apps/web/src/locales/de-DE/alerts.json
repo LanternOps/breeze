@@ -423,7 +423,9 @@
     "ruleIsDisabled": "Diese Regel ist deaktiviert und wird daher nicht ausgelöst, bis Sie sie aktivieren.",
     "conditionMet": "Erfüllt: {{condition}}",
     "conditionNotMet": "Nicht erfüllt: {{condition}}",
-    "noConditionsEvaluated": "Für diese Regel wurden keine Bedingungen ausgewertet."
+    "noConditionsEvaluated": "Für diese Regel wurden keine Bedingungen ausgewertet.",
+    "evaluatedAgainst": "Gegen {{hostname}} ausgewertet",
+    "fireSuppressionNote": "Cooldown, eine bereits offene Warnung oder eine Flapping-Unterdrückung können weiterhin verhindern, dass beim Ausführen der Regel eine Warnung ausgelöst wird."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Benachrichtigungsvorlage wird geladen...",

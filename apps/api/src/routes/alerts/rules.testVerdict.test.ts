@@ -167,7 +167,13 @@ describe('POST /alerts/rules/:id/test — real verdict', () => {
       triggered: true,
       conditionsMet: ['cpu_usage > 80 for 5min'],
       conditionsNotMet: [],
-      context: { deviceId: DEVICE_ID, evaluatedAt: '2026-08-23T00:00:00.000Z' },
+      context: {
+        deviceId: DEVICE_ID,
+        evaluatedAt: '2026-08-23T00:00:00.000Z',
+        metric: 'cpu_usage',
+        actualValue: 91,
+        threshold: 80,
+      },
     });
 
     const res = await runTest();
@@ -178,6 +184,19 @@ describe('POST /alerts/rules/:id/test — real verdict', () => {
     expect(body.conditionResults).toEqual([
       { condition: 'cpu_usage > 80 for 5min', result: true, reason: 'cpu_usage > 80 for 5min' },
     ]);
+    // With no override, the template's own conditions are what gets evaluated.
+    expect(evaluateConditionsMock).toHaveBeenCalledWith(CPU_CONDITIONS, DEVICE_ID);
+    // The measured values that explain the verdict are passed through intact.
+    expect(body.evaluationContext).toEqual({
+      deviceId: DEVICE_ID,
+      evaluatedAt: '2026-08-23T00:00:00.000Z',
+      metric: 'cpu_usage',
+      actualValue: 91,
+      threshold: 80,
+    });
+    // The row content queried for the device and template reaches the response.
+    expect(body.device).toEqual({ id: DEVICE_ID, hostname: 'ws-01', osType: 'windows' });
+    expect(body.rule.severity).toBe('high');
   });
 
   it('reports the evaluator’s real unmet conditions rather than a simulated placeholder', async () => {
@@ -238,6 +257,15 @@ describe('POST /alerts/rules/:id/test — real verdict', () => {
   });
 
   describe('target matching', () => {
+    it('matches an all-targeted rule against any device', async () => {
+      queueLookups({ id: TEMPLATE_ID, severity: 'high', conditions: CPU_CONDITIONS });
+
+      const body = await (await runTest()).json();
+
+      expect(body.targetMatch).toBe(true);
+      expect(body.targetReason).toBe('Rule applies to all devices');
+    });
+
     it('reports a site-targeted rule as not matching a device in another site', async () => {
       ruleRef.current = rule({ targetType: 'site', targetId: OTHER_SITE_ID });
       queueLookups({ id: TEMPLATE_ID, severity: 'high', conditions: CPU_CONDITIONS });

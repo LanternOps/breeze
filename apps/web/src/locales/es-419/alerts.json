@@ -423,7 +423,9 @@
     "ruleIsDisabled": "Esta regla está deshabilitada, por lo que no se activará hasta que la habilite.",
     "conditionMet": "Cumplida: {{condition}}",
     "conditionNotMet": "No cumplida: {{condition}}",
-    "noConditionsEvaluated": "No se evaluó ninguna condición para esta regla."
+    "noConditionsEvaluated": "No se evaluó ninguna condición para esta regla.",
+    "evaluatedAgainst": "Evaluado contra {{hostname}}",
+    "fireSuppressionNote": "El período de enfriamiento, una alerta que ya está abierta o la supresión por fluctuaciones (flapping) pueden seguir impidiendo que se cree una alerta cuando se ejecute la regla."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Cargando plantilla de alerta...",

@@ -860,10 +860,12 @@ rulesRoutes.post(
     const effectiveSeverity = (testOverrides.severity as string | undefined) ?? template.severity;
 
     // Does the rule actually target this device? Mirrors the SQL target
-    // matching in getApplicableRules() — that function is the authority for
-    // what fires in production, so the two must stay in sync. Previously only
-    // 'device' was checked and every other target type reported a match it had
-    // never evaluated.
+    // matching in getApplicableRules() — the firing path for standalone
+    // alertRules, which is this endpoint's rule type — so the two must stay in
+    // sync. Config-policy-linked alert rules resolve targets through a separate
+    // path (getApplicableRulesFromPolicy) that this endpoint does not exercise.
+    // Previously only 'device' was checked and every other target type reported
+    // a match it had never evaluated.
     let targetMatch: boolean;
     let targetReason: string;
     switch (rule.targetType) {
@@ -937,6 +939,11 @@ rulesRoutes.post(
     // Note: OR groups mean `conditionResults.every(...)` is NOT the verdict —
     // a compound rule can trigger with some conditions unmet. evaluation
     // .triggered is the value the firing path uses.
+    //
+    // SCOPE: this is the condition + target verdict, not a promise that an
+    // alert row appears. createAlert() additionally applies cooldown, open-alert
+    // dedup and flapping suppression (services/alertService.ts), none of which
+    // are simulated here. The UI says so rather than overstating a green result.
     const wouldTrigger = rule.isActive && targetMatch && evaluation.triggered;
 
     return c.json({
@@ -954,6 +961,9 @@ rulesRoutes.post(
       targetMatch,
       targetReason,
       conditionResults,
+      // Measured values behind the verdict (metric, actual value, threshold).
+      // Returned for API consumers and for a follow-up that surfaces "82% vs a
+      // threshold of 80%" in the modal; the current UI does not render it.
       evaluationContext: evaluation.context,
       wouldTrigger,
       testedAt: new Date().toISOString()

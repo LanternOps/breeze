@@ -423,7 +423,9 @@
     "ruleIsDisabled": "This rule is disabled, so it will not fire until you enable it.",
     "conditionMet": "Met: {{condition}}",
     "conditionNotMet": "Not met: {{condition}}",
-    "noConditionsEvaluated": "No conditions were evaluated for this rule."
+    "noConditionsEvaluated": "No conditions were evaluated for this rule.",
+    "evaluatedAgainst": "Evaluated against {{hostname}}",
+    "fireSuppressionNote": "Cooldown, an alert that is already open, or flapping suppression may still stop an alert being created when the rule runs."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Loading alert template...",

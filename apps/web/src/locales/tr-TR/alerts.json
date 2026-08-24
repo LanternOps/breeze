@@ -423,7 +423,9 @@
     "ruleIsDisabled": "Bu kural devre dışı, bu nedenle siz etkinleştirene kadar tetiklenmeyecek.",
     "conditionMet": "Karşılandı: {{condition}}",
     "conditionNotMet": "Karşılanmadı: {{condition}}",
-    "noConditionsEvaluated": "Bu kural için hiçbir koşul değerlendirilmedi."
+    "noConditionsEvaluated": "Bu kural için hiçbir koşul değerlendirilmedi.",
+    "evaluatedAgainst": "{{hostname}} için değerlendirildi",
+    "fireSuppressionNote": "Bekleme süresi (cooldown), zaten açık olan bir uyarı veya çalkalanma (flapping) bastırma, kural çalıştığında bir uyarı oluşturulmasını yine de engelleyebilir."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Uyarı şablonu yükleniyor...",

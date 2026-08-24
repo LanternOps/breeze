@@ -423,7 +423,9 @@
     "ruleIsDisabled": "Questa regola è disattivata, quindi non si attiverà finché non la abiliti.",
     "conditionMet": "Soddisfatta: {{condition}}",
     "conditionNotMet": "Non soddisfatta: {{condition}}",
-    "noConditionsEvaluated": "Per questa regola non è stata valutata alcuna condizione."
+    "noConditionsEvaluated": "Per questa regola non è stata valutata alcuna condizione.",
+    "evaluatedAgainst": "Valutato rispetto a {{hostname}}",
+    "fireSuppressionNote": "Il cooldown, un avviso già aperto o la soppressione per flapping potrebbero comunque impedire che venga creato un avviso quando la regola viene eseguita."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Caricamento modello avviso...",

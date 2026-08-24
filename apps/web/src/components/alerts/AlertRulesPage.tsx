@@ -16,10 +16,16 @@ type TestConditionResult = { condition: string; result: boolean; reason: string 
 
 /**
  * The verdict the API actually returns for POST /alerts/rules/:id/test.
- * `wouldTrigger` is the same boolean the firing path computes; `targetMatch`
- * and `conditionResults` explain it. There is deliberately no `success` /
- * `message` pair here — reading those invented fields is what made every test
- * report "Test Passed" (#3752).
+ *
+ * `wouldTrigger` mirrors the condition + target evaluation the firing path
+ * performs (`isActive && targetMatch && evaluation.triggered`); `targetMatch`
+ * and `conditionResults` explain it. It is NOT a promise that an alert row
+ * appears: `createAlert()` additionally applies cooldown, open-alert dedup and
+ * flapping suppression, which this endpoint does not simulate — hence the
+ * caveat rendered alongside a positive verdict.
+ *
+ * There is deliberately no `success` / `message` pair here — reading those
+ * invented fields is what made every test report "Test Passed" (#3752).
  */
 type RuleTestVerdict = {
   wouldTrigger: boolean;
@@ -362,7 +368,13 @@ export default function AlertRulesPage() {
                 id="test-rule-device"
                 value={testDeviceId}
                 disabled={devicesLoading || submitting}
-                onChange={(e) => setTestDeviceId(e.target.value)}
+                onChange={(e) => {
+                  // Drop the previous verdict: it belongs to the device that
+                  // was selected when it was computed. Leaving it on screen
+                  // beside a new selection is the same lie in a new costume.
+                  setTestResult(null);
+                  setTestDeviceId(e.target.value);
+                }}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <option value="">
@@ -409,6 +421,20 @@ export default function AlertRulesPage() {
                     ? t('alertRulesPage.ruleWouldFire')
                     : t('alertRulesPage.ruleWouldNotFire')}
                 </p>
+
+                {/* Name the device the verdict was computed for, so a verdict
+                    can never be read as belonging to a different selection. */}
+                {testResult.verdict.device?.hostname && (
+                  <p className="mt-1 text-sm">
+                    {t('alertRulesPage.evaluatedAgainst', {
+                      hostname: testResult.verdict.device.hostname
+                    })}
+                  </p>
+                )}
+
+                {testResult.verdict.wouldTrigger && (
+                  <p className="mt-1 text-sm">{t('alertRulesPage.fireSuppressionNote')}</p>
+                )}
 
                 {testResult.verdict.rule?.enabled === false && (
                   <p className="mt-1 text-sm">{t('alertRulesPage.ruleIsDisabled')}</p>

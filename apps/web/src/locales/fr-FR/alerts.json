@@ -423,7 +423,9 @@
     "ruleIsDisabled": "Cette règle est désactivée ; elle ne se déclenchera donc pas tant que vous ne l’activerez pas.",
     "conditionMet": "Remplie : {{condition}}",
     "conditionNotMet": "Non remplie : {{condition}}",
-    "noConditionsEvaluated": "Aucune condition n’a été évaluée pour cette règle."
+    "noConditionsEvaluated": "Aucune condition n’a été évaluée pour cette règle.",
+    "evaluatedAgainst": "Évalué par rapport à {{hostname}}",
+    "fireSuppressionNote": "Le cooldown, une alerte déjà ouverte ou la suppression du flapping peuvent quand même empêcher la création d’une alerte lorsque la règle s’exécute."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Chargement du modèle d’alerte...",

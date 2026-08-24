@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import AlertRulesPage from './AlertRulesPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 // #3752: the test modal read `data.success` and `data.message` — two fields the
 // API has never sent. `data.success ?? true` therefore fired on every 200 and
@@ -20,6 +21,7 @@ vi.mock('../../stores/auth', async (importOriginal) => ({
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const navigateMock = vi.mocked(navigateTo);
 
 function jsonResponse(payload: unknown, ok = true, status = 200): Response {
   return {
@@ -38,17 +40,17 @@ const RULE = {
 
 const DEVICE = { id: 'dev-1', hostname: 'ws-01' };
 
-/** Captured bodies of every POST to the rule-test endpoint. */
-let testRequestBodies: string[] = [];
+/** Captured paths and bodies of every POST to the rule-test endpoint. */
+let testRequests: Array<{ path: string; body: string }> = [];
 
-function mockApi(testResponse: Response) {
+function mockApi(testResponse: Response, devicesResponse?: Response) {
   fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
     if (path.startsWith('/alerts/rules/') && path.endsWith('/test')) {
-      testRequestBodies.push(String(init?.body ?? ''));
+      testRequests.push({ path, body: String(init?.body ?? '') });
       return testResponse;
     }
     if (path.startsWith('/alerts/rules')) return jsonResponse({ rules: [RULE] });
-    if (path.startsWith('/devices')) return jsonResponse({ devices: [DEVICE] });
+    if (path.startsWith('/devices')) return devicesResponse ?? jsonResponse({ devices: [DEVICE] });
     throw new Error(`Unexpected request: ${path}`);
   });
 }
@@ -71,7 +73,7 @@ async function runTest() {
 }
 
 beforeEach(() => {
-  testRequestBodies = [];
+  testRequests = [];
 });
 
 describe('AlertRulesPage — alert rule test verdict', () => {
@@ -218,8 +220,92 @@ describe('AlertRulesPage — alert rule test verdict', () => {
 
     await runTest();
 
-    await waitFor(() => expect(testRequestBodies).toHaveLength(1));
-    expect(JSON.parse(testRequestBodies[0])).toEqual({ deviceId: DEVICE.id });
+    await waitFor(() => expect(testRequests).toHaveLength(1));
+    expect(JSON.parse(testRequests[0].body)).toEqual({ deviceId: DEVICE.id });
+    // Pin the exact path too: a stale rule id would still match a loose
+    // startsWith/endsWith mock and pass a body-only assertion.
+    expect(testRequests[0].path).toBe(`/alerts/rules/${RULE.id}/test`);
+  });
+
+  // Changing the device must not leave the previous device's verdict on
+  // screen — a verdict attributed to the wrong device is the same lie in a new
+  // costume.
+  it('clears a verdict when a different device is selected', async () => {
+    fetchMock.mockImplementation(async (path: string) => {
+      if (path.startsWith('/alerts/rules/') && path.endsWith('/test')) {
+        return jsonResponse({
+          rule: { id: RULE.id, name: RULE.name, severity: 'high', enabled: true },
+          device: { id: DEVICE.id, hostname: DEVICE.hostname, osType: 'windows' },
+          targetMatch: true,
+          conditionResults: [],
+          wouldTrigger: true,
+          testedAt: '2026-08-23T00:00:00.000Z',
+        });
+      }
+      if (path.startsWith('/alerts/rules')) return jsonResponse({ rules: [RULE] });
+      if (path.startsWith('/devices')) {
+        return jsonResponse({ devices: [DEVICE, { id: 'dev-2', hostname: 'ws-02' }] });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    render(<AlertRulesPage />);
+    fireEvent.click((await screen.findAllByTitle('Test rule'))[0]);
+    const select = await screen.findByLabelText('Test against device');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'ws-02' })).toBeTruthy());
+    fireEvent.change(select, { target: { value: DEVICE.id } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run Test' }));
+
+    expect(await screen.findByText('Rule would fire')).toBeTruthy();
+    // The verdict names the device it was computed for.
+    expect(screen.getByText('Evaluated against ws-01')).toBeTruthy();
+
+    fireEvent.change(select, { target: { value: 'dev-2' } });
+
+    expect(screen.queryByText('Rule would fire')).toBeNull();
+    expect(screen.queryByText('Evaluated against ws-01')).toBeNull();
+  });
+
+  it('surfaces a failure to load the device list', async () => {
+    mockApi(jsonResponse({}), jsonResponse({ error: 'Devices unavailable' }, false, 500));
+
+    render(<AlertRulesPage />);
+    fireEvent.click((await screen.findAllByTitle('Test rule'))[0]);
+
+    expect(await screen.findByText('Devices unavailable')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Run Test' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('says so when there are no devices to test against', async () => {
+    mockApi(jsonResponse({}), jsonResponse({ devices: [] }));
+
+    render(<AlertRulesPage />);
+    fireEvent.click((await screen.findAllByTitle('Test rule'))[0]);
+
+    expect(
+      await screen.findByText('No devices are available to test this rule against.')
+    ).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Run Test' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('redirects to login when the device list returns 401', async () => {
+    mockApi(jsonResponse({}), jsonResponse({ error: 'Unauthorized' }, false, 401));
+
+    render(<AlertRulesPage />);
+    fireEvent.click((await screen.findAllByTitle('Test rule'))[0]);
+
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/login', { replace: true }));
+    expect(screen.queryByText('Unauthorized')).toBeNull();
+  });
+
+  it('redirects to login when the test request returns 401', async () => {
+    mockApi(jsonResponse({ error: 'Unauthorized' }, false, 401));
+
+    await runTest();
+
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/login', { replace: true }));
+    expect(screen.queryByText('Test Failed')).toBeNull();
+    expect(screen.queryByText('Rule would fire')).toBeNull();
   });
 
   it('does not render a negative verdict identically to a positive one', async () => {
