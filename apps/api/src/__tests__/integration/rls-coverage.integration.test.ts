@@ -3821,6 +3821,50 @@ describe('device_mtls_certificates RLS — direct-org auto-discovery (Shape 1)',
   });
 });
 
+describe('agent health RLS — direct-org auto-discovery (Shape 1)', () => {
+  it.each(['agent_health_observations', 'device_agent_health_latest'])(
+    '%s is direct-org and has forced four-command policy coverage',
+    async (tableName) => {
+      expect(ORG_ID_KEYED_TENANT_TABLES.has(tableName)).toBe(false);
+      expect(PARTNER_TENANT_TABLES.has(tableName)).toBe(false);
+      expect(ORG_AXIS_POLICY_EXCLUDED_TABLES.has(tableName)).toBe(false);
+      expect(EXEMPT_TABLES.has(tableName)).toBe(false);
+      expect(INTENTIONAL_UNSCOPED.has(tableName)).toBe(false);
+
+      const rows = (await db.execute(sql`
+        SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS rls_forced,
+               ARRAY(
+                 SELECT DISTINCT p.cmd
+                 FROM pg_policies p
+                 WHERE p.schemaname = 'public'
+                   AND p.tablename = ${tableName}
+                   AND (
+                     COALESCE(p.qual, '') LIKE '%breeze_has_org_access%'
+                     OR COALESCE(p.with_check, '') LIKE '%breeze_has_org_access%'
+                   )
+                 ORDER BY 1
+               ) AS covered_cmds
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN information_schema.columns col
+          ON col.table_schema = n.nspname AND col.table_name = c.relname
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND c.relname = ${tableName}
+          AND col.column_name = 'org_id'
+      `)) as unknown as Array<{
+        rls_on: boolean;
+        rls_forced: boolean;
+        covered_cmds: string[];
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.rls_on).toBe(true);
+      expect(rows[0]?.rls_forced).toBe(true);
+      expect(rows[0]?.covered_cmds).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+    },
+  );
+});
+
 /**
  * m365 communications-delegated (user axis) — structural enforcement.
  *

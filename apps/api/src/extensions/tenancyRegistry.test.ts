@@ -246,6 +246,19 @@ describe('tenancyRegistry', () => {
     });
   });
 
+  it('exports health evidence without leaking the open components container', () => {
+    expect(CORE_TENANT_EXPORT_POLICY.agent_health_observations?.columns.components).toMatchObject({
+      decision: 'exclude',
+      openContainerReviewed: true,
+    });
+    expect(CORE_TENANT_EXPORT_POLICY.agent_health_observations?.columns.overall).toMatchObject({
+      decision: 'include',
+    });
+    expect(CORE_TENANT_EXPORT_POLICY.device_agent_health_latest?.columns.observation_id).toMatchObject({
+      decision: 'include',
+    });
+  });
+
   it.each([
     ['c2c_consent_sessions', 'state'],
     ['device_config_state', 'config_value'],

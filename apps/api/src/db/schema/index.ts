@@ -58,6 +58,7 @@ export * from './monitors';
 export * from './filesystem';
 export * from './sessions';
 export * from './agentLogs';
+export * from './agentHealth';
 export * from './brainDeviceContext';
 export * from './playbooks';
 export * from './changes';

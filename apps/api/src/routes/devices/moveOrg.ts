@@ -20,6 +20,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import {
   getDeviceOrgDenormalizedTables,
   getDeviceOrgMoveDeleteTables,
+  DEVICE_ORG_FK_CASCADE_TABLES,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
@@ -232,6 +233,10 @@ moveOrgRoutes.post(
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
         for (const table of getDeviceOrgDenormalizedTables()) {
+          // Immutable evidence revokes app-role UPDATE. Its composite FK uses
+          // ON UPDATE CASCADE, so the devices row flip above already performed
+          // the trusted org-only restamp inside this transaction.
+          if (DEVICE_ORG_FK_CASCADE_TABLES.includes(table)) continue;
           await tx.execute(
             sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
           );
