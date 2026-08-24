@@ -12,6 +12,36 @@ import { asList } from '@/lib/asList';
 
 type ModalMode = 'closed' | 'delete' | 'test';
 
+type TestConditionResult = { condition: string; result: boolean; reason: string };
+
+/**
+ * The verdict the API actually returns for POST /alerts/rules/:id/test.
+ *
+ * `wouldTrigger` mirrors the condition + target evaluation the firing path
+ * performs (`isActive && targetMatch && evaluation.triggered`); `targetMatch`
+ * and `conditionResults` explain it. It is NOT a promise that an alert row
+ * appears: `createAlert()` additionally applies cooldown, open-alert dedup and
+ * flapping suppression, which this endpoint does not simulate — hence the
+ * caveat rendered alongside a positive verdict.
+ *
+ * There is deliberately no `success` / `message` pair here — reading those
+ * invented fields is what made every test report "Test Passed" (#3752).
+ */
+type RuleTestVerdict = {
+  wouldTrigger: boolean;
+  targetMatch: boolean;
+  targetReason?: string;
+  conditionResults: TestConditionResult[];
+  rule?: { enabled?: boolean };
+  device?: { hostname?: string };
+};
+
+type TestState =
+  | { status: 'error'; message: string }
+  | { status: 'verdict'; verdict: RuleTestVerdict };
+
+type TestDevice = { id: string; name: string };
+
 export default function AlertRulesPage() {
   const { t } = useTranslation('alerts');
   const [rules, setRules] = useState<AlertRule[]>([]);
@@ -20,7 +50,11 @@ export default function AlertRulesPage() {
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedRule, setSelectedRule] = useState<AlertRule | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<TestState | null>(null);
+  const [testDevices, setTestDevices] = useState<TestDevice[]>([]);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [devicesError, setDevicesError] = useState<string>();
+  const [testDeviceId, setTestDeviceId] = useState('');
 
   const fetchRules = useCallback(async () => {
     try {
@@ -57,15 +91,50 @@ export default function AlertRulesPage() {
     setModalMode('delete');
   };
 
+  // The endpoint evaluates a rule against ONE device and requires a deviceId
+  // body, so the modal has to ask which device before it can test anything.
   const handleTest = async (rule: AlertRule) => {
     setSelectedRule(rule);
     setTestResult(null);
+    setTestDeviceId('');
+    setDevicesError(undefined);
     setModalMode('test');
+
+    setDevicesLoading(true);
+    try {
+      const response = await fetchWithAuth('/devices');
+      if (!response.ok) {
+        if (response.status === 401) {
+          void navigateTo('/login', { replace: true });
+          return;
+        }
+        const errData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errData, t('alertRulesPage.failedToLoadDevices')));
+      }
+      const data = await response.json();
+      setTestDevices(
+        asList(data, 'devices').map((d: { id: string; hostname?: string; displayName?: string }) => ({
+          id: d.id,
+          name: d.displayName || d.hostname || d.id
+        }))
+      );
+    } catch (err) {
+      setDevicesError(err instanceof Error ? err.message : t('alertRulesPage.failedToLoadDevices'));
+    } finally {
+      setDevicesLoading(false);
+    }
+  };
+
+  const handleRunTest = async () => {
+    if (!selectedRule || !testDeviceId) return;
+
+    setTestResult(null);
     setSubmitting(true);
 
     try {
-      const response = await fetchWithAuth(`/alerts/rules/${rule.id}/test`, {
-        method: 'POST'
+      const response = await fetchWithAuth(`/alerts/rules/${selectedRule.id}/test`, {
+        method: 'POST',
+        body: JSON.stringify({ deviceId: testDeviceId })
       });
 
       if (!response.ok) {
@@ -74,18 +143,36 @@ export default function AlertRulesPage() {
           return;
         }
         const errData = await response.json().catch(() => null);
-        throw new Error(extractApiError(errData, 'Failed to test rule'));
+        throw new Error(extractApiError(errData, t('alertRulesPage.failedToTestRule')));
       }
 
-      const data = await response.json();
+      // Read the verdict the server actually computes. `wouldTrigger` is the
+      // boolean the firing path uses; a rule that would not fire must never
+      // render as a pass (#3752).
+      const data = (await response.json()) as Partial<RuleTestVerdict>;
+
+      // A response with no verdict in it is a failure to report, not a pass to
+      // assume. The previous code defaulted the missing field to `true`, which
+      // is exactly how every test came back green.
+      if (typeof data.wouldTrigger !== 'boolean') {
+        throw new Error(t('alertRulesPage.testVerdictMissing'));
+      }
+
       setTestResult({
-        success: data.success ?? true,
-        message: data.message ?? 'Test completed successfully'
+        status: 'verdict',
+        verdict: {
+          wouldTrigger: data.wouldTrigger,
+          targetMatch: data.targetMatch === true,
+          targetReason: data.targetReason,
+          conditionResults: Array.isArray(data.conditionResults) ? data.conditionResults : [],
+          rule: data.rule,
+          device: data.device
+        }
       });
     } catch (err) {
       setTestResult({
-        success: false,
-        message: err instanceof Error ? err.message : 'An error occurred'
+        status: 'error',
+        message: err instanceof Error ? err.message : t('alertRulesPage.anErrorOccurred')
       });
     } finally {
       setSubmitting(false);
@@ -120,6 +207,9 @@ export default function AlertRulesPage() {
     setModalMode('closed');
     setSelectedRule(null);
     setTestResult(null);
+    setTestDevices([]);
+    setTestDeviceId('');
+    setDevicesError(undefined);
   };
 
   const handleConfirmDelete = async () => {
@@ -269,32 +359,122 @@ export default function AlertRulesPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               {t('alertRulesPage.testing')} <span className="font-medium">{selectedRule.name}</span>
             </p>
+
+            <div className="mt-4">
+              <label htmlFor="test-rule-device" className="block text-sm font-medium">
+                {t('alertRulesPage.testAgainstDevice')}
+              </label>
+              <select
+                id="test-rule-device"
+                value={testDeviceId}
+                disabled={devicesLoading || submitting}
+                onChange={(e) => {
+                  // Drop the previous verdict: it belongs to the device that
+                  // was selected when it was computed. Leaving it on screen
+                  // beside a new selection is the same lie in a new costume.
+                  setTestResult(null);
+                  setTestDeviceId(e.target.value);
+                }}
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="">
+                  {devicesLoading
+                    ? t('alertRulesPage.loadingDevices')
+                    : t('alertRulesPage.selectADevice')}
+                </option>
+                {testDevices.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {device.name}
+                  </option>
+                ))}
+              </select>
+              {devicesError && (
+                <p className="mt-2 text-sm text-destructive">{devicesError}</p>
+              )}
+              {!devicesLoading && !devicesError && testDevices.length === 0 && (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {t('alertRulesPage.noDevicesAvailable')}
+                </p>
+              )}
+            </div>
+
             {submitting ? (
               <div className="mt-4 flex items-center gap-2">
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                 <span className="text-sm">{t('alertRulesPage.runningTest')}</span>
               </div>
-            ) : testResult ? (
+            ) : testResult?.status === 'error' ? (
+              <div className="mt-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-red-700">
+                <p className="text-sm font-medium">{t('alertRulesPage.testFailed')}</p>
+                <p className="mt-1 text-sm">{testResult.message}</p>
+              </div>
+            ) : testResult?.status === 'verdict' ? (
               <div
                 className={`mt-4 rounded-md border p-3 ${
-                  testResult.success
+                  testResult.verdict.wouldTrigger
                     ? 'border-green-500/40 bg-green-500/10 text-green-700'
-                    : 'border-red-500/40 bg-red-500/10 text-red-700'
+                    : 'border-amber-500/40 bg-amber-500/10 text-amber-700'
                 }`}
               >
                 <p className="text-sm font-medium">
-                  {testResult.success ? 'Test Passed' : 'Test Failed'}
+                  {testResult.verdict.wouldTrigger
+                    ? t('alertRulesPage.ruleWouldFire')
+                    : t('alertRulesPage.ruleWouldNotFire')}
                 </p>
-                <p className="text-sm mt-1">{testResult.message}</p>
+
+                {/* Name the device the verdict was computed for, so a verdict
+                    can never be read as belonging to a different selection. */}
+                {testResult.verdict.device?.hostname && (
+                  <p className="mt-1 text-sm">
+                    {t('alertRulesPage.evaluatedAgainst', {
+                      hostname: testResult.verdict.device.hostname
+                    })}
+                  </p>
+                )}
+
+                {testResult.verdict.wouldTrigger && (
+                  <p className="mt-1 text-sm">{t('alertRulesPage.fireSuppressionNote')}</p>
+                )}
+
+                {testResult.verdict.rule?.enabled === false && (
+                  <p className="mt-1 text-sm">{t('alertRulesPage.ruleIsDisabled')}</p>
+                )}
+
+                {testResult.verdict.targetReason && (
+                  <p className="mt-1 text-sm">{testResult.verdict.targetReason}</p>
+                )}
+
+                {testResult.verdict.conditionResults.length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {testResult.verdict.conditionResults.map((condition, index) => (
+                      <li key={`${condition.condition}-${index}`} className="text-sm">
+                        {condition.result
+                          ? t('alertRulesPage.conditionMet', { condition: condition.reason })
+                          : t('alertRulesPage.conditionNotMet', { condition: condition.reason })}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-1 text-sm">{t('alertRulesPage.noConditionsEvaluated')}</p>
+                )}
               </div>
             ) : null}
-            <div className="mt-6 flex justify-end">
+
+            <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
               >
                 {t('alertRulesPage.close')}
+              </button>
+              <button
+                type="button"
+                onClick={handleRunTest}
+                disabled={!testDeviceId || submitting || devicesLoading}
+                className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t('alertRulesPage.runTest')}
               </button>
             </div>
           </div>

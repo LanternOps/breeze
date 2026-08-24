@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
-import { Pencil, Plus, Trash2, ToggleLeft, ToggleRight } from 'lucide-react';
+import { FlaskConical, Pencil, Plus, Trash2, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import type { AlertSeverity } from './AlertList';
@@ -125,7 +125,8 @@ export default function AlertRuleList({
   onEdit,
   onDelete,
   onToggle,
-  onCreate
+  onCreate,
+  onTest
 }: AlertRuleListProps) {
   const { t } = useTranslation('alerts');
   const [templateFilter, setTemplateFilter] = useState('all');
@@ -203,6 +204,19 @@ export default function AlertRuleList({
       >
         <Pencil className="h-4 w-4" />
       </button>
+      {onTest && (
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation();
+            onTest(rule);
+          }}
+          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+          title={t('alertRuleList.testRule')}
+        >
+          <FlaskConical className="h-4 w-4" />
+        </button>
+      )}
       <button
         type="button"
         onClick={event => {
