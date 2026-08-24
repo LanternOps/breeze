@@ -13,6 +13,7 @@ import {
   decryptNotificationChannelConfig,
   encryptNotificationChannelConfig,
   redactNotificationChannelConfig,
+  scrubChannelTestError,
 } from '../../services/notificationChannelSecrets';
 import {
   getEmailRecipients,
@@ -55,7 +56,7 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
  */
 
 function toChannelResponse(channel: typeof notificationChannels.$inferSelect) {
-  // lastTestedAt and lastTestStatus are carried through via the ...channel spread;
+  // lastTestedAt, lastTestStatus and lastTestError are carried through via the ...channel spread;
   // updatedAt is intentionally NOT bumped when persisting a test result — running
   // a test is not a user content change, only lastTestedAt is the relevant timestamp.
   return {
@@ -673,12 +674,25 @@ channelsRoutes.post(
     // updatedAt is intentionally NOT bumped here; running a test is not a user content change.
     // Own short context (#1105) — the outbound send above ran with no ambient
     // request transaction; this write reopens one just for the persist.
+    // Why it failed, not just that it did (#3697). The provider message is
+    // already operator-ready ("use our testing email address instead of domains
+    // like example.com") but until now it only ever existed in a five-second
+    // toast; a reload left the card saying "Failed" with no way to learn what
+    // to fix. Scrubbed first: for slack/teams/webhook the destination URL IS
+    // the credential, and a provider that quotes it back would otherwise leak
+    // it to everyone with alerts:read. Explicitly NULLed on success so a green
+    // verdict can never sit next to a stale reason from an earlier run.
+    const lastTestError = testResult.success
+      ? null
+      : scrubChannelTestError(channel.type, channelConfig, testResult.message);
+
     try {
       await withAuthDbAccessContext(auth, () =>
         db.update(notificationChannels)
           .set({
             lastTestedAt: new Date(),
             lastTestStatus: testResult.success ? 'success' : 'failed',
+            lastTestError,
           })
           .where(eq(notificationChannels.id, channel.id))
       );

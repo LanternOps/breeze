@@ -841,6 +841,7 @@
     "smsNotification": "SMS Notification",
     "notificationChannel": "Notification Channel",
     "lastTest": "Last test: {{time}}",
+    "lastTestError": "Reason: {{reason}}",
     "channelType": {
       "email": "Email",
       "slack": "Slack",
