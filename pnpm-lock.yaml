@@ -175,6 +175,9 @@ importers:
       hono:
         specifier: ^4.13.2
         version: 4.13.2
+      i18next:
+        specifier: ^26.3.6
+        version: 26.3.6(typescript@5.9.3)
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1
@@ -15555,9 +15558,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.86.2': {}
 

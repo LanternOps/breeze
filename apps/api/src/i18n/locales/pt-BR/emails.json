@@ -1,0 +1,70 @@
+{
+  "passwordReset": {
+    "subject": "Redefinir sua senha",
+    "preheader": "Use este link para redefinir sua senha. O link expira em 1 hora.",
+    "heading": "Redefinir sua senha",
+    "body": "Você solicitou a redefinição de senha. Clique no botão abaixo para escolher uma nova senha.",
+    "button": "Redefinir senha",
+    "expiry": "Este link expira em 1 hora.",
+    "ignore": "Se você não solicitou a redefinição de senha, pode ignorar este e-mail com segurança."
+  },
+  "emailVerification": {
+    "subject": "Verifique seu endereço de e-mail",
+    "preheader": "Confirme seu endereço de e-mail para ativar sua conta.",
+    "heading": "Verifique seu e-mail",
+    "body": "Obrigado por se cadastrar! Verifique seu endereço de e-mail.",
+    "button": "Verificar e-mail"
+  },
+  "accountLocked": {
+    "subject": "Sua conta foi bloqueada",
+    "preheader": "Sua conta foi temporariamente bloqueada devido a várias tentativas de login malsucedidas.",
+    "heading": "Conta bloqueada",
+    "body": "Sua conta foi temporariamente bloqueada após {{count}} tentativas de login malsucedidas. Redefina sua senha para desbloqueá-la.",
+    "button": "Redefinir senha"
+  },
+  "emailChanged": {
+    "subject": "Seu endereço de e-mail foi alterado",
+    "preheader": "O endereço de e-mail da sua conta foi alterado recentemente.",
+    "heading": "Endereço de e-mail alterado",
+    "body": "O endereço de e-mail da sua conta foi alterado para {{newEmail}}. Se você não fez essa alteração, entre em contato com o suporte imediatamente.",
+    "notYou": "Não foi você?"
+  },
+  "accountDeletion": {
+    "subject": "Sua conta foi excluída",
+    "preheader": "Sua conta Breeze foi excluída.",
+    "heading": "Conta excluída",
+    "body": "Sua conta foi excluída permanentemente. Todos os seus dados foram removidos."
+  },
+  "userInvite": {
+    "subject": "Você foi convidado para {{partnerName}}",
+    "preheader": "Aceite seu convite para começar.",
+    "heading": "Você foi convidado",
+    "body": "Você foi convidado a participar de {{partnerName}} no Breeze. Clique abaixo para aceitar.",
+    "button": "Aceitar convite",
+    "expiry": "Este convite expira em {{days}} dias."
+  },
+  "invoice": {
+    "subject": "Fatura {{invoiceNumber}} de {{partnerName}}",
+    "preheader": "Sua fatura de {{total}} está pronta.",
+    "heading": "Fatura {{invoiceNumber}}",
+    "body": "Sua fatura está em anexo. Clique abaixo para visualizar ou pagar on-line.",
+    "button": "Ver fatura",
+    "pdfAttached": "Uma cópia em PDF está anexada a este e-mail.",
+    "amountDue": "Valor devido: {{amount}}",
+    "dueDate": "Vencimento: {{date}}"
+  },
+  "quote": {
+    "subject": "Cotação {{quoteNumber}} de {{partnerName}}",
+    "preheader": "Sua cotação de {{total}} está pronta para revisão.",
+    "heading": "Cotação {{quoteNumber}}",
+    "body": "Revise sua cotação. Clique abaixo para visualizar e aceitar.",
+    "button": "Ver cotação"
+  },
+  "reportScheduled": {
+    "subject": "{{reportName}} — {{date}}",
+    "preheader": "Seu relatório agendado está pronto.",
+    "heading": "Relatório agendado",
+    "body": "Seu relatório agendado {{reportName}} está em anexo.",
+    "button": "Ver relatório"
+  }
+}
