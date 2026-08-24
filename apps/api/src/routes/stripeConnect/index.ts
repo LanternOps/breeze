@@ -3,6 +3,10 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { HTTPException } from 'hono/http-exception';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
@@ -35,6 +39,7 @@ stripeConnectRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     const { apiKey } = c.req.valid('json');
     try {
       const result = await savePartnerStripeKey({
@@ -75,6 +80,7 @@ stripeConnectRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: 'Viewing the partner Stripe configuration requires full partner org access (orgAccess must be "all")' });
     // ONE snapshot: status, display fields and cached account facts come from
     // the same row read (or the same RETURNING'd refresh) — never a status read
     // combined with a separate cache read (review F9). The cache state is part
@@ -104,6 +110,7 @@ stripeConnectRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     try {
       const result = await refreshPartnerStripeAccount(auth.partnerId);
       writeRouteAudit(c, {
@@ -144,6 +151,7 @@ stripeConnectRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     await disconnectPartnerStripe(auth.partnerId);
     writeRouteAudit(c, {
       orgId: null,
