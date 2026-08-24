@@ -17,7 +17,12 @@ import {
 import { envFlag } from '../../config/env';
 import { db } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
-import { aiAgents, aiBudgets, organizations, type AiAgentRow } from '../../db/schema';
+// Direct module imports, NOT the ../../db/schema barrel: this module now sits
+// on the intent-release path (wave 3b), and pulling the barrel would force
+// every partial-mock unit test of that path to stub the entire schema surface.
+import { aiAgents, type AiAgentRow } from '../../db/schema/aiAgents';
+import { aiBudgets } from '../../db/schema/ai';
+import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 
 type PolicyRowFields = Pick<

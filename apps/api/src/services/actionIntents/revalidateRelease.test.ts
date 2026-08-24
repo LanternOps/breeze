@@ -2,7 +2,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 
 vi.mock('../aiTools', () => ({ getToolTier: vi.fn(() => 3) }));
-vi.mock('../aiGuardrails', () => ({ checkToolPermission: vi.fn(() => ({ allowed: true })) }));
+vi.mock('../aiGuardrails', () => ({ checkToolPermission: vi.fn(async () => null) }));
+vi.mock('./agentReleaseAuthority', () => ({
+  checkAgentReleaseAuthority: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('../tenantStatus', () => ({ getActiveOrgTenant: vi.fn(async () => ({ status: 'active' })) }));
 vi.mock('./actorContext', () => ({
   buildAuthContextForIntent: vi.fn(async () => ({
@@ -12,6 +15,8 @@ vi.mock('./actorContext', () => ({
 }));
 
 import { revalidateApprovedIntentForRelease } from './revalidateRelease';
+import { checkToolPermission } from '../aiGuardrails';
+import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 
 /** Minimal ActionIntent shape the function actually reads. */
 function intentFixture(overrides: Record<string, unknown> = {}) {
@@ -59,5 +64,66 @@ describe('revalidateApprovedIntentForRelease digest recompute', () => {
     // Later checks (tier, actor) are exercised by this file's other tests;
     // assert only that we did not fail on the digest.
     if (result.ok === false) expect(result.errorCode).not.toBe('digest_mismatch');
+  });
+});
+
+describe('revalidateApprovedIntentForRelease agent branch (wave 3b)', () => {
+  const args = { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const agentIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    requestedByUserId: null,
+    requestingAgentRunId: 'run-1',
+    originPrincipalKind: 'ai_agent',
+    originPrincipalId: 'agent-1',
+    source: 'ai_agent',
+    actionName: 'manage_services',
+    arguments: args,
+    argumentDigest: digest,
+    ...overrides,
+  });
+
+  it('consults checkAgentReleaseAuthority INSTEAD of checkToolPermission', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      agentIntent(),
+      { boundArgumentDigest: digest },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(checkAgentReleaseAuthority).toHaveBeenCalledTimes(1);
+    // The RBAC check would deny the ai_agent principal anyway; the branch is
+    // what makes agent release POSSIBLE. It must be skipped, not softened.
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('propagates the authority veto verbatim', async () => {
+    vi.mocked(checkAgentReleaseAuthority).mockResolvedValueOnce({
+      ok: false,
+      errorCode: 'agent_policy_denied',
+      details: { policy: 'current', reason: 'Agent is disabled' },
+    });
+
+    const result = await revalidateApprovedIntentForRelease(
+      agentIntent(),
+      { boundArgumentDigest: digest },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'agent_policy_denied',
+      details: { policy: 'current', reason: 'Agent is disabled' },
+    });
+  });
+
+  it('human intents still go through checkToolPermission, never the agent authority', async () => {
+    const humanArgs = { to: ['a@example.com'], subject: 's', bodyText: 'b' };
+    const humanDigest = computeArgumentDigest(canonicalizeArguments(humanArgs));
+    const result = await revalidateApprovedIntentForRelease(
+      intentFixture({ arguments: humanArgs, argumentDigest: humanDigest }),
+      { boundArgumentDigest: humanDigest },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(checkToolPermission).toHaveBeenCalledTimes(1);
+    expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
   });
 });
