@@ -30,6 +30,12 @@ import type {
   RecoveryReadiness
 } from './types';
 import { normalizeBackupVerificationType } from './types';
+import type { AuthContext } from '../../middleware/auth';
+import {
+  authorizeQueuedRecoveryWork,
+  captureRecoveryAuthorizationSubject,
+  type CapturedRecoveryAuthorizationSubject,
+} from '../../services/recoveryAuthorizationSubject';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -75,6 +81,14 @@ export type RunBackupVerificationInput = {
   snapshotId?: string;
   source: string;
   requestedBy?: string | null;
+};
+
+export type RunScheduledBackupVerificationInput = Omit<
+  RunBackupVerificationInput,
+  'snapshotId' | 'requestedBy' | 'source'
+> & {
+  backupJobId: string;
+  source: 'post-backup-integrity-check' | 'weekly-test-restore';
 };
 
 function toEpoch(value?: string | Date | null): number {
@@ -352,9 +366,16 @@ async function resolveSnapshot(orgId: string, snapshotId: string): Promise<Backu
 async function resolveBackupJob(
   orgId: string,
   deviceId: string,
-  backupJobId?: string
+  backupJobId?: string,
+  requireCurrentDbLineage = false,
 ): Promise<BackupJob> {
-  if (supportsDbOrg(orgId) && isUuid(deviceId) && (!backupJobId || isUuid(backupJobId))) {
+  const dbIdentityShape = supportsDbOrg(orgId)
+    && isUuid(deviceId)
+    && (!backupJobId || isUuid(backupJobId));
+  if (requireCurrentDbLineage && supportsDbOrg(orgId) && !dbIdentityShape) {
+    throw new Error('Scheduled verification identifiers are not valid current database identities');
+  }
+  if (dbIdentityShape) {
     try {
       if (backupJobId) {
         const [row] = await runWithSystemDbAccess(() => db
@@ -377,6 +398,9 @@ async function resolveBackupJob(
           }
           return normalized;
         }
+        if (requireCurrentDbLineage) {
+          throw new Error('Backup job not found for organization');
+        }
       } else {
         const [row] = await runWithSystemDbAccess(() => db
           .select()
@@ -395,11 +419,15 @@ async function resolveBackupJob(
             errorCount: row.errorCount as number | null,
           });
         }
+        if (requireCurrentDbLineage) {
+          throw new Error('Backup job not found for requested device');
+        }
       }
     } catch (error) {
       if (error instanceof Error && error.message === 'backupJobId does not belong to requested device') {
         throw error;
       }
+      if (requireCurrentDbLineage) throw error;
       console.warn('[backupVerification] DB backup job lookup failed; falling back to memory:', error);
     }
   }
@@ -430,6 +458,7 @@ async function resolveBackupJob(
 async function resolveSnapshotForBackupJob(
   orgId: string,
   backupJob: BackupJob,
+  requireCurrentDbLineage = false,
 ): Promise<BackupSnapshot | null> {
   if (supportsDbOrg(orgId) && isUuid(backupJob.id)) {
     try {
@@ -450,10 +479,14 @@ async function resolveSnapshotForBackupJob(
           fileCount: row.fileCount as number | null,
         });
       }
+      if (requireCurrentDbLineage) return null;
     } catch (error) {
+      if (requireCurrentDbLineage) throw error;
       console.warn('[backupVerification] DB snapshot lookup by job failed; falling back to memory:', error);
     }
   }
+
+  if (requireCurrentDbLineage && supportsDbOrg(orgId)) return null;
 
   const resolved = backupSnapshots.find(
     (row) => row.id === backupJob.snapshotId && snapshotOrgById.get(row.id) === orgId
@@ -503,7 +536,45 @@ export async function listBackupVerifications(
   return listBackupVerificationsFromMemory(orgId, filters);
 }
 
+function scheduledVerificationAuth(orgId: string): AuthContext {
+  return {
+    principal: { kind: 'system', reason: 'backup-verification-scheduler' },
+    user: { id: 'system', email: 'system@localhost', name: 'System', isPlatformAdmin: true },
+    token: null,
+    partnerId: null,
+    orgId,
+    scope: 'system',
+    accessibleOrgIds: null,
+    orgCondition: () => undefined,
+    canAccessOrg: () => true,
+  } as AuthContext;
+}
+
+export async function runScheduledBackupVerification(
+  input: RunScheduledBackupVerificationInput,
+): Promise<{
+  verification: BackupVerification;
+  readiness: RecoveryReadiness | null;
+}> {
+  const subject = await captureRecoveryAuthorizationSubject(
+    scheduledVerificationAuth(input.orgId),
+    input.orgId,
+    'verify',
+  );
+  return runBackupVerificationInternal(input, subject);
+}
+
 export async function runBackupVerification(input: RunBackupVerificationInput): Promise<{
+  verification: BackupVerification;
+  readiness: RecoveryReadiness | null;
+}> {
+  return runBackupVerificationInternal(input, null);
+}
+
+async function runBackupVerificationInternal(
+  input: RunBackupVerificationInput,
+  scheduledSubject: CapturedRecoveryAuthorizationSubject | null,
+): Promise<{
   verification: BackupVerification;
   readiness: RecoveryReadiness | null;
 }> {
@@ -516,19 +587,28 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   }
 
   let backupJob = snapshot
-    ? await resolveBackupJob(input.orgId, input.deviceId, snapshot.jobId)
-    : await resolveBackupJob(input.orgId, input.deviceId, input.backupJobId);
+    ? await resolveBackupJob(input.orgId, input.deviceId, snapshot.jobId, scheduledSubject !== null)
+    : await resolveBackupJob(input.orgId, input.deviceId, input.backupJobId, scheduledSubject !== null);
 
   if (input.backupJobId) {
-    backupJob = await resolveBackupJob(input.orgId, input.deviceId, input.backupJobId);
+    backupJob = await resolveBackupJob(
+      input.orgId,
+      input.deviceId,
+      input.backupJobId,
+      scheduledSubject !== null,
+    );
   }
 
   if (snapshot && snapshot.jobId !== backupJob.id) {
     throw new Error('snapshotId does not belong to backupJobId');
   }
 
-  if (!snapshot && backupJob.snapshotId) {
-    const resolved = await resolveSnapshotForBackupJob(input.orgId, backupJob);
+  if (!snapshot && (backupJob.snapshotId || scheduledSubject)) {
+    const resolved = await resolveSnapshotForBackupJob(
+      input.orgId,
+      backupJob,
+      scheduledSubject !== null,
+    );
     if (resolved && resolved.deviceId !== input.deviceId) {
       throw new Error('Backup job snapshot does not match requested device');
     }
@@ -538,6 +618,10 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
     snapshot = resolved;
   }
 
+  if (scheduledSubject && !snapshot) {
+    throw new Error('Scheduled verification requires a current internal snapshot');
+  }
+
   if (input.verificationType === 'test_restore' && !snapshot) {
     throw new Error('Snapshot is required for restore-based verification');
   }
@@ -545,6 +629,24 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   const snapshotId = snapshot?.id ?? null;
   const now = new Date().toISOString();
   const agentSnapshotId = snapshot?.providerSnapshotId ?? backupJob.snapshotId ?? snapshot?.id ?? undefined;
+
+  if (scheduledSubject && snapshot) {
+    const authorization = await authorizeQueuedRecoveryWork(
+      scheduledSubject,
+      input.orgId,
+      [
+        { kind: 'device', id: input.deviceId, role: 'target' },
+        { kind: 'snapshot', id: snapshot.id, role: 'source' },
+      ],
+      'verify',
+    );
+    const authorizedSnapshot = authorization.resources.resources.find(
+      (resource) => resource.kind === 'snapshot' && resource.id === snapshot!.id,
+    );
+    if (!authorizedSnapshot || authorizedSnapshot.deviceId !== input.deviceId) {
+      throw new Error('Scheduled verification snapshot lineage does not match requested device');
+    }
+  }
 
   const providerConfig = await resolveVerificationProviderConfig(input.orgId, backupJob);
   if (!providerConfig) {
