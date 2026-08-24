@@ -43,7 +43,7 @@
     "@breeze/ext-workspace": "workspace:*",    "@breeze/extension-sdk": "workspace:*",
     "@breeze/shared": "workspace:*",
     "@elastic/elasticsearch": "^9.5.0",
-    "@fastify/busboy": "^3.2.0",
+    "@fastify/busboy": "^3.2.2",
     "@googleapis/admin": "^31.0.0",
     "@googleapis/calendar": "^15.0.0",
     "@googleapis/gmail": "^17.0.0",
