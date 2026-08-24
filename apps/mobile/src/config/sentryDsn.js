@@ -24,9 +24,15 @@
  * and then `getConfig(root)`, which evaluates `app.config.js`. `expo prebuild`
  * and every Metro bundle evaluate it too.
  *
- * So a throw from here fails the Xcode build phase with a readable message,
- * from inside the same mechanism that produces the app's own config. There is
- * no "I forgot to run the script" path left. That is the whole point: the
+ * Android has no such config phase, but its release bundling task
+ * (`bundleReleaseJsAndAssets` -> `expo export:embed`) calls `getConfig` too —
+ * `@expo/cli/build/src/export/embed/exportEmbedAsync.js`. So iOS is covered
+ * twice (config phase and bundle phase) and Android once, on the phase that
+ * produces the shipped bundle either way.
+ *
+ * So a throw from here fails the build with a readable message, from inside the
+ * same mechanism that produces the app's own config. There is no "I forgot to
+ * run the script" path left. That is the whole point: the
  * missing SENTRY_AUTH_TOKEN already self-enforced this way (it fails the
  * archive from a build phase) — the DSN, which is the variable that actually
  * decides whether events exist, had no enforcement at all.
@@ -75,9 +81,62 @@ const PLACEHOLDER_MARKERS = [
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
-/** @param {string | undefined} v */
+/**
+ * Permissive truthiness, used ONLY for flags that make the guard stricter.
+ *
+ * @param {string | undefined} v
+ */
 function isTruthy(v) {
   return typeof v === 'string' && TRUTHY.has(v.trim().toLowerCase());
+}
+
+/**
+ * Strict truthiness — the literal string `1` — for the two flags that SUPPRESS
+ * the guard.
+ *
+ * Two reasons it is not `isTruthy`. It matches the existing convention
+ * (`scripts/preflight.mjs` tests `BREEZE_MOBILE_DEV === '1'`), and an
+ * unrecognised value fails in the safe direction: `BREEZE_MOBILE_DEV=yes` keeps
+ * the guard ON rather than quietly turning it off. A flag that disables a
+ * safety check should have the smallest possible accidental-set surface.
+ *
+ * @param {string | undefined} v
+ */
+function isSuppressed(v) {
+  return v === '1';
+}
+
+/** The only environment names EAS accepts. */
+const EAS_ENVIRONMENTS = ['development', 'preview', 'production'];
+
+/**
+ * Which EAS environment the failure message should tell the user to configure.
+ *
+ * The guard treats every non-`development` profile as a release, so
+ * `eas build --profile preview` can fail here — and a message that named
+ * `production` regardless would send them to configure the wrong environment
+ * and fail again. Our `eas.json` maps each profile to the environment of the
+ * same name; an unrecognised custom profile falls back to `production`.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {string}
+ */
+function easEnvironmentFor(env) {
+  const profile = String(env.EAS_BUILD_PROFILE || '').trim().toLowerCase();
+  return EAS_ENVIRONMENTS.includes(profile) ? profile : 'production';
+}
+
+/**
+ * Warnings go straight to stderr, not `console.warn`: `expo config` swallows
+ * console output while it evaluates the config (verified — the warning vanished
+ * entirely), and a silenced warning about disabled telemetry is the exact
+ * failure this whole file exists to prevent.
+ *
+ * @param {{ warn?: (message: string) => void } | undefined} io
+ * @returns {(message: string) => void}
+ */
+function warnFn(io) {
+  return (io && io.warn) || ((message) => process.stderr.write(`${message}\n`));
 }
 
 /**
@@ -102,12 +161,15 @@ function isTruthy(v) {
  *    bundling task run under. Also the mode `@expo/env` uses to pick
  *    `.env.production`.
  *
+ * This function deliberately does NOT consider `BREEZE_MOBILE_DEV`. Detection
+ * and suppression are separate steps so that suppressing a real signal can be
+ * reported — see `releaseBuildReason`.
+ *
  * @param {Record<string, string | undefined>} env
  * @returns {string | null} reason, or null when this is not a release build
  */
-function releaseBuildReason(env) {
-  // Explicit overrides first, so a human can always settle the argument.
-  if (isTruthy(env[FORCE_DEV_VAR])) return null;
+function detectReleaseSignal(env) {
+  // Only ever makes the guard stricter, so the permissive spelling is fine.
   if (isTruthy(env[FORCE_RELEASE_VAR])) return `${FORCE_RELEASE_VAR} is set`;
 
   const configuration = env.CONFIGURATION;
@@ -121,6 +183,48 @@ function releaseBuildReason(env) {
   }
 
   if (env.NODE_ENV === 'production') return 'NODE_ENV="production"';
+
+  return null;
+}
+
+/**
+ * `detectReleaseSignal` with the `BREEZE_MOBILE_DEV` escape hatch applied.
+ *
+ * ORDER MATTERS, and getting it wrong is the bug this shape exists to prevent.
+ * The override used to be the first line of the function, returning before any
+ * signal was computed — so `BREEZE_MOBILE_DEV=1` on a genuine Release archive
+ * disabled the guard and there was nothing left to report. That inverted the
+ * design: the flag that fully suppresses the check was silent, while
+ * `BREEZE_MOBILE_ALLOW_NO_SENTRY` — which merely opts out of telemetry — was
+ * loud.
+ *
+ * It is a reachable mistake, not a theoretical one. `BREEZE_MOBILE_DEV` is a
+ * pre-existing convention from `scripts/preflight.mjs`, and this feature's own
+ * documentation tells people to put build variables in `apps/mobile/.env` —
+ * the exact file the expo-constants Xcode phase loads on every build. A line
+ * left behind in `.env` after some local preflight work would have restored the
+ * original silent-blind-release failure.
+ *
+ * So: compute the signal FIRST, apply the override second, and say so on stderr
+ * whenever the override actually suppressed something.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @param {{ warn?: (message: string) => void }} [io]
+ * @returns {string | null} reason, or null when this is not a release build
+ */
+function releaseBuildReason(env, io) {
+  const signal = detectReleaseSignal(env);
+  if (!isSuppressed(env[FORCE_DEV_VAR])) return signal;
+
+  if (signal) {
+    warnFn(io)(
+      `[breeze] WARNING: ${FORCE_DEV_VAR}=1 is suppressing the release-build ` +
+        `${SENTRY_DSN_VAR} check for what looks like a real release build ` +
+        `(${signal}). If this is an Archive you intend to ship, remove ` +
+        `${FORCE_DEV_VAR} from apps/mobile/.env and your shell — it will ship ` +
+        'with crash and error reporting disabled.'
+    );
+  }
 
   return null;
 }
@@ -171,9 +275,11 @@ function describeDsnProblem(value) {
 /**
  * @param {string} problem
  * @param {string} reason
+ * @param {Record<string, string | undefined>} env
  * @returns {string}
  */
-function buildFailureMessage(problem, reason) {
+function buildFailureMessage(problem, reason, env) {
+  const easEnvironment = easEnvironmentFor(env);
   return [
     `${SENTRY_DSN_VAR} ${problem} — refusing to build.`,
     '',
@@ -188,9 +294,9 @@ function buildFailureMessage(problem, reason) {
     '    (copy .env.example). Xcode build phases do NOT inherit your interactive',
     '    shell, so exporting it in .zshrc and pressing Archive will not work.',
     '',
-    '  • EAS build — store it in the EAS "production" environment referenced by',
-    '    eas.json:',
-    `      eas env:create --environment production --name ${SENTRY_DSN_VAR} --value <dsn>`,
+    `  • EAS build — store it in the EAS "${easEnvironment}" environment referenced`,
+    '    by eas.json:',
+    `      eas env:create --environment ${easEnvironment} --name ${SENTRY_DSN_VAR} --value <dsn>`,
     '',
     'The DSN is in Sentry → olivetech-ks → breeze-mobile → Settings → Client Keys',
     '(DSN). It is a write-only client key and ships inside the IPA either way, so',
@@ -224,16 +330,11 @@ function resolveSentryDsn(env, io) {
   const problem = describeDsnProblem(raw);
   if (!problem) return String(raw).trim();
 
-  const reason = releaseBuildReason(env);
+  const reason = releaseBuildReason(env, io);
   if (!reason) return undefined;
 
-  if (isTruthy(env[ALLOW_NO_SENTRY_VAR])) {
-    // Written straight to stderr, not console.warn: `expo config` swallows
-    // console output while it evaluates the config (verified — the warning
-    // vanished entirely), and a silenced warning about disabled telemetry is
-    // the exact failure this whole file exists to prevent.
-    const warn = (io && io.warn) || ((message) => process.stderr.write(`${message}\n`));
-    warn(
+  if (isSuppressed(env[ALLOW_NO_SENTRY_VAR])) {
+    warnFn(io)(
       `[breeze] WARNING: ${SENTRY_DSN_VAR} ${problem}, but ${ALLOW_NO_SENTRY_VAR} is set. ` +
         `Building a release (${reason}) with crash and error reporting disabled. ` +
         'Nothing this build does will ever appear in Sentry.'
@@ -241,12 +342,13 @@ function resolveSentryDsn(env, io) {
     return undefined;
   }
 
-  throw new Error(buildFailureMessage(problem, reason));
+  throw new Error(buildFailureMessage(problem, reason, env));
 }
 
 module.exports = {
   resolveSentryDsn,
   releaseBuildReason,
+  detectReleaseSignal,
   describeDsnProblem,
   SENTRY_DSN_VAR,
   ALLOW_NO_SENTRY_VAR,

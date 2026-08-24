@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ALLOW_NO_SENTRY_VAR,
   describeDsnProblem,
+  detectReleaseSignal,
+  FORCE_DEV_VAR,
   releaseBuildReason,
   resolveSentryDsn,
   SENTRY_DSN_VAR,
@@ -52,19 +54,73 @@ describe('releaseBuildReason', () => {
     expect(releaseBuildReason({ NODE_ENV: 'production' })).toMatch(/production/);
   });
 
-  it('lets an explicit dev override win over every release signal', () => {
-    expect(
-      releaseBuildReason({
-        BREEZE_MOBILE_DEV: '1',
-        CONFIGURATION: 'Release',
-        NODE_ENV: 'production',
-        EAS_BUILD_PROFILE: 'production',
-      })
-    ).toBeNull();
-  });
-
   it('honours an explicit release override', () => {
     expect(releaseBuildReason({ BREEZE_MOBILE_RELEASE: '1' })).toMatch(/BREEZE_MOBILE_RELEASE/);
+  });
+});
+
+// The ordering bug this suite exists for: BREEZE_MOBILE_DEV used to be the
+// FIRST line of releaseBuildReason, returning before any signal was computed.
+// A stray `BREEZE_MOBILE_DEV=1` in apps/mobile/.env — the file the Xcode build
+// phase loads on every build — therefore disabled the guard on a genuine
+// Release archive and reported nothing anywhere, restoring the exact
+// silent-blind-release failure this whole feature exists to kill.
+describe('the BREEZE_MOBILE_DEV escape hatch is loud when it suppresses a real signal', () => {
+  const everySignal = {
+    [FORCE_DEV_VAR]: '1',
+    CONFIGURATION: 'Release',
+    NODE_ENV: 'production',
+    EAS_BUILD_PROFILE: 'production',
+  };
+
+  it('still wins — a suppressed release is not treated as a release', () => {
+    expect(releaseBuildReason(everySignal, { warn: vi.fn() })).toBeNull();
+  });
+
+  it('warns, naming the signal it suppressed and where to remove the flag', () => {
+    const warn = vi.fn();
+    releaseBuildReason({ [FORCE_DEV_VAR]: '1', CONFIGURATION: 'Release' }, { warn });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = warn.mock.calls[0][0] as string;
+    expect(message).toContain(FORCE_DEV_VAR);
+    expect(message).toContain('CONFIGURATION="Release"');
+    expect(message).toContain('apps/mobile/.env');
+  });
+
+  it('stays silent when there was no release signal to suppress', () => {
+    // The everyday case: BREEZE_MOBILE_DEV set during ordinary local work.
+    // Warning here would be noise on every Metro bundle.
+    const warn = vi.fn();
+    for (const env of [{}, { CONFIGURATION: 'Debug' }, { NODE_ENV: 'development' }]) {
+      expect(releaseBuildReason({ ...env, [FORCE_DEV_VAR]: '1' }, { warn })).toBeNull();
+    }
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns through resolveSentryDsn, the path the build actually takes', () => {
+    const warn = vi.fn();
+    expect(
+      resolveSentryDsn({ CONFIGURATION: 'Release', [FORCE_DEV_VAR]: '1' }, { warn })
+    ).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/suppressing the release-build/);
+  });
+
+  // Suppression flags take the literal string `1` only, matching
+  // scripts/preflight.mjs. An unrecognised spelling fails SAFE: the guard stays
+  // on rather than quietly switching off.
+  it('ignores spellings other than the literal 1', () => {
+    for (const value of ['yes', 'true', 'on', 'TRUE', ' 1 ']) {
+      expect(releaseBuildReason({ CONFIGURATION: 'Release', [FORCE_DEV_VAR]: value })).toMatch(
+        /CONFIGURATION="Release"/
+      );
+    }
+  });
+
+  it('is not consulted by detectReleaseSignal at all', () => {
+    expect(detectReleaseSignal({ CONFIGURATION: 'Release', [FORCE_DEV_VAR]: '1' })).toMatch(
+      /CONFIGURATION="Release"/
+    );
   });
 });
 
@@ -122,6 +178,34 @@ describe('resolveSentryDsn', () => {
       );
     });
 
+    // The message has to name the environment the user is actually building,
+    // or they configure `production`, rebuild `preview`, and fail again.
+    it('names the EAS environment matching the profile being built', () => {
+      const messageFor = (profile: string) => {
+        try {
+          resolveSentryDsn({ EAS_BUILD_PROFILE: profile });
+        } catch (err) {
+          return (err as Error).message;
+        }
+        throw new Error('expected a throw');
+      };
+      expect(messageFor('preview')).toContain('--environment preview');
+      expect(messageFor('production')).toContain('--environment production');
+      // An unknown custom profile has no matching EAS environment; fall back.
+      expect(messageFor('production-eu')).toContain('--environment production');
+      // Not an EAS build at all.
+      expect(
+        (() => {
+          try {
+            resolveSentryDsn(archive());
+          } catch (err) {
+            return (err as Error).message;
+          }
+          return '';
+        })()
+      ).toContain('--environment production');
+    });
+
     it('throws when the value is present but a placeholder', () => {
       expect(() =>
         resolveSentryDsn(archive({ [SENTRY_DSN_VAR]: 'https://REPLACE_ME@REPLACE_ME.io/0' }))
@@ -165,8 +249,16 @@ describe('resolveSentryDsn', () => {
 
     it('does not silence a real DSN problem in the message', () => {
       const warn = vi.fn();
-      resolveSentryDsn(archive({ [ALLOW_NO_SENTRY_VAR]: 'true' }), { warn });
+      resolveSentryDsn(archive({ [ALLOW_NO_SENTRY_VAR]: '1' }), { warn });
       expect(warn.mock.calls[0][0]).toMatch(/is not set/);
+    });
+
+    it('takes the literal 1 only, so a near-miss still fails the build', () => {
+      for (const value of ['true', 'yes', 'on']) {
+        expect(() => resolveSentryDsn(archive({ [ALLOW_NO_SENTRY_VAR]: value }))).toThrow(
+          /refusing to build/
+        );
+      }
     });
   });
 

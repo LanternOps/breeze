@@ -95,18 +95,36 @@ prebuild` and every Metro bundle evaluate it too. There is no path to an IPA
 that skips it.
 
 What counts as a release build: Xcode `CONFIGURATION` matching `Release`, any
-EAS profile other than `development`, or `NODE_ENV=production`. Local dev,
+EAS profile other than `development`, or `NODE_ENV=production`. Plain local dev,
 `expo start`, a Debug build, a bare `expo prebuild`, and CI (`test-mobile` runs
-vitest + `tsc` with no DSN anywhere) are all untouched. `BREEZE_MOBILE_DEV=1`
-forces the non-release path; `BREEZE_MOBILE_ALLOW_NO_SENTRY=1` builds a release
-without telemetry on purpose and warns loudly instead of throwing.
+vitest + `tsc` with no DSN anywhere) are all untouched.
+
+⚠️ **`expo start --no-dev` does require a DSN.** Expo sets `NODE_ENV=production`
+for it and it genuinely produces a `__DEV__ === false` bundle, which is the
+whole point of the gesture — so the guard treats it as a release. Use
+`BREEZE_MOBILE_DEV=1` for a throwaway one.
+
+Two escape hatches, both taking the **literal string `1`** and nothing else (the
+same spelling `scripts/preflight.mjs` uses; a near-miss like `=true` fails safe
+by leaving the guard on). Both print a warning to stderr when they actually
+suppress something:
+
+| Flag | Effect |
+|---|---|
+| `BREEZE_MOBILE_ALLOW_NO_SENTRY=1` | Build a release deliberately without telemetry. Succeeds, warns. |
+| `BREEZE_MOBILE_DEV=1` | **Disables the release check entirely** — a genuine Archive is treated as a dev build, so an IPA with no crash reporting can be produced. Warns whenever it suppresses a real release signal, but nothing stops that IPA being uploaded. **Never leave it in `apps/mobile/.env`**, which the Xcode build phase loads on every build. |
 
 Where the DSN comes from:
 
 | Build path | Source of truth | Notes |
 |---|---|---|
 | Local Xcode Archive (**current release path**) | `apps/mobile/.env` — gitignored, see `.env.example` | Must be in the **file**. Xcode build phases do not inherit your shell, so `export` in `.zshrc` + Archive does **not** work. |
-| EAS Build (not currently used) | the EAS `production` environment, referenced by `eas.json` | `eas env:create --environment production --name EXPO_PUBLIC_SENTRY_DSN --value <dsn> --visibility sensitive` |
+| EAS Build (not currently used) | the EAS environment of the same name as the profile, referenced by `eas.json` | `eas env:create --environment <profile> --name EXPO_PUBLIC_SENTRY_DSN --value <dsn> --visibility sensitive` |
+
+Every profile other than `development` is treated as a release, so
+`eas build --profile preview` needs the DSN in the **`preview`** environment —
+configuring `production` will not cover it. The failure message names the
+environment matching the profile being built.
 
 `eas.json` is committed and declares `development` / `preview` / `production`
 profiles. It deliberately does **not** carry a DSN value: `env` in `eas.json`
