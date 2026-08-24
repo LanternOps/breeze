@@ -1,0 +1,203 @@
+/**
+ * aiAgentRunner — the `ai-agent` BullMQ queue and worker (AI agents wave 3c).
+ *
+ * This module owns DURABILITY for headless agent runs, and nothing else. The
+ * decision to run at all is made by `services/aiAgents/runService.ts`
+ * (`createAndEnqueueAgentRun`), which commits the `ai_agent_runs` row and then
+ * hands the run id here; the run loop itself lives in `executeAgentRun`.
+ *
+ * Three properties are load-bearing and deliberately unlike the other workers:
+ *
+ * 1. **No retries** (`attempts: 1`, no backoff). A crashed agent run may have
+ *    already invoked tools; replaying it would re-invoke them with no human in
+ *    the loop. The run row's `failed` status IS the retry surface — a person
+ *    re-triggers it.
+ * 2. **No inline fallback when Redis is down.** `automationWorker` answers a
+ *    dead queue by running the work in-process; an agent run must not, because
+ *    a headless run with no durability guarantee is strictly worse than a
+ *    skipped one. We return `{enqueued:false}` and the admission gate marks the
+ *    run `failed` with `errorCode: 'enqueue_failed'` — loud, never silently
+ *    stuck in `queued`.
+ * 3. **The enqueuer is registered with `runService` at MODULE SCOPE**, not
+ *    inside `initializeAiAgentRunner`. `runService` must not statically import
+ *    this module (that would close a service↔job cycle and drag BullMQ/Redis
+ *    into the unit-test module graph of the most-tested function in the wave),
+ *    so it consumes an injected `AgentRunEnqueuer`. Registering at import time
+ *    means a process that never boots the worker — or one whose worker boot was
+ *    skipped because Redis was down at startup — can still enqueue from the
+ *    manual-trigger route.
+ */
+import { Job, Queue, Worker } from 'bullmq';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
+import { isReusableState } from '../services/bullmqUtils';
+import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import { getBullMQConnection, isRedisAvailable } from '../services/redis';
+import { captureException } from '../services/sentry';
+import { registerAgentRunEnqueuer } from '../services/aiAgents/runService';
+import { aiAgentQueueJobDataSchema, type AiAgentQueueJobData } from './queueSchemas';
+import { attachWorkerObservability } from './workerObservability';
+
+export const AI_AGENT_QUEUE = 'ai-agent';
+export const AI_AGENT_RUN_JOB_NAME = 'execute-agent-run';
+
+/** Wall-clock ceiling for a run is 600s (Task 4 owns the abort controller); the
+ *  BullMQ lock has to outlive that plus teardown, hence 720s. */
+const AI_AGENT_LOCK_DURATION_MS = 720_000;
+
+let aiAgentQueue: Queue<AiAgentQueueJobData> | null = null;
+let aiAgentWorker: Worker<AiAgentQueueJobData> | null = null;
+
+/**
+ * '-' separator, never ':' — BullMQ rejects a custom jobId whose ':'-split
+ * length is not 3, and this two-part id would throw (#1101).
+ */
+export function getAiAgentRunJobId(runId: string): string {
+  return `ai-agent-run-${runId}`;
+}
+
+function getAiAgentQueue(): Queue<AiAgentQueueJobData> {
+  if (!aiAgentQueue) {
+    // createInstrumentedQueue wires the #1105 held-context tripwire into
+    // `add()`: the admission gate deliberately enqueues OUTSIDE its system DB
+    // context, and this is what catches a future caller that stops doing so.
+    aiAgentQueue = createInstrumentedQueue<AiAgentQueueJobData>(AI_AGENT_QUEUE);
+  }
+  return aiAgentQueue;
+}
+
+/**
+ * Execute one agent run. Filled in by wave 3c Task 4 (the SDK `query()` loop).
+ *
+ * NOTE for Task 4: the processor deliberately does NOT hold an ambient system
+ * DB context (see `createAiAgentWorker`). Every DB touch must establish its own
+ * — `transitionRunStatus` and the runService helpers already self-context.
+ */
+export async function executeAgentRun(runId: string): Promise<void> {
+  throw new Error(`not_implemented: agent run execution lands in wave 3c task 4 (runId=${runId})`);
+}
+
+export async function enqueueAgentRunJob(runId: string): Promise<{ enqueued: boolean; jobId?: string }> {
+  const payload = aiAgentQueueJobDataSchema.safeParse({
+    type: AI_AGENT_RUN_JOB_NAME,
+    runId,
+  });
+  if (!payload.success) {
+    console.error('[AiAgentRunner] Refusing to enqueue a malformed agent run job', { runId });
+    return { enqueued: false };
+  }
+
+  if (!isRedisAvailable()) {
+    console.error('[AiAgentRunner] Redis unavailable — refusing to enqueue agent run', { runId });
+    return { enqueued: false };
+  }
+
+  try {
+    const queue = getAiAgentQueue();
+    const stableJobId = getAiAgentRunJobId(runId);
+
+    const existing = await queue.getJob(stableJobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (isReusableState(state)) {
+        // Already queued/active for this exact run row — reuse it rather than
+        // racing a second executor against the same run.
+        return { enqueued: true, jobId: existing.id ? String(existing.id) : stableJobId };
+      }
+      // A terminal leftover (completed/failed) only blocks the id. Removing and
+      // re-adding is safe: `executeAgentRun` compare-and-sets the run row out of
+      // `queued`, so a run that already reached a terminal status no-ops.
+      await existing.remove().catch((error: unknown) => {
+        console.warn('[AiAgentRunner] Failed to remove stale agent run job (non-fatal)', {
+          jobId: stableJobId,
+          error,
+        });
+      });
+    }
+
+    const job = await queue.add(AI_AGENT_RUN_JOB_NAME, payload.data, {
+      jobId: stableJobId,
+      removeOnComplete: { count: 200 },
+      removeOnFail: { count: 500 },
+      // No retries, no backoff. See the header comment.
+      attempts: 1,
+    });
+
+    return { enqueued: true, jobId: job.id ? String(job.id) : stableJobId };
+  } catch (error) {
+    // No inline fallback (header comment #2): report and refuse.
+    console.error('[AiAgentRunner] Failed to enqueue agent run', { runId, error });
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return { enqueued: false };
+  }
+}
+
+// Module scope on purpose — see the header comment, property #3.
+registerAgentRunEnqueuer(enqueueAgentRunJob);
+
+function createAiAgentWorker(): Worker<AiAgentQueueJobData> {
+  return new Worker<AiAgentQueueJobData>(
+    AI_AGENT_QUEUE,
+    async (job: Job<AiAgentQueueJobData>) => {
+      // Deliberately NOT wrapped in withSystemDbAccessContext. That helper opens
+      // a transaction, and an agent run can legitimately last the full 600s
+      // wall-clock ceiling — holding a pooled Postgres connection
+      // idle-in-transaction across the whole SDK loop is exactly the #1105
+      // pool-exhaustion shape, and it would also make every enqueue performed
+      // during the run trip the held-context tripwire. Instead each DB touch
+      // self-contexts (runService's `inSystemDbContext` / `transitionRunStatus`),
+      // which is the same shape the admission gate already uses.
+      assertQueueJobName(AI_AGENT_QUEUE, job, AI_AGENT_RUN_JOB_NAME);
+      const data = parseQueueJobData(AI_AGENT_QUEUE, job, aiAgentQueueJobDataSchema);
+      switch (data.type) {
+        case 'execute-agent-run':
+          return executeAgentRun(data.runId);
+        default:
+          throw new Error(`Unknown ai-agent job type: ${(data as { type: string }).type}`);
+      }
+    },
+    {
+      connection: getBullMQConnection(),
+      // Two concurrent headless runs per API replica. Each drives an LLM loop
+      // and a child process, so this is a cost/blast-radius ceiling, not a
+      // throughput target.
+      concurrency: 2,
+      lockDuration: AI_AGENT_LOCK_DURATION_MS,
+      stalledInterval: 60_000,
+      // A stalled agent run is failed, not re-delivered: see "no retries".
+      maxStalledCount: 1,
+    },
+  );
+}
+
+export function initializeAiAgentRunner(): void {
+  if (aiAgentWorker) return;
+
+  aiAgentWorker = createAiAgentWorker();
+  attachWorkerObservability(aiAgentWorker, 'aiAgentRunner');
+
+  aiAgentWorker.on('error', (error) => {
+    console.error('[AiAgentRunner] Worker error:', error);
+  });
+
+  aiAgentWorker.on('failed', (job, error) => {
+    console.error('[AiAgentRunner] Agent run job failed', {
+      jobId: job?.id,
+      runId: (job?.data as { runId?: string } | undefined)?.runId,
+      error,
+    });
+  });
+
+  console.log('[AiAgentRunner] AI agent runner initialized');
+}
+
+export async function shutdownAiAgentRunner(): Promise<void> {
+  if (aiAgentWorker) {
+    await aiAgentWorker.close();
+    aiAgentWorker = null;
+  }
+
+  if (aiAgentQueue) {
+    await aiAgentQueue.close();
+    aiAgentQueue = null;
+  }
+}
