@@ -419,6 +419,7 @@ git commit -m "fix(workers): reauthorize recovery media builds"
 - Modify: `apps/api/src/services/aiToolsDR.ts`
 - Modify: `apps/api/src/routes/agents/commands.ts`
 - Modify: `apps/api/src/routes/agentWs.ts`
+- Modify: `apps/api/src/routes/backup/drResultHandler.ts`
 - Modify: `apps/api/src/jobs/staleCommandReaper.ts`
 - Test: adjacent DR, AI, agent-result, and stale-reaper tests
 
@@ -426,15 +427,17 @@ git commit -m "fix(workers): reauthorize recovery media builds"
 - Replace mutable `results.authorizedDeviceIds` as dispatch authority with the durable Task 7 subject.
 - Preserve the subject through HTTP result, WebSocket result, stale-command recovery, and delayed self-reconcile entry points.
 - Reauthorize immediately before every command insertion and before scheduling each next cycle; denial creates neither commands nor follow-on jobs.
+- Resolve provider-facing snapshot IDs to exactly one organization-scoped internal snapshot row before Task 5 authorization; ambiguous external IDs fail closed.
+- Reuse the stable BullMQ job by moving the active job to delayed after the database commit and throwing `DelayedError`; do not suppress the successor by treating the active job as an already-scheduled reusable job.
 
 - [ ] **Step 1: Write RED for all four re-entry paths**
 
-Cover site/base permission revoked between groups, source moved after first dispatch, delayed self-reconcile, HTTP and WebSocket result re-entry, stale reaper, and legacy unknown work. Assert no command insertion, running transition, or next queue after denial.
+Cover site/base permission revoked between groups, source moved after first dispatch, ambiguous provider snapshot IDs, delayed self-reconcile, HTTP and WebSocket result re-entry, `drResultHandler`, stale reaper, and legacy unknown work. Assert no command insertion, running transition, or next queue after denial. Prove the active stable job moves to delayed after commit and wakes correctly on result events without replacing its subject.
 
 - [ ] **Step 2: Run RED**
 
 ```bash
-pnpm --filter @breeze/api exec vitest run src/jobs/drExecutionWorker.test.ts src/services/drExecutionService.test.ts src/routes/dr.test.ts src/services/aiToolsDR.siteScope.test.ts src/jobs/staleCommandReaper.test.ts
+pnpm --filter @breeze/api exec vitest run src/jobs/drExecutionWorker.test.ts src/services/drExecutionService.test.ts src/routes/backup/drResultHandler.test.ts src/routes/dr.test.ts src/services/aiToolsDR.siteScope.test.ts src/jobs/staleCommandReaper.test.ts
 ```
 
 - [ ] **Step 3: Persist and enforce the initiating subject**
@@ -446,7 +449,7 @@ Capture for route and AI producers, rehydrate on every re-entry, and authorize l
 Run the RED command, then:
 
 ```bash
-git add apps/api/src/services/drExecutionService.ts apps/api/src/jobs/drExecutionWorker.ts apps/api/src/routes/dr.ts apps/api/src/services/aiToolsDR.ts apps/api/src/routes/agents/commands.ts apps/api/src/routes/agentWs.ts apps/api/src/jobs/staleCommandReaper.ts
+git add apps/api/src/services/drExecutionService.ts apps/api/src/jobs/drExecutionWorker.ts apps/api/src/routes/dr.ts apps/api/src/routes/backup/drResultHandler.ts apps/api/src/services/aiToolsDR.ts apps/api/src/routes/agents/commands.ts apps/api/src/routes/agentWs.ts apps/api/src/jobs/staleCommandReaper.ts
 git commit -m "fix(workers): reauthorize DR reconciliation"
 ```
 
