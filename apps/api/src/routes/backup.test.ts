@@ -9,6 +9,7 @@ const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const POLICY_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const SNAPSHOT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const SITE_ID = '99999999-9999-4999-8999-999999999999';
 const RESTORE_ID = '11111111-1111-4111-8111-111111111111';
 const RESTORE_COMMAND_ID = '22222222-2222-4222-8222-222222222222';
 const queueCommandForExecutionMock = vi.fn();
@@ -180,16 +181,40 @@ vi.mock('../db/schema', async () => {
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+      principal: { kind: 'user_session' },
+      user: {
+        id: 'user-123',
+        email: 'test@example.com',
+        name: 'Test User',
+        isPlatformAdmin: false,
+      },
       scope: 'organization',
       partnerId: null,
       orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-      token: { sub: 'user-123' }
+      token: { sub: 'user-123', scope: 'organization' },
+      accessibleOrgIds: ['cccccccc-cccc-4ccc-8ccc-cccccccccccc'],
+      orgCondition: () => undefined,
+      canAccessOrg: (orgId: string) => orgId === 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      allowedSiteIds: undefined,
+      canAccessSite: () => true,
     });
     return next();
   }),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
-  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => {
+    c.set('permissions', {
+      permissions: [
+        { resource: 'backup', action: 'read' },
+        { resource: 'devices', action: 'execute' },
+      ],
+      partnerId: null,
+      orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      roleId: 'test-role',
+      scope: 'organization',
+      allowedSiteIds: undefined,
+    });
+    return next();
+  }),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
 
@@ -334,8 +359,10 @@ describe('backup routes', () => {
     };
 
     selectMock
+      .mockReturnValueOnce(chainMock([{ orgId: ORG_ID, deviceId: DEVICE_ID, siteId: SITE_ID }]))
+      .mockReturnValueOnce(chainMock([{ orgId: ORG_ID, deviceId: DEVICE_ID, siteId: SITE_ID }]))
       .mockReturnValueOnce(chainMock([snapshot]))
-      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, status: 'online', siteId: SITE_ID }]))
       .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
 
     const restoreRecord = {
@@ -379,8 +406,11 @@ describe('backup routes', () => {
     const restore = await restoreRes.json();
     expect(restore.status).toBe('pending');
 
-    // Mock fetch of restore job
-    selectMock.mockReturnValueOnce(chainMock([restoreRecord]));
+    // Mock the source and target lineage checks, then the restore-job fetch.
+    selectMock
+      .mockReturnValueOnce(chainMock([{ orgId: ORG_ID, deviceId: DEVICE_ID, siteId: SITE_ID }]))
+      .mockReturnValueOnce(chainMock([{ orgId: ORG_ID, deviceId: DEVICE_ID, siteId: SITE_ID }]))
+      .mockReturnValueOnce(chainMock([restoreRecord]));
 
     const fetchRes = await app.request(`/backup/restore/${RESTORE_ID}`, {
       method: 'GET',
