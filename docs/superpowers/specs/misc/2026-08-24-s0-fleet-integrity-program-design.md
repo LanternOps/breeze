@@ -3,6 +3,7 @@
 **Date:** 2026-08-24  
 **Status:** approved  
 **Baseline:** `80b498ecee73bb1c3f5f58e47dce65a016dc892c`  
+**Revised:** 2026-08-24 — current-state corrections, confirmed-defect anchors and registration contracts added after verifying the design against the baseline code  
 **Findings:** RMM-QA-012, 020, 038, 039, 099, 105, 134, 212, 225, 297, 319, 333, 445
 
 ## Objective
@@ -47,6 +48,8 @@ async function resolveOwnedAutomationReferences(
 
 The resolver loads scripts, software catalogs, selected software versions and notification channels with identifier and ownership predicates in the same query. It returns the loaded rows consumed by dispatch; callers do not repeat a bare-ID lookup.
 
+Ownership predicates are per-table, not uniform. `automations`, `software_catalog`, `software_policies` and `notification_channels` enforce `org_id XOR partner_id`; `scripts`, `script_categories` and `alert_templates` instead carry a `partner_id` denormalized from the owning organization (`2026-06-13-catalog-partner-axis-rls.sql`), so an org-owned script has **both** axes set. A partner-wide owner must therefore match scripts on `org_id IS NULL AND partner_id = :partnerId`, or on `is_system` — never on `partner_id` alone, which silently admits org-owned scripts. `scripts.is_system` is the only recognized global flag; `alert_templates.is_built_in` is not an ownership axis (org-owned rows carry it) and must not be treated as global.
+
 Unknown, deleted, moved, malformed, foreign or ownership-changed resources fail before an automation run, child execution, deployment, command, queue entry, provider call or success audit is created. Software-version ownership is derived through and pinned to its catalog.
 
 Existing automations receive normalized resource-binding rows with expected resource type and owner axes. A backfill marks valid bindings active and quarantines invalid bindings with a stable reason. Quarantined automation cannot execute. The new admission path is enabled only after the backfill completes.
@@ -74,6 +77,10 @@ async function authorizeResilienceResources(input: {
 The resolver first loads only organization, device and site identity. It performs no metadata, secret, storage, provider or command work before authorization. A site-restricted principal must be authorized for every resolved site. Missing device/site lineage fails closed. A restore with different source and target sites additionally requires `backup:cross_site_restore`.
 
 Async jobs persist the initiating authorization subject and grant revision. Workers reload that subject and re-run the same authorization contract immediately before provider, queue or command side effects. Legacy queued jobs without a recoverable subject are quarantined rather than executed.
+
+The resolver replaces the per-route `isDeviceSiteDenied` / `resolveSiteAllowedDeviceIds` helpers duplicated across `routes/backup/{restore,vmrestore,hyperv,mssql,bmr}.ts`; the existing `requireSiteAccess` middleware is used only by `software.ts` today. Two confirmed defects anchor the acceptance tests: the restore path site-checks only the **target** device and never the snapshot's source-device site (`restore.ts:188-232`, so a site-A-restricted user can restore a site-B snapshot today), and the restore-cancel check passes a device ID where a site ID is expected (`restore.ts:417` — fails closed, but on the wrong condition). Site restriction currently exists only on organization-scope tokens (`allowedSiteIds` is undefined for partner/system principals); the resolver contract states explicitly which principal kinds are site-restricted instead of inferring it from field presence.
+
+`backup:cross_site_restore` is a new permission and must be registered in all six places: `PERMISSION_GRANTS` (`packages/shared/src/constants/permissions.ts`), `DEFAULT_PERMISSIONS` and the `SYSTEM_ROLES` grant lists (`apps/api/src/db/seed.ts`), `ACTION_LABELS` (`routes/permissionsCatalog.ts` — `RESOURCE_LABELS` already has `backup`), an insert migration for `permissions`/`role_permissions` (pattern: `2026-08-11-variables-permissions.sql`), and the `seed.test.ts` parity assertions.
 
 ### Track B: fleet and execution truth
 
@@ -112,9 +119,11 @@ Search, filtering, sorting and authorization are server-owned. `includeIds` pres
 
 All affected remote, device-group, alert, script and network selectors migrate to this contract without absorbing unrelated Device Groups persistence work.
 
+The endpoint mounts as its own sub-router **before** `coreRoutes` in `routes/devices/index.ts` — otherwise `/options` is eaten by the `GET /:id` matcher — and ships a `.mountorder.test.ts` following the existing convention (`customFieldValues.mountorder.test.ts`). Migration targets are the shared `DeviceTargetSelector` (today `fetchWithAuth('/devices')` with pure client-side substring filtering) plus the ad-hoc dropdown fetches in the scripts, alerts, remote, DR, patch, backup, ticket, baseline and discovery components; `ScriptsPage`'s `'/devices?limit=10000'` is the worst offender.
+
 #### Reachability and self-health
 
-Enrollment and re-enrollment use the existing `pending` device status. A new enrollment has `lastSeenAt = null`; re-enrollment preserves the last real heartbeat time and does not advance it. Only an authenticated main-agent heartbeat changes pending/offline to online.
+Enrollment and re-enrollment use the existing `pending` device status (today written only by the pre-provision route). This changes current behavior: both the re-enroll UPDATE branch and the fresh-row INSERT branch in `routes/agents/enrollment.ts` unconditionally set `status = 'online'` and advance `lastSeenAt`. After this track, a new enrollment has `lastSeenAt = null`; re-enrollment preserves the last real heartbeat time and does not advance it. Only an authenticated main-agent heartbeat changes pending/offline to online. The stale `DEVICE_STATUSES` constant in `packages/shared/src/constants/index.ts` (missing `updating` and `pending`) is corrected in the same change.
 
 Self-health is an independent, versioned observation:
 
@@ -157,6 +166,8 @@ Automation gains durable action-result rows unique on `(run_id, device_id, actio
 
 #### Versioned software-inventory evidence
 
+Current state: `PUT /agents/:id/software` is an unconditional wipe-and-reinsert; an empty `software` array (accepted by the validator) deletes every inventory row for the device (`routes/agents/inventory.ts:163-186`) and leaves `device_vulnerabilities` rows NULL-linked, after which fleet aggregation misclassifies them as OS findings until the next correlation run.
+
 Inventory reports include an observation identity and completeness contract:
 
 ```ts
@@ -183,15 +194,15 @@ Closes RMM-QA-020 and RMM-QA-038.
 
 #### Continuous readiness
 
-Replace startup worker booleans with a live registry. Every required worker reports its running state, Redis connection state, transition time, last successful job and last error. `/ready` returns 503 when the database, required Redis connection or any required consumer is not currently runnable. Missing expected registry entries fail closed.
+The API already serves `/ready` from a live, TTL-cached, single-flighted readiness evaluator (`services/readiness.ts`, #2974) fed by a per-worker boolean map. This track extends that evaluator into the full registry rather than introducing a parallel endpoint: every required worker reports its running state, Redis connection state, transition time, last successful job and last error. `/ready` returns 503 when the database, required Redis connection or any required consumer is not currently runnable. Missing expected registry entries fail closed. The separate `/health/ready` implementation (bare DB `select 1` + Redis ping, no worker or shutdown awareness) is consolidated onto the same evaluator so the two cannot diverge.
 
-`/health` remains process liveness. Container readiness checks and post-deploy admission checks use `/ready`; restart/liveness semantics continue to use `/health`.
+`/health` remains process liveness. Container readiness checks and post-deploy admission checks use `/ready`; restart/liveness semantics continue to use `/health`. Compose healthchecks currently probe `/health` in both the tracked compose files and the hand-maintained droplet compose, so the switch requires explicit healthcheck edits in the repo files and in `/opt/breeze/docker-compose.yml` on each droplet at rollout, with `start_period` sized so a booting API legitimately returning 503 is not cycled by the restart policy.
 
 #### Bounded offline processing
 
-Keep database reads and writes inside short system-context statements. Use durable cursor continuation jobs and deterministic transition IDs derived from device identity and observed `lastSeenAt`. Queue publication, event emission and alert work remain outside the database context.
+This extends the existing `jobs/offlineDetector.ts`, which is already a keyset-cursor chunked scan (default cap 5,000 devices per run, 500 per chunk) that enqueues per-device `mark-offline` jobs, re-checks the stale predicate before each UPDATE, and wraps each page read in a short system-context statement. Keep database reads and writes inside short system-context statements. Queue publication, event emission and alert work remain outside the database context.
 
-The pipeline drains 10,000 stale devices within the existing 30-second schedule without an unbounded transaction or loop. Duplicate sweeps are idempotent, a worker restart resumes its continuation, and a device that reconnects before compare-and-set transition remains online.
+The deltas are: durable cross-run cursor continuation (the current per-run cap silently truncates a backlog larger than one sweep), deterministic transition IDs derived from device identity and observed `lastSeenAt` (mark jobs are not identity-keyed today, so duplicate sweeps can double-enqueue), and drain throughput sized so 10,000 stale devices complete within the existing 30-second schedule without an unbounded transaction or loop. Duplicate sweeps are idempotent, a worker restart resumes its continuation, and a device that reconnects before compare-and-set transition remains online.
 
 ### Track D: versioned agent control protocols
 
@@ -199,9 +210,11 @@ Closes RMM-QA-225 and RMM-QA-333.
 
 #### Peripheral effective-policy sets
 
-The server resolves the winning per-device policy set. Deterministic precedence is:
+Current state: the distributor ships every active policy for the org to every eligible device ordered only by `updatedAt`, and the agent applies first-match-wins in list order with `targetIds` never consulted (`jobs/peripheralJobs.ts`, `agent/internal/peripheral/evaluate.go`) — a device-level policy does not beat an org-level one, and nothing on the wire is monotonic or content-addressed.
 
-1. device target over group over site over organization;
+The server resolves the winning per-device policy set. `peripheral_policies` is already dual-ownership (`org_id XOR partner_id`), so precedence must rank the ownership axis too. Deterministic precedence is:
+
+1. device target over group over site over organization-wide; an organization-owned policy over the owning partner's partner-wide policy;
 2. exact device class over an umbrella class;
 3. numeric priority ascending;
 4. restrictive tie-break: block, read-only, alert, allow;
@@ -209,7 +222,7 @@ The server resolves the winning per-device policy set. Deterministic precedence 
 
 The version-2 envelope binds schema version, device/org/site/group target identity, monotonic revision, content digest, generation time, reason and the effective policies. The agent rejects wrong identity, lower revision, malformed digest, or the same revision with a different digest. Matching revision/digest is idempotent success. An empty set explicitly removes previous enforcement.
 
-Desired and applied revision/digest plus requested/applied/rejected evidence are durable. Policy and membership mutations enqueue old-union-new affected devices through a device-keyed coalescing queue, with periodic reconciliation as a backstop.
+Desired and applied revision/digest plus requested/applied/rejected evidence are durable. Policy and membership mutations enqueue old-union-new affected devices through a device-keyed coalescing queue, with periodic reconciliation as a backstop. Partner-wide rows fan out by the device organization's partner — never by `org_id` equality alone, which silently no-ops on `org_id NULL` — and the distributor resolves policy sets in a system database context so partner-wide rows remain visible on agent paths (the #1105 heartbeat probe-config pattern).
 
 Legacy peripheral enforcement is cleared and acknowledged before enabling version 2. A device that does not report the version-2 capability receives no version-2 enforcement.
 
@@ -223,7 +236,9 @@ Creation requires a dedicated rollback permission, step-up MFA, a signed target,
 
 Closes RMM-QA-445 while establishing the shared foundation required by the adjacent PAM convergence, readiness, audit and idempotency findings.
 
-Each approved request revision creates one durable `pam_actuations` identity with monotonic generation, desired state (`active` or `cleanup`) and observed lifecycle state. Approval plus the actuation row and outbox command commit atomically. Deny, revoke, expiry, policy removal, approval failure and entitlement removal atomically set cleanup intent and enqueue an idempotent cleanup generation.
+Current state: no agent cleanup command exists at all — PAM expiry is a server-side status UPDATE only (`jobs/pamJobs.ts`), actuation is a CAS from `approved` to `actuating` plus a `device_commands` insert, and the only durable trace is an `elevation_audit` row. `pam_actuations` is a new table, not a retrofit; the request/session state it tracks lives today in `elevation_requests`/`elevation_audit` (`schema/elevations.ts`).
+
+Each approved request revision creates one durable `pam_actuations` identity with monotonic generation, desired state (`active` or `cleanup`) and observed lifecycle state. Approval plus the actuation row and outbox command commit atomically; the outbox reuses the `intent_outbox` transactional-outbox pattern (`schema/actionIntents.ts`) rather than introducing a second outbox shape. Deny, revoke, expiry, policy removal, approval failure and entitlement removal atomically set cleanup intent and enqueue an idempotent cleanup generation.
 
 Version-2 apply and cleanup commands bind actuation, generation, request, device and organization identity. Apply additionally binds target path/hash, subject identity, expiry, server time and maximum remaining lifetime. Results bind actuation/generation and report received, verified-active, cleaned or failed plus boot, Windows session, PID/process creation, Job Object, account and observation evidence. A cleanup generation is an irreversible tombstone; delayed older apply commands are rejected.
 
@@ -238,6 +253,11 @@ Existing active or actuating legacy requests are marked `legacy_untracked`. They
 All new tenant tables use the repository's required ownership shape, enable and force RLS in the creation migration, and are registered in organization/device cascade and export-policy registries as applicable. Open JSON evidence is classified `excludedOpen` in tenant export policy. Append-only event ledgers receive the required audit-admin deletion handling.
 
 Migrations are additive, idempotent, ordered after shipped migrations and never edit a shipped migration. Large backfills are bounded and report affected/quarantined row counts. Server code tolerating old rows and payloads deploys before any producer emits new versions.
+
+Two additional cross-cutting rules:
+
+- **FK lock ordering on hot agent-write tables.** Inserts that FK to `devices` take `FOR KEY SHARE` on the device row; enrollment/re-enrollment updates on that same row have deadlocked with concurrent agent writers before (40P01 — #3739, PR #3911). The new agent-write tables (health observations, inventory observations, actuation results) keep their device-FK inserts in short transactions and never interleave a `devices`-row update inside the same transaction as a child insert.
+- **No epoch-aligned repeatable jobs.** BullMQ `repeat: { every }` schedules align to the epoch, so identical intervals all fire simultaneously (the 00:00 UTC stampede). The coalescing queue's reconciliation backstop and any new periodic sweep use offset or jittered schedules.
 
 ## Failure behavior
 
@@ -264,6 +284,8 @@ Required automated evidence includes:
 - old-agent omission tests for every additive heartbeat capability;
 - signed rollback interruption tests across download, verify, stage, swap, restart and health phases;
 - disposable Windows PAM tests covering normal cleanup, child processes, offline/reconnect, duplicate/reordered commands, helper loss, agent crash/restart and endpoint reboot.
+
+Integration suites must live in the directories the integration vitest config actually discovers, and their `runIf` guards skip silently — for every new integration suite, the evidence includes the CI shard log line proving it executed, not just a green job.
 
 The implementation can be code-complete without every environment packet, but a finding remains fixed-unverified until its required real database, 10,000-device, cross-platform or Windows evidence passes against the exact candidate and shipping artifacts.
 
