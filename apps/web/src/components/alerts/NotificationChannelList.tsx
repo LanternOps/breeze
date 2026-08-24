@@ -32,6 +32,9 @@ export type NotificationChannel = {
   config: Record<string, unknown>;
   lastTestedAt?: string;
   lastTestStatus?: 'success' | 'failed';
+  // Why the last test failed (#3697). NULL/absent when it passed. The API
+  // scrubs the channel's own secrets out of this before persisting it.
+  lastTestError?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -346,6 +349,28 @@ export default function NotificationChannelList({
                       : t('notificationChannelList.neverTested')}
                   </span>
                 </div>
+
+                {/* WHY it failed (#3697). "Failed" alone tells an operator their
+                    on-call routing is broken but not what to do about it, and
+                    the provider message that says exactly that ("use our testing
+                    email address instead of domains like example.com") used to
+                    live only in a five-second toast — gone on reload.
+
+                    Rendered as plain text rather than the hover/expand the issue
+                    floated: a tooltip is unreachable by touch and by keyboard,
+                    and this is the one line on the card an operator needs most.
+                    Clamped to two lines with the full string on `title`, because
+                    webhook/PagerDuty/Pushover errors can carry up to 500
+                    characters of the destination's own response body. */}
+                {channel.lastTestStatus === 'failed' && channel.lastTestError && (
+                  <p
+                    className="mt-1 line-clamp-2 text-xs text-red-600"
+                    title={channel.lastTestError}
+                    data-testid="notification-channel-last-test-error"
+                  >
+                    {t('notificationChannelList.lastTestError', { reason: channel.lastTestError })}
+                  </p>
+                )}
 
                 {/* Actions */}
                 <div className="mt-4 flex items-center gap-2 border-t pt-4">

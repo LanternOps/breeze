@@ -124,6 +124,12 @@ vi.mock('../../services/notificationChannelSecrets', () => ({
   encryptNotificationChannelConfig: vi.fn((_type: string, config: unknown) => config),
   decryptNotificationChannelConfig: vi.fn((_type: string, config: unknown) => config),
   redactNotificationChannelConfig: vi.fn((_type: string, config: unknown) => config),
+  // Named export must exist or the route's import fails at module load. The
+  // real scrubbing behaviour is covered by notificationChannelSecrets.test.ts
+  // and the persist wiring by channels.testOutcomePersist.test.ts (#3697).
+  scrubChannelTestError: vi.fn((_type: string, _config: unknown, message: unknown) =>
+    typeof message === 'string' ? message : null
+  ),
 }));
 
 import { channelsRoutes } from './channels';
