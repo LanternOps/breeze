@@ -11,9 +11,23 @@ vi.mock('../services/sentry', () => ({
 // with a recording scope, so tag/context calls don't throw and the tags applied
 // around job execution are observable.
 const isolationTags: Array<Record<string, unknown>> = [];
+// Records what the 'failed' handler put on the reporting scope, so severity and
+// the failure-reason tag are assertable rather than assumed.
+const failedScopes: Array<{ tags: Record<string, unknown>; level?: string }> = [];
 vi.mock('@sentry/node', () => ({
-  withScope: (fn: (scope: unknown) => void) =>
-    fn({ setTag: vi.fn(), setContext: vi.fn() }),
+  withScope: (fn: (scope: unknown) => void) => {
+    const recorded: { tags: Record<string, unknown>; level?: string } = { tags: {} };
+    failedScopes.push(recorded);
+    return fn({
+      setTag: (key: string, value: unknown) => {
+        recorded.tags[key] = value;
+      },
+      setLevel: (level: string) => {
+        recorded.level = level;
+      },
+      setContext: vi.fn(),
+    });
+  },
   withIsolationScope: (fn: (scope: unknown) => unknown) => {
     const tags: Record<string, unknown> = {};
     isolationTags.push(tags);
@@ -37,6 +51,7 @@ function makeFakeWorker(): Worker {
 describe('attachWorkerObservability', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    failedScopes.length = 0;
   });
 
   it('reports failed jobs to Sentry with the job error', () => {
@@ -176,6 +191,170 @@ describe('attachWorkerObservability — job execution tagging (BREEZE-9 attribut
     expect(captureException).toHaveBeenCalledTimes(1);
 
     warnSpy.mockRestore();
+    consoleSpy.mockRestore();
+  });
+});
+
+// BREEZE-1J: a handler that `throw`s to ask BullMQ for a retry on an EXPECTED
+// condition produced one error-level Sentry event per attempt for something
+// nobody should be paged about. Classification changes the severity and folds
+// the identical intermediate attempts into the report that says it gave up — it
+// must never make the failure silent.
+describe('attachWorkerObservability — failure classification', () => {
+  function failedJob(attemptsMade: number, attempts: number) {
+    return { id: 'job-1', name: 'doThing', attemptsMade, opts: { attempts } };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    failedScopes.length = 0;
+  });
+
+  it('keeps the default error-level report on every attempt with no classifier', () => {
+    const worker = makeFakeWorker();
+    attachWorkerObservability(worker, 'testWorker');
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    (worker as unknown as EventEmitter).emit('failed', failedJob(1, 5), new Error('boom'));
+
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(failedScopes[0]?.level).toBeUndefined();
+    consoleSpy.mockRestore();
+  });
+
+  it('holds an exhaust-only report until the final attempt, then reports it once', () => {
+    const worker = makeFakeWorker();
+    attachWorkerObservability(worker, 'desktopSessionFinalizationWorker', {
+      classifyFailure: () => ({
+        reason: 'desktop_stop_pending',
+        level: 'warning',
+        reportOnlyWhenExhausted: true,
+      }),
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emitter = worker as unknown as EventEmitter;
+
+    for (let attempt = 1; attempt < 5; attempt += 1) {
+      emitter.emit('failed', failedJob(attempt, 5), new Error('stop pending'));
+    }
+    expect(captureException).not.toHaveBeenCalled();
+    // Not silent: every held attempt is still logged.
+    expect(warnSpy).toHaveBeenCalledTimes(4);
+
+    emitter.emit('failed', failedJob(5, 5), new Error('stop pending'));
+
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(failedScopes.at(-1)).toEqual({
+      level: 'warning',
+      tags: {
+        worker: 'desktopSessionFinalizationWorker',
+        jobId: 'job-1',
+        worker_failure_reason: 'desktop_stop_pending',
+      },
+    });
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('reports a non-exhaust-only classification on its very first attempt', () => {
+    const worker = makeFakeWorker();
+    attachWorkerObservability(worker, 'testWorker', {
+      classifyFailure: () => ({ reason: 'desktop_intent_already_released', level: 'warning' }),
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    (worker as unknown as EventEmitter).emit('failed', failedJob(1, 5), new Error('gone'));
+
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(failedScopes.at(-1)?.level).toBe('warning');
+    consoleSpy.mockRestore();
+  });
+
+  it('reports rather than swallows when the job shape is unrecognised', () => {
+    const worker = makeFakeWorker();
+    attachWorkerObservability(worker, 'testWorker', {
+      classifyFailure: () => ({
+        reason: 'desktop_stop_pending',
+        level: 'warning',
+        reportOnlyWhenExhausted: true,
+      }),
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    (worker as unknown as EventEmitter).emit('failed', undefined, new Error('x'));
+
+    expect(captureException).toHaveBeenCalledTimes(1);
+    consoleSpy.mockRestore();
+  });
+
+  // BullMQ stops retrying for more reasons than reaching `opts.attempts`, and a
+  // held report on a job that will never run again is DROPPED, not deferred.
+  // `job.discard()` is called by this very worker (desktopSessionFinalizationWorker,
+  // intent-already-released path), so an exhaust-only classification landing on
+  // a discarded job is one edit away at all times.
+  it('treats a discarded job as exhausted so a held report is not lost forever', () => {
+    const worker = makeFakeWorker();
+    attachWorkerObservability(worker, 'testWorker', {
+      classifyFailure: () => ({
+        reason: 'desktop_stop_pending',
+        level: 'warning',
+        reportOnlyWhenExhausted: true,
+      }),
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Attempt 1 of 5 — the attempts ceiling alone would hold this report, and
+    // no later attempt will ever arrive to release it.
+    (worker as unknown as EventEmitter).emit(
+      'failed',
+      { ...failedJob(1, 5), discarded: true },
+      new Error('discarded'),
+    );
+
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(failedScopes.at(-1)?.level).toBe('warning');
+    expect(warnSpy).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('still holds a report on a job that has NOT been discarded', () => {
+    const worker = makeFakeWorker();
+    attachWorkerObservability(worker, 'testWorker', {
+      classifyFailure: () => ({
+        reason: 'desktop_stop_pending',
+        level: 'warning',
+        reportOnlyWhenExhausted: true,
+      }),
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    (worker as unknown as EventEmitter).emit(
+      'failed',
+      { ...failedJob(1, 5), discarded: false },
+      new Error('retrying'),
+    );
+
+    expect(captureException).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('falls back to the default report when the classifier itself throws', () => {
+    const worker = makeFakeWorker();
+    attachWorkerObservability(worker, 'testWorker', {
+      classifyFailure: () => {
+        throw new Error('classifier bug');
+      },
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const err = new Error('boom');
+    (worker as unknown as EventEmitter).emit('failed', failedJob(1, 5), err);
+
+    expect(captureException).toHaveBeenCalledWith(err);
+    expect(failedScopes.at(-1)?.level).toBeUndefined();
     consoleSpy.mockRestore();
   });
 });
