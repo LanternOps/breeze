@@ -16,7 +16,7 @@
     "@azure/keyvault-secrets": "^4.9.0",
     "@breeze/shared": "workspace:*",
     "@hono/node-server": "^2.1.1",
-    "hono": "^4.13.2",
+    "hono": "^4.13.3",
     "jose": "^6.2.3",
     "zod": "^4.4.3"
   },
