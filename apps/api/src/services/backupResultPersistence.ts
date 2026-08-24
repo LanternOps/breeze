@@ -719,10 +719,7 @@ async function reportBackupJobPredicateMiss(params: {
       console.warn(msg);
       captureMessage(msg, {
         eventCode: 'backup_result_job_not_found',
-        tags: {
-          backup_result_drop: 'job-not-found',
-          backup_result_source: source,
-        },
+        tags: { backup_result_source: source },
       });
       return;
     }
@@ -1108,10 +1105,7 @@ export async function applyBackupCommandResultToJob(params: {
     console.warn(msg);
     captureMessage(msg, {
       eventCode: 'backup_result_org_divergence',
-      tags: {
-        backup_result_org_divergence: 'true',
-        backup_result_source: source,
-      },
+      tags: { backup_result_source: source },
     });
   }
 

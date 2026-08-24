@@ -167,7 +167,7 @@ describe('mobileDeviceBlockedMiddleware — unresolved device telemetry (#2913)'
     expect(captureMessageMock).toHaveBeenCalledTimes(1);
     expect(captureMessageMock.mock.calls[0]?.[1]).toMatchObject({
       eventCode: 'mobile_device_unresolved',
-      tags: { source: 'signed-claim' },
+      tags: { mobile_device_id_source: 'signed-claim' },
     });
   });
 
@@ -179,7 +179,7 @@ describe('mobileDeviceBlockedMiddleware — unresolved device telemetry (#2913)'
     });
 
     expect(captureMessageMock.mock.calls[0]?.[1]).toMatchObject({
-      tags: { source: 'header' },
+      tags: { mobile_device_id_source: 'header' },
     });
   });
 

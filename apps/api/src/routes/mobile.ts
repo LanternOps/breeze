@@ -123,7 +123,7 @@ function registrationConflict(
       'mobile push registration conflicted — the phone is not receiving notifications',
       {
         eventCode: 'mobile_push_registration_conflict',
-        tags: { area: 'mobile-device-identity', reason },
+        tags: { mobile_registration_reason: reason },
       }
     );
   }
@@ -367,7 +367,7 @@ mobileRoutes.post(
         'mobile push registration fell back to push-derived device id — block enforcement stays inert for this caller',
         {
           eventCode: 'mobile_push_registration_fallback',
-          tags: { area: 'mobile-device-identity', reason: plan.fallbackReason },
+          tags: { mobile_registration_reason: plan.fallbackReason },
         }
       );
     }

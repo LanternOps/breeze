@@ -645,8 +645,9 @@ describe('processInboundEmail', () => {
     expect(captureMessageMock).toHaveBeenCalledTimes(1);
     expect(captureMessageMock.mock.calls[0]![1]).toMatchObject({
       eventCode: 'inbound_email_sender_auth_unverified',
-      extra: expect.objectContaining({ diagnostic: 'no-mailgun-authserv' }),
     });
+    // The diagnostic itself is asserted on the audit row above — it used to be
+    // asserted inside captureMessage's `extra`, which never reached Sentry.
   });
 
   it('does NOT alert Sentry for an ordinary unverified sender (genuine DMARC fail, no diagnostic)', async () => {
@@ -1403,11 +1404,11 @@ describe('processInboundEmail — cross-channel claim ledger (spec §4)', () => 
 
     expect(captureMessageMock).toHaveBeenCalledWith(
       expect.stringContaining('lost the message-id claim race'),
-      expect.objectContaining({
-        eventCode: 'inbound_email_claim_race_lost',
-        extra: expect.objectContaining({ ourTicketId: 't-new', winnerTicketId: 't-winner', path: 'create' })
-      })
+      expect.objectContaining({ eventCode: 'inbound_email_claim_race_lost' })
     );
+    // Both ticket ids are asserted on the audit row below (rows[0].error), which
+    // is the record that actually persists; the `extra` bag they used to be
+    // checked in never left the process.
     const rows = inboundOf();
     expect(rows[0]!.parseStatus).toBe('created');
     expect(String(rows[0]!.error)).toContain('t-winner');

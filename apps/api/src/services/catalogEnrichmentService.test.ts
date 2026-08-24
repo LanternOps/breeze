@@ -365,6 +365,7 @@ describe('polishCatalogText', () => {
   });
 
   it('warns when the model INVENTS a new spec not present in the input', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     create
       .mockResolvedValueOnce(aiMessage({ name: 'Dell Monitor 27" 144Hz', description: null }))
       .mockResolvedValueOnce(aiMessage({ name: 'Dell Monitor 27" 144Hz', description: null }));
@@ -376,11 +377,20 @@ describe('polishCatalogText', () => {
     // operator can catch the model inventing specs on live quotes.
     expect(captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('over-claimed'),
+      expect.objectContaining({ eventCode: 'catalog_polish_fact_over_claim' }),
+    );
+    // BREEZE-18: the invented token used to be asserted inside the `extra` bag,
+    // which never reached Sentry — captureMessage never attached it and
+    // scrubEvent deleted it. The durable record is the console line above the
+    // capture, so that is where the token is asserted now.
+    expect(consoleWarn).toHaveBeenCalledWith(
+      '[catalog-polish] fact guard: advisory drift',
       expect.objectContaining({
-        eventCode: 'catalog_polish_fact_over_claim',
-        extra: expect.objectContaining({ added: expect.arrayContaining(['144hz']) }),
+        direction: 'over-claim',
+        added: expect.arrayContaining(['144hz']),
       }),
     );
+    consoleWarn.mockRestore();
   });
 
   it('accepts the stricter retry when the first attempt drifts but the second is clean', async () => {

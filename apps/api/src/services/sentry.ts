@@ -121,7 +121,10 @@ const ALLOWED_TAG_NAMES = new Set([
   // issue could not say WHICH asset was refused — and the INTENDED case
   // (unsigned darwin artifacts, pending signed macOS releases) was therefore
   // indistinguishable from a real trust regression. `binary_component` is the
-  // hardcoded component name from the sync call sites ('agent', 'viewer', …);
+  // hardcoded component name from the only two call sites that can reach this
+  // report: `registerFromOfficialManifest` is invoked with exactly "agent" and
+  // "watchdog". The "backup", "helper" and "user-helper" components go through
+  // registerLocalBinaries, which never refuses an asset and never reports here;
   // `release_asset_name` is a RELEASE ARTIFACT filename — a build output name
   // like `breeze-agent-windows-amd64.exe`, bounded by the release matrix and
   // carrying no tenant, device, org or host identifier; `manifest_refusal_reason`
@@ -130,19 +133,25 @@ const ALLOWED_TAG_NAMES = new Set([
   'binary_component',
   'release_asset_name',
   'manifest_refusal_reason',
-  // #1379/BREEZE-9: `attachWorkerObservability` has been setting this tag on
-  // every one of the 38 workers ALL ALONG — twice, in fact: on the per-job
-  // isolation scope (so anything captured DURING a job inherits it) and again
-  // on the `failed` listener. `pickAllowedTags` then dropped it on the way out,
-  // every time. That is the same defect as the contentless captureMessage
-  // events above, and it invalidates the diagnosis recorded in
-  // jobs/workerObservability.ts: BREEZE-9's ~12k held-context events with an
-  // empty `worker` tag were blamed on the listener firing outside job
-  // execution, and the fix (patching Worker.processFn) could never have worked
-  // while the scrubber deleted the tag regardless of where it was set.
-  // Attributing events by worker is the stated entire point of that
-  // integration. Closed set of 38 hardcoded worker-name literals passed to
-  // attachWorkerObservability; carries no tenant, device or host identifier.
+  // #1379/BREEZE-9: `attachWorkerObservability` sets this tag on every worker —
+  // twice, in fact: on the per-job isolation scope (so anything captured DURING
+  // a job inherits it) and again on the `failed` listener. It is a closed set of
+  // hardcoded worker-name literals passed to attachWorkerObservability; no
+  // tenant, device or host identifier.
+  //
+  // Chronology matters here, because it explains a two-day-old regression rather
+  // than an original defect. `3c92c07cd` (2026-07-25, #2786) added the
+  // processFn patch that put `worker` on the per-job scope, and it WORKED:
+  // `git show a50769487^:apps/api/src/services/sentry.ts` has no tag filtering
+  // at all. Two days later `a50769487` (2026-07-27, #2843, security wave 7)
+  // introduced this allowlist and silently dropped `worker` on the way out. So
+  // the BREEZE-9 fix was live for two days and has been inert since — the
+  // hardening regressed it, and nothing failed to say so.
+  //
+  // The diagnosis in jobs/workerObservability.ts is therefore correct but
+  // incomplete, not wrong: the `failed` listener genuinely does fire outside job
+  // execution, which is why the processFn patch was needed. This allowlist gap
+  // is a second, later defect stacked on top of it.
   //
   // Its two neighbours there are deliberately NOT allowlisted: `jobName` is
   // bounded but redundant with `worker` for triage, and `jobId` is a BullMQ
@@ -167,6 +176,44 @@ const ALLOWED_TAG_NAMES = new Set([
   // into unbounded tag cardinality. Neither carries a tenant, device or job id.
   'patch_reconcile_stage',
   'patch_reconcile_repeat',
+  // These were being passed to captureMessage and silently dropped — the same
+  // defect as `worker`, found by auditing every tag key against this list
+  // rather than trusting that a passed tag arrives.
+  //
+  // `mobile_device_id_source` is the TypeScript union `'signed-claim' | 'header'`
+  // (middleware/mobileDeviceBlocked.ts) — it says whether the caller's device id
+  // came from a signed token claim or a legacy header, which is what decides
+  // whether the fleet needs re-registration or the token issuer is at fault.
+  // `mobile_registration_reason` carries two disjoint closed unions from
+  // routes/mobile.ts: 'displace-insert-conflict' | 'upsert-guard-matched-no-row'
+  // on the conflict path, and 'foreign-blocked-row' |
+  // 'unverified-installation-claim' on the fallback path. Both are declared
+  // unions, never interpolated, and neither carries a user or device id.
+  //
+  // Both are named specifically rather than `source` / `reason`. The allowlist
+  // is keyed by NAME, so a generic key would hand a free pass to any future
+  // caller that reaches for the same obvious word with an unbounded value —
+  // `reason` being the single most likely name for a raw error string.
+  'mobile_device_id_source',
+  'mobile_registration_reason',
+  // `'agent' | 'reconcile'` (services/backupResultPersistence.ts) — which
+  // ingestion path reported the result. Not redundant with `event_code`: the
+  // same drop can arrive from either path and they fail for different reasons.
+  'backup_result_source',
+  // BREEZE-A/#3218: the derived `${file}.${fn}` attribution for a held DB
+  // context. Structurally bounded — parseOpenerFrame builds it from a matched
+  // stack frame's source basename and stripped function name, and deliberately
+  // omits line numbers so an unrelated edit above the call site cannot fork the
+  // issue. This is the ONLY attribution that reaches Sentry for a held context:
+  // scrubEvent deletes `message`, so the label baked into the message text
+  // (formatHeldContextWarning) never arrives either.
+  //
+  // Its sibling `dbContextLabel` is NOT allowlisted, deliberately. It is
+  // caller-supplied `withDbAccessContext({ label })` typed as bare `string` and
+  // threaded through helpers like agentWs's runWithAgentOrgDbAccess(label, …),
+  // so proving every current and future path passes a hardcoded literal is a
+  // real sweep, not a glance. Unproven means not allowlisted.
+  'dbContextOpener',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
@@ -466,10 +513,11 @@ export function captureException(
  * `captureException` keeps its positional shape deliberately: it has no
  * required discriminator, and churning it would buy nothing.
  *
- * Prefer `tags` over `extra` for any low-cardinality discriminator you will
- * want to GROUP BY in Sentry: extras are only visible once you open an
- * individual event (and `scrubEvent` deletes them outright before send), while
- * tags are searchable and drive the "break down by" UI.
+ * `tags` is the ONLY channel that reaches Sentry from here. Anything you want to
+ * GROUP BY must be a bounded, allowlisted tag: `scrubEvent` deletes `message`,
+ * `logentry` and `extra` from every outbound event, so a discriminator that is
+ * not an allowlisted tag does not exist as far as triage is concerned. Console
+ * output is the place for unbounded detail.
  *
  * Keep tag values low-cardinality (a handler name, not an id) — high-cardinality
  * tags inflate Sentry's index without making anything more triageable.
@@ -483,21 +531,28 @@ export interface CaptureMessageOptions {
    */
   eventCode: SentryEventCode;
   level?: 'info' | 'warning' | 'error';
-  /** Deleted by `scrubEvent` before send; kept for local console parity only. */
-  extra?: Record<string, unknown>;
   tags?: Record<string, string>;
 }
+
+// There is deliberately NO `extra` field. The old one was dead twice over: this
+// function never called `scope.setExtras`, so nothing was attached to the
+// event, and `scrubEvent` deletes `extra` from every outbound event anyway.
+// Sixteen call sites were nonetheless building payloads for it — several
+// capturing stack traces — that went nowhere. A type advertising a capability
+// it does not have is the same failure this PR is about, so the field is gone
+// rather than documented. If you want a diagnostic locally, `console.warn` it
+// at the call site (most already do); if you want it in Sentry, it has to be a
+// bounded, allowlisted TAG.
 
 export function captureMessage(message: string, options: CaptureMessageOptions): void {
   if (!initialized) {
     return;
   }
 
-  const { eventCode, level = 'warning', extra, tags } = options;
+  const { eventCode, level = 'warning', tags } = options;
 
   Sentry.withScope((scope) => {
     scope.setLevel(level);
-    void extra;
     setCallerTags(scope, tags);
     // Set AFTER the caller's tags so a `tags: { event_code: ... }` bag can never
     // override the call site's own code, and guarded so an unregistered value

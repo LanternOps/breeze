@@ -979,17 +979,6 @@ softwareRoutes.post(
     if (payload.downloadUrl && fileType === null) {
       captureMessage('software version created with undetermined installer type', {
         eventCode: 'software_version_installer_type_unknown',
-        extra: {
-          // Dual-axis (#2135): a partner-wide package has org_id NULL, so log both
-          // axes — orgId alone would attribute those rows to nothing at all.
-          orgId: catalogItem.orgId,
-          partnerId: catalogItem.partnerId,
-          catalogId: id,
-          version: payload.version,
-          // Host only — a managed-software URL can carry a presigned capability
-          // query string that must never reach a log.
-          downloadUrlHost: safeUrlHost(payload.downloadUrl),
-        },
       });
     }
 
@@ -1139,7 +1128,6 @@ softwareRoutes.post(
           // make the discard visible rather than fully silent.
           captureMessage('software upload: discarded malformed supportedOs', {
             eventCode: 'software_upload_malformed_supported_os',
-            extra: { orgId, catalogId },
           });
         }
       }

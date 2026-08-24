@@ -125,7 +125,6 @@ export function warnHighSkipRatio(
   console.error(message);
   captureMessage(message, {
     eventCode: 'cve_feed_high_skip_rate',
-    extra: { tag, skippedCount, entryCount, ratio, trigger, droppedWhat },
   });
 }
 

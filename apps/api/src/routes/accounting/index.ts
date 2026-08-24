@@ -326,7 +326,6 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     if (isHomeCurrencyCasAbort(err)) {
       captureMessage('[accounting] QuickBooks home currency capture lost the compare-and-set', {
         eventCode: 'accounting_home_currency_cas_lost',
-        extra: { partnerId: state.partnerId, provider },
       });
       console.warn('[accounting] QuickBooks home currency capture lost the compare-and-set', { partnerId: state.partnerId, provider });
     } else {

@@ -80,7 +80,6 @@ describe('sentry service', () => {
     captureMessage('held a pooled connection', {
       eventCode: 'db_context_held_too_long',
       level: 'warning',
-      extra: { heldMs: 12000 },
       tags: { dbContextLabel: 'agentWs.heartbeat' },
     });
 
@@ -536,10 +535,10 @@ describe('scrubEvent', () => {
       binary_component: 'agent',
       release_asset_name: 'breeze-agent-darwin-arm64',
       manifest_refusal_reason: 'not-distributable',
-      // #1379/BREEZE-9: attachWorkerObservability sets this on all 38 workers
-      // and the scrubber has been discarding it the whole time, which is why
-      // ~12k held-context events carry an empty `worker`. Dropped here, no
-      // worker-attributed triage is possible at all.
+      // #1379/BREEZE-9: attachWorkerObservability sets this on every worker,
+      // and the allowlist introduced two days later (a50769487) has discarded
+      // it ever since, which is why ~12k held-context events carry an empty
+      // `worker`. Dropped here, no worker-attributed triage is possible.
       worker: 'patchScheduler',
       // #3912's tags. Inert until that PR lands, but asserted now so a future
       // edit to ALLOWED_TAG_NAMES cannot quietly un-allowlist them.

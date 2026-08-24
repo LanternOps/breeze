@@ -56,6 +56,48 @@ function walk(dir: string): string[] {
   return out;
 }
 
+/**
+ * Blank out `//` and block comments, preserving length and newlines so every
+ * offset and line number computed later still lines up with the real source.
+ *
+ * Required, not cosmetic: `callArguments` treats `'` as a string delimiter, so
+ * an apostrophe inside a comment desynchronises it. That is live in this repo —
+ * `db/dbPoolHealthMonitor.ts` has `// States this event's own sampling rate`
+ * inside a captureMessage options block, which made the parser run past the
+ * call and return null for it.
+ */
+function blankComments(source: string): string {
+  let out = '';
+  let i = 0;
+  let quote: string | null = null;
+  while (i < source.length) {
+    const ch = source[i]!;
+    const next = source[i + 1];
+    if (quote) {
+      out += ch;
+      if (ch === '\\') { out += next ?? ''; i += 2; continue; }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; out += ch; i += 1; continue; }
+    if (ch === '/' && next === '/') {
+      while (i < source.length && source[i] !== '\n') { out += ' '; i += 1; }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) {
+        out += source[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      out += '  '; i += 2;
+      continue;
+    }
+    out += ch; i += 1;
+  }
+  return out;
+}
+
 /** Slice the argument list of the call whose `(` follows `openIndex`. */
 function callArguments(source: string, openIndex: number): string | null {
   let depth = 0;
@@ -86,7 +128,8 @@ function callArguments(source: string, openIndex: number): string | null {
 interface CallSite {
   file: string;
   line: number;
-  args: string;
+  /** null when the argument list could not be parsed — an offender, never a skip. */
+  args: string | null;
 }
 
 function findCaptureMessageCalls(): CallSite[] {
@@ -95,7 +138,7 @@ function findCaptureMessageCalls(): CallSite[] {
   );
   const sites: CallSite[] = [];
   for (const file of files) {
-    const source = readFileSync(file, 'utf8');
+    const source = blankComments(readFileSync(file, 'utf8'));
     // Only files that actually import OUR captureMessage. apps/web and
     // apps/mobile call the Sentry SDK's own captureMessage, which has a
     // different contract; neither is under the roots scanned here, but the
@@ -106,7 +149,6 @@ function findCaptureMessageCalls(): CallSite[] {
     while ((match = pattern.exec(source)) !== null) {
       const openIndex = source.indexOf('(', match.index);
       const args = callArguments(source, openIndex);
-      if (args === null) continue;
       sites.push({
         file: relative(REPO_ROOT, file),
         line: source.slice(0, match.index).split('\n').length,
@@ -145,13 +187,25 @@ describe('captureMessage call sites (BREEZE-18)', () => {
     // helper or moves the tree would otherwise turn this whole suite green by
     // scanning zero files. The floor is deliberately well under the current
     // count so ordinary churn does not touch it.
-    expect(sites.length).toBeGreaterThanOrEqual(20);
+    // Tightened after the comment-stripping fix: the apostrophe desync meant
+    // this scanner silently discarded one of 28 real call sites, and a floor of
+    // 20 could never have noticed. Kept a little under the true count so
+    // ordinary churn does not touch it, but close enough to catch a collapse.
+    expect(sites.length).toBeGreaterThanOrEqual(26);
   });
 
   it('passes a hardcoded, registered eventCode at every call site', () => {
     const offenders: string[] = [];
     for (const site of sites) {
       const where = `${site.file}:${site.line}`;
+      // A call whose arguments we could not parse is an OFFENDER, not a skip.
+      // Skipping it silently is how a scanner passes while covering less than
+      // it claims — and a desynced parser can also over-run into the NEXT
+      // call's arguments, letting one site's code vouch for another's.
+      if (site.args === null) {
+        offenders.push(`${where} — could not parse the argument list; the scanner cannot vouch for this call site`);
+        continue;
+      }
       const match = /(?:^|[\s,{])eventCode\s*:\s*(.+)/s.exec(site.args);
       if (!match) {
         offenders.push(`${where} — no eventCode (event ships contentless)`);

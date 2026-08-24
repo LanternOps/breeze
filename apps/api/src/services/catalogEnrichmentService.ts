@@ -714,11 +714,6 @@ export async function polishCatalogText(
     if (overClaimed) {
       captureMessage('[catalog-polish] fact guard: AI over-claimed a numeric spec not in the input', {
         eventCode: 'catalog_polish_fact_over_claim',
-        extra: {
-          orgId: actor.orgId,
-          added: factChanges.added,
-          removed: factChanges.removed,
-        },
       });
     }
     result = {

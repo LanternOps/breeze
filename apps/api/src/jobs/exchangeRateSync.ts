@@ -97,8 +97,6 @@ export async function syncEcbExchangeRates(): Promise<ExchangeRateSyncStats> {
       `[ExchangeRateSync] rejected ${fetched.rejected.length} unusable provider row(s)`,
       {
         eventCode: 'exchange_rate_rows_rejected',
-        extra: { rejected: fetched.rejected },
-        tags: { job: 'exchange-rate-sync' },
       },
     );
   }

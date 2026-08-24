@@ -46,7 +46,6 @@ export async function dbWriteExpectingRows<T>(
     }
     captureMessage(message, {
       eventCode: 'db_write_expecting_rows_zero',
-      extra: { label, stack: new Error().stack },
       tags,
     });
   }

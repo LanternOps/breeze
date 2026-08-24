@@ -65,7 +65,6 @@ describe('contextless-write guard on proxiedDb (#1375/#1379)', () => {
     expect(message).toContain('.update()');
     expect(message).toContain('#1375');
     expect(options.eventCode).toBe('db_contextless_write');
-    expect(options.extra).toHaveProperty('stack');
   });
 
   it('warns + reports for .insert and .delete too', () => {

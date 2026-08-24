@@ -196,7 +196,6 @@ export async function getAnthropicClientForPartner(partnerId: string | null): Pr
     captureAtMostHourly('blank-platform-key:platform', () => {
       captureMessage('AI is not configured on this deployment.', {
         eventCode: 'llm_platform_key_missing',
-        tags: { service: 'llmConfigResolver' },
       });
     });
     throw error;

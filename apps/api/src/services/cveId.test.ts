@@ -118,17 +118,7 @@ describe('warnHighSkipRatio', () => {
     expect(message).toContain('20 of 100');
     expect(message).toContain('20.0%');
     expect(captureMessage).toHaveBeenCalledTimes(1);
-    expect(captureMessage).toHaveBeenCalledWith(message, {
-      eventCode: 'cve_feed_high_skip_rate',
-      extra: {
-        tag: 'Test',
-        skippedCount: 20,
-        entryCount: 100,
-        ratio: 0.2,
-        trigger: 'ratio',
-        droppedWhat: 'malformed-CVE',
-      },
-    });
+    expect(captureMessage).toHaveBeenCalledWith(message, { eventCode: 'cve_feed_high_skip_rate' });
   });
 
   // The #2427 regression class: a huge absolute drop whose RATIO is tiny because
@@ -139,17 +129,7 @@ describe('warnHighSkipRatio', () => {
 
     expect(error).toHaveBeenCalledTimes(1);
     expect(captureMessage).toHaveBeenCalledTimes(1);
-    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), {
-      eventCode: 'cve_feed_high_skip_rate',
-      extra: {
-        tag: 'Test',
-        skippedCount: 5_000,
-        entryCount: 1_000_000,
-        ratio: 0.005,
-        trigger: 'absolute_floor',
-        droppedWhat: 'malformed-CVE',
-      },
-    });
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), { eventCode: 'cve_feed_high_skip_rate' });
   });
 
   it('escalates at exactly the absolute floor', () => {
@@ -177,17 +157,7 @@ describe('warnHighSkipRatio', () => {
     warnHighSkipRatio('Test', 40, 45);
 
     expect(error).toHaveBeenCalledTimes(1);
-    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), {
-      eventCode: 'cve_feed_high_skip_rate',
-      extra: {
-        tag: 'Test',
-        skippedCount: 40,
-        entryCount: 45,
-        ratio: 40 / 45,
-        trigger: 'gross_loss',
-        droppedWhat: 'malformed-CVE',
-      },
-    });
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), { eventCode: 'cve_feed_high_skip_rate' });
   });
 
   // #2470: kev_epss also drops entries for an unusable SCORE, not just a malformed
@@ -200,19 +170,7 @@ describe('warnHighSkipRatio', () => {
 
     expect(error).toHaveBeenCalledTimes(1);
     expect(error.mock.calls[0]?.[0]).toContain('High malformed-id/unusable-score skip count');
-    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), {
-      eventCode: 'cve_feed_high_skip_rate',
-      extra: {
-        tag: 'ExploitFeeds/epss',
-        skippedCount: 200,
-        entryCount: 400,
-        ratio: 0.5,
-        // 200/400 on a 400-entry feed trips the RATIO check first (evaluated before
-        // the absolute floor), even though 200 also clears the floor.
-        trigger: 'ratio',
-        droppedWhat: 'malformed-id/unusable-score',
-      },
-    });
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), { eventCode: 'cve_feed_high_skip_rate' });
   });
 
   it('still ignores a trivial gross-loss case below the min-skips guard', () => {
