@@ -458,37 +458,42 @@ git commit -m "fix(workers): reauthorize DR reconciliation"
 **Files:**
 - Modify: `apps/api/src/jobs/c2cEnqueue.ts`
 - Modify: `apps/api/src/jobs/c2cBackupWorker.ts`
+- Modify: `apps/api/src/services/c2cJobCreation.ts`
 - Modify: `apps/api/src/routes/c2c/items.ts`
+- Modify: `apps/api/src/routes/c2c/jobs.ts`
 - Modify: `apps/api/src/services/aiToolsC2C.ts`
 - Modify: `apps/api/src/jobs/backupVerificationJobs.ts`
-- Modify: scheduled verification route/service code
+- Modify: `apps/api/src/routes/backup/verificationService.ts`
+- Modify: `apps/api/src/routes/backup/verificationScheduled.ts`
+- Create: a focused C2C queued-owner authorization service/test if needed
 - Test: adjacent C2C and scheduled-verification tests
 
 **Interfaces:**
-- C2C durable work explicitly distinguishes sync from restore. Restore producers capture a live Task 7 subject; unknown legacy restore work quarantines. Until provider restore is implemented, an unreauthorized restore branch remains hard-disabled before provider work.
-- Scheduled backup verification is explicit allowlisted system-origin work (`system-recovery-v1` or a narrower versioned reason) and revalidates current snapshot/device lineage before command insertion.
+- All five C2C producers explicitly distinguish sync from restore and capture the correct live Task 7 subject. Only scheduled sync may use `c2c-sync-scheduler`; ordinary request and AI sync/restore retain their real subjects. Unknown legacy work quarantines.
+- Both C2C operations are currently provider stubs. An authorized restore transitions directly `pending -> failed` with `c2c_restore_not_implemented`; it never claims `running`. Mismatched queue/stored kinds and unreauthorized work stop before metadata/secrets/provider access.
+- Scheduled backup verification uses a private fixed `backup-verification-scheduler` wrapper and revalidates current snapshot/device lineage before command insertion. It resolves the internal snapshot row by `backup_jobs.id`; the provider-facing `backup_jobs.snapshot_id` string is never treated as the internal snapshot UUID.
 - System classification is narrow and cannot be supplied by an ordinary request principal.
 
 - [ ] **Step 1: Write failing C2C/system-boundary tests**
 
-Cover user/API key/OAuth/AI revocation before C2C claim, foreign/moved C2C resources, sync versus restore, legacy unknown kind/subject, forged system reason, and scheduled verification whose current lineage no longer matches. Assert zero running claims, provider calls, and commands on denial.
+Cover every request/AI/scheduler C2C producer; user/API key/OAuth/AI revocation before claim; config/source connection/storage config/item/target connection owner changes; queue/stored kind mismatch; duplicate item IDs; sync versus restore; legacy unknown kind/subject; forged system reasons; and scheduled verification whose current job/snapshot/device lineage no longer matches. Assert zero running claims, provider/secret/storage calls, and commands on denial. Prove passive active-sync deduplication never rebinds authority and authorized stub restore never enters `running`.
 
 - [ ] **Step 2: Run RED**
 
 ```bash
-pnpm --filter @breeze/api exec vitest run src/jobs/c2cEnqueue.test.ts src/jobs/c2cBackupWorker.test.ts src/routes/c2c/items.test.ts src/services/aiToolsC2C.test.ts src/routes/backup/verificationScheduled.test.ts src/routes/backup/verificationService.test.ts
+pnpm --filter @breeze/api exec vitest run src/jobs/c2cEnqueue.test.ts src/jobs/c2cBackupWorker.test.ts src/services/c2cJobCreation.test.ts src/routes/c2c/items.test.ts src/routes/c2c/jobs.test.ts src/services/aiToolsC2C.test.ts src/routes/backup/verificationScheduled.test.ts src/routes/backup/verificationService.test.ts src/services/recoveryAuthorizationSubject.test.ts src/services/resilienceSiteAuthorization.test.ts
 ```
 
 - [ ] **Step 3: Add explicit operation/system contracts**
 
-Wire supported C2C producers to Task 7, preserve hard-disable behavior for unimplemented restore provider work, and gate scheduled verification with only the allowlisted system subject plus live lineage.
+Wire all five C2C producers to Task 7. Before a C2C claim, re-resolve the durable job, operation kind, config, source connection, optional storage config, unique items, and optional target connection by current organization ownership. Preserve direct pending-to-failed hard-disable behavior for the unimplemented restore provider path. Gate scheduled verification with a private allowlisted system wrapper plus live internal snapshot/device lineage; caller-controlled `source` strings cannot select system authority.
 
 - [ ] **Step 4: Run GREEN and commit**
 
 Run the RED command, then:
 
 ```bash
-git add apps/api/src/jobs/c2cEnqueue.ts apps/api/src/jobs/c2cBackupWorker.ts apps/api/src/routes/c2c/items.ts apps/api/src/services/aiToolsC2C.ts apps/api/src/jobs/backupVerificationJobs.ts apps/api/src/routes/backup
+git add apps/api/src/jobs/c2cEnqueue.ts apps/api/src/jobs/c2cBackupWorker.ts apps/api/src/services/c2cJobCreation.ts apps/api/src/routes/c2c/items.ts apps/api/src/routes/c2c/jobs.ts apps/api/src/services/aiToolsC2C.ts apps/api/src/jobs/backupVerificationJobs.ts apps/api/src/routes/backup
 git commit -m "fix(workers): classify queued recovery authority"
 ```
 
