@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // every other test here observes console.warn, which is untouched.
 const capturedMessages: Array<{
   message: string;
+  eventCode?: string;
   extra?: Record<string, unknown>;
   tags?: Record<string, string>;
 }> = [];
@@ -27,13 +28,24 @@ vi.mock('../../services/sentry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/sentry')>();
   return {
     ...actual,
+    // BREEZE-18: captureMessage takes an options object, not four positionals.
+    // `vi.mock`'s factory return is not checked against the real module's
+    // types, so an adapter left on the old shape does NOT fail tsc — it fails
+    // at assertion time, and only in the integration shard that owns this file.
     captureMessage: (
       message: string,
-      _level?: unknown,
-      extra?: Record<string, unknown>,
-      tags?: Record<string, string>,
+      options?: {
+        eventCode?: string;
+        extra?: Record<string, unknown>;
+        tags?: Record<string, string>;
+      },
     ) => {
-      capturedMessages.push({ message, extra, tags });
+      capturedMessages.push({
+        message,
+        eventCode: options?.eventCode,
+        extra: options?.extra,
+        tags: options?.tags,
+      });
     },
   };
 });
@@ -176,6 +188,11 @@ describe('#1105 DB-context tripwires', () => {
       );
 
       expect(capturedMessages).toHaveLength(1);
+      // BREEZE-18: every captureMessage carries a required, registered event
+      // code, applied by captureMessage itself. Asserted against a real held
+      // context (not a unit double) because this is the path that produced the
+      // contentless events in the first place.
+      expect(capturedMessages[0]!.eventCode).toBe('db_context_held_too_long');
       // The TAG is the load-bearing part: extras are only visible inside a
       // single event, so an unfilterable bucket (BREEZE-A, ~7k events) stays
       // unfilterable if the label only lands in `extra`.
