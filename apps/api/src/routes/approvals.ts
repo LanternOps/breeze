@@ -4,7 +4,7 @@ import { zValidator } from '../lib/validation';
 import { and, eq, exists, gt, desc, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, isInteractiveUserSession } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
 import { elevationRequests, elevationAudit } from '../db/schema/elevations';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
@@ -29,7 +29,10 @@ import {
 } from '../services/authenticatorAssurance';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import { RELEASE_LEASE_MS } from '../services/actionIntents/intentService';
-import { resolveIntentApprovers } from '../services/actionIntents/intentApprovers';
+import {
+  resolveIntentApprovers,
+  isAgentIntentDecideAuthorized,
+} from '../services/actionIntents/intentApprovers';
 import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../services/authenticatorPolicy';
@@ -104,19 +107,43 @@ function isAfterPendingCursor(
   return row.id < cursor.id;
 }
 
-/** The only fields of a linked intent the live-authorization rule reads. */
+/** The only fields of a linked intent the live-authorization rule reads.
+ * Wave 3b: agent-originated intents (`requestingAgentRunId` set) are
+ * authorized per-user via `isAgentIntentDecideAuthorized`, which needs the
+ * intent's id (memoization key + run lookup), actionName and arguments. */
 type LiveAuthzIntent = Pick<
   ActionIntent,
-  'status' | 'approvalScope' | 'orgId' | 'requestedByUserId'
+  | 'id'
+  | 'status'
+  | 'approvalScope'
+  | 'orgId'
+  | 'requestedByUserId'
+  | 'requestingAgentRunId'
+  | 'actionName'
+  | 'arguments'
 >;
+
+/**
+ * Minimal attribution projection of a linked intent (wave 3b Task 6): just
+ * enough for `serialize` to say WHO asked — a human, or an AI agent (and
+ * which one, via `requestingClientLabel`, stamped with the agent's name at
+ * creation so no join is needed). Null when the row has no intent.
+ */
+type IntentAttribution = Pick<
+  ActionIntent,
+  'id' | 'requestingAgentRunId' | 'requestingClientLabel'
+> | null;
 
 /** An approval row paired with its linked intent's scope (null when the row
  * has no intent). The scope is what lets a client tell a supervised row —
  * decided with a plain click — from a four_eyes one that may demand a
- * step-up, so it must not be dropped on the way out of the projection. */
+ * step-up, so it must not be dropped on the way out of the projection.
+ * `attribution` (wave 3b) rides along for the same reason: without it the
+ * serializer cannot mark a row as agent-originated. */
 interface AuthorizedApproval {
   approval: typeof approvalRequests.$inferSelect;
   approvalScope: ActionIntentApprovalScope | null;
+  attribution: IntentAttribution;
 }
 
 /**
@@ -152,6 +179,41 @@ function makeOrgDecideAuthorizer(
 }
 
 /**
+ * Per-user live authority over a SUPERVISED AGENT-originated intent (wave 3b
+ * Task 6), memoised per intent id for the lifetime of one request — the
+ * pending list is already per-user rows, so this runs once per visible agent
+ * intent. Delegates to `isAgentIntentDecideAuthorized` (action-and-target
+ * authority: the tool's full RBAC mapping AND reach over the intent's
+ * concrete target — never `approvals:decide`, never requester identity, which
+ * is NULL for a requester-less intent).
+ */
+function makeAgentDecideAuthorizer(
+  userId: string,
+): (intent: LiveAuthzIntent) => Promise<boolean> {
+  const cache = new Map<string, Promise<boolean>>();
+  return (intent: LiveAuthzIntent) => {
+    let resolved = cache.get(intent.id);
+    if (!resolved) {
+      resolved = isAgentIntentDecideAuthorized(userId, intent);
+      cache.set(intent.id, resolved);
+    }
+    return resolved;
+  };
+}
+
+/** Attribution projection for `serialize` — null when there is no intent. */
+function toIntentAttribution(
+  intent: Pick<ActionIntent, 'id' | 'requestingAgentRunId' | 'requestingClientLabel'> | null,
+): IntentAttribution {
+  if (!intent) return null;
+  return {
+    id: intent.id,
+    requestingAgentRunId: intent.requestingAgentRunId,
+    requestingClientLabel: intent.requestingClientLabel,
+  };
+}
+
+/**
  * THE live-authorization rule for an intent-linked approval row (spec
  * docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
  * §4.2). Deliberately one function shared by every read surface that can hand
@@ -175,8 +237,19 @@ async function isIntentRowLiveAuthorized(
   intent: LiveAuthzIntent | null,
   userId: string,
   orgDecideAuthorizer: (orgId: string) => Promise<boolean>,
+  agentDecideAuthorizer: (intent: LiveAuthzIntent) => Promise<boolean>,
 ): Promise<boolean> {
   if (!intent || intent.status !== 'pending_approval') return false;
+  // Wave 3b: an AGENT-originated intent has no requester, so the supervised
+  // identity rule below can never authorize anyone for it. Supervised agent
+  // rows are fanned out to action-and-target-eligible humans and re-checked
+  // per user here; four_eyes agent rows keep the unchanged org
+  // approvals:decide rule. (`!= null` on purpose: never routes a legacy row
+  // whose projection lacks the column into the agent branch.)
+  if (intent.requestingAgentRunId != null) {
+    if (intent.approvalScope !== 'supervised') return orgDecideAuthorizer(intent.orgId);
+    return agentDecideAuthorizer(intent);
+  }
   if (intent.approvalScope === 'supervised') return intent.requestedByUserId === userId;
   return orgDecideAuthorizer(intent.orgId);
 }
@@ -199,8 +272,12 @@ async function resolveRowLiveAuthorization(
   row: typeof approvalRequests.$inferSelect,
   userId: string,
   partnerId: string | null,
-): Promise<{ authorized: boolean; approvalScope: ActionIntentApprovalScope | null }> {
-  if (!row.intentId) return { authorized: true, approvalScope: null };
+): Promise<{
+  authorized: boolean;
+  approvalScope: ActionIntentApprovalScope | null;
+  attribution: IntentAttribution;
+}> {
+  if (!row.intentId) return { authorized: true, approvalScope: null, attribution: null };
   const intentId = row.intentId;
   const intent = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
@@ -215,8 +292,13 @@ async function resolveRowLiveAuthorization(
     intent,
     userId,
     makeOrgDecideAuthorizer(userId, partnerId),
+    makeAgentDecideAuthorizer(userId),
   );
-  return { authorized, approvalScope: intent?.approvalScope ?? null };
+  return {
+    authorized,
+    approvalScope: intent?.approvalScope ?? null,
+    attribution: toIntentAttribution(intent),
+  };
 }
 
 /**
@@ -256,14 +338,19 @@ async function fetchAuthorizedPendingApprovals(
   );
 
   const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId, partnerId);
+  const agentDecideAuthorizer = makeAgentDecideAuthorizer(userId);
   const authorized: AuthorizedApproval[] = [];
   for (const { approval, intent } of rows) {
     if (!approval.intentId) {
-      authorized.push({ approval, approvalScope: null });
+      authorized.push({ approval, approvalScope: null, attribution: null });
       continue;
     }
-    if (await isIntentRowLiveAuthorized(intent, userId, orgDecideAuthorizer)) {
-      authorized.push({ approval, approvalScope: intent?.approvalScope ?? null });
+    if (await isIntentRowLiveAuthorized(intent, userId, orgDecideAuthorizer, agentDecideAuthorizer)) {
+      authorized.push({
+        approval,
+        approvalScope: intent?.approvalScope ?? null,
+        attribution: toIntentAttribution(intent),
+      });
     }
   }
   return authorized;
@@ -297,11 +384,12 @@ approvalRoutes.get('/pending', async (c) => {
   // mutation rows in this page (no N+1).
   const tenants = await lookupCustomerTenants(page.map((r) => r.approval));
   return c.json({
-    approvals: page.map(({ approval, approvalScope }) =>
+    approvals: page.map(({ approval, approvalScope, attribution }) =>
       serialize(
         approval,
         (approval.executionId && tenants.get(approval.executionId)) || null,
         approvalScope,
+        attribution,
       ),
     ),
     nextCursor,
@@ -410,7 +498,7 @@ approvalRoutes.get('/:id', async (c) => {
 
   const tenants = await lookupCustomerTenants([row]);
   const customerTenant = (row.executionId && tenants.get(row.executionId)) || null;
-  return c.json({ approval: serialize(row, customerTenant, live.approvalScope) });
+  return c.json({ approval: serialize(row, customerTenant, live.approvalScope, live.attribution) });
 });
 
 // Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
@@ -1034,6 +1122,15 @@ async function decideHandler(
   proof?: ApprovalProof,
   reauthVerified = false
 ) {
+  // Wave 3b (parent plan §1.2): approval decisions are made by HUMANS,
+  // structurally — asserted here on the principal discriminator rather than
+  // relying on routing topology (no non-human route mounts this handler
+  // today, but nothing else guarantees that stays true). An allowlist of
+  // one: api_key, oauth_grant, ai_agent, system — none of them decide.
+  if (!isInteractiveUserSession(c.get('auth'))) {
+    return c.json({ error: 'human_decision_required' }, 403);
+  }
+
   const userId = c.get('auth').user.id;
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'Bad request' }, 400);
@@ -1121,7 +1218,46 @@ async function decideHandler(
     // re-derivation, the WebAuthn/step-up ladder) applies to it. Branching
     // here, BEFORE any of that runs, is what lets a supervised requester who
     // holds no approvals:decide permission at all still decide their own row.
-    if (linkedIntent.approvalScope === 'supervised') {
+    //
+    // Wave 3b Task 6 (review blocker 2): a supervised AGENT-originated intent
+    // (`requestingAgentRunId` set, requester NULL) takes a COMPLETELY separate
+    // branch — swapping only the `not_requester` 403 would not be enough:
+    //
+    //  - Authority is the live action-and-target re-check
+    //    (`isAgentIntentDecideAuthorized`): does THIS decider currently hold
+    //    the tool's full RBAC mapping AND reach the intent's concrete target?
+    //    Exactly the predicate creation fanned out on, re-derived at decide
+    //    time the way four_eyes re-derives approvals:decide.
+    //  - The human branch's requester-RBAC re-check (buildAuthContextForIntent
+    //    + checkToolPermission) must be SKIPPED: Task 7 reconstructs an
+    //    `ai_agent` principal for this intent, and checkToolPermission's first
+    //    statement denies that kind — left in place, EVERY supervised agent
+    //    approval would 403. The decider's own action RBAC was just verified
+    //    above; the agent-policy re-check happens at release (Task 7).
+    //  - `isSupervisedSelfDecide` stays FALSE: agent intents never skip the
+    //    assurance ladder — a headless proposal gets the same ceremony a
+    //    four_eyes decision would.
+    //
+    // Unconditional (approve AND deny), like the human identity gate: rows are
+    // only ever fanned out to eligible users, so an ineligible decider here is
+    // a lost permission or a tampered row — fail closed either way. (The
+    // requester-less cancel contract for `approvals:decide` holders is the
+    // cancel endpoint, Task 8 — not this handler.)
+    if (linkedIntent.approvalScope === 'supervised' && linkedIntent.requestingAgentRunId != null) {
+      if (!(await isAgentIntentDecideAuthorized(userId, linkedIntent))) {
+        recordActionIntentEvent({
+          orgId: linkedIntent.orgId,
+          intentId: linkedIntent.id,
+          actionName: linkedIntent.actionName,
+          argumentDigest: linkedIntent.argumentDigest,
+          source: linkedIntent.source,
+          outcome: 'approver_unauthorized',
+          actorId: userId,
+          details: { approvalId: existing.id, errorCode: 'not_authorized_for_agent_intent' },
+        });
+        return c.json({ error: 'not_authorized_for_agent_intent' }, 403);
+      }
+    } else if (linkedIntent.approvalScope === 'supervised') {
       isSupervisedSelfDecide = true;
 
       // Identity gate: even if a non-requester somehow reached this row (a
@@ -1756,7 +1892,14 @@ async function decideHandler(
     });
   }
 
-  return c.json({ approval: serialize(updated, null, linkedIntent?.approvalScope ?? null) });
+  return c.json({
+    approval: serialize(
+      updated,
+      null,
+      linkedIntent?.approvalScope ?? null,
+      toIntentAttribution(linkedIntent),
+    ),
+  });
 }
 
 // The two M365 mutation tools (tier 3) that create an approval card. Read-only
@@ -1816,9 +1959,19 @@ function serialize(
    * affordance ahead of the request.
    */
   approvalScope: ActionIntentApprovalScope | null = null,
+  /**
+   * Attribution projection of the linked intent (wave 3b Task 6), or null for
+   * a row with no intent. Drives `origin`/`agentName` so the inbox can say an
+   * AI agent asked — `requestingClientLabel` was stamped with the agent's
+   * name at intent creation, so no join is needed. Web Task 9 consumes both.
+   */
+  attribution: IntentAttribution = null,
 ) {
+  const isAgentOriginated = attribution?.requestingAgentRunId != null;
   return {
     id: r.id,
+    origin: isAgentOriginated ? ('ai_agent' as const) : ('human' as const),
+    agentName: isAgentOriginated ? (attribution?.requestingClientLabel ?? null) : null,
     requestingClientLabel: r.requestingClientLabel,
     requestingMachineLabel: r.requestingMachineLabel ?? null,
     actionLabel: r.actionLabel,
