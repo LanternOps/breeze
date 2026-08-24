@@ -109,7 +109,8 @@ git commit -m "fix(api): authorize automation resource ownership"
 - Create: `apps/api/src/__tests__/integration/automationResourceBindings.integration.test.ts`
 
 **Interfaces:**
-- Produces `automationResourceBindings` with `automationId`, `orgId`, `resourceKind`, `resourceId`, expected owner axes, `state`, `reason`, timestamps and uniqueness on automation/resource identity.
+- Produces `automationResourceBindings` with `automationId`, dual owner axes (`orgId XOR partnerId`), `resourceKind`, `resourceId`, expected resource-owner axes, `state`, `reason`, timestamps and uniqueness on automation/resource identity.
+- A database constraint trigger rejects any binding whose `orgId`/`partnerId` owner axes differ from its parent automation. Partner-wide bindings use `orgId = null` and the automation's `partnerId`; organization bindings use the automation's `orgId` and `partnerId = null`.
 - Binding states are `active | quarantined`; only active bindings admit execution.
 
 - [ ] **Step 1: Write the real-Postgres RED suite**
@@ -126,7 +127,7 @@ Expected: FAIL because the table/migration does not exist.
 
 - [ ] **Step 3: Add schema and idempotent migration**
 
-Create direct-org RLS with `ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY`, and system-or-org access policies. Register the table alphabetically in organization cascade order and classify its ordinary columns as included, reason/open JSON as `excludedOpen` if JSON is used. The migration backfill reports active and quarantined row counts with `GET DIAGNOSTICS`/`RAISE WARNING`.
+Create dual-axis RLS with `ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY`, and system-or-org-or-partner access policies. Add the XOR owner check and the parent-owner constraint trigger in the same migration. Register the table in `DUAL_AXIS_TENANT_TABLES`, alphabetically in organization cascade order, and in tenant-export policy; classify ordinary columns as included and any open JSON as `excludedOpen`. The migration backfill copies the parent automation owner axes and reports active and quarantined row counts with `GET DIAGNOSTICS`/`RAISE WARNING`.
 
 - [ ] **Step 4: Run GREEN plus migration contracts**
 
