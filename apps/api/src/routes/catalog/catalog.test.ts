@@ -86,7 +86,7 @@ vi.mock('../../services/tdSynnexEcExpress', () => ({
 // Mock auth middleware to inject a partner-scoped actor with catalog perms.
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
-    c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', accessibleOrgIds: null });
+    c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', partnerOrgAccess: 'all', accessibleOrgIds: null });
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
