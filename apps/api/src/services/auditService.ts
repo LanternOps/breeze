@@ -1,4 +1,5 @@
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import type { AuditResult } from '@breeze/shared';
 import { auditLogs } from '../db/schema';
 import { captureException } from './sentry';
 
@@ -16,7 +17,7 @@ export interface CreateAuditLogParams {
   details?: Record<string, unknown>;
   ipAddress?: string;
   userAgent?: string;
-  result: 'success' | 'failure' | 'denied';
+  result: AuditResult;
   errorMessage?: string;
   initiatedBy?: InitiatedByType;
 }

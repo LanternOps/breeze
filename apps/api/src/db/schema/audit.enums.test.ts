@@ -19,10 +19,22 @@ import { auditQuerySchema, ACTOR_TYPES, AUDIT_RESULTS, type ActorType } from '@b
 import { actorTypeEnum, auditResultEnum } from './audit';
 import { openApiSpec } from '../../openapi';
 
-// Compile-time exhaustiveness: adding a value to the shared ActorType union
-// without listing it here is a type error, and vice versa via the runtime
-// comparison below.
-const SHARED_ACTOR_TYPES: readonly ActorType[] = ['user', 'api_key', 'agent', 'system', 'ai_agent'];
+// Real compile-time exhaustiveness. A `readonly ActorType[]` would NOT give us
+// this — TypeScript happily accepts an array literal that omits union members,
+// so the old annotation here only ever caught *extra* values. `satisfies
+// Record<ActorType, true>` catches both directions: a widened ActorType leaves
+// a key missing (error), and a stale key that is no longer an ActorType is an
+// excess property (error). Widening ACTOR_TYPES therefore fails to COMPILE
+// until this list is updated too, which is the point.
+const ACTOR_TYPE_EXPECTATIONS = {
+  user: true,
+  api_key: true,
+  agent: true,
+  system: true,
+  ai_agent: true
+} satisfies Record<ActorType, true>;
+
+const SHARED_ACTOR_TYPES = Object.keys(ACTOR_TYPE_EXPECTATIONS) as ActorType[];
 
 /**
  * Collect every `enum: [...]` array in the OpenAPI document that describes the
@@ -103,8 +115,12 @@ describe('actor_type enum parity (shared ↔ DB schema ↔ validators ↔ OpenAP
   });
 
   it('the audit result enums in the OpenAPI spec match the DB enum', () => {
-    // `result` is a generic key name elsewhere in the spec, so scope the walk to
-    // the two audit subtrees rather than searching the whole document.
+    // `result` is a generic key name elsewhere in the spec (e.g. the unrelated
+    // `result: { type: 'object' }` on the script-execution schema), so scope the
+    // walk to the two audit subtrees rather than searching the whole document.
+    // Trade-off vs. the actorType check above: an audit-adjacent endpoint added
+    // OUTSIDE these two subtrees with its own inline `result` enum would not be
+    // covered here — add its subtree below if that ever happens.
     const spec = openApiSpec as unknown as Record<string, unknown>;
     const components = spec.components as { schemas?: Record<string, unknown> } | undefined;
     const auditLogSchema = components?.schemas?.AuditLog;

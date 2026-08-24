@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { AuditResult } from '@breeze/shared';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, inArray } from 'drizzle-orm';
@@ -169,7 +170,7 @@ function writeRecoveryDownloadAudit(
   c: any,
   params: {
     orgId: string | null;
-    result: 'success' | 'failure' | 'denied';
+    result: AuditResult;
     resourceId?: string | null;
     snapshotId?: string | null;
     path?: string;

@@ -5,7 +5,10 @@ import { organizations } from './orgs';
 // 'agent' is the Go device agent; 'ai_agent' is the autonomous AI agent
 // principal (wave 3). They are different actors and must stay distinguishable
 // in the audit trail. Values come from @breeze/shared so the DB enum, the
-// shared union, the validators and the OpenAPI spec cannot drift apart (#3908).
+// shared union, the validators, the AI tool schemas and the OpenAPI spec all
+// widen together. NOTE: this does not author the Postgres type — that is
+// hand-written SQL in migrations/, so a new value still needs an
+// `ALTER TYPE ... ADD VALUE` migration alongside the constant (#3908).
 export const actorTypeEnum = pgEnum('actor_type', ACTOR_TYPES);
 export const auditResultEnum = pgEnum('audit_result', AUDIT_RESULTS);
 export const initiatedByEnum = pgEnum('initiated_by_type', ['manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration']);
