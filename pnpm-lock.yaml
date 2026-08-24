@@ -194,8 +194,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       node-stream-zip:
-        specifier: ^1.15.0
-        version: 1.15.0
+        specifier: ^1.16.0
+        version: 1.16.0
       nodemailer:
         specifier: ^9.0.3
         version: 9.0.3
@@ -9620,10 +9620,6 @@ packages:
   node-releases@2.0.53:
     resolution: {integrity: sha512-D9UOmYG3UH1V+ENW56t5QXBwJw1YEY18ruVeus89Rw+SyIgjPkCO84bRzO3uNIYosJbNwiabWVn48o3uJLjxFQ==}
     engines: {node: '>=18'}
-
-  node-stream-zip@1.15.0:
-    resolution: {integrity: sha512-LN4fydt9TqhZhThkZIVQnF9cwjU3qmUH9h78Mx/K7d3VvfRqqwthLwJEUOEL0QPZ0XQmNN7be5Ggit5+4dq3Bw==}
-    engines: {node: '>=0.12.0'}
 
   node-stream-zip@1.16.0:
     resolution: {integrity: sha512-ObaRrRoR8T68wF6suxHd7R4XQNamij6ZQHrwG7Dx1D2zeHcDNLsIOBcWrIwtDm7AsCXBguaPHgXhcjxDa2szrg==}
@@ -22040,10 +22036,7 @@ snapshots:
 
   node-releases@2.0.53: {}
 
-  node-stream-zip@1.15.0: {}
-
-  node-stream-zip@1.16.0:
-    optional: true
+  node-stream-zip@1.16.0: {}
 
   nodemailer@9.0.3: {}
 

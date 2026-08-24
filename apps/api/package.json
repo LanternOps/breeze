@@ -71,7 +71,7 @@
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "nanoid": "^6.0.0",
-    "node-stream-zip": "^1.15.0",
+    "node-stream-zip": "^1.16.0",
     "nodemailer": "^9.0.3",
     "oidc-provider": "^9",
     "otplib": "^13.4.1",
