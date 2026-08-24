@@ -265,7 +265,11 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		return "", fmt.Errorf("failed to get screen bounds: %w", err)
 	}
 	probeStart := time.Now()
-	probeImg, probeErr := probeCapture(capturer.Capture, 5, 200*time.Millisecond)
+	// forceProbeRepaint runs before every attempt: DXGI only produces a frame
+	// when desktop content changes, so an idle-but-healthy desktop would
+	// otherwise time out through the whole probe budget and abort the session
+	// (#3951). No-op on non-Windows.
+	probeImg, probeErr := probeCapture(capturer.Capture, 5, 200*time.Millisecond, forceProbeRepaint)
 	if probeErr != nil {
 		// The display is inaccessible (disconnected Windows session, no input
 		// desktop, GDI handle churn). Abort instead of returning a WebRTC

@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"log/slog"
+	"runtime"
 	"unsafe"
 )
 
@@ -59,4 +60,25 @@ func nudgeSecureDesktop() {
 	if ret != uintptr(len(nudges)) {
 		slog.Debug("nudgeSecureDesktop: SendInput did not inject full nudge sequence", "sent", ret)
 	}
+}
+
+// forceProbeRepaint shakes a frame out of an idle desktop for the startup
+// capture probe (see probeCapture). It runs the same warm-up pair the capture
+// loop uses on a static display — nudgeSecureDesktop followed by
+// forceDesktopRepaint (session_capture.go). Both are needed: InvalidateRect has
+// no HWND to target on a windowless desktop, and the SendInput jiggle is what
+// makes the DWM compositor produce dirty rects there.
+//
+// It pins and re-attaches the calling thread to the input desktop first.
+// Unlike the capture loop, the probe does not run on a prepareCaptureThread
+// goroutine: newPlatformCapturer releases its OS-thread lock once DXGI is
+// initialized, so Go may have migrated StartSession onto a thread that is not
+// on the input desktop — and SendInput, InvalidateRect and RedrawWindow all
+// act on the calling thread's desktop.
+func forceProbeRepaint() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	switchThreadToInputDesktop()
+	nudgeSecureDesktop()
+	forceDesktopRepaint()
 }
