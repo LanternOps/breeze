@@ -43,6 +43,68 @@ describe('eventBus service', () => {
     vi.mocked(getRedisConnection).mockReturnValue(mockRedis as Redis);
   });
 
+  describe('publishUserEvent — addressed to one user', () => {
+    it('writes ONLY the live channel: no stream, no global channel', async () => {
+      // This is the containment property. publish() also writes the org's Redis
+      // STREAM (persisted), the GLOBAL cross-org channel that webhook delivery
+      // subscribes to, and every local wildcard handler. A private
+      // notification taking that path would be persisted for anything reading
+      // the stream and could be forwarded to a customer's webhook endpoint.
+      const { getEventBus } = eventBusModule;
+
+      const eventId = await getEventBus().publishUserEvent(
+        'notification.created',
+        'org-1',
+        'user-alice',
+        { notificationId: 'n-1' },
+        'unit-test',
+      );
+
+      expect(mockRedis.xadd).not.toHaveBeenCalled();
+
+      const publishMock = mockRedis.publish as ReturnType<typeof vi.fn>;
+      expect(publishMock).toHaveBeenCalledTimes(1);
+      const [channel, body] = publishMock.mock.calls[0]!;
+      expect(channel).toBe('breeze:events:live:org-1');
+      expect(channel).not.toContain('global');
+
+      const event = JSON.parse(body as string) as Record<string, unknown>;
+      expect(event.id).toBe(eventId);
+      expect(event.audienceUserId).toBe('user-alice');
+      // Content-free by design: the WS transport fans out per ORG, so this id
+      // is all that crosses it and the client refetches behind RLS.
+      expect(event.payload).toEqual({ notificationId: 'n-1' });
+    });
+
+    it('does not invoke local wildcard handlers', async () => {
+      // webhookDelivery and automationWorker both subscribe to '*'. An
+      // addressed notification must not trigger an automation or a webhook.
+      const { getEventBus } = eventBusModule;
+      const bus = getEventBus();
+      const wildcard = vi.fn();
+      bus.subscribe('*', wildcard);
+
+      await bus.publishUserEvent(
+        'notification.created', 'org-1', 'user-alice', { notificationId: 'n-1' }, 'unit-test',
+      );
+
+      expect(wildcard).not.toHaveBeenCalled();
+    });
+
+    it('escapes the DB transaction context before touching Redis', async () => {
+      // Same #815 reason as publish(): never hold a Postgres connection
+      // idle-in-transaction across Redis-bound work.
+      const { getEventBus } = eventBusModule;
+      const { runOutsideDbContext } = await import('../db');
+
+      await getEventBus().publishUserEvent(
+        'notification.created', 'org-1', 'user-alice', { notificationId: 'n-1' }, 'unit-test',
+      );
+
+      expect(runOutsideDbContext).toHaveBeenCalled();
+    });
+  });
+
   it('should publish events to stream and pubsub channels', async () => {
     const { publishEvent, EVENT_TYPES } = eventBusModule;
 

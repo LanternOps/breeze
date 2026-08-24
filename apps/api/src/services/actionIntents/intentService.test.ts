@@ -7,7 +7,7 @@ import type { EffectDigestOutcome } from './effectDigest';
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, metricsMock, intentApproversState, effectDigestState } = vi.hoisted(() => {
+const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, notifyState, metricsMock, intentApproversState, effectDigestState } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = {
     id: col('id'),
@@ -67,6 +67,9 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     pushState: {
       getUserPushTokens: vi.fn(async () => []),
       dispatchApprovalPushToTokens: vi.fn(async () => ({ tokensFound: 0, dispatched: 0, errors: 0 })),
+    },
+    notifyState: {
+      createNotification: vi.fn(async () => 'notif-1'),
     },
     metricsMock: { recordActionIntentEvent: vi.fn() },
     // CRITICAL-2: approver resolution is now a single opaque resolver call
@@ -155,6 +158,7 @@ vi.mock('../../db', () => ({
   },
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
 }));
 
 vi.mock('../../db/schema/actionIntents', () => ({
@@ -191,6 +195,10 @@ vi.mock('../permissions', () => ({
 vi.mock('../expoPush', () => ({
   getUserPushTokens: pushState.getUserPushTokens,
   dispatchApprovalPushToTokens: pushState.dispatchApprovalPushToTokens,
+}));
+
+vi.mock('../userNotifications', () => ({
+  createNotification: notifyState.createNotification,
 }));
 
 vi.mock('./metrics', () => ({
@@ -356,6 +364,7 @@ beforeEach(() => {
   permState.userCanDecideApprovals.mockImplementation((perms: { canDecide?: boolean } | null) => !!perms?.canDecide);
   pushState.getUserPushTokens.mockResolvedValue([]);
   pushState.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+  notifyState.createNotification.mockResolvedValue('notif-1');
   // No eligible approvers by default — tests that need a fan-out opt in via
   // mockResolvedValueOnce.
   intentApproversState.resolveIntentApprovers.mockResolvedValue([]);
@@ -733,6 +742,104 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
 
     expect(msUntil(fe.approvalExpiresAt!)).toBeCloseTo(60 * 60 * 1000, -4);
     expect(msUntil(sv.approvalExpiresAt!)).toBeCloseTo(5 * 60 * 1000, -4);
+  });
+
+  it('THE FIX: an approver with NO phone is still notified in-app', async () => {
+    // Before wave 2 the only approver channel was mobile push, and
+    // getUserPushTokens reads mobile_devices exclusively — so an approver who
+    // had never enrolled a phone was notified by NOTHING, with the push
+    // failure swallowed to console.error. That is the bug this wave fixes.
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce(['approver-1']);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-notify' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-notify' }]);
+    // No enrolled device: zero tokens, exactly the phoneless approver's case.
+    pushState.getUserPushTokens.mockResolvedValueOnce([]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-fe-notify' }));
+
+    expect(notifyState.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'approver-1',
+        type: 'approval',
+        link: '/approvals',
+        // Idempotent across outbox/BullMQ redelivery.
+        dedupeKey: 'intent-approval:intent-fe-notify',
+      }),
+    );
+  });
+
+  it('notifies in-app even when the push dispatch throws', async () => {
+    // The in-app row must not be downstream of the phone lookup — that is what
+    // made the old path fail silently for the people it most affected.
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce(['approver-1']);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-pushfail' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-pushfail' }]);
+    pushState.getUserPushTokens.mockRejectedValueOnce(new Error('mobile_devices unreachable'));
+
+    await expect(
+      createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-fe-pushfail' })),
+    ).resolves.toBeTruthy();
+
+    expect(notifyState.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'approver-1', type: 'approval' }),
+    );
+  });
+
+  it('a failed in-app notification never fails intent creation', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce(['approver-1']);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-notiffail' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-notiffail' }]);
+    notifyState.createNotification.mockRejectedValueOnce(new Error('notify boom'));
+
+    const snapshot = await createActionIntent(
+      makeAuth(),
+      baseInput({ idempotencyKey: 'key-fe-notiffail' }),
+    );
+
+    expect(snapshot.status).toBe('pending_approval');
+    // Push still attempted — one channel failing must not suppress the other.
+    expect(pushState.dispatchApprovalPushToTokens).toHaveBeenCalled();
+  });
+
+  it('supervised intents notify NOBODY in-app, same as push', async () => {
+    // The sole row belongs to the requester, who is already watching the chat
+    // response that created it.
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-sv-nonotify' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-sv-nonotify' }]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-sv-nonotify' }));
+
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+    expect(pushState.dispatchApprovalPushToTokens).not.toHaveBeenCalled();
   });
 
   it('four_eyes with no other active approver keeps sole-operator fallback', async () => {

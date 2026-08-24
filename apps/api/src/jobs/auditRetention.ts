@@ -59,12 +59,13 @@ import {
 } from '../db/auditAdminPool';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
+import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'audit-log-retention';
 const JOB_NAME = 'audit-log-retention';
 const REPEAT_JOB_ID = 'audit-log-retention';
 // Daily at 03:30 UTC — off-peak and offset from oauthCleanup's 03:00.
-const DAILY_CRON = '30 3 * * *';
+const DAILY_CRON = jobSchedule('audit-retention');
 
 function isRetentionEnabled(): boolean {
   const raw = process.env.AUDIT_RETENTION_ENABLED;

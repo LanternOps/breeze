@@ -128,6 +128,39 @@
       "hybridPlan": "Hybrid Plan"
     }
   },
+  "partnerAiProvider": {
+    "title": "AI Provider",
+    "subtitle": "Run Breeze AI on your own Anthropic API key instead of the platform key.",
+    "platformKey": "Platform key",
+    "platformKeyDescription": "AI features run on Breeze's Anthropic key and are billed as Breeze AI credits.",
+    "yourKey": "Your key •••• {{last4}}",
+    "verifiedAt": "Verified {{date}}",
+    "notVerifiedYet": "Not verified yet",
+    "defaultModelValue": "Default model: {{model}}",
+    "platformDefault": "Platform default",
+    "keyErrorTitle": "Your Anthropic key is not working",
+    "reconnectHint": "AI features are unavailable for your organizations until you save a working key below.",
+    "connectKeyTitle": "Connect your Anthropic key",
+    "replaceKeyTitle": "Replace your Anthropic key",
+    "keyLabel": "Anthropic API key",
+    "writeOnlyHint": "The key is verified when you save it and is never shown again.",
+    "saveKey": "Save key",
+    "keySaved": "Anthropic key saved and verified.",
+    "keySaveFailed": "Could not save the Anthropic key.",
+    "defaultModelLabel": "Default model",
+    "defaultModelHint": "Used for new AI sessions across all your organizations.",
+    "modelUpdated": "Default model updated.",
+    "modelUpdateFailed": "Could not update the default model.",
+    "disconnectTitle": "Switch back to the platform key",
+    "disconnectDescription": "Removes your Anthropic key. AI usage is billed as Breeze AI credits again.",
+    "disconnect": "Disconnect",
+    "disconnectConfirm": "Disconnect your Anthropic key? AI features will switch back to the platform key and Breeze AI credits.",
+    "disconnected": "Anthropic key removed. AI features now use the platform key.",
+    "disconnectFailed": "Could not disconnect the Anthropic key.",
+    "permissionDenied": "Managing the AI provider requires billing permissions and access to all organizations.",
+    "loadFailed": "Could not load the AI provider configuration.",
+    "workspaceDisclosure": "Workspace content enrichment currently uses the platform key."
+  },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
     "updatePolicy": "Agent Update Policy",
@@ -416,6 +449,10 @@
       "aiBudgets": {
         "label": "AI Budgets",
         "description": "AI spending limits"
+      },
+      "aiProvider": {
+        "label": "AI Provider",
+        "description": "Bring your own Anthropic key"
       },
       "branding": {
         "label": "Branding",
@@ -1271,7 +1308,8 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits"
   },
   "aiAgentsPage": {
     "title": "AI Agents",

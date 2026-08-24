@@ -11,6 +11,7 @@ import { snmpMetrics } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -80,14 +81,12 @@ export async function initializeSnmpRetention(): Promise<void> {
       await queue.removeRepeatableByKey(job.key);
     }
 
-    // Schedule every 6 hours
+    // Every 6h at a registry-allocated slot (jobs/scheduleRegistry.ts).
     await queue.add(
       'cleanup',
       { retentionDays: DEFAULT_RETENTION_DAYS },
       {
-        repeat: {
-          every: 6 * 60 * 60 * 1000
-        },
+        repeat: { pattern: jobSchedule('snmp-retention') },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 }
       }

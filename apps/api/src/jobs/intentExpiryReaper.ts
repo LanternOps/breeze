@@ -2,7 +2,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db } from '../db';
-import { actionIntents } from '../db/schema/actionIntents';
+import { actionIntents, intentOutbox } from '../db/schema/actionIntents';
 import type { ActionIntentSource } from '../db/schema/actionIntents';
 import { approvalRequests } from '../db/schema/approvals';
 import { getBullMQConnection } from '../services/redis';
@@ -184,15 +184,43 @@ export async function reapExpiredIntents(): Promise<number> {
   // Expire any still-pending approval rows fanned out for these intents —
   // approval does not stop the clock, so an approved intent can still have
   // sibling rows sitting `pending` when it times out.
-  try {
-    await db
-      .update(approvalRequests)
-      .set({ status: 'expired', decidedAt: new Date() })
-      .where(and(eq(approvalRequests.status, 'pending'), inArray(approvalRequests.intentId, intentIds)));
-  } catch (err) {
-    console.error('[IntentExpiryReaper] Failed to expire linked approval_requests:', err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
-  }
+  //
+  // NOTE ON ERROR HANDLING IN THIS FUNCTION. The whole pass runs inside ONE
+  // Postgres transaction (`runWithSystemDbAccess(reapExpiredIntents)` ->
+  // withSystemDbAccessContext -> baseDb.transaction). Catching a database error
+  // in JS does NOT un-abort that transaction: the backend is left in 25P02,
+  // every later statement fails, and the final COMMIT is silently converted to
+  // ROLLBACK without raising. So a swallowed failure here does not "carry on
+  // without the approval rows" — it discards the intent expiry too, while the
+  // caller still returns rows.length and logs "Expired N intents", and the
+  // fire-and-forget audit event records an expiry that never committed.
+  //
+  // Both statements below therefore PROPAGATE. Failing the pass is the honest
+  // outcome: nothing commits, the worker logs and reports it, and the next tick
+  // retries the same rows. This catch used to swallow, which is why it is
+  // called out rather than quietly deleted.
+  await db
+    .update(approvalRequests)
+    .set({ status: 'expired', decidedAt: new Date() })
+    .where(and(eq(approvalRequests.status, 'pending'), inArray(approvalRequests.intentId, intentIds)));
+
+  // Record the outcome so the requester can be told. The reaper previously
+  // mutated intent and approval rows and wrote an audit event, but no outbox
+  // row — so an intent that timed out simply went quiet on the person who asked
+  // for it.
+  //
+  // Atomic with the expiry above, and propagating for the reason in the note:
+  // an expiry that commits without its outbox row is an intent nobody is ever
+  // told about, and there is no repair path because the reaper will not see
+  // those rows again (their status is no longer pending_approval/approved).
+  await db.insert(intentOutbox).values(
+    rows.map((row) => ({
+      intentId: row.id,
+      eventType: 'intent_expired' as const,
+      // Ids only, matching the approve/deny rows — no argument content.
+      payload: { intentId: row.id, orgId: row.org_id },
+    })),
+  );
 
   for (const row of rows) {
     try {

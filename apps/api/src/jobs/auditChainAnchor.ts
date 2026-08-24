@@ -66,12 +66,13 @@ import {
   getAnchorSigningKeyId,
   isAnchorSigningEnabled,
 } from '../services/auditAnchorSigning';
+import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'audit-chain-anchor';
 const JOB_NAME = 'audit-chain-anchor';
 const REPEAT_JOB_ID = 'audit-chain-anchor';
 // Daily at 04:45 UTC — after auditChainVerify (04:15) and retention (03:30).
-const DAILY_CRON = '45 4 * * *';
+const DAILY_CRON = jobSchedule('audit-chain-anchor');
 const INTER_ORG_DELAY_MS = 50;
 
 const INCIDENT_CLASSIFICATION = 'audit_integrity';

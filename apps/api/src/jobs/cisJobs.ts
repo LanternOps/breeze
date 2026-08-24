@@ -15,6 +15,7 @@ import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 
@@ -442,7 +443,7 @@ async function scheduleRecurringCisJobs(): Promise<void> {
     'schedule-scans',
     { type: 'schedule-scans' },
     {
-      repeat: { pattern: '0 * * * *' },
+      repeat: { pattern: jobSchedule('cis-scan-scheduler') },
       jobId: 'cis-scan-scheduler',
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 20 },
@@ -453,7 +454,7 @@ async function scheduleRecurringCisJobs(): Promise<void> {
     'aggregate-scores',
     { type: 'aggregate-scores' },
     {
-      repeat: { pattern: '0 * * * *' },
+      repeat: { pattern: jobSchedule('cis-score-aggregator') },
       jobId: 'cis-score-aggregator',
       removeOnComplete: { count: 20 },
       removeOnFail: { count: 50 },

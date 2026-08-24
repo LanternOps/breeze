@@ -6,12 +6,20 @@
 // we pin nodeModulesPaths to both the project and workspace roots and tell
 // Metro to watch the workspace root.
 const path = require('path');
-const { getDefaultConfig } = require('expo/metro-config');
+const { getSentryExpoConfig } = require('@sentry/react-native/metro');
 
 const projectRoot = __dirname;
 const workspaceRoot = path.resolve(projectRoot, '../..');
 
-const config = getDefaultConfig(projectRoot);
+// `getSentryExpoConfig` is Expo's `getDefaultConfig` plus Sentry's asset
+// serialization plugin, which stamps a Debug ID into the bundle AND into the
+// source map. Without matching debug IDs, an uploaded source map cannot be
+// paired with the bundle a crash came from, so every JS frame stays a minified
+// offset even though the upload "succeeded" — a failure that looks like
+// success, which is the same class of problem as shipping without a DSN.
+// Same signature as `getDefaultConfig(projectRoot, options)`; every override
+// below still applies because it returns a plain Metro config object.
+const config = getSentryExpoConfig(projectRoot);
 
 config.watchFolders = [workspaceRoot];
 

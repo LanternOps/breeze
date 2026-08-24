@@ -4,6 +4,10 @@
     "dashboard": "Kontrol Paneli",
     "devices": "Cihazlar",
     "alerts": "Uyarılar",
+    "approvals": "Onaylar",
+    "pendingApprovals": "{{count}} bekleyen onay",
+    "pendingApprovals_one": "{{count}} bekleyen onay",
+    "pendingApprovals_other": "{{count}} bekleyen onay",
     "tickets": "Biletler",
     "incidents": "Olaylar",
     "remoteAccess": "Uzaktan Erişim",
@@ -700,7 +704,20 @@
       "recently": "Son zamanlarda",
       "markUnread": "Okunmadı olarak işaretle",
       "markRead": "Okundu olarak işaretle",
-      "preferences": "Bildirim tercihleri"
+      "preferences": "Bildirim tercihleri",
+      "types": {
+        "alert": "Uyarı",
+        "device": "Cihaz",
+        "script": "Komut dosyası",
+        "automation": "Otomasyon",
+        "system": "Sistem",
+        "user": "Kullanıcı",
+        "security": "Güvenlik",
+        "ticket": "Bilet",
+        "approval": "Onay",
+        "ai": "Yapay zeka",
+        "unknown": "Bildirim"
+      }
     },
     "sidebar": {
       "autoHide": "Kenar çubuğunu otomatik gizle",

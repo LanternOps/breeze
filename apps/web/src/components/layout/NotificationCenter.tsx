@@ -2,22 +2,32 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
+  Bot,
   FileCode,
   Monitor,
-  Settings
+  Settings,
+  ShieldAlert,
+  ShieldCheck,
+  Ticket,
+  UserRound,
+  Workflow
 } from 'lucide-react';
+import { NOTIFICATION_TYPES, type NotificationType } from '@breeze/shared';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../stores/auth';
+import { useEventStream } from '../../hooks/useEventStream';
 import { useTranslation } from 'react-i18next';
 
 const POLL_INTERVAL_MS = 30000;
+const LIVE_REFETCH_DEBOUNCE_MS = 750;
+const NOTIFICATION_EVENTS = ['notification.created'];
 
-type NotificationType = 'alert' | 'device' | 'script' | 'system';
+type NotificationDisplayType = NotificationType | 'unknown';
 
 type NotificationItem = {
   id: string;
-  type: NotificationType;
+  type: NotificationDisplayType;
   title: string;
   message: string;
   createdAt: string;
@@ -32,7 +42,7 @@ type NotificationItem = {
 type RawNotification = Record<string, unknown>;
 
 const typeConfig: Record<
-  NotificationType,
+  NotificationDisplayType,
   {
     label: string;
     icon: typeof AlertTriangle;
@@ -40,33 +50,63 @@ const typeConfig: Record<
   }
 > = {
   alert: {
-    label: 'Alert',
+    label: 'layout.notifications.types.alert',
     icon: AlertTriangle,
     className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200'
   },
   device: {
-    label: 'Device',
+    label: 'layout.notifications.types.device',
     icon: Monitor,
     className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
   },
   script: {
-    label: 'Script',
+    label: 'layout.notifications.types.script',
     icon: FileCode,
     className: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-200'
   },
+  automation: {
+    label: 'layout.notifications.types.automation',
+    icon: Workflow,
+    className: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200'
+  },
   system: {
-    label: 'System',
+    label: 'layout.notifications.types.system',
     icon: Settings,
+    className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-200'
+  },
+  user: {
+    label: 'layout.notifications.types.user',
+    icon: UserRound,
+    className: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-200'
+  },
+  security: {
+    label: 'layout.notifications.types.security',
+    icon: ShieldAlert,
+    className: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'
+  },
+  ticket: {
+    label: 'layout.notifications.types.ticket',
+    icon: Ticket,
+    className: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-200'
+  },
+  approval: {
+    label: 'layout.notifications.types.approval',
+    icon: ShieldCheck,
+    className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200'
+  },
+  ai: {
+    label: 'layout.notifications.types.ai',
+    icon: Bot,
+    className: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-200'
+  },
+  unknown: {
+    label: 'layout.notifications.types.unknown',
+    icon: Bell,
     className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-200'
   }
 };
 
-const notificationTypes = new Set<NotificationType>([
-  'alert',
-  'device',
-  'script',
-  'system'
-]);
+const notificationTypes = new Set<string>(NOTIFICATION_TYPES);
 
 const getString = (value: unknown) =>
   typeof value === 'string' && value.trim().length > 0 ? value : undefined;
@@ -74,11 +114,11 @@ const getString = (value: unknown) =>
 const getBoolean = (value: unknown) =>
   typeof value === 'boolean' ? value : undefined;
 
-const getNotificationType = (value: unknown): NotificationType => {
-  if (typeof value === 'string' && notificationTypes.has(value as NotificationType)) {
+const getNotificationType = (value: unknown): NotificationDisplayType => {
+  if (typeof value === 'string' && notificationTypes.has(value)) {
     return value as NotificationType;
   }
-  return 'system';
+  return 'unknown';
 };
 
 const getTargetId = (raw: RawNotification) =>
@@ -93,7 +133,7 @@ const getTargetId = (raw: RawNotification) =>
   getString(raw.targetId) ||
   getString(raw.target_id);
 
-const buildHref = (type: NotificationType, raw: RawNotification) => {
+const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
   const targetId = getTargetId(raw);
 
   switch (type) {
@@ -103,9 +143,22 @@ const buildHref = (type: NotificationType, raw: RawNotification) => {
       return targetId ? `/scripts/${targetId}` : '/scripts';
     case 'alert':
       return '/alerts';
+    case 'automation':
+      return '/automations';
+    case 'user':
+      return '/settings/users';
+    case 'security':
+      return '/security';
+    case 'ticket':
+      return '/tickets';
+    case 'approval':
+      return '/approvals';
+    case 'ai':
+      return '/ai-risk';
     case 'system':
-    default:
       return '/settings/organization';
+    case 'unknown':
+      return undefined;
   }
 };
 
@@ -125,7 +178,7 @@ const normalizeNotification = (raw: RawNotification, index: number): Notificatio
     getString(raw.title) ||
     getString(raw.summary) ||
     getString(raw.subject) ||
-    `${typeConfig[type].label} notification`;
+    '';
   const message =
     getString(raw.message) ||
     getString(raw.description) ||
@@ -163,6 +216,7 @@ export default function NotificationCenter() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const notificationsRef = useRef<NotificationItem[]>([]);
+  const liveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -197,11 +251,32 @@ export default function NotificationCenter() {
     }
   }, []);
 
+  const { subscribe, unsubscribe } = useEventStream({
+    onEvent: (event) => {
+      if (event.type !== 'notification.created') return;
+      // The event payload is intentionally content-free. It is only a nudge
+      // to refetch the authoritative notification row from the API.
+      if (liveDebounceRef.current) clearTimeout(liveDebounceRef.current);
+      liveDebounceRef.current = setTimeout(() => {
+        void fetchNotifications();
+      }, LIVE_REFETCH_DEBOUNCE_MS);
+    }
+  });
+
   useEffect(() => {
     fetchNotifications();
+    // Keep polling as the reconnect and missed-while-offline reconciliation path.
     const interval = setInterval(fetchNotifications, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [fetchNotifications]);
+
+  useEffect(() => {
+    subscribe(NOTIFICATION_EVENTS);
+    return () => {
+      unsubscribe(NOTIFICATION_EVENTS);
+      if (liveDebounceRef.current) clearTimeout(liveDebounceRef.current);
+    };
+  }, [subscribe, unsubscribe]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -346,7 +421,7 @@ export default function NotificationCenter() {
       >
         <Bell className="h-5 w-5" />
         {unreadCount > 0 && (
-          <span className="absolute right-1 top-1 flex u-min-h-px-18 min-w-[18px] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">
+          <span className="absolute right-1 top-1 flex u-min-h-px-18 min-w-[18px] items-center justify-center rounded-full bg-destructive px-1 text-xs font-semibold text-destructive-foreground">
             {unreadDisplay}
           </span>
         )}
@@ -476,7 +551,8 @@ export default function NotificationCenter() {
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex items-center justify-between gap-3">
                           <p className="truncate text-sm font-medium text-foreground">
-                            {notification.title}
+                            {notification.title ||
+                              t(/* i18n-dynamic */ typeConfig[notification.type].label)}
                           </p>
                           {!notification.read && (
                             <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />
@@ -487,7 +563,11 @@ export default function NotificationCenter() {
                             {notification.message}
                           </p>
                         )}
-                        <span className="block text-xs text-muted-foreground">{timeLabel}</span>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>{t(/* i18n-dynamic */ config.label)}</span>
+                          <span aria-hidden="true">&middot;</span>
+                          <span>{timeLabel}</span>
+                        </div>
                       </div>
                     </button>
                     <button

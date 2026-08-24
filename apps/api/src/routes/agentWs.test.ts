@@ -3153,7 +3153,10 @@ describe('BREEZE-X: WS terminal CAS reports why it moved 0 rows', () => {
     // The diagnostic re-read happened exactly once.
     expect(commandSelects).toHaveLength(2);
     expect(captureMessage).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(captureMessage).mock.calls[0]![3]).toEqual({
+    expect(vi.mocked(captureMessage).mock.calls[0]![1].eventCode).toBe(
+      'db_write_expecting_rows_zero',
+    );
+    expect(vi.mocked(captureMessage).mock.calls[0]![1].tags).toEqual({
       cas_label: 'device_commands.ws_result_terminal_cas',
       prior_status: 'failed:server-timeout',
     });
@@ -3162,7 +3165,7 @@ describe('BREEZE-X: WS terminal CAS reports why it moved 0 rows', () => {
   it('distinguishes a cancellation from the reaper on the same 0-row branch', async () => {
     await driveResult([], { status: 'cancelled', result: null });
 
-    expect(vi.mocked(captureMessage).mock.calls[0]![3]).toEqual({
+    expect(vi.mocked(captureMessage).mock.calls[0]![1].tags).toEqual({
       cas_label: 'device_commands.ws_result_terminal_cas',
       prior_status: 'cancelled',
     });

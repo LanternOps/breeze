@@ -12,7 +12,10 @@ import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreadin
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
 import { createConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
 import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
-import { resolveLlmConfig } from '../../services/llm/llmConfigResolver';
+import {
+  getAnthropicClientForPartner,
+  LlmUnavailableError,
+} from '../../services/llm/llmConfigResolver';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
 import {
   addTicketComment,
@@ -303,13 +306,16 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'ai_not_enabled' }, 403);
     }
 
-    const llmConfig = await resolveLlmConfig(auth.partnerId);
-    if (
-      llmConfig.source === 'unavailable'
-      || (llmConfig.source === 'platform' && !llmConfig.apiKey?.trim())
-    ) {
-      return c.json({ error: 'ai_unavailable' }, 503);
+    let llm: Awaited<ReturnType<typeof getAnthropicClientForPartner>>;
+    try {
+      llm = await getAnthropicClientForPartner(auth.partnerId);
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) {
+        return c.json({ error: 'ai_unavailable' }, 503);
+      }
+      throw err;
     }
+    const { client, resolved: llmConfig } = llm;
 
     const policy = await getOrgPolicy(input.orgId);
     const dlpResult = await applyDlp({ text: input.bodyText, dlpConfig: policy?.dlpConfig, orgId: input.orgId });
@@ -325,6 +331,7 @@ officeAddinTicketRoutes.post(
           bodyText: dlpResult.text ?? input.bodyText,
           model,
           partnerId: auth.partnerId,
+          client,
         }),
         DRAFT_TIMEOUT_MS
       );
@@ -336,7 +343,15 @@ officeAddinTicketRoutes.post(
       // failed-then-recovered attempt 1 is metered too. Best-effort: a
       // metering failure must never turn a good draft into a 503 for the pane.
       try {
-        await recordUsage(null, input.orgId, model, draft.inputTokens, draft.outputTokens, false);
+        await recordUsage(
+          null,
+          input.orgId,
+          model,
+          draft.inputTokens,
+          draft.outputTokens,
+          false,
+          llmConfig.source === 'partner' ? 'partner_key' : 'platform',
+        );
       } catch (err) {
         console.error('[office-addin] draft usage accounting failed', err);
       }
@@ -350,7 +365,15 @@ officeAddinTicketRoutes.post(
       // rejects with a plain Error before token counts exist.
       if (err instanceof EmailDraftFailedError && (err.inputTokens > 0 || err.outputTokens > 0)) {
         try {
-          await recordUsage(null, input.orgId, model, err.inputTokens, err.outputTokens, false);
+          await recordUsage(
+            null,
+            input.orgId,
+            model,
+            err.inputTokens,
+            err.outputTokens,
+            false,
+            llmConfig.source === 'partner' ? 'partner_key' : 'platform',
+          );
         } catch (meterErr) {
           console.error('[office-addin] draft usage accounting failed', meterErr);
         }
