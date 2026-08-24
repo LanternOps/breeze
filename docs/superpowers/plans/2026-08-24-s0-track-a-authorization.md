@@ -503,17 +503,23 @@ git commit -m "fix(workers): classify queued recovery authority"
 - Create: `apps/api/src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts`
 - Modify: adjacent integration fixtures only as required
 
+**Interfaces:**
+- Execute exported direct media, boot-media, DR, C2C, and scheduled-verification processors against the real unprivileged application database; dependency injection replaces only provider/builder/command/BullMQ effects, never the production DB module.
+- The matrix contains eight tests: one authorized five-family wiring smoke plus seven post-capture live-mutation denials covering user session, human API key, service-principal API key, OAuth grant, AI run, system, and unknown provenance.
+- Every denial proves both zero mocked boundary calls and unchanged literal durable effect counts/state. Clear permission caches after raw grant/membership mutation.
+
 - [ ] **Step 1: Write the real-PostgreSQL RED matrix before Tasks 8–10 GREEN**
 
-Use two partners, two organizations, and two sites. Exercise user, human API key, service-principal key, OAuth, AI, system, and unknown subjects; mutate grants/site/source between enqueue and attempt; and assert zero provider calls, BullMQ follow-on jobs, and `device_commands` after denial. Include media, boot media, DR, C2C restore, and scheduled verification.
+Use two partners, two organizations, and two sites. Capture each known subject while live, persist durable work, then mutate its actual grant/site/source before invoking the real processor. Cover: user source-site move on media; revoked human key on boot media; disabled service principal and disabled/tool-revoked AI on DR; revoked OAuth grant on C2C restore; system snapshot/device mismatch on scheduled verification; and legacy unknown media work. Assert durable denial/quarantine plus zero provider/builder/command/BullMQ follow-on effects. The positive wiring smoke proves each mocked boundary is genuinely reachable, including DR `DelayedError`, C2C direct stub failure, and scheduled verification persistence.
 
 - [ ] **Step 2: Run the complete worker authorization matrix**
 
 ```bash
-pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts src/__tests__/integration/resilienceSiteAuthorization.integration.test.ts src/__tests__/integration/lateCommandResultRecovery.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/rls-coverage.integration.test.ts
+pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts src/__tests__/integration/resilienceSiteAuthorization.integration.test.ts src/__tests__/integration/lateCommandResultRecovery.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts
+pnpm --filter @breeze/api exec vitest run --config vitest.config.rls-coverage.ts src/__tests__/integration/rls-coverage.integration.test.ts
 ```
 
-Expected: every named file reports executed and passes; no integration guard silently skips the new matrix.
+Expected: the new matrix reports exactly eight passing, non-skipped tests; every named integration file reports executed and passes. RLS coverage runs separately because the general integration config excludes that file.
 
 - [ ] **Step 3: Run all Track A targeted regressions and commit proof**
 
