@@ -92,13 +92,13 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual              *bool          `json:"isVirtual,omitempty"`
-	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
-	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
-	DroppedLogs            int64          `json:"droppedLogs,omitempty"`
-	HelperVersion          string         `json:"helperVersion,omitempty"`
-	WatchdogVersion        string         `json:"watchdogVersion,omitempty"`
-	BackupVersion          string         `json:"backupVersion,omitempty"`
+	IsVirtual              *bool                          `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string                         `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           *health.AgentHealthObservation `json:"healthStatus,omitempty"`
+	DroppedLogs            int64                          `json:"droppedLogs,omitempty"`
+	HelperVersion          string                         `json:"helperVersion,omitempty"`
+	WatchdogVersion        string                         `json:"watchdogVersion,omitempty"`
+	BackupVersion          string                         `json:"backupVersion,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -3889,13 +3889,19 @@ func (h *Heartbeat) sendHeartbeat() {
 	virtComputed := h.cachedVirtComputed
 	h.mu.Unlock()
 
+	healthSnapshot := h.healthMon.Snapshot(health.SnapshotMetadata{
+		DeviceID:         h.config.DeviceID,
+		AgentVersion:     h.agentVersion,
+		MetricsAvailable: &metricsAvailable,
+		ObservedAt:       time.Now().UTC(),
+	})
 	payload := HeartbeatPayload{
 		Status:          status,
 		AgentVersion:    h.agentVersion,
 		HelperVersion:   h.helperMgr.InstalledVersion(),
 		WatchdogVersion: h.installedWatchdogVersion(),
 		BackupVersion:   h.installedBackupVersion(),
-		HealthStatus:    h.healthMon.Summary(),
+		HealthStatus:    &healthSnapshot,
 		DeviceRole:      deviceRole,
 		IsHeadless:      h.currentHeadless(),
 		// Wave 6 Task 4 — this build enforces internal/netpolicy (Tasks 1-3),
@@ -4001,33 +4007,6 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	} else if runtime.GOOS == "linux" {
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
-	}
-
-	// Include user helper session info in heartbeat
-	if h.sessionBroker != nil {
-		sessions := h.sessionBroker.AllSessions()
-		if len(sessions) > 0 {
-			helpers := make([]map[string]any, len(sessions))
-			for i, s := range sessions {
-				helpers[i] = map[string]any{
-					"uid":         s.UID,
-					"username":    s.Username,
-					"display":     s.DisplayEnv,
-					"connectedAt": s.ConnectedAt,
-					"lastSeen":    s.LastSeen,
-				}
-				if s.Capabilities != nil {
-					helpers[i]["capabilities"] = s.Capabilities
-				}
-				if s.BinaryKind != "" {
-					helpers[i]["binaryKind"] = s.BinaryKind
-				}
-				if s.DesktopContext != "" {
-					helpers[i]["desktopContext"] = s.DesktopContext
-				}
-			}
-			payload.HealthStatus["userHelpers"] = helpers
-		}
 	}
 
 	if h.postHeartbeat(h.serverURL(), &payload) {

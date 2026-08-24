@@ -50,6 +50,7 @@ import { decryptClaimedCommandsForDelivery } from '../../services/commandDeliver
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
+import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -1303,6 +1304,38 @@ if (latestHelper) {
   // 404 / 401 / watchdog branches returned a Response directly from the scoped
   // block — pass it through.
   if (scoped instanceof Response) return scoped;
+
+  // Self-health is independent from reachability and is persisted only after
+  // the request's org-scoped transaction has released. A failed observation
+  // must never turn a valid heartbeat into an outage or roll back the device's
+  // online/last-seen update.
+  if (data.healthStatus) {
+    if (
+      data.healthStatus.deviceId !== undefined
+      && data.healthStatus.deviceId !== scoped.deviceId
+    ) {
+      const error = new Error('Agent health observation device identity mismatch');
+      console.error(
+        `[heartbeat] failed to persist health observation for agentId=${agentId}:`,
+        error,
+      );
+      captureException(error);
+    } else {
+      try {
+        await recordAgentHealthObservation({
+          device: { id: scoped.deviceId, orgId: scoped.deviceOrgId },
+          observation: data.healthStatus,
+          receivedAt: new Date(),
+        });
+      } catch (err) {
+        console.error(
+          `[heartbeat] failed to persist health observation for agentId=${agentId}:`,
+          err,
+        );
+        captureException(err);
+      }
+    }
+  }
 
   // #1105 — the org transaction is now released. Fetch the manifest trust
   // keyset OUTSIDE it: getActiveTrustKeyset opens its own system-scoped

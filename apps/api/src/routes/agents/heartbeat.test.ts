@@ -13,6 +13,11 @@ const runOutsideDbContextMock = vi.fn(async (fn: () => unknown) => fn());
 // (the #1105 pool-poison fix). Reset per test.
 const callOrder: string[] = [];
 
+const recordAgentHealthObservationMock = vi.hoisted(() => vi.fn(async (_input: unknown) => ({
+  observationId: 'health-observation-1',
+  becameLatest: true,
+})));
+
 // Default pass-through behaviour for withSystemDbAccessContext — extracted so
 // it can be reinstalled via mockImplementationOnce for calls a test doesn't
 // care about, while a specific call (targeted by ordering) is made to reject.
@@ -211,6 +216,11 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('../../services/agentHealthObservations', () => ({
+  recordAgentHealthObservation: (...args: unknown[]) =>
+    recordAgentHealthObservationMock(...(args as [any])),
+}));
+
 vi.mock('../../services/remoteAccessPolicy', () => ({
   resolveRemoteAccessForDevice: vi.fn(async () => ({
     helperEnabled: false,
@@ -365,6 +375,18 @@ const minimalHeartbeatBody = {
   },
 };
 
+const healthObservation = {
+  schemaVersion: 1,
+  deviceId: 'device-1',
+  agentVersion: '0.65.10',
+  overall: 'warning',
+  metricsAvailable: true,
+  components: {
+    metrics: { state: 'warning', reason: 'disk pressure' },
+  },
+  observedAt: '2026-08-24T12:00:00.000Z',
+};
+
 const originalAgentBackupServerUrl = process.env.AGENT_BACKUP_SERVER_URL;
 const originalAgentRequireManifestSigningKeyId = process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
 
@@ -429,6 +451,108 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
     expect(update.lastSeenAt).toBeInstanceOf(Date);
   });
 
+  it('records valid v1 health only after the main heartbeat DB context is released', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    callOrder.length = 0;
+    recordAgentHealthObservationMock.mockImplementationOnce(async () => {
+      callOrder.push('health:persisted');
+      return { observationId: 'health-observation-1', becameLatest: true };
+    });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, healthStatus: healthObservation }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(recordAgentHealthObservationMock).toHaveBeenCalledWith({
+      device: { id: 'device-1', orgId: 'org-1' },
+      observation: healthObservation,
+      receivedAt: expect.any(Date),
+    });
+    expect(callOrder.indexOf('dbContext:released')).toBeLessThan(
+      callOrder.indexOf('health:persisted'),
+    );
+  });
+
+  it('does not record a health observation when an old main agent omits it', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(200);
+    expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps reachability successful and captures a health persistence failure', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const failure = new Error('health store unavailable');
+    recordAgentHealthObservationMock.mockRejectedValueOnce(failure);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { captureException } = await import('../../services/sentry');
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, healthStatus: healthObservation }),
+    });
+
+    expect(response.status).toBe(200);
+    expect((setSpy.mock.calls as any[])[0]?.[0]).toMatchObject({ status: 'online' });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed to persist health observation'),
+      failure,
+    );
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
+    errorSpy.mockRestore();
+  });
+
+  it('drops an explicit mismatched health device identity without calling persistence', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { captureException } = await import('../../services/sentry');
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        healthStatus: { ...healthObservation, deviceId: 'device-2' },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('identity mismatch') }),
+    );
+    errorSpy.mockRestore();
+  });
+
   it('an authenticated watchdog heartbeat updates watchdog fields without changing main reachability', async () => {
     selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
     selectMock.mockReturnValue(selectChainResolving([]));
@@ -442,6 +566,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         agentVersion: '0.65.10',
         role: 'watchdog',
         watchdogState: 'MONITORING',
+        healthStatus: healthObservation,
       }),
     });
 
@@ -454,6 +579,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
     });
     expect(update).not.toHaveProperty('status');
     expect(update).not.toHaveProperty('lastSeenAt');
+    expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
   });
 
   it('rejects a missing authenticated agent context without a reachability write', async () => {
