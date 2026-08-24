@@ -1011,7 +1011,10 @@ export async function cancelActionIntent(
     throw new ActionIntentNotFoundError(intentId);
   }
 
-  // Requester-or-approver only (spec §6.2).
+  // Requester-or-approver only (spec §6.2). For an agent-originated intent
+  // requestedByUserId is NULL, so this deliberately collapses to "any
+  // approvals:decide holder in the org" — a human can dismiss an agent
+  // proposal without approving it (owner decision 2026-08-23, wave 3b).
   const isRequester = intent.requestedByUserId === auth.user.id;
   let isApprover = false;
   if (!isRequester) {

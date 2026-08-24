@@ -1695,6 +1695,40 @@ describe('cancelActionIntent', () => {
     expect(result).toEqual({ ok: true, status: 'cancelled' });
   });
 
+  it('lets an approvals:decide holder cancel an agent-originated intent', async () => {
+    // Owner decision 2026-08-23 (wave 3b): an agent intent has NO requester,
+    // so "requester or approver" deliberately collapses to "any
+    // approvals:decide holder in the org" — a human can dismiss an agent
+    // proposal without approving it.
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({
+        id: 'intent-1',
+        requestedByUserId: null,
+        source: 'ai_agent',
+        requestingAgentRunId: RUN_ID,
+        approvalScope: 'supervised',
+      }),
+    ]);
+    permState.getUserPermissions.mockResolvedValue({ canDecide: true });
+    dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+    const result = await cancelActionIntent(makeAuth(), 'intent-1');
+    expect(result).toEqual({ ok: true, status: 'cancelled' });
+  });
+
+  it('denies cancel to a user with neither requester identity nor approvals:decide', async () => {
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({
+        id: 'intent-1',
+        requestedByUserId: null,
+        source: 'ai_agent',
+        requestingAgentRunId: RUN_ID,
+        approvalScope: 'supervised',
+      }),
+    ]);
+    permState.getUserPermissions.mockResolvedValue(null);
+    await expect(cancelActionIntent(makeAuth(), 'intent-1')).rejects.toBeInstanceOf(ActionIntentAuthorizationError);
+  });
+
   it('reports the lost race with the current status when the CAS affects zero rows', async () => {
     dbState.selectActionIntentsResults.push([makeIntentRow({ id: 'intent-1', requestedByUserId: REQUESTER_ID })]);
     dbState.updateActionIntentsResults.push([]); // CAS lost
