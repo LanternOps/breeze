@@ -48,7 +48,7 @@ func TestProbeCaptureHardErrorImmediate(t *testing.T) {
 }
 
 // TestProbeCaptureNilRepaintIsSafe guards the non-Windows caller shape, where
-// forceProbeRepaint is a no-op and callers may pass nil outright.
+// newProbeRepainter returns a no-op, and any caller that passes nil outright.
 func TestProbeCaptureNilRepaintIsSafe(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	got, err := probeCapture(func() (*image.RGBA, error) { return img, nil }, 3, time.Millisecond, nil)
