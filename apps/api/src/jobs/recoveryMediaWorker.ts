@@ -65,20 +65,22 @@ export async function processRecoveryMediaBuildJob(
   }
   assertQueueJobName(RECOVERY_MEDIA_QUEUE, job, 'build-media');
 
-  try {
-    await withSystemDbAccessContext(async () => {
+  const authorizationDenial = await withSystemDbAccessContext(async () => {
+    try {
       const claimed = await authorizeAndClaimRecoveryMediaArtifact(data.artifactId);
       if (!claimed) {
         throw new Error(`Recovery media authorization claim changed for ${data.artifactId}`);
       }
-    });
-  } catch (error) {
-    if (isKnownAuthorizationDenial(error)) {
-      throw new UnrecoverableError(
-        `Recovery media authorization denied: ${error.code ?? error.message}`,
-      );
+      return null;
+    } catch (error) {
+      if (isKnownAuthorizationDenial(error)) return error;
+      throw error;
     }
-    throw error;
+  });
+  if (authorizationDenial) {
+    throw new UnrecoverableError(
+      `Recovery media authorization denied: ${authorizationDenial.code ?? authorizationDenial.message}`,
+    );
   }
 
   try {

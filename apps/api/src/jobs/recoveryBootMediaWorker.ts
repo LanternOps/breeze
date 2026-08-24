@@ -65,20 +65,22 @@ export async function processRecoveryBootMediaBuildJob(
   }
   assertQueueJobName(RECOVERY_BOOT_MEDIA_QUEUE, job, 'build-boot-media');
 
-  try {
-    await withSystemDbAccessContext(async () => {
+  const authorizationDenial = await withSystemDbAccessContext(async () => {
+    try {
       const claimed = await authorizeAndClaimRecoveryBootMediaArtifact(data.artifactId);
       if (!claimed) {
         throw new Error(`Recovery boot media authorization claim changed for ${data.artifactId}`);
       }
-    });
-  } catch (error) {
-    if (isKnownAuthorizationDenial(error)) {
-      throw new UnrecoverableError(
-        `Recovery boot media authorization denied: ${error.code ?? error.message}`,
-      );
+      return null;
+    } catch (error) {
+      if (isKnownAuthorizationDenial(error)) return error;
+      throw error;
     }
-    throw error;
+  });
+  if (authorizationDenial) {
+    throw new UnrecoverableError(
+      `Recovery boot media authorization denied: ${authorizationDenial.code ?? authorizationDenial.message}`,
+    );
   }
 
   try {
