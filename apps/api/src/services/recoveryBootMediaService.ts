@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { db } from '../db';
@@ -21,6 +21,13 @@ import {
 } from './recoveryMediaService';
 import { isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
 import { verifyTemplateDirectory } from './recoveryBootMediaTemplateManifest';
+import {
+  authorizeQueuedRecoveryWork,
+  captureRecoveryAuthorizationSubject,
+  RecoveryAuthorizationDeniedError,
+  type RecoveryAuthorizationSubjectRow,
+} from './recoveryAuthorizationSubject';
+import type { AuthContext } from '../middleware/auth';
 
 const execFileAsync = promisify(execFile);
 
@@ -81,6 +88,145 @@ async function resolveBundleArtifact(orgId: string, tokenId: string, bundleArtif
   return artifact ?? null;
 }
 
+type RecoveryBootMediaAuthorizationArtifact = RecoveryAuthorizationSubjectRow & {
+  id: string;
+  orgId: string;
+};
+
+export interface RecoveryBootMediaAuthorizationDependencies {
+  loadArtifact(artifactId: string): Promise<RecoveryBootMediaAuthorizationArtifact | null>;
+  authorize(artifact: RecoveryBootMediaAuthorizationArtifact): Promise<unknown>;
+  claim(artifact: RecoveryBootMediaAuthorizationArtifact, checkedAt: Date): Promise<boolean>;
+  recordDenial(
+    artifact: RecoveryBootMediaAuthorizationArtifact,
+    state: 'denied' | 'quarantined_authorization_unknown',
+    code: string,
+    checkedAt: Date,
+  ): Promise<boolean>;
+  now(): Date;
+}
+
+function recoveryBootMediaSubjectPredicate(artifact: RecoveryBootMediaAuthorizationArtifact) {
+  return and(
+    eq(recoveryBootMediaArtifacts.id, artifact.id),
+    eq(recoveryBootMediaArtifacts.orgId, artifact.orgId),
+    eq(recoveryBootMediaArtifacts.authorizationPrincipalKind, artifact.authorizationPrincipalKind),
+    artifact.authorizationPrincipalId
+      ? eq(recoveryBootMediaArtifacts.authorizationPrincipalId, artifact.authorizationPrincipalId)
+      : isNull(recoveryBootMediaArtifacts.authorizationPrincipalId),
+    artifact.authorizationGrantRevision
+      ? eq(recoveryBootMediaArtifacts.authorizationGrantRevision, artifact.authorizationGrantRevision)
+      : isNull(recoveryBootMediaArtifacts.authorizationGrantRevision),
+  );
+}
+
+const defaultRecoveryBootMediaAuthorizationDependencies: RecoveryBootMediaAuthorizationDependencies = {
+  async loadArtifact(artifactId) {
+    const [artifact] = await db
+      .select()
+      .from(recoveryBootMediaArtifacts)
+      .where(eq(recoveryBootMediaArtifacts.id, artifactId))
+      .limit(1);
+    return artifact ?? null;
+  },
+  async authorize(artifact) {
+    return authorizeQueuedRecoveryWork(
+      artifact,
+      artifact.orgId,
+      [
+        { kind: 'boot_media_artifact', id: artifact.id, role: 'source' },
+        { kind: 'boot_media_artifact', id: artifact.id, role: 'target' },
+      ],
+      'media',
+    );
+  },
+  async claim(artifact, checkedAt) {
+    const [claimed] = await db
+      .update(recoveryBootMediaArtifacts)
+      .set({
+        status: 'building',
+        authorizationState: 'authorized',
+        authorizationDenialCode: null,
+        authorizationCheckedAt: checkedAt,
+      })
+      .where(and(
+        recoveryBootMediaSubjectPredicate(artifact),
+        inArray(recoveryBootMediaArtifacts.status, ['pending', 'failed']),
+      ))
+      .returning({ id: recoveryBootMediaArtifacts.id });
+    return Boolean(claimed);
+  },
+  async recordDenial(artifact, state, code, checkedAt) {
+    const [recorded] = await db
+      .update(recoveryBootMediaArtifacts)
+      .set({
+        authorizationState: state,
+        authorizationDenialCode: code,
+        authorizationCheckedAt: checkedAt,
+      })
+      .where(recoveryBootMediaSubjectPredicate(artifact))
+      .returning({ id: recoveryBootMediaArtifacts.id });
+    return Boolean(recorded);
+  },
+  now: () => new Date(),
+};
+
+export async function authorizeAndClaimRecoveryBootMediaArtifact(
+  artifactId: string,
+  deps: RecoveryBootMediaAuthorizationDependencies = defaultRecoveryBootMediaAuthorizationDependencies,
+): Promise<boolean> {
+  const artifact = await deps.loadArtifact(artifactId);
+  if (!artifact) throw new RecoveryAuthorizationDeniedError('resource_not_found');
+  const checkedAt = deps.now();
+
+  try {
+    await deps.authorize(artifact);
+  } catch (error) {
+    if (
+      error instanceof Error
+      && 'retriable' in error
+      && (error as { retriable?: unknown }).retriable === false
+    ) {
+      const code = 'code' in error && typeof error.code === 'string'
+        ? error.code
+        : 'authorization_subject_unknown';
+      const state = code === 'authorization_subject_unknown'
+        ? 'quarantined_authorization_unknown'
+        : 'denied';
+      const recorded = await deps.recordDenial(artifact, state, code, checkedAt);
+      if (!recorded) {
+        throw new Error(`Recovery boot media authorization subject changed for ${artifact.id}`);
+      }
+    }
+    throw error;
+  }
+
+  return deps.claim(artifact, checkedAt);
+}
+
+export async function recordRecoveryBootMediaBuildFailure(
+  artifactId: string,
+  error: unknown,
+): Promise<void> {
+  const [artifact] = await db
+    .select({ metadata: recoveryBootMediaArtifacts.metadata })
+    .from(recoveryBootMediaArtifacts)
+    .where(eq(recoveryBootMediaArtifacts.id, artifactId))
+    .limit(1);
+  if (!artifact) return;
+  await db
+    .update(recoveryBootMediaArtifacts)
+    .set({
+      status: 'failed',
+      metadata: {
+        ...asRecord(artifact.metadata),
+        error: error instanceof Error ? error.message : String(error),
+      },
+      completedAt: new Date(),
+    })
+    .where(eq(recoveryBootMediaArtifacts.id, artifactId));
+}
+
 export async function buildRecoveryBootMediaArtifact(artifactId: string) {
   const [artifact] = await db
     .select()
@@ -114,8 +260,6 @@ export async function buildRecoveryBootMediaArtifact(artifactId: string) {
   if (!isRecoverySigningConfigured()) {
     throw new Error('Boot media signing is not configured');
   }
-
-  await db.update(recoveryBootMediaArtifacts).set({ status: 'building' }).where(eq(recoveryBootMediaArtifacts.id, artifact.id));
 
   const baseTemplateDir = process.env.RECOVERY_BOOT_MEDIA_BASE_DIR?.trim();
   if (!baseTemplateDir) {
@@ -390,6 +534,7 @@ export async function getRecoveryBootMediaDownloadTarget(orgId: string, artifact
 export async function createRecoveryBootMediaRequest(args: {
   orgId: string;
   tokenId: string;
+  auth: AuthContext;
   createdBy?: string | null;
   bundleArtifactId?: string | null;
 }) {
@@ -419,9 +564,9 @@ export async function createRecoveryBootMediaRequest(args: {
   }
 
   if (existing) {
-    const [reset] = await db
-      .update(recoveryBootMediaArtifacts)
-      .set({
+    const subject = await captureRecoveryAuthorizationSubject(args.auth, args.orgId, 'media');
+    return db.transaction(async (tx) => {
+      const [reset] = await tx.update(recoveryBootMediaArtifacts).set({
         bundleArtifactId: bundleArtifact.id,
         status: 'pending',
         storageKey: null,
@@ -436,15 +581,17 @@ export async function createRecoveryBootMediaRequest(args: {
           ...asRecord(existing.metadata),
           restartedAt: new Date().toISOString(),
         },
+        ...subject,
       })
       .where(eq(recoveryBootMediaArtifacts.id, existing.id))
       .returning();
-    return reset!;
+      return reset!;
+    });
   }
 
-  const [row] = await db
-    .insert(recoveryBootMediaArtifacts)
-    .values({
+  const subject = await captureRecoveryAuthorizationSubject(args.auth, args.orgId, 'media');
+  return db.transaction(async (tx) => {
+    const [row] = await tx.insert(recoveryBootMediaArtifacts).values({
       orgId: args.orgId,
       tokenId: args.tokenId,
       snapshotId: bundleArtifact.snapshotId,
@@ -457,8 +604,9 @@ export async function createRecoveryBootMediaRequest(args: {
       metadata: {
         requestedAt: new Date().toISOString(),
       },
+      ...subject,
     })
     .returning();
-
-  return row!;
+    return row!;
+  });
 }

@@ -19,6 +19,7 @@ import { resolveEffectiveAgent } from './aiAgents/effectivePolicy';
 import { canAccessOrg, getUserPermissions, hasPermission, type UserPermissions } from './permissions';
 import {
   authorizeResilienceResources,
+  ResilienceAuthorizationError,
   type AuthorizedResilienceResources,
   type ResilienceOperation,
   type ResilienceResourceRef,
@@ -158,6 +159,8 @@ export type RecoveryAuthorizationErrorCode =
   | 'delegation_scope_denied'
   | 'base_permission_denied'
   | 'system_reason_not_allowed'
+  | 'site_access_denied'
+  | 'resource_not_found'
   | 'authorization_dependency_unavailable';
 
 export class RecoveryAuthorizationDeniedError extends Error {
@@ -274,6 +277,9 @@ async function dependencyRead<T>(read: () => Promise<T>): Promise<T> {
       || error instanceof RecoveryAuthorizationTransientError
     ) {
       throw error;
+    }
+    if (error instanceof ResilienceAuthorizationError) {
+      throw new RecoveryAuthorizationDeniedError(error.code);
     }
     throw new RecoveryAuthorizationTransientError('authorization_dependency_unavailable');
   }
