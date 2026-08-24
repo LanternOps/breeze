@@ -1,9 +1,9 @@
 # S0 and Fleet-Integrity Remediation Program Design
 
-**Date:** 2026-08-24  
-**Status:** approved  
-**Baseline:** `80b498ecee73bb1c3f5f58e47dce65a016dc892c`  
-**Revised:** 2026-08-24 — current-state corrections, confirmed-defect anchors and registration contracts added after verifying the design against the baseline code  
+**Date:** 2026-08-24
+**Status:** approved
+**Baseline:** `80b498ecee73bb1c3f5f58e47dce65a016dc892c`
+**Revised:** 2026-08-24 — current-state corrections, confirmed-defect anchors and registration contracts added after verifying the design against the baseline code
 **Findings:** RMM-QA-012, 020, 038, 039, 099, 105, 134, 212, 225, 297, 319, 333, 445
 
 ## Objective
