@@ -9,6 +9,7 @@ import { getEventBus } from '../eventBus';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
+import { validateAgentRecipients } from './recipients';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -268,6 +269,13 @@ export async function createAgent(
 ): Promise<AiAgentRow> {
   assertAgentWriteAllowed(auth, owner);
 
+  // Recipients are membership-validated BEFORE anything is written: a typo'd
+  // or cross-tenant id must never be persisted, because notification-time
+  // resolution silently drops what it cannot verify (services/aiAgents/
+  // recipients.ts) — an invalid entry stored here would be a recipient that
+  // silently never hears anything.
+  await validateAgentRecipients(owner, input.recipients ?? {});
+
   // Pre-check the partial unique indexes on (partner_id, kind) and (org_id,
   // kind) WHERE disabled_at IS NULL. Letting the insert trip 23505 is not an
   // option here: the whole request runs inside one withDbAccessContext
@@ -317,6 +325,16 @@ export async function updateAgent(
     throw new AgentAccessDeniedError('Agent not found');
   }
   assertAgentWriteAllowed(auth, existing);
+
+  // Validate the MERGED recipients — the exact object updatePolicyColumns
+  // persists ({ ...stored, ...patch }), so what is checked is what is stored.
+  if (input.recipients !== undefined) {
+    const stored = normalizeAgentPolicy(existing);
+    await validateAgentRecipients(
+      { orgId: existing.orgId, partnerId: existing.partnerId },
+      { ...stored.recipients, ...input.recipients },
+    );
+  }
 
   const [row] = await db
     .update(aiAgents)

@@ -18,6 +18,7 @@ import {
   AgentInvariantError, AgentKindConflictError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
+import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveOrgId } from './networkShared';
@@ -103,6 +104,15 @@ function mapError(c: Context, err: unknown) {
   }
   if (err instanceof AgentKindConflictError) {
     return c.json({ error: err.message, code: err.code }, 409);
+  }
+  // Membership-validation failure on recipients (services/aiAgents/recipients.ts):
+  // actionable client error — the body names exactly which ids were refused.
+  if (err instanceof InvalidAgentRecipientsError) {
+    return c.json({
+      error: 'invalid_recipients',
+      invalidUserIds: err.invalidUserIds,
+      invalidRoleIds: err.invalidRoleIds,
+    }, 400);
   }
   // The pre-check in createAgent cannot win a concurrent create; the partial
   // unique index settles that race. Answer it the same way rather than letting
