@@ -6,6 +6,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ScriptExecutionModal, { type Device } from './ScriptExecutionModal';
 import type { ScriptParameter } from './ScriptFormSchema';
 import type { Script } from './ScriptList';
+import { fetchWithAuth } from '../../stores/auth';
+
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+
+const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 // The advanced-filter panel is closed on open, so `useFilterPreview` is disabled
 // and never fetches — no transport stub is needed for these cases.
@@ -142,6 +147,63 @@ describe('ScriptExecutionModal sourced parameters (#3409 PR3)', () => {
 
     expect(screen.getByText('Parameter "message" is required')).toBeInTheDocument();
     expect(onExecute).not.toHaveBeenCalled();
+  });
+});
+
+describe('ScriptExecutionModal device option paging', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        data: [{
+          id: '00000000-0000-4000-8000-000000000099',
+          hostname: 'zzz-beyond-old-prefix',
+          displayName: null,
+          osType: 'windows',
+          status: 'online',
+          siteId: null,
+          siteName: null,
+        }],
+        page: { nextCursor: null, returned: 1, total: 1, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+      }),
+    } as unknown as Response);
+  });
+
+  it('searches authorized server options when no legacy device list is supplied', async () => {
+    render(
+      <ScriptExecutionModal
+        script={{ ...baseScript, parameters: [] }}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    expect(await screen.findByText('zzz-beyond-old-prefix')).toBeInTheDocument();
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).startsWith('/devices/options?'))).toBe(true);
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => /^\/devices(?:\?|$)/.test(String(url)))).toBe(false);
+  });
+
+  it('keeps execute disabled when the supporting option request fails', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: vi.fn().mockResolvedValue({ error: 'selector unavailable' }),
+    } as unknown as Response);
+
+    render(
+      <ScriptExecutionModal
+        script={{ ...baseScript, parameters: [] }}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('selector unavailable');
+    expect(screen.getByRole('button', { name: 'Execute' })).toBeDisabled();
   });
 });
 

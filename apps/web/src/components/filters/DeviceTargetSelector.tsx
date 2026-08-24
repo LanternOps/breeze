@@ -42,6 +42,10 @@ export interface DeviceTargetSelectorProps {
   showPreview?: boolean;
   showSavedFilters?: boolean;
   requireCompleteSet?: boolean;
+  orgId?: string;
+  siteId?: string;
+  status?: string;
+  osType?: string;
   onCanSubmitChange?: (canSubmit: boolean) => void;
   className?: string;
 }
@@ -90,6 +94,10 @@ export function DeviceTargetSelector({
   showPreview = true,
   showSavedFilters = true,
   requireCompleteSet = false,
+  orgId,
+  siteId,
+  status,
+  osType,
   onCanSubmitChange,
   className = ''
 }: DeviceTargetSelectorProps) {
@@ -111,6 +119,10 @@ export function DeviceTargetSelector({
     includeIds: value.deviceIds,
     enabled: !propDevices,
     requireCompleteSet,
+    orgId,
+    siteId,
+    status,
+    osType,
   });
 
   const providedDeviceOptions = useMemo<UseDeviceOptionsResult | null>(() => {

@@ -105,6 +105,7 @@ describe('ScriptsPage execution freshness', () => {
     render(<ScriptsPage />);
 
     await screen.findByText('Run Cleanup Temp Files');
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => /^\/devices(?:\?|$)/.test(String(url)))).toBe(false);
     fireEvent.click(screen.getByText('Run Cleanup Temp Files'));
     fireEvent.click(await screen.findByText('Confirm Execute'));
 

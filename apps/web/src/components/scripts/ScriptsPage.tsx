@@ -4,7 +4,7 @@ import { extractApiError } from '@/lib/apiError';
 import { Plus, Download, Search, Upload, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
 import ScriptList, { type Script, type ScriptLanguage, type OSType } from './ScriptList';
 import { ScriptBundleExportModal, ScriptBundleImportModal } from './ScriptBundleImport';
-import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
+import ScriptExecutionModal, { type Site } from './ScriptExecutionModal';
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
@@ -46,7 +46,6 @@ type SystemScript = {
 export default function ScriptsPage() {
   const { t } = useTranslation('scripts');
   const [scripts, setScripts] = useState<ScriptWithDetails[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -90,26 +89,6 @@ export default function ScriptsPage() {
     }
   }, [t]);
 
-  const fetchDevices = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/devices?limit=10000');
-      if (response.ok) {
-        const data = await response.json();
-        const raw = asList(data, 'devices');
-        setDevices(raw.map((d: Record<string, unknown>) => ({
-          id: d.id as string,
-          hostname: (d.hostname ?? '') as string,
-          os: (d.osType ?? d.os ?? '') as Device['os'],
-          status: (d.status ?? 'offline') as Device['status'],
-          siteId: (d.siteId ?? '') as string,
-          siteName: (d.siteName ?? '') as string,
-        })));
-      }
-    } catch {
-      // Silently fail - devices will be empty
-    }
-  }, []);
-
   const fetchSites = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/orgs/sites');
@@ -124,19 +103,8 @@ export default function ScriptsPage() {
 
   useEffect(() => {
     fetchScripts();
-    fetchDevices();
     fetchSites();
-  }, [fetchScripts, fetchDevices, fetchSites]);
-
-  // Enrich devices with site names once both are loaded
-  const enrichedDevices = useMemo(() => {
-    if (sites.length === 0) return devices;
-    const siteMap = new Map(sites.map(s => [s.id, s.name]));
-    return devices.map(d => ({
-      ...d,
-      siteName: d.siteName || siteMap.get(d.siteId) || '',
-    }));
-  }, [devices, sites]);
+  }, [fetchScripts, fetchSites]);
 
   const handleRun = async (script: Script) => {
     // Fetch full script details including parameters
@@ -445,7 +413,6 @@ export default function ScriptsPage() {
       {modalMode === 'execute' && selectedScript && (
         <ScriptExecutionModal
           script={selectedScript}
-          devices={enrichedDevices}
           sites={sites}
           isOpen={true}
           onClose={handleCloseModal}
