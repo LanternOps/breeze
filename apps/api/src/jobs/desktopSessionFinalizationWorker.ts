@@ -1,7 +1,10 @@
 import { Worker, type Job } from 'bullmq';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
-import { attachWorkerObservability } from './workerObservability';
+import {
+  attachWorkerObservability,
+  type WorkerFailureClassification,
+} from './workerObservability';
 import {
   desktopSessionFinalizationJobDataSchema,
 } from './queueSchemas';
@@ -102,7 +105,7 @@ export class DesktopFinalizationIntentReleaseError extends Error {
 export function classifyDesktopFinalizationFailure(
   _job: Job | undefined,
   err: Error,
-): { reason: string; level: 'warning' | 'error'; reportOnlyWhenExhausted?: boolean } | null {
+): WorkerFailureClassification | null {
   if (err instanceof DesktopFinalizationStopPendingError) {
     return {
       reason: 'desktop_stop_pending',

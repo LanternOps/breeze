@@ -41,6 +41,7 @@ import {
   enqueueDesktopSessionFinalization,
   processDesktopSessionFinalizationJob,
 } from './desktopSessionFinalizationWorker';
+import { WORKER_FAILURE_REASONS } from './workerObservability';
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const FINALIZATION_ID = '22222222-2222-4222-8222-222222222222';
@@ -195,5 +196,25 @@ describe('desktop finalization failure shapes (BREEZE-1J)', () => {
     expect(
       classifyDesktopFinalizationFailure(undefined, new DesktopFinalizationIntentReleaseError('x')),
     ).toBeNull();
+  });
+
+  // `worker_failure_reason` is allowlisted through Sentry's scrubber on the
+  // promise that it is a closed set of hardcoded labels — `isBoundedTagValue`
+  // only bounds LENGTH, so it would pass a session UUID happily. The
+  // WorkerFailureReason union is what enforces that at compile time (an
+  // interpolated `desktop_stop_pending_${job.id}` no longer compiles); this
+  // pins the runtime side so a cast could not smuggle one past either.
+  it('only ever emits reasons that are in the shared registry', () => {
+    for (const error of [
+      new DesktopFinalizationStopPendingError('x'),
+      new DesktopFinalizationIntentAbsentError('x'),
+      new DesktopFinalizationIntentMismatchError('x'),
+      new DesktopFinalizationIntentReleaseError('x'),
+      new Error('anything else'),
+    ]) {
+      const reason = classifyDesktopFinalizationFailure(undefined, error)?.reason;
+      if (reason === undefined) continue;
+      expect(WORKER_FAILURE_REASONS).toContain(reason);
+    }
   });
 });

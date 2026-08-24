@@ -137,6 +137,30 @@ export class StaleQueueJobRemovalError extends Error {
 }
 
 /**
+ * One or more devices of an already-`running` patch job could not be handed to
+ * the per-device queue. Named for the same reason as the class above: Sentry's
+ * `scrubEvent` deletes the message, so the exception type is the only thing
+ * that distinguishes this from every other blank event.
+ */
+export class PatchDeviceDispatchError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PatchDeviceDispatchError';
+  }
+}
+
+/**
+ * The 35-minute completion check for an already-`running` patch job could not
+ * be scheduled on its stable id (fallback used) or at all (no backstop left).
+ */
+export class PatchCompletionCheckError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PatchCompletionCheckError';
+  }
+}
+
+/**
  * Return the reusable queue job for one of `candidateIds`, clearing any
  * terminal leftover so the caller can re-add on the same stable jobId.
  *
@@ -336,6 +360,25 @@ export async function selectStaleScheduledJobIds(now: Date = new Date()): Promis
 }
 
 /**
+ * Patch job ids already reported as wedged, so the report fires once per
+ * episode rather than once per sweep (BREEZE-1A, second time).
+ *
+ * A wedged id is persistent BY DEFINITION: `resolveActiveQueueJob` threw
+ * precisely because it could not clear the job hash, and nothing else clears
+ * it. The scheduler sweeps every 60s and `selectStaleScheduledJobIds` keeps
+ * selecting the row for RECONCILE_MAX_AGE_MS (45 days), so an undeduplicated
+ * report is up to ~64,800 error-level events for ONE stuck job — all collapsing
+ * into a single issue, because `scrubEvent` deletes the message. That is
+ * exactly the 342-event issue this whole change set exists to stop, rebuilt at
+ * two orders of magnitude.
+ *
+ * Cleared as soon as the id resolves cleanly again (recovered or genuinely
+ * present), which both ends the episode and bounds the set: it only ever holds
+ * ids that are currently wedged.
+ */
+const reportedWedgedJobIds = new Set<string>();
+
+/**
  * Of the given `scheduled` jobs, return those with no active execute-patch-job
  * queue entry — i.e. the rows whose enqueue was lost (#1733). Pure Redis reads;
  * run this outside the DB access context. Carries `scheduledAt` through so the
@@ -356,15 +399,38 @@ export async function filterOrphanedJobIds(jobs: StaleScheduledJob[]): Promise<S
       // sweep exists to prevent. Report it and carry on; it is deliberately NOT
       // reported as orphaned, because re-adding onto an id we could not clear
       // would be the silent no-op resolveActiveQueueJob just refused to hide.
+      //
+      // Reported ONCE per episode (see reportedWedgedJobIds) — the condition
+      // does not clear itself, so a per-sweep report is pure volume. The
+      // console line still fires every sweep, so the state stays visible in
+      // logs; only the Sentry event is gated.
+      const detail = error instanceof Error ? error.message : error;
+      if (reportedWedgedJobIds.has(job.id)) {
+        console.error(
+          `[PatchJobExecutor] Patch job ${job.id} still wedged (already reported):`,
+          detail,
+        );
+        continue;
+      }
+      reportedWedgedJobIds.add(job.id);
       console.error(
         `[PatchJobExecutor] Skipping reconcile of patch job ${job.id}:`,
-        error instanceof Error ? error.message : error,
+        detail,
       );
-      captureException(error instanceof Error ? error : new StaleQueueJobRemovalError(
-        `[PatchJobExecutor] Skipping reconcile of patch job ${job.id}`,
-      ));
+      captureException(
+        error instanceof Error
+          ? error
+          : new StaleQueueJobRemovalError(
+            `[PatchJobExecutor] Skipping reconcile of patch job ${job.id}`,
+          ),
+        undefined,
+        { patch_reconcile_stage: 'wedged' },
+      );
       continue;
     }
+    // Resolved cleanly — whatever wedged it is gone, so the next wedge is a new
+    // episode and reports again.
+    reportedWedgedJobIds.delete(job.id);
     if (!existing) {
       orphaned.push(job);
     }
@@ -441,41 +507,185 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
     return { completed: true, reason: 'No target devices' };
   }
 
-  // Fan out to per-device queue
+  // Fan out to per-device queue.
+  //
+  // Every device is dispatched inside its own try/catch, and a failure costs
+  // ONLY that device. This runs AFTER the claim UPDATE above has already
+  // flipped the row to `running`, which makes an escaping throw unrecoverable:
+  // the orchestration queue sets no `attempts` (BullMQ defaults to no retry),
+  // a manual retry re-runs the claim UPDATE against `status='scheduled'` and
+  // matches 0 rows, and the #1733 reconcile sweep only scans `scheduled` rows.
+  // So one rejected Redis call on device 7 of 200 would strand the whole run
+  // in `running` forever, with devices 8-200 never enqueued and no completion
+  // checker — invisible, because the row never fails either.
   const deviceQueue = getPatchJobDeviceQueue();
+  const dispatchFailures: { deviceId: string; error: unknown }[] = [];
   for (const deviceId of deviceIds) {
     const stableJobId = getPatchJobDeviceExecutionId(patchJobId, deviceId);
-    const existing = await resolveActiveQueueJob(deviceQueue, [stableJobId]);
-    if (!existing) {
-      await deviceQueue.add(
-        'execute-patch-job-device',
-        {
-          type: 'execute-patch-job-device',
-          patchJobId,
-          deviceId,
-          orgId: patchJob.orgId,
-        } satisfies ExecutePatchJobDeviceData,
-        {
-          ...PATCH_JOB_RETENTION,
-          jobId: stableJobId,
-        }
+    try {
+      const existing = await resolveActiveQueueJob(deviceQueue, [stableJobId]);
+      if (!existing) {
+        await deviceQueue.add(
+          'execute-patch-job-device',
+          {
+            type: 'execute-patch-job-device',
+            patchJobId,
+            deviceId,
+            orgId: patchJob.orgId,
+          } satisfies ExecutePatchJobDeviceData,
+          {
+            ...PATCH_JOB_RETENTION,
+            jobId: stableJobId,
+          }
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[PatchJobExecutor] Failed to dispatch device ${deviceId} of patch job ${patchJobId}:`,
+        error instanceof Error ? error.message : error,
+      );
+      dispatchFailures.push({ deviceId, error });
+    }
+  }
+
+  // Settle the devices we could not dispatch. Without this their
+  // `devicesPending` slots never drain, so the run could only ever be finished
+  // by the 35-minute completion checker — and only if that checker was itself
+  // enqueued. Recording them as failed keeps the counters exact and lets the
+  // normal `devicesPending === 0` finalization close the job out on its own.
+  for (const failure of dispatchFailures) {
+    try {
+      await markDeviceDispatchFailed(patchJobId, failure.deviceId, failure.error);
+    } catch (error) {
+      console.error(
+        `[PatchJobExecutor] Failed to record dispatch failure for device ${failure.deviceId} `
+        + `of patch job ${patchJobId}:`,
+        error instanceof Error ? error.message : error,
       );
     }
   }
 
-  // Enqueue completion checker (35 min delay)
-  const queue = getPatchJobQueue();
-  const completionJobId = getPatchJobCompletionId(patchJobId);
-  const existingCompletion = await resolveActiveQueueJob(queue, [completionJobId]);
-  if (!existingCompletion) {
-    await queue.add(
-      'check-completion',
-      { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
-      { ...PATCH_JOB_COMPLETION_RETENTION, delay: 35 * 60 * 1000, jobId: completionJobId }
+  if (dispatchFailures.length > 0) {
+    const message =
+      `[PatchJobExecutor] Patch job ${patchJobId} could not dispatch `
+      + `${dispatchFailures.length} of ${deviceIds.length} device(s); they are recorded as failed`;
+    captureException(
+      new PatchDeviceDispatchError(message, { cause: dispatchFailures[0]?.error }),
+      undefined,
+      { patch_reconcile_stage: 'device_dispatch_failed' },
     );
   }
 
-  return { dispatched: deviceIds.length };
+  // Enqueue completion checker (35 min delay). This is the backstop that fails
+  // a run whose devices never report, so losing it is what turns a wedged
+  // dispatch into a row that sits in `running` forever. A wedged stable id
+  // therefore falls back to a fresh, unique id rather than giving up:
+  // processCheckCompletion re-reads the row and no-ops unless it is still
+  // `running`, so a duplicate checker is harmless, while no checker is not.
+  await enqueueCompletionCheck(patchJobId);
+
+  return {
+    dispatched: deviceIds.length - dispatchFailures.length,
+    dispatchFailed: dispatchFailures.length,
+  };
+}
+
+/**
+ * Schedule the 35-minute completion check, tolerating a queue id we cannot
+ * clear. Never throws: it is called after the row is already `running`, where
+ * an escaping error is unrecoverable (see the fan-out comment above).
+ */
+async function enqueueCompletionCheck(patchJobId: string): Promise<void> {
+  const queue = getPatchJobQueue();
+  const completionJobId = getPatchJobCompletionId(patchJobId);
+  const completionOptions = {
+    ...PATCH_JOB_COMPLETION_RETENTION,
+    delay: 35 * 60 * 1000,
+  };
+
+  try {
+    const existingCompletion = await resolveActiveQueueJob(queue, [completionJobId]);
+    if (!existingCompletion) {
+      await queue.add(
+        'check-completion',
+        { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
+        { ...completionOptions, jobId: completionJobId }
+      );
+    }
+    return;
+  } catch (error) {
+    console.error(
+      `[PatchJobExecutor] Could not schedule the completion check for patch job ${patchJobId} `
+      + 'on its stable id; retrying under a unique id:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  // Fallback: the stable id is occupied by something we could not remove, so
+  // re-adding it would be a silent no-op. A unique id is not idempotent, but a
+  // second checker only re-reads the row, and the alternative is a `running`
+  // row that nothing will ever finalize.
+  const fallbackJobId = `${completionJobId}-retry-${Date.now()}`;
+  try {
+    await queue.add(
+      'check-completion',
+      { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
+      { ...completionOptions, jobId: fallbackJobId }
+    );
+    captureException(
+      new PatchCompletionCheckError(
+        `[PatchJobExecutor] Completion check for patch job ${patchJobId} was scheduled under a `
+        + 'fallback id because its stable queue id could not be cleared',
+      ),
+      undefined,
+      { patch_reconcile_stage: 'completion_check_fallback' },
+    );
+  } catch (error) {
+    // Both ids failed — the row will stay `running` with no backstop until an
+    // operator intervenes. Page-worthy, and the only remaining signal.
+    const message =
+      `[PatchJobExecutor] Patch job ${patchJobId} is running with NO completion check scheduled; `
+      + 'it cannot time out on its own';
+    console.error(`${message}:`, error instanceof Error ? error.message : error);
+    captureException(
+      new PatchCompletionCheckError(message, { cause: error }),
+      undefined,
+      { patch_reconcile_stage: 'completion_check_lost' },
+    );
+  }
+}
+
+/**
+ * Record a device we could never hand to the per-device queue as a failed
+ * result, mirroring markDeviceSkipped but counting toward `devicesFailed` —
+ * a device that was never dispatched did not succeed, and calling it "skipped"
+ * (which counts as completed) would let the run finish green.
+ */
+async function markDeviceDispatchFailed(
+  patchJobId: string,
+  deviceId: string,
+  error: unknown,
+): Promise<void> {
+  await db.insert(patchJobResults).values({
+    jobId: patchJobId,
+    deviceId,
+    patchId: '00000000-0000-0000-0000-000000000000',
+    status: 'failed',
+    startedAt: new Date(),
+    completedAt: new Date(),
+    errorMessage: `dispatch_failed: ${error instanceof Error ? error.message : String(error)}`,
+    rebootRequired: false,
+  });
+
+  await db
+    .update(patchJobs)
+    .set({
+      devicesFailed: sql`${patchJobs.devicesFailed} + 1`,
+      devicesPending: sql`${patchJobs.devicesPending} - 1`,
+    })
+    .where(eq(patchJobs.id, patchJobId));
+
+  await checkAndFinalizeJob(patchJobId);
 }
 
 async function processCheckCompletion(data: CheckCompletionData): Promise<unknown> {
@@ -1107,3 +1317,13 @@ export async function shutdownPatchJobWorkers(): Promise<void> {
   patchJobQueue = null;
   patchJobDeviceQueue = null;
 }
+
+/**
+ * Module-level state that the reconcile dedup depends on. Exposed so suites can
+ * start each case from a clean slate — the executor is a process singleton.
+ */
+export const __testOnly = {
+  resetWedgedJobReporting(): void {
+    reportedWedgedJobIds.clear();
+  },
+};

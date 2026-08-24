@@ -58,6 +58,28 @@ function tagJobExecution(worker: Worker, name: string): void {
 }
 
 /**
+ * Every label that may ever become a `worker_failure_reason` tag value.
+ *
+ * A registry, not documentation: `reason` below is the derived union, so a
+ * classifier that returns an unregistered label — or, the hazard this closes,
+ * an interpolated one like `desktop_stop_pending_${job.id}` — fails `tsc`
+ * rather than shipping a per-session tag value into Sentry. The tag is
+ * allowlisted through `scrubEvent` on the promise that it is a closed set of
+ * hardcoded labels; `isBoundedTagValue` only bounds LENGTH, so it would pass a
+ * UUID happily. This array is what actually keeps that promise.
+ *
+ * Adding a reason is deliberately a two-line edit here plus the classifier.
+ */
+export const WORKER_FAILURE_REASONS = [
+  /** desktopSessionFinalizationWorker: agent has not acked `desktop_stream_stop` yet. */
+  'desktop_stop_pending',
+  /** desktopSessionFinalizationWorker: another finalizer already released the intent. */
+  'desktop_intent_already_released',
+] as const;
+
+export type WorkerFailureReason = (typeof WORKER_FAILURE_REASONS)[number];
+
+/**
  * How a worker wants ONE of its own failure modes reported (BREEZE-1J).
  *
  * The default — every rejection of every attempt captured at error level — is
@@ -77,9 +99,10 @@ export interface WorkerFailureClassification {
   /**
    * Closed, hardcoded label for this failure mode — becomes the
    * `worker_failure_reason` tag. Must never carry a tenant, device, session or
-   * job identifier: it is a discriminator, not a payload.
+   * job identifier: it is a discriminator, not a payload. Enforced by the
+   * union, not by convention.
    */
-  reason: string;
+  reason: WorkerFailureReason;
   /** `warning` for an expected, self-healing condition; `error` otherwise. */
   level: 'warning' | 'error';
   /**
@@ -94,6 +117,15 @@ export interface WorkerObservabilityOptions {
   /**
    * Classify a job failure. Return `null` (or omit the option entirely) to keep
    * the default error-level report on every attempt.
+   *
+   * MUST NOT combine `reportOnlyWhenExhausted: true` with a handler that calls
+   * `job.discard()` for the same condition, unless you have verified
+   * `hasExhaustedAttempts` recognises it. `discard()` stops BullMQ retrying
+   * WITHOUT advancing `attemptsMade` to the ceiling, so a held report would
+   * never be released by a later attempt — the event would be dropped entirely
+   * rather than deferred. `hasExhaustedAttempts` reads `job.discarded` for
+   * exactly this reason; a future BullMQ that renames that field would put the
+   * combination back in the danger zone.
    */
   classifyFailure?: (
     job: Job | undefined,
@@ -106,9 +138,25 @@ export interface WorkerObservabilityOptions {
  * incremented when `failed` fires, so the final attempt is the one where it has
  * reached the configured ceiling. Unknown job shape → treat as exhausted, so an
  * unrecognised BullMQ version reports MORE rather than swallowing the report.
+ *
+ * BullMQ stops retrying for three reasons, and holding a report on a job that
+ * will never run again drops it permanently rather than deferring it:
+ *   1. `attemptsMade` reached `opts.attempts` — the ceiling check below;
+ *   2. the handler called `job.discard()` — `discarded` is set on the instance
+ *      the `failed` listener receives, and `attemptsMade` may still be 1 of 5.
+ *      It is `protected` in BullMQ's typings (an internal, not part of the
+ *      public surface), hence the structural read;
+ *   3. a custom backoff strategy returned -1. That is NOT modelled: the
+ *      strategy lives on the worker's options, not on the job, so it cannot be
+ *      evaluated here without re-running it. The two workers that define one
+ *      (softwareRemediationWorker, softwareComplianceWorker) return
+ *      `Math.min(attemptsMade * 5000, 30000)`, which can never be -1, and
+ *      neither classifies failures. A worker whose strategy CAN return -1 must
+ *      not use `reportOnlyWhenExhausted`.
  */
 function hasExhaustedAttempts(job: Job | undefined): boolean {
   if (!job) return true;
+  if ((job as unknown as { discarded?: boolean }).discarded === true) return true;
   const attempts = job.opts?.attempts ?? 1;
   const made = job.attemptsMade ?? 0;
   if (!Number.isFinite(attempts) || !Number.isFinite(made)) return true;

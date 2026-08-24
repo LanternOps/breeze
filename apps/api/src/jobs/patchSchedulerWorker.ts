@@ -429,6 +429,14 @@ async function scanAndCreateJobs(): Promise<{
   scanned: number;
   enqueueJobIds: string[];
   staleScheduledJobs: StaleScheduledJob[];
+  /**
+   * False when the orphan-recovery read did not produce a complete answer, so
+   * `staleScheduledJobs` is empty for want of data rather than because nothing
+   * is orphaned. Required (not optional-defaulting-to-true) so a new caller has
+   * to state which it is: the two are indistinguishable downstream, and getting
+   * it wrong silently disables the BREEZE-1A stall escalation.
+   */
+  staleScheduledJobsComplete: boolean;
 }> {
   const now = new Date();
   let created = 0;
@@ -601,12 +609,26 @@ async function scanAndCreateJobs(): Promise<{
   // (see the worker). A failure here silently disables the backstop, so surface
   // it to Sentry, not just the console (#1379 worker-observability convention).
   let staleScheduledJobs: StaleScheduledJob[] = [];
+  let staleScheduledJobsComplete = true;
   try {
     staleScheduledJobs = await runWithSystemDbAccess(() => selectStaleScheduledJobIds(now));
   } catch (err) {
+    // Reporting the failure is NOT enough on its own. An empty list is
+    // indistinguishable from "nothing is orphaned", and the downstream sweep
+    // would treat it as a completed sweep and clear every streak — so under the
+    // pool pressure this repo already alerts on, one failed read every <=4
+    // minutes resets the counter before it reaches
+    // PATCH_RECONCILE_STALL_SWEEPS and the error-level stall escalation becomes
+    // unreachable, while the warning-level "new orphan" notice re-fires each
+    // time. That is a severity DOWNGRADE on a genuinely stranded run, i.e. the
+    // exact opposite of what BREEZE-1A asked for. The flag is what makes the
+    // sweep say "I don't know" instead of "all clear".
+    staleScheduledJobsComplete = false;
     const message = '[PatchScheduler] Failed to read stale scheduled jobs for reconcile';
     console.error(`${message}:`, err instanceof Error ? err.message : err);
-    captureException(err instanceof Error ? err : new Error(message));
+    captureException(err instanceof Error ? err : new Error(message), undefined, {
+      patch_reconcile_stage: 'stale_read_failed',
+    });
   }
 
   return {
@@ -614,6 +636,7 @@ async function scanAndCreateJobs(): Promise<{
     scanned: patchPoliciesWithSchedules.length,
     enqueueJobIds,
     staleScheduledJobs,
+    staleScheduledJobsComplete,
   };
 }
 
@@ -682,8 +705,11 @@ function reconcileRepeatBucket(sweeps: number): string {
  * Repeat sweeps below the threshold report nothing new — they are the same fact
  * as the notice already sent for that id, not a swallowed failure.
  *
- * Only called when the sweep ran to completion: a sweep that threw knows nothing
- * about which ids are still orphaned, so it must not clear anyone's streak.
+ * Only called for a sweep that actually ENUMERATED the orphan set. A sweep that
+ * threw, and equally one whose stale-jobs read failed (which yields the same
+ * empty list as a clean sweep), knows nothing about which ids are still
+ * orphaned — clearing streaks from it would hold the counter below
+ * PATCH_RECONCILE_STALL_SWEEPS forever and make the escalation unreachable.
  */
 function reportReconcileOutcome(recoveredIds: string[]): void {
   const recovered = new Set(recoveredIds);
@@ -759,6 +785,7 @@ async function enqueueScanResults(
   result: {
     enqueueJobIds: string[];
     staleScheduledJobs: StaleScheduledJob[];
+    staleScheduledJobsComplete: boolean;
   },
   now: Date = new Date()
 ): Promise<{ enqueued: number; recovered: number }> {
@@ -768,14 +795,30 @@ async function enqueueScanResults(
       await enqueuePatchJob(jobId);
       enqueued += 1;
     } catch (err) {
-      console.error(
-        `[PatchScheduler] Failed to enqueue patch job ${jobId}:`,
-        err instanceof Error ? err.message : err
-      );
+      const message = `[PatchScheduler] Failed to enqueue patch job ${jobId}`;
+      console.error(`${message}:`, err instanceof Error ? err.message : err);
+      // Console-only was defensible when the only escape here was a raw Redis
+      // `add` rejection. It is not now that enqueuePatchJob can throw
+      // StaleQueueJobRemovalError, which is a PROOF the job was not queued: the
+      // stable id is occupied by something that could not be cleared, so
+      // re-adding it is a silent no-op. The reconcile sweep deliberately skips
+      // that same wedged id (filterOrphanedJobIds), so there is no backstop —
+      // without this capture the run is lost with no Sentry event at all. The
+      // orphan-recovery loop below already reports the identical failure.
+      captureException(err instanceof Error ? err : new Error(message), undefined, {
+        patch_reconcile_stage: 'scheduled_enqueue_failed',
+      });
     }
   }
 
   const recoveredIds: string[] = [];
+  // A sweep may only clear streaks if it actually enumerated the orphan set.
+  // Two things can make it incomplete, and BOTH have to be honoured here: the
+  // DB read that produces staleScheduledJobs may have failed (empty list, not
+  // an empty answer — see scanAndCreateJobs), or the queue-state pass below may
+  // have thrown. The first is the one that bit us: filterOrphanedJobIds([])
+  // early-returns without throwing, so the try/catch alone reported a clean
+  // sweep on a read that never happened.
   let sweepCompleted = false;
   try {
     const orphaned = await filterOrphanedJobIds(result.staleScheduledJobs);
@@ -808,7 +851,11 @@ async function enqueueScanResults(
     });
   }
 
-  if (sweepCompleted) reportReconcileOutcome(recoveredIds);
+  // Both conditions, not just the try/catch: an incomplete sweep must leave the
+  // streak map exactly as it found it.
+  if (sweepCompleted && result.staleScheduledJobsComplete) {
+    reportReconcileOutcome(recoveredIds);
+  }
 
   return { enqueued, recovered: recoveredIds.length };
 }
@@ -829,7 +876,15 @@ function createSchedulerWorker(): Worker {
             _configPolicyTableWarningLogged = true;
             console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
           }
-          result = { created: 0, scanned: 0, enqueueJobIds: [], staleScheduledJobs: [] };
+          // No scan ran, so the orphan set was never enumerated — not "all
+          // clear". Streaks must survive a missing-tables cycle.
+          result = {
+            created: 0,
+            scanned: 0,
+            enqueueJobIds: [],
+            staleScheduledJobs: [],
+            staleScheduledJobsComplete: false,
+          };
         } else {
           throw error;
         }

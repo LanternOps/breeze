@@ -375,6 +375,7 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
     const result = await enqueueScanResults({
       enqueueJobIds: ['job-1'],
       staleScheduledJobs: [{ id: 'job-1', scheduledAt: now }, orphan],
+      staleScheduledJobsComplete: true,
     }, now);
 
     expect(filterOrphanedJobIds).toHaveBeenCalledWith([{ id: 'job-1', scheduledAt: now }, orphan]);
@@ -405,6 +406,7 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
     const result = await enqueueScanResults({
       enqueueJobIds: [],
       staleScheduledJobs: [futureOrphan],
+      staleScheduledJobsComplete: true,
     }, now);
 
     // 10:00 - 09:00 = 3,600,000ms remaining delay
@@ -422,6 +424,7 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
     const result = await enqueueScanResults({
       enqueueJobIds: ['job-fresh'],
       staleScheduledJobs: [orphan],
+      staleScheduledJobsComplete: true,
     }, now);
 
     // fresh enqueue threw → enqueued stays 0, but the orphan sweep still ran
@@ -437,6 +440,7 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
     const result = await enqueueScanResults({
       enqueueJobIds: [],
       staleScheduledJobs: [orphan],
+      staleScheduledJobsComplete: true,
     }, now);
 
     expect(result).toEqual({ enqueued: 0, recovered: 0 });
@@ -453,6 +457,7 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
     const result = await enqueueScanResults({
       enqueueJobIds: ['job-1'],
       staleScheduledJobs: [{ id: 'job-1', scheduledAt: now }],
+      staleScheduledJobsComplete: true,
     }, now);
 
     expect(result).toEqual({ enqueued: 1, recovered: 0 });
@@ -466,6 +471,7 @@ describe('enqueueScanResults orphan reconcile (#1733)', () => {
     const result = await enqueueScanResults({
       enqueueJobIds: ['job-1'],
       staleScheduledJobs: [{ id: 'job-1', scheduledAt: now }],
+      staleScheduledJobsComplete: true,
     }, now);
 
     expect(result).toEqual({ enqueued: 1, recovered: 0 });
@@ -496,7 +502,10 @@ describe('enqueueScanResults reconcile reporting (BREEZE-1A)', () => {
     vi.mocked(filterOrphanedJobIds).mockResolvedValueOnce(
       ids.map((id) => ({ id, scheduledAt: null })),
     );
-    return enqueueScanResults({ enqueueJobIds: [], staleScheduledJobs: [] }, now);
+    return enqueueScanResults(
+      { enqueueJobIds: [], staleScheduledJobs: [], staleScheduledJobsComplete: true },
+      now,
+    );
   }
 
   function noticeCalls() {
@@ -546,7 +555,7 @@ describe('enqueueScanResults reconcile reporting (BREEZE-1A)', () => {
     expect(stallCalls()).toHaveLength(0);
   });
 
-  it('does not clear streaks on a sweep that failed before it could enumerate orphans', async () => {
+  it('does not clear streaks when the queue-state pass itself throws', async () => {
     for (let sweep = 0; sweep < PATCH_RECONCILE_STALL_SWEEPS - 1; sweep += 1) {
       await sweepRecovering([orphan.id]);
     }
@@ -554,11 +563,99 @@ describe('enqueueScanResults reconcile reporting (BREEZE-1A)', () => {
     // it cleared the streak the stall would never be reachable under a flapping
     // Redis connection — exactly the condition that strands the row.
     vi.mocked(filterOrphanedJobIds).mockRejectedValueOnce(new Error('queue read failed'));
-    await enqueueScanResults({ enqueueJobIds: [], staleScheduledJobs: [] }, now);
+    await enqueueScanResults(
+      { enqueueJobIds: [], staleScheduledJobs: [], staleScheduledJobsComplete: true },
+      now,
+    );
 
     await sweepRecovering([orphan.id]);
 
     expect(stallCalls()).toHaveLength(1);
+  });
+
+  // The production shape of a failed sweep, and the one the try/catch could NOT
+  // see. When selectStaleScheduledJobIds rejects, scanAndCreateJobs hands back
+  // `staleScheduledJobs: []` — and filterOrphanedJobIds([]) early-returns []
+  // WITHOUT throwing (pinned by patchJobExecutor.test.ts,
+  // "filterOrphanedJobIds short-circuits on an empty list"), so nothing
+  // downstream can be mocked into
+  // rejecting here without inventing a failure that production never produces.
+  // The sweep therefore looked complete and wiped every streak. One failed read
+  // per <=4 minutes then holds the counter under PATCH_RECONCILE_STALL_SWEEPS
+  // forever: the error-level escalation becomes unreachable while the
+  // warning-level notice re-fires — a severity downgrade on a stranded run.
+  describe('a stale-jobs read that failed', () => {
+    beforeEach(() => {
+      // Real behaviour, not a convenience stub: `if (jobs.length === 0) return [];`
+      vi.mocked(filterOrphanedJobIds).mockImplementation(
+        async (jobs) => (jobs.length === 0 ? [] : jobs),
+      );
+    });
+
+    async function failedReadSweep() {
+      return enqueueScanResults(
+        // Exactly what scanAndCreateJobs returns when the read rejects — see
+        // patchSchedulerWorker.dbcontext.test.ts for that half of the chain.
+        { enqueueJobIds: [], staleScheduledJobs: [], staleScheduledJobsComplete: false },
+        now,
+      );
+    }
+
+    it('leaves the streak intact instead of reporting an all-clear sweep', async () => {
+      for (let sweep = 0; sweep < PATCH_RECONCILE_STALL_SWEEPS - 1; sweep += 1) {
+        await sweepRecovering([orphan.id]);
+      }
+
+      await failedReadSweep();
+      await sweepRecovering([orphan.id]);
+
+      // Streak survived the blind sweep and reached the threshold.
+      expect(stallCalls()).toHaveLength(1);
+    });
+
+    it('keeps the stall escalation reachable when reads fail between every sweep', async () => {
+      for (let sweep = 0; sweep < PATCH_RECONCILE_STALL_SWEEPS; sweep += 1) {
+        await sweepRecovering([orphan.id]);
+        await failedReadSweep();
+      }
+
+      // Before the fix: every failed read reset the streak to 0, so `sweeps`
+      // never passed 1 — no stall event ever, and one fresh-orphan WARNING per
+      // recovery instead.
+      expect(stallCalls()).toHaveLength(1);
+      expect(noticeCalls()).toHaveLength(1);
+    });
+
+    it('reports nothing new of its own — the read failure is reported by the scan', async () => {
+      await sweepRecovering([orphan.id]);
+      vi.mocked(captureException).mockClear();
+
+      await failedReadSweep();
+
+      expect(captureException).not.toHaveBeenCalled();
+    });
+  });
+
+  // The primary enqueue path. enqueuePatchJob can now throw
+  // StaleQueueJobRemovalError, which PROVES the job was not queued — and the
+  // reconcile sweep deliberately skips that same wedged id, so console-only
+  // logging left a lost run with no Sentry event anywhere.
+  it('reports a failure to enqueue a freshly created job', async () => {
+    vi.mocked(filterOrphanedJobIds).mockResolvedValueOnce([]);
+    const wedged = new Error('re-enqueuing this id would be a silent no-op');
+    vi.mocked(enqueuePatchJob).mockRejectedValueOnce(wedged);
+
+    const result = await enqueueScanResults(
+      { enqueueJobIds: ['job-new'], staleScheduledJobs: [], staleScheduledJobsComplete: true },
+      now,
+    );
+
+    expect(result).toEqual({ enqueued: 0, recovered: 0 });
+    expect(captureException).toHaveBeenCalledWith(
+      wedged,
+      undefined,
+      { patch_reconcile_stage: 'scheduled_enqueue_failed' },
+    );
   });
 
   it('counts distinct new orphans in one sweep as a single notice', async () => {
