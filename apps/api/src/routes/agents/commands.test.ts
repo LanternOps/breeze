@@ -983,8 +983,8 @@ describe('agent commands routes', () => {
 
       expect(captureMessage).toHaveBeenCalledTimes(1);
       const call = vi.mocked(captureMessage).mock.calls[0]!;
-      expect(call[1]).toBe('warning');
-      expect(call[3]).toEqual({
+      expect(call[1]?.eventCode).toBe('db_write_expecting_rows_zero');
+      expect(call[1]?.tags).toEqual({
         cas_label: 'device_commands.rest_result_terminal_cas',
         prior_status: 'failed:server-timeout',
       });

@@ -35,7 +35,7 @@ export class CeremonyError extends Error {
  * because the sole-operator self-approve gate on the server (approvals.ts)
  * REQUIRES an L3 proof and refuses a proofless approve.
  */
-function isNoApproverDeviceError(err: unknown): boolean {
+export function isNoApproverDeviceError(err: unknown): boolean {
   return (err as { name?: string } | null)?.name === 'NoApproverDeviceError';
 }
 
@@ -50,7 +50,7 @@ function errorToken(err: unknown): string | undefined {
 
 /** The server's L3 self-approve rejection (approvals.ts, 403). Same remedy as
  *  a missing authenticator: register a device — so it drives the same CTA. */
-function isStepUpRequired(err: unknown): boolean {
+export function isStepUpRequired(err: unknown): boolean {
   return errorToken(err) === 'step_up_required';
 }
 
@@ -63,14 +63,14 @@ function isStepUpRequired(err: unknown): boolean {
  * approve it on the /approvals surface. The submission itself worked, so it
  * must never surface as the generic `decideFailed` copy.
  */
-function isNotSoleApprover(err: unknown): boolean {
+export function isNotSoleApprover(err: unknown): boolean {
   return errorToken(err) === 'not_sole_approver';
 }
 
 /** Bare machine tokens the decide route emits in `error` (no `code`), mapped to
  *  translated copy. Without this the user is shown the literal token. Keys are
  *  spelled out as literals so the i18n key-usage scanner can see them. */
-function decideErrorCopy(token: string): string | undefined {
+export function decideErrorCopy(token: string): string | undefined {
   if (token === 'step_up_required') return i18n.t('ai:aiApprovalDialog.noApproverDevice');
   if (token === 'not_sole_approver') return i18n.t('ai:aiApprovalDialog.notSoleApprover');
   return undefined;
@@ -81,7 +81,8 @@ function decideErrorCopy(token: string): string | undefined {
  * (the inline chat self-approve, sole-operator case). Approve runs the
  * WebAuthn (Touch ID / Windows Hello) ceremony first — the server's L3
  * self-approve gate refuses a proofless approve — then POSTs the proof to the
- * existing decide endpoint. Deny needs no proof and skips the ceremony.
+ * existing decide endpoint. Deny needs no proof, skips the ceremony, and may
+ * carry the optional reason collected by the approvals inbox.
  *
  * Returns 'needs_device' when no approver device is registered (before any
  * network write) or when the server answers `step_up_required` — the caller
@@ -107,6 +108,7 @@ function decideErrorCopy(token: string): string | undefined {
 export async function decideIntentApproval(
   approvalRequestId: string,
   decision: 'approve' | 'deny',
+  reason?: string,
 ): Promise<IntentDecisionOutcome> {
   const body: Record<string, unknown> = {};
 
@@ -120,10 +122,15 @@ export async function decideIntentApproval(
       if (isNoApproverDeviceError(err)) return 'needs_device';
       throw new CeremonyError(err);
     }
+  } else if (reason?.trim()) {
+    body.reason = reason.trim();
   }
 
   try {
     await runAction({
+      // Kept inline rather than hoisted: the no-silent-mutations guard walks
+      // parents for an enclosing runAction call, so a hoisted thunk reads as an
+      // unwrapped mutation even when passed straight in.
       request: () =>
         fetchWithAuth(`/mobile/approvals/${approvalRequestId}/${decision}`, {
           method: 'POST',
@@ -131,6 +138,12 @@ export async function decideIntentApproval(
           skipUnauthorizedRetry: true,
         }),
       errorFallback: i18n.t('ai:aiApprovalDialog.decideFailed'),
+      // NO onUnauthorized here, deliberately. `treatUnauthorizedAsError` makes
+      // runAction skip its 401 branch entirely, so the callback would be dead
+      // code — and worse than dead: this route answers 401 for `assertion_failed`
+      // and `reauth_required`, which are WebAuthn PROOF rejections, not session
+      // expiry. Wiring a /login redirect here would bounce a user out of the app
+      // because their fingerprint scan failed.
       treatUnauthorizedAsError: true,
       friendly: decideErrorCopy,
       successMessage:

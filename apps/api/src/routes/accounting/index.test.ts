@@ -437,7 +437,10 @@ describe('accounting routes', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('connected=1');
     expect(mocks.captureException).not.toHaveBeenCalled();
-    expect(mocks.captureMessage).toHaveBeenCalledWith(expect.stringContaining('home currency'), 'warning', expect.anything());
+    expect(mocks.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('home currency'),
+      expect.objectContaining({ eventCode: 'accounting_home_currency_cas_lost' }),
+    );
   });
 
   it('a GENUINE home-currency write failure still reports an exception', async () => {

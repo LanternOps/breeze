@@ -128,6 +128,14 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
     // is load-bearing, not a tidy-up: it is the fix for the BREEZE-3/BREEZE-W
     // deadlock pair (pg 40P01, ~4k dropped software reports in 6 days).
     //
+    // BEFORE EDITING THE STATEMENT ORDER BELOW: this transaction's shape is
+    // half of a deadlock contract with the vulnerability correlation pass
+    // (BREEZE-1N). __tests__/integration/vulnerabilityCorrelationDeadlock
+    // .integration.test.ts hand-mirrors these statements to prove the cycle is
+    // closed; it cannot see a change made here, so a reordering would return
+    // the deadlock to production with that suite still green. Update the
+    // mirror in the same PR.
+    //
     // This select covers exactly the findings the DELETE below will touch via
     // the ON DELETE SET NULL cascade, and exactly the ones the re-link UPDATEs
     // touch afterwards. Without the locking clause this transaction acquired

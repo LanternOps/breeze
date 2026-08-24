@@ -88,4 +88,25 @@ describe('draftTicketFromTranscript', () => {
 
     expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1');
   });
+
+  it('uses an injected resolved client without resolving a second time', async () => {
+    createMock.mockResolvedValueOnce(reply({
+      subject: 'S',
+      problemSummary: 'P',
+      resolutionSummary: '',
+      wasFixed: false,
+      suggestedTimeMinutes: 5,
+    }));
+
+    await draftTicketFromTranscript({
+      messages: transcript,
+      contextSnapshot: null,
+      elapsedMinutes: 5,
+      model: 'claude-x',
+      partnerId: 'partner-1',
+      client: { messages: { create: createMock } } as any,
+    });
+
+    expect(getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+  });
 });

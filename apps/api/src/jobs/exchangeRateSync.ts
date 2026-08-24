@@ -95,9 +95,9 @@ export async function syncEcbExchangeRates(): Promise<ExchangeRateSyncStats> {
     console.warn(`[ExchangeRateSync] Rejected ${fetched.rejected.length} unusable row(s) — ${detail}`);
     captureMessage(
       `[ExchangeRateSync] rejected ${fetched.rejected.length} unusable provider row(s)`,
-      'warning',
-      { rejected: fetched.rejected },
-      { job: 'exchange-rate-sync' },
+      {
+        eventCode: 'exchange_rate_rows_rejected',
+      },
     );
   }
 

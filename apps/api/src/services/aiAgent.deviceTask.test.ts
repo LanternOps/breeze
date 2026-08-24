@@ -81,7 +81,10 @@ describe('createSession device binding', () => {
     await createSession(auth, {});
 
     expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith('org-111');
-    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-opus-4-6' }));
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'claude-opus-4-6',
+      billingSource: 'partner_key',
+    }));
   });
 
   it('preserves an explicit model over the resolved partner default', async () => {

@@ -1,0 +1,34 @@
+{
+  "title": "Onaylar",
+  "description": "Kararınızı bekleyen yüksek etkili işlemleri inceleyin.",
+  "loading": "Onaylar yükleniyor…",
+  "loadError": "Onaylar yüklenemedi. Yeniden deneyin.",
+  "retry": "Yeniden dene",
+  "empty": {
+    "title": "Bekleyen onay yok",
+    "description": "Kararınız gerektiğinde yeni istekler burada görünür."
+  },
+  "requestedBy": "İsteyen: {{client}}",
+  "risk": {
+    "low": "Düşük risk",
+    "medium": "Orta risk",
+    "high": "Yüksek risk",
+    "critical": "Kritik risk"
+  },
+  "denyPrompt": "Bu isteği neden reddediyorsunuz? Gerekçe isteğe bağlıdır.",
+  "denyReasonPlaceholder": "İsteğe bağlı — isteği yapan kişiyle paylaşılır",
+  "confirmDeny": "Reddi onayla",
+  "cancel": "Vazgeç",
+  "deny": "Reddet",
+  "approve": "Onayla",
+  "deciding": "Gönderiliyor…",
+  "expiresIn": "{{minutes}} dk içinde sona erer",
+  "expiresSoon": "Bir dakikadan kısa sürede sona erer",
+  "errors": {
+    "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
+    "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
+    "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
+    "decisionFailed": "Karar gönderilemedi. Yeniden deneyin."
+  },
+  "registerDevice": "Cihazı kaydet"
+}

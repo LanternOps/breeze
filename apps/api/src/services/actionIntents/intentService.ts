@@ -1,7 +1,9 @@
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { createNotification } from '../userNotifications';
+import { captureException } from '../sentry';
 import {
   actionIntents,
   intentOutbox,
@@ -670,6 +672,43 @@ export async function createActionIntent(
       const approvalId = creation.approvalRequestIds[i];
       const userId = creation.fanOutUserIds[i];
       if (!approvalId || !userId) continue;
+      // In-app FIRST, then push. getUserPushTokens reads mobile_devices
+      // exclusively, so before wave 2 an approver with no enrolled phone was
+      // notified by NOTHING — no row, no email, no event — while the push
+      // failure was swallowed to console.error. The in-app row is the channel
+      // that always exists, so it must not be downstream of the phone lookup.
+      try {
+        // runOutsideDbContext first: a bare system wrapper inside an ambient
+        // request context is a passthrough (db/index.ts ~440), and this
+        // cross-user insert would then 42501 into the catch below.
+        await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+          createNotification({
+            userId,
+            orgId,
+            type: 'approval',
+            priority: 'high',
+            title: 'Approval requested',
+            message: `${requestingClientLabel}: ${targetSummary}`,
+            link: '/approvals',
+            metadata: { approvalId, intentId: creation.intent.id },
+            // Survives outbox/BullMQ redelivery: one approver, one intent, one
+            // row in the bell.
+            dedupeKey: `intent-approval:${creation.intent.id}`,
+          })));
+      } catch (err) {
+        // Sentry, not just console.error. This is the highest-stakes swallow in
+        // the wave: it is the ONLY channel a phoneless approver has, and the
+        // wave exists because the equivalent push failure was console.error-only
+        // and nobody found out for months. Every neighbouring file in this
+        // subsystem pairs the log with captureException; this one must too.
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error(
+          `[intentService] in-app approval notification failed ` +
+            `(intent=${creation.intent.id} approval=${approvalId} user=${userId})`,
+          err,
+        );
+      }
+
       try {
         const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
         await dispatchApprovalPushToTokens(tokens, {

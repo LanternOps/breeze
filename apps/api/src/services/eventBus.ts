@@ -114,7 +114,11 @@ export type EventType =
   | 'ai.agent.run.awaiting_approval'
   | 'ai.agent.run.completed'
   | 'ai.agent.run.failed'
-  | 'ai.agent.run.skipped';
+  | 'ai.agent.run.skipped'
+  // Wave 2 (#3823). Addressed to ONE user, never broadcast — see
+  // publishUserEvent, which deliberately does not use the ordinary publish
+  // path. Two segments so it stays subscribable under EVENT_TYPE_RE.
+  | 'notification.created';
 
 export type EventPriority = 'low' | 'normal' | 'high' | 'critical';
 
@@ -122,6 +126,11 @@ export interface BreezeEvent<T = Record<string, unknown>> {
   id: string;
   type: EventType;
   orgId: string;
+  /**
+   * When set, this event is addressed to exactly one user and the WS layer must
+   * deliver it to that user alone. Only ever set by publishUserEvent.
+   */
+  audienceUserId?: string;
   /**
    * Site this event is attributable to, when known. Used by the events WS
    * layer to deliver in-site events to site-restricted users (the app-layer
@@ -307,6 +316,56 @@ class EventBus {
       // This handles the case where startConsuming() hasn't been called
       await this.invokeLocalHandlers(event as BreezeEvent);
 
+      return eventId;
+    });
+  }
+
+  /**
+   * Publish an event addressed to ONE user.
+   *
+   * This deliberately does NOT go through `publish()`. That path also writes
+   * the org's Redis STREAM (persisted, MAXLEN-capped), the GLOBAL cross-org
+   * channel that webhook delivery subscribes to, and every local wildcard
+   * handler (webhookDelivery, automationWorker). A private notification taking
+   * that route would be persisted for anything reading the stream, could be
+   * forwarded to a customer's webhook endpoint, and could trigger automations
+   * — none of which the recipient consented to.
+   *
+   * So this writes exactly one thing: the live pub/sub channel the WS
+   * dispatcher reads. The transport is still org-wide (that is how the
+   * dispatcher is built), which is why the payload must stay CONTENT-FREE — a
+   * notification id and nothing else. The client refetches through
+   * GET /notifications, which is behind RLS. That way the filter is not the
+   * only thing standing between one user's notification and another's screen:
+   * even a mis-delivered event carries nothing worth having.
+   */
+  async publishUserEvent(
+    type: EventType,
+    orgId: string,
+    audienceUserId: string,
+    payload: Record<string, unknown>,
+    source: string,
+  ): Promise<string> {
+    const eventId = randomUUID();
+    const event: BreezeEvent = {
+      id: eventId,
+      type,
+      orgId,
+      audienceUserId,
+      source,
+      priority: 'normal',
+      payload,
+      metadata: {
+        correlationId: eventId,
+        timestamp: new Date().toISOString(),
+      },
+    };
+
+    // Same reason as publish(): never hold a Postgres transaction open across
+    // Redis-bound work.
+    return runOutsideDbContext(async () => {
+      const redis = this.getOrCreateRedis();
+      await redis.publish(`${STREAM_PREFIX}:live:${orgId}`, JSON.stringify(event));
       return eventId;
     });
   }
@@ -724,4 +783,7 @@ export const EVENT_TYPES = {
   AI_AGENT_RUN_COMPLETED: 'ai.agent.run.completed' as const,
   AI_AGENT_RUN_FAILED: 'ai.agent.run.failed' as const,
   AI_AGENT_RUN_SKIPPED: 'ai.agent.run.skipped' as const,
+  // Wave 2 (#3823). Addressed to one user via publishUserEvent — never
+  // broadcast, never written to the stream or the global channel.
+  NOTIFICATION_CREATED: 'notification.created' as const,
 };

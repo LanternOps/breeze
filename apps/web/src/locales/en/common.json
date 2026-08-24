@@ -4,6 +4,10 @@
     "dashboard": "Dashboard",
     "devices": "Devices",
     "alerts": "Alerts",
+    "approvals": "Approvals",
+    "pendingApprovals": "{{count}} pending approvals",
+    "pendingApprovals_one": "{{count}} pending approval",
+    "pendingApprovals_other": "{{count}} pending approvals",
     "tickets": "Tickets",
     "incidents": "Incidents",
     "remoteAccess": "Remote Access",
@@ -700,7 +704,20 @@
       "recently": "Recently",
       "markUnread": "Mark unread",
       "markRead": "Mark read",
-      "preferences": "Notification preferences"
+      "preferences": "Notification preferences",
+      "types": {
+        "alert": "Alert",
+        "device": "Device",
+        "script": "Script",
+        "automation": "Automation",
+        "system": "System",
+        "user": "User",
+        "security": "Security",
+        "ticket": "Ticket",
+        "approval": "Approval",
+        "ai": "AI",
+        "unknown": "Notification"
+      }
     },
     "sidebar": {
       "autoHide": "Auto-hide sidebar",

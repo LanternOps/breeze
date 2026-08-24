@@ -89,6 +89,19 @@ async function readPartnerLlmConfig(partnerId: string) {
   );
 }
 
+async function partnerLlmConfigExists(partnerId: string): Promise<boolean> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .select({ id: partnerLlmConfigs.id })
+        .from(partnerLlmConfigs)
+        .where(eq(partnerLlmConfigs.partnerId, partnerId))
+        .limit(1);
+      return row !== undefined;
+    }),
+  );
+}
+
 export async function resolveLlmConfig(partnerId: string | null): Promise<ResolvedLlmConfig> {
   const platform = (): ResolvedLlmConfig => ({
     source: 'platform',
@@ -152,6 +165,25 @@ export async function resolveLlmConfigForOrg(orgId: string): Promise<ResolvedLlm
   return resolveLlmConfig(partnerId ?? null);
 }
 
+export async function getLlmBillingSourceForOrg(
+  orgId: string,
+): Promise<'platform' | 'partner_key'> {
+  try {
+    const partnerId = await readOrganizationPartnerId(orgId);
+    if (!partnerId) return 'platform';
+    return await partnerLlmConfigExists(partnerId) ? 'partner_key' : 'platform';
+  } catch (error) {
+    try {
+      captureAtMostHourly(`billing-source:${orgId}`, () => {
+        captureException(error, undefined, { service: 'llmConfigResolver', orgId });
+      });
+    } catch {
+      // Telemetry must not break this conservative, read-only billing fallback.
+    }
+    return 'platform';
+  }
+}
+
 export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
 
 /**
@@ -194,12 +226,9 @@ export async function getAnthropicClientForPartner(partnerId: string | null): Pr
   if (!resolved.apiKey?.trim()) {
     const error = new LlmUnavailableError('AI is not configured on this deployment.');
     captureAtMostHourly('blank-platform-key:platform', () => {
-      captureMessage(
-        'AI is not configured on this deployment.',
-        'warning',
-        undefined,
-        { service: 'llmConfigResolver' },
-      );
+      captureMessage('AI is not configured on this deployment.', {
+        eventCode: 'llm_platform_key_missing',
+      });
     });
     throw error;
   }
