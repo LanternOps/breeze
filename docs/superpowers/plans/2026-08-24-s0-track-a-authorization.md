@@ -318,53 +318,202 @@ git add apps/api/src/routes/backup apps/api/src/services/recoveryMediaService.ts
 git commit -m "fix(api): enforce site scope across recovery routes"
 ```
 
-### Task 7: Revalidate queued recovery work
+### Task 7: Persist and rehydrate queued recovery authorization subjects
 
 **Files:**
 - Modify: `apps/api/src/db/schema/backup.ts`
 - Modify: `apps/api/src/db/schema/recoveryTokens.ts`
+- Modify: `apps/api/src/db/schema/drPlans.ts`
+- Modify: `apps/api/src/db/schema/c2c.ts`
 - Create: `apps/api/migrations/2026-08-24-recovery-authorization-subject.sql`
-- Modify: `apps/api/src/jobs/recoveryMediaWorker.ts`
-- Modify: `apps/api/src/jobs/recoveryBootMediaWorker.ts`
-- Test: adjacent worker tests and `apps/api/src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts`
+- Create: `apps/api/src/services/recoveryAuthorizationSubject.ts`
+- Create: `apps/api/src/services/recoveryAuthorizationSubject.test.ts`
+- Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts`
+- Test: migration, export-policy, and RLS integration contracts
 
 **Interfaces:**
-- Job input carries stable initiating principal identity and authorization revision.
-- Every worker invokes Task 5 immediately before provider/queue/command side effects.
-- Legacy jobs without a recoverable subject transition to `quarantined_authorization_unknown`.
+- Durable work rows embed `authorizationPrincipalKind`, stable `authorizationPrincipalId`, `authorizationGrantRevision`, `authorizationState`, `authorizationDenialCode`, and `authorizationCheckedAt`; no mutable permission snapshot is authoritative.
+- Principal IDs identify the actual user, API key, OAuth grant, AI run, or an allowlisted versioned system reason. `agent`, `helper`, and unknown identities are not accepted authorization subjects.
+- `captureRecoveryAuthorizationSubject`, `rehydrateRecoveryAuthorizationSubject`, and `authorizeQueuedRecoveryWork` reload live principal status, delegated scope/base permission, and Task 5 lineage on every attempt.
+- Matching revisions are audit evidence only and never skip live authorization. Known denial is non-retriable; transient dependency failure remains retriable.
+- Legacy nonterminal work with no safely recoverable subject becomes `quarantined_authorization_unknown`; terminal history becomes `not_required` without rewriting operational status.
 
-- [ ] **Step 1: Write failing queued/retry tests**
+- [ ] **Step 1: Write RED schema, migration, and subject-resolution tests**
 
-Cover site access revoked after enqueue, source moved after enqueue, delayed retry, API-key/service-principal subject, and a legacy job without subject. Assert zero provider calls, queues and device commands after denial; assert the job's durable quarantined/denied state.
+Cover active and disabled users; human and service-principal API keys; revoked/expired OAuth grants and blocked clients; disabled AI runs/effective policy changes; allowlisted system reasons; rejected unknown/system strings; revision drift; and transient lookup failure. Assert no subject can be reconstructed from `createdBy`/`initiatedBy` alone.
 
 - [ ] **Step 2: Run RED**
 
 ```bash
-pnpm --filter @breeze/api exec vitest run src/jobs/*restore*.test.ts src/jobs/*recovery*.test.ts
-pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts
+pnpm --filter @breeze/api exec vitest run src/services/recoveryAuthorizationSubject.test.ts src/db/autoMigrate.test.ts
+pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/rls-coverage.integration.test.ts
 ```
 
-Expected: queued work currently lacks subject/revalidation and the denial assertions fail.
+Expected: the subject tuple/service/migration do not exist and the new export/migration assertions fail.
 
-- [ ] **Step 3: Add additive subject storage and worker gate**
+- [ ] **Step 3: Implement additive storage and live rehydration**
 
-Use existing actor/principal storage patterns. Register any added columns in tenant export policy, classifying open JSON as `excludedOpen`. Quarantine legacy jobs and revalidate current subject/grant/site lineage immediately before each irreversible boundary.
+Use idempotent `ADD COLUMN IF NOT EXISTS`, checked kind/state allowlists, and claim indexes. Add `operationKind` to C2C jobs so sync and restore are not conflated. Register ordinary subject fields in tenant export policy. Do not create a polymorphic subject table and do not grant service API keys through their creators. Base permission/delegated scope and current site lineage are both required.
 
-- [ ] **Step 4: Run GREEN and Track A regression suites**
+- [ ] **Step 4: Run GREEN plus migration contracts**
+
+Run the RED commands plus:
 
 ```bash
-pnpm --filter @breeze/api exec vitest run src/services/automationReferenceAuthorization.test.ts src/services/resilienceSiteAuthorization.test.ts src/routes/automations.test.ts src/routes/backup/restore.test.ts src/routes/backup/vmrestore.test.ts src/routes/backup/hyperv.test.ts src/routes/backup/mssql.test.ts src/routes/backup/bmr.test.ts src/jobs/*restore*.test.ts src/jobs/*recovery*.test.ts
-pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/automationResourceBindings.integration.test.ts src/__tests__/integration/automationReferenceAuthorization.integration.test.ts src/__tests__/integration/resilienceSiteAuthorization.integration.test.ts src/__tests__/integration/resilienceRouteCoverage.integration.test.ts src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts src/__tests__/integration/rls-coverage.integration.test.ts
+bash scripts/check-migration-naming.sh
+pnpm --filter @breeze/api check:migrations
 pnpm db:check-drift
 ```
-
-Expected: every named test file is reported as executed and passes; drift check passes.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src apps/api/migrations/2026-08-24-recovery-authorization-subject.sql
-git commit -m "fix(workers): reauthorize queued recovery work"
+git add apps/api/src/db apps/api/src/services/recoveryAuthorizationSubject.ts apps/api/src/services/recoveryAuthorizationSubject.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration apps/api/migrations/2026-08-24-recovery-authorization-subject.sql
+git commit -m "fix(db): persist recovery authorization subjects"
+```
+
+### Task 8: Reauthorize recovery media and boot-media work
+
+**Files:**
+- Modify: `apps/api/src/routes/backup/bmr.ts`
+- Modify: `apps/api/src/services/recoveryMediaService.ts`
+- Modify: `apps/api/src/services/recoveryBootMediaService.ts`
+- Modify: `apps/api/src/jobs/recoveryMediaWorker.ts`
+- Modify: `apps/api/src/jobs/recoveryBootMediaWorker.ts`
+- Modify: `apps/api/src/jobs/queueSchemas.ts` only if the queue envelope carries a diagnostic revision
+- Test: adjacent route/service/worker tests
+
+**Interfaces:**
+- New and explicitly retried media/boot work captures a complete current subject in the same transaction as the durable row/reset.
+- Workers reload the durable subject and authorize current source/target lineage immediately before atomically claiming `building`; queue payload permissions are never authority.
+- Denied and legacy-unknown work records a durable denial/quarantine and performs zero builder, storage, signing, provider, queue, or command effects.
+
+- [ ] **Step 1: Write failing producer/retry/worker tests**
+
+Cover revocation after enqueue, source device moved sites, delayed retry, a previously authorized retry, each supported principal kind, and a legacy unknown row. Assert literal zero builder/storage/signing calls and that observing an existing job does not replace its subject.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+pnpm --filter @breeze/api exec vitest run src/routes/backup/bmr.test.ts src/services/recoveryMediaService.test.ts src/jobs/recoveryMediaWorker.test.ts src/jobs/recoveryBootMediaWorker.test.ts
+```
+
+- [ ] **Step 3: Capture, rehydrate, authorize, and claim**
+
+Wire Task 7 at every producer and worker attempt. A retry requested by a different currently authorized caller replaces the prior subject atomically; passive reads do not. Use BullMQ `UnrecoverableError` for known authorization denial and preserve retries for transient failures.
+
+- [ ] **Step 4: Run GREEN and commit**
+
+```bash
+pnpm --filter @breeze/api exec vitest run src/routes/backup/bmr.test.ts src/services/recoveryMediaService.test.ts src/jobs/recoveryMediaWorker.test.ts src/jobs/recoveryBootMediaWorker.test.ts src/services/recoveryAuthorizationSubject.test.ts src/services/resilienceSiteAuthorization.test.ts
+git add apps/api/src/routes/backup/bmr.ts apps/api/src/services/recoveryMediaService.ts apps/api/src/services/recoveryBootMediaService.ts apps/api/src/jobs/recoveryMediaWorker.ts apps/api/src/jobs/recoveryBootMediaWorker.ts apps/api/src/jobs/queueSchemas.ts
+git commit -m "fix(workers): reauthorize recovery media builds"
+```
+
+### Task 9: Reauthorize delayed disaster-recovery reconciliation
+
+**Files:**
+- Modify: `apps/api/src/services/drExecutionService.ts`
+- Modify: `apps/api/src/jobs/drExecutionWorker.ts`
+- Modify: `apps/api/src/routes/dr.ts`
+- Modify: `apps/api/src/services/aiToolsDR.ts`
+- Modify: `apps/api/src/routes/agents/commands.ts`
+- Modify: `apps/api/src/routes/agentWs.ts`
+- Modify: `apps/api/src/jobs/staleCommandReaper.ts`
+- Test: adjacent DR, AI, agent-result, and stale-reaper tests
+
+**Interfaces:**
+- Replace mutable `results.authorizedDeviceIds` as dispatch authority with the durable Task 7 subject.
+- Preserve the subject through HTTP result, WebSocket result, stale-command recovery, and delayed self-reconcile entry points.
+- Reauthorize immediately before every command insertion and before scheduling each next cycle; denial creates neither commands nor follow-on jobs.
+
+- [ ] **Step 1: Write RED for all four re-entry paths**
+
+Cover site/base permission revoked between groups, source moved after first dispatch, delayed self-reconcile, HTTP and WebSocket result re-entry, stale reaper, and legacy unknown work. Assert no command insertion, running transition, or next queue after denial.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+pnpm --filter @breeze/api exec vitest run src/jobs/drExecutionWorker.test.ts src/services/drExecutionService.test.ts src/routes/dr.test.ts src/services/aiToolsDR.siteScope.test.ts src/jobs/staleCommandReaper.test.ts
+```
+
+- [ ] **Step 3: Persist and enforce the initiating subject**
+
+Capture for route and AI producers, rehydrate on every re-entry, and authorize live lineage at the command boundary. Keep snapshot fields only as audit context, never authority.
+
+- [ ] **Step 4: Run GREEN and commit**
+
+Run the RED command, then:
+
+```bash
+git add apps/api/src/services/drExecutionService.ts apps/api/src/jobs/drExecutionWorker.ts apps/api/src/routes/dr.ts apps/api/src/services/aiToolsDR.ts apps/api/src/routes/agents/commands.ts apps/api/src/routes/agentWs.ts apps/api/src/jobs/staleCommandReaper.ts
+git commit -m "fix(workers): reauthorize DR reconciliation"
+```
+
+### Task 10: Classify C2C restore and scheduled verification authority
+
+**Files:**
+- Modify: `apps/api/src/jobs/c2cEnqueue.ts`
+- Modify: `apps/api/src/jobs/c2cBackupWorker.ts`
+- Modify: `apps/api/src/routes/c2c/items.ts`
+- Modify: `apps/api/src/services/aiToolsC2C.ts`
+- Modify: `apps/api/src/jobs/backupVerificationJobs.ts`
+- Modify: scheduled verification route/service code
+- Test: adjacent C2C and scheduled-verification tests
+
+**Interfaces:**
+- C2C durable work explicitly distinguishes sync from restore. Restore producers capture a live Task 7 subject; unknown legacy restore work quarantines. Until provider restore is implemented, an unreauthorized restore branch remains hard-disabled before provider work.
+- Scheduled backup verification is explicit allowlisted system-origin work (`system-recovery-v1` or a narrower versioned reason) and revalidates current snapshot/device lineage before command insertion.
+- System classification is narrow and cannot be supplied by an ordinary request principal.
+
+- [ ] **Step 1: Write failing C2C/system-boundary tests**
+
+Cover user/API key/OAuth/AI revocation before C2C claim, foreign/moved C2C resources, sync versus restore, legacy unknown kind/subject, forged system reason, and scheduled verification whose current lineage no longer matches. Assert zero running claims, provider calls, and commands on denial.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+pnpm --filter @breeze/api exec vitest run src/jobs/c2cEnqueue.test.ts src/jobs/c2cBackupWorker.test.ts src/routes/c2c/items.test.ts src/services/aiToolsC2C.test.ts src/routes/backup/verificationScheduled.test.ts src/routes/backup/verificationService.test.ts
+```
+
+- [ ] **Step 3: Add explicit operation/system contracts**
+
+Wire supported C2C producers to Task 7, preserve hard-disable behavior for unimplemented restore provider work, and gate scheduled verification with only the allowlisted system subject plus live lineage.
+
+- [ ] **Step 4: Run GREEN and commit**
+
+Run the RED command, then:
+
+```bash
+git add apps/api/src/jobs/c2cEnqueue.ts apps/api/src/jobs/c2cBackupWorker.ts apps/api/src/routes/c2c/items.ts apps/api/src/services/aiToolsC2C.ts apps/api/src/jobs/backupVerificationJobs.ts apps/api/src/routes/backup
+git commit -m "fix(workers): classify queued recovery authority"
+```
+
+### Task 11: Prove queued recovery authorization end to end
+
+**Files:**
+- Create: `apps/api/src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts`
+- Modify: adjacent integration fixtures only as required
+
+- [ ] **Step 1: Write the real-PostgreSQL RED matrix before Tasks 8–10 GREEN**
+
+Use two partners, two organizations, and two sites. Exercise user, human API key, service-principal key, OAuth, AI, system, and unknown subjects; mutate grants/site/source between enqueue and attempt; and assert zero provider calls, BullMQ follow-on jobs, and `device_commands` after denial. Include media, boot media, DR, C2C restore, and scheduled verification.
+
+- [ ] **Step 2: Run the complete worker authorization matrix**
+
+```bash
+pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts src/__tests__/integration/resilienceSiteAuthorization.integration.test.ts src/__tests__/integration/lateCommandResultRecovery.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/rls-coverage.integration.test.ts
+```
+
+Expected: every named file reports executed and passes; no integration guard silently skips the new matrix.
+
+- [ ] **Step 3: Run all Track A targeted regressions and commit proof**
+
+```bash
+pnpm --filter @breeze/api exec vitest run src/services/automationReferenceAuthorization.test.ts src/services/resilienceSiteAuthorization.test.ts src/services/recoveryAuthorizationSubject.test.ts src/routes/automations.test.ts src/routes/backup/restore.test.ts src/routes/backup/vmrestore.test.ts src/routes/backup/hyperv.test.ts src/routes/backup/mssql.test.ts src/routes/backup/bmr.test.ts src/jobs/recoveryMediaWorker.test.ts src/jobs/recoveryBootMediaWorker.test.ts src/jobs/drExecutionWorker.test.ts src/jobs/c2cBackupWorker.test.ts src/routes/backup/verificationScheduled.test.ts
+pnpm db:check-drift
+git add apps/api/src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts
+git commit -m "test(api): prove queued recovery authorization"
 ```
 
 ## Track completion gate
