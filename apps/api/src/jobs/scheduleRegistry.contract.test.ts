@@ -38,7 +38,6 @@ import {
   JOB_SCHEDULES,
   COARSE_REPEAT_INTERVAL_MS,
   DAILY_REPEAT_INTERVAL_MS,
-  VULNERABILITY_JOBS_MINUTE_ZERO_DEBT,
   isStructurallyValidCron,
   jobSchedule,
 } from './scheduleRegistry';
@@ -533,19 +532,15 @@ describe('BullMQ repeatable schedule registry', { timeout: 60_000 }, () => {
   });
 
   it('never fires two coarse schedules in the same minute', () => {
-    // ONE pass over BOTH tiers. Splitting it by tier was the bug the first
-    // round of this test shipped with: it proved daily-vs-daily and
-    // hourly-vs-hourly while the hourly jobs quietly took out eleven daily
+    // ONE pass over BOTH tiers, with no allowlist. Splitting it by tier was the
+    // bug the first round of this test shipped with: it proved daily-vs-daily
+    // and hourly-vs-hourly while the hourly jobs quietly took out eleven daily
     // slots parked on minute 0 and three more on minute 15, every single day.
     const coarse = [...new Set(SITES.flatMap((s) => s.patterns))].filter(
       (p) => minimumGapMs(p) >= COARSE_REPEAT_INTERVAL_MS,
     );
     expect(coarse.length).toBeGreaterThan(40);
 
-    const hourlyRefresh = jobSchedule('vulnerability-risk-score-refresh');
-    const knownDebt = new Set(
-      VULNERABILITY_JOBS_MINUTE_ZERO_DEBT.map((key) => pairKey(hourlyRefresh, jobSchedule(key))),
-    );
     const collisions = new Set<string>();
     const record = (a: string, b: string): void => {
       if (a !== b) collisions.add(pairKey(a, b));
@@ -592,21 +587,13 @@ describe('BullMQ repeatable schedule registry', { timeout: 60_000 }, () => {
       }
     }
 
-    const unexpected = [...collisions].filter((pair) => !knownDebt.has(pair));
+    // No allowlist. Every coarse schedule in the API has its own minute.
     expect(
-      unexpected,
+      [...collisions],
       'Two coarse jobs co-firing is what saturated the 30-connection pool. Move '
       + 'one to a free minute in jobs/scheduleRegistry.ts — daily jobs use the '
-      + '(mod 5) == 3 lane, sub-daily jobs the (mod 5) == 2 lane.',
-    ).toEqual([]);
-
-    // The waiver list must not rot into a dumping ground: every entry has to be
-    // a collision that actually still happens.
-    const staleWaivers = [...knownDebt].filter((pair) => !collisions.has(pair));
-    expect(
-      staleWaivers,
-      'VULNERABILITY_JOBS_MINUTE_ZERO_DEBT entries that no longer collide — '
-      + 'delete them from the registry.',
+      + '(mod 5) == 3 lane, sub-daily jobs the (mod 5) == 2 lane. Do not add a '
+      + 'waiver list; the last one hid fourteen daily collisions.',
     ).toEqual([]);
   });
 

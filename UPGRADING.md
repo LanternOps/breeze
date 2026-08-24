@@ -9,7 +9,14 @@ production shared a single millisecond, and eleven of those were batched
 retention `DELETE`s competing for the same Postgres pool as live agent traffic.
 
 Those registrations are now explicit, staggered cron slots allocated in
-`apps/api/src/jobs/scheduleRegistry.ts`.
+`apps/api/src/jobs/scheduleRegistry.ts`. No two scheduled jobs that run hourly
+or less often share a firing minute any more — including the daily vulnerability
+feed syncs, which used to co-fire with the hourly risk-score refresh on minute 0
+(the 13:00 pair was holding database connections for ~128 s a day).
+
+Daily job times have therefore moved. If you monitor for a specific job's run
+time, the registry lists every slot; nothing runs on a schedule you can no longer
+see.
 
 **No Redis cleanup is needed.** Each job's initializer removes its queue's
 existing repeat entries before re-registering, so the first boot of the new API

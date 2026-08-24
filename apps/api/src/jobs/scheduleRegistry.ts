@@ -76,12 +76,11 @@ export const DAILY_REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
  */
 export const JOB_SCHEDULES = {
   // ---------------------------------------------------------------- daily tier
-  // Minutes ≡ 3 (mod 5). The six `vulnerability-*` slots below sit on minute 0
-  // instead — see VULNERABILITY_JOBS_MINUTE_ZERO_DEBT.
+  // Minutes ≡ 3 (mod 5), one job per (hour, minute).
   'device-metrics-retention': '3 0 * * *',
   'process-sample-retention': '23 0 * * *',
   'service-process-check-retention': '43 0 * * *',
-  'vulnerability-accept-expiry': '0 1 * * *',
+  'vulnerability-accept-expiry': '3 1 * * *',
   'reliability-scoring': '8 2 * * *',
   'backup-readiness-score': '18 2 * * *',
   'oauth-cleanup': '8 3 * * *',
@@ -103,12 +102,12 @@ export const JOB_SCHEDULES = {
   'ip-history-retention': '3 8 * * *',
   'ml-output-retention': '23 8 * * *',
   'user-risk-retention': '43 8 * * *',
-  'vulnerability-msrc-sync': '0 9 * * *',
+  'vulnerability-msrc-sync': '3 9 * * *',
   'abuse-signals-digest': '18 9 * * 1',
-  'vulnerability-nvd-sync': '0 10 * * *',
-  'vulnerability-kev-epss-sync': '0 11 * * *',
-  'vulnerability-sofa-sync': '0 12 * * *',
-  'vulnerability-correlate': '0 13 * * *',
+  'vulnerability-nvd-sync': '3 10 * * *',
+  'vulnerability-kev-epss-sync': '3 11 * * *',
+  'vulnerability-sofa-sync': '3 12 * * *',
+  'vulnerability-correlate': '3 13 * * *',
   'reliability-history-retention': '3 14 * * *',
   'playbook-execution-retention': '23 14 * * *',
   'cve-enrichment': '43 14 * * *',
@@ -117,7 +116,9 @@ export const JOB_SCHEDULES = {
   'exchange-rate-sync': '13 17 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
-  // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35.
+  // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
+  // belongs to the hourly risk-score refresh alone — nothing daily may sit on
+  // it, or the two co-fire once a day (that was the #3793 128-second pool hold).
   'vulnerability-risk-score-refresh': '0 * * * *',
   'security-posture-scan': '7 * * * *',
   'snmp-retention': '12 1,7,13,19 * * *',
@@ -134,34 +135,6 @@ export const JOB_SCHEDULES = {
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;
-
-/**
- * The one remaining set of same-minute collisions, and why it is still here.
- *
- * `vulnerability-risk-score-refresh` fires on minute 0 of every hour, and the
- * six daily `vulnerability-*` feed/expiry jobs all sit on minute 0 too, so each
- * of them co-fires with the hourly refresh once a day. The 13:00 pair
- * (`vulnerability-correlate` + the refresh) is the one recorded in the PR #3793
- * pool-alert investigation as holding pool connections for 128 seconds.
- *
- * These are NOT structurally inseparable — `RISK_SCORE_REFRESH_CRON` and the
- * daily constants are independent one-liners in `jobs/vulnerabilityJobs.ts`
- * driving independent `queue.add` calls on separate queues. Moving the six
- * daily jobs into the ≡ 3 (mod 5) lane is a six-line edit.
- *
- * It is not done in this PR only because `jobs/vulnerabilityJobs.ts` is owned by
- * concurrent work on another branch and editing it here would collide. The
- * contract test enforces cross-tier collision-freedom for everything else and
- * fails on any NEW entry added to this list.
- */
-export const VULNERABILITY_JOBS_MINUTE_ZERO_DEBT: readonly JobScheduleKey[] = [
-  'vulnerability-accept-expiry',
-  'vulnerability-msrc-sync',
-  'vulnerability-nvd-sync',
-  'vulnerability-kev-epss-sync',
-  'vulnerability-sofa-sync',
-  'vulnerability-correlate',
-];
 
 /**
  * Resolve an allocated slot. Prefer this over an inline pattern string so the
