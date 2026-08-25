@@ -7,7 +7,10 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => {}) }));
-vi.mock('../jobs/peripheralJobs', () => ({ schedulePeripheralPolicyDistribution: vi.fn(async () => {}) }));
+vi.mock('../jobs/peripheralJobs', () => ({
+  resolvePeripheralPolicyDeviceIds: vi.fn(async () => ['device-1']),
+  schedulePeripheralPolicyDevices: vi.fn(async () => ['job-1']),
+}));
 
 import { db } from '../db';
 import { registerPeripheralTools } from './aiToolsPeripherals';

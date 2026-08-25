@@ -89,7 +89,8 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 vi.mock('../jobs/peripheralJobs', () => ({
-  schedulePeripheralPolicyDistribution: vi.fn()
+  resolvePeripheralPolicyDeviceIds: vi.fn().mockResolvedValue(['device-1']),
+  schedulePeripheralPolicyDevices: vi.fn().mockResolvedValue(['job-1']),
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -110,7 +111,7 @@ vi.mock('../services/permissions', () => ({
 }));
 
 import { db } from '../db';
-import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
+import { schedulePeripheralPolicyDevices } from '../jobs/peripheralJobs';
 import { publishEvent } from '../services/eventBus';
 import { authMiddleware } from '../middleware/auth';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
@@ -218,6 +219,10 @@ describe('peripheralControl routes', () => {
     expect(body.data.id).toBe(policyId);
     expect(body.data.name).toBe('Block USB Storage');
     expect(body.data.deviceClass).toBe('storage');
+    expect(schedulePeripheralPolicyDevices).toHaveBeenCalledWith(
+      ['device-1'],
+      'policy-created',
+    );
   });
 
   it.each([-1, 1001, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects unsafe policy priority %s', async (priority) => {
@@ -444,7 +449,7 @@ describe('peripheralControl routes', () => {
     expect(body.error).toBe('No matching exception rule found');
   });
 
-  it('includes warning when distribution scheduling fails', async () => {
+  it('includes warning when device reconciliation scheduling fails', async () => {
     const created = { ...basePolicy };
 
     vi.mocked(db.insert).mockReturnValue({
@@ -453,7 +458,7 @@ describe('peripheralControl routes', () => {
       })
     } as any);
 
-    vi.mocked(schedulePeripheralPolicyDistribution).mockRejectedValueOnce(
+    vi.mocked(schedulePeripheralPolicyDevices).mockRejectedValueOnce(
       new Error('Redis connection lost')
     );
 
@@ -470,11 +475,10 @@ describe('peripheralControl routes', () => {
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.warning).toContain('distribution scheduling failed');
-    expect(body.warning).toContain(orgId);
+    expect(body.warning).toContain('reconciliation scheduling failed for 1 device(s)');
   });
 
-  it('includes both error messages when distribution and event publish fail', async () => {
+  it('includes both error messages when reconciliation and event publish fail', async () => {
     const created = { ...basePolicy };
 
     vi.mocked(db.insert).mockReturnValue({
@@ -483,7 +487,7 @@ describe('peripheralControl routes', () => {
       })
     } as any);
 
-    vi.mocked(schedulePeripheralPolicyDistribution).mockRejectedValueOnce(
+    vi.mocked(schedulePeripheralPolicyDevices).mockRejectedValueOnce(
       new Error('Redis down')
     );
     vi.mocked(publishEvent).mockRejectedValueOnce(
@@ -503,7 +507,7 @@ describe('peripheralControl routes', () => {
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.warning).toContain(`distribution scheduling failed for 1/1 org(s): ${orgId}`);
+    expect(body.warning).toContain('reconciliation scheduling failed for 1 device(s)');
     expect(body.warning).toContain(`event publish failed for 1/1 org(s): ${orgId}`);
     expect(body.warning).toContain(';');
   });

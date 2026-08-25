@@ -72,6 +72,7 @@ import {
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 
 
 /**
@@ -1337,6 +1338,12 @@ coreRoutes.patch(
         .where(eq(devices.id, deviceId))
         .returning();
       updated = row;
+    }
+
+    if (siteChanged) {
+      await schedulePeripheralPolicyDevice(deviceId, 'device_site_changed').catch((error) => {
+        console.error(`[devices] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      });
     }
 
     writeRouteAudit(c, {

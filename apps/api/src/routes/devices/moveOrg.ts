@@ -31,6 +31,7 @@ import {
   TicketMoveCurrencyBlockedError,
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -337,6 +338,10 @@ moveOrgRoutes.post(
       });
       return c.json({ error: 'Failed to move device between organizations' }, 500);
     }
+
+    await schedulePeripheralPolicyDevice(deviceId, 'device_org_changed').catch((error) => {
+      console.error(`[devices.moveOrg] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    });
 
     // Force-close any active WS so the agent reconnects with a fresh
     // handshake on the new org_id. Without this, createAgentWsHandlers
