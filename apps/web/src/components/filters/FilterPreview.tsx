@@ -120,7 +120,15 @@ export function FilterPreview({
   );
 }
 
+// Enum values whose raw name no longer matches the product's preferred wording
+// get an explicit locale-key override instead of a hard-coded English string —
+// see filters.value.enumOverrides in common.json (shared with ValueInput.tsx).
+const STATUS_LABEL_OVERRIDE_KEYS: Record<string, string> = {
+  decommissioned: 'filters.value.enumOverrides.decommissioned'
+};
+
 function StatusIndicator({ status }: { status: string }) {
+  const { t } = useTranslation('common');
   const colorMap: Record<string, string> = {
     online: 'bg-green-500',
     offline: 'bg-gray-400',
@@ -128,11 +136,13 @@ function StatusIndicator({ status }: { status: string }) {
     // Removed is a terminal, non-error state — muted grey like offline, not red.
     decommissioned: 'bg-gray-400'
   };
+  const overrideKey = STATUS_LABEL_OVERRIDE_KEYS[status];
+  const label = overrideKey ? t(/* i18n-dynamic */ overrideKey) : status;
 
   return (
     <div
       className={`h-2 w-2 rounded-full ${colorMap[status] || 'bg-gray-400'}`}
-      title={status}
+      title={label}
     />
   );
 }
@@ -150,13 +160,6 @@ function OsBadge({ osType }: { osType: string }) {
     </span>
   );
 }
-
-// Enum values whose raw name no longer matches the product's preferred wording
-// get an explicit locale-key override instead of a hard-coded English string —
-// see filters.value.enumOverrides in common.json (shared with ValueInput.tsx).
-const STATUS_LABEL_OVERRIDE_KEYS: Record<string, string> = {
-  decommissioned: 'filters.value.enumOverrides.decommissioned'
-};
 
 function StatusBadge({ status }: { status: string }) {
   const { t } = useTranslation('common');
