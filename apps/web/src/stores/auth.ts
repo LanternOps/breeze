@@ -86,6 +86,13 @@ interface AuthState {
   // collapses. NOT persisted — see partialize below — a stale reason must
   // never survive a reload.
   sessionExpiredReason: 'session-expired' | 'idle' | null;
+  // Epoch ms until which POST /auth/refresh is rate-limited for this user
+  // (issue #3696). Non-null means "the session is FINE, the server is just
+  // throttling us" — the opposite of sessionExpiredReason. AuthOverlay renders
+  // a non-destructive waiting mask while it is set, so a throttled page can
+  // never paint as an empty-but-loaded page. NOT persisted: a stale throttle
+  // must never survive a reload.
+  authThrottledUntil: number | null;
 
   // Actions
   setUser: (user: User | null) => void;
@@ -95,6 +102,7 @@ interface AuthState {
   login: (user: User, tokens: Tokens) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
+  setAuthThrottledUntil: (until: number | null) => void;
 }
 
 type PersistedAuthState = Pick<AuthState, 'user' | 'isAuthenticated'>;
@@ -114,8 +122,11 @@ export const useAuthStore = create<AuthState>()(
       mfaPending: false,
       mfaTempToken: null,
       sessionExpiredReason: null,
+      authThrottledUntil: null,
 
       setUser: (user) => set({ user, isAuthenticated: !!user }),
+
+      setAuthThrottledUntil: (until) => set({ authThrottledUntil: until }),
 
       setTokens: (tokens) => set({ tokens }),
 
@@ -137,7 +148,8 @@ export const useAuthStore = create<AuthState>()(
           isLoading: false,
           mfaPending: false,
           mfaTempToken: null,
-          sessionExpiredReason: null
+          sessionExpiredReason: null,
+          authThrottledUntil: null
         });
       },
 
@@ -158,7 +170,10 @@ export const useAuthStore = create<AuthState>()(
           tokens: null,
           isAuthenticated: false,
           mfaPending: false,
-          mfaTempToken: null
+          mfaTempToken: null,
+          // An evicted session is not "waiting out a throttle" — drop the mask
+          // so the expiry overlay/redirect is what the user sees (#3696).
+          authThrottledUntil: null
         });
       },
 
@@ -322,7 +337,13 @@ export function resolveApiOrigin(): string {
 type RefreshOutcome =
   | { kind: 'restored'; tokens: Tokens }
   | { kind: 'auth-failed' }
-  | { kind: 'transient' };
+  | { kind: 'transient' }
+  // The server rate-limited POST /auth/refresh (429). Like 'transient' this is
+  // NOT a verdict on the refresh cookie — but unlike a gateway blip it comes
+  // with a known wait, and retrying before that wait elapses is guaranteed to
+  // fail AND costs another slot in the server's sliding window. Kept separate
+  // so callers can wait it out instead of evicting a healthy session (#3696).
+  | { kind: 'throttled'; retryAfterMs: number };
 
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
@@ -332,15 +353,67 @@ const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 //                #1107) — the winning sibling already rotated the SHARED refresh
 //                cookie and the server deliberately did NOT clear it or kill the
 //                session family, so an immediate retry picks up the fresh cookie.
-//   - transient: a gateway/network blip or a rate-limit rejection (5xx, 429,
-//                offline, timeout) — no verdict was reached on the refresh
-//                cookie, so the session is very likely still valid and this
-//                should be retried with backoff rather than evicting the user
-//                (QA 2026-07-08: a single 502 on /auth/refresh hard-logged-out
-//                the SPA mid-session; issue #3041: so did a single 429).
+//   - transient: a gateway/network blip (5xx, offline, timeout) — no verdict
+//                was reached on the refresh cookie, so the session is very
+//                likely still valid and this should be retried with backoff
+//                rather than evicting the user (QA 2026-07-08: a single 502 on
+//                /auth/refresh hard-logged-out the SPA mid-session).
+//   - throttled: a 429 from the per-user refresh limiter, carrying the number
+//                of ms to wait. Split out from `transient` in #3696 because the
+//                two need OPPOSITE handling: a blip should be retried right
+//                away, a throttle must NOT be (see requestTokenRefresh).
 //   - neither:   a hard failure (expired/reused refresh cookie, real 401/403) —
 //                the session is unrecoverable and the caller must evict.
-async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boolean; transient: boolean }> {
+type RefreshFetchResult = {
+  tokens: Tokens | null;
+  raced: boolean;
+  transient: boolean;
+  throttledForMs?: number;
+};
+
+// Fallback wait when a 429 arrives without a usable Retry-After/retryAfter —
+// matches the server's default 60s window (apps/api/src/services/rate-limit.ts,
+// getRefreshRateWindowSeconds).
+const DEFAULT_REFRESH_RETRY_AFTER_MS = 60_000;
+// Never wait longer than this on a single throttle, however large a
+// Retry-After the server (or a proxy in front of it) sends. A hostile or
+// misconfigured value must not wedge the tab indefinitely.
+const MAX_REFRESH_RETRY_AFTER_MS = 90_000;
+
+/**
+ * Seconds-to-wait from a 429, preferring the standard `Retry-After` header and
+ * falling back to the JSON `retryAfter` field the API also sends. Clamped into
+ * a sane range so neither a `0` (retry immediately — the very hammering being
+ * rejected) nor an absurd value can be honoured literally.
+ */
+function parseRetryAfterMs(response: Response, body: { retryAfter?: unknown } | null): number {
+  // Optional chaining: `headers` is absent on partially-stubbed Response
+  // objects (test doubles, some fetch polyfills), and a throw here would turn a
+  // recoverable throttle into an unhandled rejection on the recovery path.
+  const header = response.headers?.get('Retry-After') ?? null;
+  const fromHeader = header !== null ? Number(header) : NaN;
+  const fromBody = typeof body?.retryAfter === 'number' ? body.retryAfter : NaN;
+  const seconds = Number.isFinite(fromHeader) && fromHeader > 0
+    ? fromHeader
+    : Number.isFinite(fromBody) && fromBody > 0
+      ? fromBody
+      : NaN;
+  if (!Number.isFinite(seconds)) {
+    // Reaching here means a 429 arrived with NO usable wait: a proxy/CDN
+    // stripping Retry-After, or a server regression. The default keeps the
+    // client correct, but silently guessing the window would hide the cause —
+    // and if the operator has retuned AUTH_REFRESH_RATE_WINDOW_SECONDS the
+    // guess is simply wrong. Make it visible.
+    console.warn(
+      '[auth] /auth/refresh returned 429 with no usable Retry-After; ' +
+        `falling back to ${DEFAULT_REFRESH_RETRY_AFTER_MS}ms`
+    );
+    return DEFAULT_REFRESH_RETRY_AFTER_MS;
+  }
+  return Math.min(MAX_REFRESH_RETRY_AFTER_MS, Math.max(1_000, Math.round(seconds * 1_000)));
+}
+
+async function refreshFetchOnce(): Promise<RefreshFetchResult> {
   const headers = new Headers({ 'Content-Type': 'application/json' });
   const csrfToken = readCookie(CSRF_COOKIE_NAME);
   if (csrfToken) {
@@ -379,14 +452,25 @@ async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boole
     }
   }
 
-  // 429 means the rate limiter rejected the request before it was ever
-  // evaluated, so — exactly like a 5xx — no verdict was reached on the refresh
-  // cookie and the session is very likely still valid. Classifying it as a hard
-  // failure evicted people whose session was fine, which is how a runaway
-  // remote-desktop viewer poll (issue #3041) could exhaust the shared per-IP
-  // budget and dump the operator on the login screen.
+  // 429 means the rate limiter rejected the request before the refresh cookie
+  // was ever evaluated, so no verdict was reached and the session is very
+  // likely still valid. Classifying it as a hard failure evicted people whose
+  // session was fine — a runaway remote-desktop viewer poll exhausting the
+  // shared per-IP budget (#3041), and normal sidebar navigation exhausting the
+  // per-USER budget (#3696, one refresh per full page load in an MPA).
+  //
+  // Reported as its own kind rather than folded into `transient`: the server
+  // told us exactly how long to wait, and an immediate retry both cannot
+  // succeed and burns another slot in the server's sliding window (rejected
+  // requests are still ZADDed), which deepens the throttle.
   if (refreshResponse.status === 429) {
-    return { tokens: null, raced: false, transient: true };
+    const body = await refreshResponse.json().catch(() => null) as { retryAfter?: unknown } | null;
+    return {
+      tokens: null,
+      raced: false,
+      transient: false,
+      throttledForMs: parseRetryAfterMs(refreshResponse, body),
+    };
   }
 
   // 5xx (typically a 502/503/504 from the gateway) means the request never
@@ -427,6 +511,16 @@ async function requestTokenRefresh(): Promise<RefreshOutcome> {
       const result = await refreshFetchOnce();
       if (result.tokens) return { kind: 'restored', tokens: result.tokens };
 
+      // Rate-limited. Return IMMEDIATELY — do not spend the transient-retry
+      // budget. The whole backoff ladder below completes in ~0.9s, always
+      // inside the server's 60s window, so every retry is a guaranteed 429 that
+      // additionally consumes a slot in the sliding window (#3696). Waiting out
+      // the throttle is the caller's job (requestTokenRefreshShared), which can
+      // show the user why the page is waiting.
+      if (result.throttledForMs !== undefined) {
+        return { kind: 'throttled', retryAfterMs: result.throttledForMs };
+      }
+
       if (result.raced) {
         // Benign race (#1107): a sibling context won the rotation. Give the
         // winner's rotated cookie a beat to settle in the shared jar, then
@@ -434,6 +528,9 @@ async function requestTokenRefresh(): Promise<RefreshOutcome> {
         await new Promise((resolve) => setTimeout(resolve, 200));
         const retry = await refreshFetchOnce();
         if (retry.tokens) return { kind: 'restored', tokens: retry.tokens };
+        if (retry.throttledForMs !== undefined) {
+          return { kind: 'throttled', retryAfterMs: retry.throttledForMs };
+        }
         // If the race-retry itself hit a transient blip, fall through to the
         // backoff path below; otherwise the session is genuinely gone.
         if (!retry.transient) return { kind: 'auth-failed' };
@@ -506,6 +603,51 @@ if (typeof window !== 'undefined' && window.location?.hash?.startsWith('#ssoCode
 }
 // ----------------------------------------------------------------------------
 
+// A throttled refresh is waited out at most this many times before the caller
+// is told the refresh is still throttled. One wait is enough to clear a full
+// server window; more would let a genuinely wedged client hang for minutes.
+const MAX_THROTTLE_WAITS = 1;
+
+/**
+ * Wait out a `429` on /auth/refresh and try once more (#3696).
+ *
+ * A throttle is NOT a verdict on the refresh cookie — the session is fine, the
+ * server is just rationing. Evicting here is what turned normal sidebar
+ * navigation into a forced logout. Instead we publish `authThrottledUntil` so
+ * AuthOverlay can mask the page with an honest "waiting" state (which also
+ * makes the silent-broken-page variant impossible: the page can never look
+ * loaded-but-empty while this is set), sleep for the server-supplied window,
+ * and retry.
+ *
+ * Bounded by MAX_THROTTLE_WAITS and by the clamp in parseRetryAfterMs, so the
+ * worst case is one bounded wait, never an indefinite hang.
+ */
+async function requestTokenRefreshWaitingOutThrottle(): Promise<RefreshOutcome> {
+  let outcome = await requestTokenRefresh();
+
+  for (let waits = 0; waits < MAX_THROTTLE_WAITS; waits += 1) {
+    if (outcome.kind !== 'throttled') break;
+    const waitMs = outcome.retryAfterMs;
+    useAuthStore.getState().setAuthThrottledUntil(Date.now() + waitMs);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    outcome = await requestTokenRefresh();
+  }
+
+  // Still throttled after the bounded wait: leave the mask up (with the fresh
+  // deadline) so the user keeps seeing WHY the page is stuck rather than a
+  // page that looks loaded but has no data. It is cleared by login(), by
+  // logout(), and by the next successful refresh.
+  if (outcome.kind === 'throttled') {
+    useAuthStore.getState().setAuthThrottledUntil(Date.now() + outcome.retryAfterMs);
+  } else {
+    // Any other verdict (restored, auth-failed, transient) ends the throttle —
+    // drop the mask so a wait we entered above can never outlive its cause.
+    useAuthStore.getState().setAuthThrottledUntil(null);
+  }
+
+  return outcome;
+}
+
 async function requestTokenRefreshShared(): Promise<RefreshOutcome> {
   // Hold every refresh while an SSO exchange is (about to be) in flight — a
   // dead-cookie verdict reached mid-exchange evicts the session and abandons
@@ -518,7 +660,7 @@ async function requestTokenRefreshShared(): Promise<RefreshOutcome> {
     return tokenRefreshInFlight;
   }
 
-  tokenRefreshInFlight = requestTokenRefresh().finally(() => {
+  tokenRefreshInFlight = requestTokenRefreshWaitingOutThrottle().finally(() => {
     tokenRefreshInFlight = null;
   });
 
@@ -559,7 +701,7 @@ export async function waitForPendingRefresh(): Promise<void> {
  * this; callers that only care about restored-or-not keep using the boolean
  * wrapper below.
  */
-export async function restoreAccessTokenFromCookieDetailed(): Promise<'restored' | 'auth-failed' | 'transient'> {
+export async function restoreAccessTokenFromCookieDetailed(): Promise<'restored' | 'auth-failed' | 'transient' | 'throttled'> {
   try {
     const outcome = await requestTokenRefreshShared();
     if (outcome.kind === 'restored') {
@@ -726,6 +868,39 @@ export class AuthSessionExpiredError extends Error {
 }
 
 /**
+ * Thrown by `fetchWithAuth` when the bootstrap refresh could not mint an access
+ * token because the server is RATE-LIMITING /auth/refresh — the session itself
+ * is fine (issue #3696).
+ *
+ * Deliberately NOT a subclass of `AuthSessionExpiredError`: dozens of callers
+ * do `if (err instanceof AuthSessionExpiredError) return;` on the (correct)
+ * assumption that the page is already navigating to /login. Inheriting that
+ * would make every one of them swallow a throttle silently and render an empty
+ * page — the exact "looks loaded, has no data" failure this fix exists to
+ * remove. Callers that don't know this type instead fall through to their
+ * normal error UI.
+ *
+ * SCOPE, precisely: on pages rendered by `DashboardLayout.astro` (and the
+ * `/account/*` pages) `authThrottledUntil` also puts AuthOverlay's waiting mask
+ * on top, so the throttle is impossible to miss. Pages built on the bare
+ * `Layout.astro` / `AuthLayout.astro` shells mount no AuthOverlay — the
+ * full-screen remote-access viewers (`pages/remote/**`) and the forced-MFA
+ * enrollment page — so there the mask does NOT appear and the throttle is only
+ * as visible as the caller's own error handling makes it. `ForcedMfaSetupPage`
+ * handles this type explicitly; the remote viewers do not yet (tracked
+ * separately — mounting a `fixed inset-0` mask over a live video/terminal
+ * surface needs its own design pass).
+ */
+export class AuthThrottledError extends Error {
+  readonly retryAt: number;
+  constructor(retryAt: number, message = 'Too many session refreshes — retrying shortly') {
+    super(message);
+    this.name = 'AuthThrottledError';
+    this.retryAt = retryAt;
+  }
+}
+
+/**
  * Single entry point for "the session is unrecoverable, evict and redirect."
  * Both fetchWithAuth expiry paths (dead refresh cookie on bootstrap, and a
  * 401 that survives a refresh-and-retry) funnel through here so idle-timeout
@@ -814,6 +989,17 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
       // still require a valid Bearer; we simply refuse to send a request we know
       // can't carry one.
       //
+      // A THROTTLE is not an expiry (#3696). requestTokenRefreshShared already
+      // waited out the server's window once and it is still rationing, so the
+      // refresh cookie has never been judged — evicting here would sign out a
+      // perfectly good session (and lie about why). Keep the session, keep
+      // AuthOverlay's waiting mask up, and let the caller fail this one request.
+      if (outcome.kind === 'throttled') {
+        throw new AuthThrottledError(
+          useAuthStore.getState().authThrottledUntil ?? Date.now() + outcome.retryAfterMs
+        );
+      }
+
       // This evicts on 'transient' too (bounded retries exhausted), unlike the
       // background heartbeat which can wait forever: a foreground fetch needs a
       // verdict now — bounded retries, then evict.
@@ -889,6 +1075,19 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
         // Also reached on 'transient' (bounded retries exhausted), unlike the
         // background heartbeat which can wait forever: a foreground fetch needs
         // a verdict now — bounded retries, then evict.
+        //
+        // A THROTTLE is not an expiry (#3696): the server never judged the
+        // refresh cookie, so there is nothing to evict on. Throw rather than
+        // fall through and return the original 401 — `lib/errorMessages.ts`
+        // classifies a 401 Response as "Session expired", so returning it would
+        // put the same false copy in every widget's error card. The typed error
+        // is unrecognised by callers (deliberately — see AuthThrottledError) and
+        // AuthOverlay's waiting mask owns the visible state.
+        if (outcome.kind === 'throttled') {
+          throw new AuthThrottledError(
+            useAuthStore.getState().authThrottledUntil ?? Date.now() + outcome.retryAfterMs
+          );
+        }
         handleSessionExpired('session-expired');
       }
     }

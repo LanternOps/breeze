@@ -59,6 +59,12 @@ vi.mock('../services', () => ({
   ACCOUNT_LOCKOUT_WINDOW_SECONDS: 15 * 60,
   getAccountLockoutMax: vi.fn(() => 5),
   getAccountLockoutWindowSeconds: vi.fn(() => 15 * 60),
+  // #3696: the per-family refresh budget is read through getters at call time
+  // (so ops can retune without a restart). Omitting them here makes
+  // getRefreshRateLimit() an `undefined()` call inside POST /auth/refresh and
+  // every refresh test 500s. Values mirror the real defaults.
+  getRefreshRateLimit: vi.fn(() => 60),
+  getRefreshRateWindowSeconds: vi.fn(() => 60),
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
   getRedis: vi.fn(() => ({
     setex: vi.fn(),

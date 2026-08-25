@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
+import { restoreAccessTokenFromCookieDetailed, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import Header from './Header';
@@ -13,7 +13,7 @@ interface DashboardWrapperProps {
 
 export default function DashboardWrapper({ children, currentPath }: DashboardWrapperProps) {
   const { t } = useTranslation('common');
-  const { isAuthenticated, isLoading, tokens } = useAuthStore();
+  const { isAuthenticated, isLoading, tokens, authThrottledUntil } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
@@ -35,10 +35,17 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
         setRecoverAttempted(true);
         setIsRecovering(true);
 
-        void restoreAccessTokenFromCookie().finally(() => {
-          if (!cancelled) {
-            setIsRecovering(false);
-          }
+        // Detailed outcome, not the boolean: a 'throttled' verdict (#3696) means
+        // the server rate-limited /auth/refresh and never judged the cookie, so
+        // the redirect-to-login below must stay dormant. AuthOverlay's throttle
+        // mask owns that state.
+        void restoreAccessTokenFromCookieDetailed().then((outcome) => {
+          if (cancelled) return;
+          setIsRecovering(false);
+          // 'throttled' (#3696) is NOT a dead session: the server rate-limited
+          // /auth/refresh and never judged the cookie. Keep rendering the
+          // spinner rather than redirecting; the store retries on its own.
+          if (outcome === 'throttled') return;
         });
         return () => {
           cancelled = true;
@@ -46,6 +53,14 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
       }
 
       if (isRecovering) {
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      // Never redirect while a refresh throttle is still in force: no verdict
+      // was reached on the session, so there is nothing to evict on (#3696).
+      if (authThrottledUntil && authThrottledUntil > Date.now()) {
         return () => {
           cancelled = true;
         };
@@ -61,7 +76,7 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, isLoading, isChecking, tokens, currentPath, recoverAttempted, isRecovering]);
+  }, [isAuthenticated, isLoading, isChecking, tokens, currentPath, recoverAttempted, isRecovering, authThrottledUntil]);
 
   // Show loading while checking auth
   if (isChecking || isLoading || isRecovering) {
