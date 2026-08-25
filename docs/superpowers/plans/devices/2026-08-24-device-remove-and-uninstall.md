@@ -14,7 +14,7 @@ Closes #3986 (API), #3987 (Web).
 
 ## Global Constraints
 
-- **NEVER write a backfill migration.** Queuing `self_uninstall` for already-decommissioned devices would uninstall agents fleet-wide on deploy. The derived drain flag is false for every device in the field today and must stay that way. There is no migration in this plan at all.
+- **NEVER write a backfill migration, and never backfill `uninstall_reasons`.** Queuing `self_uninstall` for already-decommissioned devices would uninstall agents fleet-wide on deploy; stamping `device_remove` onto historic rows would arm the same incident. The plan adds exactly ONE migration (Task 5, two nullable columns on `device_commands`) and it backfills nothing — `NULL` reasons mean no exemption and no widened auth, fail-closed by construction.
 - **`uninstallAgent` defaults to `false` on the API.** The web UI sends `true` explicitly. PR2 may merge before PR3; the default must never silently start uninstalling agents.
 - **Do not modify `apps/api/src/routes/agentWs.ts:749`.** Its independent `decommissioned` check is what keeps the WebSocket control channel shut for a removed device. That asymmetry (REST heartbeat open, WS shut) is the security property this design depends on — see `agentWs.ts:786-793` for why WS cannot be narrowed by command type.
 - **Do not modify the Go agent.** Commands ride the heartbeat response body (`heartbeat.go:197`, consumer loop `:4363`); a heartbeat-only agent already receives and executes `self_uninstall`. The Go agent calls `RecordAuthFailure` only on **401**, never 403 (`heartbeat.go:4085` vs the generic branch at `:4094`), so removed agents in the field are at full 60s cadence and will collect a queued uninstall within one interval of deploy.
@@ -398,233 +398,229 @@ Refs #3987"
 
 Branch: `feat/3986-device-uninstall-drain` (off `main`, **not** stacked on PR1 — a PR based on a sibling branch runs no CI at all). `Closes #3986`.
 
-Behaviour-neutral until PR3 ships: `uninstallAgent` defaults to `false`, so a Remove from today's UI behaves exactly as it does now.
+> **REVISED after an independent architecture review (2026-08-24).** The first draft of this section defined the drain as `status='decommissioned' AND EXISTS(pending self_uninstall)` and claimed that cleanly separated our rows from abuse-suspension rows. **That claim was false.** `routes/admin/abuse.ts:130-135` selects every device under the partner with **no status filter**, so an abuse suspension queues `self_uninstall` onto already-decommissioned devices too. A source-blind predicate would have exempted those rows from expiry and, on un-suspension inside the window, delivered them to a reinstated fleet — exactly the hazard `staleCommandReaper.ts:191-199` exists to prevent. **Uninstall provenance is therefore mandatory and fail-closed.** Three further corrections from the same review are folded in below (handler-level narrowing, watchdog exclusion, and the purge-block removal moving out of this PR).
+
+Behaviour-neutral until PR3 ships: `uninstallAgent` defaults to `false`.
 
 ---
 
-### Task 5: The drain service (derived predicate + queue + cancel)
+### Task 5: Migration — uninstall provenance on `device_commands`
 
-One module owns the predicate so it cannot drift between the auth middleware, the reaper, and the routes.
+Provenance cannot live in `payload`: it is the input to a security predicate, and putting it in an open jsonb container that terminalizers rewrite is exactly the kind of load-bearing-value-in-a-soft-field that this codebase has been bitten by before.
+
+`device_commands` is the cheapest possible place for a column, and this is worth stating explicitly because CLAUDE.md's registration contracts are what usually make a column expensive:
+
+- It has **no `org_id`** (`db/schema/devices.ts:455-467`) → not in `CORE_ORG_CASCADE_DELETE_ORDER` → **no `CORE_TENANT_EXPORT_POLICY` entry required.** (A column on `devices` *would* require one — that contract fires on `ADD COLUMN`, not just new tables.)
+- It has **no RLS** (intentionally system-scoped per CLAUDE.md; zero policies in any migration) → **no policy to add.**
+- It is **already** in `CORE_DEVICE_CASCADE_DELETE_TABLES` (`routes/devices/core.ts:224`) and already pre-cleared by `tenantCascade.ts:413` → **no cascade registration change.**
 
 **Files:**
-- Create: `apps/api/src/services/deviceUninstallDrain.ts`
-- Create: `apps/api/src/services/deviceUninstallDrain.test.ts`
+- Create: `apps/api/migrations/2026-08-24-device-command-uninstall-provenance.sql`
+- Modify: `apps/api/src/db/schema/devices.ts:455-467`
 
-**Interfaces:**
-- Produces (consumed by Tasks 6-9):
-  - `isDeviceUninstallDraining(deviceId: string): Promise<boolean>`
-  - `queueDeviceUninstall(tx: DbOrTx, deviceId: string, actorUserId: string | null): Promise<{ queued: boolean }>`
-  - `cancelDeviceUninstall(deviceId: string, reason: string): Promise<{ cancelledPending: number; alreadyDispatched: number }>`
-  - `DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS: number`
+- [ ] **Step 1: Write the migration**
 
-- [ ] **Step 1: Write the failing tests**
+```sql
+ALTER TABLE device_commands
+  ADD COLUMN IF NOT EXISTS uninstall_reasons text[],
+  ADD COLUMN IF NOT EXISTS device_remove_expires_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS idx_device_commands_device_remove_drain
+  ON device_commands (device_id)
+  WHERE type = 'self_uninstall'
+    AND status IN ('pending', 'sent')
+    AND uninstall_reasons @> ARRAY['device_remove']::text[];
+```
+
+Naming rules that apply here: plain `YYYY-MM-DD-<slug>.sql` on today's date (which already sorts last — that is the property we want). **Do not** use a `-g-`/`-h-` infix on `2026-08-06`; that date block is closed. Idempotent (`IF NOT EXISTS`). **No inner `BEGIN;`/`COMMIT;`** — `autoMigrate` wraps each file in a transaction.
+
+**Do not backfill.** Existing rows keep `uninstall_reasons = NULL`, which the predicate treats as "no exemption, no widened auth" — fail-closed by construction. A backfill that stamped `device_remove` onto historic rows would arm the exact incident this design prevents.
+
+- [ ] **Step 2: Mirror it in the Drizzle schema, then check drift**
 
 ```ts
-describe('queueDeviceUninstall', () => {
-  it('inserts one pending self_uninstall with removeConfig and targetRole agent', async () => { /* assert insert values */ });
-  it('does not queue a second row when one is already pending or sent', async () => { /* dedupe */ });
-});
-
-describe('cancelDeviceUninstall', () => {
-  it('cancels pending rows and reports how many were already dispatched', async () => {
-    // a 'sent' row must NOT be counted as cancelled — the agent may already
-    // have handed teardown to the detached helper and cannot be recalled.
-  });
-});
+uninstallReasons: text('uninstall_reasons').array(),
+deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true }),
 ```
-
-- [ ] **Step 2: Run to verify they fail**
 
 ```bash
-pnpm --filter=@breeze/api test --run src/services/deviceUninstallDrain.test.ts
+export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
+pnpm db:migrate && pnpm db:check-drift
 ```
-Expected: FAIL — module does not exist.
+Note `db:check-drift` compares the Drizzle model to the migrations, **not** to the live DB — a wrong model can still pass. The integration test in Task 12 is what actually proves the column behaves.
 
-- [ ] **Step 3: Implement**
-
-```ts
-export const DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS = Math.max(
-  1, envInt('DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS', 72),
-);
-
-const NON_TERMINAL = ['pending', 'sent'] as const;
-
-/**
- * A removed device is "draining" for exactly as long as it has an
- * undelivered self_uninstall. Derived, never stored: when the command
- * terminalizes (agent ack, reaper timeout, or restore), the device stops
- * draining and agentAuth returns to a hard 403. Nothing to clean up.
- */
-export async function isDeviceUninstallDraining(deviceId: string): Promise<boolean> {
-  const [row] = await db.select({ one: sql`1` }).from(deviceCommands)
-    .where(and(
-      eq(deviceCommands.deviceId, deviceId),
-      eq(deviceCommands.type, 'self_uninstall'),
-      inArray(deviceCommands.status, [...NON_TERMINAL]),
-    ))
-    .limit(1);
-  return Boolean(row);
-}
-
-export async function queueDeviceUninstall(tx, deviceId, actorUserId) {
-  const existing = await tx.select({ id: deviceCommands.id }).from(deviceCommands)
-    .where(and(
-      eq(deviceCommands.deviceId, deviceId),
-      eq(deviceCommands.type, 'self_uninstall'),
-      inArray(deviceCommands.status, [...NON_TERMINAL]),
-    )).limit(1);
-  if (existing.length > 0) return { queued: false };
-
-  await tx.insert(deviceCommands).values({
-    deviceId,
-    type: 'self_uninstall',
-    payload: { removeConfig: true },
-    status: 'pending',
-    targetRole: 'agent',
-    createdBy: actorUserId,
-  });
-  return { queued: true };
-}
-```
-
-Notes the implementer must not skip:
-- **Take an explicit `actorUserId`; do not reach into `auth` inside the service.** `queueCommand` (`services/commandQueue.ts:492`) passes `createdBy: userId || null` straight through with no guard, which is issue #3978's failure mode for synthetic agent auth. Our caller is behind `authMiddleware` + `requireMfa()` so `auth.user.id` is a real `users` row — but keeping the parameter explicit is what makes that reviewable.
-- **Do not use `queueCommandForExecution`** (`commandQueue.ts:644`) — it hard-fails on `device.status !== 'online'` at `:673`, and we have just set the device to `decommissioned`.
-- `cancelDeviceUninstall` must include `...terminalPayloadErasureSet()` (`services/sensitiveCommandPayload.ts:79`) in its `.set()`, matching every other terminalizer in the codebase.
-- Mirror `tenantOffboarding.cancelDrainUninstallsForOrgIds` (`:291-322`) for the cancel shape, narrowed to one `deviceId`.
-
-- [ ] **Step 4: Run + commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-pnpm --filter=@breeze/api test --run src/services/deviceUninstallDrain.test.ts
-git add apps/api/src/services/deviceUninstallDrain*.ts
-git commit -m "feat(api): device uninstall drain service (derived state, no schema change)
+git add apps/api/migrations/2026-08-24-device-command-uninstall-provenance.sql apps/api/src/db/schema/devices.ts
+git commit -m "feat(api): uninstall provenance columns on device_commands
 
 Refs #3986"
 ```
 
 ---
 
-### Task 6: `DELETE /devices/:id` accepts `uninstallAgent`
+### Task 6: The drain service (reason-scoped)
 
 **Files:**
-- Modify: `apps/api/src/routes/devices/core.ts:1408-1489`, `apps/api/src/routes/devices/schemas.ts`
-- Test: `apps/api/src/routes/devices/core.decommission.test.ts`
+- Create: `apps/api/src/services/deviceUninstallDrain.ts`, `apps/api/src/services/deviceUninstallDrain.test.ts`
 
-- [ ] **Step 1: Extend the existing test rig FIRST**
+**Interfaces (consumed by Tasks 7-10):**
+```ts
+export const UNINSTALL_REASON_DEVICE_REMOVE = 'device_remove' as const;
+export const DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS: number; // envInt(..., 72), min 1
 
-`core.decommission.test.ts` mocks `db.insert` as a bare `vi.fn()` with no chain. The moment the handler calls `db.insert(...).values(...)`, every test in the file throws `Cannot read properties of undefined (reading 'values')`. Extend `rigDecommission()` to stub the insert chain before writing new tests, or the whole file goes red for the wrong reason.
+export async function isDeviceUninstallDraining(deviceId: string): Promise<boolean>;
+export async function queueDeviceUninstall(tx, deviceId: string, actorUserId: string | null): Promise<{ queued: boolean; mergedIntoExisting: boolean }>;
+export async function releaseDeviceRemoveReason(deviceId: string, reason: string): Promise<{ cancelled: number; retainedOtherOwner: number; alreadyDispatched: number }>;
+```
 
-Also note `expect(set).toHaveBeenCalledTimes(2)` (the status flip + the replacement-linkage clear). This task adds an **insert**, not an update, so the count stays 2 — but if you add any third `db.update()` this assertion breaks and the fix is to assert the specific `set` payloads, not to bump the number.
+**The predicate — every consumer uses this one definition:**
+
+```
+draining(device) :=
+      device.status = 'decommissioned'
+  AND EXISTS (SELECT 1 FROM device_commands
+              WHERE device_id = device.id
+                AND type = 'self_uninstall'
+                AND status IN ('pending','sent')
+                AND uninstall_reasons @> ARRAY['device_remove']
+                AND device_remove_expires_at > now())
+```
+
+Three clauses beyond the first draft, each load-bearing: the **reason** keeps abuse-suspension and tenant-offboarding rows out; the **deadline** closes the drain without a sweeper; `status='decommissioned'` keeps a live device out.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+it('queues one pending self_uninstall stamped device_remove with a deadline', ...);
+it('MERGES into an existing tenant-offboarding uninstall instead of inserting a second row', ...);
+it('is NOT draining for an abuse-queued uninstall (no device_remove reason)', ...);   // the incident guard
+it('is NOT draining once device_remove_expires_at has passed', ...);
+it('releases only its own reason, leaving a tenant-owned uninstall live', ...);
+it('reports alreadyDispatched for a row already in sent', ...);
+```
+
+- [ ] **Step 2: Implement**
+
+Multi-valued reasons, not a single `origin`: a device can be removed while its tenant is *also* offboarding, and one command row then has two lifecycle owners. Each canceller removes only its own reason and cancels the row only when **no destructive reason remains**:
+
+```ts
+// release: strip our reason; cancel only if nothing else owns it
+uninstall_reasons = array_remove(uninstall_reasons, 'device_remove')
+// then, only where cardinality(uninstall_reasons) = 0 AND status = 'pending':
+//   status='cancelled', completed_at=now(), result={reason}, ...terminalPayloadErasureSet()
+```
+
+`queueDeviceUninstall` must `SELECT ... FROM devices WHERE id = $1 FOR UPDATE` inside the same transaction before it reads-then-writes — mirroring `tenantOffboarding.ts:172-176`. Without the row lock, two concurrent Removes both see "no existing row" and insert duplicates. A unique index was deliberately rejected upstream (`tenantOffboarding.ts:153-163`) because it would break the abuse bulk insert; the lock is the sanctioned pattern.
+
+Other constraints: take `actorUserId` as an explicit parameter (never reach into `auth` inside a service — `queueCommand:492` passes `createdBy` through unguarded, which is #3978's failure mode); do **not** use `queueCommandForExecution` (`commandQueue.ts:673` hard-fails on `status !== 'online'`); include `...terminalPayloadErasureSet()` in every terminal write.
+
+- [ ] **Step 3: Run + commit**
+
+```bash
+pnpm --filter=@breeze/api test --run src/services/deviceUninstallDrain.test.ts
+git commit -am "feat(api): reason-scoped device uninstall drain service
+
+Refs #3986"
+```
+
+---
+
+### Task 7: `DELETE /devices/:id` accepts `uninstallAgent`
+
+**Files:** `apps/api/src/routes/devices/core.ts:1408-1489`, `apps/api/src/routes/devices/schemas.ts`, test `core.decommission.test.ts`
+
+- [ ] **Step 1: Extend the test rig FIRST**
+
+`core.decommission.test.ts` stubs `db.insert` as a bare `vi.fn()` with no chain. The first `db.insert(...).values(...)` throws `Cannot read properties of undefined` and takes every test in the file with it. Extend `rigDecommission()` before writing new tests.
+
+`expect(set).toHaveBeenCalledTimes(2)` counts the status flip + the replacement-linkage clear. This task adds an insert, not an update, so 2 still holds — but if you add a third `db.update()`, fix it by asserting the specific `set` payloads, not by bumping the number.
 
 - [ ] **Step 2: Write the failing tests**
 
 ```ts
-it('defaults to NOT queueing an uninstall', async () => {
-  const res = await app.request(`/devices/${DEVICE_ID}`, { method: 'DELETE', headers: AUTH });
-  expect(res.status).toBe(200);
-  expect(insertValues).not.toHaveBeenCalled();
-});
-
-it('queues a durable self_uninstall when uninstallAgent is true', async () => {
-  const res = await app.request(`/devices/${DEVICE_ID}`, {
-    method: 'DELETE', headers: { ...AUTH, 'content-type': 'application/json' },
-    body: JSON.stringify({ uninstallAgent: true }),
-  });
-  expect(res.status).toBe(200);
-  expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
-    deviceId: DEVICE_ID, type: 'self_uninstall',
-    payload: { removeConfig: true }, status: 'pending', targetRole: 'agent',
-  }));
-  expect(await res.json()).toMatchObject({ uninstallQueued: true });
-});
-
-it('audits whether the uninstall was queued', async () => {
-  // writeRouteAudit details must carry uninstallQueued so an operator can
-  // answer "did we ask this machine to uninstall?" from the audit trail alone.
-});
+it('defaults to NOT queueing an uninstall', ...);          // no body at all
+it('defaults to NOT queueing when the body omits the field', ...);
+it('queues a device_remove-stamped uninstall when uninstallAgent is true', ...);
+it('audits uninstallQueued either way', ...);
 ```
 
 - [ ] **Step 3: Implement**
 
-Add `uninstallAgent: z.boolean().optional().default(false)` to the DELETE body schema in `schemas.ts`. The route currently takes no body — accept an **optional** body so existing callers sending none still work.
+`uninstallAgent: z.boolean().optional().default(false)` on an **optional** body (the route takes none today; existing callers must keep working). Queue inside the **same transaction** as the status write — the route already runs in an org-scoped request transaction (`middleware/auth.ts:712`), and `device_commands` has no RLS, so no system context is needed. Do **not** wrap in `runOutsideDbContext`: that would let the command commit while the decommission rolls back.
 
-Queue inside the **same transaction** as the status write, so a rolled-back decommission cannot leave an orphan uninstall. The route runs under `withDbAccessContext` (an org/partner-scoped request transaction — `middleware/auth.ts:712`); `device_commands` has **no RLS** (intentionally system-scoped per CLAUDE.md), so the insert passes without a system context. Do **not** wrap it in `runOutsideDbContext` — that would let the command commit while the decommission rolls back.
+Set `device_remove_expires_at = now() + DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS`. Return `uninstallQueued` in the body and the audit `details`.
 
-Return `uninstallQueued: boolean` in the response body and put it in the audit `details` alongside the existing `remoteSessionTeardown` / `agentWsDisconnect` keys.
-
-Keep `disconnectAgent(...)` exactly as it is. The agent must lose its WS channel; it re-polls over REST heartbeat, which is the actual delivery path.
+Keep `disconnectAgent(...)` unchanged — the agent must lose its WS channel and fall back to REST heartbeat, which is the delivery path.
 
 - [ ] **Step 4: Run + commit**
 
 ```bash
 pnpm --filter=@breeze/api test --run src/routes/devices/
-git commit -am "feat(api): DELETE /devices/:id accepts uninstallAgent and queues a durable uninstall
+git commit -am "feat(api): DELETE /devices/:id accepts uninstallAgent
 
-Defaults to false so behaviour is unchanged until the UI opts in.
+Defaults false; behaviour unchanged until the UI opts in.
 
 Refs #3986"
 ```
 
 ---
 
-### Task 7: Restore cancels the pending uninstall
+### Task 8: Restore releases the device-remove reason
 
-Without this, restoring a removed device leaves a queued uninstall that fires on the next check-in and wipes a device the user just brought back.
-
-**Files:** `apps/api/src/routes/devices/core.ts:1494-1535`, test in `core.decommission.test.ts` (add a `describe('POST /devices/:id/restore')` — **there is no behavioural test for restore anywhere in the API today**, only the 403 permission matrix at `core.permissions.test.ts:363`).
+**Files:** `apps/api/src/routes/devices/core.ts:1494-1535`, tests in `core.decommission.test.ts` — note **restore has no behavioural test anywhere in the API today**, only the 403 matrix at `core.permissions.test.ts:363`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-it('cancels a pending self_uninstall when the device is restored', async () => { /* ... */ });
-
-it('reports when the uninstall was already dispatched and cannot be recalled', async () => {
-  // a 'sent' row means the agent claimed it; handlers_uninstall.go hands
-  // teardown to a DETACHED helper and acks immediately, so cancelling the
-  // row cannot stop the uninstall. Restore must still succeed (otherwise an
-  // agent that never acks wedges restore for the whole drain window) but
-  // must tell the truth.
-  expect(await res.json()).toMatchObject({ uninstallAlreadyDispatched: true });
-});
+it('cancels a pending device_remove uninstall on restore', ...);
+it('leaves a tenant-offboarding uninstall live, stripping only device_remove', ...);
+it('reports uninstallAlreadyDispatched when the row is already sent', ...);
 ```
 
-- [ ] **Step 2: Implement**
+- [ ] **Step 2: Implement — and understand the race you are NOT closing**
 
-Call `cancelDeviceUninstall(deviceId, 'device_restored')` in the restore handler. Cancel only `pending`; count `sent` separately and surface it as `uninstallAlreadyDispatched` in the response and the audit details. Do not block the restore on it.
+Call `releaseDeviceRemoveReason(deviceId, 'device_restored')`.
+
+`claimPendingCommandsForDevice` commits `pending → sent` **before** the HTTP response is built (`commandDispatch.ts:93-104`), and `handlers_uninstall.go:52-75` hands teardown to a **detached helper** and acks immediately. So once a row is `sent`, cancelling it cannot recall the uninstall — there is no safe claimed-state transition today.
+
+**Decision (owner call — see the note below):** restore still **succeeds**, cancels only `pending`, and returns `uninstallAlreadyDispatched: true` when a `sent` row exists, so the UI can say plainly that the machine may already have uninstalled and needs a reinstall. Restore is a user-facing recovery action and must not be wedged for up to the drain window by a race that lasts seconds.
+
+The genuine fix is an agent-side pre-teardown fence (agent calls a `begin` endpoint that CASes `sent → executing`; restore and begin serialize). That requires a Go agent change, which this plan's Global Constraints exclude. **File it as a follow-up issue and link it from here** — do not silently drop it.
 
 - [ ] **Step 3: Run + commit**
 
 ```bash
 pnpm --filter=@breeze/api test --run src/routes/devices/core.decommission.test.ts
-git commit -am "fix(api): restoring a device cancels its pending uninstall
+git commit -am "fix(api): restoring a device releases its pending uninstall
 
 Refs #3986"
 ```
 
 ---
 
-### Task 8: Narrow agentAuth instead of hard-403 (both layers)
+### Task 9: Narrow the agent surface — route, role, handler, and result
 
-**This is the highest-risk task in the plan.** Read the whole task before editing.
+**This is the highest-risk task in the plan. Read all of it before editing.** The first draft narrowed only the route allowlist and the command-type allowlist; an independent review found that insufficient. All four layers below are required.
 
-**Files:** `apps/api/src/middleware/agentAuth.ts:419-421` and `:589-597`, `:626-638`
+**Files:** `apps/api/src/middleware/agentAuth.ts`, `apps/api/src/routes/agents/heartbeat.ts`, `apps/api/src/routes/agents/commands.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-it('still 403s a removed device with no queued uninstall', async () => { /* unchanged behaviour */ });
-it('admits a removed device that has a pending uninstall, on heartbeat only', async () => { /* 200 */ });
-it('refuses a removed+draining device on a non-drain route', async () => {
-  // recovery-keys, inventory, elevation-requests, and an extension agent path
-  // must all still 403 — this is the security assertion, assert at least
-  // recoveryKeys and one extension gateway path explicitly.
-});
+it('still 403s a removed device with NO device_remove drain', ...);            // unchanged for uninstallAgent:false
+it('still 403s a removed device whose drain deadline has passed', ...);
+it('still 403s a removed device carrying only an abuse-queued uninstall', ...); // the incident guard
+it('admits a draining removed device on heartbeat', ...);
+it('refuses a draining removed device on recovery-keys, inventory, elevation, and an extension agent path', ...);
+it('refuses a WATCHDOG credential on a draining removed device', ...);
+it('returns only self_uninstall — no config, upgrades, trust keys or rotation — in a drain heartbeat', ...);
+it('rejects a non-UUID command result while draining', ...);
+it('rejects a result for a non-self_uninstall command while draining', ...);
 ```
 
-- [ ] **Step 2: Implement — narrow BOTH layers**
-
-At `:419`, replace the unconditional throw:
+- [ ] **Step 2: Layer 1 — auth gate (`agentAuth.ts:419`)**
 
 ```ts
 const deviceDraining =
@@ -633,146 +629,153 @@ if (device.status === 'decommissioned' && !deviceDraining) {
   throw new HTTPException(403, { message: 'Device has been decommissioned' });
 }
 ```
+Leave the `quarantined` throw at `:423` alone. **Only a device with an unexpired `device_remove` drain is admitted** — a plain removed device keeps today's 403, so `uninstallAgent:false` gains no surface whatsoever.
 
-Leave the `quarantined` throw at `:423` alone.
+**Admit only the main-agent credential.** The middleware also accepts watchdog credentials, and the watchdog heartbeat branch (`heartbeat.ts:298`) writes without the terminal-status guard. Gate on `role === 'agent'`; a watchdog on a draining device gets the 403.
 
-At `:595`, the route allowlist predicate becomes `if ((tenantState === 'draining' || deviceDraining) && !isDrainAllowedAgentPath(c))`. **This is the layer that matters.** `DRAIN_ALLOWED_ACTIONS` (`:270`) already restricts to `{heartbeat, commands, logs, rotate-token}`; without this line a removed device keeps inventory push, `PUT /:id/security/recovery-keys` (BitLocker/FileVault ingest), `POST /:id/elevation-requests` (PAM), and every extension's `<prefix>/agent/:id/*` namespace (`extensions/gateway.ts:60-65`).
+Note `lastSeenIp` is written at `agentAuth.ts:489`, *before* the drain routing at `:589`. A draining device will therefore update `last_seen_ip`. Decide explicitly and comment it — either accept it (it is genuinely the last IP we saw) or move the write behind the gate.
 
-At `:637`, derive **one** value on the agent context rather than repeating a ternary at each claim site:
+- [ ] **Step 3: Layer 2 — route allowlist (`agentAuth.ts:595`)**
+
+Predicate becomes `(tenantState === 'draining' || deviceDraining) && !isDrainAllowedAgentPath(c)`. This is what keeps inventory, `PUT /:id/security/recovery-keys` (BitLocker/FileVault ingest), `POST /:id/elevation-requests` (PAM), and every extension's `<prefix>/agent/:id/*` namespace (`extensions/gateway.ts:60-65`) refused.
+
+- [ ] **Step 4: Layer 3 — one derived claim allowlist (`agentAuth.ts:637`)**
 
 ```ts
 claimTypeAllowlist: (tenantState === 'draining' || deviceDraining)
   ? (['self_uninstall'] as const) : undefined,
 ```
+Replace the three local `agent.tenantDraining ? [...] : undefined` ternaries (`heartbeat.ts:378`, `:853`, `commands.ts:188`) with this one value. `claimPendingCommandsForDevice`'s `typeAllowlist` defaults to **unrestricted** (`commandDispatch.ts:61-68`), so a future claim site that forgets the ternary silently gets everything.
 
-`claimPendingCommandsForDevice`'s `typeAllowlist` defaults to *unrestricted* (`commandDispatch.ts:61-68`), so any future claim site that forgets the ternary silently gets full access. One derived value removes that trap.
+- [ ] **Step 5: Layer 4 — handler-level narrowing (the layer the first draft missed)**
 
-- [ ] **Step 3: Do NOT touch these**
+Being on the route allowlist is not the same as being harmless. A drain heartbeat currently still runs metrics insertion (`heartbeat.ts:717`), IP-history updates (`:759`), **threshold-scan command creation** (`:777`), and OneDrive state writes (`:803`) — and its response still carries config changes, upgrade targets, helper upgrades, manifest trust keys, and token-rotation signals (`:1127`, `:1338`), all of which the Go agent acts on (`heartbeat.go:4284`).
 
-- `agentWs.ts:749` — the independent `decommissioned` refusal. It is what keeps the WS control channel shut. `agentWs.ts:786-793` explains why WS can never be narrowed by command type: ~20 call sites push commands over the socket with **no** `device_commands` row, so `typeAllowlist` cannot see them. REST-open/WS-shut is the whole security property.
-- `mtls.ts:642,680` (`renew-cert`) — a separate `agentBearerAuthMiddleware`, deliberately admitting drain mode so an agent quarantined mid-drain can still collect its uninstall (`tenantStatus.ts:259-266`). Confirm it behaves for a removed device; do not widen it.
-- `heartbeat.ts:615-631` — the terminal-status write guard. It now runs on **every** beat of a draining removed device rather than as a rare race backstop: the device UPDATE matches 0 rows, `updatedRows` is empty, the state-change audit is skipped, and `lastSeenAt` is not bumped, so the device correctly stays "Removed" in the UI while draining. **Verify the command claim is not gated on `updatedRows`** — it is not today (`heartbeat.ts:849` runs unconditionally) — and add a comment saying so, because a future refactor that moves the claim inside the guard would silently break delivery.
+Add an **early minimal drain branch** in the heartbeat handler: claim and return `self_uninstall` and nothing else — no metrics, no config/policy, no upgrade targets, no trust keys, no rotation signalling. Return before the normal processing path.
 
-- [ ] **Step 4: Update the stale reasoning in `offlineDetector.ts:695-707`**
+In the result route (`commands.ts:205-265`), while draining: reject every **non-UUID** commandId (the `sw-install-…` branch at `:216-242` writes `applySoftwareInstallResult` with no `device_commands` row and is gated only on the device id matching), and reject any command whose `type !== 'self_uninstall'`.
 
-Its status exclusion stays **correct** and must not be removed, but its comment justifies itself with "it can never heartbeat again to clear it (agentAuthMiddleware 403s decommissioned devices)", which this task makes false. Update the comment; leave the predicate.
+- [ ] **Step 6: Do NOT touch these**
 
-- [ ] **Step 5: Run the auth + agent suites, then commit**
+- **`agentWs.ts:749`** — the independent `decommissioned` refusal that keeps the WS control channel shut. `agentWs.ts:786-793` explains why WS can never be narrowed by command type: ~20 call sites push commands over the socket with no `device_commands` row, so `typeAllowlist` cannot see them.
+- **`mtls.ts:642,680`** (`renew-cert`) — a separate `agentBearerAuthMiddleware` that deliberately admits drain mode so an agent quarantined mid-drain can still collect its uninstall (`tenantStatus.ts:259-266`). Confirm, do not widen.
+- **`heartbeat.ts:615-631`** — the terminal-status write guard. It now runs on every beat of a draining device (0 rows matched, audit skipped, `lastSeenAt` not bumped, so the device correctly stays "Removed" in the UI). Verify the command claim is **not** gated on `updatedRows` — it is not today (`heartbeat.ts:849`) — and add a comment, because a refactor that moved the claim inside the guard would silently break delivery.
+
+- [ ] **Step 7: Fix the now-stale reasoning in `offlineDetector.ts:695-707`**
+
+Its status exclusion stays **correct** and must not be removed, but its justification ("it can never heartbeat again … agentAuthMiddleware 403s decommissioned devices") becomes false. Update the comment; leave the predicate.
+
+- [ ] **Step 8: Run + commit**
 
 ```bash
 pnpm --filter=@breeze/api test --run src/middleware/ src/routes/agents/
-git commit -am "feat(api): narrow a draining removed device's agent surface instead of 403
+git commit -am "feat(api): narrow a draining removed device to self_uninstall delivery only
 
 Refs #3986"
 ```
 
 ---
 
-### Task 9: Drain window in the stale-command reaper
+### Task 10: Drain window in the stale-command reaper
 
 **Files:** `apps/api/src/jobs/staleCommandReaper.ts:190-211`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```ts
-it('does not reap a self_uninstall on a removed device inside the drain window', ...);
-it('reaps it once the window has passed', ...);
-it('still reaps an abuse-queued self_uninstall on an ACTIVE device at 30 minutes', ...);
+it('does not reap a device_remove uninstall inside its deadline', ...);
+it('reaps it once device_remove_expires_at has passed', ...);
+it('STILL reaps an abuse-queued uninstall on a decommissioned device at 30 minutes', ...);
 ```
 
-That third test is the important one — it is the regression guard for the hazard the existing comment at `:191-199` describes.
+That third test is the regression guard for the incident this whole provenance scheme exists to prevent. It must fail if someone later relaxes the reason clause.
 
-- [ ] **Step 2: Implement — add a second arm, do not widen the first**
-
-`self_uninstall` currently times out at 30 minutes (`commandTimeouts.ts:85` → `MEDIUM_TIMEOUT_TYPES` → `THIRTY_MINUTES`). Add an OR-arm inside the same `NOT (...)`:
+- [ ] **Step 2: Implement — a second arm, do not widen the first**
 
 ```sql
 OR (
   ${deviceCommands.type} = 'self_uninstall'
-  AND EXISTS (
-    SELECT 1 FROM ${devices}
-    WHERE ${devices.id} = ${deviceCommands.deviceId}
-      AND ${devices.status} = 'decommissioned'
-  )
-  AND ${deviceCommands.createdAt} > now() - (${DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS} || ' hours')::interval
+  AND ${deviceCommands.uninstallReasons} @> ARRAY['device_remove']::text[]
+  AND ${deviceCommands.deviceRemoveExpiresAt} > now()
 )
 ```
 
-Two traps:
-- **Do not copy the existing arm's `JOIN partners`.** It is an INNER join, so an org with `partner_id IS NULL` drops out of the EXISTS and its uninstalls are not exempt today. The new arm is devices-only and must stay that way.
-- Abuse-suspension uninstalls target **active** devices, and the tenant drain explicitly skips decommissioned ones (`tenantOffboarding.ts:175`), so `devices.status = 'decommissioned'` cleanly separates our rows from both. No new hazard — but the third test above is what proves it.
+Two traps: **do not copy the existing arm's `JOIN partners`** (it is an INNER join, so an org with `partner_id IS NULL` drops out of the EXISTS and is not exempt today); and the exemption keys on the **reason plus an unexpired deadline**, never on `devices.status` alone — abuse suspension queues uninstalls onto already-decommissioned devices (`abuse.ts:130-135`, no status filter), so a status-only predicate would exempt them.
 
-When the window passes, the row is reaped to `failed` with `{status:'timeout'}`, the device stops satisfying the derived predicate, and `agentAuth` reverts to the hard 403. The drain closes itself; **no new sweeper job is needed.**
+When the deadline passes, the row is reaped to `failed`/timeout, the device stops satisfying the predicate, and auth reverts to 403. The drain closes itself; **no new sweeper job.**
 
 - [ ] **Step 3: Run + commit**
 
 ```bash
-pnpm --filter=@breeze/api test --run src/jobs/staleCommandReaper.test.ts src/services/commandTimeouts.test.ts
-git commit -am "feat(api): hold a removed device's uninstall for the drain window
+pnpm --filter=@breeze/api test --run src/jobs/staleCommandReaper.test.ts
+git commit -am "feat(api): hold a device_remove uninstall for its drain window
 
 Refs #3986"
 ```
 
 ---
 
-### Task 10: Delete the WS best-effort block from permanent delete
+### Task 11: Teach tenant offboarding about shared ownership
 
-**Files:** `apps/api/src/routes/devices/core.ts:1559-1571`
+`tenantOffboarding` currently dedupes against **any** pending/sent uninstall regardless of origin (`:200-211`) and cancels **every** pending/sent uninstall on abort (`:291-322`). With two reason-owners possible on one row, that is now wrong in both directions: a tenant abort would cancel a uninstall the user explicitly asked for via Remove, and a tenant drain would count a device-remove row as its own.
 
-- [ ] **Step 1: Delete it**
+**Files:** `apps/api/src/services/tenantOffboarding.ts:164-229`, `:291-322`, `:380-394`
 
-Remove the `isAgentConnected` / `sendCommandToAgent` block entirely, along with the now-unused imports. Keep `uninstallCommandSent` out of the audit details, or keep the key with a fixed `false` if you would rather not change the audit shape — state which in the commit message.
-
-Removal is safe because the uninstall now happens at **Remove** time, and permanent delete requires the device to already be removed (`core.ts:1555`). Purge becomes purely a data operation.
-
-- [ ] **Step 2: Update `cascadeDelete.test.ts` Half B if it asserts on the removed block, run, commit**
+- [ ] **Step 1:** Stamp `uninstall_reasons = ARRAY['tenant_offboarding']` on rows it inserts; when a row already exists, **append** its reason rather than skipping.
+- [ ] **Step 2:** On abort, `array_remove(uninstall_reasons,'tenant_offboarding')` and cancel only when no reason remains.
+- [ ] **Step 3:** `countOutstandingUninstalls` counts only rows carrying its own reason.
+- [ ] **Step 4:** Run the offboarding integration suites, which are the ones most likely to catch a mistake here:
 
 ```bash
-pnpm --filter=@breeze/api test --run src/routes/devices/
-git commit -am "refactor(api): permanent delete no longer sends a best-effort uninstall
+pnpm --filter @breeze/api test:integration -- src/__tests__/integration/offboardingDrainSuspendedEntry.integration.test.ts src/__tests__/integration/offboardingEntryDeadlock.integration.test.ts
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -am "refactor(api): tenant offboarding owns only its own uninstall reason
 
 Refs #3986"
 ```
 
 ---
 
-### Task 11: Integration test — delivery to an offline agent
+### Task 12: Integration tests — delivery, isolation, and the incident guard
 
-The unit tests mock Drizzle; none of them prove a queued uninstall survives and is claimable. This is the test that would have caught the original bug.
+Unit tests mock Drizzle; none of them prove a queued uninstall survives and is claimable. Place these in `src/__tests__/integration/` **exactly** — a file outside that directory runs in zero CI jobs, and a `runIf` guard skips silently.
 
 **Files:** Create `apps/api/src/__tests__/integration/deviceUninstallDrain.integration.test.ts`
 
-Place it in `src/__tests__/integration/` exactly — a file outside that directory runs in **zero** CI jobs.
+- [ ] **Step 1: Write the tests**
 
-- [ ] **Step 1: Write the test**
+1. **Delivery.** Seed partner→org→device; `DELETE /devices/:id` with `uninstallAgent:true`; assert a `pending` row stamped `device_remove` with a deadline; assert auth admits `/heartbeat` and refuses `PUT /:id/security/recovery-keys`; claim via heartbeat and assert the response carries `self_uninstall` **and nothing else** (queue a `run_script` first and assert it is not delivered, and assert no config/upgrade/trust-key payload); ack `completed`; assert the next heartbeat 403s.
+2. **Restore.** Queue, then `POST /devices/:id/restore`; assert the row is cancelled and the device 403s again.
+3. **THE INCIDENT GUARD.** Suspend a partner (queues fleet uninstalls, including onto an already-decommissioned device) → age past the 30-minute timeout → run the reaper → un-suspend → agent heartbeat. **Assert zero commands claimed.** This is the test that fails if provenance is ever loosened.
+4. **Overlap.** Device removed while its tenant is offboarding: one row, two reasons; restore strips one; the tenant drain still counts and delivers it.
 
-Against real Postgres, with `import './setup';` first:
-
-1. Seed partner → org → device (`createPartner`/`createOrganization`/`createUser` from `./db-utils`).
-2. `DELETE /devices/:id` with `uninstallAgent: true`.
-3. Assert a `pending` `self_uninstall` row exists with `target_role='agent'`.
-4. Assert `agentAuthMiddleware` now **admits** the device on `/heartbeat` and **refuses** it on `PUT /:id/security/recovery-keys`.
-5. Claim via the heartbeat path; assert the response body carries the `self_uninstall` command and only that command (queue an extra `run_script` first and assert it is NOT delivered).
-6. Ack it `completed`; assert the device is no longer draining and the next heartbeat 403s.
-7. Separately: queue, then `POST /devices/:id/restore`; assert the row is `cancelled` and the device 403s again.
-
-- [ ] **Step 2: Run it and CONFIRM IT RAN** (a `runIf` guard skips silently)
+- [ ] **Step 2: Run and CONFIRM IT RAN** (read the passed count, do not trust a green exit)
 
 ```bash
 pnpm --filter @breeze/api test:docker:up
 pnpm --filter @breeze/api test:integration -- src/__tests__/integration/deviceUninstallDrain.integration.test.ts
 pnpm --filter @breeze/api test:docker:down
 ```
-Read the output and confirm a non-zero passed count — not just a green exit.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add apps/api/src/__tests__/integration/deviceUninstallDrain.integration.test.ts
-git commit -m "test(api): prove a queued uninstall reaches an offline removed device
+git commit -am "test(api): prove uninstall delivery, isolation, and abuse-reversal safety
 
 Closes #3986"
 ```
+
+---
+
+### Task 13 (separate cleanup PR, AFTER PR3 is deployed): remove the purge WS block
+
+**Do not do this in PR2.** Deleting `core.ts:1559-1571` while the UI still cannot request an uninstall would leave a window in which Remove never uninstalls *and* purge no longer uninstalls either — no single-device uninstall path at all. Ship it as a fourth, trivial PR once PR3 is live.
+
+- [ ] Delete the `isAgentConnected` / `sendCommandToAgent` block and its now-unused imports; keep or drop `uninstallCommandSent` in the audit details, and say which in the commit message.
 
 # PR3 — Web: the Remove dialog
 
@@ -782,7 +785,7 @@ Branch: `feat/3987-remove-dialog` (off `main`, after PR1 and PR2 have merged). `
 
 ---
 
-### Task 12: `RemoveDeviceDialog`
+### Task 14: `RemoveDeviceDialog`
 
 `ConfirmDialog` (`apps/web/src/components/shared/ConfirmDialog.tsx`) already accepts `children: ReactNode` rendered under the message, so **no new modal primitive is required**. It owns no state for children — the radio value lives in the caller.
 
@@ -863,7 +866,7 @@ Refs #3987"
 
 ---
 
-### Task 13: Wire the dialog through the dispatchers
+### Task 15: Wire the dialog through the dispatchers
 
 **Files:** `apps/web/src/services/deviceActions.ts:386`, `apps/web/src/components/devices/DevicesPage.tsx:796`, `apps/web/src/components/devices/DeviceDetailPage.tsx:363`
 
@@ -911,7 +914,7 @@ Closes #3987"
 
 ---
 
-### Task 14: E2E coverage (greenfield)
+### Task 16: E2E coverage (greenfield)
 
 Decommission/restore/permanent-delete has **zero** end-to-end coverage today — a grep for `decommission` across all of `e2e-tests/` returns nothing, and there is no devices page object.
 
@@ -935,10 +938,10 @@ cd e2e-tests && pnpm test device_remove.spec.ts
 
 ## Self-review
 
-**Spec coverage.** #3986: durable queue (T5, T6) · claim narrowing both layers (T8) · drain window (T9) · restore cancels (T7) · WS best-effort deleted (T10) · delivery proven against real Postgres (T11). #3987: menu parity (T1) · Remove/Delete-permanently split (T1, T2) · two-option radio defaulting to uninstall with state-aware hints (T12, T13) · label sweep + locale parity (T2, T3) · filter-builder derived label (T4) · bulk path (T13) · E2E (T14).
+**Spec coverage.** #3986: provenance migration (T5) · durable queue (T6, T7) · surface narrowing across route/role/handler/result (T9) · drain window (T10) · restore releases its own reason (T8) · shared ownership with tenant offboarding (T11) · delivery, isolation and the abuse-reversal incident guard proven against real Postgres (T12) · WS best-effort block removed in a separate post-PR3 cleanup (T13). #3987: menu parity (T1) · Remove/Delete-permanently split (T1, T2) · two-option radio defaulting to uninstall with state-aware hints (T14, T15) · label sweep + locale parity (T2, T3) · filter-builder derived label (T4) · bulk path (T15) · E2E (T16).
 
 **Deliberately not covered, and why.** `admin.json`'s mTLS quarantine copy (different flow — file separately, noted in T2). `DeviceFilters.tsx` (dead code — noted in T4). Pending-uninstall *state surfaced in the UI* — #3986 lists it, but it depends on an API read model that PR2 does not build; it should be its own follow-up rather than a half-built badge. Mobile needs no changes (no decommission UI; status coercion only).
 
-**Type consistency.** `RemoveAgentChoice` (T12) → `{ uninstallAgent: boolean }` (T13) → `uninstallAgent` body field (T6). `isDeviceUninstallDraining` / `queueDeviceUninstall` / `cancelDeviceUninstall` (T5) are consumed by T6/T7/T8 under exactly those names. Action strings stay `'decommission'` / `'restore'` / `'permanent-delete'` throughout — only labels change.
+**Type consistency.** `RemoveAgentChoice` (T14) → `{ uninstallAgent: boolean }` (T15) → `uninstallAgent` body field (T7). `isDeviceUninstallDraining` / `queueDeviceUninstall` / `releaseDeviceRemoveReason` (T6) are consumed by T7/T8/T9/T10 under exactly those names. Action strings stay `'decommission'` / `'restore'` / `'permanent-delete'` throughout — only labels change.
 
-**Rollout.** PR1 → PR2 → deploy → PR3. PR2 is behaviour-neutral on its own (`uninstallAgent` defaults false). No migration, so no deploy ordering constraint beyond "API before the UI that calls it". Every branch targets `main` directly; do not stack, or CI will not run at all.
+**Rollout.** PR1 → PR2 → deploy → PR3 → deploy → PR4 (T13 cleanup). PR2 is behaviour-neutral on its own (`uninstallAgent` defaults false) and its migration adds two nullable columns with no backfill, so it is safe to deploy ahead of the UI. The purge WS block stays until PR3 is live, or there would be a window with no single-device uninstall path at all. Every branch targets `main` directly; do not stack, or CI will not run at all.
