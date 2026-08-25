@@ -113,6 +113,8 @@ var allCommandTypes = []string{
 
 	// handlers_peripheral.go init()
 	tools.CmdPeripheralPolicySync,
+	// handlers_peripheral_v2.go init()
+	tools.CmdPeripheralPolicySyncV2,
 
 	// handlers_uninstall.go init()
 	tools.CmdSelfUninstall,
