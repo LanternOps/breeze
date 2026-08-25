@@ -31,10 +31,12 @@ import {
   mapUserAttributes,
   discoverOIDCConfig,
   assertSafeOidcEndpoint,
+  assertFreshIdpAuthentication,
   PROVIDER_PRESETS,
   type OIDCConfig,
   type EmailVerifiedClaim
 } from '../services/sso';
+import { mintStepUpGrant } from '../services/mfaStepUpGrant';
 import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, getRefreshFamily, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
@@ -589,7 +591,7 @@ async function revalidateSsoDefaultRole(params: {
     : { ok: true, roleId: role.id, orgPartnerId };
 }
 
-type SsoCallbackMode = 'login' | 'link';
+type SsoCallbackMode = 'login' | 'link' | 'reauth';
 
 /**
  * SR2-11: a pending SSO transaction is valid only against the provider
@@ -601,6 +603,10 @@ type SsoCallbackMode = 'login' | 'link';
  * provider may be linked). Neither was checked at the callback before this
  * change — a provider disabled inside the <=10-minute state TTL still completed
  * a full login or link.
+ *
+ * #4018: reauth mode shares LINK's rule — /reauth/start also admits a
+ * `testing` provider and refuses only `inactive` — so it deliberately falls
+ * outside the `mode === 'login'` branch below, which needs no change.
  *
  * A NULL providerVersion (a row written before the column existed) is a REJECT,
  * not a pass: those are exactly the unbound sessions this change invalidates.
@@ -644,11 +650,15 @@ type LinkRejectReason =
   | 'link_axis_membership_lost';
 
 /**
- * SR2-11b: re-check a pending LINK session against LIVE state before it is
- * allowed to bind an external identity to a Breeze account.
+ * SR2-11b: re-check a pending user-bound SSO session against LIVE state before
+ * it is allowed to act on behalf of that user — binding an external identity
+ * (link mode) or minting an enrollment step-up grant (#4018 reauth mode). Both
+ * modes need the IDENTICAL set of conditions, so they share one validator;
+ * `boundUserId` is whichever of link_user_id / reauth_user_id the session
+ * carries (the DB CHECK guarantees at most one is set).
  *
- * The session snapshotted {authEpoch, mfaEpoch, sid} at /link/start. Any of the
- * following since then must kill it:
+ * The session snapshotted {authEpoch, mfaEpoch, sid} at /link/start or
+ * /reauth/start. Any of the following since then must kill it:
  *   - the user was suspended/deleted            -> status / user_gone
  *   - password reset, email change, membership
  *     change, platform-privilege change         -> auth_epoch bump
@@ -662,9 +672,10 @@ type LinkRejectReason =
  * MUST be called inside withSystemDbAccessContext (/sso/callback is
  * unauthenticated; getRefreshFamily establishes its own system context).
  */
-async function validateLinkBinding(
+async function validateSessionBinding(
   session: typeof ssoSessions.$inferSelect,
   provider: typeof ssoProviders.$inferSelect,
+  boundUserId: string,
 ): Promise<{ ok: true; user: typeof users.$inferSelect } | { ok: false; reason: LinkRejectReason }> {
   if (
     session.initiatingAuthEpoch == null ||
@@ -677,7 +688,7 @@ async function validateLinkBinding(
   const [linkingUser] = await db
     .select()
     .from(users)
-    .where(eq(users.id, session.linkUserId!))
+    .where(eq(users.id, boundUserId))
     .limit(1);
   if (!linkingUser) return { ok: false, reason: 'link_user_gone' };
   if (linkingUser.status !== 'active') return { ok: false, reason: 'link_user_inactive' };
@@ -2240,7 +2251,8 @@ ssoRoutes.get('/callback', async (c) => {
   // mode, or whose snapshot no longer matches the provider's live generation.
   // Runs BEFORE any default-role/ceiling work below — a stale or disabled
   // transaction must never reach JIT logic at all.
-  const callbackMode: SsoCallbackMode = session.linkUserId ? 'link' : 'login';
+  const callbackMode: SsoCallbackMode =
+    session.reauthUserId ? 'reauth' : session.linkUserId ? 'link' : 'login';
 
   const generation = checkProviderGeneration(provider, session, callbackMode);
   if (!generation.ok) {
@@ -2440,6 +2452,120 @@ ssoRoutes.get('/callback', async (c) => {
       return c.redirect('/login?error=sso_no_subject');
     }
 
+    // #4018 reauth mode: an already-authenticated, PASSWORDLESS user proving
+    // identity through a fresh IdP round-trip so they can enroll a first MFA
+    // factor. Mints NO tokens, creates NO users, links NO identities — its only
+    // output is a single-use step-up grant.
+    if (session.reauthUserId) {
+      const reauthUserId = session.reauthUserId;
+
+      // The IdP must have ACTUALLY re-authenticated for THIS transaction.
+      // Bounded from the session's own created_at, not from now: an auth_time
+      // that predates the user's click is a cached session, however recent it
+      // looks. Fails closed on a missing auth_time.
+      const freshness = assertFreshIdpAuthentication(idClaims, session.createdAt.getTime());
+      if (!freshness.ok) {
+        writeRouteAudit(c, {
+          orgId: provider.orgId,
+          action: 'sso.reauth.rejected',
+          resourceType: 'sso_provider',
+          resourceId: provider.id,
+          resourceName: provider.name,
+          result: 'denied',
+          details: { mode: 'reauth', reason: freshness.reason, userId: reauthUserId }
+        });
+        clearStateCookie();
+        return c.redirect('/settings/profile?error=reauth_not_fresh');
+      }
+
+      // NOTE on the shape: every variant carries an explicit `ok` literal
+      // rather than relying on `'ok' in outcome`. TS normalizes a union of
+      // object literals by adding the missing members back as optional
+      // `undefined`, which makes an `in` check narrow NOTHING here — the
+      // success payload would silently degrade to `number | undefined` and the
+      // grant would be minted with undefined epochs.
+      const outcome = await withSystemDbAccessContext(async () => {
+        const binding = await validateSessionBinding(session, provider, reauthUserId);
+        if (!binding.ok) {
+          return { ok: false as const, error: 'session_invalid' as const, auditReason: binding.reason };
+        }
+
+        // STRICTER than link mode's email comparison: the asserted (provider,
+        // sub) must ALREADY be this user's identity. An IdP where users can
+        // change their own email would otherwise let one user re-auth as
+        // another by matching an address.
+        const [identity] = await db
+          .select({ userId: userSsoIdentities.userId })
+          .from(userSsoIdentities)
+          .where(and(
+            eq(userSsoIdentities.providerId, provider.id),
+            eq(userSsoIdentities.externalId, externalSub)
+          ))
+          .limit(1);
+        if (!identity || identity.userId !== reauthUserId) {
+          return { ok: false as const, error: 'identity_mismatch' as const };
+        }
+
+        // Belt-and-braces: the account must still be passwordless. A password
+        // set between /reauth/start and here means the ordinary step-up applies.
+        if (binding.user.passwordHash != null) {
+          return { ok: false as const, error: 'password_set' as const };
+        }
+
+        return {
+          ok: true as const,
+          authEpoch: session.initiatingAuthEpoch!,
+          mfaEpoch: session.initiatingMfaEpoch!,
+          sid: session.initiatingSessionId!,
+        };
+      });
+
+      clearStateCookie();
+
+      if (!outcome.ok) {
+        writeRouteAudit(c, {
+          orgId: provider.orgId,
+          action: 'sso.reauth.rejected',
+          resourceType: 'sso_provider',
+          resourceId: provider.id,
+          resourceName: provider.name,
+          result: 'denied',
+          details: {
+            // The PUBLIC code stays coarse; the precise binding reason is
+            // audit-only, exactly as in link mode above.
+            mode: 'reauth',
+            reason: outcome.auditReason ?? outcome.error,
+            userId: reauthUserId
+          }
+        });
+        return c.redirect(`/settings/profile?error=${outcome.error}`);
+      }
+
+      const grantId = await mintStepUpGrant({
+        userId: reauthUserId,
+        operation: 'enroll_first_factor',
+        authEpoch: outcome.authEpoch,
+        mfaEpoch: outcome.mfaEpoch,
+        sid: outcome.sid,
+      });
+      if (!grantId) {
+        return c.redirect('/settings/profile?error=reauth_unavailable');
+      }
+
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: 'sso.reauth.completed',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name,
+        details: { partnerId: provider.partnerId, userId: reauthUserId }
+      });
+
+      // Fragment, not query: never sent to the server, never in an access log.
+      // Same channel the login path already uses for #ssoCode.
+      return c.redirect(`/settings/profile#ssoReauthGrant=${grantId}`);
+    }
+
     // ── Link mode (#2183 Connect SSO): this round-trip belongs to an
     // already-authenticated user connecting their identity — never a login.
     // Placed AFTER the full id_token signature/nonce verification, the atomic
@@ -2449,7 +2575,7 @@ ssoRoutes.get('/callback', async (c) => {
     if (session.linkUserId) {
       const outcome = await withSystemDbAccessContext(async () => {
         // SR2-11b: live re-check of the binding captured at /link/start.
-        const binding = await validateLinkBinding(session, provider);
+        const binding = await validateSessionBinding(session, provider, session.linkUserId!);
         if (!binding.ok) {
           return { error: 'session_invalid' as const, auditReason: binding.reason };
         }

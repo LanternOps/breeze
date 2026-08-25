@@ -123,12 +123,19 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // existing clients are untouched; register_approver_device gates the
 // /authenticator register routes (#2707).
 //
-// `satisfies readonly StepUpOperation[]` compile-time-links this literal
-// array to the service's StepUpOperation union — if the two ever diverge
-// (a new operation added to one but not the other), this fails typecheck
-// instead of silently letting a grant type this schema doesn't know about
-// slip through validation, or letting a value this schema accepts fail to
-// match any real operation.
+// `satisfies readonly StepUpOperation[]` compile-time-links this literal array
+// to the service's StepUpOperation union in ONE direction only: every value
+// here must be a real operation, so this schema can never accept a value that
+// matches no grant type. It is deliberately NOT exhaustive — it is the
+// CLIENT-REQUESTABLE allowlist, and the union is legitimately wider.
+//
+// #4018: `enroll_first_factor` is intentionally absent. That grant is the sole
+// output of the SSO re-auth callback, which mints it only after a forced IdP
+// round-trip proves identity for a PASSWORDLESS account. Adding it here would
+// let any caller who can already satisfy step-up mint one on demand, turning a
+// re-authentication proof into a checkbox. `schemas.test.ts` locks the
+// exclusion — adding an operation to the union must stay a no-op here unless
+// clients are genuinely meant to ask for it.
 const STEP_UP_OPERATIONS = ['add_factor', 'register_approver_device'] as const satisfies readonly StepUpOperation[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)

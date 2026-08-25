@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHmac } from 'crypto';
 import { Hono } from 'hono';
 import { ssoRoutes } from './sso';
 
@@ -7,7 +8,20 @@ import { ssoRoutes } from './sso';
 // brief), trimmed to what POST /sso/reauth/start actually exercises:
 // provider lookup + getOIDCConfig (needs assertSafeOidcEndpoint's real logic),
 // authorization-URL building, epoch/session binding, and the system-context
-// insert.
+// insert. Task 4 extends the same blocks with what GET /sso/callback's reauth
+// branch exercises (token exchange, id_token verification, userinfo, grant
+// minting).
+
+// Mirrors the route's signed binding-cookie derivation
+// (HMAC-SHA256 of `sso-login-state:<state>` keyed by the cookie secret) —
+// same helper as ./sso.test.ts:8-14.
+const SSO_STATE_COOKIE_SECRET = 'test-sso-cookie-secret';
+function ssoStateCookieHeader(state: string): string {
+  const value = createHmac('sha256', SSO_STATE_COOKIE_SECRET)
+    .update(`sso-login-state:${state}`)
+    .digest('hex');
+  return `breeze_sso_state=${encodeURIComponent(value)}`;
+}
 
 vi.mock('../services/sso', () => ({
   generateState: vi.fn().mockReturnValue('state'),
@@ -38,8 +52,43 @@ vi.mock('../services/sso', () => ({
   exchangeCodeForTokens: vi.fn(),
   getUserInfo: vi.fn(),
   verifyIdTokenSignature: vi.fn(),
-  readEmailVerifiedClaim: vi.fn(),
+  // Real logic (not a stub), same mirror as ./sso.test.ts:37-42 — an
+  // always-undefined stub would make the callback's email_verified gate
+  // unconditionally pass, hiding it from the reauth callback tests.
+  readEmailVerifiedClaim: (source: Record<string, unknown> | null | undefined) => {
+    const ev = source?.email_verified;
+    if (ev === true || ev === 'true') return 'true';
+    if (ev === false || ev === 'false') return 'false';
+    return 'absent';
+  },
   idpAssertedMfa: vi.fn(),
+  // Real logic (not a stub) — a faithful mirror of services/sso.ts:295-313
+  // (Task 1; independently unit-tested in services/sso.test.ts:633). A plain
+  // vi.fn() stub would return `undefined` and let the callback's freshness
+  // gate be deleted with the auth_time tests below still green, which is
+  // exactly the revert-probe this suite has to survive. Wrapped in vi.fn() so
+  // the suite can ALSO assert the route bounds it from the sso_sessions row's
+  // own created_at rather than a window measured from now.
+  assertFreshIdpAuthentication: vi.fn((
+    claims: { auth_time?: unknown } | null | undefined,
+    startedAtMs: number,
+    nowMs: number = Date.now(),
+  ) => {
+    const AUTH_TIME_SKEW_SECONDS = 120;
+    const authTime = claims?.auth_time;
+    if (typeof authTime !== 'number' || !Number.isFinite(authTime)) {
+      return { ok: false, reason: 'auth_time_missing' };
+    }
+    const nowSeconds = Math.floor(nowMs / 1000);
+    const startedAtSeconds = Math.floor(startedAtMs / 1000);
+    if (authTime > nowSeconds + AUTH_TIME_SKEW_SECONDS) {
+      return { ok: false, reason: 'auth_time_future' };
+    }
+    if (authTime < startedAtSeconds - AUTH_TIME_SKEW_SECONDS) {
+      return { ok: false, reason: 'auth_time_stale' };
+    }
+    return { ok: true };
+  }),
   mapUserAttributes: vi.fn(),
   discoverOIDCConfig: vi.fn(),
   // Real logic (not a stub) — getOIDCConfig (defined in sso.ts, not mocked)
@@ -67,7 +116,13 @@ vi.mock('../services', () => ({
   mintRefreshTokenFamily: vi.fn(),
   bindRefreshJtiToFamily: vi.fn(),
   getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
-  getRefreshFamily: vi.fn(),
+  // The reauth callback re-checks the initiating refresh family is still live
+  // via validateSessionBinding. Default: healthy + far-future, so only the
+  // dedicated revocation test sees a dead one.
+  getRefreshFamily: vi.fn().mockResolvedValue({
+    revokedAt: null,
+    absoluteExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+  }),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date(Date.now() + 60_000) }),
   getRedis: vi.fn().mockReturnValue({})
 }));
@@ -104,6 +159,13 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => any) => fn()),
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' }))
+}));
+
+// The reauth callback's ONLY output on success. Mocked so the suite can assert
+// the exact bind (userId/operation/epochs/sid) and prove the grant is never
+// minted on any rejection path.
+vi.mock('../services/mfaStepUpGrant', () => ({
+  mintStepUpGrant: vi.fn()
 }));
 
 vi.mock('../services/auditEvents', async (importOriginal) => ({
@@ -145,11 +207,22 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { getUserEpochs, rateLimiter } from '../services';
+import { createTokenPair, getRefreshFamily, getUserEpochs, rateLimiter } from '../services';
+import {
+  assertFreshIdpAuthentication,
+  exchangeCodeForTokens,
+  getUserInfo,
+  mapUserAttributes,
+  verifyIdTokenSignature,
+} from '../services/sso';
+import { mintStepUpGrant } from '../services/mfaStepUpGrant';
+import { writeRouteAudit } from '../services/auditEvents';
 import { authMiddleware } from '../middleware/auth';
 
 const USER_ID = '00000000-0000-4000-8000-000000000020';
+const OTHER_USER_ID = '00000000-0000-4000-8000-0000000000aa';
 const PROVIDER_ID = '00000000-0000-4000-8000-000000000001';
+const ORG_ID = '00000000-0000-4000-8000-000000000010';
 const SID = '00000000-0000-4000-8000-0000000000fa';
 
 const ACTIVE_OIDC_PROVIDER = {
@@ -297,7 +370,7 @@ describe('POST /sso/reauth/start', () => {
       initiatingMfaEpoch: 1,
       initiatingSessionId: SID
     }));
-    const insertedArg = insertValues.mock.calls[0][0];
+    const insertedArg = insertValues.mock.calls[0]![0];
     expect(insertedArg.linkUserId).toBeUndefined();
 
     // #4018 Finding 2: sso_sessions is system-scope-only under RLS. Dropping
@@ -377,5 +450,344 @@ describe('POST /sso/reauth/start', () => {
     });
 
     expect(res.status).toBe(429);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// #4018 Task 4: GET /sso/callback — reauth mode.
+//
+// A passwordless SSO user who has just proved identity through a FORCED IdP
+// round-trip (`prompt=login&max_age=0`, stamped by POST /sso/reauth/start) is
+// handed a single-use step-up grant so they can enroll a FIRST MFA factor.
+//
+// The branch sits after the full id_token signature/nonce verification, the
+// atomic session claim and the userinfo `sub` cross-check — the same position
+// link mode occupies — and it mints NO login tokens, creates NO users and
+// links NO identities. Everything below exists to keep it that way.
+// ══════════════════════════════════════════════════════════════════════════
+describe('GET /sso/callback — reauth mode (#4018)', () => {
+  let app: Hono;
+
+  const EXTERNAL_ID = 'external-user-1';
+
+  const sel = (rows: unknown[]) => ({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) })
+    })
+  } as any);
+
+  const ACTIVE_REAUTH_USER = {
+    id: USER_ID,
+    email: 'tech@acme.example',
+    name: 'Tech',
+    status: 'active',
+    orgId: null,
+    passwordHash: null,
+  };
+
+  const secondsAgo = (n: number) => Math.floor(Date.now() / 1000) - n;
+
+  // Primes ONE reauth callback round-trip. db.select is consumed in exactly
+  // this order by the branch under test:
+  //   1. ssoProviders           (callback: provider by id)
+  //   2. users                  (validateSessionBinding: the bound user)
+  //   3. organizationUsers      (validateSessionBinding: org-axis membership)
+  //   4. userSsoIdentities      (reauth branch: (provider, sub) ownership)
+  // Every test funnels through here so that ordering lives in one place.
+  const primeReauthCallback = (opts: {
+    sessionCreatedAt?: Date;
+    idClaims?: Record<string, unknown>;
+    sessionOverrides?: Record<string, unknown>;
+    // undefined = healthy user; null = simulate "user gone" (no row).
+    reauthUser?: Record<string, unknown> | null;
+    // undefined = live membership row; [] = membership lost.
+    membership?: unknown[];
+    // undefined = the identity belongs to the reauth user; [] = no identity.
+    identityRows?: Array<{ userId: string }>;
+    provider?: Record<string, unknown>;
+  } = {}) => {
+    const {
+      sessionCreatedAt = new Date(),
+      sessionOverrides = {},
+      reauthUser = ACTIVE_REAUTH_USER,
+      membership = [{ userId: USER_ID }],
+      identityRows = [{ userId: USER_ID }],
+      provider = ACTIVE_OIDC_PROVIDER,
+    } = opts;
+    const idClaims = opts.idClaims ?? {
+      sub: EXTERNAL_ID,
+      email: 'tech@acme.example',
+      auth_time: secondsAgo(5),
+    };
+
+    vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+      access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s'
+    } as any);
+    vi.mocked(verifyIdTokenSignature).mockResolvedValue(idClaims as any);
+    vi.mocked(getUserInfo).mockResolvedValue({
+      sub: EXTERNAL_ID, email: 'tech@acme.example', name: 'Tech'
+    } as any);
+    vi.mocked(mapUserAttributes).mockReturnValue({
+      email: 'tech@acme.example', name: 'Tech'
+    } as any);
+
+    const session = {
+      id: 'sso-session-reauth',
+      providerId: PROVIDER_ID,
+      state: 'state',
+      nonce: 'nonce',
+      codeVerifier: 'verifier',
+      redirectUrl: '/settings/profile',
+      linkUserId: null,
+      reauthUserId: USER_ID,
+      providerVersion: 7,
+      initiatingAuthEpoch: 3,
+      initiatingMfaEpoch: 1,
+      initiatingSessionId: SID,
+      createdAt: sessionCreatedAt,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      ...sessionOverrides,
+    };
+
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([session])
+      })
+    } as any);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(sel([provider]))
+      .mockReturnValueOnce(sel(reauthUser ? [reauthUser] : []))
+      .mockReturnValueOnce(sel(membership))
+      .mockReturnValueOnce(sel(identityRows));
+
+    return { session, idClaims };
+  };
+
+  const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', {
+    method: 'GET',
+    headers: { cookie: ssoStateCookieHeader('state') }
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset().mockReturnValue(sel([]));
+    vi.mocked(db.insert).mockReset().mockReturnValue({
+      values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
+    } as any);
+    vi.mocked(db.delete).mockReset().mockReturnValue({
+      where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
+    } as any);
+    vi.mocked(getUserEpochs).mockReset().mockResolvedValue({ authEpoch: 3, mfaEpoch: 1 } as any);
+    vi.mocked(getRefreshFamily).mockReset().mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    } as any);
+    vi.mocked(mintStepUpGrant).mockReset().mockResolvedValue('grant-abc');
+    process.env.APP_ENCRYPTION_KEY = SSO_STATE_COOKIE_SECRET;
+    app = new Hono();
+    app.route('/sso', ssoRoutes);
+  });
+
+  // ── Freshness: the IdP must have ACTUALLY re-authenticated ───────────────
+
+  it('rejects when the id_token has no auth_time (fails closed)', async () => {
+    primeReauthCallback({ idClaims: { sub: EXTERNAL_ID, email: 'tech@acme.example' } });
+
+    const res = await doCallback();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('error=reauth_not_fresh');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale auth_time — the IdP replayed a cached session', async () => {
+    primeReauthCallback({
+      idClaims: { sub: EXTERNAL_ID, email: 'tech@acme.example', auth_time: secondsAgo(3600) }
+    });
+
+    const res = await doCallback();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('error=reauth_not_fresh');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  // The load-bearing half of the freshness contract: the lower bound is the
+  // sso_sessions row's own created_at, NOT a window measured from now. An
+  // authentication that predates the user's click is a cached session however
+  // recent it looks in wall-clock terms — this pair discriminates the two
+  // (both auth_times below are comfortably "recent", only one post-dates the
+  // click), and the call-argument assertion pins the contract exactly.
+  it('bounds freshness from the session created_at, not from now (accepts an auth_time after the click)', async () => {
+    const sessionCreatedAt = new Date(Date.now() - 9 * 60 * 1000);
+    const { idClaims } = primeReauthCallback({
+      sessionCreatedAt,
+      idClaims: { sub: EXTERNAL_ID, email: 'tech@acme.example', auth_time: secondsAgo(30) }
+    });
+
+    const res = await doCallback();
+
+    expect(assertFreshIdpAuthentication).toHaveBeenCalledWith(idClaims, sessionCreatedAt.getTime());
+    expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
+  });
+
+  it('bounds freshness from the session created_at, not from now (rejects an auth_time that predates the click)', async () => {
+    const sessionCreatedAt = new Date(Date.now() - 9 * 60 * 1000);
+    primeReauthCallback({
+      sessionCreatedAt,
+      idClaims: {
+        sub: EXTERNAL_ID,
+        email: 'tech@acme.example',
+        // ~14 minutes ago: still "recent" by any now-relative window, but it
+        // predates the /reauth/start click by 5 minutes.
+        auth_time: Math.floor(sessionCreatedAt.getTime() / 1000) - 300,
+      }
+    });
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=reauth_not_fresh');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  // ── Identity: stricter than link mode's email comparison ─────────────────
+
+  it('rejects when the asserted sub belongs to a different user', async () => {
+    // Same asserted email as the reauth user — an email comparison (link
+    // mode's rule) would WAVE THIS THROUGH. Only (providerId, externalSub)
+    // ownership catches it.
+    primeReauthCallback({ identityRows: [{ userId: OTHER_USER_ID }] });
+
+    const res = await doCallback();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('error=identity_mismatch');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the asserted sub has no identity row at all (never creates one)', async () => {
+    primeReauthCallback({ identityRows: [] });
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=identity_mismatch');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  // ── Binding: live re-check of the /reauth/start snapshot ─────────────────
+
+  it('rejects when the initiating session was revoked since /reauth/start', async () => {
+    primeReauthCallback();
+    vi.mocked(getRefreshFamily).mockResolvedValueOnce({
+      revokedAt: new Date(),
+      absoluteExpiresAt: new Date(Date.now() + 1e9),
+    } as any);
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('rejects an auth-epoch bump since /reauth/start', async () => {
+    primeReauthCallback();
+    vi.mocked(getUserEpochs).mockResolvedValueOnce({ authEpoch: 4, mfaEpoch: 1 } as any);
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('rejects an mfa-epoch bump since /reauth/start', async () => {
+    primeReauthCallback();
+    vi.mocked(getUserEpochs).mockResolvedValueOnce({ authEpoch: 3, mfaEpoch: 2 } as any);
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('rejects a suspended user', async () => {
+    primeReauthCallback({ reauthUser: { ...ACTIVE_REAUTH_USER, status: 'suspended' } });
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('rejects lost org-axis membership since /reauth/start', async () => {
+    primeReauthCallback({ membership: [] });
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('rejects a NULL binding column — pre-deploy row', async () => {
+    primeReauthCallback({ sessionOverrides: { initiatingSessionId: null } });
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  // ── Belt-and-braces: a password set mid-flight ───────────────────────────
+
+  it('rejects when a password was set between /reauth/start and the callback', async () => {
+    primeReauthCallback({ reauthUser: { ...ACTIVE_REAUTH_USER, passwordHash: 'argon2id$...' } });
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toContain('error=password_set');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  // ── Success ──────────────────────────────────────────────────────────────
+
+  it('mints an enroll_first_factor grant and redirects with it in the fragment', async () => {
+    primeReauthCallback();
+
+    const res = await doCallback();
+
+    expect(mintStepUpGrant).toHaveBeenCalledWith({
+      userId: USER_ID,
+      operation: 'enroll_first_factor',
+      authEpoch: 3,
+      mfaEpoch: 1,
+      sid: SID,
+    });
+    expect(res.status).toBe(302);
+    // Fragment, not query: never sent to the server, never in an access log.
+    expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'sso.reauth.completed' })
+    );
+  });
+
+  it('fails closed with reauth_unavailable when the grant cannot be minted (Redis down)', async () => {
+    primeReauthCallback();
+    vi.mocked(mintStepUpGrant).mockResolvedValueOnce(null);
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toBe('/settings/profile?error=reauth_unavailable');
+  });
+
+  it('never mints login tokens, creates users, or links identities in reauth mode', async () => {
+    primeReauthCallback();
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });
