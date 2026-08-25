@@ -2105,6 +2105,8 @@
     "securitySettings": "Paramètres de sécurité",
     "enforceSSOOnlyLogin": "Imposer la connexion SSO uniquement",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Les utilisateurs doivent utiliser SSO pour se connecter. La connexion par mot de passe sera désactivée.",
+    "trustThisProvidersMFA": "Faire confiance au MFA de ce fournisseur",
+    "trustThisProvidersMFAHelperText": "Lorsque votre fournisseur d'identité indique que l'authentification multifacteur a été utilisée (`amr: mfa`), le MFA est considéré comme satisfait dans Breeze. Votre IdP doit inclure la revendication `amr` dans son jeton d'ID — la plupart exigent une activation explicite. Désactivé par défaut.",
     "warningSSOEnforcementEnabled": "Avertissement : application obligatoire du SSO activée",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Les utilisateurs ne pourront pas se connecter avec des mots de passe. Assurez-vous que votre configuration SSO fonctionne correctement avant d’activer cette option. Envisagez d’avoir au moins un compte administrateur capable de contourner SSO pour un accès d’urgence.",
     "testing": "Test...",

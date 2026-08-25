@@ -2105,6 +2105,8 @@
     "securitySettings": "Impostazioni sicurezza",
     "enforceSSOOnlyLogin": "Imponi accesso solo SSO",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Gli utenti devono usare SSO per accedere. L'accesso con password verrà disabilitato.",
+    "trustThisProvidersMFA": "Considera attendibile l'MFA di questo provider",
+    "trustThisProvidersMFAHelperText": "Quando il tuo provider di identità segnala che è stata usata l'autenticazione a più fattori (`amr: mfa`), l'MFA viene considerata soddisfatta in Breeze. Il tuo IdP deve includere il claim `amr` nel suo token ID — la maggior parte richiede che questo sia abilitato esplicitamente. Disattivato per impostazione predefinita.",
     "warningSSOEnforcementEnabled": "Avviso: imposizione SSO abilitata",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Gli utenti non potranno accedere con password. Assicurati che la configurazione SSO funzioni correttamente prima di abilitare questa opzione. Valuta di mantenere almeno un account amministratore che possa bypassare SSO per accesso di emergenza.",
     "testing": "Test in corso...",

@@ -2110,6 +2110,8 @@
     "securitySettings": "Güvenlik Ayarları",
     "enforceSSOOnlyLogin": "Yalnızca SSO oturum açmayı zorunlu kıl",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Kullanıcılar oturum açmak için SSO'yu kullanmalıdır. Şifreyle oturum açma devre dışı bırakılacaktır.",
+    "trustThisProvidersMFA": "Bu sağlayıcının MFA'sına güven",
+    "trustThisProvidersMFAHelperText": "Kimlik sağlayıcınız çok faktörlü kimlik doğrulamanın kullanıldığını bildirdiğinde (`amr: mfa`), Breeze'de MFA karşılanmış sayılır. IdP'niz, kimlik belirtecinde `amr` talebini içermelidir — çoğu bunun açıkça etkinleştirilmesini gerektirir. Varsayılan olarak kapalıdır.",
     "warningSSOEnforcementEnabled": "Uyarı: SSO uygulaması etkinleştirildi",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Kullanıcılar şifrelerle oturum açamayacaktır. Bu seçeneği etkinleştirmeden önce SSO yapılandırmanızın doğru çalıştığından emin olun. Acil durum erişimi için SSO'yu atlayabilecek en az bir yönetici hesabına sahip olmayı düşünün.",
     "testing": "Test ediliyor...",

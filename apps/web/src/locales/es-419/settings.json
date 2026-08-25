@@ -2110,6 +2110,8 @@
     "securitySettings": "Configuración de seguridad",
     "enforceSSOOnlyLogin": "Aplicar el inicio de sesión SSO-only",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Los usuarios deben usar SSO para iniciar sesión. El inicio de sesión con contraseña estará deshabilitado.",
+    "trustThisProvidersMFA": "Confiar en el MFA de este proveedor",
+    "trustThisProvidersMFAHelperText": "Cuando su proveedor de identidad informa que se usó autenticación multifactor (`amr: mfa`), se considera que el MFA está satisfecho en Breeze. Su IdP debe incluir la reclamación `amr` en su token de ID; la mayoría requiere habilitar esto explícitamente. Desactivado de forma predeterminada.",
     "warningSSOEnforcementEnabled": "Advertencia: aplicación de SSO habilitada",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Los usuarios no podrán iniciar sesión con contraseñas. Asegúrese de que su configuración SSO esté funcionando correctamente antes de habilitar esta opción. Considere tener al menos una cuenta de administrador que pueda omitir SSO para acceso de emergencia.",
     "testing": "Probando...",

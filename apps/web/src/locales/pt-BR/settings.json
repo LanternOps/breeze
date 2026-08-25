@@ -2110,6 +2110,8 @@
     "securitySettings": "Configurações de segurança",
     "enforceSSOOnlyLogin": "Aplicar login somente SSO",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Os usuários devem usar o SSO para fazer login. O login com senha será desativado.",
+    "trustThisProvidersMFA": "Confiar na MFA deste provedor",
+    "trustThisProvidersMFAHelperText": "Quando seu provedor de identidade informa que a autenticação multifator foi usada (`amr: mfa`), a MFA é considerada satisfeita no Breeze. Seu IdP deve incluir a declaração `amr` em seu token de ID — a maioria exige que isso seja habilitado explicitamente. Desativado por padrão.",
     "warningSSOEnforcementEnabled": "Aviso: aplicação de SSO ativada",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Os usuários não poderão fazer login com senhas. Certifique-se de que sua configuração de SSO esteja funcionando corretamente antes de ativar esta opção. Considere ter pelo menos uma conta de administrador que possa ignorar o SSO para acesso de emergência.",
     "testing": "Testando...",

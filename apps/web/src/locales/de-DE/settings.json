@@ -2110,6 +2110,8 @@
     "securitySettings": "Sicherheitseinstellungen",
     "enforceSSOOnlyLogin": "Erzwingen Sie die Anmeldung nur für SSO",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Benutzer müssen SSO verwenden, um sich anzumelden. Die Passwortanmeldung wird deaktiviert.",
+    "trustThisProvidersMFA": "Diesem Anbieter bei MFA vertrauen",
+    "trustThisProvidersMFAHelperText": "Wenn Ihr Identitätsanbieter meldet, dass eine Multi-Faktor-Authentifizierung verwendet wurde (`amr: mfa`), wird MFA in Breeze als erfüllt betrachtet. Ihr IdP muss den Anspruch `amr` in seinem ID-Token enthalten — die meisten erfordern, dass dies ausdrücklich aktiviert wird. Standardmäßig deaktiviert.",
     "warningSSOEnforcementEnabled": "Warnung: Durchsetzung von SSO aktiviert",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Benutzer können sich nicht mit Passwörtern anmelden. Stellen Sie sicher, dass Ihre SSO-Konfiguration ordnungsgemäß funktioniert, bevor Sie diese Option aktivieren. Erwägen Sie, mindestens ein Administratorkonto zu haben, das SSO für den Notfallzugriff umgehen kann.",
     "testing": "Testen...",
