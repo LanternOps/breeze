@@ -19,6 +19,10 @@
       "create": "Créez un flux de travail automatisé avec des déclencheurs, des conditions et des actions.",
       "edit": "Modifiez la configuration de l’automatisation."
     },
+    "managed": {
+      "title": "Gérée par un agent IA",
+      "description": "Cette automatisation est maintenue par son agent IA. Configurez plutôt l’agent."
+    },
     "actions": {
       "create": "Créer l’automatisation",
       "saveChanges": "Enregistrer les modifications"
@@ -215,6 +219,8 @@
     "empty": "Aucune automatisation trouvée. Essayez d’ajuster votre recherche ou vos filtres.",
     "partnerWideTitle": "Automatisation à l’échelle du partenaire — s’applique à toutes les organisations",
     "allOrgs": "À l’échelle du partenaire",
+    "managedByAgent": "Gérée par un agent IA",
+    "managedByAgentHint": "Cette automatisation est maintenue par son agent IA. Configurez plutôt l’agent.",
     "never": "Jamais",
     "actions": {
       "viewHistory": "Voir l’historique",

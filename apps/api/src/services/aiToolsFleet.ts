@@ -86,6 +86,13 @@ import {
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { listFleetFindings } from './fleetFindings/query';
+import {
+  AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE,
+  MANAGED_AUTOMATION_ERROR_CODE,
+  containsAiTriageAction,
+  isManagedAutomation,
+  managedAutomationOwnerIsLive,
+} from './aiAgents/managedAutomation';
 import type {
   FleetFindingKind,
   FleetFindingSeverity,
@@ -1664,6 +1671,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
+        // Defence behind the disabled-action gate in case create is re-enabled.
+        if (containsAiTriageAction(input.actions)) {
+          return JSON.stringify({ error: AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE });
+        }
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
         const [auto] = await db.insert(automations).values({
           orgId,
@@ -1688,6 +1699,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+        if (isManagedAutomation(existing)) {
+          return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: existing.managedByAgentId });
+        }
+        // Mirrors the create branch: an ai_triage action is seeded per agent,
+        // never authored onto an existing row.
+        if (containsAiTriageAction(input.actions)) {
+          return JSON.stringify({ error: AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE });
+        }
 
         // Defense-in-depth (#2133): this action is disabled by the early
         // return above, but if it is ever re-enabled, mutating a partner-wide
@@ -1717,6 +1736,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+        // Mirrors the REST delete route: a managed row becomes deletable once
+        // its agent is soft-disabled, because nothing else can ever remove it.
+        if (isManagedAutomation(existing)
+          && await managedAutomationOwnerIsLive(existing.managedByAgentId as string)) {
+          return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: existing.managedByAgentId });
+        }
 
         // Defense-in-depth (#2133): see the update-action gate above.
         if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
@@ -1738,6 +1763,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+        if (isManagedAutomation(existing)) {
+          return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: existing.managedByAgentId });
+        }
 
         // Toggling a partner-wide automation mutates behavior across every
         // org under the partner (#2133) — requires the partner-wide capability.
@@ -1764,6 +1792,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!auto) return JSON.stringify({ error: 'Automation not found or access denied' });
+        if (isManagedAutomation(auto)) {
+          return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: auto.managedByAgentId });
+        }
 
         // Running a partner-wide automation fans actions out across every org
         // under the partner (#2133) — requires the partner-wide capability.

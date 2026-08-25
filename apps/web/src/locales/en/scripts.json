@@ -19,6 +19,10 @@
       "create": "Build an automated workflow with triggers, conditions, and actions.",
       "edit": "Modify the automation configuration."
     },
+    "managed": {
+      "title": "Managed by AI agent",
+      "description": "This automation is maintained by its AI agent. Configure the agent instead."
+    },
     "actions": {
       "create": "Create Automation",
       "saveChanges": "Save Changes"
@@ -215,6 +219,8 @@
     "empty": "No automations found. Try adjusting your search or filters.",
     "partnerWideTitle": "Partner-wide automation — applies to every organization",
     "allOrgs": "Partner-wide",
+    "managedByAgent": "Managed by AI agent",
+    "managedByAgentHint": "This automation is maintained by its AI agent. Configure the agent instead.",
     "never": "Never",
     "actions": {
       "viewHistory": "View history",

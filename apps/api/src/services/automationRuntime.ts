@@ -25,6 +25,11 @@ import { scriptNeedsVariableScope } from './sourcedParameters';
 import { publishEvent } from './eventBus';
 import { captureException } from './sentry';
 import {
+  createAndEnqueueAgentRun,
+  type AgentRunSkipReason,
+  type CreateAgentRunInput,
+} from './aiAgents/runService';
+import {
   getEmailRecipients,
   sendEmailNotification,
   sendWebhookNotification,
@@ -182,12 +187,32 @@ export type DeploySoftwareAction = {
   catalogId: string;
 };
 
+// AI agents wave 3d (#3824). No config by design — see the shared
+// validator arm: the agent comes from automation.managedByAgentId and
+// the device from the event-target binding.
+export type AiTriageAction = {
+  type: 'ai_triage';
+};
+
 export type AutomationAction =
   | RunScriptAction
   | SendNotificationAction
   | CreateAlertAction
   | ExecuteCommandAction
-  | DeploySoftwareAction;
+  | DeploySoftwareAction
+  | AiTriageAction;
+
+/**
+ * AI agents wave 3d (#3824): what the triggering EVENT was, threaded from
+ * processTriggerEvent through the queue into every action's execution context.
+ * Only populated for managed automations (automations.managedByAgentId).
+ */
+export type AutomationTriggerContext = {
+  alertId: string | null;
+  eventId: string | null;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info' | null;
+  ruleId: string | null;
+};
 
 export type NotificationTargets = {
   channelIds?: string[];
@@ -443,6 +468,11 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         throw new AutomationValidationError(`actions[${index}] deploy_software requires catalogId`);
       }
       normalized.push({ type: 'deploy_software', catalogId });
+      continue;
+    }
+
+    if (type === 'ai_triage') {
+      normalized.push({ type: 'ai_triage' });
       continue;
     }
 
@@ -833,8 +863,10 @@ async function ensureAutomationAlertRule(orgId: string): Promise<string> {
 }
 
 type ActionExecutionContext = {
-  automation: Pick<AutomationRow, 'id' | 'orgId' | 'name' | 'createdBy'>;
+  automation: Pick<AutomationRow, 'id' | 'orgId' | 'name' | 'createdBy' | 'managedByAgentId'>;
   runId: string;
+  /** Present only for event-bound managed runs. */
+  trigger?: AutomationTriggerContext;
   device: {
     id: string;
     // Worker-created child rows (alerts, notifications) always take the
@@ -915,6 +947,34 @@ type ActionExecutionResult = {
   success: boolean;
   log: AutomationLogEntry;
 };
+
+/**
+ * Which admission-gate skips are POLICY outcomes (cooldown, filters, kill
+ * switch → the automation run stays green and the reason is logged) and which
+ * are genuine integrity failures. `ownership_mismatch` and `device_not_in_org`
+ * both mean the (org, device) pair we handed the gate does not hold — a data
+ * bug or a cross-tenant move mid-flight, never an operator policy choice.
+ *
+ * Typed as a total Record over AgentRunSkipReason ON PURPOSE: when 3c adds a
+ * new skip reason, this table stops compiling until someone classifies it. An
+ * unclassified reason must never silently default to "green".
+ */
+const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> = Object.freeze({
+  kill_switch_off: false,
+  no_effective_agent: false,
+  agent_disabled: false,
+  mode_off: false,
+  trigger_filter_mismatch: false,
+  maintenance_window: false,
+  cooldown: false,
+  max_concurrent_runs: false,
+  max_runs_per_hour: false,
+  org_budget_exceeded: false,
+  agent_daily_budget_exceeded: false,
+  duplicate: false,
+  ownership_mismatch: true,
+  device_not_in_org: true,
+});
 
 // Exported for direct unit coverage of the script_executions correlation
 // (#3162); the run loop still reaches it through executeAction below.
@@ -1327,6 +1387,138 @@ async function executeCreateAlertAction(
   };
 }
 
+/**
+ * AI agents wave 3d (#3824). Hands ONE alert to 3c's admission gate
+ * (`createAndEnqueueAgentRun`) — the single entry point that resolves the
+ * effective policy, applies trigger filters/cooldown/caps/dedupe, inserts the
+ * ledger row and enqueues. This action never touches the ai-agent queue
+ * directly and never runs an agent inline.
+ *
+ * The action carries no config: the agent comes from
+ * `automation.managedByAgentId` and the device from the event-target binding
+ * that `processTriggerEvent` established (`boundDeviceIds: [payload.deviceId]`),
+ * so a managed run is one alert → one device → one agent run, never a fan-out
+ * across the automation's configured target set.
+ *
+ * The loop guard — never triage an alert that an automation itself created —
+ * lives UPSTREAM in `jobs/automationWorker.processTriggerEvent`
+ * (`managed_automation_skips_automation_created_alerts`), because only the raw
+ * event payload still carries `automationId`; `AutomationTriggerContext`
+ * deliberately does not. Do not re-implement it here.
+ */
+async function executeAiTriageAction(
+  _action: AiTriageAction,
+  actionIndex: number,
+  context: ActionExecutionContext,
+): Promise<ActionExecutionResult> {
+  const agentId = context.automation.managedByAgentId;
+  if (!agentId) {
+    return {
+      success: false,
+      log: logEntry('ai_triage action on an unmanaged automation — refusing', 'error', {
+        actionType: 'ai_triage',
+        actionIndex,
+        deviceId: context.device.id,
+      }),
+    };
+  }
+
+  const trigger = context.trigger;
+  // Typed off the frozen 3c input rather than restated structurally, so a
+  // change to the gate's alertContext shape surfaces here as a compile error.
+  // Built ONLY when the trigger carries a severity: `alertContext.severity` is
+  // required by the gate, and the device-tag lookup it needs is not worth a
+  // query on a trigger that cannot populate it.
+  let alertContext: CreateAgentRunInput['alertContext'];
+
+  if (trigger?.severity) {
+    const [deviceRow] = await db
+      .select({ tags: devices.tags })
+      .from(devices)
+      .where(eq(devices.id, context.device.id))
+      .limit(1);
+
+    alertContext = {
+      severity: trigger.severity,
+      ruleId: trigger.ruleId,
+      siteId: context.device.siteId,
+      deviceTags: deviceRow?.tags ?? [],
+    };
+  }
+
+  // managedByAgentId is attribution/bookkeeping. The admission gate resolves
+  // the effective triage agent for the device org; an org override wins over
+  // the managed baseline, while both ids remain traceable through triggerRef.
+  const result = await createAndEnqueueAgentRun({
+    orgId: context.device.orgId,
+    kind: 'triage',
+    triggerKind: 'alert',
+    deviceId: context.device.id,
+    alertId: trigger?.alertId ?? null,
+    triggerEventId: trigger?.eventId ?? null,
+    triggerRef: {
+      automationId: context.automation.id,
+      automationRunId: context.runId,
+      alertRuleId: trigger?.ruleId ?? null,
+      managedByAgentId: agentId,
+    },
+    ...(alertContext ? { alertContext } : {}),
+    dedupeKey: trigger?.alertId
+      ? `alert:${trigger.alertId}`
+      : `event:${trigger?.eventId ?? context.runId}`,
+  });
+
+  if (result.created) {
+    // `created` is NOT "queued". 3c's gate inserts the ledger row first and
+    // announces/enqueues afterwards; when the publish or the BullMQ enqueue
+    // throws (a Redis blip is enough) it marks the row `failed` /
+    // `enqueue_failed` and STILL returns created:true with the failed run
+    // (runService step 10). Branching on `created` alone would log
+    // "queued agent run" at info, complete the automation run green, and leave
+    // NO worker job — while the row now owns (org_id, dedupe_key), so every
+    // redelivery of the same alert answers `duplicate` (a non-failure here) and
+    // the alert is never triaged. The manual trigger route answers 503 on this
+    // exact signal; the automation's equivalent is a failed action.
+    if (result.run.status === 'failed' || result.run.errorCode === 'enqueue_failed') {
+      return {
+        success: false,
+        log: logEntry('ai_triage agent run was created but could not be enqueued', 'error', {
+          actionType: 'ai_triage',
+          actionIndex,
+          deviceId: context.device.id,
+          details: {
+            agentRunId: result.run.id,
+            errorCode: result.run.errorCode ?? 'enqueue_failed',
+          },
+        }),
+      };
+    }
+
+    // Like run_script, success means queued, not finished. The agent run
+    // completes out-of-band and reports through ai.agent.run.* events and 3c
+    // recipient notifications.
+    return {
+      success: true,
+      log: logEntry('ai_triage queued agent run', 'info', {
+        actionType: 'ai_triage',
+        actionIndex,
+        deviceId: context.device.id,
+        details: { agentRunId: result.run.id },
+      }),
+    };
+  }
+
+  const hardFailure = AI_TRIAGE_SKIP_IS_FAILURE[result.skipped] ?? true;
+  return {
+    success: !hardFailure,
+    log: logEntry(
+      `ai_triage skipped: ${result.skipped}`,
+      hardFailure ? 'error' : 'info',
+      { actionType: 'ai_triage', actionIndex, deviceId: context.device.id },
+    ),
+  };
+}
+
 async function executeAction(
   action: AutomationAction,
   actionIndex: number,
@@ -1346,6 +1538,10 @@ async function executeAction(
 
   if (action.type === 'create_alert') {
     return executeCreateAlertAction(action, actionIndex, context);
+  }
+
+  if (action.type === 'ai_triage') {
+    return executeAiTriageAction(action, actionIndex, context);
   }
 
   return {
@@ -1547,8 +1743,12 @@ export async function createAutomationRunRecord(options: {
   automation: AutomationRow;
   triggeredBy: string;
   details?: Record<string, unknown>;
+  /** Event-target binding (#3824): when set, the run targets EXACTLY these
+   * devices and resolveAutomationTargetDeviceIds is NOT consulted. */
+  boundDeviceIds?: string[];
 }): Promise<{ run: AutomationRunRow; targetDeviceIds: string[] }> {
-  const targetDeviceIds = await resolveAutomationTargetDeviceIds(options.automation);
+  const targetDeviceIds = options.boundDeviceIds
+    ?? await resolveAutomationTargetDeviceIds(options.automation);
 
   const [run] = await db
     .insert(automationRuns)
@@ -1744,13 +1944,14 @@ async function markAutomationRunFailedAfterError(runId: string, err: unknown): P
 export async function executeAutomationRun(
   runId: string,
   targetDeviceIdsFromQueue?: string[],
+  triggerContext?: AutomationTriggerContext,
 ): Promise<{
   status: 'completed' | 'failed' | 'partial';
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
   try {
-    return await executeAutomationRunInner(runId, targetDeviceIdsFromQueue);
+    return await executeAutomationRunInner(runId, targetDeviceIdsFromQueue, triggerContext);
   } catch (err) {
     await markAutomationRunFailedAfterError(runId, err).catch((cleanupErr) => {
       console.error(
@@ -1762,9 +1963,30 @@ export async function executeAutomationRun(
   }
 }
 
+/**
+ * Builds the per-device ActionExecutionContext for one run. Extracted (and
+ * exported for tests via __testOnly) so the #3824 event-target binding —
+ * `trigger` reaching EVERY action's context — is unit-provable without
+ * driving a full mocked run.
+ */
+function buildActionExecutionContext(base: {
+  automation: ActionExecutionContext['automation'];
+  runId: string;
+  scriptsById: ActionExecutionContext['scriptsById'];
+  channelsById: ActionExecutionContext['channelsById'];
+  variableScope: ActionExecutionContext['variableScope'];
+  /** REQUIRED (explicit `undefined` for unbound runs), not optional: an
+   *  optional property would let the call site silently drop the event
+   *  binding and still compile — the exact #3824 failure mode. */
+  trigger: AutomationTriggerContext | undefined;
+}, device: ActionExecutionContext['device']): ActionExecutionContext {
+  return { ...base, device };
+}
+
 async function executeAutomationRunInner(
   runId: string,
   targetDeviceIdsFromQueue?: string[],
+  triggerContext?: AutomationTriggerContext,
 ): Promise<{
   status: 'completed' | 'failed' | 'partial';
   devicesSucceeded: number;
@@ -1907,14 +2129,14 @@ async function executeAutomationRunInner(
       for (const [actionIndex, action] of normalized.actions.entries()) {
         // deploy_software is handled by the batched executeDeploySoftwareActions pass below
         if (action.type === 'deploy_software') continue;
-        const result = await executeAction(action, actionIndex, {
+        const result = await executeAction(action, actionIndex, buildActionExecutionContext({
           automation,
           runId: run.id,
-          device,
           scriptsById,
           channelsById,
           variableScope,
-        });
+          trigger: triggerContext,
+        }, device));
 
         logs.push(result.log);
         deviceOutput.push(`[${result.log.level}] ${result.log.message}`);
@@ -2449,6 +2671,9 @@ export async function executeConfigPolicyAutomationRun(
     orgId,
     name: automation.name,
     createdBy: null,
+    // Config-policy automations are never agent-managed (#3824): managed rows
+    // live in `automations` and are resolved through managed_by_agent_id.
+    managedByAgentId: null,
   };
 
   const existingLogs = getExistingLogs(run.logs);
@@ -2577,3 +2802,11 @@ export async function executeConfigPolicyAutomationRun(
     devicesFailed,
   };
 }
+
+// Exported for unit tests of the #3824 event-target binding. Internal helper,
+// not part of the runtime's public surface.
+export const __testOnly = {
+  buildActionExecutionContext,
+  executeAction,
+  executeAiTriageAction,
+};

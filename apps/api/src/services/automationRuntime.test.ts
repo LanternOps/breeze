@@ -107,6 +107,11 @@ describe('automationRuntime', () => {
     ]);
   });
 
+  it('normalizes an ai_triage action (wave 3d #3824)', () => {
+    expect(normalizeAutomationActions([{ type: 'ai_triage' }]))
+      .toEqual([{ type: 'ai_triage' }]);
+  });
+
   it('normalizes a run_script action carrying string/number/boolean parameters (#3409 PR2 Task 7)', () => {
     const actions = normalizeAutomationActions([
       { type: 'run_script', scriptId: 'script-1', parameters: { s: 'a', n: 3, b: true } },

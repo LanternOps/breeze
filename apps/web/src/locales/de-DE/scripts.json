@@ -19,6 +19,10 @@
       "create": "Erstellen Sie einen automatisierten Workflow mit Auslösern, Bedingungen und Aktionen.",
       "edit": "Ändern Sie die Automatisierungskonfiguration."
     },
+    "managed": {
+      "title": "Von KI-Agent verwaltet",
+      "description": "Diese Automatisierung wird von ihrem KI-Agenten gepflegt. Konfigurieren Sie stattdessen den Agenten."
+    },
     "actions": {
       "create": "Erstellen Sie Automatisierung",
       "saveChanges": "Änderungen speichern"
@@ -215,6 +219,8 @@
     "empty": "Keine Automatisierungen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
     "partnerWideTitle": "Partnerweite Automatisierung – gilt für jedes Unternehmen",
     "allOrgs": "Partnerweit",
+    "managedByAgent": "Von KI-Agent verwaltet",
+    "managedByAgentHint": "Diese Automatisierung wird von ihrem KI-Agenten gepflegt. Konfigurieren Sie stattdessen den Agenten.",
     "never": "Niemals",
     "actions": {
       "viewHistory": "Verlauf anzeigen",

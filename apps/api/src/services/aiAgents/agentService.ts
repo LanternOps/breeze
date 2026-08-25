@@ -9,6 +9,11 @@ import { getEventBus } from '../eventBus';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
+import {
+  ensureManagedTriageAutomation,
+  setManagedAutomationEnabled,
+  syncManagedAutomation,
+} from './managedAutomation';
 import { validateAgentRecipients } from './recipients';
 
 export class UnsupportedAgentModeError extends Error {
@@ -311,6 +316,10 @@ export async function createAgent(
     .returning();
   if (!row) throw new AgentInvariantError('Agent not created');
 
+  // Seed before the audit: this whole request is one withDbAccessContext
+  // transaction, so a wiring failure must roll the agent insert back rather
+  // than leave an audited agent with no trigger automation.
+  await ensureManagedTriageAutomation(row);
   await recordMutation(row, auth, 'created');
   return row;
 }
@@ -348,6 +357,14 @@ export async function updateAgent(
     .returning();
   if (!row) throw new AgentAccessDeniedError('Agent not found');
 
+  // Mirroring the disable direction too is deliberate symmetry: one switch
+  // updates both the agent policy and its managed wiring before audit.
+  const managedPatch: { name?: string; enabled?: boolean } = {};
+  if (input.name !== undefined && input.name !== existing.name) managedPatch.name = row.name;
+  if (input.enabled !== undefined && input.enabled !== existing.enabled) managedPatch.enabled = row.enabled;
+  if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
+    await syncManagedAutomation(row.id, managedPatch);
+  }
   await recordMutation(row, auth, 'updated');
   return row;
 }
@@ -372,6 +389,9 @@ export async function disableAgent(auth: AuthContext, id: string): Promise<AiAge
     .returning();
   if (!row) throw new AgentAccessDeniedError('Agent not found');
 
+  // Agents are never hard-deleted (managed_by_agent_id is ON DELETE RESTRICT),
+  // so soft-disable must also stop the wiring from generating queue traffic.
+  await setManagedAutomationEnabled(row.id, false);
   await recordMutation(row, auth, 'disabled');
   return row;
 }

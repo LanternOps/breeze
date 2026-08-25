@@ -135,4 +135,43 @@ describe('policy remediation actually dispatches (#3413)', () => {
     // pinning its presence keeps a future refactor from dropping one of them.
     expect(typeof __triggerRemediationAutomation).toBe('function');
   });
+
+  it('does not create a standalone-policy remediation run for a managed automation', async () => {
+    queueSelects(
+      [{ partnerId: null }],
+      [{ id: AUTOMATION_ID, enabled: true, managedByAgentId: 'agent-1' }],
+    );
+
+    const result = await __triggerRemediationAutomation(
+      { id: 'policy-1', name: 'Managed policy' } as never,
+      DEVICE as never,
+      'non_compliant',
+      AUTOMATION_ID,
+    );
+
+    expect(result).toBeNull();
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('does not create a config-policy remediation run for a managed automation', async () => {
+    queueSelects(
+      [{ orgId: DEVICE.orgId }],
+      [{ partnerId: null }],
+      [{ id: AUTOMATION_ID, actions: [{ scriptId: SCRIPT_ID }] }],
+      [{ id: AUTOMATION_ID, enabled: true, managedByAgentId: 'agent-1' }],
+    );
+
+    const result = await __triggerConfigPolicyRemediation(
+      {
+        id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        name: 'BitLocker enabled',
+        remediationScriptId: SCRIPT_ID,
+        featureLinkId: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+      } as never,
+      DEVICE as never,
+    );
+
+    expect(result).toBe(false);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
 });

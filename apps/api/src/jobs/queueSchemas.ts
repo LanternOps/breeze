@@ -219,6 +219,22 @@ const automationAssignmentTargetSchema = z.object({
   targetId: z.string().min(1),
 }).strict();
 
+/**
+ * AI agents wave 3d (#3824): what event bound this run, carried from
+ * processTriggerEvent to the runtime. `.optional()` on purpose — jobs enqueued
+ * before this deploy carry no triggerContext and MUST still parse.
+ * Parity with services/automationRuntime.ts `AutomationTriggerContext` is
+ * enforced by the compiler at automationWorker's two call sites (enqueue writes
+ * the runtime type into this shape; processExecuteRun reads this shape back into
+ * the runtime type), so no duplicated type assertion is needed here.
+ */
+export const automationTriggerContextSchema = z.object({
+  alertId: z.string().nullable(),
+  eventId: z.string().nullable(),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).nullable(),
+  ruleId: z.string().nullable(),
+}).strict();
+
 export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('scan-schedules'),
@@ -242,6 +258,7 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     type: z.literal('execute-run'),
     runId: z.string().min(1),
     targetDeviceIds: z.array(z.string().min(1)).optional(),
+    triggerContext: automationTriggerContextSchema.optional(),
   }).strict(),
   z.object({
     type: z.literal('trigger-config-policy-schedule'),
