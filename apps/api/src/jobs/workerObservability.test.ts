@@ -7,6 +7,12 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('../services/workerReadinessRegistry', () => ({
+  workerReadinessRegistry: {
+    attach: vi.fn(),
+  },
+}));
+
 // Mock @sentry/node's scope helpers to passthroughs that invoke the callback
 // with a recording scope, so tag/context calls don't throw and the tags applied
 // around job execution are observable.
@@ -41,6 +47,7 @@ vi.mock('@sentry/node', () => ({
 }));
 
 import { captureException } from '../services/sentry';
+import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
 import { attachWorkerObservability } from './workerObservability';
 
 function makeFakeWorker(): Worker {
@@ -52,6 +59,15 @@ describe('attachWorkerObservability', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     failedScopes.length = 0;
+  });
+
+  it('delegates lifecycle tracking to the worker readiness registry', () => {
+    const worker = makeFakeWorker();
+
+    attachWorkerObservability(worker, 'testWorker');
+
+    expect(workerReadinessRegistry.attach).toHaveBeenCalledTimes(1);
+    expect(workerReadinessRegistry.attach).toHaveBeenCalledWith('testWorker', worker);
   });
 
   it('reports failed jobs to Sentry with the job error', () => {
