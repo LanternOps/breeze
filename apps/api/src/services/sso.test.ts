@@ -6,6 +6,8 @@ import {
   assertEmailVerified,
   readEmailVerifiedClaim,
   idpAssertedMfa,
+  buildAuthorizationUrl,
+  assertFreshIdpAuthentication,
   discoverOIDCConfig,
   isInternalUrl,
   assertSafeOidcEndpoint,
@@ -594,5 +596,77 @@ describe('SSRF-safe OIDC transport (SR2-13/14)', () => {
 
     const config: OIDCConfig = { ...baseConfig, jwksUrl: 'https://idp.example.com/jwks' };
     await expect(verifyIdTokenSignature(rs256Token(), config, 'nonce')).rejects.toThrow(/safeFetch/);
+  });
+});
+
+describe('buildAuthorizationUrl re-auth params', () => {
+  const CONFIG = {
+    issuer: 'https://idp.example.com',
+    authorizationUrl: 'https://idp.example.com/authorize',
+    tokenUrl: 'https://idp.example.com/token',
+    jwksUrl: 'https://idp.example.com/jwks',
+    clientId: 'client-123',
+    clientSecret: 'secret',
+    scopes: 'openid email profile',
+  } as any;
+
+  it('omits prompt and max_age when not requested', () => {
+    const url = new URL(buildAuthorizationUrl({
+      config: CONFIG, state: 's', nonce: 'n', redirectUri: 'https://app/cb',
+    }));
+    expect(url.searchParams.has('prompt')).toBe(false);
+    expect(url.searchParams.has('max_age')).toBe(false);
+  });
+
+  it('sets prompt=login and max_age=0 when requested', () => {
+    const url = new URL(buildAuthorizationUrl({
+      config: CONFIG, state: 's', nonce: 'n', redirectUri: 'https://app/cb',
+      prompt: 'login', maxAge: 0,
+    }));
+    expect(url.searchParams.get('prompt')).toBe('login');
+    // max_age=0 must survive: a falsy-check bug would drop it and silently
+    // turn a forced re-auth into an ordinary (cache-satisfiable) login.
+    expect(url.searchParams.get('max_age')).toBe('0');
+  });
+});
+
+describe('assertFreshIdpAuthentication', () => {
+  const NOW = 1_800_000_000_000;        // fixed clock, ms
+  const STARTED = NOW - 30_000;         // transaction began 30s ago
+
+  it('rejects a missing auth_time (IdP ignored prompt=login)', () => {
+    expect(assertFreshIdpAuthentication({}, STARTED, NOW))
+      .toEqual({ ok: false, reason: 'auth_time_missing' });
+  });
+
+  it('rejects an auth_time from BEFORE the transaction started', () => {
+    // The cached-session replay this check exists for: the IdP returns a
+    // perfectly recent auth_time that nonetheless predates the user's click.
+    const beforeStart = Math.floor(STARTED / 1000) - 121;
+    expect(assertFreshIdpAuthentication({ auth_time: beforeStart }, STARTED, NOW))
+      .toEqual({ ok: false, reason: 'auth_time_stale' });
+  });
+
+  it('rejects an auth_time in the future beyond clock skew', () => {
+    const future = Math.floor(NOW / 1000) + 121;
+    expect(assertFreshIdpAuthentication({ auth_time: future }, STARTED, NOW))
+      .toEqual({ ok: false, reason: 'auth_time_future' });
+  });
+
+  it('accepts an auth_time from during the round trip', () => {
+    const during = Math.floor(STARTED / 1000) + 5;
+    expect(assertFreshIdpAuthentication({ auth_time: during }, STARTED, NOW))
+      .toEqual({ ok: true });
+  });
+
+  it('accepts an auth_time slightly before the start, inside skew tolerance', () => {
+    const justBefore = Math.floor(STARTED / 1000) - 30;
+    expect(assertFreshIdpAuthentication({ auth_time: justBefore }, STARTED, NOW))
+      .toEqual({ ok: true });
+  });
+
+  it('never accepts iat as a substitute for auth_time', () => {
+    expect(assertFreshIdpAuthentication({ iat: Math.floor(NOW / 1000) } as any, STARTED, NOW))
+      .toEqual({ ok: false, reason: 'auth_time_missing' });
   });
 });
