@@ -197,6 +197,72 @@ const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partn
   status: z.enum(['active', 'suspended', 'trial', 'churned', 'offboarding']).optional(),
 });
 
+// #3967 — `organizations.slug` is unique PER PARTNER, case-insensitively, and
+// for the lifetime of the row (`organizations_partner_slug_uniq`; see
+// migrations/2026-09-08-organizations-partner-slug-unique.sql for why each of
+// those three properties was chosen).
+//
+// Two things enforce it and they are not interchangeable:
+//   * the index, which is the actual guarantee; and
+//   * this pre-check, which exists only so the caller gets a 409 with a
+//     sentence instead of a raw 23505 rendered as a 500.
+// The pre-check is inherently racy (two concurrent creates both pass it), so
+// every write path below ALSO maps the unique violation to the same 409.
+//
+// It has to run under a SYSTEM db context: `organizations` is policed by
+// breeze_has_org_access(id), so a partner-scope caller whose accessible org set
+// excludes the clashing org would read zero rows here and fall through to the
+// 23505 anyway.
+interface OrgSlugConflict {
+  id: string;
+  deletedAt: Date | null;
+}
+
+async function findOrgSlugConflict(
+  partnerId: string,
+  slug: string,
+  excludeOrgId?: string
+): Promise<OrgSlugConflict | null> {
+  const conditions = [
+    eq(organizations.partnerId, partnerId),
+    sql`lower(${organizations.slug}) = lower(${slug})`
+  ];
+  if (excludeOrgId) conditions.push(ne(organizations.id, excludeOrgId));
+
+  const [row] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: organizations.id, deletedAt: organizations.deletedAt })
+        .from(organizations)
+        .where(and(...conditions))
+        .limit(1)
+    )
+  );
+  return row ?? null;
+}
+
+// A clash against a soft-deleted org is invisible to the caller, so say so —
+// otherwise "already in use" points at an organization they cannot find.
+function orgSlugConflictMessage(conflict: OrgSlugConflict | null): string {
+  return conflict?.deletedAt
+    ? 'That organization slug is still reserved by a deleted organization'
+    : 'That organization slug is already in use';
+}
+
+// Drizzle wraps the driver error and the original `{ code, constraint_name }`
+// can sit anywhere on the cause chain, so walk it (and fall back to the
+// constraint name appearing in a message) rather than checking one level.
+function isOrgSlugUniqueViolation(error: unknown): boolean {
+  let candidate: unknown = error;
+  for (let depth = 0; candidate && typeof candidate === 'object' && depth < 5; depth++) {
+    const e = candidate as { code?: unknown; constraint_name?: unknown; message?: unknown; cause?: unknown };
+    if (e.code === '23505' && e.constraint_name === 'organizations_partner_slug_uniq') return true;
+    if (typeof e.message === 'string' && e.message.includes('organizations_partner_slug_uniq')) return true;
+    candidate = e.cause;
+  }
+  return false;
+}
+
 const listSitesSchema = z.object({
   orgId: z.string().guid().optional(),
   organizationId: z.string().guid().optional(), // Alias for orgId (frontend compatibility)
@@ -1410,6 +1476,13 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     return c.json({ error: 'Partner not found' }, 404);
   }
 
+  // #3967 — refuse a duplicate slug with a 409 before inserting. Backed by the
+  // 23505 catch below, which is what actually closes the race.
+  const slugConflict = await findOrgSlugConflict(targetPartnerId, data.slug);
+  if (slugConflict) {
+    return c.json({ error: orgSlugConflictMessage(slugConflict) }, 409);
+  }
+
   const insertValues = {
     partnerId: targetPartnerId,
     currencyCode: partnerRow.currencyCode,
@@ -1430,7 +1503,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   // request's auth-scoped tx via runOutsideDbContext and open a fresh
   // system-scoped tx for just this insert. Atomicity with the rest of the
   // handler isn't a concern — the only follow-up here is an audit write.
-  const [organization] = await runOutsideDbContext(() =>
+  const insertOrganization = () => runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const created = await db.insert(organizations).values(insertValues).returning();
       // The `contacts` mirror is written inside this SAME system-scoped context,
@@ -1445,6 +1518,19 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
       return created;
     })
   );
+
+  // The pre-check above is racy by construction; organizations_partner_slug_uniq
+  // is what actually holds, so translate its violation into the same 409 rather
+  // than letting a 23505 surface as a 500.
+  let organization: Awaited<ReturnType<typeof insertOrganization>>[number] | undefined;
+  try {
+    [organization] = await insertOrganization();
+  } catch (error) {
+    if (isOrgSlugUniqueViolation(error)) {
+      return c.json({ error: 'That organization slug is already in use' }, 409);
+    }
+    throw error;
+  }
 
   writeRouteAudit(c, {
     orgId: organization?.id,
@@ -1761,6 +1847,29 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     return c.json({ error: 'No updates provided' }, 400);
   }
 
+  // #3967 — same per-partner slug guard as create. The org's own partner is
+  // resolved under a system context rather than taken from `auth.partnerId`,
+  // which is null for a system-scope caller and would silently scope the clash
+  // query to the wrong tenant.
+  if (data.slug !== undefined) {
+    const [target] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
+          .limit(1)
+      )
+    );
+    if (!target) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+    const slugConflict = await findOrgSlugConflict(target.partnerId, data.slug, id);
+    if (slugConflict) {
+      return c.json({ error: orgSlugConflictMessage(slugConflict) }, 409);
+    }
+  }
+
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (data.name !== undefined) updates.name = data.name;
   if (data.slug !== undefined) updates.slug = data.slug;
@@ -1819,9 +1928,19 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     return rows;
   };
 
-  const [organization] = suspendedLifecycleOverride
-    ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
-    : await runUpdate();
+  // See the create path: the slug pre-check above cannot close the race, so the
+  // index's 23505 gets the same 409 treatment here too.
+  let organization: Awaited<ReturnType<typeof runUpdate>>[number] | undefined;
+  try {
+    [organization] = suspendedLifecycleOverride
+      ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
+      : await runUpdate();
+  } catch (error) {
+    if (isOrgSlugUniqueViolation(error)) {
+      return c.json({ error: 'That organization slug is already in use' }, 409);
+    }
+    throw error;
+  }
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
