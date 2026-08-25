@@ -252,7 +252,9 @@
         "thisRuleUsesUnsupportedMetrics": "Diese Regel verwendet eine Metrik, die die Alarm-Engine nicht auswerten kann ({{metrics}}). Wählen Sie vor dem Speichern eine unterstützte Metrik – oder entfernen Sie die Bedingung; der Server weist Regeln damit zurück.",
         "thisConditionUsesAnUnsupportedMetric": "Die Metrik „{{metric}}“ wird von der Alarm-Engine nicht ausgewertet, daher wird diese Bedingung schreibgeschützt angezeigt.",
         "valueCount": "Wert (Anzahl)",
-        "metricNotSet": "nicht festgelegt"
+        "metricNotSet": "nicht festgelegt",
+        "testRule": "Regel testen",
+        "testRuleHint": "Diese Bedingungen jetzt an einem Gerät auswerten, einschließlich nicht gespeicherter Änderungen."
       },
       "automationTab": {
         "schedule": "Zeitplan",

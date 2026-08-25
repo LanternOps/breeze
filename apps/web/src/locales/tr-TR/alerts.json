@@ -427,7 +427,7 @@
     "conditionNotMet": "Karşılanmadı: {{condition}}",
     "noConditionsEvaluated": "Bu kural için hiçbir koşul değerlendirilmedi.",
     "evaluatedAgainst": "{{hostname}} için değerlendirildi",
-    "fireSuppressionNote": "Bekleme süresi (cooldown), zaten açık olan bir uyarı veya çalkalanma (flapping) bastırma, kural çalıştığında bir uyarı oluşturulmasını yine de engelleyebilir."
+    "fireSuppressionNote": "Etkin bir bakım penceresi, bekleme süresi (cooldown), zaten açık olan bir uyarı veya çalkalanma (flapping) bastırma, kural çalıştığında bir uyarı oluşturulmasını yine de engelleyebilir."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Uyarı şablonu yükleniyor...",
