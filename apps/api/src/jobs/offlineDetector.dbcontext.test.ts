@@ -112,12 +112,17 @@ vi.mock('../services/redis', () => ({
 }));
 
 vi.mock('../services/eventBus', () => ({
-  publishEvent: vi.fn(async () => undefined),
+  publishEvent: vi.fn(async () => {
+    ctxState.events.push(`publishEvent@depth${ctxState.depth}`);
+  }),
 }));
 
 vi.mock('../services/alertService', () => ({
   createAlert: vi.fn(async () => null),
-  evaluateDeviceAlertsFromPolicy: vi.fn(async () => ({ created: 0 })),
+  evaluateDeviceAlertsFromPolicy: vi.fn(async () => {
+    ctxState.events.push(`alertEvaluation@depth${ctxState.depth}`);
+    return [];
+  }),
   alertRuleOwnershipConditionForOrg: vi.fn(() => ({ op: 'ownership' })),
 }));
 
@@ -147,7 +152,7 @@ vi.mock('../services/auditEvents', () => ({
   ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
 }));
 
-import { createOfflineWorker } from './offlineDetector';
+import { createOfflineWorker, offlineTransitionId } from './offlineDetector';
 
 /**
  * A `.select().from().where().orderBy().limit()` chain that logs the depth its
@@ -179,7 +184,11 @@ function selectPageChain(rows: unknown[], label: string) {
 function updateChain(returningRows: unknown[]) {
   return () => ({
     set: (payload: Record<string, unknown>) => {
-      const label = 'status' in payload ? 'decommission' : 'clearReplLink';
+      const label = payload.status === 'offline'
+        ? 'markOfflineCas'
+        : 'status' in payload
+          ? 'decommission'
+          : 'clearReplLink';
       const record = () => {
         ctxState.events.push(`${label}@depth${ctxState.depth}`);
       };
@@ -200,6 +209,14 @@ function updateChain(returningRows: unknown[]) {
       };
     },
   });
+}
+
+function selectRulesChain(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(rows),
+    }),
+  };
 }
 
 function runJob(data: unknown): Promise<unknown> {
@@ -233,8 +250,8 @@ describe('offlineDetector DB-context scoping (#3233)', () => {
     mockDb.select.mockReturnValueOnce(
       selectPageChain(
         [
-          { id: 'd1', orgId: 'o1', hostname: 'h1', displayName: 'D1', lastSeenAt: new Date() },
-          { id: 'd2', orgId: 'o1', hostname: 'h2', displayName: 'D2', lastSeenAt: new Date() },
+          { id: '00000000-0000-4000-8000-000000000001', orgId: '10000000-0000-4000-8000-000000000001', hostname: 'h1', displayName: 'D1', lastSeenAt: new Date() },
+          { id: '00000000-0000-4000-8000-000000000002', orgId: '10000000-0000-4000-8000-000000000001', hostname: 'h2', displayName: 'D2', lastSeenAt: new Date() },
         ],
         'detectSelect'
       ) as never
@@ -262,6 +279,58 @@ describe('offlineDetector DB-context scoping (#3233)', () => {
     expect(result.detected).toBe(0);
     expect(queueMock.addBulk).not.toHaveBeenCalled();
     expect(ctxState.events).toEqual(['ctx:enter', 'detectSelect@depth1', 'ctx:exit']);
+  });
+
+  it('mark-offline performs one CAS in-context and publishes/events/alerts after exit', async () => {
+    const device = {
+      id: '00000000-0000-4000-8000-000000000001',
+      orgId: '10000000-0000-4000-8000-000000000001',
+      siteId: '20000000-0000-4000-8000-000000000001',
+      hostname: 'h1',
+      displayName: 'D1',
+      status: 'offline',
+      lastSeenAt: new Date('2026-05-17T00:00:00.000Z'),
+      isEphemeral: false,
+    };
+    mockDb.update.mockImplementation(updateChain([device]) as never);
+    mockDb.select.mockReturnValueOnce(selectRulesChain([]) as never);
+
+    const result = await runJob({
+      type: 'mark-offline',
+      transitionId: offlineTransitionId(device.orgId, device.id, device.lastSeenAt.toISOString()),
+      deviceId: device.id,
+      orgId: device.orgId,
+      observedLastSeenAt: device.lastSeenAt.toISOString(),
+    }) as { transitioned: boolean; alertCreated: boolean };
+
+    expect(result).toEqual({ transitioned: true, alertCreated: false });
+    expect(mockDb.update).toHaveBeenCalledTimes(1);
+    expect(ctxState.events).toEqual([
+      'ctx:enter',
+      'markOfflineCas@depth1',
+      'ctx:exit',
+      'publishEvent@depth0',
+      'alertEvaluation@depth0',
+    ]);
+  });
+
+  it('duplicate or stale mark-offline work loses the CAS and emits nothing', async () => {
+    mockDb.update.mockImplementation(updateChain([]) as never);
+
+    const result = await runJob({
+      type: 'mark-offline',
+      transitionId: offlineTransitionId(
+        '10000000-0000-4000-8000-000000000001',
+        '00000000-0000-4000-8000-000000000001',
+        '2026-05-17T00:00:00.000Z',
+      ),
+      deviceId: '00000000-0000-4000-8000-000000000001',
+      orgId: '10000000-0000-4000-8000-000000000001',
+      observedLastSeenAt: '2026-05-17T00:00:00.000Z',
+    }) as { transitioned: boolean; alertCreated: boolean };
+
+    expect(result).toEqual({ transitioned: false, alertCreated: false });
+    expect(ctxState.events).toEqual(['ctx:enter', 'markOfflineCas@depth1', 'ctx:exit']);
   });
 
   it('reevaluate-offline-sweep reads in-context but fans out OUTSIDE it', async () => {
@@ -344,7 +413,7 @@ describe('offlineDetector DB-context scoping (#3233)', () => {
       mockDb.select.mockReset();
       mockDb.select.mockReturnValueOnce(
         selectPageChain(
-          [{ id: 'd1', orgId: 'o1', hostname: 'h', displayName: 'D', lastSeenAt: new Date() }],
+          [{ id: '00000000-0000-4000-8000-000000000001', orgId: '10000000-0000-4000-8000-000000000001', hostname: 'h', displayName: 'D', lastSeenAt: new Date() }],
           'sel'
         ) as never
       );

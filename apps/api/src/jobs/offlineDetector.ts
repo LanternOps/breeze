@@ -6,6 +6,7 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { createHash, randomUUID } from 'node:crypto';
 import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
 import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray } from 'drizzle-orm';
@@ -100,16 +101,60 @@ export function getOfflineQueue(): Queue {
 }
 
 // Job data types
-interface DetectOfflineJobData {
+export interface DetectOfflineJobData {
   type: 'detect-offline';
   thresholdMinutes?: number;
+  sweepId?: string;
+  cutoffAt?: string;
+  cursor?: string;
 }
 
-interface MarkOfflineJobData {
+export interface MarkOfflineJobData {
   type: 'mark-offline';
+  transitionId: string;
   deviceId: string;
   orgId: string;
-  lastSeenAt: string;
+  observedLastSeenAt: string;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function requireUuid(value: string, name: string): string {
+  if (!UUID_PATTERN.test(value)) throw new Error(`Invalid ${name}`);
+  return value;
+}
+
+function canonicalTimestamp(value: string, name: string): string {
+  const parsed = new Date(value);
+  if (!value || Number.isNaN(parsed.getTime())) throw new Error(`Invalid ${name}`);
+  return parsed.toISOString();
+}
+
+function sha256(parts: readonly string[]): string {
+  return createHash('sha256').update(parts.join('\0')).digest('hex');
+}
+
+export function offlineTransitionId(
+  orgId: string,
+  deviceId: string,
+  observedLastSeenAt: string,
+): string {
+  const canonicalOrgId = requireUuid(orgId, 'orgId');
+  const canonicalDeviceId = requireUuid(deviceId, 'deviceId');
+  const observedAt = canonicalTimestamp(observedLastSeenAt, 'observedLastSeenAt');
+  return `offline-transition-${sha256([canonicalOrgId, canonicalDeviceId, observedAt])}`;
+}
+
+export function offlineContinuationJobId(sweepId: string, cursor: string): string {
+  if (!sweepId) throw new Error('Invalid sweepId');
+  return `offline-continuation-${sha256([sweepId, requireUuid(cursor, 'cursor')])}`;
+}
+
+export function resolveOfflineWorkerConcurrency(raw: string | undefined): number {
+  if (raw === undefined) return 5;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return 5;
+  return Math.min(20, Math.max(1, parsed));
 }
 
 // Periodic fan-out: re-queue still-offline devices so config-policy offline
@@ -164,11 +209,11 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
         case 'reap-uninstall-intent':
           return await processReapUninstallIntent();
 
-        // Per-device jobs read+write a single row and do no fan-out, so a
-        // whole-job context is appropriate here — mirrors alertWorker's
-        // `evaluate-device` / `auto-resolve`.
+        // mark-offline owns one short CAS context and publishes only after it
+        // closes. Re-evaluation has no queue fan-out and keeps its existing
+        // whole-job context, mirroring alertWorker's per-device jobs.
         case 'mark-offline':
-          return await runWithSystemDbAccess(() => processMarkOffline(job.data as MarkOfflineJobData));
+          return await processMarkOffline(job.data as MarkOfflineJobData);
 
         case 'reevaluate-offline':
           return await runWithSystemDbAccess(() => processReevaluateOffline(job.data as ReevaluateOfflineJobData));
@@ -179,7 +224,7 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
     },
     {
       connection: getBullMQConnection(),
-      concurrency: 5,
+      concurrency: resolveOfflineWorkerConcurrency(process.env.OFFLINE_DETECTOR_WORKER_CONCURRENCY),
       lockDuration: 120_000,
       lockRenewTime: 60_000,
     }
@@ -214,8 +259,12 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
   durationMs: number;
 }> {
   const startTime = Date.now();
-  const thresholdMinutes = data.thresholdMinutes || DEFAULT_OFFLINE_THRESHOLD_MINUTES;
-  const thresholdTime = new Date(Date.now() - thresholdMinutes * 60 * 1000);
+  const thresholdMinutes = data.thresholdMinutes ?? DEFAULT_OFFLINE_THRESHOLD_MINUTES;
+  const sweepId = data.sweepId || randomUUID();
+  const cutoffAt = data.cutoffAt
+    ? canonicalTimestamp(data.cutoffAt, 'cutoffAt')
+    : new Date(Date.now() - thresholdMinutes * 60 * 1000).toISOString();
+  const thresholdTime = new Date(cutoffAt);
 
   // Env tunables — same shape as alertWorker. cap=0 means unlimited per run.
   const cap = envInt('OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN', 5000);
@@ -223,12 +272,21 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
 
   const queue = getOfflineQueue();
   let totalDetected = 0;
-  let cursor: string | null = null;
+  let cursor: string | null = data.cursor ? requireUuid(data.cursor, 'cursor') : null;
 
   while (true) {
     const remaining = cap > 0 ? Math.max(0, cap - totalDetected) : chunkSize;
     if (cap > 0 && remaining === 0) {
-      console.warn(`[OfflineDetector] Hit OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN=${cap}; remainder will be picked up next run`);
+      if (!cursor) throw new Error('Offline continuation requires a cursor');
+      await queue.add(
+        'detect-offline',
+        { type: 'detect-offline', thresholdMinutes: data.thresholdMinutes, sweepId, cutoffAt, cursor },
+        {
+          jobId: offlineContinuationJobId(sweepId, cursor),
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 100 },
+        },
+      );
       break;
     }
 
@@ -259,15 +317,28 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
 
     if (chunk.length === 0) break;
 
-    const jobs = chunk.map(device => ({
-      name: 'mark-offline',
-      data: {
-        type: 'mark-offline' as const,
-        deviceId: device.id,
-        orgId: device.orgId,
-        lastSeenAt: device.lastSeenAt?.toISOString() || ''
-      }
-    }));
+    const jobs = chunk.map(device => {
+      const observedLastSeenAt = canonicalTimestamp(
+        device.lastSeenAt?.toISOString() || '',
+        'observedLastSeenAt',
+      );
+      const transitionId = offlineTransitionId(device.orgId, device.id, observedLastSeenAt);
+      return {
+        name: 'mark-offline',
+        data: {
+          type: 'mark-offline' as const,
+          transitionId,
+          deviceId: device.id,
+          orgId: device.orgId,
+          observedLastSeenAt,
+        },
+        opts: {
+          jobId: transitionId,
+          removeOnComplete: { count: 10_000 },
+          removeOnFail: { count: 10_000 },
+        },
+      };
+    });
 
     await queue.addBulk(jobs);
     totalDetected += jobs.length;
@@ -290,44 +361,30 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
  * Process mark-offline job
  * Marks a device as offline and triggers alerts
  */
-async function processMarkOffline(data: MarkOfflineJobData): Promise<{
-  deviceId: string;
+export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
+  transitioned: boolean;
   alertCreated: boolean;
-  durationMs: number;
 }> {
-  const startTime = Date.now();
+  requireUuid(data.deviceId, 'deviceId');
+  requireUuid(data.orgId, 'orgId');
+  const observedLastSeenAt = canonicalTimestamp(data.observedLastSeenAt, 'observedLastSeenAt');
+  const expectedTransitionId = offlineTransitionId(data.orgId, data.deviceId, observedLastSeenAt);
+  if (data.transitionId !== expectedTransitionId) throw new Error('Invalid transitionId');
 
-  // Verify device is still online in DB (might have reconnected)
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, data.deviceId))
-    .limit(1);
+  const [device] = await runWithSystemDbAccess(() =>
+    db
+      .update(devices)
+      .set({ status: 'offline' })
+      .where(and(
+        eq(devices.id, data.deviceId),
+        eq(devices.orgId, data.orgId),
+        inArray(devices.status, ['online', 'updating']),
+        eq(devices.lastSeenAt, new Date(observedLastSeenAt)),
+      ))
+      .returning()
+  );
 
-  if (!device) {
-    return {
-      deviceId: data.deviceId,
-      alertCreated: false,
-      durationMs: Date.now() - startTime
-    };
-  }
-
-  // Check if device has reconnected since job was queued
-  const thresholdTime = new Date(Date.now() - DEFAULT_OFFLINE_THRESHOLD_MINUTES * 60 * 1000);
-  if ((device.status !== 'online' && device.status !== 'updating') || (device.lastSeenAt && device.lastSeenAt >= thresholdTime)) {
-    // Device is no longer stale
-    return {
-      deviceId: data.deviceId,
-      alertCreated: false,
-      durationMs: Date.now() - startTime
-    };
-  }
-
-  // Mark device as offline
-  await db
-    .update(devices)
-    .set({ status: 'offline' })
-    .where(eq(devices.id, data.deviceId));
+  if (!device) return { transitioned: false, alertCreated: false };
 
   // Publish device.offline event — carry siteId for site-restricted users
   await publishEvent(
@@ -337,7 +394,7 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
       deviceId: data.deviceId,
       hostname: device.hostname,
       displayName: device.displayName,
-      lastSeenAt: data.lastSeenAt
+      lastSeenAt: observedLastSeenAt
     },
     'offline-detector',
     { siteId: device.siteId }
@@ -354,11 +411,7 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
   // page the on-call technician after every single support session.
   const alertCreated = device.isEphemeral ? false : await triggerOfflineAlerts(device);
 
-  return {
-    deviceId: data.deviceId,
-    alertCreated,
-    durationMs: Date.now() - startTime
-  };
+  return { transitioned: true, alertCreated };
 }
 
 /**
@@ -862,7 +915,8 @@ export async function scheduleOfflineJobs(): Promise<void> {
     { type: 'detect-offline' },
     {
       repeat: {
-        every: 30 * 1000 // Every 30 seconds
+        every: 30 * 1000, // Every 30 seconds
+        offset: 7 * 1000,
       },
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 50 }
