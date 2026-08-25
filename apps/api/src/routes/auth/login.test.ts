@@ -54,6 +54,11 @@ vi.mock('../../services', () => ({
   hashPassword: vi.fn(async () => 'dummy-hash'),
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60_000) })),
   loginLimiter: { limit: 5, windowSeconds: 300 },
+  // #3696: per-family refresh rate limit getters — read at call time by
+  // login.ts's POST /refresh handler. Defaults mirror the real fallbacks
+  // (60/60); the rate-limiting describe block below overrides per test.
+  getRefreshRateLimit: vi.fn(() => 60),
+  getRefreshRateWindowSeconds: vi.fn(() => 60),
   getRedis: vi.fn(() => ({
     setex: vi.fn(async () => 'OK'),
   })),
@@ -240,6 +245,9 @@ import {
   getUserEpochs,
   getRefreshFamily,
   getRedis,
+  rateLimiter,
+  getRefreshRateLimit,
+  getRefreshRateWindowSeconds,
 } from '../../services';
 import { revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { authMiddleware } from '../../middleware/auth';
@@ -924,6 +932,174 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
 
     expect(res.status).toBe(401);
     expect(createTokenPair).not.toHaveBeenCalled();
+  });
+});
+
+// #3696: per-refresh-token-FAMILY rate limiting. Every other describe block
+// in this file sets E2E_MODE=true, which skips this branch entirely — this
+// suite must turn it off so the code under test actually runs.
+describe('POST /refresh — per-family rate limiting (#3696)', () => {
+  function postRefresh() {
+    return loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  let originalE2eMode: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    originalE2eMode = process.env.E2E_MODE;
+    delete process.env.E2E_MODE;
+
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      status: 'active',
+      authEpoch: 1,
+      mfaEpoch: 1,
+    }]) as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    } as any);
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-77',
+      aep: 1,
+      mep: 1,
+    } as any);
+    // Defaults re-primed after vi.clearAllMocks() wipes the module-mock
+    // implementations set at file scope.
+    vi.mocked(getRefreshRateLimit).mockReturnValue(60);
+    vi.mocked(getRefreshRateWindowSeconds).mockReturnValue(60);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 59,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  afterEach(() => {
+    if (originalE2eMode === undefined) delete process.env.E2E_MODE;
+    else process.env.E2E_MODE = originalE2eMode;
+  });
+
+  it('keys the limiter on the refresh token family, not the user id', async () => {
+    const res = await postRefresh();
+
+    expect(res.status).toBe(200);
+    expect(rateLimiter).toHaveBeenCalledTimes(1);
+    const [, key] = vi.mocked(rateLimiter).mock.calls[0]!;
+    expect(key).toBe('refresh:fam:family-77');
+  });
+
+  it('passes the limit/window from the getters, and honours operator overrides', async () => {
+    vi.mocked(getRefreshRateLimit).mockReturnValue(120);
+    vi.mocked(getRefreshRateWindowSeconds).mockReturnValue(30);
+
+    await postRefresh();
+
+    expect(rateLimiter).toHaveBeenCalledWith(
+      expect.anything(),
+      'refresh:fam:family-77',
+      120,
+      30,
+      1,
+      { refundOnReject: true },
+    );
+  });
+
+  it('passes { refundOnReject: true } and a cost of 1', async () => {
+    await postRefresh();
+
+    expect(rateLimiter).toHaveBeenCalledWith(
+      expect.anything(),
+      'refresh:fam:family-77',
+      60,
+      60,
+      1,
+      { refundOnReject: true },
+    );
+  });
+
+  it('returns 429 with a retryAfter body field and matching Retry-After header on rejection', async () => {
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 5_000),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      error: 'Too many refresh attempts. Please try again later.',
+      retryAfter: expect.any(Number),
+    });
+    expect(res.headers.get('retry-after')).toBe(String(body.retryAfter));
+    expect(body.retryAfter).toBeGreaterThanOrEqual(4);
+    expect(body.retryAfter).toBeLessThanOrEqual(6);
+    // Rejected before any rotation/minting work.
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('clamps retryAfter to at least 1 when resetAt is in the past (never advertises Retry-After: 0)', async () => {
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() - 10_000),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.retryAfter).toBe(1);
+    expect(res.headers.get('retry-after')).toBe('1');
+  });
+
+  it('clamps retryAfter to at least 1 when resetAt equals now', async () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(now),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.retryAfter).toBe(1);
+    expect(res.headers.get('retry-after')).toBe('1');
+
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  it('a non-throttled refresh still succeeds and mints a new pair (non-regression)', async () => {
+    const res = await postRefresh();
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createTokenPair).mock.calls[0]?.[1]).toEqual({ refreshFam: 'family-77' });
   });
 });
 

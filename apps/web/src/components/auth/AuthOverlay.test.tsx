@@ -438,3 +438,116 @@ describe('AuthOverlay #ssoCode failure and race hardening (#3700 review round)',
     expect(fetchCalls.some((c) => c.url.includes('/auth/refresh') && !exchangeSettled)).toBe(false);
   });
 });
+
+// Issue #3696. When POST /auth/refresh is rate-limited the session is FINE —
+// the server is rationing, not judging the refresh cookie. Two failure modes
+// had to die here:
+//
+//  1. the hard logout: `restoreAccessTokenFromCookie()` collapsed every
+//     non-success into a bare soft `navigateTo('/login')`;
+//  2. the SILENT one, which the reporter called worse: DashboardLayout mounts
+//     Sidebar/Header/page content as ungated siblings of this overlay, so the
+//     page painted its full chrome with every data call 401'd, no error and no
+//     toast — indistinguishable from "you have no integrations configured".
+//
+// The throttle mask closes both: the session is untouched and the page can
+// never render as loaded-but-empty.
+describe('AuthOverlay refresh-throttle mask (#3696)', () => {
+  const THROTTLED_BASE = {
+    isAuthenticated: true,
+    isLoading: false,
+    tokens: null,
+    user: null,
+    sessionExpiredReason: null,
+    authThrottledUntil: null as number | null,
+  };
+
+  // jsdom's `location.reload` is non-configurable, so the whole location object
+  // is swapped (the same trick stores/auth.test.ts uses) rather than patched.
+  const originalLocation = window.location;
+  let reload: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    reload = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { pathname: '/integrations', search: '', hash: '', href: '/integrations', replace: vi.fn(), assign: vi.fn(), reload },
+    });
+    useAuthStore.setState({ ...THROTTLED_BASE });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    useAuthStore.setState({ ...THROTTLED_BASE, isAuthenticated: false, authThrottledUntil: null });
+  });
+
+  it('masks the page while throttled, and says the user is still signed in', async () => {
+    useAuthStore.setState({ authThrottledUntil: Date.now() + 30_000 });
+    render(<AuthOverlay />);
+
+    const mask = await screen.findByTestId('auth-throttled-overlay');
+    // The copy must NOT claim the session expired — it had not.
+    expect(mask).not.toHaveTextContent(/expired/i);
+    expect(mask).toHaveTextContent(/still signed in/i);
+    expect(screen.queryByTestId('session-expired-overlay')).not.toBeInTheDocument();
+  });
+
+  it('does not bounce to /login while throttled — including past the 10s safety timer', async () => {
+    useAuthStore.setState({ authThrottledUntil: Date.now() + 45_000 });
+    render(<AuthOverlay />);
+    await screen.findByTestId('auth-throttled-overlay');
+
+    // The safety net force-redirects to /login after 10s whenever no access
+    // token exists. A rate-limit window is legitimately longer than that, so
+    // leaving it armed would reinstate exactly the forced logout this fixes.
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+    });
+
+    const { navigateTo } = await import('../../lib/navigation');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(screen.getByTestId('auth-throttled-overlay')).toBeInTheDocument();
+  });
+
+  it('offers a manual retry and a sign-out escape hatch', async () => {
+    useAuthStore.setState({ authThrottledUntil: Date.now() + 30_000 });
+    render(<AuthOverlay />);
+    await screen.findByTestId('auth-throttled-overlay');
+
+    fireEvent.click(screen.getByTestId('auth-throttled-retry'));
+    expect(reload).toHaveBeenCalled();
+
+    // Signing out must be available but never automatic — deciding to sign the
+    // user out is the whole bug.
+    expect(screen.getByTestId('auth-throttled-signout')).toBeInTheDocument();
+  });
+
+  it('retries automatically once the advertised window elapses', async () => {
+    useAuthStore.setState({ authThrottledUntil: Date.now() + 2_000 });
+    render(<AuthOverlay />);
+    await screen.findByTestId('auth-throttled-overlay');
+    expect(reload).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+
+    expect(reload).toHaveBeenCalled();
+  });
+
+  it('lets a real expiry win over a stale throttle', async () => {
+    useAuthStore.setState({
+      authThrottledUntil: Date.now() + 30_000,
+      sessionExpiredReason: 'session-expired',
+    });
+    render(<AuthOverlay />);
+
+    // A genuinely dead session must still get its redirecting mask; the
+    // throttle must never mask an eviction that is already under way.
+    expect(await screen.findByTestId('session-expired-overlay')).toBeInTheDocument();
+    expect(screen.queryByTestId('auth-throttled-overlay')).not.toBeInTheDocument();
+  });
+});
