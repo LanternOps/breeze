@@ -598,6 +598,21 @@ describe('#3986 overlap — a device Removed while its tenant is offboarding', (
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status, 'another owner still needs this delivered').toBe('pending');
     expect(rows[0]!.uninstallReasons).toEqual(['tenant_offboarding']);
+    // ...AND the deadline goes with it. The row survives, so the deadline is
+    // the only place a released device-remove hold can hide: the earlier
+    // `array_remove(...) = '{}'` form cleared it only when NO owner remained,
+    // which is never true for a co-owned row. Confirmed against live
+    // Postgres before this assertion existed — the deadline was PRESERVED.
+    //
+    // A left-behind deadline is not cosmetic. The next Remove of this device
+    // takes `row.deviceRemoveExpiresAt ?? deadline` and INHERITS the stale
+    // one: before it passes the second window is silently shortened, and
+    // after it passes `isDeviceUninstallDraining` is false the instant the
+    // row is written — agentAuth hard-403s the machine while the API and the
+    // audit log both report `uninstallQueued: true`, so that uninstall can
+    // never be delivered at all. This assertion is what makes the test's own
+    // name ("strips ONLY device_remove") true of the whole row.
+    expect(rows[0]!.deviceRemoveExpiresAt, 'the deadline belongs to device_remove and must be released with it').toBeNull();
     // The device half of the exemption is gone even though the row lives on.
     expect(await withSystemDbAccessContext(() => isDeviceUninstallDraining(device.id))).toBe(false);
 

@@ -332,6 +332,28 @@ const TENANT_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', '
 const DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs']);
 
 /**
+ * Both drains at once (a removed device inside an offboarding tenant): the
+ * INTERSECTION of the two sets, never either one whole.
+ *
+ * Two independent narrowing gates compose by intersection, full stop. The
+ * earlier "whichever drain is the tenant one wins" form composed by union in
+ * the only case that mattered: it handed `rotate-token` back to exactly the
+ * device the DEVICE drain had just taken it away from, silently reopening
+ * HIGH-1 (a stolen token on a removed machine minting a durable agent +
+ * watchdog + helper credential set that outlives the window and goes live on
+ * restore, while demoting the legitimate token and denying the real machine
+ * its uninstall). A tenant drain is not evidence that a removed device is
+ * safer; it is a second, independent reason to trust it less.
+ *
+ * Computed once at module load — this is a fixed set, not per-request state.
+ */
+const BOTH_DRAINS_ALLOWED_ACTIONS = new Set(
+  [...DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS].filter((action) =>
+    TENANT_DRAIN_ALLOWED_ACTIONS.has(action),
+  ),
+);
+
+/**
  * The ONLY command type a drained agent — tenant-offboarding (#2774) or
  * device-remove (#3986) — may claim, ack, or have delivered.
  *
@@ -782,13 +804,19 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // #2774's original surface; a DEVICE drain additionally drops `rotate-token`,
   // because the credentials that route mints outlive the drain window and
   // would become live again on restore (see
-  // DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS). When BOTH apply, the tenant set is
-  // the one in force — the device drain is the narrower, more urgent state, but
-  // its own gate has already admitted only a `role==='agent'` credential, and a
-  // tenant mid-offboarding still needs its fleet's rotations to complete.
-  const drainNarrowed = tenantState === 'draining' || deviceUninstallDraining;
-  const drainAllowedActions = tenantState === 'draining'
-    ? TENANT_DRAIN_ALLOWED_ACTIONS
+  // DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS). When BOTH apply they compose by
+  // INTERSECTION (BOTH_DRAINS_ALLOWED_ACTIONS) — two narrowing gates can only
+  // ever narrow further. Letting the tenant set win instead handed
+  // `rotate-token` straight back to a removed device, which is the one case
+  // the device set exists to cover.
+  //
+  // The error CODE still reports the tenant drain when both apply: it is the
+  // agent-visible, longer-lived condition, and #2774's clients already parse
+  // it. Only the action SET intersects.
+  const tenantDraining = tenantState === 'draining';
+  const drainNarrowed = tenantDraining || deviceUninstallDraining;
+  const drainAllowedActions = tenantDraining
+    ? (deviceUninstallDraining ? BOTH_DRAINS_ALLOWED_ACTIONS : TENANT_DRAIN_ALLOWED_ACTIONS)
     : DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS;
   if (drainNarrowed && !isDrainAllowedAgentPath(pathSegments, agentId, drainAllowedActions)) {
     return c.json(

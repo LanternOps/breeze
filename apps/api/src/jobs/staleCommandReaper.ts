@@ -231,6 +231,33 @@ export async function reapStaleDeviceCommands(): Promise<number> {
   // incident guard; a compiled-SQL unit assertion cannot see it, because the
   // clause SHAPE is correct and only Postgres's three-valued evaluation of it
   // is not.
+  // DELIBERATE PREDICATE DRIFT, recorded so nobody "fixes" it into a bug:
+  // this arm omits the `devices.status = 'decommissioned'` conjunct that
+  // `isDeviceUninstallDraining` (services/deviceUninstallDrain.ts) requires,
+  // so it is strictly LOOSER than the auth-side predicate. That is safe, and
+  // the safe direction is the only one available here:
+  //
+  //   - Looser here means a row can be EXEMPT from reaping while the device
+  //     is not (yet, or any longer) `decommissioned`. Exemption only leaves a
+  //     `pending` row alive; it never grants authentication or delivery. The
+  //     narrower auth predicate still 403s such a device, and the row's own
+  //     deadline still expires it, so the exemption self-closes with no
+  //     sweeper.
+  //   - Tighter here would be the dangerous direction: the reaper would time
+  //     out a self_uninstall that `agentAuth` is still holding a live drain
+  //     window open for, and the removed machine would authenticate for the
+  //     rest of the window with nothing left to collect — the uninstall
+  //     silently never delivered.
+  //
+  // The set where they differ is empty in practice anyway: only
+  // `queueDeviceUninstall` writes the `device_remove` reason, and it runs
+  // inside the caller's decommission transaction, so a row carrying that
+  // reason and a future deadline belongs to a `decommissioned` device. A
+  // restore strips BOTH the reason and the deadline in one UPDATE (see
+  // `releaseDeviceRemoveReason`), which drops the row out of this arm at the
+  // same instant it drops out of the auth predicate. Joining `devices` here
+  // purely to re-derive that would add a per-row join to the hot reaper scan
+  // for no reachable behaviour change.
   whereConditions.push(
     sql`NOT COALESCE((
       (

@@ -162,7 +162,18 @@ export async function queueDeviceUninstall(
       and(
         eq(deviceCommands.deviceId, deviceId),
         eq(deviceCommands.type, 'self_uninstall'),
-        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES]),
+        // `pending` ONLY — deliberately NARROWER than
+        // NON_TERMINAL_COMMAND_STATUSES. `claimPendingCommandsForDevice`
+        // claims `pending` rows and nothing else, so a `sent` row is not a
+        // row this Remove can rely on for delivery: merging into one would
+        // open a fresh 72h authenticated window around a command the agent
+        // can never be handed again (the previous dispatch may have been
+        // lost, e.g. a restore-then-remove cycle across a socket drop).
+        // Insert a new `pending` row instead — the drain exists to make the
+        // uninstall COLLECTABLE, and only a pending row is. Distinct from
+        // #3995, which is about the agent-side teardown fence on a row that
+        // genuinely was received.
+        eq(deviceCommands.status, 'pending'),
       ),
     );
 
@@ -170,7 +181,7 @@ export async function queueDeviceUninstall(
 
   if (existing.length > 0) {
     // Another feature (tenant offboarding, or a duplicate device-remove call)
-    // already has a non-terminal self_uninstall in flight for this device.
+    // already has a PENDING self_uninstall in flight for this device.
     // Stamp OUR reason onto every such row (defensive: normal operation keeps
     // this to one row via the FOR UPDATE lock, but abuse.ts's bulk insert has
     // no such lock and can leave more than one) rather than inventing a
@@ -254,7 +265,22 @@ export async function releaseDeviceRemoveReason(
     .update(deviceCommands)
     .set({
       uninstallReasons: sql`array_remove(${deviceCommands.uninstallReasons}, ${UNINSTALL_REASON_DEVICE_REMOVE})`,
-      deviceRemoveExpiresAt: sql`CASE WHEN array_remove(${deviceCommands.uninstallReasons}, ${UNINSTALL_REASON_DEVICE_REMOVE}) = '{}' THEN NULL ELSE ${deviceCommands.deviceRemoveExpiresAt} END`,
+      // The deadline is device_remove's PROPERTY, not the row's: both readers
+      // (`isDeviceUninstallDraining` above and `staleCommandReaper`'s
+      // exemption arm) only ever consult it alongside the `device_remove`
+      // reason. So releasing that reason must release the deadline with it —
+      // keyed on the reason's PRESENCE, not on the row becoming reason-LESS.
+      //
+      // The earlier `array_remove(...) = '{}'` form cleared it only when NO
+      // owner at all remained, so a CO-OWNED row (device removed while its
+      // tenant is offboarding) kept a live deadline through a restore. A
+      // second Remove then took the `row.deviceRemoveExpiresAt ?? deadline`
+      // preserve branch in `queueDeviceUninstall`, inherited that STALE
+      // deadline, and — once it had passed — produced a device that
+      // `agentAuth` hard-403s while the API and the audit log both report
+      // `uninstallQueued: true`: an uninstall that can NEVER be delivered.
+      // Before expiry the same bug silently SHORTENS the second window.
+      deviceRemoveExpiresAt: sql`CASE WHEN ${arrayContains(deviceCommands.uninstallReasons, [UNINSTALL_REASON_DEVICE_REMOVE])} THEN NULL ELSE ${deviceCommands.deviceRemoveExpiresAt} END`,
     })
     .where(
       and(

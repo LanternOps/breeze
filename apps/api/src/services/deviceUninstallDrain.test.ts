@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Real drizzle-orm + real schema throughout this suite (deliberately NOT
@@ -207,14 +207,32 @@ function createFakeTx() {
   // every subsequent chained call (`.where()`, `.for()`, ...) instead of once
   // per `select()`.
   const selectQueue: unknown[][] = [];
+  // One record per `tx.select()` call, IN CALL ORDER, capturing what that
+  // select was actually given. The earlier version of this helper built
+  // `where`/`for` as throwaway `vi.fn`s that nothing ever read, so the two
+  // things the caller most needs to be true — the row lock exists, and each
+  // WHERE is the right one — were both unobservable: deleting `.for('update')`
+  // or dropping a WHERE conjunct left this suite green. Index IS call order,
+  // so `selectCalls[0]` being the `devices` lock also proves it ran BEFORE the
+  // `device_commands` read.
+  const selectCalls: { where?: unknown; forArgs?: unknown[] }[] = [];
 
   const tx = {
     select: vi.fn(() => {
       const rows = selectQueue.shift() ?? [];
+      const record: { where?: unknown; forArgs?: unknown[] } = {};
+      selectCalls.push(record);
       const chain: Record<string, any> = {};
-      for (const method of ['from', 'where', 'for']) {
-        chain[method] = vi.fn(() => Object.assign(Promise.resolve(rows), chain));
-      }
+      const settle = () => Object.assign(Promise.resolve(rows), chain);
+      chain.from = vi.fn(() => settle());
+      chain.where = vi.fn((condition: unknown) => {
+        record.where = condition;
+        return settle();
+      });
+      chain.for = vi.fn((...args: unknown[]) => {
+        record.forArgs = args;
+        return settle();
+      });
       return chain;
     }),
     update: vi.fn(() => ({
@@ -236,6 +254,7 @@ function createFakeTx() {
     tx,
     updateLog,
     insertLog,
+    selectCalls,
     queueSelect(rows: unknown[]) {
       selectQueue.push(rows);
     },
@@ -311,8 +330,82 @@ describe('queueDeviceUninstall', () => {
     await queueDeviceUninstall(fake.tx as never, 'device-1', null);
 
     // Two independent .select() calls: the FOR UPDATE lock, then the
-    // existing-row read. `.for` is only invoked on the first.
+    // existing-row read.
     expect(fake.tx.select).toHaveBeenCalledTimes(2);
+    expect(fake.selectCalls).toHaveLength(2);
+
+    // THE LOCK ITSELF. A unique index on device_commands was deliberately
+    // declined upstream (module doc, and tenantOffboarding.ts's comment on
+    // queueDrainUninstalls: it would break abuse.ts's bulk insert), so this
+    // row lock is the ONLY thing standing between two concurrent Removes and
+    // a pair of duplicate self_uninstall rows. Integration cannot cover that
+    // deterministically, which makes this assertion the whole guard — assert
+    // the ARGUMENT too, since `.for('share')` would not serialise writers.
+    const [lockSelect, existingSelect] = fake.selectCalls;
+    expect(lockSelect!.forArgs).toEqual(['update']);
+
+    // ...and that the lock is on the DEVICES select, not the command read:
+    // `selectCalls` is in call order, so proving index 0 is the devices row
+    // lock proves it ran BEFORE any device_commands work.
+    const lockSql = sqlOf(lockSelect!.where).sql.toLowerCase();
+    expect(lockSql).toContain('"id" = $');
+    expect(lockSql).not.toContain('"device_id"');
+    expect(sqlOf(lockSelect!.where).params).toEqual(['device-1']);
+
+    // The second select is the device_commands read, and it is NOT locked
+    // (the devices row lock is what serialises; a second FOR UPDATE here
+    // would lock command rows for no reason).
+    expect(existingSelect!.forArgs).toBeUndefined();
+    expect(sqlOf(existingSelect!.where).sql.toLowerCase()).toContain('"device_id" = $');
+  });
+
+  it('scopes BOTH reads: the lock to this device row, the existing-row lookup to this device + self_uninstall + pending (compiled SQL)', async () => {
+    // Dropping `eq(deviceCommands.type, 'self_uninstall')` from the lookup
+    // used to leave this suite AND core.decommission.test.ts green, because
+    // `chain.where` captured nothing. With that conjunct gone, Removing a
+    // device that has any other pending command (a script run, a backup job)
+    // stamps `uninstall_reasons=['device_remove']` and a 72h deadline onto
+    // THAT row, returns mergedIntoExisting -> uninstallQueued:true, and never
+    // queues an uninstall at all — while corrupting an unrelated command.
+    const fake = createFakeTx();
+    fake.queueSelect([{ id: 'device-1' }]);
+    fake.queueSelect([]);
+
+    await queueDeviceUninstall(fake.tx as never, 'device-1', null);
+
+    const existingBuilt = sqlOf(fake.selectCalls[1]!.where);
+    const existingSql = existingBuilt.sql.toLowerCase();
+
+    // Three REQUIRED conjuncts — an OR here would match half of
+    // device_commands, exactly as it would in the strip UPDATE below.
+    assertConjunction(existingSql, 3);
+    expect(existingSql).toContain('"device_id" = $');
+    expect(existingBuilt.params).toContain('device-1');
+    expect(existingSql).toContain('"type" = $');
+    expect(existingBuilt.params).toContain('self_uninstall');
+    expect(existingSql).toContain('"status" = $');
+    expect(existingBuilt.params).toContain('pending');
+  });
+
+  it('merges ONLY into a pending row — never into a sent one (a sent row can never be claimed again)', async () => {
+    // `claimPendingCommandsForDevice` claims `pending` and nothing else, so a
+    // `sent` row is not a row this Remove can rely on for delivery. Merging
+    // into one would open a fresh 72h authenticated window around a command
+    // the agent can never be handed again. Asserted on compiled SQL because
+    // the mocked tx returns whatever rows a test scripts REGARDLESS of the
+    // WHERE — a behavioural test here could not tell the two apart.
+    const fake = createFakeTx();
+    fake.queueSelect([{ id: 'device-1' }]);
+    fake.queueSelect([]);
+
+    await queueDeviceUninstall(fake.tx as never, 'device-1', null);
+
+    const built = sqlOf(fake.selectCalls[1]!.where);
+    // Equality on one status, not `IN ('pending','sent')`.
+    expect(built.sql.toLowerCase()).toContain('"status" = $');
+    expect(built.sql.toLowerCase()).not.toMatch(/"status" in \(/);
+    expect(built.params).toContain('pending');
+    expect(built.params).not.toContain('sent');
   });
 
   it('is a no-op when the device row does not exist', async () => {
@@ -378,8 +471,41 @@ describe('releaseDeviceRemoveReason', () => {
     expect(reasonsExpr.sql).toContain('"uninstall_reasons"');
     expect(reasonsExpr.params).toEqual([UNINSTALL_REASON_DEVICE_REMOVE]);
 
+    // The deadline is released with the reason it belongs to, keyed on that
+    // reason's PRESENCE. The earlier `array_remove(...) = '{}'` form keyed on
+    // the row becoming reason-LESS, so a co-owned row (device removed while
+    // its tenant offboards) kept a live deadline through the restore; the
+    // next Remove then inherited it via the `?? deadline` preserve branch and
+    // — once it had passed — produced a device agentAuth hard-403s while the
+    // API reports uninstallQueued:true. Asserted structurally: the emptiness
+    // form contains `array_remove` and no `@>`, so it cannot pass this.
+    const deadlineExpr = sqlOf(strip.values.deviceRemoveExpiresAt);
+    const deadlineSql = deadlineExpr.sql.toLowerCase();
+    expect(deadlineSql).toContain('case when');
+    expect(deadlineSql).toContain('"uninstall_reasons" @> $');
+    expect(deadlineSql).not.toContain('array_remove');
+    expect(deadlineSql).not.toContain("= '{}'");
+    // (In a SET expression drizzle qualifies columns as
+    // `"device_commands"."device_remove_expires_at"`, unlike a WHERE clause.)
+    expect(deadlineSql).toContain('then null else');
+    expect(deadlineSql).toContain('"device_remove_expires_at" end');
+    expect(deadlineExpr.params.some((p) => typeof p === 'string' && p.includes(UNINSTALL_REASON_DEVICE_REMOVE))).toBe(true);
+
     const whereBuilt = sqlOf(strip.where);
     const whereSql = whereBuilt.sql.toLowerCase();
+
+    // THE OPERATOR, not just the clauses (see assertConjunction's doc). This
+    // is the one UPDATE in this module that WRITES, and `device_commands` has
+    // no RLS. Under `or(...)` this WHERE matches `device_id = $1` OR
+    // `type='self_uninstall'` OR `status IN (...)` OR `uninstall_reasons @>
+    // [...]` — i.e. every non-terminal row in the table, across every tenant.
+    // RETURNING then feeds the cancel loop, where a legacy NULL-reason row
+    // has zero reasons left, so ONE operator clicking Restore on ONE device
+    // would flip every pending command in the entire fleet to `cancelled`.
+    // Every other assertion in this test is a substring or param-membership
+    // check and stays green under that mutant; this line is what fails.
+    assertConjunction(whereSql, 4);
+
     expect(whereSql).toContain('"device_id" = $');
     expect(whereBuilt.params).toContain('device-1');
     expect(whereSql).toContain('"type" = $');
@@ -456,5 +582,58 @@ describe('module wiring sanity', () => {
   it('uses the real device_commands/devices schema objects', () => {
     expect(deviceCommands.uninstallReasons).toBeDefined();
     expect(devices.status).toBeDefined();
+  });
+});
+
+/**
+ * The window constant is computed ONCE at module load from the environment,
+ * so every case here re-imports the module under a stubbed env.
+ *
+ * Why literals, never `DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS` itself: the
+ * deadline assertion in `queueDeviceUninstall` above derives its expected
+ * value FROM the constant under test, so it holds for 0, for a negative, and
+ * for any other value the floor was supposed to reject — it can only prove
+ * the deadline is self-consistent, never that the window is sane. `envInt`
+ * returns 0 for the string '0' (a compose file renders an unset variable as
+ * `VAR: ""`, and an operator can set it outright), and with the floor deleted
+ * a 0-hour window makes every deadline already expired at insert time: the
+ * drain predicate is false the instant the row is written, agentAuth 403s the
+ * device forever, and the feature is inert with no error anywhere.
+ */
+describe('DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS — the Math.max(..., 1) floor', () => {
+  async function importWindowHours(raw: string | undefined): Promise<number> {
+    vi.resetModules();
+    if (raw === undefined) {
+      vi.stubEnv('DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS', undefined as never);
+    } else {
+      vi.stubEnv('DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS', raw);
+    }
+    const mod = await import('./deviceUninstallDrain');
+    return mod.DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS;
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('floors an explicit 0 up to 1 hour (not to the 72h default)', async () => {
+    // 1, not 72: this is a FLOOR, not a fallback. An operator asking for the
+    // shortest possible window gets the shortest LEGAL one — a ternary
+    // (`RAW >= 1 ? RAW : 72`) would look almost identical and silently do the
+    // opposite. Both literals are asserted so neither substitution passes.
+    await expect(importWindowHours('0')).resolves.toBe(1);
+  });
+
+  it('floors a negative value up to 1 hour', async () => {
+    await expect(importWindowHours('-5')).resolves.toBe(1);
+  });
+
+  it('passes a legitimate override through unchanged (the floor is not a clamp to 1)', async () => {
+    await expect(importWindowHours('5')).resolves.toBe(5);
+  });
+
+  it('defaults to 72 hours when unset', async () => {
+    await expect(importWindowHours(undefined)).resolves.toBe(72);
   });
 });

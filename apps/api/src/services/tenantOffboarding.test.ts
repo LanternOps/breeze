@@ -230,6 +230,14 @@ describe('beginOrganizationOffboarding', () => {
     // d1's existing row is merged, not skipped or duplicated: our reason is
     // appended alongside device_remove's.
     expect(merge!.values.uninstallReasons).toEqual(['device_remove', 'tenant_offboarding']);
+    // ...onto THAT ROW ONLY. The merge loop writes a whole new reasons array
+    // computed from one row's current value, so an unscoped (or wrongly
+    // scoped) WHERE would overwrite other rows' reason sets with this row's
+    // — silently transplanting `device_remove` (and its drain exemption)
+    // onto commands that never had it.
+    expect(JSON.stringify(merge!.where)).toBe(
+      JSON.stringify({ eq: [deviceCommands.id, 'cmd-d1'] })
+    );
 
     // Only d2 gets a brand-new row, stamped with our reason.
     expect(insertLog).toHaveLength(1);
@@ -439,6 +447,17 @@ describe('abortOrganizationOffboarding', () => {
 
     const [strip] = updatesFor(deviceCommands);
     const whereJson = JSON.stringify(strip!.where);
+
+    // TENANT SCOPING — the conjunct that keeps this UPDATE inside the org.
+    // `device_commands` has no RLS, so nothing below the app layer bounds
+    // this write. Deleting `inArray(deviceCommands.deviceId, deviceIds)`
+    // left all 36 tests in this file green: every other assertion here is a
+    // reason-string substring check, and those stay true unscoped. The
+    // mutant strips `tenant_offboarding` from EVERY non-terminal
+    // self_uninstall in the database — every tenant's — on any org abort.
+    // The exact device list matters, not just the presence of a filter.
+    expect(whereJson).toContain('"inArray":["deviceCommands.deviceId",["d1"]]');
+
     expect(whereJson).toContain('self_uninstall');
     expect(whereJson).toContain('"or"');
     expect(whereJson).toContain('"isNull":"deviceCommands.uninstallReasons"');
@@ -589,8 +608,21 @@ describe('finalizeOrganizationOffboarding', () => {
     const [strip, cancel] = updatesFor(deviceCommands);
     expect(strip!.values.status).toBeUndefined();
     expect(JSON.stringify(strip!.values.uninstallReasons)).toContain('array_remove');
+    // SCOPING — the strip is bounded to the candidate ids this finalize
+    // actually collected (which the query above already scoped to this org
+    // AND to tenant-owned rows). Without `inArray(deviceCommands.id,
+    // outstandingIds)` this UPDATE strips `tenant_offboarding` from every
+    // non-terminal self_uninstall in the table; the array_remove assertion
+    // above cannot see the difference. Same shape as the abort path.
+    expect(JSON.stringify(strip!.where)).toContain(
+      '"inArray":["deviceCommands.id",["cmd-1","cmd-2"]]'
+    );
     expect(cancel!.values.status).toBe('cancelled');
     expect((cancel!.values.result as Record<string, unknown>).reason).toBe('offboarding_window_closed');
+    // The cancel step is bounded to the ids the strip actually emptied.
+    expect(JSON.stringify(cancel!.where)).toContain(
+      '"inArray":["deviceCommands.id",["cmd-1","cmd-2"]]'
+    );
 
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
