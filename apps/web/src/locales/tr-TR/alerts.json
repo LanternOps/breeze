@@ -835,6 +835,7 @@
     "sms": "SMS",
     "pushover": "Pushover",
     "noNotificationChannelsFoundTryAdjustingYour": "Bildirim kanalı bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
+    "noChannelsYet": "Henüz bildirim kanalı yok. E-posta, Slack, Teams veya bir webhook’a uyarı göndermek için bir tane oluşturun.",
     "partnerWideChannelReceivesAlertsFromEvery": "İş ortağı çapındaki kanal — her kuruluştan uyarı alır",
     "allOrgs": "İş ortağı çapında",
     "testing": "Test ediliyor...",

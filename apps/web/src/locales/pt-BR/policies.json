@@ -143,6 +143,7 @@
       "archived2": "Arquivada",
       "features": "Recursos",
       "noPoliciesFoundTryAdjustingYourSearch": "Nenhuma política encontrada. Tente ajustar sua pesquisa.",
+      "noPoliciesYet": "Ainda não há políticas de configuração. Crie uma e depois atribua-a a organizações, locais ou dispositivos.",
       "partnerWidePolicyAppliesToEveryOrganization": "Política de todo o parceiro — aplica-se a todas as organizações",
       "allOrgs": "Todo o parceiro",
       "page": "Página",

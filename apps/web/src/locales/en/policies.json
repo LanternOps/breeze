@@ -143,6 +143,7 @@
       "archived2": "Archived",
       "features": "Features",
       "noPoliciesFoundTryAdjustingYourSearch": "No policies found. Try adjusting your search.",
+      "noPoliciesYet": "No configuration policies yet. Create one, then assign it to organizations, sites or devices.",
       "partnerWidePolicyAppliesToEveryOrganization": "Partner-wide policy — applies to every organization",
       "allOrgs": "Partner-wide",
       "page": "Page",

@@ -143,6 +143,7 @@
       "archived2": "Archivé",
       "features": "Caractéristiques",
       "noPoliciesFoundTryAdjustingYourSearch": "Aucune stratégie n’a été trouvée. Essayez d’ajuster votre recherche.",
+      "noPoliciesYet": "Aucune politique de configuration pour l’instant. Créez-en une, puis attribuez-la à des organisations, des sites ou des appareils.",
       "partnerWidePolicyAppliesToEveryOrganization": "Politique à l’échelle des partenaires — s’applique à toutes les organisations",
       "allOrgs": "À l’échelle du partenaire",
       "page": "Page",
