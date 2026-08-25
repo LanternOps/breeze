@@ -1760,8 +1760,9 @@
       "bulkActionFailed": "Échec de l’action en masse",
       "bulkCommandPartialFailed": "Commandement de masse partiellement échoué",
       "bulkCommandSent": "Commandement en vrac envoyé",
-      "bulkDecommissionFailed": "Échec du retrait groupé",
-      "bulkDecommissioned": "Appareils retirés",
+      "bulkDecommissionAllFailed": "Échec du retrait des {{count}} appareil(s) : {{devices}}",
+      "bulkDecommissionFailed": "{{succeeded}} appareil(s) retiré(s) ; {{failed}} échoué(s) : {{devices}}",
+      "bulkDecommissioned": "{{count}} appareil(s) retiré(s)",
       "bulkMaintenanceAllFailed": "Impossible de mettre à jour le mode maintenance pour tous {{count}} appareil(s) : {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} ou périphérique(s) {{verb}} mode maintenance ; {{failed}} échoué : {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} appareils {{verb}} mode maintenance",
@@ -1797,7 +1798,7 @@
       "unknownBulkAction": "Action en vrac inconnue",
       "wakeSentWatching": "Commande de réveil envoyée ; surveillance en cours",
       "wakeTimeout": "Temps d’arrêt du réveil",
-      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont retirés — ils n’ont plus d’agent pour exécuter cette action."
+      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont déjà retirés."
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",

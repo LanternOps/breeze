@@ -1122,7 +1122,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     await waitFor(() => {
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-      expect(messages.some(m => /all 2 selected device\(s\) are removed/i.test(m))).toBe(true);
+      expect(messages.some(m => /all 2 selected device\(s\) are already removed/i.test(m))).toBe(true);
     });
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
     expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
@@ -1161,7 +1161,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   // one, so an ungated mixed/all-removed selection fired doomed requests.
   it('bulk Remove: skips the already-removed device and still removes the offline one', async () => {
     const { bulkDecommissionDevices } = await import('../../services/deviceActions');
-    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: 0 } as never);
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: [] } as never);
 
     boundaryFleet();
     await renderMixedFleet();
@@ -1176,9 +1176,8 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     // DEV_3 (already decommissioned) must NOT be re-submitted — that's the
     // doomed request the API 400s. DEV_2 (offline) IS a legitimate target:
     // retiring a dead machine is still the use case.
-    expect([...(vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as string[])].sort()).toEqual(
-      [DEV_1, DEV_2].sort(),
-    );
+    const submitted = vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as Array<{ id: string; hostname: string }>;
+    expect([...submitted.map(d => d.id)].sort()).toEqual([DEV_1, DEV_2].sort());
   });
 
   it('bulk Remove: refuses outright when EVERY selected device is already removed', async () => {
@@ -1196,10 +1195,38 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     await waitFor(() => {
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-      expect(messages.some(m => /all 2 selected device\(s\) are removed/i.test(m))).toBe(true);
+      expect(messages.some(m => /all 2 selected device\(s\) are already removed/i.test(m))).toBe(true);
     });
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
     expect(vi.mocked(bulkDecommissionDevices)).not.toHaveBeenCalled();
+  });
+
+  // #3987 fix wave 2: a partial-failure batch previously collapsed into a bare
+  // "Bulk Remove Failed" — the user couldn't tell how many succeeded, which
+  // devices failed, or why. Assert the toast now names both counts and the
+  // failed hostnames.
+  it('bulk Remove: partial failure names both counts and the failed device', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'online' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'online' },
+      ],
+    } as never);
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({
+      succeeded: 1,
+      failed: [{ id: DEV_2, hostname: 'host-beta' }],
+    } as never);
+    await renderMixedFleet([DEV_1, DEV_2]);
+
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /1/.test(m) && /host-beta/.test(m))).toBe(true);
+    });
   });
 
   // Queued commands can fire at devices with no connected agent. A 201 there
@@ -1506,16 +1533,15 @@ describe('DevicesPage — ungated bulk actions still work on an all-offline flee
 
   it('decommissions every offline device — no gate, no confirm', async () => {
     const { bulkDecommissionDevices } = await import('../../services/deviceActions');
-    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ decommissioned: 2, failed: [] } as never);
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: [] } as never);
 
     await renderOfflineFleet();
     fireEvent.click(screen.getByTestId('bulk-decommission'));
 
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
-    expect([...(vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as string[])].sort()).toEqual(
-      [DEV_1, DEV_2].sort(),
-    );
+    const submitted = vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as Array<{ id: string; hostname: string }>;
+    expect([...submitted.map(d => d.id)].sort()).toEqual([DEV_1, DEV_2].sort());
   });
 
   it('flags every offline device into maintenance — no gate, no confirm', async () => {

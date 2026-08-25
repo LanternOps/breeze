@@ -1760,8 +1760,9 @@
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
       "bulkCommandPartialFailed": "Massenbefehl ist teilweise fehlgeschlagen",
       "bulkCommandSent": "Massenbefehl gesendet",
-      "bulkDecommissionFailed": "Massenentfernung fehlgeschlagen",
-      "bulkDecommissioned": "Geräte entfernt",
+      "bulkDecommissionAllFailed": "Entfernen für alle {{count}} Geräte fehlgeschlagen: {{devices}}",
+      "bulkDecommissionFailed": "{{succeeded}} Gerät(e) entfernt; bei {{failed}} fehlgeschlagen: {{devices}}",
+      "bulkDecommissioned": "{{count}} Gerät(e) entfernt",
       "bulkMaintenanceAllFailed": "Der Wartungsmodus konnte für alle {{count}} Geräte nicht aktualisiert werden: {{devices}}",
       "bulkMaintenanceSomeFailed": "Wartungsmodus für {{succeeded}} Gerät(e) {{verb}}; bei {{failed}} fehlgeschlagen: {{devices}}",
       "bulkMaintenanceSuccess": "Wartungsmodus für {{count}} Geräte {{verb}}",
@@ -1797,7 +1798,7 @@
       "unknownBulkAction": "Unbekannte Massenaktion",
       "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
       "wakeTimeout": "Zeitüberschreitung beim Aufwecken",
-      "bulkAllDecommissioned": "Alle {{total}} ausgewählten Geräte sind entfernt – sie haben keinen verwalteten Agenten mehr, der dies ausführen könnte."
+      "bulkAllDecommissioned": "Alle {{total}} ausgewählten Geräte sind bereits entfernt."
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",

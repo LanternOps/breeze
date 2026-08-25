@@ -1760,8 +1760,9 @@
       "bulkActionFailed": "Error en la acción masiva",
       "bulkCommandPartialFailed": "Error parcial del comando masivo",
       "bulkCommandSent": "Comando masivo enviado",
-      "bulkDecommissionFailed": "Error al quitar en bloque",
-      "bulkDecommissioned": "Dispositivos quitados",
+      "bulkDecommissionAllFailed": "No se pudo quitar ninguno de los {{count}} dispositivos: {{devices}}",
+      "bulkDecommissionFailed": "{{succeeded}} dispositivo(s) quitado(s); {{failed}} con error: {{devices}}",
+      "bulkDecommissioned": "{{count}} dispositivo(s) quitado(s)",
       "bulkMaintenanceAllFailed": "No se pudo actualizar el modo de mantenimiento para todos los dispositivos {{count}}: {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} dispositivo(s) {{verb}} modo de mantenimiento; {{failed}} falló: {{devices}}",
       "bulkMaintenanceSuccess": "dispositivos {{count}} {{verb}} modo de mantenimiento",
@@ -1797,7 +1798,7 @@
       "unknownBulkAction": "Acción masiva desconocida",
       "wakeSentWatching": "Comando de encendido enviado; supervisando",
       "wakeTimeout": "Tiempo de espera para despertar",
-      "bulkAllDecommissioned": "Los {{total}} dispositivo(s) seleccionados están quitados: ya no tienen un agente administrado que ejecute esto."
+      "bulkAllDecommissioned": "Los {{total}} dispositivo(s) seleccionados ya están quitados."
     },
     "tryAgain": "Intentar otra vez",
     "unknownDevice": "Desconocido",
