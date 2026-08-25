@@ -1253,6 +1253,22 @@ jobs:
           CGO_ENABLED: "0"
         run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
 
+      # Software inventory has platform-specific registry behavior. Keep this
+      # filtered until the inherited Windows package backlog in #2523 is green,
+      # and count PASS lines so a rename cannot turn the gate vacuously green.
+      - name: Run Windows software inventory observation tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^TestWindowsCollectObservation(SourceEvidenceAndGlobalCap|AllApplicableSourcesFailed|CompleteWhenApplicableSourcesSucceed)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
       # codes (#2997) against golang.org/x/sys/windows, and those codes drive
