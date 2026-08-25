@@ -56,6 +56,18 @@ export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * authentication or exempt a row from normal expiry. */
 export const UNINSTALL_REASON_DEVICE_REMOVE = 'device_remove' as const;
 
+/** Tenant offboarding's ownership stamp (`tenantOffboarding.ts`) — the other
+ * reason value that can co-occupy `uninstall_reasons` on the same row when a
+ * device is individually removed while its tenant is ALSO offboarding.
+ * Exported from here (alongside `UNINSTALL_REASON_DEVICE_REMOVE`) so both
+ * owners share one constant instead of each repeating a string literal. It
+ * grants NO drain exemption of its own here — `isDeviceUninstallDraining`
+ * above still requires `device_remove` specifically — tenant offboarding's
+ * drain is a wholly separate mechanism keyed on `organizations.status` /
+ * `partners.status` (`staleCommandReaper.ts`'s first EXISTS arm), not on
+ * this reason value. */
+export const UNINSTALL_REASON_TENANT_OFFBOARDING = 'tenant_offboarding' as const;
+
 // `envInt` cannot return a non-finite number, so the old `Number.isFinite`
 // arm here would be unfalsifiable; the `Math.max(..., 1)` floor is the part
 // that matters. NOTE: this is a genuine FLOOR, not a fallback-to-default — an

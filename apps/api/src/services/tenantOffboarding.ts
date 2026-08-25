@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, arrayContains, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, partners } from '../db/schema';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
@@ -12,6 +12,7 @@ import {
   type TenantRevocationResult,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
+import { UNINSTALL_REASON_TENANT_OFFBOARDING } from './deviceUninstallDrain';
 import { envInt } from '../utils/envInt';
 
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
@@ -150,8 +151,12 @@ export interface OffboardingFinalizeReport {
 
 /**
  * Cancel every other pending/sent command (they will never be user-visible
- * again and must not race the uninstall), then queue `self_uninstall` to each
- * device that doesn't already have one in flight.
+ * again and must not race the uninstall), then either queue a fresh
+ * `self_uninstall` for a device with none in flight, or — a device that
+ * already has one (queued by device-remove, a prior tenant-drain pass, or an
+ * abuse bulk insert) — MERGE our `tenant_offboarding` reason into that row
+ * rather than skipping it or inserting a competing second row for the same
+ * device (see the merge loop below).
  *
  * The whole read-then-insert runs in ONE transaction with the device rows
  * locked `FOR UPDATE`: without the lock, two concurrent entries (a repeated
@@ -185,7 +190,7 @@ async function queueDrainUninstalls(
       .set({
         status: 'cancelled',
         completedAt: new Date(),
-        result: { reason: 'tenant_offboarding' },
+        result: { reason: UNINSTALL_REASON_TENANT_OFFBOARDING },
         ...terminalPayloadErasureSet(),
       })
       .where(
@@ -198,7 +203,11 @@ async function queueDrainUninstalls(
       .returning({ id: deviceCommands.id });
 
     const existing = await tx
-      .select({ deviceId: deviceCommands.deviceId })
+      .select({
+        id: deviceCommands.id,
+        deviceId: deviceCommands.deviceId,
+        uninstallReasons: deviceCommands.uninstallReasons,
+      })
       .from(deviceCommands)
       .where(
         and(
@@ -210,6 +219,24 @@ async function queueDrainUninstalls(
     const alreadyQueued = new Set(existing.map((row) => row.deviceId));
     const toQueue = deviceIds.filter((id) => !alreadyQueued.has(id));
 
+    // A device already has a non-terminal self_uninstall in flight — queued
+    // by device-remove, an abuse bulk insert, or a prior tenant-drain pass —
+    // so this row is now (or already was) CO-OWNED. Append OUR reason rather
+    // than skipping it (the old behaviour, which left tenant offboarding with
+    // no row it owned once a device-remove uninstall already existed) or
+    // inserting a competing second row for the same device. Mirrors
+    // `deviceUninstallDrain.ts`'s `queueDeviceUninstall` merge loop — same
+    // shape, same reasoning, applied unconditionally per row (idempotent: a
+    // row that already carries our reason is re-set to the same value).
+    for (const row of existing) {
+      const reasons = new Set(row.uninstallReasons ?? []);
+      reasons.add(UNINSTALL_REASON_TENANT_OFFBOARDING);
+      await tx
+        .update(deviceCommands)
+        .set({ uninstallReasons: [...reasons] })
+        .where(eq(deviceCommands.id, row.id));
+    }
+
     if (toQueue.length > 0) {
       await tx.insert(deviceCommands).values(
         toQueue.map((deviceId) => ({
@@ -219,6 +246,7 @@ async function queueDrainUninstalls(
           status: 'pending',
           targetRole: 'agent',
           createdBy,
+          uninstallReasons: [UNINSTALL_REASON_TENANT_OFFBOARDING],
         }))
       );
     }
@@ -283,10 +311,46 @@ export async function beginPartnerOffboarding(
 }
 
 /**
- * Cancel in-flight drain uninstalls for the orgs. Used on abort (an
- * uncollected self_uninstall MUST NOT survive into a reactivated tenant —
- * it would fire the moment the fleet resumes polling) and shared by the
- * transition handlers when an operator forces suspended/churned mid-drain.
+ * Release tenant offboarding's hold on in-flight drain uninstalls for the
+ * orgs. Used on abort (an uncollected self_uninstall MUST NOT survive into a
+ * reactivated tenant — it would fire the moment the fleet resumes polling)
+ * and shared by the transition handlers when an operator forces
+ * suspended/churned mid-drain.
+ *
+ * A row can now be CO-OWNED (a device individually removed while its tenant
+ * is ALSO offboarding — `deviceUninstallDrain.ts`'s `queueDeviceUninstall`
+ * merges into the same row rather than inserting a second one). Strip ONLY
+ * our own `tenant_offboarding` reason via `array_remove` — mirroring
+ * `deviceUninstallDrain.ts`'s `releaseDeviceRemoveReason`, the sibling
+ * function this is intentionally shaped after — and cancel a row only once
+ * NO reason remains. A `device_remove`-owned row therefore survives a tenant
+ * abort with its reason AND its deadline intact (this function never touches
+ * `device_remove_expires_at`).
+ *
+ * NULL-compatibility decision: `uninstall_reasons IS NULL` rows are treated
+ * as tenant-offboarding-owned here (and in `countOutstandingUninstalls`
+ * below), same predicate in both places. Every row this feature queued
+ * before the multi-owner reason column existed is NULL, and at production
+ * scale tenant offboarding is the only feature that ever queued self_uninstall
+ * rows in bulk before this change — so treating NULL as "not ours" would make
+ * every currently in-flight offboarding's outstanding count silently drop to
+ * zero and finalize immediately with a false "clean drain" report, reviving
+ * the exact false-confidence bug (#2774: 78/80 uninstalls lost) this whole
+ * drain-report mechanism exists to prevent. `array_remove(NULL, x)` is NULL
+ * in Postgres, so a NULL row is simply left NULL by the strip below and then
+ * cancelled outright by the `(reasons ?? []).length === 0` check — correct,
+ * because a NULL-reason row can never be co-owned by `device_remove` (that
+ * queuer always stamps a non-null array on every row it touches), so there is
+ * no other owner's claim to preserve.
+ *
+ * Accepted tradeoff: `abuse.ts`'s bulk suspension insert also stamps no
+ * reason by design (module doc, `deviceUninstallDrain.ts`), so if a partner
+ * is abuse-suspended while one of its orgs is independently offboarding AND
+ * that org's offboarding is then aborted, this would also cancel the
+ * abuse-queued row. That requires two independent, rare events to coincide
+ * on the same org; treating NULL as unowned instead would guarantee the
+ * worse, common-case bug above for every in-flight legacy drain. Not
+ * resolved here — flagged for whoever eventually backfills real reasons.
  */
 async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string): Promise<number> {
   if (orgIds.length === 0) return 0;
@@ -297,6 +361,31 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
   const deviceIds = deviceRows.map((row) => row.id);
   if (deviceIds.length === 0) return 0;
 
+  const tenantOwned = or(
+    isNull(deviceCommands.uninstallReasons),
+    arrayContains(deviceCommands.uninstallReasons, [UNINSTALL_REASON_TENANT_OFFBOARDING])
+  );
+
+  const stripped = await db
+    .update(deviceCommands)
+    .set({
+      uninstallReasons: sql`array_remove(${deviceCommands.uninstallReasons}, ${UNINSTALL_REASON_TENANT_OFFBOARDING})`,
+    })
+    .where(
+      and(
+        inArray(deviceCommands.deviceId, deviceIds),
+        eq(deviceCommands.type, 'self_uninstall'),
+        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES]),
+        tenantOwned
+      )
+    )
+    .returning({ id: deviceCommands.id, uninstallReasons: deviceCommands.uninstallReasons });
+
+  const toCancelIds = stripped
+    .filter((row) => (row.uninstallReasons ?? []).length === 0)
+    .map((row) => row.id);
+  if (toCancelIds.length === 0) return 0;
+
   const cancelled = await db
     .update(deviceCommands)
     .set({
@@ -305,13 +394,7 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
       result: { reason },
       ...terminalPayloadErasureSet(),
     })
-    .where(
-      and(
-        inArray(deviceCommands.deviceId, deviceIds),
-        eq(deviceCommands.type, 'self_uninstall'),
-        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
-      )
-    )
+    .where(inArray(deviceCommands.id, toCancelIds))
     .returning({ id: deviceCommands.id });
   return cancelled.length;
 }
@@ -377,6 +460,15 @@ export async function abortPartnerOffboarding(partnerId: string): Promise<Offboa
   });
 }
 
+/**
+ * Counts only rows tenant offboarding OWNS (its own reason, or the NULL
+ * legacy case — see the NULL-compatibility decision on
+ * `cancelDrainUninstallsForOrgIds` above, same predicate here). A
+ * device_remove-only row (`uninstallReasons = ['device_remove']`, not NULL,
+ * no `tenant_offboarding` entry) is correctly excluded: it is not this
+ * drain's to wait on, and counting it would delay this org's finalize until
+ * the deadline for an uninstall this feature doesn't own.
+ */
 async function countOutstandingUninstalls(orgIds: string[]): Promise<number> {
   if (orgIds.length === 0) return 0;
   const rows = await db
@@ -387,7 +479,11 @@ async function countOutstandingUninstalls(orgIds: string[]): Promise<number> {
       and(
         inArray(devices.orgId, orgIds),
         eq(deviceCommands.type, 'self_uninstall'),
-        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES]),
+        or(
+          isNull(deviceCommands.uninstallReasons),
+          arrayContains(deviceCommands.uninstallReasons, [UNINSTALL_REASON_TENANT_OFFBOARDING])
+        )
       )
     );
   return rows.length;
