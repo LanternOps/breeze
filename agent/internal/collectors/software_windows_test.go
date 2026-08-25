@@ -60,8 +60,8 @@ func TestWindowsCollectObservationAllApplicableSourcesFailed(t *testing.T) {
 func TestWindowsCollectObservationCompleteWhenApplicableSourcesSucceed(t *testing.T) {
 	original := softwareRegistryCollect
 	t.Cleanup(func() { softwareRegistryCollect = original })
-	softwareRegistryCollect = func(_ registry.Key, path string) ([]SoftwareItem, error) {
-		if path == softwareRegistryPaths[0].path {
+	softwareRegistryCollect = func(root registry.Key, path string) ([]SoftwareItem, error) {
+		if root == registry.LOCAL_MACHINE && path == softwareRegistryPaths[0].path {
 			return []SoftwareItem{{Name: "Breeze", Version: "1"}}, nil
 		}
 		return nil, registry.ErrNotExist
