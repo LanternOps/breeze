@@ -82,6 +82,7 @@
     "multiFactorAuthenticationIsRequiredTo": "Multi-factor authentication is required to generate links.",
     "setUpMfaInYourProfile": "Set up MFA in your profile settings",
     "andSignInAgainThenRetry": "and sign in again, then retry.",
+    "ssoMfaTrustGuidance": "Your organization signs you in through an identity provider — ask your administrator to enable MFA trust for it, or enroll a factor in your profile settings.",
     "retry": "Retry",
     "multiFactorAuthenticationIsRequiredTo2": "Multi-factor authentication is required to generate installers.",
     "installerDownloadedRunItOn": "Installer downloaded. Run it on",

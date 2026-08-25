@@ -82,6 +82,7 @@
     "multiFactorAuthenticationIsRequiredTo": "Zum Generieren von Links ist eine Multi-Faktor-Authentifizierung erforderlich.",
     "setUpMfaInYourProfile": "MFA in den Profileinstellungen einrichten",
     "andSignInAgainThenRetry": "und erneut anmelden, anschließend wiederholen.",
+    "ssoMfaTrustGuidance": "Ihre Organisation meldet Sie über einen Identitätsanbieter an — bitten Sie Ihren Administrator, das MFA-Vertrauen dafür zu aktivieren, oder richten Sie einen Faktor in Ihren Profileinstellungen ein.",
     "retry": "Erneut versuchen",
     "multiFactorAuthenticationIsRequiredTo2": "Zum Generieren von Installern ist eine Multi-Faktor-Authentifizierung erforderlich.",
     "installerDownloadedRunItOn": "Installer heruntergeladen. Ausführen auf",

@@ -82,6 +82,7 @@
     "multiFactorAuthenticationIsRequiredTo": "Bağlantı oluşturmak için çok faktörlü kimlik doğrulama gereklidir.",
     "setUpMfaInYourProfile": "Profil ayarlarınızda MFA'yı kurun",
     "andSignInAgainThenRetry": "ve tekrar oturum açın, ardından tekrar deneyin.",
+    "ssoMfaTrustGuidance": "Kuruluşunuz sizi bir kimlik sağlayıcı üzerinden oturum açtırıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin veya profil ayarlarınızda bir faktör kaydedin.",
     "retry": "Tekrar dene",
     "multiFactorAuthenticationIsRequiredTo2": "Yükleyici oluşturmak için çok faktörlü kimlik doğrulama gereklidir.",
     "installerDownloadedRunItOn": "Yükleyici indirildi. Çalıştır",

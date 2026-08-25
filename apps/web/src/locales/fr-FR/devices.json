@@ -82,6 +82,7 @@
     "multiFactorAuthenticationIsRequiredTo": "L’authentification multifactorielle est nécessaire pour générer des liens.",
     "setUpMfaInYourProfile": "Configurez MFA dans les paramètres de votre profil",
     "andSignInAgainThenRetry": "puis reconnectez-vous et réessayez.",
+    "ssoMfaTrustGuidance": "Votre organisation vous connecte via un fournisseur d’identité — demandez à votre administrateur d’activer la confiance MFA pour ce fournisseur, ou inscrivez un facteur dans les paramètres de votre profil.",
     "retry": "Réessayer",
     "multiFactorAuthenticationIsRequiredTo2": "L’authentification multifactorielle est nécessaire pour générer des installateurs.",
     "installerDownloadedRunItOn": "Programme d’installation téléchargé. Exécutez-le sur",

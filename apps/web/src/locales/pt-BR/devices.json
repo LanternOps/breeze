@@ -82,6 +82,7 @@
     "multiFactorAuthenticationIsRequiredTo": "A autenticação multifator é obrigatória para gerar links.",
     "setUpMfaInYourProfile": "Configure a MFA nas configurações do seu perfil",
     "andSignInAgainThenRetry": "e entre novamente. Depois, tente de novo.",
+    "ssoMfaTrustGuidance": "Sua organização autentica você por meio de um provedor de identidade — peça ao seu administrador para habilitar a confiança de MFA para ele, ou registre um fator nas configurações do seu perfil.",
     "retry": "Tentar novamente",
     "multiFactorAuthenticationIsRequiredTo2": "A autenticação multifator é obrigatória para gerar instaladores.",
     "installerDownloadedRunItOn": "Instalador baixado. Execute-o no",

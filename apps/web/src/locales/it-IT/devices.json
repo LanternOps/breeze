@@ -82,6 +82,7 @@
     "multiFactorAuthenticationIsRequiredTo": "Per generare link è necessaria l'autenticazione a più fattori.",
     "setUpMfaInYourProfile": "Configura l'MFA nelle impostazioni del profilo",
     "andSignInAgainThenRetry": "quindi accedi di nuovo e riprova.",
+    "ssoMfaTrustGuidance": "La tua organizzazione ti autentica tramite un provider di identità: chiedi al tuo amministratore di abilitare l'attendibilità MFA per questo provider, oppure registra un fattore nelle impostazioni del profilo.",
     "retry": "Riprova",
     "multiFactorAuthenticationIsRequiredTo2": "Per generare programmi di installazione è necessaria l'autenticazione a più fattori.",
     "installerDownloadedRunItOn": "Programma di installazione scaricato. Eseguilo sul",
