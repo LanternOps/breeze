@@ -69,6 +69,8 @@ const FX_IMPORT_ALLOWLIST: Record<string, string> = {
   'apps/api/src/routes/invoices/settings.ts': 'the read-only reporting-totals endpoint',
   'apps/api/src/db/schema/currency.ts': 'the table definition',
   'apps/api/src/index.ts': 'worker init/shutdown wiring only',
+  'apps/api/src/jobs/workerReadinessManifest.ts':
+    'readiness manifest — a list of worker initializer names; matches on the exchangeRateSync string literal, imports no FX module and does no arithmetic',
   'packages/shared/src/validators/currency.ts':
     'query-shape validator for the reporting-totals endpoint (no arithmetic)',
   'apps/web/src/lib/reporting/approximateTotal.ts':
