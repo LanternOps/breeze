@@ -923,6 +923,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       peripheralPolicyProtocolVersion: normalizePeripheralPolicyProtocolVersion(
         data.securityCapabilities?.peripheralPolicyProtocolVersion,
       ),
+      rollbackProtocolVersion: normalizeRollbackProtocolVersion(
+        data.securityCapabilities?.rollbackProtocolVersion,
+      ),
     },
   );
 

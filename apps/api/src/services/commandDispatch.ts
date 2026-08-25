@@ -66,7 +66,10 @@ export async function claimPendingCommandsForDevice(
   // are claimable; anything else stays `pending` and is reaped/cancelled by
   // the normal lifecycle. The drain callers pass ['self_uninstall'].
   typeAllowlist?: readonly string[],
-  capabilities?: { peripheralPolicyProtocolVersion?: number },
+  capabilities?: {
+    peripheralPolicyProtocolVersion?: number;
+    rollbackProtocolVersion?: number;
+  },
 ): Promise<DeviceCommandRow[]> {
   // Only HTTP delivery paths (heartbeat responses) claim batches; the agent
   // WebSocket never embeds command batches in frames (#2407 removed the
@@ -100,6 +103,14 @@ export async function claimPendingCommandsForDevice(
         ));
     }
 
+    const unsupportedProtocolTypes: string[] = [];
+    if (targetRole === 'agent' && capabilities?.peripheralPolicyProtocolVersion !== 2) {
+      unsupportedProtocolTypes.push('peripheral_policy_sync_v2');
+    }
+    if (targetRole === 'agent' && capabilities?.rollbackProtocolVersion !== 1) {
+      unsupportedProtocolTypes.push('agent_rollback_v1');
+    }
+
     const pendingCommands = await tx
       .select()
       .from(deviceCommands)
@@ -109,8 +120,8 @@ export async function claimPendingCommandsForDevice(
           eq(deviceCommands.status, 'pending'),
           eq(deviceCommands.targetRole, targetRole),
           ...(typeAllowlist ? [inArray(deviceCommands.type, [...typeAllowlist])] : []),
-          ...(targetRole === 'agent' && capabilities?.peripheralPolicyProtocolVersion !== 2
-            ? [notInArray(deviceCommands.type, ['peripheral_policy_sync_v2'])]
+          ...(unsupportedProtocolTypes.length > 0
+            ? [notInArray(deviceCommands.type, unsupportedProtocolTypes)]
             : []),
         ),
       )

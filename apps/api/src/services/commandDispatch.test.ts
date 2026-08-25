@@ -172,7 +172,33 @@ describe('command dispatch helpers', () => {
     expect(rejectWhere).toHaveBeenCalledTimes(1);
     expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
       'deviceCommands.type',
-      ['peripheral_policy_sync_v2'],
+      ['peripheral_policy_sync_v2', 'agent_rollback_v1'],
+    );
+  });
+
+  it('withholds rollback when this heartbeat does not report protocol v1', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([]) }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn(),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+      peripheralPolicyProtocolVersion: 2,
+      rollbackProtocolVersion: 0,
+    });
+
+    expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
+      'deviceCommands.type',
+      ['agent_rollback_v1'],
     );
   });
 
