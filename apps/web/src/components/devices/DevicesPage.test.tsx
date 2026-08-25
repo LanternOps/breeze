@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
@@ -118,9 +118,10 @@ vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable, and
-// re-emits reboot so the GRID path through handleDeviceAction is covered too —
-// the real DeviceCard emits it from its own kebab (DeviceCard.tsx), and #3698's
-// gate lives on the shared handler, so both surfaces inherit it.
+// re-emits reboot + decommission so the GRID path through handleDeviceAction is
+// covered too — the real DeviceCard emits both from its own kebab
+// (DeviceCard.tsx:278 reboot, :320 decommission), and the #3698/#4009 gate
+// lives on the shared handler, so both surfaces inherit it.
 vi.mock('./DeviceCard', () => ({
   default: ({ device, onAction }: { device: { id: string; hostname: string }; onAction?: (action: string, device: unknown) => void }) => (
     <div data-testid={`device-card-${device.id}`}>
@@ -132,6 +133,12 @@ vi.mock('./DeviceCard', () => ({
         aria-label="card reboot"
         data-testid={`card-reboot-${device.id}`}
         onClick={() => onAction?.('reboot', device)}
+      />
+      <button
+        type="button"
+        aria-label="card decommission"
+        data-testid={`card-decommission-${device.id}`}
+        onClick={() => onAction?.('decommission', device)}
       />
     </div>
   ),
@@ -176,7 +183,11 @@ vi.mock('./DeviceList', () => ({
         </button>
       ))}
       {/* Drives DevicesPage.handleDeviceAction for ONE device — the row-menu /
-          grid-card path, as opposed to the bulk buttons above. */}
+          grid-card path, as opposed to the bulk buttons above. The real row
+          kebab emits these from DeviceList.tsx (:2450 reboot, :2490 restore,
+          :2502 decommission). The decommission/restore buttons are deliberately
+          text-free so they cannot collide with the sibling getByText assertions
+          that match on the word "decommissioned". */}
       {devices.map(d => (
         <button
           key={`row-reboot-${d.id}`}
@@ -186,6 +197,24 @@ vi.mock('./DeviceList', () => ({
         >
           row reboot {d.id}
         </button>
+      ))}
+      {devices.map(d => (
+        <button
+          key={`row-decommission-${d.id}`}
+          type="button"
+          aria-label={`row decommission ${d.id}`}
+          data-testid={`row-decommission-${d.id}`}
+          onClick={() => onAction?.('decommission', d)}
+        />
+      ))}
+      {devices.map(d => (
+        <button
+          key={`row-restore-${d.id}`}
+          type="button"
+          aria-label={`row restore ${d.id}`}
+          data-testid={`row-restore-${d.id}`}
+          onClick={() => onAction?.('restore', d)}
+        />
       ))}
       {onShowDecommissioned && (
         <button
@@ -1349,6 +1378,132 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     expect(vi.mocked(sendBulkWakeCommand)).not.toHaveBeenCalled();
     expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledWith(DEV_1, 'reboot');
+  });
+});
+
+// #4009: `decommission` from the row kebab / grid card fired on a single click
+// while the device DETAIL page had always confirmed it — the same split-brain
+// #3698 set out to remove, left on the one kebab action that pulls a machine out
+// of monitoring. Nothing had to be built: the dialog renderer already composes
+// `deviceActions.confirm.${action}.*` and those decommission strings already
+// shipped for the detail page. Only CONFIRM_REQUIRED_ACTIONS omitted the action,
+// which is precisely the kind of one-token regression a test pins cheaply.
+//
+// Note the 5s undo toast inside runDeviceAction is NOT this gate. It is a
+// post-hoc recovery window that a user who has looked away never sees, and it
+// was already there while the bug was live.
+describe('DevicesPage — decommission from the row/grid kebab is confirm-gated (#4009)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+  });
+
+  async function mockedDecommission() {
+    const { decommissionDevice } = await import('../../services/deviceActions');
+    vi.mocked(decommissionDevice).mockResolvedValue(undefined as never);
+    return vi.mocked(decommissionDevice);
+  }
+
+  async function toastTypes(): Promise<string[]> {
+    const { showToast } = await import('../shared/Toast');
+    return vi.mocked(showToast).mock.calls.map(c => c[0].type);
+  }
+
+  it('row kebab opens the dialog instead of decommissioning, in the detail page\'s own words', async () => {
+    const decommissionDevice = await mockedDecommission();
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+
+    // Pre-#4009 this went straight into runDeviceAction, whose decommission
+    // branch synchronously raises the undo toast and schedules the API call.
+    // Neither may happen before the operator has answered.
+    expect(decommissionDevice).not.toHaveBeenCalled();
+    expect(await toastTypes()).not.toContain('undo');
+
+    // The SAME keys DeviceActions.tsx renders — proving no new copy was needed
+    // and that the two screens still read identically.
+    expect(await screen.findByText('Decommission Device')).toBeTruthy();
+    expect(screen.getByText(/decommission host-alpha\?/i)).toBeTruthy();
+
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
+    expect(confirmBtn.textContent).toBe('Decommission');
+    // DeviceActions.tsx grades decommission `destructive`. ConfirmDialog encodes
+    // that as a stop-octagon, not just a colour, so a drift to `warning` here
+    // would visibly downgrade the severity on the denser of the two surfaces.
+    expect(confirmBtn.className).toContain('bg-destructive');
+  });
+
+  it('cancelling the dialog decommissions nothing', async () => {
+    const decommissionDevice = await mockedDecommission();
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+    await screen.findByTestId('confirm-device-action');
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByTestId('confirm-device-action')).toBeNull());
+    expect(decommissionDevice).not.toHaveBeenCalled();
+    expect(await toastTypes()).not.toContain('undo');
+  });
+
+  it('confirming still decommissions the device, undo window and all', async () => {
+    const decommissionDevice = await mockedDecommission();
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
+
+    // Only setTimeout is faked: the undo window is a plain 5s timer inside
+    // runDeviceAction, and faking Date/microtasks as well would disturb React's
+    // own scheduling for the rest of this render.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(confirmBtn);
+      // The decommission branch runs synchronously up to the timer, so both of
+      // these are already settled: gate cleared, nothing sent yet.
+      expect(await toastTypes()).toContain('undo');
+      expect(decommissionDevice).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(decommissionDevice).toHaveBeenCalledTimes(1);
+    expect(decommissionDevice).toHaveBeenCalledWith(DEV_1);
+  });
+
+  // The gate lives on the shared handleDeviceAction, so the grid card inherits
+  // it — the same follow-up Todd flagged as gated-but-untested on #3698.
+  it('grid card decommission is gated on the same terms as the list row', async () => {
+    const decommissionDevice = await mockedDecommission();
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-decommission-${DEV_1}`));
+
+    expect(decommissionDevice).not.toHaveBeenCalled();
+    expect(await screen.findByText('Decommission Device')).toBeTruthy();
+  });
+
+  // Deliberate scope boundary (#4009): `restore` is the UNDO of a decommission.
+  // Gating it would put a dialog in front of the recovery path, so it stays
+  // ungated — pinned here so a future "confirm every lifecycle action" sweep has
+  // to argue with a test rather than quietly change the answer.
+  it('restore stays ungated — it is the recovery path, not a destructive one', async () => {
+    const { restoreDevice } = await import('../../services/deviceActions');
+    vi.mocked(restoreDevice).mockResolvedValue(undefined as never);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-restore-${DEV_1}`));
+
+    await waitFor(() => expect(vi.mocked(restoreDevice)).toHaveBeenCalledWith(DEV_1));
+    expect(screen.queryByTestId('confirm-device-action')).toBeNull();
   });
 });
 
