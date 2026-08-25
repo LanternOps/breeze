@@ -417,8 +417,18 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           triggeredAt: { type: 'string', format: 'date-time' },
           acknowledgedAt: { type: 'string', format: 'date-time', nullable: true },
           acknowledgedBy: { type: 'string', format: 'uuid', nullable: true },
+          acknowledgedByName: {
+            type: 'string',
+            nullable: true,
+            description: 'Display name for acknowledgedBy. Null when the id no longer resolves to a user.'
+          },
           resolvedAt: { type: 'string', format: 'date-time', nullable: true },
           resolvedBy: { type: 'string', format: 'uuid', nullable: true },
+          resolvedByName: {
+            type: 'string',
+            nullable: true,
+            description: 'Display name for resolvedBy. Null when the id no longer resolves to a user.'
+          },
           resolutionNote: { type: 'string', nullable: true },
           suppressedUntil: { type: 'string', format: 'date-time', nullable: true }
         }

@@ -256,7 +256,10 @@ export default function AlertDetails({
                   <p className="text-sm">
                     {formatDateTime(alert.acknowledgedAt)}
                     {alert.acknowledgedBy && (
-                      <span className="text-muted-foreground"> {t('alertDetails.by')} {alert.acknowledgedBy}</span>
+                      <span className="text-muted-foreground" title={alert.acknowledgedBy}>
+                        {' '}{t('alertDetails.by')}{' '}
+                        {alert.acknowledgedByName || t('alertDetails.unknownUser')}
+                      </span>
                     )}
                   </p>
                 </div>
@@ -267,7 +270,10 @@ export default function AlertDetails({
                   <p className="text-sm">
                     {formatDateTime(alert.resolvedAt)}
                     {alert.resolvedBy && (
-                      <span className="text-muted-foreground"> {t('alertDetails.by')} {alert.resolvedBy}</span>
+                      <span className="text-muted-foreground" title={alert.resolvedBy}>
+                        {' '}{t('alertDetails.by')}{' '}
+                        {alert.resolvedByName || t('alertDetails.unknownUser')}
+                      </span>
                     )}
                   </p>
                 </div>

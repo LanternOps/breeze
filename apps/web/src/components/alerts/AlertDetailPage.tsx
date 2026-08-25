@@ -39,8 +39,12 @@ type Alert = {
   triggeredAt: string;
   acknowledgedAt?: string;
   acknowledgedBy?: string;
+  // Server-resolved display name for the actor ids (#3966); null when the id no
+  // longer resolves to a user.
+  acknowledgedByName?: string | null;
   resolvedAt?: string;
   resolvedBy?: string;
+  resolvedByName?: string | null;
   context?: Record<string, unknown>;
   contextData?: Record<string, unknown>;
   anomalyContext?: MetricAnomalyAlertContext | null;
@@ -430,9 +434,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   <p className="text-sm">
                     {formatDateTime(alert.acknowledgedAt)}
                     {alert.acknowledgedBy && (
-                      <span className="text-muted-foreground flex items-center gap-1 mt-0.5">
+                      <span
+                        className="text-muted-foreground flex items-center gap-1 mt-0.5"
+                        title={alert.acknowledgedBy}
+                      >
                         <User className="h-3 w-3" />
-                        {alert.acknowledgedBy}
+                        {alert.acknowledgedByName || t('alertDetailPage.unknownUser')}
                       </span>
                     )}
                   </p>
@@ -447,9 +454,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   <p className="text-sm">
                     {formatDateTime(alert.resolvedAt)}
                     {alert.resolvedBy && (
-                      <span className="text-muted-foreground flex items-center gap-1 mt-0.5">
+                      <span
+                        className="text-muted-foreground flex items-center gap-1 mt-0.5"
+                        title={alert.resolvedBy}
+                      >
                         <User className="h-3 w-3" />
-                        {alert.resolvedBy}
+                        {alert.resolvedByName || t('alertDetailPage.unknownUser')}
                       </span>
                     )}
                   </p>
