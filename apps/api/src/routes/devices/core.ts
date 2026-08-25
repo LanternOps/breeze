@@ -143,6 +143,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_group_memberships', 'device_hardware', 'device_ip_history',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
+  'agent_rollback_events', 'agent_rollback_directives',
   'device_reliability', 'device_reliability_history', 'device_sessions',
   'device_vulnerabilities', 'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
@@ -264,6 +265,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // ON DELETE CASCADE, so delete the access-event ledger before its parent keys.
   'recovery_key_access_events', 'device_recovery_keys',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
+  'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',
   'huntress_agents', 'huntress_incidents',
   // AI & context

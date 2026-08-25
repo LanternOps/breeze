@@ -250,6 +250,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // requirement that every org_id-columned table be listed for auditability.
   'organization_external_links',
   'organization_users',
+  'agent_rollback_events',
+  'agent_rollback_directives',
   'pam_org_config',
   'pam_rules',
   'pam_signer_groups',
@@ -517,6 +519,7 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   'audit_chain_anchors',
   'ml_feedback_events',
   'peripheral_policy_delivery_events',
+  'agent_rollback_events',
 ]);
 
 interface FkEdge {
