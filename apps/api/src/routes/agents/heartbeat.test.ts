@@ -1892,6 +1892,66 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(updateArg.scriptSecretEnvVersion).toBe(0);
   });
+
+  it.each([
+    {
+      name: 'recognized exact integers',
+      capabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1 },
+      expectedPeripheral: 2,
+      expectedRollback: 1,
+    },
+    {
+      name: 'omitted capability object',
+      capabilities: undefined,
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+    {
+      name: 'explicit zero downgrade',
+      capabilities: { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+    {
+      name: 'unknown integer versions',
+      capabilities: { peripheralPolicyProtocolVersion: 3, rollbackProtocolVersion: 2 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+    {
+      name: 'fractional versions',
+      capabilities: { peripheralPolicyProtocolVersion: 2.5, rollbackProtocolVersion: 1.5 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+    {
+      name: 'string versions',
+      capabilities: { peripheralPolicyProtocolVersion: '2', rollbackProtocolVersion: '1' },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+  ])('persists tolerant non-sticky control protocol capabilities: $name', async ({
+    capabilities,
+    expectedPeripheral,
+    expectedRollback,
+  }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const body = capabilities === undefined
+      ? minimalHeartbeatBody
+      : { ...minimalHeartbeatBody, securityCapabilities: capabilities };
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.peripheralPolicyProtocolVersion).toBe(expectedPeripheral);
+    expect(updateArg.rollbackProtocolVersion).toBe(expectedRollback);
+  });
 });
 
 // ---------------------------------------------------------------------

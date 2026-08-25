@@ -222,7 +222,8 @@ Rollback directive canonical bytes are the LF-separated record below, with no CR
 - Modify: `apps/api/src/routes/agents/heartbeat.ts`
 - Modify: `apps/api/src/routes/agents/heartbeat.test.ts`
 - Modify: `apps/api/src/db/schema/devices.ts`
-- Create: `apps/api/migrations/2026-08-24-agent-control-protocol-capabilities.sql`
+- Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts`
+- Create: `apps/api/migrations/2026-09-10-agent-control-protocol-capabilities.sql`
 
 **Interfaces:** Produces the two normalizers and `SecurityCapabilities` fields from the shared contracts. Tasks 4 and 11 consume only the normalized same-heartbeat values; they do not infer capability from agent version or stale device columns.
 
@@ -254,7 +255,7 @@ cd agent && go test -race ./internal/heartbeat
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/heartbeat_test.go apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/heartbeat.ts apps/api/src/routes/agents/heartbeat.test.ts apps/api/src/db/schema/devices.ts apps/api/migrations/2026-08-24-agent-control-protocol-capabilities.sql
+git add agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/heartbeat_test.go apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/heartbeat.ts apps/api/src/routes/agents/heartbeat.test.ts apps/api/src/db/schema/devices.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/migrations/2026-09-10-agent-control-protocol-capabilities.sql
 git commit -m "fix(protocol): persist explicit device capabilities"
 ```
 

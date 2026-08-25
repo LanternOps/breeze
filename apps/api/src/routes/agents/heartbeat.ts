@@ -134,6 +134,16 @@ export function watchdogRestartLogCacheSizeForTests(): number {
   return watchdogRestartLogCache.size;
 }
 
+/** Normalize the only peripheral-policy protocol version implemented here. */
+export function normalizePeripheralPolicyProtocolVersion(value: unknown): 0 | 2 {
+  return value === 2 ? 2 : 0;
+}
+
+/** Normalize the only signed rollback protocol version implemented here. */
+export function normalizeRollbackProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
 export const heartbeatRoutes = new Hono();
 
 /**
@@ -529,6 +539,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // not only at enqueue, because an offline-queued command can be claimed
     // after the agent downgraded.
     scriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(data.securityCapabilities?.scriptSecretEnvVersion),
+    // Device-control capability claims are same-heartbeat, non-sticky truth.
+    // Never union with stored values or infer support from agentVersion.
+    peripheralPolicyProtocolVersion: normalizePeripheralPolicyProtocolVersion(
+      data.securityCapabilities?.peripheralPolicyProtocolVersion,
+    ),
+    rollbackProtocolVersion: normalizeRollbackProtocolVersion(
+      data.securityCapabilities?.rollbackProtocolVersion,
+    ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these

@@ -252,15 +252,19 @@ export const heartbeatSchema = z.object({
   }).optional().catch(undefined),
   // Wave 6 Task 4 (security remediation) — outbound-network-policy capability
   // handshake. Old agents omit this object entirely; a capable agent sends
-  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad value drops
-  // the whole object (.catch) rather than 400-ing the heartbeat, since the
-  // route treats anything other than exactly 1 as "not enforcing" anyway.
+  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad field drops
+  // independently rather than 400-ing the heartbeat, since the route treats
+  // every omitted/unrecognized value as capability zero anyway.
   securityCapabilities: z.object({
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
     // a bad value drops the field rather than 400-ing the heartbeat, since the
     // route treats anything other than exactly 1 as "not capable" anyway.
     scriptSecretEnvVersion: z.number().int().optional().catch(undefined),
+    // Device-control capability claims are tolerant informational fields.
+    // Each malformed field drops independently without rejecting the beat.
+    peripheralPolicyProtocolVersion: z.number().int().optional().catch(undefined),
+    rollbackProtocolVersion: z.number().int().optional().catch(undefined),
   }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
   // agent believes it needs to migrate hosted↔self-host. Informational: a bad

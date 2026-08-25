@@ -183,6 +183,11 @@ type SecurityCapabilities struct {
 	// every beat, so a DOWNGRADE to an older agent reports back down to 0 and
 	// the PR4c dispatch gate stops trusting a stale claim.
 	ScriptSecretEnvVersion int `json:"scriptSecretEnvVersion"`
+	// Device-control protocols are independently versioned and intentionally
+	// omitted when unsupported. The API treats omission, zero, malformed, and
+	// unknown values as capability 0 on every heartbeat.
+	PeripheralPolicyProtocolVersion int `json:"peripheralPolicyProtocolVersion,omitempty"`
+	RollbackProtocolVersion         int `json:"rollbackProtocolVersion,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -3903,8 +3908,10 @@ func (h *Heartbeat) sendHeartbeat() {
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
 		SecurityCapabilities: SecurityCapabilities{
-			OutboundNetworkPolicyVersion: 1,
-			ScriptSecretEnvVersion:       1,
+			OutboundNetworkPolicyVersion:    1,
+			ScriptSecretEnvVersion:          1,
+			PeripheralPolicyProtocolVersion: 2,
+			RollbackProtocolVersion:         1,
 		},
 	}
 	// Hosted/self-host build-edition + migration-needed telemetry (Task 8).

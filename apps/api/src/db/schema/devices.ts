@@ -162,6 +162,11 @@ export const devices = pgTable('devices', {
   // `secretEnv` would run the script with the credential UNSET, which is why
   // this gates on a declared capability rather than on agentVersion.
   scriptSecretEnvVersion: integer('script_secret_env_version').notNull().default(0),
+  // Explicit device-control protocol capabilities. These are rewritten from
+  // the current heartbeat rather than accumulated, so old agents and agent
+  // downgrades clear stale claims back to zero.
+  peripheralPolicyProtocolVersion: integer('peripheral_policy_protocol_version').notNull().default(0),
+  rollbackProtocolVersion: integer('rollback_protocol_version').notNull().default(0),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally
   // every heartbeat (self-healing), so a resolved condition clears next beat.
