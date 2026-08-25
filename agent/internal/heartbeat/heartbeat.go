@@ -275,35 +275,36 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
-	config           *config.Config
-	secureToken      *secmem.SecureString
-	client           *http.Client
-	clientMu         sync.RWMutex
-	stopChan         chan struct{}
-	metricsCol       *collectors.MetricsCollector
-	hardwareCol      *collectors.HardwareCollector
-	softwareCol      *collectors.SoftwareCollector
-	inventoryCol     *collectors.InventoryCollector
-	vpnCol           *collectors.VPNCollector
-	changeTrackerCol *collectors.ChangeTrackerCollector
-	sessionCol       *collectors.SessionCollector
-	policyStateCol   *collectors.PolicyStateCollector
-	patchCol         *collectors.PatchCollector
-	patchMgr         *patching.PatchManager
-	connectionsCol   *collectors.ConnectionsCollector
-	eventLogCol      *collectors.EventLogCollector
-	bootCol          *collectors.BootPerformanceCollector
-	reliabilityCol   *collectors.ReliabilityCollector
-	agentVersion     string
-	desktopMgr       *desktop.SessionManager
-	wsDesktopMgr     *desktop.WsSessionManager
-	terminalMgr      *terminal.Manager
-	tunnelMgr        *tunnel.Manager
-	executor         *executor.Executor
-	backupBinaryPath string
-	rebootMgr        *patching.RebootManager
-	securityScanner  *security.SecurityScanner
-	wsClient         *websocket.Client
+	config                *config.Config
+	secureToken           *secmem.SecureString
+	client                *http.Client
+	clientMu              sync.RWMutex
+	stopChan              chan struct{}
+	metricsCol            *collectors.MetricsCollector
+	hardwareCol           *collectors.HardwareCollector
+	softwareCol           *collectors.SoftwareCollector
+	softwareObservationFn func() (collectors.SoftwareInventoryObservationV2, error)
+	inventoryCol          *collectors.InventoryCollector
+	vpnCol                *collectors.VPNCollector
+	changeTrackerCol      *collectors.ChangeTrackerCollector
+	sessionCol            *collectors.SessionCollector
+	policyStateCol        *collectors.PolicyStateCollector
+	patchCol              *collectors.PatchCollector
+	patchMgr              *patching.PatchManager
+	connectionsCol        *collectors.ConnectionsCollector
+	eventLogCol           *collectors.EventLogCollector
+	bootCol               *collectors.BootPerformanceCollector
+	reliabilityCol        *collectors.ReliabilityCollector
+	agentVersion          string
+	desktopMgr            *desktop.SessionManager
+	wsDesktopMgr          *desktop.WsSessionManager
+	terminalMgr           *terminal.Manager
+	tunnelMgr             *tunnel.Manager
+	executor              *executor.Executor
+	backupBinaryPath      string
+	rebootMgr             *patching.RebootManager
+	securityScanner       *security.SecurityScanner
+	wsClient              *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -753,7 +754,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		stopChan:     make(chan struct{}),
 		metricsCol:   collectors.NewMetricsCollector(),
 		hardwareCol:  collectors.NewHardwareCollector(),
-		softwareCol:  collectors.NewSoftwareCollector(),
+		softwareCol:  collectors.NewSoftwareCollectorWithVersion(version),
 		inventoryCol: collectors.NewInventoryCollector(),
 		vpnCol:       collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
@@ -2077,25 +2078,16 @@ func (h *Heartbeat) sendAppleWarrantyInfo() {
 }
 
 func (h *Heartbeat) sendSoftwareInventory() {
-	software, err := collectors.Guard("software", h.softwareCol.Collect)
+	collect := h.softwareObservationFn
+	if collect == nil {
+		collect = h.softwareCol.CollectObservation
+	}
+	observation, err := collectors.Guard("software", collect)
 	if err != nil {
 		log.Error("failed to collect software inventory", "error", err.Error())
 		return
 	}
-
-	items := make([]map[string]any, len(software))
-	for i, item := range software {
-		items[i] = map[string]any{
-			"name":            item.Name,
-			"version":         item.Version,
-			"vendor":          item.Vendor,
-			"installDate":     item.InstallDate,
-			"installLocation": item.InstallLocation,
-			"uninstallString": item.UninstallString,
-		}
-	}
-
-	h.sendInventoryData("software", map[string]any{"software": items}, fmt.Sprintf("software (%d items)", len(software)))
+	h.sendInventoryData("software", observation, fmt.Sprintf("software observation (%s, %d items)", observation.Completeness, observation.ItemCount))
 }
 
 func (h *Heartbeat) sendDiskInventory() {
