@@ -1,12 +1,13 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ScriptExecutionModal, { type Device } from './ScriptExecutionModal';
 import type { ScriptParameter } from './ScriptFormSchema';
 import type { Script } from './ScriptList';
 import { fetchWithAuth } from '../../stores/auth';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
@@ -29,17 +30,34 @@ const baseScript: Script = {
   updatedAt: '2026-08-13T00:00:00.000Z',
 };
 
-function renderModal(parameters: ScriptParameter[], onExecute = vi.fn().mockResolvedValue(undefined)) {
+const admittedResult: ScriptAdmissionResult = {
+  requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  status: 'queued',
+  targets: [{
+    requestedDeviceId: 'd-1',
+    admission: 'admitted',
+    executionId: 'execution-1',
+    commandId: 'command-1',
+    batchId: 'batch-1',
+  }],
+};
+
+function renderModal(
+  parameters: ScriptParameter[],
+  onExecute = vi.fn().mockResolvedValue(admittedResult),
+  onClose = vi.fn(),
+  availableDevices = devices,
+) {
   render(
     <ScriptExecutionModal
       script={{ ...baseScript, parameters }}
-      devices={devices}
+      devices={availableDevices}
       isOpen
-      onClose={vi.fn()}
+      onClose={onClose}
       onExecute={onExecute}
     />
   );
-  return { onExecute };
+  return { onExecute, onClose };
 }
 
 /** Select the one online device and drive the two-step execute button. */
@@ -177,7 +195,7 @@ describe('ScriptExecutionModal device option paging', () => {
         script={{ ...baseScript, parameters: [] }}
         isOpen
         onClose={vi.fn()}
-        onExecute={vi.fn().mockResolvedValue(undefined)}
+        onExecute={vi.fn().mockResolvedValue(admittedResult)}
       />
     );
 
@@ -198,12 +216,91 @@ describe('ScriptExecutionModal device option paging', () => {
         script={{ ...baseScript, parameters: [] }}
         isOpen
         onClose={vi.fn()}
-        onExecute={vi.fn().mockResolvedValue(undefined)}
+        onExecute={vi.fn().mockResolvedValue(admittedResult)}
       />
     );
 
     expect(await screen.findByRole('alert')).toHaveTextContent('selector unavailable');
     expect(screen.getByRole('button', { name: 'Execute' })).toBeDisabled();
+  });
+});
+
+describe('ScriptExecutionModal admission truth', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders admitted targets as queued and only then auto-closes after 1.5 seconds', async () => {
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue(admittedResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText('All selected devices were admitted and queued.')).toBeInTheDocument();
+    expect(screen.getAllByText('Queued').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/completed/i)).toBeNull();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1499); });
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a partial admission open and renders every target with its reason', async () => {
+    const secondDevice: Device = {
+      id: 'd-2', hostname: 'ws-02', os: 'windows', status: 'online', siteId: 's-1', siteName: 'HQ',
+    };
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue({
+      requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      status: 'partially_queued',
+      targets: [
+        { requestedDeviceId: 'd-1', admission: 'admitted', executionId: 'execution-1' },
+        { requestedDeviceId: 'd-2', admission: 'suppressed', reasonCode: 'maintenance_suppressed' },
+      ],
+    } satisfies ScriptAdmissionResult), onClose, [...devices, secondDevice]);
+
+    fireEvent.click(screen.getByText('Select all'));
+    fireEvent.click(screen.getByText('Execute'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText('Some devices were admitted and queued. Review the remaining targets.')).toBeInTheDocument();
+    expect(screen.getAllByText('ws-01').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('ws-02').length).toBeGreaterThan(0);
+    expect(screen.getByText(/maintenance_suppressed/)).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps a typed rejection open beyond 1.5 seconds and shows the target reason', async () => {
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue({
+      requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      status: 'rejected',
+      targets: [{ requestedDeviceId: 'd-1', admission: 'denied', reasonCode: 'site_access_denied' }],
+    } satisfies ScriptAdmissionResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText('No devices were admitted. Review the reasons below.')).toBeInTheDocument();
+    expect(screen.getByText(/site_access_denied/)).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps transport failure distinct from a typed rejection', async () => {
+    renderModal([], vi.fn().mockRejectedValue(new Error('network unavailable')));
+
+    await execute();
+
+    await vi.waitFor(() => expect(screen.getByText('network unavailable')).toBeInTheDocument());
+    expect(screen.queryByText('No devices were admitted. Review the reasons below.')).toBeNull();
   });
 });
 
