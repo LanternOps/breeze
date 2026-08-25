@@ -494,7 +494,7 @@
         "months": "ay"
       },
       "enumOverrides": {
-        "decommissioned": "Kaldırıldı"
+        "decommissioned": "Çıkarıldı"
       }
     }
   },
