@@ -494,7 +494,21 @@ export default function EnrollmentKeyManager() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('enrollmentKeys.title')}</h1>
           <p className="text-muted-foreground">
-            <Trans i18nKey="enrollmentKeys.description" t={t} components={{ code: <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono" /> }} />
+            {/* `key` maps the literal CLI placeholder `<key/>`. Authored as a
+                tag rather than plain `<key>` because <Trans> parses the value
+                as markup: an unmapped `<key>` is escaped and reaches the user
+                as the text "&lt;key>". HTML entities are no help either:
+                <Trans> unescapes only under `shouldUnescape`, which this app
+                never enables, so `&lt;key&gt;` would render verbatim too.
+                See #3964. */}
+            <Trans
+              i18nKey="enrollmentKeys.description"
+              t={t}
+              components={{
+                code: <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono" />,
+                key: <>{'<key>'}</>,
+              }}
+            />
           </p>
         </div>
         <button

@@ -359,7 +359,7 @@
     "recoveryBootstrap": "Kurtarma Önyüklemesi",
     "createInspectAuthenticateAndRevokeRecoveryTokensFor": "Manuel kurtarma iş akışları için kurtarma belirteçleri oluşturun, inceleyin, kimliklerini doğrulayın ve iptal edin. Bu sekme, manuel kurtarma ortamlarını önyükler ve indirilebilir kurtarma paketlerini hazırlayabilir.",
     "cliTemplate": "CLI şablonu",
-    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token &lt;token&gt; --server &lt;api-server&gt;",
+    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token <token> --server <api-server>",
     "createRecoveryToken": "Kurtarma belirteci oluştur",
     "generateANewTokenForASpecificBackup": "Belirli bir yedekleme anlık görüntüsü ve kurtarma profili için yeni bir belirteç oluşturun.",
     "snapshot": "Anlık görüntü",

@@ -946,8 +946,8 @@
   },
   "suppressAlertDialog": {
     "suppressAlert": "Suprimir alerta",
-    "howLongShould": "Por quanto tempo &ldquo;",
-    "staySuppressed": "&rdquo; deve permanecer suprimido?",
+    "howLongShould": "Por quanto tempo “",
+    "staySuppressed": "” deve permanecer suprimido?",
     "suppressionDuration": "Duração da supressão",
     "forever": "Para sempre",
     "cancel": "Cancelar",

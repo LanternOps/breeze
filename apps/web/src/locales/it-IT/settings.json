@@ -572,7 +572,7 @@
     },
     "loading": "Caricamento chiavi di registrazione...",
     "title": "Chiavi di registrazione",
-    "description": "Crea e gestisci le chiavi per la registrazione degli agent. Usa queste chiavi con breeze-agent enroll <key>",
+    "description": "Crea e gestisci le chiavi per la registrazione degli agent. Usa queste chiavi con <code>breeze-agent enroll <key/></code>",
     "createKey": "Crea chiave",
     "saveNow": "Salva subito questa chiave di registrazione. Non verrà mostrata di nuovo.",
     "copied": "Copiato",
