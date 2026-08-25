@@ -2009,7 +2009,7 @@
         "skipReasons": {
           "siteDenied": "Site auquel vous n'avez pas accès",
           "notMember": "N'est plus concerné par ce constat",
-          "decommissioned": "Appareil déclassé",
+          "decommissioned": "L’appareil est retiré",
           "timeout": "Expiré après 30 minutes",
           "dispatchEnqueueFailed": "Jamais envoyé — la mise en file d'attente a échoué"
         },

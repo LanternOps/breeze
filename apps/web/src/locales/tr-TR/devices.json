@@ -142,11 +142,15 @@
     "creating": "Oluşturuluyor...",
     "createGroup": "Grup Oluştur"
   },
+  "decommissionedHiddenHint": {
+    "label": "{{count}} kaldırılan gizlendi",
+    "show": "göster"
+  },
   "deviceActions": {
     "unavailable": {
       "offline": "Cihaz çevrimdışı",
       "maintenance": "Cihaz bakım modunda",
-      "decommissioned": "Cihaz kullanımdan kaldırıldı",
+      "decommissioned": "Cihaz kaldırıldı",
       "quarantined": "Cihaz karantinaya alındı",
       "updating": "Cihaz güncelleniyor",
       "pending": "Cihaz kaydedilmeyi bekliyor",
@@ -183,9 +187,9 @@
         "confirm": "Bakıma Girin"
       },
       "decommission": {
-        "title": "Hizmetten Çıkarma Cihazı",
-        "message": "{{hostname}} hizmetini kaldırmak istediğinizden emin misiniz? Bu, cihazı filonuzdan kalıcı olarak kaldıracaktır. Temsilci raporlamayı durduracak ve cihaz artık izlenmeyecektir.",
-        "confirm": "Hizmetten Çıkarma"
+        "title": "Cihazı Kaldır",
+        "message": "{{hostname}}'yi kaldırmak istediğinizden emin misiniz? Cihaz etkin filonuzdan çıkarılacak ve izlenmeyecektir. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+        "confirm": "Kaldır"
       },
       "clearSessions": {
         "title": "Oturumları Temizle",
@@ -210,7 +214,7 @@
     "changeSite": "Siteyi Değiştir",
     "exitMaintenance": "Bakımdan Çık",
     "enterMaintenance": "Bakıma Girin",
-    "decommission": "Hizmetten Çıkarma",
+    "decommission": "Kaldır",
     "restore": "Geri Yükle",
     "permanentlyDelete": "Kalıcı Olarak Sil",
     "sendAWakeOnLanPacket": "Cihazın LAN'ındaki çevrimiçi eş aracı aracılığıyla LAN'da Uyandırma paketi gönderin",
@@ -335,7 +339,7 @@
     "reboot": "Yeniden başlat",
     "settings": "Ayarlar",
     "restore": "Geri Yükle",
-    "decommission": "Hizmetten Çıkarma",
+    "decommission": "Kaldır",
     "permanentlyDelete": "Kalıcı Olarak Sil",
     "loadingTrend": "Trend yükleniyor...",
     "trendUnavailable": "Trend kullanılamıyor",
@@ -435,7 +439,7 @@
       "online": "Çevrimiçi",
       "offline": "Çevrimdışı",
       "maintenance": "Bakım",
-      "decommissioned": "Kullanımdan kaldırıldı",
+      "decommissioned": "Kaldırıldı",
       "quarantined": "Karantinaya alındı",
       "updating": "Güncelleniyor",
       "pending": "Beklemede"
@@ -500,7 +504,7 @@
     "takenOutOf": "çıkarıldı",
     "putInto": "yerleştirdim",
     "s": "s",
-    "decommissionCancelled": "Hizmetten çıkarma iptal edildi",
+    "decommissionCancelled": "Kaldırma iptal edildi",
     "permanentDeleteCancelled": "Kalıcı silme işlemi iptal edildi",
     "failedToQueueScript": "Komut dosyası sıraya alınamadı",
     "loadingDevice": "Cihaz yükleniyor...",
@@ -996,7 +1000,7 @@
         "online": "Yukarı",
         "offline": "Aşağı",
         "maintenance": "Bakım",
-        "decommissioned": "Dekom",
+        "decommissioned": "Kaldırıldı",
         "quarantined": "Quar",
         "updating": "Güncelleniyor",
         "pending": "Beklemede"
@@ -1005,7 +1009,7 @@
         "online": "Çevrimiçi",
         "offline": "Çevrimdışı",
         "maintenance": "Bakım",
-        "decommissioned": "Kullanımdan kaldırıldı",
+        "decommissioned": "Kaldırıldı",
         "quarantined": "Karantinaya alındı",
         "updating": "Güncelleniyor",
         "pending": "Beklemede"
@@ -1076,7 +1080,7 @@
     "wakeSelected": "Uyandırma Seçilen",
     "compareSelected": "Seçilenleri Karşılaştır",
     "linkAsMultiBoot": "Çoklu önyükleme olarak bağlantı",
-    "decommissionSelected": "Hizmetten Çıkarma Seçildi",
+    "decommissionSelected": "Seçilenleri Kaldır",
     "clearSelection": "Seçimi temizle",
     "selectAllDevicesOnThisPage": "Bu sayfadaki tüm cihazları seçin",
     "actions": "Eylemler",
@@ -1090,7 +1094,7 @@
     "wake": "Uyan",
     "settings": "Ayarlar",
     "restore": "Geri Yükle",
-    "decommission": "Hizmetten Çıkarma",
+    "decommission": "Kaldır",
     "permanentlyDelete": "Kalıcı Olarak Sil",
     "inactive": "· etkin değil",
     "expectedOffline": "Çevrimdışı bekleniyor",
@@ -1542,10 +1546,10 @@
   "deviceSettingsModal": {
     "addTagPlaceholder": "Bir etiket ekleyin...",
     "dangerZone": "Tehlikeli Bölge",
-    "decommissionDevice": "Hizmetten Çıkarma Cihazı",
-    "decommissionWarning": "Kullanımdan kaldırıldığında bu cihaz aktif filonuzdan kaldırılacaktır.",
-    "decommissionedDescription": "Bu cihaz kullanımdan kaldırıldı. Geri yükleyebilir veya kalıcı olarak silebilirsiniz.",
-    "decommissionedTitle": "Hizmetten Çıkarılmış Cihaz",
+    "decommissionDevice": "Cihazı Kaldır",
+    "decommissionWarning": "Kaldırma işlemi bu cihazı etkin filonuzdan çıkarır. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+    "decommissionedDescription": "Bu cihaz kaldırıldı. Geri yükleyebilir veya kalıcı olarak silebilirsiniz.",
+    "decommissionedTitle": "Kaldırılmış Cihaz",
     "displayName": "Görünen Ad",
     "errors": {
       "loadSites": "Siteler yüklenemedi",
@@ -1733,8 +1737,8 @@
     },
     "addDevice": "Cihaz Ekle",
     "confirmDecommissionedSkip": {
-      "message": "{{total}} seçilen cihazlardan {{skipped}} kullanım dışı bırakıldı ve atlanacak; artık bir aracıları yok. Kalan {{eligible}} cihaz(lar)la devam edilsin mi? Çevrimdışı olan herkes bir sonraki check-in işleminde bunu çalıştıracaktır.",
-      "title": "Seçilen bazı cihazlar kullanımdan kaldırıldı"
+      "message": "Seçilen {{total}} cihazdan {{skipped}} tanesi kaldırıldı ve atlanacak — artık yönetilen bir aracıları yok. Kalan {{eligible}} cihazla devam edilsin mi? Çevrimdışı olanlar bir sonraki bağlantıda bunu çalıştıracaktır.",
+      "title": "Seçilen bazı cihazlar kaldırıldı"
     },
     "confirmRunAction": "Çalıştır {{script}}",
     "confirmScriptRun": "Komut dosyasının çalıştırılmasını onaylayın",
@@ -1758,11 +1762,11 @@
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
-      "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz(lar) hizmet dışı bırakıldı — artık bunu çalıştıracak bir aracıları yok.",
+      "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz kaldırıldı — bunu çalıştıracak yönetilen bir aracıları artık yok.",
       "bulkCommandPartialFailed": "Toplu Komut Kısmi Başarısız",
       "bulkCommandSent": "Toplu Komut Gönderildi",
-      "bulkDecommissionFailed": "Toplu Kullanımdan Kaldırma Başarısız Oldu",
-      "bulkDecommissioned": "Toplu Kullanımdan Kaldırıldı",
+      "bulkDecommissionFailed": "Toplu Kaldırma Başarısız Oldu",
+      "bulkDecommissioned": "Cihazlar Kaldırıldı",
       "bulkMaintenanceAllFailed": "Tüm {{count}} cihazları için bakım modu güncellenemedi: {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} cihaz(lar) {{verb}} bakım modu; {{failed}} başarısız oldu: {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} cihazlar {{verb}} bakım modu",
@@ -1771,10 +1775,10 @@
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
       "commandQueued": "{{action}} sıraya alındı — {{hostname}} yeniden bağlandığında çalışacak",
       "commandSent": "{{action}}, {{hostname}} adlı kişiye gönderildi",
-      "decommissionCancelled": "Hizmetten Çıkarma İptal Edildi",
-      "decommissionFailed": "Hizmetten Çıkarma Başarısız",
-      "decommissioned": "Kullanımdan kaldırıldı",
-      "decommissioning": "Hizmetten Çıkarma",
+      "decommissionCancelled": "Kaldırma İptal Edildi",
+      "decommissionFailed": "Kaldırma Başarısız",
+      "decommissioned": "Kaldırıldı",
+      "decommissioning": "Kaldırılıyor",
       "deleteFailed": "Silme Başarısız",
       "deviceError": "Cihaz Hatası",
       "deviceOnline": "Cihaz Çevrimiçi",
@@ -2271,11 +2275,11 @@
     "cancel": "İptal"
   },
   "possibleReplacementBanner": {
-    "decommissionFailed": "Eski cihazın kullanımdan kaldırılması başarısız oldu",
-    "decommissionOldDevice": "Eski cihazın hizmet dışı bırakılması",
-    "decommissionSucceeded": "Eski cihaz hizmet dışı bırakıldı",
+    "decommissionFailed": "Eski cihaz kaldırılamadı",
+    "decommissionOldDevice": "Eski cihazı kaldır",
+    "decommissionSucceeded": "Eski cihaz kaldırıldı",
     "message": "Bu cihaz {{hostname}} yerini alabilir — eski satırı inceleyebilir ve kullanımdan kaldırabilir.",
-    "oldDeviceDecommissioned": "Eski cihaz kullanımdan kaldırıldı — incelenecek bir şey kalmadı.",
+    "oldDeviceDecommissioned": "Eski cihaz kaldırıldı — incelenecek bir şey kalmadı.",
     "oldDeviceUnavailable": "Eski cihaz kaydı artık mevcut değil.",
     "title": "Olası mükerrer kayıt",
     "unknownDevice": "önceki cihaz",

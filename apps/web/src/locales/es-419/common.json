@@ -2009,7 +2009,7 @@
         "skipReasons": {
           "siteDenied": "Sitio no accesible para ti",
           "notMember": "Ya no está afectado por este hallazgo",
-          "decommissioned": "El dispositivo está dado de baja",
+          "decommissioned": "El dispositivo está quitado",
           "timeout": "Se agotó el tiempo tras 30 minutos",
           "dispatchEnqueueFailed": "Nunca se envió: falló el encolado"
         },
