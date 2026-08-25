@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { NotificationChannelType } from '@breeze/shared';
+import { formatRelativeTime } from './alertConfig';
 
 export type { NotificationChannelType };
 
@@ -86,23 +87,14 @@ const channelTypeConfig: Record<
   }
 };
 
+// Delegates to the shared `alerts:relativeTime.*` catalog rather than keeping a
+// private copy. The private copy was extracted into title-cased strings that
+// also dropped the `{{count}}` placeholder the caller passes, so the card read
+// "Last test: Hours Ago" — no case agreement and no number (#3992). The shared
+// node is correct in all eight locales and is what the alerts list already uses.
 function formatLastTested(dateString: string | undefined, t: AlertsT): string {
   if (!dateString) return t('notificationChannelList.neverTested');
-
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffMins < 1) return t('notificationChannelList.justNow');
-  if (diffMins < 60) return t('notificationChannelList.minutesAgo', { count: diffMins });
-  if (diffHours < 24) return t('notificationChannelList.hoursAgo', { count: diffHours });
-  if (diffDays < 7) return t('notificationChannelList.daysAgo', { count: diffDays });
-  return date.toLocaleDateString();
+  return formatRelativeTime(dateString);
 }
 
 /**

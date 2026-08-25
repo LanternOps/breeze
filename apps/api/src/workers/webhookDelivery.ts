@@ -5,6 +5,8 @@ import { getEventBus, type BreezeEvent } from '../services/eventBus';
 import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { sanitizeOutboundHeaders } from '../services/outboundHeaders';
+import { formatHttpFailure } from '../services/httpFailureMessage';
+import { collectChannelSecretStrings } from '../services/notificationChannelSecrets';
 import * as dbModule from '../db';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -164,7 +166,23 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
       };
     }
 
-    errorMessage = `HTTP ${responseStatus}: ${responseBody?.slice(0, 500)}`;
+    // Operator-facing and therefore short + markup-free (#3992). The raw
+    // body is not lost: the delivery record below keeps 1000 characters of it
+    // in its own `responseBody` field.
+    //
+    // Redacted against the webhook's own credentials BEFORE the body is
+    // transformed — nothing scrubs this string downstream, unlike the channel
+    // test path. `secret` is routed through the `authToken` key so it picks up
+    // the collector's own trim and minimum-length rules rather than being
+    // pushed in raw; it is the HMAC signing key and is every bit as sensitive
+    // as the URL.
+    errorMessage = formatHttpFailure(responseStatus, responseBody, {
+      secrets: collectChannelSecretStrings('webhook', {
+        url: webhook.url,
+        headers: webhook.headers,
+        authToken: webhook.secret
+      })
+    });
   } catch (err) {
     if (err instanceof SsrfBlockedError) {
       errorMessage = `Unsafe webhook URL: ${err.message}`;
