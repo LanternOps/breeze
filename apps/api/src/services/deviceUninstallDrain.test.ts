@@ -60,18 +60,51 @@ function sqlOf(cond: unknown) {
   return dialect.sqlToQuery(cond as never);
 }
 
+/**
+ * Asserts the compiled SQL is a flat `expectedClauseCount`-way CONJUNCTION
+ * (AND), not a disjunction (OR) or anything else.
+ *
+ * Why this exists (and why `toContain('"foo" = $1')`-style substring checks
+ * are NOT enough on their own): `and(a, b, c, d, e, f)` and
+ * `or(a, b, c, d, e, f)` compile to text containing every one of `a..f` as a
+ * substring either way — they only differ in the JOINER between fragments
+ * (`" and "` vs `" or "`). A regression that flips the top-level `and(...)`
+ * in `deviceUninstallDrain.ts` to `or(...)` would leave every
+ * `toContain(...)` assertion in this file green while silently turning the
+ * drain predicate into "decommissioned OR self_uninstall OR ... OR
+ * unexpired" — which an abuse-queued row (no `device_remove` reason) can
+ * satisfy on the `status`/`type` clauses alone. That is the exact incident
+ * this module exists to prevent, so the operator itself — not just the
+ * clause substrings — must be under test. Do not "simplify" this back to a
+ * bag of `toContain` checks.
+ *
+ * None of the six leaf predicates here (`eq`, `inArray`, `arrayContains`,
+ * `gt`) can themselves emit the literal strings `" and "` or `" or "`, so
+ * splitting the whole compiled string on `" and "` reliably counts top-level
+ * conjuncts, and a bare `" or "` substring can only appear if the top-level
+ * operator itself changed.
+ */
+function assertConjunction(sqlText: string, expectedClauseCount: number) {
+  expect(sqlText).not.toContain(' or ');
+  expect(sqlText.split(' and ')).toHaveLength(expectedClauseCount);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
 describe('isDeviceUninstallDraining — the shared predicate', () => {
-  it('compiles a WHERE that requires decommissioned + self_uninstall + pending/sent + the device_remove reason + an unexpired deadline', async () => {
+  it('compiles a 6-way CONJUNCTION requiring decommissioned + self_uninstall + pending/sent + the device_remove reason + an unexpired deadline', async () => {
     const rig = rigSelect([]);
 
     await isDeviceUninstallDraining('device-1');
 
     const built = sqlOf(rig.where());
     const sqlText = built.sql.toLowerCase();
+
+    // The operator itself: AND, not OR — see assertConjunction's doc for why
+    // this is asserted structurally rather than just via substring checks.
+    assertConjunction(sqlText, 6);
 
     // status = 'decommissioned' on devices
     expect(sqlText).toContain('"status" = $');
@@ -104,6 +137,58 @@ describe('isDeviceUninstallDraining — the shared predicate', () => {
   it('returns false when no matching row is found', async () => {
     rigSelect([]);
     await expect(isDeviceUninstallDraining('device-1')).resolves.toBe(false);
+  });
+
+  // The two tests below are named exactly as the task-6 brief specifies —
+  // the name IS the incident it guards, so it survives a refactor instead of
+  // being deleted as "redundant" with the general compiled-SQL test above.
+  //
+  // `db.select` is mocked in this file (see the file-header comment), so the
+  // WHERE clause below is never actually evaluated against real rows here —
+  // these tests assert the COMPILED-SQL facts that make each scenario
+  // impossible, not a live run against Postgres. Real behavioural coverage
+  // of this predicate's row-level semantics (NULL/empty-array
+  // `uninstall_reasons`, an actually-expired timestamp) against a live
+  // database belongs in the integration suite — a later task — not here.
+
+  it('is NOT draining for an abuse-queued uninstall (no device_remove reason)', async () => {
+    // The incident guard (see module doc + assertConjunction doc): abuse.ts
+    // queues a bare self_uninstall with NO reason stamped (uninstall_reasons
+    // IS NULL, the fail-closed default). `NULL @> ARRAY[...]` is NULL (not
+    // true) in Postgres, so this clause alone excludes every abuse-queued
+    // row — but only because it is AND-ed, not OR-ed, with the rest of the
+    // predicate, and only because it is present at all.
+    const rig = rigSelect([]);
+
+    await isDeviceUninstallDraining('device-1');
+
+    const built = sqlOf(rig.where());
+    const sqlText = built.sql.toLowerCase();
+
+    // Structural: the reason clause is one REQUIRED conjunct among six, not
+    // an alternative a status-only match could satisfy without it.
+    assertConjunction(sqlText, 6);
+    expect(sqlText).toContain('"uninstall_reasons" @> $');
+    expect(built.params.some((p) => typeof p === 'string' && p.includes(UNINSTALL_REASON_DEVICE_REMOVE))).toBe(true);
+  });
+
+  it('is NOT draining once device_remove_expires_at has passed', async () => {
+    // Closes the drain without needing a separate sweeper job: once the
+    // deadline is in the past, `device_remove_expires_at > now()` is false,
+    // and — because it is AND-ed with the rest of the predicate, not OR-ed —
+    // that alone is enough to exclude the row regardless of how the other
+    // clauses evaluate.
+    const rig = rigSelect([]);
+
+    await isDeviceUninstallDraining('device-1');
+
+    const built = sqlOf(rig.where());
+    const sqlText = built.sql.toLowerCase();
+
+    assertConjunction(sqlText, 6);
+    // Strict `>` (not `>=`/missing entirely): a deadline equal to `now()` at
+    // read time is already expired, not still draining.
+    expect(sqlText).toContain('"device_remove_expires_at" > now()');
   });
 });
 

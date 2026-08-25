@@ -57,9 +57,15 @@ export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export const UNINSTALL_REASON_DEVICE_REMOVE = 'device_remove' as const;
 
 // `envInt` cannot return a non-finite number, so the old `Number.isFinite`
-// arm here would be unfalsifiable; the `>= 1` floor is the part that matters.
+// arm here would be unfalsifiable; the `Math.max(..., 1)` floor is the part
+// that matters. NOTE: this is a genuine FLOOR, not a fallback-to-default — an
+// operator setting `0` (or a negative value) gets clamped up to `1`, not
+// silently reset to `72`. A ternary here (`RAW >= 1 ? RAW : 72`) would look
+// almost identical but do the wrong thing: it resets an explicit `0` back to
+// the 72h default instead of flooring it, which is the opposite of what an
+// operator asking for the shortest possible window wants.
 const RAW_WINDOW_HOURS = envInt('DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS', 72);
-export const DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS = RAW_WINDOW_HOURS >= 1 ? RAW_WINDOW_HOURS : 72;
+export const DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS = Math.max(RAW_WINDOW_HOURS, 1);
 
 const NON_TERMINAL_COMMAND_STATUSES = ['pending', 'sent'] as const;
 
