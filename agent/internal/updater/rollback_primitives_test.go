@@ -303,3 +303,40 @@ func TestRollbackSwapRetainsOldSetUntilHealthCommit(t *testing.T) {
 		}
 	})
 }
+
+func TestPrepareRollbackArtifactsLeavesLiveSetUntouched(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "agent")
+	staged := filepath.Join(dir, "agent.staged")
+	journalPath := filepath.Join(dir, "rollback.json")
+	if err := os.WriteFile(live, []byte("old agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("target agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := prepareRollbackArtifacts(RollbackSwapSet{
+		DirectiveID: "rollback-id",
+		JournalPath: journalPath,
+		Artifacts:   []RollbackSwapArtifact{{Component: RollbackComponentAgent, StagedPath: staged, LivePath: live}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if journal.State != "prepared" {
+		t.Fatalf("journal state = %q, want prepared", journal.State)
+	}
+	got, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old agent" {
+		t.Fatalf("prepare mutated running executable: %q", got)
+	}
+	if _, err := os.Stat(journal.Artifacts[0].NewPath); err != nil {
+		t.Fatalf("detached target copy missing: %v", err)
+	}
+	if err := recoverRollbackSwapInline(journalPath); err != nil {
+		t.Fatal(err)
+	}
+}

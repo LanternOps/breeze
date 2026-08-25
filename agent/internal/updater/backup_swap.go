@@ -184,15 +184,28 @@ func swapRollbackArtifacts(set RollbackSwapSet, afterRename func(int) error) err
 	return swapRollbackArtifactsMode(set, afterRename, true)
 }
 
-// SwapRollbackArtifactsRetainingJournal installs the target set but retains
-// the old set and journal until post-restart health calls CommitRollbackSwap.
+// SwapRollbackArtifactsRetainingJournal installs the target set on Unix and
+// prepares its durable detached swap on Windows, retaining the old set and
+// journal until post-restart health calls CommitRollbackSwap.
 func SwapRollbackArtifactsRetainingJournal(set RollbackSwapSet) error {
+	if deferRollbackSwapToRestart() {
+		_, err := prepareRollbackArtifacts(set)
+		return err
+	}
 	return swapRollbackArtifactsMode(set, nil, false)
 }
 
 func swapRollbackArtifactsMode(set RollbackSwapSet, afterRename func(int) error, finalize bool) error {
+	journal, err := prepareRollbackArtifacts(set)
+	if err != nil {
+		return err
+	}
+	return applyPreparedRollbackArtifacts(set.JournalPath, journal, afterRename, finalize)
+}
+
+func prepareRollbackArtifacts(set RollbackSwapSet) (rollbackSwapJournal, error) {
 	if strings.TrimSpace(set.DirectiveID) == "" || set.JournalPath == "" || len(set.Artifacts) == 0 {
-		return fmt.Errorf("rollback swap set is incomplete")
+		return rollbackSwapJournal{}, fmt.Errorf("rollback swap set is incomplete")
 	}
 	journal := rollbackSwapJournal{SchemaVersion: 1, DirectiveID: set.DirectiveID, State: "prepared"}
 	token := rollbackPathToken(set.DirectiveID)
@@ -208,52 +221,56 @@ func swapRollbackArtifactsMode(set RollbackSwapSet, afterRename func(int) error,
 	}()
 	for index, artifact := range set.Artifacts {
 		if artifact.Component == "" || artifact.StagedPath == "" || artifact.LivePath == "" {
-			return fmt.Errorf("rollback swap artifact %d is incomplete", index)
+			return rollbackSwapJournal{}, fmt.Errorf("rollback swap artifact %d is incomplete", index)
 		}
 		livePath, err := filepath.Abs(artifact.LivePath)
 		if err != nil {
-			return err
+			return rollbackSwapJournal{}, err
 		}
 		stagedPath, err := filepath.Abs(artifact.StagedPath)
 		if err != nil {
-			return err
+			return rollbackSwapJournal{}, err
 		}
 		if _, duplicate := seen[livePath]; duplicate {
-			return fmt.Errorf("duplicate rollback live path")
+			return rollbackSwapJournal{}, fmt.Errorf("duplicate rollback live path")
 		}
 		seen[livePath] = struct{}{}
 		liveInfo, err := os.Lstat(livePath)
 		if err != nil {
-			return fmt.Errorf("inspect live rollback component %s: %w", artifact.Component, err)
+			return rollbackSwapJournal{}, fmt.Errorf("inspect live rollback component %s: %w", artifact.Component, err)
 		}
 		if !liveInfo.Mode().IsRegular() {
-			return fmt.Errorf("live rollback component %s is not a regular file", artifact.Component)
+			return rollbackSwapJournal{}, fmt.Errorf("live rollback component %s is not a regular file", artifact.Component)
 		}
 		stagedInfo, err := os.Lstat(stagedPath)
 		if err != nil {
-			return fmt.Errorf("inspect staged rollback component %s: %w", artifact.Component, err)
+			return rollbackSwapJournal{}, fmt.Errorf("inspect staged rollback component %s: %w", artifact.Component, err)
 		}
 		if !stagedInfo.Mode().IsRegular() {
-			return fmt.Errorf("staged rollback component %s is not a regular file", artifact.Component)
+			return rollbackSwapJournal{}, fmt.Errorf("staged rollback component %s is not a regular file", artifact.Component)
 		}
 		base := filepath.Join(filepath.Dir(livePath), ".breeze-rollback-"+token+"-"+fmt.Sprint(index))
 		entry := rollbackSwapJournalEntry{Component: artifact.Component, LivePath: livePath, BackupPath: base + ".old", NewPath: base + ".new"}
 		if err := copyRollbackFile(livePath, entry.BackupPath, liveInfo.Mode()); err != nil {
-			return fmt.Errorf("backup %s: %w", artifact.Component, err)
+			return rollbackSwapJournal{}, fmt.Errorf("backup %s: %w", artifact.Component, err)
 		}
 		if err := copyRollbackFile(stagedPath, entry.NewPath, stagedInfo.Mode()); err != nil {
-			return fmt.Errorf("stage %s beside live file: %w", artifact.Component, err)
+			return rollbackSwapJournal{}, fmt.Errorf("stage %s beside live file: %w", artifact.Component, err)
 		}
 		journal.Artifacts = append(journal.Artifacts, entry)
 	}
 	if err := writeRollbackJournal(set.JournalPath, journal); err != nil {
-		return fmt.Errorf("write prepared rollback journal: %w", err)
+		return rollbackSwapJournal{}, fmt.Errorf("write prepared rollback journal: %w", err)
 	}
 	cleanupPrepared = false
+	return journal, nil
+}
+
+func applyPreparedRollbackArtifacts(journalPath string, journal rollbackSwapJournal, afterRename func(int) error, finalize bool) error {
 	for index, entry := range journal.Artifacts {
 		journal.State = "swapping"
 		journal.Next = index
-		if err := writeRollbackJournal(set.JournalPath, journal); err != nil {
+		if err := writeRollbackJournal(journalPath, journal); err != nil {
 			return fmt.Errorf("write rollback boundary journal: %w", err)
 		}
 		if err := replaceRollbackFile(entry.NewPath, entry.LivePath); err != nil {
@@ -270,7 +287,7 @@ func swapRollbackArtifactsMode(set RollbackSwapSet, afterRename func(int) error,
 	}
 	journal.State = "swapped"
 	journal.Next = len(journal.Artifacts)
-	if err := writeRollbackJournal(set.JournalPath, journal); err != nil {
+	if err := writeRollbackJournal(journalPath, journal); err != nil {
 		return fmt.Errorf("write swapped rollback journal: %w", err)
 	}
 	if !finalize {
@@ -278,17 +295,17 @@ func swapRollbackArtifactsMode(set RollbackSwapSet, afterRename func(int) error,
 	}
 	journal.State = "committed"
 	journal.Next = len(journal.Artifacts)
-	if err := writeRollbackJournal(set.JournalPath, journal); err != nil {
+	if err := writeRollbackJournal(journalPath, journal); err != nil {
 		return fmt.Errorf("commit rollback journal: %w", err)
 	}
 	for _, entry := range journal.Artifacts {
 		_ = os.Remove(entry.BackupPath)
 		_ = os.Remove(entry.NewPath)
 	}
-	if err := os.Remove(set.JournalPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(journalPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return syncRollbackDir(set.JournalPath)
+	return syncRollbackDir(journalPath)
 }
 
 // CommitRollbackSwap makes a health-verified target set permanent and removes
@@ -323,23 +340,35 @@ func CommitRollbackSwap(journalPath string) error {
 // complete set: committed journals retain the target set; all earlier states
 // restore every old component before removing recovery material.
 func RecoverRollbackSwap(journalPath string) error {
+	return recoverRollbackSwapPlatform(journalPath)
+}
+
+func readRollbackJournal(journalPath string) (rollbackSwapJournal, error) {
 	info, err := os.Lstat(journalPath)
 	if err != nil {
-		return err
+		return rollbackSwapJournal{}, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("rollback journal is not a regular file")
+		return rollbackSwapJournal{}, fmt.Errorf("rollback journal is not a regular file")
 	}
 	payload, err := os.ReadFile(journalPath)
 	if err != nil {
-		return err
+		return rollbackSwapJournal{}, err
 	}
 	var journal rollbackSwapJournal
 	if err := json.Unmarshal(payload, &journal); err != nil {
-		return fmt.Errorf("decode rollback journal: %w", err)
+		return rollbackSwapJournal{}, fmt.Errorf("decode rollback journal: %w", err)
 	}
 	if journal.SchemaVersion != 1 || strings.TrimSpace(journal.DirectiveID) == "" || len(journal.Artifacts) == 0 {
-		return fmt.Errorf("invalid rollback journal")
+		return rollbackSwapJournal{}, fmt.Errorf("invalid rollback journal")
+	}
+	return journal, nil
+}
+
+func recoverRollbackSwapInline(journalPath string) error {
+	journal, err := readRollbackJournal(journalPath)
+	if err != nil {
+		return err
 	}
 	if journal.State != "committed" {
 		for index, entry := range journal.Artifacts {

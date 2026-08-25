@@ -107,7 +107,7 @@ func (b *agentRollbackBackend) Swap(_ context.Context, d rollbackstate.Directive
 }
 
 func (b *agentRollbackBackend) Restart(context.Context, rollbackstate.Directive) error {
-	return updater.RestartAfterRollback()
+	return updater.RestartAfterRollback(b.journalPath)
 }
 func (b *agentRollbackBackend) Healthy(_ context.Context, d rollbackstate.Directive) (bool, error) {
 	versions := b.currentVersions()
