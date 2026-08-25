@@ -343,11 +343,18 @@ describe('stale command reaper', () => {
     // routes/admin/abuse.ts queues self_uninstall onto every device under a
     // suspended partner with NO status filter — including already-
     // decommissioned devices — and never sets uninstallReasons or
-    // deviceRemoveExpiresAt. Such a row can satisfy neither arm here, so it
-    // is never excluded from the SELECT and keeps expiring at the normal
+    // deviceRemoveExpiresAt. Such a row satisfies neither arm here, so it is
+    // never excluded from the SELECT and keeps expiring at the normal
     // 30-minute self_uninstall timeout (MEDIUM_TIMEOUT_TYPES in
     // commandTimeouts.ts) — proven behaviorally below, once the structural
     // proof establishes the row survives the WHERE.
+    //
+    // "Satisfies neither arm" only holds because of the NULL guard pinned by
+    // the test that follows this one. Both halves of the device-remove arm
+    // evaluate to NULL (not false) for such a row, and an unguarded NULL
+    // propagates out through NOT(...) and silently drops the row from the
+    // candidate set instead. Nothing in THIS test can see that: the compiled
+    // clause shape is identical either way.
     it('still reaps an abuse-queued self_uninstall on an already-decommissioned device at 30 minutes', async () => {
       const { sql: sqlText, params } = await compileWhere();
 
@@ -390,6 +397,21 @@ describe('stale command reaper', () => {
 
       expect(reaped).toBe(1);
       expect(returning).toHaveBeenCalledTimes(1);
+    });
+
+    // Cheap structural backstop for a defect only a live database can
+    // actually demonstrate (deviceUninstallDrain.integration.test.ts's
+    // incident guard). `NULL @> ARRAY['device_remove']` and `NULL > now()`
+    // are both NULL, so for a reason-less row the exemption disjunction is
+    // NULL and `NOT NULL` is NULL — which does NOT match, silently dropping
+    // every abuse-queued self_uninstall out of the reaper's candidate set and
+    // making it immortal. COALESCE(..., FALSE) is what keeps the NOT boolean.
+    it('wraps the exemption disjunction in COALESCE(..., FALSE) so a NULL uninstall_reasons / deadline cannot void the whole NOT(...)', async () => {
+      const { sql: sqlText } = await compileWhere();
+
+      expect(sqlText).toContain('NOT COALESCE(');
+      expect(sqlText).toContain('), FALSE)');
+      expect(sqlText).not.toMatch(/NOT \(\n\s+\(\n\s+\$\d+ = 'self_uninstall'/);
     });
   });
 });

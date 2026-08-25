@@ -215,8 +215,24 @@ export async function reapStaleDeviceCommands(): Promise<number> {
   // inherit that bug. When the deadline passes the row reaps normally, the
   // device stops satisfying the drain predicate, and agentAuth's 30-minute
   // window reverts to a hard 403 on its own; no new sweeper needed.
+  //
+  // NULL-SAFETY (`COALESCE(..., FALSE)`) IS LOAD-BEARING, NOT DEFENSIVE POLISH.
+  // Both halves of the device-remove arm are NULL for exactly the rows this
+  // exemption must never cover: `NULL @> ARRAY['device_remove']` is NULL (not
+  // false), and `NULL > now()` is NULL. `TRUE AND NULL AND NULL` is NULL, so
+  // the whole disjunction goes NULL and `NOT NULL` is NULL — and a NULL WHERE
+  // term does not match, which drops the row from the reaper's candidate set
+  // ENTIRELY. Unguarded, that inverts the arm's meaning for every
+  // reason-less self_uninstall: abuse.ts's fleet-wide suspension rows and
+  // every row predating the provenance column would become permanently
+  // un-reapable, sit `pending` forever, and deliver on the first heartbeat
+  // after an un-suspension — precisely the incident this arm's own comment
+  // says it prevents. Caught by deviceUninstallDrain.integration.test.ts's
+  // incident guard; a compiled-SQL unit assertion cannot see it, because the
+  // clause SHAPE is correct and only Postgres's three-valued evaluation of it
+  // is not.
   whereConditions.push(
-    sql`NOT (
+    sql`NOT COALESCE((
       (
         ${deviceCommands.type} = 'self_uninstall'
         AND EXISTS (
@@ -233,7 +249,7 @@ export async function reapStaleDeviceCommands(): Promise<number> {
         AND ${deviceCommands.uninstallReasons} @> ARRAY[${UNINSTALL_REASON_DEVICE_REMOVE}]::text[]
         AND ${deviceCommands.deviceRemoveExpiresAt} > now()
       )
-    )`,
+    ), FALSE)`,
   );
 
   const staleCommands = await db
