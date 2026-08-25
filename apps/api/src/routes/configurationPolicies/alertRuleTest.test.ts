@@ -28,7 +28,10 @@ const {
   selectQueue: [] as unknown[][],
   policyRef: { current: undefined as Record<string, unknown> | undefined },
   governingRef: {
-    current: { winningPolicyId: null as string | null, candidateAssigned: false },
+    current: { outcome: 'unassigned' } as
+      | { outcome: 'governs' }
+      | { outcome: 'outranked'; winningPolicyId: string }
+      | { outcome: 'unassigned' },
   },
   evaluateConditionsMock: vi.fn(),
 }));
@@ -117,7 +120,7 @@ describe('POST /configuration-policies/:id/alert-rules/test', () => {
     vi.clearAllMocks();
     selectQueue.length = 0;
     policyRef.current = POLICY;
-    governingRef.current = { winningPolicyId: POLICY_ID, candidateAssigned: true };
+    governingRef.current = { outcome: 'governs' };
     authRef.current = {
       scope: 'organization',
       orgId: ORG_ID,
@@ -186,7 +189,7 @@ describe('POST /configuration-policies/:id/alert-rules/test', () => {
   it('reports wouldTrigger false and targetMatch false when conditions ARE met but another policy governs the device', async () => {
     selectQueue.push([DEVICE]);
     // Assigned to the device, but a closer/higher-priority policy wins.
-    governingRef.current = { winningPolicyId: OTHER_POLICY_ID, candidateAssigned: true };
+    governingRef.current = { outcome: 'outranked', winningPolicyId: OTHER_POLICY_ID };
     evaluateConditionsMock.mockResolvedValue({
       triggered: true,
       conditionsMet: ['cpu > 80'],
@@ -209,7 +212,7 @@ describe('POST /configuration-policies/:id/alert-rules/test', () => {
 
   it('reports targetMatch false with a distinct reason when this policy is not assigned to the device', async () => {
     selectQueue.push([DEVICE]);
-    governingRef.current = { winningPolicyId: OTHER_POLICY_ID, candidateAssigned: true };
+    governingRef.current = { outcome: 'outranked', winningPolicyId: OTHER_POLICY_ID };
     evaluateConditionsMock.mockResolvedValue({
       triggered: true,
       conditionsMet: ['cpu > 80'],
@@ -219,7 +222,7 @@ describe('POST /configuration-policies/:id/alert-rules/test', () => {
     const anotherPolicyGoverns = await (await runTest()).json();
 
     selectQueue.push([DEVICE]);
-    governingRef.current = { winningPolicyId: null, candidateAssigned: false };
+    governingRef.current = { outcome: 'unassigned' };
     const res = await runTest();
     const body = await res.json();
 

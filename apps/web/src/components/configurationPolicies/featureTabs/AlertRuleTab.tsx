@@ -53,7 +53,9 @@ type AlertSeverity = "critical" | "high" | "medium" | "low" | "info";
 // REJECTS them on save, so the rule carrying one cannot be saved at all until
 // the offending condition is removed. That is why they get an amber banner
 // rather than being quietly round-tripped.
-type Condition = {
+// Exported for AlertRuleTestModal, which forwards a draft's conditions to the
+// test endpoint. Type-only, so the import back into the child erases entirely.
+export type Condition = {
   type: string;
   metric?: string;
   operator?: string;

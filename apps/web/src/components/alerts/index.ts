@@ -9,9 +9,10 @@ export type { NotificationHistory, StatusChange } from './AlertDetails';
 // Alert Rules
 //
 // AlertRuleList / AlertRulesPage were removed with #3988: /alerts/rules/* has
-// been a 301 to /configuration-policies since 2026-07-23, so both components —
-// and the "Test" verdict fix #3923 landed in them — were unreachable from any
-// route. Alert rules are edited in the Configuration Policy Alerts tab
+// been a 301 to /configuration-policies since d8a6bc833 (2026-02-22), so both
+// components — and the "Test" verdict fix #3923 landed in them six months
+// later — were unreachable from any route. Alert rules are edited in the
+// Configuration Policy Alerts tab
 // (components/configurationPolicies/featureTabs/AlertRuleTab.tsx), and the Test
 // verdict now lives beside it in AlertRuleTestModal.tsx.
 export { default as AlertRuleForm } from './AlertRuleForm';

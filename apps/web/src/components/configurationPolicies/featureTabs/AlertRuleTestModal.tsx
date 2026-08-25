@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
+import type { Condition } from './AlertRuleTab';
 
 type TestConditionResult = { condition: string; result: boolean; reason: string };
 
@@ -15,9 +16,12 @@ type TestConditionResult = { condition: string; result: boolean; reason: string 
  * policy provide the device's alert rules (`targetMatch`), and does the
  * evaluator say the conditions are met — and `targetReason` /
  * `conditionResults` explain which half produced a negative. It is NOT a
- * promise that an alert row appears: createAlert() additionally applies
- * cooldown, open-alert dedup and flapping suppression, which the endpoint does
- * not simulate — hence the caveat rendered alongside a positive verdict.
+ * promise that an alert row appears: the config-policy firing path is
+ * evaluateDeviceAlertsFromPolicy (NOT createAlert — that one owns the
+ * standalone-rule path), which additionally skips a device inside a suppressing
+ * maintenance window and applies cooldown, open-alert dedup and flapping
+ * suppression. None of that is simulated — hence the caveat rendered alongside
+ * a positive verdict.
  *
  * There is deliberately no `success` / `message` pair here — reading those
  * invented fields is what made every test report "Test Passed" (#3752), and
@@ -47,8 +51,13 @@ type AlertRuleTestModalProps = {
    * saved. Testing the draft rather than a persisted row is the point: config
    * policy alert rules carry no stable id to address, and a tech tuning a
    * threshold wants a verdict on the number they just typed.
+   *
+   * Typed as the editor's own `Condition` — deliberately wider than
+   * `alertRuleConditionSchema` so a legacy retired type still round-trips — so
+   * a caller cannot hand this modal something that is not a condition at all
+   * and discover it only as a 400.
    */
-  conditions: unknown[];
+  conditions: Condition[];
   onClose: () => void;
 };
 
@@ -173,7 +182,10 @@ export default function AlertRuleTestModal({
       <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">{t('alertRulesPage.testAlertRule')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          {t('alertRulesPage.testing')} <span className="font-medium">{ruleName}</span>
+          {t('alertRulesPage.testing')}{' '}
+          <span data-testid="alert-rule-test-rule-name" className="font-medium">
+            {ruleName}
+          </span>
         </p>
 
         <div className="mt-4">

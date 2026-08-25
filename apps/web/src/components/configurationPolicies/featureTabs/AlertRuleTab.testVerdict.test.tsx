@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AlertRuleTab from './AlertRuleTab';
@@ -7,8 +7,8 @@ import { navigateTo } from '@/lib/navigation';
 
 // Ported from AlertRulesPage.testVerdict.test.tsx (#3752/#3923), which asserted
 // this behaviour against a component no route could reach: /alerts/rules/* has
-// been a 301 to /configuration-policies since 2026-07-23, so those tests passed
-// while zero users could run an alert-rule test (#3988). The Test action now
+// been a 301 to /configuration-policies since d8a6bc833 (2026-02-22), so those
+// tests passed while zero users could run an alert-rule test (#3988). The Test action now
 // lives on the live editor — the Configuration Policy Alerts tab — and the same
 // contract is pinned here, on the call site a user can actually reach.
 //
@@ -76,6 +76,40 @@ function renderTab(conditions: unknown[] = [CPU_CONDITION]) {
               name: 'High CPU',
               severity: 'high',
               conditions,
+              cooldownMinutes: 15,
+              autoResolve: false,
+            },
+          ],
+        },
+      }}
+      linkedPolicyId={null}
+      onLinkChanged={vi.fn()}
+    />
+  );
+}
+
+/** Two rules, so index-shift behaviour on delete can be exercised. */
+function renderTwoRules() {
+  return render(
+    <AlertRuleTab
+      policyId={POLICY_ID}
+      existingLink={{
+        id: 'link-1',
+        featureType: 'alert_rule',
+        featurePolicyId: null,
+        inlineSettings: {
+          items: [
+            {
+              name: 'High CPU',
+              severity: 'high',
+              conditions: [CPU_CONDITION],
+              cooldownMinutes: 15,
+              autoResolve: false,
+            },
+            {
+              name: 'Low disk',
+              severity: 'medium',
+              conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 90 }],
               cooldownMinutes: 15,
               autoResolve: false,
             },
@@ -359,6 +393,40 @@ describe('AlertRuleTab — alert rule test verdict', () => {
     await screen.findByText('Rule would not fire');
 
     expect(failing.textContent).not.toEqual(passingText);
+  });
+
+  // Deleting a rule shifts every later rule's index. An open Test modal is
+  // addressed BY index, so without the shift handling in deleteItem it would
+  // silently re-point at whichever rule slid into the slot — a verdict
+  // attributed to the wrong rule, the same class of lie as one attributed to
+  // the wrong device.
+  it('keeps an open Test modal on the same rule when an earlier rule is deleted', async () => {
+    mockApi(jsonResponse(verdictBody()));
+    renderTwoRules();
+
+    fireEvent.click(screen.getByTestId('alert-rule-card-header-1'));
+    fireEvent.click(screen.getByTestId('alert-rule-test-1'));
+    expect(await screen.findByTestId('alert-rule-test-rule-name')).toHaveTextContent('Low disk');
+
+    // Delete the FIRST rule; the tested rule slides from index 1 to index 0.
+    fireEvent.click(within(screen.getByTestId('alert-rule-card-header-0')).getByRole('button'));
+
+    expect(screen.getByTestId('alert-rule-test-rule-name')).toHaveTextContent('Low disk');
+    expect(screen.getByTestId('alert-rule-test-device')).toBeTruthy();
+  });
+
+  it('closes an open Test modal when the rule being tested is deleted', async () => {
+    mockApi(jsonResponse(verdictBody()));
+    renderTwoRules();
+
+    fireEvent.click(screen.getByTestId('alert-rule-card-header-0'));
+    fireEvent.click(screen.getByTestId('alert-rule-test-0'));
+    expect(await screen.findByTestId('alert-rule-test-rule-name')).toHaveTextContent('High CPU');
+
+    fireEvent.click(within(screen.getByTestId('alert-rule-card-header-0')).getByRole('button'));
+
+    expect(screen.queryByTestId('alert-rule-test-rule-name')).toBeNull();
+    expect(screen.queryByTestId('alert-rule-test-device')).toBeNull();
   });
 
   // A rule carrying a condition the write schema rejects cannot be tested

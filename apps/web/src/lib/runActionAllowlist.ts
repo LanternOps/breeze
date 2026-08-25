@@ -25,7 +25,8 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/alerts/AlertCorrelationView.tsx',
   'apps/web/src/components/alerts/AlertRuleEditor.tsx',
   // AlertRulesPage.tsx removed (#3988): the page it backed has been a 301 to
-  // /configuration-policies since 2026-07-23, so the component was unreachable.
+  // /configuration-policies since d8a6bc833 (2026-02-22), so the component was
+  // unreachable from any route.
   'apps/web/src/components/alerts/AlertTemplateEditor.tsx',
   'apps/web/src/components/alerts/AlertTemplateList.tsx',
   // AlertsPage.tsx migrated to runAction (#1300) — now in TARGET_GLOBS.

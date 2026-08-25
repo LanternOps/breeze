@@ -37,11 +37,14 @@ const requireConfigPolicyRead = requirePermission(
  *  - `conditionResults` / `wouldTrigger`: the real evaluator's verdict, run
  *    against this device's actual state.
  *
- * SCOPE, deliberately narrower than "an alert appears": evaluateDeviceAlertsFromPolicy()
- * skips the whole device while a maintenance window with suppressAlerts is
- * active, and createAlert() then applies cooldown, open-alert dedup and flapping
- * suppression — none of which are simulated here. The UI renders that caveat
- * next to a positive verdict.
+ * SCOPE, deliberately narrower than "an alert appears": the config-policy
+ * firing path is evaluateDeviceAlertsFromPolicy() (services/alertService.ts) —
+ * NOT createAlert(), which belongs to the standalone-rule path. It skips the
+ * whole device while a maintenance window with suppressAlerts is active, then
+ * applies its own cooldown (isConfigPolicyRuleCooling), open-alert dedup (an
+ * alerts.configPolicyId lookup) and flapping suppression before inserting a
+ * row. None of that is simulated here; the UI renders the caveat next to a
+ * positive verdict.
  */
 alertRuleTestRoutes.post(
   '/:id/alert-rules/test',
@@ -89,15 +92,17 @@ alertRuleTestRoutes.post(
     // the draft is saved? The assignment hierarchy decides (level, then
     // priority, then age), with role and OS filters applied.
     const governing = await resolveGoverningAlertRulePolicyForDevice(device.id, id);
-    const targetMatch = governing.winningPolicyId === id;
+    const targetMatch = governing.outcome === 'governs';
     // Each negative gets its own remedy: assign the policy, or resolve the
     // precedence conflict. The reason never identifies the policy that won
-    // instead — that policy may belong to another org under the partner.
-    const targetReason = targetMatch
-      ? 'This configuration policy provides the alert rules for this device'
-      : governing.candidateAssigned
-        ? 'Another configuration policy takes precedence for this device, so these alert rules would not apply to it'
-        : 'This configuration policy is not assigned to this device';
+    // instead — `governing.winningPolicyId` may name a policy in another org
+    // under the partner, so it stays server-side.
+    const targetReason =
+      governing.outcome === 'governs'
+        ? 'This configuration policy provides the alert rules for this device'
+        : governing.outcome === 'outranked'
+          ? 'Another configuration policy takes precedence for this device, so these alert rules would not apply to it'
+          : 'This configuration policy is not assigned to this device';
 
     const evaluation = await evaluateConditions(conditions, device.id);
 

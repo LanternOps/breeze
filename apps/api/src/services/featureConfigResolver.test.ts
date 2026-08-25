@@ -103,6 +103,7 @@ import {
   isInMaintenanceWindow,
   createSystemAuthContext,
   resolveAlertRulesForDevice,
+  resolveGoverningAlertRulePolicyForDevice,
 } from './featureConfigResolver';
 
 // Helper to build a maintenance settings object.
@@ -585,5 +586,216 @@ describe('resolveAlertRulesForDevice', () => {
 
     const result = await resolveAlertRulesForDevice('device-1');
     expect(result).toEqual([{ id: 'rule-device', name: 'Device-level rule' }]);
+  });
+});
+
+// ============================================
+// resolveGoverningAlertRulePolicyForDevice (#3988)
+//
+// This resolver deliberately cannot reuse either of its two natural
+// substitutes:
+//
+//  - `resolveAlertRulesForDevice` inner-joins the PERSISTED
+//    `config_policy_alert_rules` rows. A policy whose first rule is still an
+//    unsaved draft in the editor has no feature link and no row yet, so it
+//    could never appear in that join — the editor's own candidate policy
+//    would always be reported as "not governing", even though it would win
+//    the hierarchy the instant the tech hits save.
+//  - Resolving on the `alert_rule` feature LINK alone (ignoring whether that
+//    link actually holds any rule row) is equally wrong in the other
+//    direction: an EMPTY link would let a closer-but-ruleless policy outrank
+//    a farther policy that genuinely has persisted rules — which is not what
+//    happens at runtime, where a policy contributing zero rows simply does
+//    not compete.
+//
+// So the candidate is overlaid onto real runtime behaviour: the candidate
+// always competes (its draft counts as a rule), and every OTHER policy
+// competes only if it currently holds at least one persisted alert rule. Case
+// 4 below ("does not let a ruleless closer-level competitor outrank the
+// candidate") is the regression guard for the second bullet — without the
+// `haveRules` filter on non-candidate contenders, a ruleless device-level
+// policy would incorrectly outrank an organization-level candidate.
+// ============================================
+describe('resolveGoverningAlertRulePolicyForDevice', () => {
+  type AssignedRow = {
+    configPolicyId: string;
+    assignmentLevel: string;
+    assignmentPriority: number;
+    assignmentCreatedAt: Date;
+  };
+
+  // Simple thenable chain for the three loadDeviceHierarchy reads.
+  function makeHierarchyChain(result: unknown[]) {
+    const chain: any = {
+      from: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      limit: vi.fn(() => Promise.resolve(result)),
+      then: (onFulfilled: any, onRejected?: any) => Promise.resolve(result).then(onFulfilled, onRejected),
+    };
+    return chain;
+  }
+
+  // The `assigned` query: assignments innerJoin configurationPolicies,
+  // .where(...), .orderBy(level, priority, createdAt), awaited.
+  function makeAssignedChain(rows: AssignedRow[]) {
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
+      then: (onFulfilled: any, onRejected?: any) => Promise.resolve(rows).then(onFulfilled, onRejected),
+    };
+    return chain;
+  }
+
+  // The `policyIdsWithRules` query: configPolicyFeatureLinks innerJoin
+  // configPolicyAlertRules, .where(...), awaited — no orderBy.
+  function makeRulesChain(rows: { configPolicyId: string }[]) {
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      then: (onFulfilled: any, onRejected?: any) => Promise.resolve(rows).then(onFulfilled, onRejected),
+    };
+    return chain;
+  }
+
+  function mockHierarchyReads() {
+    selectMock
+      .mockReturnValueOnce(
+        makeHierarchyChain([
+          { id: 'device-1', orgId: 'org-a', siteId: 'site-1', deviceRole: 'workstation', osType: 'windows' },
+        ])
+      ) // device
+      .mockReturnValueOnce(makeHierarchyChain([{ partnerId: null }])) // org -> partnerId
+      .mockReturnValueOnce(makeHierarchyChain([])); // device-group memberships
+  }
+
+  const T0 = new Date('2026-01-01T00:00:00Z');
+  const T1 = new Date('2026-01-02T00:00:00Z');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+  });
+
+  it('reports governs when the candidate wins outright with no competitors', async () => {
+    mockHierarchyReads();
+    selectMock.mockReturnValueOnce(
+      makeAssignedChain([
+        { configPolicyId: 'candidate', assignmentLevel: 'device', assignmentPriority: 0, assignmentCreatedAt: T0 },
+      ])
+    );
+    selectMock.mockReturnValueOnce(makeRulesChain([{ configPolicyId: 'candidate' }]));
+
+    const result = await resolveGoverningAlertRulePolicyForDevice('device-1', 'candidate');
+    expect(result).toEqual({ outcome: 'governs' });
+  });
+
+  it('reports outranked when a closer rules-holding policy beats the candidate', async () => {
+    mockHierarchyReads();
+    selectMock.mockReturnValueOnce(
+      makeAssignedChain([
+        { configPolicyId: 'candidate', assignmentLevel: 'organization', assignmentPriority: 0, assignmentCreatedAt: T0 },
+        { configPolicyId: 'other', assignmentLevel: 'device', assignmentPriority: 0, assignmentCreatedAt: T1 },
+      ])
+    );
+    selectMock.mockReturnValueOnce(makeRulesChain([{ configPolicyId: 'other' }]));
+
+    const result = await resolveGoverningAlertRulePolicyForDevice('device-1', 'candidate');
+    expect(result).toEqual({ outcome: 'outranked', winningPolicyId: 'other' });
+  });
+
+  it('reports unassigned when the candidate is not among the assigned policies, and never issues the rules query', async () => {
+    mockHierarchyReads();
+    selectMock.mockReturnValueOnce(
+      makeAssignedChain([
+        { configPolicyId: 'other', assignmentLevel: 'device', assignmentPriority: 0, assignmentCreatedAt: T0 },
+      ])
+    );
+
+    const result = await resolveGoverningAlertRulePolicyForDevice('device-1', 'candidate');
+    expect(result).toEqual({ outcome: 'unassigned' });
+    // 3 hierarchy reads + 1 assigned read — the policyIdsWithRules query must
+    // never fire once the candidate is absent from `assigned` (early return).
+    expect(selectMock).toHaveBeenCalledTimes(4);
+  });
+
+  // THE KEY CASE — regression guard for the `haveRules` filter described in
+  // the block comment above. A competing policy assigned at `device` level
+  // (closer than the candidate's `organization` level) but holding ZERO
+  // persisted alert rules must be filtered out of `contenders`, so the
+  // candidate still wins. Without the `haveRules` filter this would (wrongly)
+  // resolve to `outranked`.
+  it('does not let a ruleless closer-level competitor outrank the candidate', async () => {
+    mockHierarchyReads();
+    selectMock.mockReturnValueOnce(
+      makeAssignedChain([
+        { configPolicyId: 'candidate', assignmentLevel: 'organization', assignmentPriority: 0, assignmentCreatedAt: T0 },
+        { configPolicyId: 'competitor', assignmentLevel: 'device', assignmentPriority: 0, assignmentCreatedAt: T1 },
+      ])
+    );
+    // `competitor` is assigned at device level but holds no persisted alert
+    // rules — absent from the policyIdsWithRules result.
+    selectMock.mockReturnValueOnce(makeRulesChain([]));
+
+    const result = await resolveGoverningAlertRulePolicyForDevice('device-1', 'candidate');
+    expect(result).toEqual({ outcome: 'governs' });
+  });
+
+  it('lets the candidate compete on its own unsaved draft when it holds no persisted rules yet', async () => {
+    mockHierarchyReads();
+    selectMock.mockReturnValueOnce(
+      makeAssignedChain([
+        { configPolicyId: 'candidate', assignmentLevel: 'device', assignmentPriority: 0, assignmentCreatedAt: T0 },
+      ])
+    );
+    // The candidate itself has no saved alert_rule rows yet — absent here —
+    // yet it is exempt from the `haveRules` requirement and still wins since
+    // there is no other contender.
+    selectMock.mockReturnValueOnce(makeRulesChain([]));
+
+    const result = await resolveGoverningAlertRulePolicyForDevice('device-1', 'candidate');
+    expect(result).toEqual({ outcome: 'governs' });
+  });
+
+  describe('same-level priority tiebreak', () => {
+    it('outranks the candidate when the competing policy has the lower (winning) priority number', async () => {
+      mockHierarchyReads();
+      selectMock.mockReturnValueOnce(
+        makeAssignedChain([
+          { configPolicyId: 'candidate', assignmentLevel: 'site', assignmentPriority: 5, assignmentCreatedAt: T0 },
+          { configPolicyId: 'other', assignmentLevel: 'site', assignmentPriority: 1, assignmentCreatedAt: T1 },
+        ])
+      );
+      selectMock.mockReturnValueOnce(makeRulesChain([{ configPolicyId: 'other' }]));
+
+      const result = await resolveGoverningAlertRulePolicyForDevice('device-1', 'candidate');
+      expect(result).toEqual({ outcome: 'outranked', winningPolicyId: 'other' });
+    });
+
+    it('governs when the candidate instead has the lower (winning) priority number', async () => {
+      mockHierarchyReads();
+      selectMock.mockReturnValueOnce(
+        makeAssignedChain([
+          { configPolicyId: 'candidate', assignmentLevel: 'site', assignmentPriority: 1, assignmentCreatedAt: T0 },
+          { configPolicyId: 'other', assignmentLevel: 'site', assignmentPriority: 5, assignmentCreatedAt: T1 },
+        ])
+      );
+      selectMock.mockReturnValueOnce(makeRulesChain([{ configPolicyId: 'other' }]));
+
+      const result = await resolveGoverningAlertRulePolicyForDevice('device-1', 'candidate');
+      expect(result).toEqual({ outcome: 'governs' });
+    });
+  });
+
+  it('reports unassigned when the device itself does not exist', async () => {
+    // The device lookup resolves empty, so loadDeviceHierarchy short-circuits
+    // to null before issuing the org or device-group-membership reads.
+    selectMock.mockReturnValueOnce(makeHierarchyChain([]));
+
+    const result = await resolveGoverningAlertRulePolicyForDevice('missing-device', 'candidate');
+    expect(result).toEqual({ outcome: 'unassigned' });
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -210,16 +210,28 @@ function sortByHierarchy<T extends { assignmentLevel: string; assignmentPriority
 // Feature-Specific Resolvers
 // ============================================
 
-/** Outcome of {@link resolveGoverningAlertRulePolicyForDevice}. */
-export interface GoverningAlertRulePolicy {
+/**
+ * Outcome of {@link resolveGoverningAlertRulePolicyForDevice}: exactly three
+ * states, each with its own remedy for the tech.
+ *
+ * A union rather than `{ winningPolicyId: string | null; candidateAssigned: boolean }`
+ * — that pair spells four combinations, and the fourth
+ * (`candidateAssigned` with no winner) is unreachable but would render as
+ * "another configuration policy takes precedence" naming a policy that does not
+ * exist. A fabricated verdict reason is precisely the failure class this
+ * endpoint exists to close (#3752/#3923/#3988), so the type refuses to spell it.
+ */
+export type GoverningAlertRulePolicy =
+  /** The candidate policy's alert rules are the ones that run on this device. */
+  | { outcome: 'governs' }
   /**
-   * The policy whose alert rules would run on this device, or null when no
-   * assigned policy would provide any.
+   * The candidate is assigned, but another policy wins the hierarchy.
+   * `winningPolicyId` is for diagnostics only — it may name a policy in another
+   * org under the partner, so it must never be surfaced to an API client.
    */
-  winningPolicyId: string | null;
-  /** Whether the candidate policy is assigned to this device at all. */
-  candidateAssigned: boolean;
-}
+  | { outcome: 'outranked'; winningPolicyId: string }
+  /** The candidate policy is not assigned to this device at all. */
+  | { outcome: 'unassigned' };
 
 /**
  * Would `candidatePolicyId`'s alert rules be the ones that run on this device,
@@ -255,7 +267,7 @@ export async function resolveGoverningAlertRulePolicyForDevice(
   candidatePolicyId: string
 ): Promise<GoverningAlertRulePolicy> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
-  if (!hierarchy) return { winningPolicyId: null, candidateAssigned: false };
+  if (!hierarchy) return { outcome: 'unassigned' };
 
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
@@ -280,10 +292,20 @@ export async function resolveGoverningAlertRulePolicyForDevice(
           policyOwnershipCondition(hierarchy)
         )
       )
-      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions));
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      // sortByHierarchy re-sorts in JS, but ordering here too pins the outcome
+      // of a genuine three-way tie (same level, priority AND createdAt), which
+      // unordered Postgres output would otherwise decide arbitrarily. Matches
+      // resolveAlertRulesForDevice.
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      );
 
-    const candidateAssigned = assigned.some((row) => row.configPolicyId === candidatePolicyId);
-    if (assigned.length === 0) return { winningPolicyId: null, candidateAssigned };
+    if (!assigned.some((row) => row.configPolicyId === candidatePolicyId)) {
+      return { outcome: 'unassigned' };
+    }
 
     // Which of the assigned policies actually hold alert rules today. The
     // candidate is exempt: its rules are the draft being tested.
@@ -305,15 +327,16 @@ export async function resolveGoverningAlertRulePolicyForDevice(
       );
     const haveRules = new Set(policyIdsWithRules.map((row) => row.configPolicyId));
 
+    // The candidate is always a contender here — it is assigned, and its draft
+    // counts as a rule — so `contenders` can never be empty at this point.
     const contenders = assigned.filter(
       (row) => row.configPolicyId === candidatePolicyId || haveRules.has(row.configPolicyId)
     );
-    if (contenders.length === 0) return { winningPolicyId: null, candidateAssigned };
+    const winningPolicyId = sortByHierarchy(contenders)[0]!.configPolicyId;
 
-    return {
-      winningPolicyId: sortByHierarchy(contenders)[0]!.configPolicyId,
-      candidateAssigned,
-    };
+    return winningPolicyId === candidatePolicyId
+      ? { outcome: 'governs' }
+      : { outcome: 'outranked', winningPolicyId };
   });
 }
 
