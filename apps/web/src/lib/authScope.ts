@@ -11,25 +11,38 @@ export interface JwtClaims {
 }
 
 /**
- * Claims plus an explicit "we have actually looked at a token" bit.
+ * The outcome of *attempting* to read the claims — deliberately a union, not
+ * `JwtClaims & { resolved: boolean }`, so that `.claims` (and therefore `.scope`)
+ * is unreachable until the caller has narrowed on `status`.
  *
- * `resolved: false` means *unknown*, not *denied*: there is no access token in
- * the store yet, so every field is null for a partner and an org user alike.
- * Access tokens are deliberately never persisted (see `partialize` in
- * `stores/auth.ts` — only `user` and `isAuthenticated` survive a reload), so on
- * every cold page load `resolved` starts false and flips once the refresh cookie
- * has been exchanged. Callers that would otherwise destroy state on a denial
- * (clearing a deep-link hash, redirecting) must wait for `resolved` before
- * treating a null scope as a "no".
+ * `'unresolved'` means *unknown*, not *denied*: there is no access token in the
+ * store yet, so a partner and an org user are indistinguishable. Access tokens
+ * are deliberately never persisted (see `partialize` and `migrate` in
+ * `stores/auth.ts` — only `user` and `isAuthenticated` survive a reload), so
+ * every cold page load starts here and flips once the refresh cookie has been
+ * exchanged. That window is not always brief: while `/auth/refresh` is rate
+ * limited (#3696) the session is perfectly valid and yet tokenless for up to 90
+ * seconds.
  *
- * A present-but-undecodable token counts as resolved: we looked, and the answer
- * is "no claims", which fails closed the same way the server would.
+ * Conflating `'unresolved'` with a denial is exactly what #4010 was, and a flat
+ * `scope: null` invites precisely that — which is why the shape forces the
+ * check. Code that merely HIDES ui on a denial can narrow and fail closed in one
+ * line; code that DESTROYS state on a denial (clearing a deep-link hash,
+ * redirecting, resetting a form) must act only on a genuine `'resolved'` denial.
+ *
+ * A present-but-undecodable token is `'resolved'` with all-null claims: we
+ * looked, and the answer is "no claims". Note this is a client-side UX decision
+ * only — it denies the partner-gated UI just as a real org token would, and is
+ * NOT a replay of the server, which rejects an undecodable token outright with
+ * a 401 rather than degrading the page.
  */
-export interface ResolvedJwtClaims extends JwtClaims {
-  resolved: boolean;
-}
+export type JwtClaimsState =
+  | { status: 'unresolved' }
+  | { status: 'resolved'; claims: JwtClaims };
 
 const NO_CLAIMS: Readonly<JwtClaims> = { scope: null, orgId: null, partnerId: null };
+
+const UNRESOLVED: Readonly<JwtClaimsState> = { status: 'unresolved' };
 
 function decodeClaims(token: string | null | undefined): JwtClaims {
   if (!token) return NO_CLAIMS;
@@ -66,13 +79,18 @@ export function getJwtClaims(): JwtClaims {
 
 /**
  * Reactive form of `getJwtClaims()`: subscribes to the access token, so the
- * component re-renders when the token arrives after first paint, and reports
- * `resolved` so a null scope can be told apart from a denied one (#4010).
+ * component re-renders when it arrives after first paint, and returns a state
+ * that keeps "no token yet" distinguishable from "token says no" (#4010).
+ *
+ * Prefer this over `getJwtClaims()` in any component. The one-shot read is only
+ * correct where a stale answer cannot outlive the call (an event handler, a
+ * request builder); captured into render state or a `[]`-dep memo it freezes the
+ * empty-store answer for the life of the mount.
  */
-export function useJwtClaims(): ResolvedJwtClaims {
+export function useJwtClaims(): JwtClaimsState {
   const accessToken = useAuthStore((s) => s.tokens?.accessToken ?? null);
-  return useMemo(
-    () => ({ ...decodeClaims(accessToken), resolved: accessToken !== null }),
+  return useMemo<JwtClaimsState>(
+    () => (accessToken === null ? UNRESOLVED : { status: 'resolved', claims: decodeClaims(accessToken) }),
     [accessToken],
   );
 }

@@ -47,7 +47,11 @@ vi.mock('../../lib/authScope', () => {
   });
   return {
     getJwtClaims: claims,
-    useJwtClaims: () => ({ ...claims(), resolved: true }),
+    // NOTE: `status` is hard-wired to 'resolved' and is deliberately NOT derived
+    // from `jwtScope` — flipping `jwtScope.scope` to null here models an org-ish
+    // user with no claims, NOT the pre-token window. There is no way to reach
+    // 'unresolved' from this file; use PatchesPage.scopeResolution.test.tsx.
+    useJwtClaims: () => ({ status: 'resolved' as const, claims: claims() }),
   };
 });
 

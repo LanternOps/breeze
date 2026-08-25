@@ -117,6 +117,13 @@ describe('PatchesPage #rings deep link vs. late-arriving JWT scope (#4010)', () 
     expect(await screen.findByRole('button', { name: /Compliance/i })).toBeInTheDocument();
     // Deferred, not granted: the rings tab is not offered while the scope is unknown.
     expect(screen.queryByRole('button', { name: 'Update Rings' })).toBeNull();
+    // ...and the hash is still intact at this point. The guard cannot know in
+    // advance which way an unresolved user will go, so it must defer for
+    // EVERYONE — including the ones who will turn out to be denied. Without this
+    // assertion the test passes against the buggy code too, since the old
+    // premature clear and the new deferred-then-real clear reach the same final
+    // state for an org user.
+    expect(window.location.hash).toBe('#rings');
 
     tokenArrives({ scope: 'organization', orgId: 'org-1' });
 
@@ -134,6 +141,8 @@ describe('PatchesPage #rings deep link vs. late-arriving JWT scope (#4010)', () 
     // "scope pending" state that never clears a bookmark an org user can't use.
     render(<PatchesPage />);
     expect(await screen.findByRole('button', { name: /Compliance/i })).toBeInTheDocument();
+    // Same discriminating assertion as above: intact until the token exists.
+    expect(window.location.hash).toBe('#rings');
 
     act(() => {
       useAuthStore.setState({ tokens: { accessToken: 'not-a-jwt', expiresInSeconds: 900 } });
@@ -141,6 +150,47 @@ describe('PatchesPage #rings deep link vs. late-arriving JWT scope (#4010)', () 
 
     await waitFor(() => expect(window.location.hash).toBe(''));
     expect(screen.queryByRole('button', { name: 'Update Rings' })).toBeNull();
+  });
+
+  it('a token going away again (throttled refresh / logout) hides rings but does NOT wipe the hash', async () => {
+    // The resolved -> unresolved transition is a real sequence: while
+    // /auth/refresh is rate limited the session is valid and yet tokenless for
+    // up to 90s (#3696). Wiping the deep link there would be #4010 in slow
+    // motion, so the guard defers exactly as it does before the first token.
+    render(<PatchesPage />);
+    tokenArrives({ scope: 'partner', partnerId: 'p-1' });
+    await waitFor(() => expect(navTab('Update Rings')).toHaveClass('border-primary'));
+
+    act(() => {
+      useAuthStore.setState({ tokens: null });
+    });
+
+    // Falls closed on the view...
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Update Rings' })).toBeNull());
+    expect(screen.queryByRole('button', { name: /New Ring/i })).toBeNull();
+    // ...but the deep link survives, so the same session recovers on re-auth.
+    expect(window.location.hash).toBe('#rings');
+
+    tokenArrives({ scope: 'partner', partnerId: 'p-1' });
+    await waitFor(() => expect(navTab('Update Rings')).toHaveClass('border-primary'));
+  });
+
+  it('a token landing while the user is on #patches reveals the Update Rings tab without moving them', async () => {
+    // The nav chrome is gated on `mounted && canManageRings`, a separate path
+    // from the hash guard: a partner browsing Patches during the unresolved
+    // window must gain the tab when the token lands, and must not be yanked off
+    // the tab they are on.
+    window.history.replaceState({}, '', '/#patches');
+
+    render(<PatchesPage />);
+    await waitFor(() => expect(navTab('Patches')).toHaveClass('border-primary'));
+    expect(screen.queryByRole('button', { name: 'Update Rings' })).toBeNull();
+
+    tokenArrives({ scope: 'partner', partnerId: 'p-1' });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Update Rings' })).toBeInTheDocument());
+    expect(navTab('Patches')).toHaveClass('border-primary');
+    expect(window.location.hash).toBe('#patches');
   });
 
   it('a hashchange back to #rings while the scope is still unknown does not wipe the hash', async () => {
