@@ -250,7 +250,20 @@ async function queueScriptCommand(deviceId: string): Promise<string> {
   return row!.id;
 }
 
-function heartbeat(app: Hono, device: SeededDevice): Promise<Response> {
+/**
+ * Request helpers.
+ *
+ * `async` is load-bearing, not stylistic: Hono's `app.request()` is overloaded
+ * and returns `Response | Promise<Response>`, which does NOT satisfy a plain
+ * `: Promise<Response>` annotation on a synchronous function (TS2322). Inside
+ * an `async` function the returned value is awaited, so the union collapses to
+ * `Response` and the declared type holds. Do not "simplify" the `async` away:
+ * apps/api/tsconfig.json includes every file under `src`, so this integration
+ * file IS typechecked by CI's required Type Check job
+ * (`tsc --noEmit --project apps/api/tsconfig.json`) and dropping the keyword
+ * reddens it — a test file being out of typecheck scope is NOT true here.
+ */
+async function heartbeat(app: Hono, device: SeededDevice): Promise<Response> {
   return app.request(`/api/v1/agents/${device.agentId}/heartbeat`, {
     method: 'POST',
     headers: {
@@ -261,7 +274,7 @@ function heartbeat(app: Hono, device: SeededDevice): Promise<Response> {
   });
 }
 
-function removeDevice(app: Hono, deviceId: string, uninstallAgent: boolean): Promise<Response> {
+async function removeDevice(app: Hono, deviceId: string, uninstallAgent: boolean): Promise<Response> {
   return app.request(`/devices/${deviceId}`, {
     method: 'DELETE',
     headers: { Authorization: 'Bearer stub', 'Content-Type': 'application/json' },
@@ -269,7 +282,7 @@ function removeDevice(app: Hono, deviceId: string, uninstallAgent: boolean): Pro
   });
 }
 
-function restoreDevice(app: Hono, deviceId: string): Promise<Response> {
+async function restoreDevice(app: Hono, deviceId: string): Promise<Response> {
   return app.request(`/devices/${deviceId}/restore`, {
     method: 'POST',
     headers: { Authorization: 'Bearer stub' },
