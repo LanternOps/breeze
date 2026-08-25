@@ -98,6 +98,33 @@ describe('schedulePeripheralPolicyDevice', () => {
     );
   });
 
+  it('enqueues a follow-up instead of mutating an already active job', async () => {
+    const updateData = vi.fn();
+    queueMock.getJob.mockResolvedValue({
+      id: 'policy-reconciliation-device-3',
+      data: {
+        type: 'policy-reconciliation',
+        deviceId: 'device-3',
+        reason: 'policy_changed',
+        queuedAt: '2026-08-25T00:00:00.000Z',
+      },
+      getState: vi.fn().mockResolvedValue('active'),
+      updateData,
+    });
+    queueMock.add.mockResolvedValue({ id: 'follow-up-job' });
+
+    await expect(schedulePeripheralPolicyDevice('device-3', 'membership_changed'))
+      .resolves.toBe('follow-up-job');
+    expect(updateData).not.toHaveBeenCalled();
+    expect(queueMock.add).toHaveBeenCalledWith(
+      'policy-reconciliation',
+      expect.objectContaining({ deviceId: 'device-3', reason: 'membership_changed' }),
+      expect.objectContaining({
+        jobId: expect.stringMatching(/^policy-reconciliation-device-3-follow-up-/),
+      }),
+    );
+  });
+
   it('keyset-pages the fleet and lets reconciliation coalesce non-drifted devices', async () => {
     const loadPage = vi.fn()
       .mockResolvedValueOnce([{ id: 'device-1' }, { id: 'device-2' }])

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, asc, eq, gt, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -373,6 +374,25 @@ export async function schedulePeripheralPolicyDevice(
   if (existing) {
     const state = await existing.getState();
     if (isReusableState(state)) {
+      if (state === 'active') {
+        const followUp = await queue.add(
+          'policy-reconciliation',
+          {
+            type: 'policy-reconciliation',
+            deviceId,
+            reason,
+            queuedAt: new Date().toISOString(),
+          },
+          {
+            jobId: `${jobId}-follow-up-${randomUUID()}`,
+            attempts: 6,
+            backoff: { type: 'exponential', delay: 250 },
+            removeOnComplete: { count: 100 },
+            removeOnFail: { count: 200 },
+          },
+        );
+        return String(followUp.id);
+      }
       if (existing.data.type === 'policy-reconciliation') {
         await (existing as Job<PolicyReconciliationJobData>).updateData({
           ...existing.data,

@@ -214,50 +214,55 @@ export function digestPeripheralEnvelope(envelope: DigestEnvelope): `sha256:${st
 export async function loadAndResolveEffectivePeripheralPolicySet(
   deviceId: string,
 ): Promise<{ identity: PeripheralDeviceIdentity; effectivePolicies: PeripheralPolicyV2[] } | null> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
-      .from(devices)
-      .where(eq(devices.id, deviceId))
-      .limit(1);
-    if (!device) return null;
+  return runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext(deviceId)));
+}
 
-    const [organization] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, device.orgId))
-      .limit(1);
-    if (!organization) return null;
+export async function loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext(
+  deviceId: string,
+): Promise<{ identity: PeripheralDeviceIdentity; effectivePolicies: PeripheralPolicyV2[] } | null> {
+  const [device] = await db
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  if (!device) return null;
 
-    const membershipRows = await db
-      .select({ groupId: deviceGroupMemberships.groupId })
-      .from(deviceGroupMemberships)
-      .where(and(
-        eq(deviceGroupMemberships.deviceId, device.id),
-        eq(deviceGroupMemberships.orgId, device.orgId),
-      ));
+  const [organization] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+  if (!organization) return null;
 
-    const policyRows = await db
-      .select()
-      .from(peripheralPolicies)
-      .where(and(
-        eq(peripheralPolicies.isActive, true),
-        or(
-          eq(peripheralPolicies.orgId, device.orgId),
-          eq(peripheralPolicies.partnerId, organization.partnerId),
-        ),
-      ));
+  const membershipRows = await db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(and(
+      eq(deviceGroupMemberships.deviceId, device.id),
+      eq(deviceGroupMemberships.orgId, device.orgId),
+    ));
 
-    const identity: PeripheralDeviceIdentity = {
-      deviceId: device.id,
-      orgId: device.orgId,
-      partnerId: organization.partnerId,
-      siteId: device.siteId,
-      groupIds: membershipRows.map((row) => row.groupId).sort(compareText),
-    };
-    return {
-      identity,
-      effectivePolicies: resolveEffectivePeripheralPolicySet({ identity, policies: policyRows }),
-    };
-  }));
+  const policyRows = await db
+    .select()
+    .from(peripheralPolicies)
+    .where(and(
+      eq(peripheralPolicies.isActive, true),
+      or(
+        eq(peripheralPolicies.orgId, device.orgId),
+        eq(peripheralPolicies.partnerId, organization.partnerId),
+      ),
+    ));
+
+  const identity: PeripheralDeviceIdentity = {
+    deviceId: device.id,
+    orgId: device.orgId,
+    partnerId: organization.partnerId,
+    siteId: device.siteId,
+    groupIds: membershipRows.map((row) => row.groupId).sort(compareText),
+  };
+  return {
+    identity,
+    effectivePolicies: resolveEffectivePeripheralPolicySet({ identity, policies: policyRows }),
+  };
 }

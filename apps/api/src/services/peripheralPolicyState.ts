@@ -5,7 +5,7 @@ import type {
 } from './peripheralEffectivePolicy';
 import {
   digestPeripheralEnvelope,
-  loadAndResolveEffectivePeripheralPolicySet,
+  loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext,
 } from './peripheralEffectivePolicy';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -174,9 +174,6 @@ export async function reconcilePeripheralPolicyDevice(
   deviceId: string,
   reason: PeripheralReconcileReason,
 ): Promise<'coalesced' | 'queued' | 'incompatible'> {
-  const resolved = await loadAndResolveEffectivePeripheralPolicySet(deviceId);
-  if (!resolved) return 'incompatible';
-
   return runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async (tx) => {
     const [device] = await tx
       .select({
@@ -188,8 +185,12 @@ export async function reconcilePeripheralPolicyDevice(
       .where(eq(devices.id, deviceId))
       .limit(1)
       .for('update');
+    const resolved = device
+      ? await loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext(deviceId)
+      : null;
     if (
       !device
+      || !resolved
       || device.peripheralPolicyProtocolVersion !== 2
       || device.orgId !== resolved.identity.orgId
     ) {

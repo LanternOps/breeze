@@ -1,7 +1,7 @@
 import '../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { getTestDb } from '../__tests__/integration/setup';
 import {
   deviceCommands,
@@ -57,6 +57,87 @@ async function seedDevice(capability: number) {
 }
 
 describe('peripheral policy desired-state persistence', () => {
+  runDb('resolves the effective policy only after acquiring the device lock', async () => {
+    const database = getTestDb();
+    const seeded = await seedDevice(2);
+    const [policy] = await database.insert(peripheralPolicies).values({
+      orgId: seeded.organization.id,
+      partnerId: null,
+      name: 'Mutable storage policy',
+      deviceClass: 'storage',
+      action: 'block',
+      targetType: 'organization',
+      priority: 100,
+      targetIds: {},
+      exceptions: [],
+      isActive: true,
+    }).returning();
+
+    await reconcilePeripheralPolicyDevice(seeded.device.id, 'policy_changed');
+    const [clearState] = await database.select().from(peripheralPolicyDeviceStates)
+      .where(eq(peripheralPolicyDeviceStates.deviceId, seeded.device.id));
+    const [clearCommand] = await database.select().from(deviceCommands).where(and(
+      eq(deviceCommands.deviceId, seeded.device.id),
+      eq(deviceCommands.type, 'peripheral_policy_sync_v2'),
+    ));
+    await handlePeripheralPolicyResultV2(seeded.device.id, clearCommand!.id, {
+      schemaVersion: 2,
+      phase: 'clear_legacy',
+      revision: clearState!.desiredRevision,
+      digest: clearState!.desiredDigest,
+      outcome: 'applied',
+    });
+
+    let releaseDeviceLock!: () => void;
+    const releaseDeviceLockPromise = new Promise<void>((resolve) => {
+      releaseDeviceLock = resolve;
+    });
+    let deviceLocked!: () => void;
+    const deviceLockedPromise = new Promise<void>((resolve) => {
+      deviceLocked = resolve;
+    });
+    const lockTransaction = database.transaction(async (tx) => {
+      await tx.select({ id: devices.id }).from(devices)
+        .where(eq(devices.id, seeded.device.id)).for('update');
+      deviceLocked();
+      await releaseDeviceLockPromise;
+    });
+    await deviceLockedPromise;
+
+    const reconciliation = reconcilePeripheralPolicyDevice(seeded.device.id, 'policy_changed');
+    try {
+      let observedLockWait = false;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const rows = await database.execute(sql<{ waiting: number }>`
+          SELECT count(*)::int AS waiting
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND usename = 'breeze_app'
+            AND wait_event_type = 'Lock'
+        `);
+        if (Number(rows[0]?.waiting ?? 0) > 0) {
+          observedLockWait = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(observedLockWait).toBe(true);
+
+      await database.update(peripheralPolicies)
+        .set({ action: 'allow' })
+        .where(eq(peripheralPolicies.id, policy!.id));
+    } finally {
+      releaseDeviceLock();
+      await lockTransaction;
+    }
+    await expect(reconciliation).resolves.toBe('queued');
+
+    const [state] = await database.select().from(peripheralPolicyDeviceStates)
+      .where(eq(peripheralPolicyDeviceStates.deviceId, seeded.device.id));
+    expect((state!.desiredEnvelope as { effectivePolicies: Array<{ action: string }> })
+      .effectivePolicies.map((entry) => entry.action)).toEqual(['allow']);
+  });
+
   runDb('serializes concurrent first admission and coalesces one clear command', async () => {
     const database = getTestDb();
     const seeded = await seedDevice(2);
