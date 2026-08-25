@@ -215,16 +215,19 @@ function createFakeTx() {
   // or dropping a WHERE conjunct left this suite green. Index IS call order,
   // so `selectCalls[0]` being the `devices` lock also proves it ran BEFORE the
   // `device_commands` read.
-  const selectCalls: { where?: unknown; forArgs?: unknown[] }[] = [];
+  const selectCalls: { from?: unknown; where?: unknown; forArgs?: unknown[] }[] = [];
 
   const tx = {
     select: vi.fn(() => {
       const rows = selectQueue.shift() ?? [];
-      const record: { where?: unknown; forArgs?: unknown[] } = {};
+      const record: { from?: unknown; where?: unknown; forArgs?: unknown[] } = {};
       selectCalls.push(record);
       const chain: Record<string, any> = {};
       const settle = () => Object.assign(Promise.resolve(rows), chain);
-      chain.from = vi.fn(() => settle());
+      chain.from = vi.fn((table: unknown) => {
+        record.from = table;
+        return settle();
+      });
       chain.where = vi.fn((condition: unknown) => {
         record.where = condition;
         return settle();
@@ -306,6 +309,21 @@ describe('queueDeviceUninstall', () => {
     const update = fake.updateLog[0]!;
     expect(update.values.uninstallReasons).toEqual(['tenant_offboarding', UNINSTALL_REASON_DEVICE_REMOVE]);
     expect(update.values.deviceRemoveExpiresAt).toBeInstanceOf(Date);
+
+    // ...ONTO THAT ROW AND NOTHING ELSE. This UPDATE stamps `device_remove`
+    // AND a fresh 72h deadline, i.e. it hands out the drain exemption itself,
+    // and `device_commands` has no RLS to bound it. Swapping the row-id scope
+    // for `eq(type, 'self_uninstall')` left all 41 tests here and in
+    // core.decommission.test.ts green while granting that exemption to every
+    // non-terminal self_uninstall in the table, across every tenant —
+    // including the abuse-suspension rows this module's header exists to keep
+    // out. They would then survive the reaper and deliver on un-suspension:
+    // the same fleet-wide incident as the sibling merge loop in
+    // tenantOffboarding.ts, reached from the opposite direction.
+    const mergeWhere = sqlOf(update.where);
+    expect(mergeWhere.sql.toLowerCase()).toContain('"id" = $');
+    expect(mergeWhere.sql.toLowerCase()).not.toContain('"type"');
+    expect(mergeWhere.params).toEqual(['cmd-1']);
   });
 
   it('preserves an already-set deadline on a retried device-remove call (does not push the window out)', async () => {
@@ -343,6 +361,13 @@ describe('queueDeviceUninstall', () => {
     // the ARGUMENT too, since `.for('share')` would not serialise writers.
     const [lockSelect, existingSelect] = fake.selectCalls;
     expect(lockSelect!.forArgs).toEqual(['update']);
+
+    // The lock is on DEVICES. Asserting only the WHERE column and `for()`
+    // would still pass if the lock were moved onto `device_commands` — which
+    // locks the wrong rows entirely: two concurrent Removes of a device with
+    // no existing command would each lock nothing and both insert.
+    expect(lockSelect!.from).toBe(devices);
+    expect(existingSelect!.from).toBe(deviceCommands);
 
     // ...and that the lock is on the DEVICES select, not the command read:
     // `selectCalls` is in call order, so proving index 0 is the devices row
