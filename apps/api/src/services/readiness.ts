@@ -37,12 +37,18 @@
  * lifetime" — is testable without booting the API.
  */
 
+import type {
+  ConsumerReadinessState,
+  WorkerReadinessRegistry,
+} from './workerReadinessRegistry';
+
 export interface ReadinessSnapshot {
   ready: boolean;
   db: boolean;
   redis: boolean;
   workers: boolean;
   checkedAt: string;
+  consumers: Readonly<Record<string, ConsumerReadinessState>>;
 }
 
 export type ReadinessProbeName = 'db' | 'redis';
@@ -112,8 +118,10 @@ export interface ReadinessEvaluatorOptions {
   checkDb: () => Promise<boolean>;
   /** Live Redis probe. */
   checkRedis: () => Promise<boolean>;
-  /** Live worker view, given the freshly probed Redis result. */
-  workersHealthy: (redisOk: boolean) => boolean;
+  /** Process-local view of every declared queue consumer. */
+  workerRegistry: Pick<WorkerReadinessRegistry, 'snapshot' | 'requiredConsumersRunnable'>;
+  /** Prevents the pre-declaration startup window from becoming admissible. */
+  workersInitialized: () => boolean;
   /** True once the process has begun draining. */
   isShuttingDown: () => boolean;
   /** Whether Redis is a hard readiness dependency for this deployment. */
@@ -186,21 +194,21 @@ export function createReadinessEvaluator(
       probe('redis', options.checkRedis)
     ]);
 
-    const workers = options.workersHealthy(redis);
+    const consumers = options.workerRegistry.snapshot();
+    const workers = redis
+      && options.workersInitialized()
+      && options.workerRegistry.requiredConsumersRunnable();
     const redisReady = options.requireRedis ? redis : true;
-    // Workers can only be absent *because* Redis is. When this deployment
-    // declared Redis optional, that must not fail the verdict — but the
-    // `workers` field above still reports the honest fact.
-    const workersReady = workers || (!options.requireRedis && !redis);
 
     return {
       // Belt-and-braces for a drain that begins mid-evaluation: `get()` already
       // short-circuits, but this response is still in flight.
-      ready: !options.isShuttingDown() && db && redisReady && workersReady,
+      ready: !options.isShuttingDown() && db && redisReady && workers,
       db,
       redis,
       workers,
-      checkedAt: new Date(now()).toISOString()
+      checkedAt: new Date(now()).toISOString(),
+      consumers,
     };
   };
 
@@ -216,7 +224,8 @@ export function createReadinessEvaluator(
           db: false,
           redis: false,
           workers: false,
-          checkedAt: new Date(now()).toISOString()
+          checkedAt: new Date(now()).toISOString(),
+          consumers: options.workerRegistry.snapshot(),
         };
       }
 

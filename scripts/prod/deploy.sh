@@ -390,14 +390,14 @@ fi
 
 echo "[deploy] Running smoke checks"
 for _ in {1..24}; do
-  if curl --silent --show-error --fail "https://${BREEZE_DOMAIN}/health" >/dev/null 2>&1; then
+  if curl --silent --show-error --fail "https://${BREEZE_DOMAIN}/ready" >/dev/null 2>&1; then
     break
   fi
   sleep 5
 done
 
-if ! curl --silent --show-error --fail "https://${BREEZE_DOMAIN}/health" >/dev/null; then
-  echo "[deploy] Health check failed: https://${BREEZE_DOMAIN}/health" >&2
+if ! curl --silent --show-error --fail "https://${BREEZE_DOMAIN}/ready" >/dev/null; then
+  echo "[deploy] Readiness check failed: https://${BREEZE_DOMAIN}/ready" >&2
   exit 1
 fi
 

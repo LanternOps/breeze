@@ -292,5 +292,13 @@ export function createWorkerReadinessRegistry(options: {
   };
 }
 
+let workerReadinessTransitionHandler: (() => void) | undefined;
+
+export function setWorkerReadinessTransitionHandler(handler: () => void): void {
+  workerReadinessTransitionHandler = handler;
+}
+
 export const workerReadinessRegistry: WorkerReadinessRegistry =
-  createWorkerReadinessRegistry();
+  createWorkerReadinessRegistry({
+    onTransition: () => workerReadinessTransitionHandler?.(),
+  });

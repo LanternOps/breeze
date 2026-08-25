@@ -1,5 +1,28 @@
 import type { Context } from 'hono';
 import type { ReadinessEvaluator } from '../services/readiness';
+import {
+  summarizeConsumerReadiness,
+  type PublicConsumerReadinessSummary,
+} from '../services/workerReadinessRegistry';
+
+export type PublicReadinessResponse =
+  | {
+      ready: boolean;
+      db: boolean;
+      redis: boolean;
+      workers: boolean;
+      checkedAt: string;
+      consumerSummary: PublicConsumerReadinessSummary;
+    }
+  | {
+      ready: false;
+      db: null;
+      redis: null;
+      workers: null;
+      checkedAt: string;
+      consumerSummary: null;
+      error: 'readiness evaluation failed';
+    };
 
 export interface ReadinessHandlerDeps {
   evaluator: ReadinessEvaluator;
@@ -32,19 +55,26 @@ export function createReadinessHandler({ evaluator, onEvaluationError }: Readine
       // perfectly healthy, and claiming "database: false" would send whoever
       // reads the alert off chasing Postgres.
       onEvaluationError(error, c);
-      return c.json(
-        {
+      const response: PublicReadinessResponse = {
           ready: false,
           db: null,
           redis: null,
           workers: null,
           checkedAt: new Date().toISOString(),
+          consumerSummary: null,
           error: 'readiness evaluation failed'
-        },
-        503
-      );
+      };
+      return c.json(response, 503);
     }
 
-    return c.json(snapshot, snapshot.ready ? 200 : 503);
+    const response: PublicReadinessResponse = {
+      ready: snapshot.ready,
+      db: snapshot.db,
+      redis: snapshot.redis,
+      workers: snapshot.workers,
+      checkedAt: snapshot.checkedAt,
+      consumerSummary: summarizeConsumerReadiness(snapshot.consumers),
+    };
+    return c.json(response, snapshot.ready ? 200 : 503);
   };
 }
