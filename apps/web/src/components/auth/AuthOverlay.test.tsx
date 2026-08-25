@@ -568,6 +568,42 @@ describe('AuthOverlay refresh-throttle mask (#3696)', () => {
     expect(await screen.findByTestId('auth-throttled-overlay')).toBeInTheDocument();
   });
 
+  // The mirror image of the test above, and the one the first cut of this fix
+  // got wrong. A throttle does NOT imply the session lost its access token:
+  // AdminSessionManager fires a keepalive refresh on an interval while the user
+  // is authenticated, so a 429 routinely lands while the token is still valid
+  // and every data call is still succeeding. Masking there is wrong twice over
+  // — it hides a working page, and AuthThrottledMask's countdown ends in
+  // `window.location.reload()`, so it would discard unsaved work to "recover" a
+  // session that was never impaired.
+  it('does NOT mask, or reload, when a throttle arrives while the access token is still valid', async () => {
+    useAuthStore.setState({
+      isAuthenticated: true,
+      tokens: { accessToken: 'access-token', expiresInSeconds: 900 },
+      isLoading: false,
+      sessionExpiredReason: null,
+      authThrottledUntil: null,
+    });
+    render(<AuthOverlay />);
+    await fadeOverlayOut();
+
+    // Keepalive refresh gets rate-limited. The token is untouched.
+    act(() => {
+      useAuthStore.setState({ authThrottledUntil: Date.now() + 30_000 });
+    });
+
+    expect(screen.queryByTestId('auth-throttled-overlay')).not.toBeInTheDocument();
+
+    // Run past the retry deadline: the mask never mounted, so its countdown
+    // must never have armed the reload.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(35_000);
+    });
+
+    expect(screen.queryByTestId('auth-throttled-overlay')).not.toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it('lets a real expiry win over a stale throttle', async () => {
     useAuthStore.setState({
       authThrottledUntil: Date.now() + 30_000,

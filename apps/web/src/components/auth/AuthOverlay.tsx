@@ -286,7 +286,18 @@ export default function AuthOverlay() {
   //
   // Non-destructive by construction: the session is untouched, nothing is
   // logged out, and recovery is automatic.
-  if (authThrottledUntil !== null) {
+  //
+  // Gated on there being no usable access token, and that gate is load-bearing.
+  // The justification above only holds when the token is gone — that is what
+  // makes the data calls 401. A throttle can also arrive on a refresh the user
+  // never needed: AdminSessionManager runs a keepalive `refreshAccessToken()`
+  // on an interval while `isAuthenticated` (AdminSessionManager.tsx:308-320),
+  // so a 429 there lands while the access token is still valid and every data
+  // call is still succeeding. Masking that session would be wrong on its own,
+  // and `AuthThrottledMask` ends its countdown with `window.location.reload()`
+  // — so an unconditional branch would throw away unsaved work to "recover" a
+  // session that was never impaired. See #3696 review.
+  if (authThrottledUntil !== null && !tokens?.accessToken) {
     return <AuthThrottledMask retryAt={authThrottledUntil} />;
   }
 
