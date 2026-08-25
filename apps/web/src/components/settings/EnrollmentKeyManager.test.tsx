@@ -524,3 +524,29 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     });
   });
 });
+
+// #3964: the subtitle goes through <Trans>, whose markup parser used to escape
+// the literal `<key>` in the locale value into the visible text "&lt;key>".
+// Its `components={{ code }}` map was dead at the same time, because no locale
+// variant carried a <code> tag for it to bind to.
+describe('EnrollmentKeyManager — subtitle (#3964)', () => {
+  it('renders the CLI placeholder as literal angle brackets, not an escaped entity', async () => {
+    routeFetch([]);
+    render(<EnrollmentKeyManager />);
+
+    const subtitle = await screen.findByText(/Create and manage keys for agent enrollment/);
+    expect(subtitle.textContent).toContain('breeze-agent enroll <key>');
+    expect(subtitle.textContent).not.toContain('&lt;');
+    expect(subtitle.textContent).not.toContain('&amp;');
+  });
+
+  it('binds the command to the styled <code> wrapper the components map provides', async () => {
+    routeFetch([]);
+    render(<EnrollmentKeyManager />);
+
+    const subtitle = await screen.findByText(/Create and manage keys for agent enrollment/);
+    const code = subtitle.querySelector('code');
+    expect(code, 'the components={{ code }} map must actually bind').toBeTruthy();
+    expect(code?.textContent).toBe('breeze-agent enroll <key>');
+  });
+});

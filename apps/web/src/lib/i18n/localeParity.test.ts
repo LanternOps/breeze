@@ -349,6 +349,35 @@ function routePathValueErrors(values: LeafValues, namespace: string): string[] {
   return errors;
 }
 
+// A locale value reaches the DOM either as a React text node (plain `t()`) or
+// through <Trans>'s markup parser. React text-escapes the leading `&`, and
+// react-i18next does NOT decode entities inside <Trans> either — so an HTML
+// entity written into a JSON value can never decode in *any* render path. It
+// always reaches the user as the literal source text ("&ldquo;", "&times;").
+// Author the character itself instead: “ ” × — a real \n, U+00A0 for &nbsp;.
+// Regression guard for #3964.
+const htmlEntityPattern = /&(?:[a-zA-Z][a-zA-Z0-9]{1,9}|#(?:[0-9]{2,5}|[xX][0-9a-fA-F]{2,4}));/;
+
+function htmlEntityValueErrors(values: LeafValues, namespace: string): string[] {
+  const errors: string[] = [];
+  for (const [key, value] of values) {
+    // `flattenValues` stops at arrays, so scan array leaves element-wise.
+    const candidates: [string, unknown][] = Array.isArray(value)
+      ? value.map((entry, index) => [`${key}[${index}]`, entry] as [string, unknown])
+      : [[key, value]];
+    for (const [label, candidate] of candidates) {
+      if (typeof candidate !== 'string') continue;
+      const match = candidate.match(htmlEntityPattern);
+      if (!match) continue;
+      errors.push(
+        `${label}: value contains the HTML entity ${JSON.stringify(match[0])}, ` +
+          'which renders literally; use the character itself instead',
+      );
+    }
+  }
+  return errors;
+}
+
 function readNamespaces(locale: string): Map<string, string[]> {
   const dir = join(localesDir, locale);
   return new Map(
@@ -387,6 +416,19 @@ describe('locale parity', () => {
   });
 
   for (const locale of locales) {
+    it(`${locale} spells characters out instead of leaving HTML entities`, () => {
+      const values = locale === 'en' ? referenceValues : readNamespaceValues(locale);
+      const errors: string[] = [];
+      for (const [namespace, leaves] of values) {
+        errors.push(
+          ...htmlEntityValueErrors(leaves, namespace).map(
+            (error) => `${namespace}:${error}`,
+          ),
+        );
+      }
+      expect(errors, errors.join('\n')).toEqual([]);
+    });
+
     it(`${locale} carries no route or filesystem path as a translatable value`, () => {
       const values = locale === 'en' ? referenceValues : readNamespaceValues(locale);
       const errors: string[] = [];
@@ -485,6 +527,36 @@ describe('locale parity guard helpers', () => {
     ).toEqual([
       'actions.save: target leaf must be a string; received boolean',
     ]);
+  });
+
+  it('rejects a leaf carrying an HTML entity', () => {
+    expect(
+      htmlEntityValueErrors(
+        new Map([
+          ['suppress.howLong', 'How long should &ldquo;'],
+          ['patch.close', '&times;'],
+          ['scan.placeholder', 'device-uuid-1&#10;device-uuid-2'],
+        ]),
+        'alerts.json',
+      ),
+    ).toEqual([
+      'suppress.howLong: value contains the HTML entity "&ldquo;", which renders literally; use the character itself instead',
+      'patch.close: value contains the HTML entity "&times;", which renders literally; use the character itself instead',
+      'scan.placeholder: value contains the HTML entity "&#10;", which renders literally; use the character itself instead',
+    ]);
+  });
+
+  it('accepts an ampersand that is not an entity', () => {
+    expect(
+      htmlEntityValueErrors(
+        new Map([
+          ['reports.title', 'Research & Development'],
+          ['filters.andOr', 'AND / OR'],
+          ['suppress.howLong', 'How long should \u201c'],
+        ]),
+        'reports.json',
+      ),
+    ).toEqual([]);
   });
 
   it('rejects changed rich-text placeholder tags', () => {

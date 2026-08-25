@@ -884,7 +884,7 @@
         "windowsUpdateSource": "Windows Update Source",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Manage Windows Update exclusively through Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suppresses the endpoint's native Windows Update automatic-install channel so updates only flow through Breeze's approval rings — preventing unexpected reboots and patches outside your schedule. Windows-only; Breeze's own scan/approve/install path is unaffected. Reverts cleanly when disabled (a pre-existing admin Group Policy is left untouched).",
-        "times": "&times;",
+        "times": "×",
         "os": "os",
         "thirdParty": "third_party",
         "apps": "apps",

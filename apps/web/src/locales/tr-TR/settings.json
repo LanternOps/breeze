@@ -572,7 +572,7 @@
     },
     "loading": "Kayıt anahtarları yükleniyor...",
     "title": "Kayıt Anahtarları",
-    "description": "Temsilci kaydı için anahtarlar oluşturun ve yönetin. Bu anahtarları breeze-agent enroll <key> ile kullanın",
+    "description": "Temsilci kaydı için anahtarlar oluşturun ve yönetin. Bu anahtarları <code>breeze-agent enroll <key/></code> ile kullanın",
     "createKey": "Anahtar Oluştur",
     "saveNow": "Bu kayıt anahtarını şimdi kaydedin. Bir daha gösterilmeyecek.",
     "copied": "Kopyalandı",
