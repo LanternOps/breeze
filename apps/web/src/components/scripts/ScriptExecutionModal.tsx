@@ -1,12 +1,12 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Play, Loader2, CheckCircle, AlertCircle, Filter } from 'lucide-react';
+import { X, Play, Loader2, Clock, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
-import ProgressBar, { ProgressItemList, type ProgressItem } from '../shared/ProgressBar';
+import ProgressBar from '../shared/ProgressBar';
 import type { Script } from './ScriptList';
 import { hasSecretParameters, runtimeParameters, secretsBlockedForRun, type ScriptParameter } from './ScriptFormSchema';
-import type { FilterConditionGroup } from '@breeze/shared';
+import type { FilterConditionGroup, ScriptAdmissionResult } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
 import ScriptParametersForm, { validateParameters as validateParamsHelper } from './ScriptParametersForm';
@@ -38,10 +38,10 @@ type ScriptExecutionModalProps = {
     deviceIds: string[],
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
-  ) => Promise<void>;
+  ) => Promise<ScriptAdmissionResult>;
 };
 
-type ExecutionState = 'idle' | 'executing' | 'success' | 'error';
+type ExecutionState = 'idle' | 'submitting' | 'admitted' | 'partially_admitted' | 'rejected' | 'transport_error';
 
 export default function ScriptExecutionModal({
   script,
@@ -59,6 +59,7 @@ export default function ScriptExecutionModal({
   const [parameters, setParameters] = useState<Record<string, string | number | boolean>>({});
   const [runAs, setRunAs] = useState<'system' | 'user'>('system');
   const [executionState, setExecutionState] = useState<ExecutionState>('idle');
+  const [admissionResult, setAdmissionResult] = useState<ScriptAdmissionResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>();
   const [showConfirm, setShowConfirm] = useState(false);
   const [showAdvancedFilter, setShowAdvancedFilter] = useState(false);
@@ -184,31 +185,43 @@ export default function ScriptExecutionModal({
       return;
     }
 
-    setExecutionState('executing');
+    setExecutionState('submitting');
     setErrorMessage(undefined);
+    setAdmissionResult(null);
 
     try {
-      await onExecute(script.id, Array.from(selectedDeviceIds), parameters, runAs);
-      setExecutionState('success');
-      setTimeout(() => {
-        onClose();
-        setExecutionState('idle');
-        setShowConfirm(false);
-        setSelectedDeviceIds(new Set());
-      }, 1500);
+      const result = await onExecute(script.id, Array.from(selectedDeviceIds), parameters, runAs);
+      setAdmissionResult(result);
+      const admittedCount = result.targets.filter(target => target.admission === 'admitted').length;
+      const presentationState: ExecutionState = admittedCount === result.targets.length && admittedCount > 0
+        ? 'admitted'
+        : admittedCount > 0
+          ? 'partially_admitted'
+          : 'rejected';
+      setExecutionState(presentationState);
+      setShowConfirm(false);
+      if (presentationState === 'admitted') {
+        setTimeout(() => {
+          onClose();
+          setExecutionState('idle');
+          setAdmissionResult(null);
+          setSelectedDeviceIds(new Set());
+        }, 1500);
+      }
     } catch (err) {
-      setExecutionState('error');
+      setExecutionState('transport_error');
       setErrorMessage(err instanceof Error ? err.message : t('scriptExecutionModal.errors.executionFailed'));
       setShowConfirm(false);
     }
   };
 
   const handleClose = () => {
-    if (executionState === 'executing') return;
+    if (executionState === 'submitting') return;
     onClose();
     setExecutionState('idle');
     setShowConfirm(false);
     setErrorMessage(undefined);
+    setAdmissionResult(null);
   };
 
   return (
@@ -222,7 +235,7 @@ export default function ScriptExecutionModal({
           <button
             type="button"
             onClick={handleClose}
-            disabled={executionState === 'executing'}
+            disabled={executionState === 'submitting'}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
           >
             <X className="h-5 w-5" />
@@ -384,28 +397,54 @@ export default function ScriptExecutionModal({
           </div>
 
           {/* Execution Progress */}
-          {(executionState === 'executing' || executionState === 'success') && selectedDeviceIds.size > 1 && (
+          {(executionState === 'submitting' || admissionResult) && (
             <div className="rounded-md border bg-muted/20 p-4 space-y-3">
+              {admissionResult && (
+                <p className="text-sm font-medium">
+                  {executionState === 'admitted'
+                    ? t('scriptExecutionModal.admission.allAdmitted')
+                    : executionState === 'partially_admitted'
+                      ? t('scriptExecutionModal.admission.partiallyAdmitted')
+                      : t('scriptExecutionModal.admission.rejected')}
+                </p>
+              )}
               <ProgressBar
-                current={executionState === 'success' ? selectedDeviceIds.size : 0}
+                current={admissionResult?.targets.filter(target => target.admission === 'admitted').length ?? 0}
                 total={selectedDeviceIds.size}
-                label={executionState === 'executing'
+                label={executionState === 'submitting'
                   ? t('scriptExecutionModal.progress.submitting', { count: selectedDeviceIds.size })
-                  : t('scriptExecutionModal.progress.submitted', { count: selectedDeviceIds.size })}
-                variant={executionState === 'success' ? 'success' : 'default'}
+                  : t('scriptExecutionModal.progress.admitted', {
+                    admitted: admissionResult?.targets.filter(target => target.admission === 'admitted').length ?? 0,
+                    count: admissionResult?.targets.length ?? selectedDeviceIds.size,
+                  })}
+                variant={executionState === 'rejected' ? 'error' : executionState === 'partially_admitted' ? 'warning' : 'default'}
               />
-              <ProgressItemList
-                items={Array.from(selectedDeviceIds).map((id): ProgressItem => {
-                  const device = deviceOptions.options.find(d => d.id === id);
-                  return {
-                    id,
-                    label: device?.displayName ?? device?.hostname ?? id,
-                    status: executionState === 'success' ? 'success' : 'running',
-                    detail: device?.siteName ?? undefined,
-                  };
+              <div className="space-y-1">
+                {(admissionResult?.targets ?? Array.from(selectedDeviceIds).map(requestedDeviceId => ({
+                  requestedDeviceId,
+                  admission: 'admitted' as const,
+                  reasonCode: undefined,
+                }))).map((target) => {
+                  const device = deviceOptions.options.find(d => d.id === target.requestedDeviceId);
+                  const label = device?.displayName ?? device?.hostname ?? target.requestedDeviceId;
+                  const targetState = executionState === 'submitting'
+                    ? t('scriptExecutionModal.progress.submittingTarget')
+                    : target.admission === 'admitted'
+                      ? t('scriptExecutionModal.admission.queued')
+                      : target.admission;
+                  return (
+                    <div key={target.requestedDeviceId} className="flex items-center justify-between gap-3 rounded-md px-3 py-1.5 text-sm">
+                      <span className="truncate font-medium">{label}</span>
+                      <span className="shrink-0 text-right text-xs text-muted-foreground">
+                        <span className="font-medium">{targetState}</span>
+                        {executionState !== 'submitting' && target.reasonCode && (
+                          <span className="ml-2 font-mono">{target.reasonCode}</span>
+                        )}
+                      </span>
+                    </div>
+                  );
                 })}
-                maxVisible={8}
-              />
+              </div>
             </div>
           )}
 
@@ -442,7 +481,7 @@ export default function ScriptExecutionModal({
             <button
               type="button"
               onClick={handleClose}
-              disabled={executionState === 'executing'}
+              disabled={executionState === 'submitting'}
               className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:opacity-50"
             >
               {t('common:actions.cancel')}
@@ -450,32 +489,32 @@ export default function ScriptExecutionModal({
             <button
               type="button"
               onClick={handleExecute}
-              disabled={executionState === 'executing' || executionState === 'success' || selectedDeviceIds.size === 0 || !deviceOptions.canSubmit}
+              disabled={executionState !== 'idle' || selectedDeviceIds.size === 0 || !deviceOptions.canSubmit}
               className={cn(
                 'inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
-                executionState === 'success'
-                  ? 'bg-success text-white'
-                  : showConfirm
+                showConfirm
                     ? 'bg-warning text-white hover:bg-warning/90'
                     : 'bg-primary text-primary-foreground hover:bg-primary/90'
               )}
             >
-              {executionState === 'executing' && (
+              {executionState === 'submitting' && (
                 <Loader2 className="h-4 w-4 animate-spin" />
               )}
-              {executionState === 'success' && (
-                <CheckCircle className="h-4 w-4" />
+              {executionState === 'admitted' && (
+                <Clock className="h-4 w-4" />
               )}
-              {executionState === 'error' && (
+              {(executionState === 'partially_admitted' || executionState === 'rejected' || executionState === 'transport_error') && (
                 <AlertCircle className="h-4 w-4" />
               )}
               {executionState === 'idle' && !showConfirm && (
                 <Play className="h-4 w-4" />
               )}
-              {executionState === 'executing'
+              {executionState === 'submitting'
                 ? t('scriptExecutionModal.actions.executing')
-                : executionState === 'success'
-                  ? t('scriptExecutionModal.actions.started')
+                : executionState === 'admitted'
+                  ? t('scriptExecutionModal.actions.queued')
+                  : executionState === 'partially_admitted' || executionState === 'rejected'
+                    ? t('scriptExecutionModal.actions.reviewResult')
                   : showConfirm
                     ? t('scriptExecutionModal.actions.confirmExecute')
                     : t('scriptExecutionModal.actions.execute')}

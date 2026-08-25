@@ -11,6 +11,7 @@ import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { asList } from '@/lib/asList';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -130,14 +131,17 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     if (!response.ok) {
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
-        return;
+        throw new Error(t('scriptExecutionsPage.errors.execute'));
       }
       const data = await response.json();
       throw new Error(extractApiError(data, t('scriptExecutionsPage.errors.execute')));
     }
 
-    // Refresh executions list
-    await fetchExecutions();
+    const admission = await response.json() as ScriptAdmissionResult;
+    if (admission.targets.some(target => target.admission === 'admitted')) {
+      await fetchExecutions();
+    }
+    return admission;
   };
 
   if (loading && !script) {

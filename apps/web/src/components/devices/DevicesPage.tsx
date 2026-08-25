@@ -656,11 +656,25 @@ export default function DevicesPage() {
       const { script, runAs, parameters, devices } = pending;
       const deviceIds = devices.map(d => d.id);
       const result = await executeScript(script.id, deviceIds, parameters, runAs);
+      const admitted = result.targets.filter(target => target.admission === 'admitted');
+      const refused = result.targets.filter(target => target.admission !== 'admitted');
 
-      if (devices.length === 1) {
+      if (admitted.length === 0) {
+        const reasons = [...new Set(refused.map(target => target.reasonCode ?? target.admission))].join(', ');
+        showToast({ type: 'error', message: `${t('devicesPage.toasts.scriptQueueFailed')}: ${reasons}` });
+        return;
+      }
+
+      if (refused.length > 0) {
+        const reasons = [...new Set(refused.map(target => target.reasonCode ?? target.admission))].join(', ');
+        showToast({
+          type: 'warning',
+          message: `${admitted.length} of ${result.targets.length} script targets queued; ${refused.length} not admitted (${reasons})`,
+        });
+      } else if (devices.length === 1) {
         showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedOne', { script: script.name, hostname: devices[0].hostname }) });
       } else {
-        showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedMany', { script: script.name, count: result.devicesTargeted }) });
+        showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedMany', { script: script.name, count: admitted.length }) });
       }
 
       closeScriptPicker();

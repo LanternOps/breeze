@@ -446,11 +446,13 @@ describe('DevicesPage — multi-select run script keeps its target devices', () 
   it('executes with the originally-selected device ids, not an empty array', async () => {
     const { executeScript } = await import('../../services/deviceActions');
     vi.mocked(executeScript).mockResolvedValue({
-      batchId: 'batch-1',
-      scriptId: 'script-1',
-      devicesTargeted: 3,
-      executions: [],
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       status: 'queued',
+      targets: [DEV_1, DEV_2, DEV_3].map((requestedDeviceId, index) => ({
+        requestedDeviceId,
+        admission: 'admitted' as const,
+        executionId: `execution-${index + 1}`,
+      })),
     } as never);
 
     await renderAgentFleet();
@@ -474,6 +476,30 @@ describe('DevicesPage — multi-select run script keeps its target devices', () 
     const [scriptId, deviceIds] = vi.mocked(executeScript).mock.calls[0];
     expect(scriptId).toBe('script-1');
     expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2, DEV_3].sort());
+  });
+
+  it('does not show a queued-success toast when a valid 201 rejects every target', async () => {
+    const { executeScript } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(executeScript).mockResolvedValue({
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      status: 'rejected',
+      targets: [
+        { requestedDeviceId: DEV_1, admission: 'suppressed', reasonCode: 'maintenance_suppressed' },
+        { requestedDeviceId: DEV_2, admission: 'denied', reasonCode: 'site_access_denied' },
+        { requestedDeviceId: DEV_3, admission: 'excluded', reasonCode: 'device_decommissioned' },
+      ],
+    } as never);
+
+    await renderAgentFleet();
+    fireEvent.click(screen.getByTestId('bulk-run-script'));
+    fireEvent.click(await screen.findByTestId('pick-script'));
+    fireEvent.click(await screen.findByTestId('confirm-fleet-action'));
+
+    await waitFor(() => expect(vi.mocked(executeScript)).toHaveBeenCalledTimes(1));
+    const toastTypes = vi.mocked(showToast).mock.calls.map(([toast]) => toast.type);
+    expect(toastTypes).toContain('error');
+    expect(toastTypes).not.toContain('success');
   });
 });
 
@@ -1131,11 +1157,13 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   it('narrows bulk Run Script past the decommissioned device, keeping the offline one', async () => {
     const { executeScript } = await import('../../services/deviceActions');
     vi.mocked(executeScript).mockResolvedValue({
-      batchId: 'batch-1',
-      scriptId: 'script-1',
-      devicesTargeted: 2,
-      executions: [],
+      requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       status: 'queued',
+      targets: [DEV_1, DEV_2].map((requestedDeviceId, index) => ({
+        requestedDeviceId,
+        admission: 'admitted' as const,
+        executionId: `execution-${index + 1}`,
+      })),
     } as never);
 
     boundaryFleet();

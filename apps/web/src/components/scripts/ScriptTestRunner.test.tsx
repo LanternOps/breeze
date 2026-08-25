@@ -73,7 +73,11 @@ describe('ScriptTestRunner', () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
-        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }],
+        }, 201);
       }
       if (url === `/scripts/executions/${EXECUTION_ID}`) {
         polls += 1;
@@ -116,6 +120,43 @@ describe('ScriptTestRunner', () => {
       triggerType: 'manual',
     });
   }, 10000);
+
+  it('shows a typed rejection inline and never polls an execution', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          status: 'rejected',
+          targets: [{
+            requestedDeviceId: DEVICE_ID,
+            admission: 'suppressed',
+            reasonCode: 'maintenance_suppressed',
+          }],
+        }, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const onExecutionChange = vi.fn();
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows']}
+        isDirty={false}
+        onSaveChanges={async () => true}
+        onExecutionChange={onExecutionChange}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+
+    expect(await screen.findByText(/maintenance_suppressed/)).toBeInTheDocument();
+    expect(onExecutionChange).not.toHaveBeenCalled();
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes('/executions/'))).toBe(false);
+  });
 
   it('saves first when the form is dirty and aborts the run when the save fails', async () => {
     const onSaveChanges = vi.fn(async () => false);
@@ -204,7 +245,7 @@ describe('ScriptTestRunner', () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
-        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+        return jsonResponse({ requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'queued', targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }] }, 201);
       }
       if (url === `/scripts/executions/${EXECUTION_ID}`) {
         return jsonResponse({ id: EXECUTION_ID, status: 'completed', exitCode: 0, stdout: '', stderr: '' });
@@ -242,7 +283,7 @@ describe('ScriptTestRunner', () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
-        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+        return jsonResponse({ requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'queued', targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }] }, 201);
       }
       if (url === `/scripts/executions/${EXECUTION_ID}`) {
         return jsonResponse({ id: EXECUTION_ID, status: 'cancelled', stdout: '', stderr: '' });
@@ -269,7 +310,7 @@ describe('ScriptTestRunner', () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
-        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+        return jsonResponse({ requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'queued', targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }] }, 201);
       }
       if (url === `/scripts/executions/${EXECUTION_ID}`) return jsonResponse({ error: 'gone' }, 404);
       return jsonResponse({}, 404);
@@ -322,7 +363,7 @@ describe('ScriptTestRunner', () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
-        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+        return jsonResponse({ requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'queued', targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }] }, 201);
       }
       if (url === `/scripts/executions/${EXECUTION_ID}`) {
         polls += 1;
@@ -364,7 +405,7 @@ describe('ScriptTestRunner', () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
-        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+        return jsonResponse({ requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'queued', targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }] }, 201);
       }
       if (url === `/scripts/executions/${EXECUTION_ID}`) {
         polls += 1;
@@ -392,7 +433,7 @@ describe('ScriptTestRunner', () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
-        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+        return jsonResponse({ requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'queued', targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }] }, 201);
       }
       if (url === `/scripts/executions/${EXECUTION_ID}`) {
         return jsonResponse({ id: EXECUTION_ID, status: 'running' });

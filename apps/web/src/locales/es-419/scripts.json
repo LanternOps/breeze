@@ -806,6 +806,8 @@
       "advancedFilters": "Filtros avanzados",
       "executing": "Ejecutando...",
       "started": "¡Iniciado!",
+      "queued": "En cola",
+      "reviewResult": "Revisar resultado",
       "confirmExecute": "Confirmar Ejecutar",
       "execute": "Ejecutar"
     },
@@ -824,7 +826,15 @@
     "orSeparator": "o",
     "progress": {
       "submitting": "Enviando a dispositivos {{count}}...",
-      "submitted": "Enviado a dispositivos {{count}}"
+      "submitted": "Enviado a dispositivos {{count}}",
+      "admitted": "{{admitted}} de {{count}} dispositivos admitidos en la cola",
+      "submittingTarget": "Enviando"
+    },
+    "admission": {
+      "allAdmitted": "Todos los dispositivos seleccionados fueron admitidos y puestos en cola.",
+      "partiallyAdmitted": "Algunos dispositivos fueron admitidos y puestos en cola. Revise los objetivos restantes.",
+      "rejected": "No se admitió ningún dispositivo. Revise los motivos a continuación.",
+      "queued": "En cola"
     },
     "confirm": {
       "title": "Confirmar ejecución",

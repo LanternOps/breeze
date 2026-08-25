@@ -1,5 +1,6 @@
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '../lib/apiError';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 
 export interface CommandResult {
   id: string;
@@ -349,14 +350,6 @@ export async function sendBulkCommand(
   return data.data ?? data;
 }
 
-export interface ScriptExecuteResult {
-  batchId: string | null;
-  scriptId: string;
-  devicesTargeted: number;
-  executions: Array<{ executionId: string; deviceId: string; commandId: string }>;
-  status: string;
-}
-
 export type ScriptRunAsOverride = 'system' | 'user';
 
 export async function executeScript(
@@ -365,7 +358,7 @@ export async function executeScript(
   parameters?: Record<string, unknown>,
   runAs?: ScriptRunAsOverride,
   targetSessionId?: number
-): Promise<ScriptExecuteResult> {
+): Promise<ScriptAdmissionResult> {
   const body: Record<string, unknown> = { deviceIds };
   if (parameters) body.parameters = parameters;
   if (runAs) body.runAs = runAs;
@@ -380,7 +373,7 @@ export async function executeScript(
     throw new Error(await getErrorMessage(response, 'Failed to execute script'));
   }
 
-  return await response.json();
+  return await response.json() as ScriptAdmissionResult;
 }
 
 export async function decommissionDevice(deviceId: string): Promise<{ success: boolean }> {

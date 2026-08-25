@@ -15,6 +15,7 @@ import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -148,61 +149,16 @@ export default function ScriptsPage() {
       body: JSON.stringify({ deviceIds, parameters, runAs })
     });
 
-    const data = await response.json().catch(() => ({})) as {
-      error?: string;
-      lastRun?: string;
-      executedAt?: string;
-      startedAt?: string;
-      createdAt?: string;
-      execution?: {
-        lastRun?: string;
-        executedAt?: string;
-        startedAt?: string;
-        createdAt?: string;
-      };
-      executions?: Array<{
-        lastRun?: string;
-        executedAt?: string;
-        startedAt?: string;
-        createdAt?: string;
-      }>;
-    };
+    const data = await response.json().catch(() => ({})) as ScriptAdmissionResult & { error?: string };
 
     if (!response.ok) {
       throw new Error(extractApiError(data, t('scriptsPage.errors.execute')));
     }
 
-    const candidateTimestamps = [
-      data.lastRun,
-      data.executedAt,
-      data.startedAt,
-      data.createdAt,
-      data.execution?.lastRun,
-      data.execution?.executedAt,
-      data.execution?.startedAt,
-      data.execution?.createdAt,
-      data.executions?.[0]?.lastRun,
-      data.executions?.[0]?.executedAt,
-      data.executions?.[0]?.startedAt,
-      data.executions?.[0]?.createdAt
-    ];
-    const lastRunTime = candidateTimestamps.find(value => {
-      if (!value) return false;
-      return !Number.isNaN(new Date(value).getTime());
-    });
-
-    if (lastRunTime) {
-      setScripts(prev =>
-        prev.map(s =>
-          s.id === scriptId
-            ? { ...s, lastRun: lastRunTime }
-            : s
-        )
-      );
-      return;
+    if (data.targets.some(target => target.admission === 'admitted')) {
+      await fetchScripts();
     }
-
-    await fetchScripts();
+    return data;
   };
 
   const handleConfirmDelete = async () => {
