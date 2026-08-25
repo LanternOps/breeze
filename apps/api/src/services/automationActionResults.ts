@@ -74,7 +74,7 @@ function correlationsPatch(state: ActionState, input: Correlations): ActionPatch
 function decideDispatchTransition(
   state: ActionState,
   input: Correlations & {
-    status: 'pending' | 'queued' | 'delivered' | 'running' | 'failed' | 'skipped';
+    status: 'pending' | 'queued' | 'delivered' | 'running' | 'succeeded' | 'failed' | 'skipped';
     message?: string;
   },
 ): ActionPatch | null {
@@ -82,7 +82,7 @@ function decideDispatchTransition(
   const correlationPatch = correlationsPatch(state, input);
   if (!correlationPatch) return null;
 
-  if (input.status === 'failed' || input.status === 'skipped') {
+  if (input.status === 'succeeded' || input.status === 'failed' || input.status === 'skipped') {
     return {
       ...correlationPatch,
       status: input.status,
@@ -338,7 +338,7 @@ export async function recordAutomationActionDispatch(input: {
   runId: string;
   deviceId: string;
   actionIndex: number;
-  status: 'queued' | 'delivered' | 'running' | 'failed' | 'skipped';
+  status: 'queued' | 'delivered' | 'running' | 'succeeded' | 'failed' | 'skipped';
   commandId?: string;
   scriptExecutionId?: string;
   deploymentResultId?: string;

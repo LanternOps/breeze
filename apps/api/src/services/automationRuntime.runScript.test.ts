@@ -199,7 +199,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       buildContext(),
     );
 
-    expect(result.success).toBe(true);
+    expect(result.outcome.status).toBe('delivered');
     expect(dispatchMock).toHaveBeenCalledTimes(1);
 
     const input = dispatchMock.mock.calls[0]![0] as Record<string, unknown>;
@@ -222,7 +222,11 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       buildContext(),
     );
 
-    expect(result.success).toBe(true);
+    expect(result.outcome).toEqual({
+      status: 'delivered',
+      commandId: 'cmd-1',
+      scriptExecutionId: EXECUTION_ID,
+    });
     expect(result.log.commandId).toBe('cmd-1');
     expect(result.log.details).toMatchObject({ scriptId: 'script-1', executionId: EXECUTION_ID });
     // Delivered: the core already wrote 'running' itself, so the caller must
@@ -240,12 +244,17 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       ignoredParameters: [],
     });
 
-    await executeRunScriptAction(
+    const result = await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,
       buildContext(),
     );
 
+    expect(result.outcome).toEqual({
+      status: 'queued',
+      commandId: 'cmd-1',
+      scriptExecutionId: EXECUTION_ID,
+    });
     expect(updatedValues).toEqual([{ status: 'queued' }]);
   });
 
@@ -316,7 +325,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       buildContext(),
     );
 
-    expect(result.success).toBe(false);
+    expect(result.outcome.status).toBe('failed');
     expect(result.log.details).toMatchObject({
       error: 'Device is offline, cannot execute command',
       scriptId: 'script-1',
@@ -351,7 +360,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       context as never,
     );
 
-    expect(result.success).toBe(false);
+    expect(result.outcome.status).toBe('failed');
     expect(dispatchMock).not.toHaveBeenCalled();
   });
 
@@ -367,7 +376,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       context as never,
     );
 
-    expect(result.success).toBe(false);
+    expect(result.outcome.status).toBe('failed');
     expect(dispatchMock).not.toHaveBeenCalled();
   });
 });

@@ -22,6 +22,11 @@ describe('automation action-result state machine', () => {
       .toMatchObject({ status: to });
   });
 
+  it('terminalizes a synchronous action through the dispatch identity', () => {
+    expect(__testOnly.decideDispatchTransition(pending, { status: 'succeeded' }))
+      .toMatchObject({ status: 'succeeded', terminalSource: 'dispatch' });
+  });
+
   it.each([
     ['queued', 'pending'],
     ['delivered', 'pending'],
