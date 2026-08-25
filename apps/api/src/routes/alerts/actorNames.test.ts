@@ -2,10 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const { selectMock, runOutsideDbContextMock, withSystemDbAccessContextMock } = vi.hoisted(() => ({
+const {
+  selectMock,
+  runOutsideDbContextMock,
+  withSystemDbAccessContextMock,
+  captureExceptionMock,
+} = vi.hoisted(() => ({
   selectMock: vi.fn(),
   runOutsideDbContextMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(),
+  captureExceptionMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -13,6 +19,8 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: runOutsideDbContextMock,
   withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
+
+vi.mock('../../services/sentry', () => ({ captureException: captureExceptionMock }));
 
 import { resolveUserDisplayNames, withAlertActorNames } from './actorNames';
 
@@ -142,6 +150,52 @@ describe('withAlertActorNames', () => {
       expect.objectContaining({ acknowledgedByName: null, resolvedByName: null })
     );
     expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('resolves a technician who acknowledged several alerts with ONE query', async () => {
+    // The realistic MSP page: one tech acked three alerts. The id must be
+    // deduped into a single round trip, and every row still gets the name.
+    mockUsersQuery([{ id: ADMIN_ID, name: 'Breeze Admin' }]);
+
+    const enriched = await withAlertActorNames([
+      { id: 'alert-1', acknowledgedBy: ADMIN_ID, resolvedBy: null },
+      { id: 'alert-2', acknowledgedBy: ADMIN_ID, resolvedBy: null },
+      { id: 'alert-3', acknowledgedBy: ADMIN_ID, resolvedBy: ADMIN_ID },
+    ]);
+
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    const compiled = new PgDialect().sqlToQuery(capturedWhere!);
+    expect(compiled.params).toEqual([ADMIN_ID]);
+    expect(enriched.map((row) => row.acknowledgedByName)).toEqual([
+      'Breeze Admin',
+      'Breeze Admin',
+      'Breeze Admin',
+    ]);
+    expect(enriched[2]!.resolvedByName).toBe('Breeze Admin');
+  });
+
+  it('returns the alerts unenriched — never throws — when the lookup fails', async () => {
+    // Names are cosmetic. A users-table blip must not 500 the whole Alerts
+    // page, but it must be reported: a silent degradation here is
+    // indistinguishable from "that technician was deleted".
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const boom = new Error('connection terminated unexpectedly');
+    selectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({ where: vi.fn(() => Promise.reject(boom)) })),
+    }));
+
+    const enriched = await withAlertActorNames([
+      { id: 'alert-1', acknowledgedBy: ADMIN_ID },
+    ]);
+
+    expect(enriched).toEqual([{ id: 'alert-1', acknowledgedBy: ADMIN_ID }]);
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      boom,
+      undefined,
+      expect.objectContaining({ stage: 'actor-name-resolution' })
+    );
+    expect(consoleSpy).toHaveBeenCalled();
+    consoleSpy.mockRestore();
   });
 
   it('short-circuits on an empty page of alerts', async () => {

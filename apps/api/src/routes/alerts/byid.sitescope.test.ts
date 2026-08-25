@@ -193,6 +193,7 @@ const ALERT_B = 'a2a2a2a2-2222-4222-8222-222222222222'; // SITE_B device
 const ALERT_ORGWIDE = 'a3a3a3a3-3333-4333-8333-333333333333'; // deviceless
 const ALERT_RESOLVED = 'a4a4a4a4-4444-4444-8444-444444444444'; // deviceless, already resolved
 const ACK_USER = '9cea2f85-2da1-445d-88cc-7c404d7504c4';
+const RESOLVE_USER = '1f0e3f2c-9a2b-4c7d-9f10-8f6a2b3c4d5e';
 const ALERTS_WRITE = 'alerts:write';
 const ALERTS_ACKNOWLEDGE = 'alerts:acknowledge';
 
@@ -235,12 +236,16 @@ describe('alert by-id site-axis scope (T9, #1051)', () => {
     });
 
     it('returns the acknowledging user’s display name, not just the id (#3966)', async () => {
+      state.users.push({ id: RESOLVE_USER, name: 'Dana Tech' });
       state.alerts[2]!.acknowledgedBy = ACK_USER;
+      state.alerts[2]!.resolvedBy = RESOLVE_USER;
       const res = await makeApp().request(`/alerts/${ALERT_ORGWIDE}`);
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.acknowledgedBy).toBe(ACK_USER);
       expect(body.acknowledgedByName).toBe('Breeze Admin');
+      expect(body.resolvedBy).toBe(RESOLVE_USER);
+      expect(body.resolvedByName).toBe('Dana Tech');
     });
 
     it('returns a null name when the acknowledging user no longer exists (#3966)', async () => {

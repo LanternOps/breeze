@@ -1,6 +1,7 @@
 import { inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { users } from '../../db/schema';
+import { captureException } from '../../services/sentry';
 
 /**
  * Alert columns that hold a user id. Each gets a `<field>Name` companion in the
@@ -67,6 +68,9 @@ export async function resolveUserDisplayNames(
  * fabricated `null` name); a present-but-unresolvable id (deleted user) yields
  * `null` so clients can fall back to a generic label rather than printing the
  * UUID.
+ *
+ * Never throws: a failed lookup degrades to unenriched rows (see below) so the
+ * alerts payload itself always survives.
  */
 export async function withAlertActorNames<T extends AlertActorRow>(
   rows: T[]
@@ -75,9 +79,28 @@ export async function withAlertActorNames<T extends AlertActorRow>(
     return [];
   }
 
-  const names = await resolveUserDisplayNames(
-    rows.flatMap((row) => ACTOR_ID_FIELDS.map((field) => row[field]))
-  );
+  let names: Map<string, string>;
+  try {
+    names = await resolveUserDisplayNames(
+      rows.flatMap((row) => ACTOR_ID_FIELDS.map((field) => row[field]))
+    );
+  } catch (error) {
+    // Names are cosmetic enrichment. By the time we get here the alerts
+    // themselves are fetched, access-checked and joined — a `users` blip (pool
+    // exhaustion, a transient PG error, a fault establishing the system context)
+    // must not turn the whole Alerts page into a 500. Degrade to unenriched
+    // rows, which clients already render as the generic "unknown user" label.
+    //
+    // Loud for engineers, graceful for the operator: without this report the
+    // degradation WOULD be a silent failure, indistinguishable from "that user
+    // was deleted".
+    captureException(error, undefined, {
+      route: 'alerts',
+      stage: 'actor-name-resolution',
+    });
+    console.error('[alerts] actor display-name lookup failed; returning alerts without names', error);
+    return rows as (T & AlertActorNames)[];
+  }
 
   return rows.map((row) => {
     const enriched = { ...row } as T & AlertActorNames;
