@@ -320,6 +320,32 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 	return nil
 }
 
+// RestartAfterRollback delegates the self-stop/start to a detached process;
+// the agent service cannot synchronously stop itself and then call Start.
+func RestartAfterRollback() error {
+	scriptFile, err := os.CreateTemp("", "breeze-rollback-restart-*.ps1")
+	if err != nil {
+		return err
+	}
+	script := "Start-Sleep -Seconds 2\r\nRestart-Service -Name '" + serviceName + "' -Force\r\nRemove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue"
+	if _, err := scriptFile.WriteString(script); err != nil {
+		_ = scriptFile.Close()
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	if err := scriptFile.Close(); err != nil {
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.Name())
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	return cmd.Process.Release()
+}
+
 // replaceRollbackFile uses Windows' write-through replacement primitive so a
 // stopped component changes from old to target in one filesystem operation.
 func replaceRollbackFile(stagedPath, livePath string) error {

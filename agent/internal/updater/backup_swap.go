@@ -177,10 +177,20 @@ func writeRollbackJournal(path string, journal rollbackSwapJournal) error {
 // SwapRollbackArtifacts crosses the complete-set boundary using a durable
 // journal. An interrupted non-committed journal always recovers the old set.
 func SwapRollbackArtifacts(set RollbackSwapSet) error {
-	return swapRollbackArtifacts(set, nil)
+	return swapRollbackArtifactsMode(set, nil, true)
 }
 
 func swapRollbackArtifacts(set RollbackSwapSet, afterRename func(int) error) error {
+	return swapRollbackArtifactsMode(set, afterRename, true)
+}
+
+// SwapRollbackArtifactsRetainingJournal installs the target set but retains
+// the old set and journal until post-restart health calls CommitRollbackSwap.
+func SwapRollbackArtifactsRetainingJournal(set RollbackSwapSet) error {
+	return swapRollbackArtifactsMode(set, nil, false)
+}
+
+func swapRollbackArtifactsMode(set RollbackSwapSet, afterRename func(int) error, finalize bool) error {
 	if strings.TrimSpace(set.DirectiveID) == "" || set.JournalPath == "" || len(set.Artifacts) == 0 {
 		return fmt.Errorf("rollback swap set is incomplete")
 	}
@@ -258,6 +268,14 @@ func swapRollbackArtifacts(set RollbackSwapSet, afterRename func(int) error) err
 			}
 		}
 	}
+	journal.State = "swapped"
+	journal.Next = len(journal.Artifacts)
+	if err := writeRollbackJournal(set.JournalPath, journal); err != nil {
+		return fmt.Errorf("write swapped rollback journal: %w", err)
+	}
+	if !finalize {
+		return nil
+	}
 	journal.State = "committed"
 	journal.Next = len(journal.Artifacts)
 	if err := writeRollbackJournal(set.JournalPath, journal); err != nil {
@@ -271,6 +289,34 @@ func swapRollbackArtifacts(set RollbackSwapSet, afterRename func(int) error) err
 		return err
 	}
 	return syncRollbackDir(set.JournalPath)
+}
+
+// CommitRollbackSwap makes a health-verified target set permanent and removes
+// the retained old-set recovery material.
+func CommitRollbackSwap(journalPath string) error {
+	payload, err := os.ReadFile(journalPath)
+	if err != nil {
+		return err
+	}
+	var journal rollbackSwapJournal
+	if err := json.Unmarshal(payload, &journal); err != nil {
+		return err
+	}
+	if journal.SchemaVersion != 1 || journal.State != "swapped" {
+		return fmt.Errorf("rollback journal is not ready to commit")
+	}
+	journal.State = "committed"
+	if err := writeRollbackJournal(journalPath, journal); err != nil {
+		return err
+	}
+	for _, entry := range journal.Artifacts {
+		_ = os.Remove(entry.BackupPath)
+		_ = os.Remove(entry.NewPath)
+	}
+	if err := os.Remove(journalPath); err != nil {
+		return err
+	}
+	return syncRollbackDir(journalPath)
 }
 
 // RecoverRollbackSwap deterministically resolves an interrupted journal to a

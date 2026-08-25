@@ -1352,6 +1352,12 @@ func (u *Updater) StageRollbackArtifacts(request RollbackStageRequest) (StagedRo
 	return result, nil
 }
 
+// VerifySignedPayload verifies an arbitrary domain-separated payload against
+// the same exact keyed manifest trust set used for release artifacts.
+func (u *Updater) VerifySignedPayload(keyID string, payload, signature []byte) error {
+	return u.verifyManifestSignature(payload, signature, keyID)
+}
+
 // downloadBinary fetches download info from the API and then downloads the binary.
 // Supports both legacy redirect responses and JSON info responses.
 // downloadBinary returns the temp path of the downloaded binary, the verified

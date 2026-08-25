@@ -248,3 +248,58 @@ func TestRollbackSwapCommitsCompleteTargetSet(t *testing.T) {
 		t.Fatalf("journal retained after commit: %v", err)
 	}
 }
+
+func TestRollbackSwapRetainsOldSetUntilHealthCommit(t *testing.T) {
+	newSet := func(t *testing.T) RollbackSwapSet {
+		dir := t.TempDir()
+		set := RollbackSwapSet{DirectiveID: "rollback-id", JournalPath: filepath.Join(dir, "rollback.json")}
+		for _, name := range []string{"agent", "backup"} {
+			live := filepath.Join(dir, name)
+			staged := filepath.Join(dir, name+".staged")
+			if err := os.WriteFile(live, []byte("old "+name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(staged, []byte("target "+name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			set.Artifacts = append(set.Artifacts, RollbackSwapArtifact{Component: RollbackComponent(name), StagedPath: staged, LivePath: live})
+		}
+		return set
+	}
+	t.Run("unhealthy recovers old", func(t *testing.T) {
+		set := newSet(t)
+		if err := SwapRollbackArtifactsRetainingJournal(set); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(set.JournalPath); err != nil {
+			t.Fatal("recoverable journal was not retained")
+		}
+		if err := RecoverRollbackSwap(set.JournalPath); err != nil {
+			t.Fatal(err)
+		}
+		for _, artifact := range set.Artifacts {
+			got, _ := os.ReadFile(artifact.LivePath)
+			if string(got) != "old "+string(artifact.Component) {
+				t.Fatalf("%s was not recovered", artifact.Component)
+			}
+		}
+	})
+	t.Run("healthy commits target", func(t *testing.T) {
+		set := newSet(t)
+		if err := SwapRollbackArtifactsRetainingJournal(set); err != nil {
+			t.Fatal(err)
+		}
+		if err := CommitRollbackSwap(set.JournalPath); err != nil {
+			t.Fatal(err)
+		}
+		for _, artifact := range set.Artifacts {
+			got, _ := os.ReadFile(artifact.LivePath)
+			if string(got) != "target "+string(artifact.Component) {
+				t.Fatalf("%s target was not retained", artifact.Component)
+			}
+		}
+		if _, err := os.Stat(set.JournalPath); !os.IsNotExist(err) {
+			t.Fatal("committed journal was not removed")
+		}
+	})
+}

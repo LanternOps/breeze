@@ -47,6 +47,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	rollbackstate "github.com/breeze-rmm/agent/internal/rollback"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
@@ -79,15 +80,16 @@ const pendingActivationClockSkew = 10 * time.Minute
 const selfInitiatedRenewalLeadTime = 24 * time.Hour
 
 type HeartbeatPayload struct {
-	Metrics          *collectors.SystemMetrics `json:"metrics,omitempty"`
-	MetricsAvailable *bool                     `json:"metricsAvailable,omitempty"`
-	Status           string                    `json:"status"`
-	AgentVersion     string                    `json:"agentVersion"`
-	IPHistoryUpdate  *IPHistoryUpdate          `json:"ipHistoryUpdate,omitempty"`
-	PendingReboot    bool                      `json:"pendingReboot"`
-	LastUser         string                    `json:"lastUser,omitempty"`
-	UptimeSeconds    int64                     `json:"uptime,omitempty"`
-	DeviceRole       string                    `json:"deviceRole,omitempty"`
+	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`
+	MetricsAvailable    *bool                      `json:"metricsAvailable,omitempty"`
+	Status              string                     `json:"status"`
+	AgentVersion        string                     `json:"agentVersion"`
+	RollbackObservation *rollbackstate.Observation `json:"rollbackObservation,omitempty"`
+	IPHistoryUpdate     *IPHistoryUpdate           `json:"ipHistoryUpdate,omitempty"`
+	PendingReboot       bool                       `json:"pendingReboot"`
+	LastUser            string                     `json:"lastUser,omitempty"`
+	UptimeSeconds       int64                      `json:"uptime,omitempty"`
+	DeviceRole          string                     `json:"deviceRole,omitempty"`
 	// Orthogonal virtualization attribute (issue #1387). IsVirtual is a
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
@@ -218,7 +220,8 @@ type HeartbeatResponse struct {
 	// Wave 6 Task 7 — signed authorisations to add an unseen manifest signing
 	// key. Nothing here is trusted on receipt; every record is verified
 	// against the currently-pinned key it names.
-	ManifestKeyDelegations []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
+	ManifestKeyDelegations            []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
+	AcknowledgedRollbackObservationID string                      `json:"acknowledgedRollbackObservationId,omitempty"`
 }
 
 type HelperSettings struct {
@@ -280,35 +283,36 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
-	config           *config.Config
-	secureToken      *secmem.SecureString
-	client           *http.Client
-	clientMu         sync.RWMutex
-	stopChan         chan struct{}
-	metricsCol       *collectors.MetricsCollector
-	hardwareCol      *collectors.HardwareCollector
-	softwareCol      *collectors.SoftwareCollector
-	inventoryCol     *collectors.InventoryCollector
-	vpnCol           *collectors.VPNCollector
-	changeTrackerCol *collectors.ChangeTrackerCollector
-	sessionCol       *collectors.SessionCollector
-	policyStateCol   *collectors.PolicyStateCollector
-	patchCol         *collectors.PatchCollector
-	patchMgr         *patching.PatchManager
-	connectionsCol   *collectors.ConnectionsCollector
-	eventLogCol      *collectors.EventLogCollector
-	bootCol          *collectors.BootPerformanceCollector
-	reliabilityCol   *collectors.ReliabilityCollector
-	agentVersion     string
-	desktopMgr       *desktop.SessionManager
-	wsDesktopMgr     *desktop.WsSessionManager
-	terminalMgr      *terminal.Manager
-	tunnelMgr        *tunnel.Manager
-	executor         *executor.Executor
-	backupBinaryPath string
-	rebootMgr        *patching.RebootManager
-	securityScanner  *security.SecurityScanner
-	wsClient         *websocket.Client
+	config             *config.Config
+	secureToken        *secmem.SecureString
+	client             *http.Client
+	clientMu           sync.RWMutex
+	stopChan           chan struct{}
+	metricsCol         *collectors.MetricsCollector
+	hardwareCol        *collectors.HardwareCollector
+	softwareCol        *collectors.SoftwareCollector
+	inventoryCol       *collectors.InventoryCollector
+	vpnCol             *collectors.VPNCollector
+	changeTrackerCol   *collectors.ChangeTrackerCollector
+	sessionCol         *collectors.SessionCollector
+	policyStateCol     *collectors.PolicyStateCollector
+	patchCol           *collectors.PatchCollector
+	patchMgr           *patching.PatchManager
+	connectionsCol     *collectors.ConnectionsCollector
+	eventLogCol        *collectors.EventLogCollector
+	bootCol            *collectors.BootPerformanceCollector
+	reliabilityCol     *collectors.ReliabilityCollector
+	agentVersion       string
+	desktopMgr         *desktop.SessionManager
+	wsDesktopMgr       *desktop.WsSessionManager
+	terminalMgr        *terminal.Manager
+	tunnelMgr          *tunnel.Manager
+	executor           *executor.Executor
+	backupBinaryPath   string
+	rollbackController rollbackController
+	rebootMgr          *patching.RebootManager
+	securityScanner    *security.SecurityScanner
+	wsClient           *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -723,6 +727,13 @@ type Heartbeat struct {
 	hbConsecutiveFailures int // guarded by h.mu
 }
 
+type rollbackController interface {
+	Execute(context.Context, rollbackstate.Directive) error
+	Reconcile(context.Context) error
+	PendingObservation() (*rollbackstate.Observation, error)
+	Acknowledge(string) error
+}
+
 func New(cfg *config.Config) *Heartbeat {
 	return NewWithVersion(cfg, "0.1.0", nil, nil)
 }
@@ -961,6 +972,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
+	h.initializeRollbackController()
 
 	return h
 }
@@ -3914,6 +3926,13 @@ func (h *Heartbeat) sendHeartbeat() {
 			RollbackProtocolVersion:         1,
 		},
 	}
+	if h.rollbackController != nil {
+		if observation, err := h.rollbackController.PendingObservation(); err != nil {
+			log.Warn("failed to load pending rollback observation", "error", err.Error())
+		} else {
+			payload.RollbackObservation = observation
+		}
+	}
 	// Hosted/self-host build-edition + migration-needed telemetry (Task 8).
 	// Independent of hostpolicy.Strict() — see migrationSignal doc comment.
 	// Checks the persisted backup as well as the primary so a hosted-gap
@@ -4294,7 +4313,17 @@ func (h *Heartbeat) applyManifestKeyDelegations(delivered []api.ManifestKeyDeleg
 // already made the response's origin the current server URL (the regular
 // path trivially has; the probe path promotes first) so that command results
 // and rotation requests go back to the control plane that issued them.
+func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
+	if h.rollbackController == nil || id == "" {
+		return
+	}
+	if err := h.rollbackController.Acknowledge(id); err != nil {
+		log.Warn("failed to persist rollback observation acknowledgement", "error", err.Error())
+	}
+}
+
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	h.acknowledgeRollbackObservation(response.AcknowledgedRollbackObservationID)
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
 	}

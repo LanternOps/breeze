@@ -98,6 +98,8 @@ var allCommandTypes = []string{
 
 	// handlers_autoupdate.go
 	tools.CmdSetAutoUpdate,
+	// handlers_rollback.go
+	tools.CmdAgentRollbackV1,
 
 	// handlers_devupdate.go init()
 	tools.CmdDevUpdate,

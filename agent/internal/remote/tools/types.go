@@ -117,6 +117,7 @@ const (
 	CmdSecurityThreatRestore    = "security_threat_restore"
 	CmdSensitiveDataScan        = "sensitive_data_scan"
 	CmdPeripheralPolicySyncV2   = "peripheral_policy_sync_v2"
+	CmdAgentRollbackV1          = "agent_rollback_v1"
 	CmdEncryptionCollectKeys    = "encryption_collect_keys"
 	CmdEncryptionRotateKey      = "encryption_rotate_key"
 	CmdEncryptFile              = "encrypt_file"
