@@ -23,6 +23,7 @@ import {
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES, SCRIPT_GRACE_BUFFER_MS } from '../services/commandTimeouts';
+import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
@@ -197,16 +198,40 @@ export async function reapStaleDeviceCommands(): Promise<number> {
   // deliver stale uninstalls to a reinstated fleet. The offboarding drain
   // reaper cancels these rows itself (with a never-drained report) when the
   // window closes, so they cannot linger past the drain either.
+  //
+  // #3986 Task 10 — a SECOND, independent arm for the device-remove drain
+  // (deviceUninstallDrain.ts). Three features queue a self_uninstall row:
+  // device remove (this arm), tenant offboarding (the arm above), and abuse
+  // suspension (routes/admin/abuse.ts, no status filter — it queues
+  // self_uninstall onto already-decommissioned devices too). The exemption
+  // below therefore keys on the explicit `device_remove` reason PLUS an
+  // unexpired deadline, never on devices.status alone: a status-only or
+  // bare-self_uninstall predicate would sweep up the abuse rows, hold them
+  // for the drain window, and on un-suspension deliver a fleet-wide
+  // uninstall to a reinstated customer. This arm deliberately does NOT
+  // reuse the EXISTS/JOIN above — that join is INNER on partners, so an org
+  // with partner_id IS NULL silently drops out of the EXISTS (a known gap
+  // in the offboarding arm) — this arm needs no join at all, so it can't
+  // inherit that bug. When the deadline passes the row reaps normally, the
+  // device stops satisfying the drain predicate, and agentAuth's 30-minute
+  // window reverts to a hard 403 on its own; no new sweeper needed.
   whereConditions.push(
     sql`NOT (
-      ${deviceCommands.type} = 'self_uninstall'
-      AND EXISTS (
-        SELECT 1
-        FROM ${devices}
-        JOIN ${organizations} ON ${organizations.id} = ${devices.orgId}
-        JOIN ${partners} ON ${partners.id} = ${organizations.partnerId}
-        WHERE ${devices.id} = ${deviceCommands.deviceId}
-          AND (${organizations.status} = 'offboarding' OR ${partners.status} = 'offboarding')
+      (
+        ${deviceCommands.type} = 'self_uninstall'
+        AND EXISTS (
+          SELECT 1
+          FROM ${devices}
+          JOIN ${organizations} ON ${organizations.id} = ${devices.orgId}
+          JOIN ${partners} ON ${partners.id} = ${organizations.partnerId}
+          WHERE ${devices.id} = ${deviceCommands.deviceId}
+            AND (${organizations.status} = 'offboarding' OR ${partners.status} = 'offboarding')
+        )
+      )
+      OR (
+        ${deviceCommands.type} = 'self_uninstall'
+        AND ${deviceCommands.uninstallReasons} @> ARRAY[${UNINSTALL_REASON_DEVICE_REMOVE}]::text[]
+        AND ${deviceCommands.deviceRemoveExpiresAt} > now()
       )
     )`,
   );
