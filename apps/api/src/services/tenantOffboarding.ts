@@ -494,6 +494,45 @@ async function countOutstandingUninstalls(orgIds: string[]): Promise<number> {
  * an explicit result — the "never drained" signal the old flow lacked (#2774:
  * silently-expired commands looked like a cleaned fleet).
  */
+/**
+ * Cancel only rows this service OWNS — its own reason, or a legacy NULL row
+ * (same compatibility predicate as `countOutstandingUninstalls` and
+ * `cancelDrainUninstallsForOrgIds` above: `array_remove(NULL, x)` is NULL in
+ * Postgres, so a NULL row is simply left NULL by the strip below and then
+ * correctly identified as "no owner left").
+ *
+ * Fix round 1: this used to cancel and report EVERY pending/sent
+ * self_uninstall for the org, the same bug already fixed on the abort path
+ * (`cancelDrainUninstallsForOrgIds`) but left live here. Concretely: an org
+ * offboards, one of its devices is separately Removed (queuing a
+ * `device_remove`-owned row with its own 72h deadline), the offboarding
+ * force-finalizes at ITS deadline — and the device-remove row got cancelled
+ * before its own window closed, plus counted in the never-drained report as
+ * though it were the tenant's to account for. The user's explicit Remove was
+ * silently undone, exactly as an unfixed abort would have done.
+ *
+ * Same shape as `cancelDrainUninstallsForOrgIds`: strip ONLY the tenant
+ * reason via `array_remove`, cancel a row only once no reason remains. A
+ * `device_remove`-owned, tenant-UNOWNED row (only `device_remove` present)
+ * never matches the WHERE below at all (excluded by `tenantOwned`), so it
+ * survives finalize with its reason AND `device_remove_expires_at` untouched
+ * — this function never writes that column. A CO-owned row (both reasons)
+ * loses only the tenant reason and stays live, non-terminal, for the
+ * device-remove owner.
+ *
+ * The never-drained report (`neverDelivered`/`deliveredUnconfirmed`) is
+ * built from the SAME tenant-owned candidate set, before the strip/cancel —
+ * a device_remove-only row was never tenant offboarding's to report on, and
+ * a co-owned row surviving the strip is still correctly reported as "this
+ * tenant's own drain did not confirm it," even though the row itself lives
+ * on for its other owner. The strip/cancel step below re-scopes by `id IN
+ * (...)` against the exact ids this same tenant-owned select already
+ * captured, rather than re-deriving the org/device scope — mirrors the
+ * id-list pattern `cancelDrainUninstallsForOrgIds` uses for its own cancel
+ * step, and sidesteps drizzle's single-`.where()`-per-statement limitation
+ * (an UPDATE can't independently AND a devices join here without a second
+ * subquery round-trip).
+ */
 async function collectAndCancelOutstanding(
   orgIds: string[],
   // Start of the drain window. Terminal counts are scoped to commands created
@@ -526,6 +565,11 @@ async function collectAndCancelOutstanding(
   const uninstallsCompleted = terminalRows.filter((row) => row.status === 'completed').length;
   const uninstallsFailed = terminalRows.filter((row) => row.status === 'failed').length;
 
+  const tenantOwned = or(
+    isNull(deviceCommands.uninstallReasons),
+    arrayContains(deviceCommands.uninstallReasons, [UNINSTALL_REASON_TENANT_OFFBOARDING])
+  );
+
   const outstanding = await db
     .select({
       id: deviceCommands.id,
@@ -539,7 +583,8 @@ async function collectAndCancelOutstanding(
       and(
         inArray(devices.orgId, orgIds),
         eq(deviceCommands.type, 'self_uninstall'),
-        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES]),
+        tenantOwned
       )
     );
 
@@ -551,24 +596,45 @@ async function collectAndCancelOutstanding(
     .map((row) => ({ deviceId: row.deviceId, hostname: row.hostname }));
 
   if (outstanding.length > 0) {
-    await db
+    const outstandingIds = outstanding.map((row) => row.id);
+
+    const stripped = await db
       .update(deviceCommands)
       .set({
-        status: 'cancelled',
-        completedAt: new Date(),
-        result: {
-          status: 'cancelled',
-          reason: 'offboarding_window_closed',
-          error: 'Offboarding drain window closed: agent never confirmed the uninstall',
-        },
-        ...terminalPayloadErasureSet(),
+        uninstallReasons: sql`array_remove(${deviceCommands.uninstallReasons}, ${UNINSTALL_REASON_TENANT_OFFBOARDING})`,
       })
       .where(
         and(
-          inArray(deviceCommands.id, outstanding.map((row) => row.id)),
+          inArray(deviceCommands.id, outstandingIds),
           inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
         )
-      );
+      )
+      .returning({ id: deviceCommands.id, uninstallReasons: deviceCommands.uninstallReasons });
+
+    const toCancelIds = stripped
+      .filter((row) => (row.uninstallReasons ?? []).length === 0)
+      .map((row) => row.id);
+
+    if (toCancelIds.length > 0) {
+      await db
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt: new Date(),
+          result: {
+            status: 'cancelled',
+            reason: 'offboarding_window_closed',
+            error: 'Offboarding drain window closed: agent never confirmed the uninstall',
+          },
+          ...terminalPayloadErasureSet(),
+        })
+        .where(
+          and(
+            inArray(deviceCommands.id, toCancelIds),
+            inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+          )
+        );
+    }
   }
 
   return { uninstallsCompleted, uninstallsFailed, neverDelivered, deliveredUnconfirmed };

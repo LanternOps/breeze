@@ -500,7 +500,14 @@ describe('finalizeOrganizationOffboarding', () => {
     queueSelect([
       { id: 'cmd-1', status: 'pending', deviceId: 'd1', hostname: 'host-1' },
       { id: 'cmd-2', status: 'sent', deviceId: 'd2', hostname: 'host-2' },
-    ]); // outstanding
+    ]); // outstanding (tenant-owned candidates only)
+    // strip step: both rows carry ONLY our reason (or NULL), so both end up
+    // with no reasons left and are cancelled.
+    updateReturningQueue.push([
+      { id: 'cmd-1', uninstallReasons: [] },
+      { id: 'cmd-2', uninstallReasons: null },
+    ]);
+    updateReturningQueue.push([{ id: 'cmd-1' }, { id: 'cmd-2' }]); // cancel step
     queueSelect([{ status: 'churned' }]); // pre-sever status re-check
 
     const report = await finalizeOrganizationOffboarding('org-1', { forcedByDeadline: true });
@@ -522,10 +529,13 @@ describe('finalizeOrganizationOffboarding', () => {
     expect(flip.values.offboardingStartedAt).toBeNull();
     expect(JSON.stringify(flip.where)).toContain('offboarding');
 
-    // Leftovers get an explicit cancellation (the never-drained signal).
-    const cancel = updatesFor(deviceCommands)[0]!;
-    expect(cancel.values.status).toBe('cancelled');
-    expect((cancel.values.result as Record<string, unknown>).reason).toBe('offboarding_window_closed');
+    // Leftovers get an explicit cancellation (the never-drained signal), via
+    // strip-then-cancel: index 0 is the strip, index 1 is the actual cancel.
+    const [strip, cancel] = updatesFor(deviceCommands);
+    expect(strip!.values.status).toBeUndefined();
+    expect(JSON.stringify(strip!.values.uninstallReasons)).toContain('array_remove');
+    expect(cancel!.values.status).toBe('cancelled');
+    expect((cancel!.values.result as Record<string, unknown>).reason).toBe('offboarding_window_closed');
 
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
@@ -535,6 +545,98 @@ describe('finalizeOrganizationOffboarding', () => {
       })
     );
     expect(severAgentCredentialsForOrgIds).toHaveBeenCalledWith(['org-1']);
+  });
+
+  // Fix round 1: collectAndCancelOutstanding used to cancel/report EVERY
+  // pending/sent self_uninstall for the org, the same bug already fixed on
+  // the abort path but left live on finalize. These four tests cover the
+  // ownership rule on THIS path specifically (forcedByDeadline: true — the
+  // scenario that actually reaches this code when a drain is force-finalized
+  // with something still outstanding).
+
+  it('the outstanding-candidate query is scoped to tenant-owned rows (own reason OR legacy NULL) — a device-remove-only row is structurally excluded', async () => {
+    queueSelect([{ startedAt: DRAIN_START }]);
+    updateReturningQueue.push([{ id: 'org-1' }]);
+    queueSelect([]); // terminal
+    queueSelect([]); // outstanding — nothing tenant-owned
+    queueSelect([{ status: 'churned' }]);
+
+    await finalizeOrganizationOffboarding('org-1', { forcedByDeadline: true });
+
+    // Select call index 2: 0 = stamp read, 1 = terminal, 2 = outstanding.
+    const outstandingWhere = selectMock.mock.results[2]!.value.where.mock.calls[0][0];
+    const whereJson = JSON.stringify(outstandingWhere);
+    expect(whereJson).toContain('self_uninstall');
+    expect(whereJson).toContain('"or"');
+    expect(whereJson).toContain('"isNull":"deviceCommands.uninstallReasons"');
+    expect(whereJson).toContain('"arrayContains":["deviceCommands.uninstallReasons"');
+    expect(whereJson).toContain('tenant_offboarding');
+    // Never a device_remove-only reason literal in this predicate — a row
+    // owned solely by device-remove is invisible to this query, so it can
+    // never be stripped, cancelled, or counted in the never-drained report.
+    // Because this function also never writes deviceRemoveExpiresAt anywhere,
+    // such a row's reason AND deadline are left completely untouched.
+    expect(whereJson).not.toContain('device_remove');
+    // No candidates found — no deviceCommands writes at all.
+    expect(updatesFor(deviceCommands)).toHaveLength(0);
+  });
+
+  it('a purely tenant-owned row is still cancelled by a forced finalize', async () => {
+    queueSelect([{ startedAt: DRAIN_START }]);
+    updateReturningQueue.push([{ id: 'org-1' }]);
+    queueSelect([]); // terminal
+    queueSelect([{ id: 'cmd-1', status: 'pending', deviceId: 'd1', hostname: 'h1' }]); // outstanding
+    updateReturningQueue.push([{ id: 'cmd-1', uninstallReasons: [] }]); // strip: nothing left
+    updateReturningQueue.push([{ id: 'cmd-1' }]); // cancel
+    queueSelect([{ status: 'churned' }]);
+
+    const report = await finalizeOrganizationOffboarding('org-1', { forcedByDeadline: true });
+
+    expect(report!.neverDelivered).toEqual([{ deviceId: 'd1', hostname: 'h1' }]);
+    const [, cancel] = updatesFor(deviceCommands);
+    expect(cancel!.values.status).toBe('cancelled');
+  });
+
+  it('a legacy NULL-reason row is still cancelled by a forced finalize (NULL is tenant-owned)', async () => {
+    queueSelect([{ startedAt: DRAIN_START }]);
+    updateReturningQueue.push([{ id: 'org-1' }]);
+    queueSelect([]); // terminal
+    queueSelect([{ id: 'cmd-1', status: 'pending', deviceId: 'd1', hostname: 'h1' }]); // outstanding
+    // array_remove(NULL, x) is NULL in real Postgres — the strip leaves
+    // uninstallReasons NULL, and (row.uninstallReasons ?? []).length === 0
+    // still treats that as "no owner left".
+    updateReturningQueue.push([{ id: 'cmd-1', uninstallReasons: null }]);
+    updateReturningQueue.push([{ id: 'cmd-1' }]);
+    queueSelect([{ status: 'churned' }]);
+
+    const report = await finalizeOrganizationOffboarding('org-1', { forcedByDeadline: true });
+
+    expect(report!.neverDelivered).toEqual([{ deviceId: 'd1', hostname: 'h1' }]);
+    const [, cancel] = updatesFor(deviceCommands);
+    expect(cancel!.values.status).toBe('cancelled');
+  });
+
+  it('a co-owned row loses only the tenant reason, stays live for device-remove, and is still reported as never-drained by this drain', async () => {
+    queueSelect([{ startedAt: DRAIN_START }]);
+    updateReturningQueue.push([{ id: 'org-1' }]);
+    queueSelect([]); // terminal
+    // This row IS tenant-owned (carries 'tenant_offboarding' among its
+    // reasons), so it's a candidate the outstanding query returns.
+    queueSelect([{ id: 'cmd-1', status: 'pending', deviceId: 'd1', hostname: 'h1' }]);
+    // strip: array_remove('tenant_offboarding') leaves 'device_remove' behind.
+    updateReturningQueue.push([{ id: 'cmd-1', uninstallReasons: ['device_remove'] }]);
+    queueSelect([{ status: 'churned' }]);
+
+    const report = await finalizeOrganizationOffboarding('org-1', { forcedByDeadline: true });
+
+    // Still reported: this tenant's own drain never confirmed it, even
+    // though the row itself survives for its other owner.
+    expect(report!.neverDelivered).toEqual([{ deviceId: 'd1', hostname: 'h1' }]);
+    // Only the strip update ran — no second (cancel) update for a row that
+    // still has an owner, and deviceRemoveExpiresAt was never touched by
+    // either update (this function writes only status/completedAt/result/
+    // payload on the cancel step, which never ran here).
+    expect(updatesFor(deviceCommands)).toHaveLength(1);
   });
 
   // Prior one-off remote uninstalls must not inflate THIS drain's completion
