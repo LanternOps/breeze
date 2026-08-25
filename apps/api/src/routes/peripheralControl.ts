@@ -43,6 +43,7 @@ const policySchema = z.object({
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues),
   action: z.enum(peripheralPolicyActionEnum.enumValues),
   targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional().default('organization'),
+  priority: z.number().int().safe().min(0).max(1000).optional(),
   targetIds: z.object({
     siteIds: z.array(z.string().guid()).max(1000).optional(),
     groupIds: z.array(z.string().guid()).max(1000).optional(),
@@ -518,6 +519,7 @@ peripheralControlRoutes.post(
           deviceClass: payload.deviceClass,
           action: payload.action,
           targetType: payload.targetType,
+          priority: payload.priority ?? existing.priority,
           targetIds: sanitizeTargetIds(payload.targetIds),
           exceptions: payload.exceptions ?? [],
           isActive: payload.isActive ?? existing.isActive,
@@ -583,6 +585,7 @@ peripheralControlRoutes.post(
         deviceClass: payload.deviceClass,
         action: payload.action,
         targetType: payload.targetType,
+        priority: payload.priority ?? 100,
         targetIds: sanitizeTargetIds(payload.targetIds),
         exceptions: payload.exceptions ?? [],
         isActive: payload.isActive ?? true,

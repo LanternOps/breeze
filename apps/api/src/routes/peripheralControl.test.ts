@@ -45,6 +45,7 @@ vi.mock('../db/schema', () => ({
     deviceClass: 'deviceClass',
     action: 'action',
     targetType: 'targetType',
+    priority: 'priority',
     isActive: 'isActive',
     updatedAt: 'updatedAt'
   },
@@ -126,6 +127,7 @@ const basePolicy = {
   deviceClass: 'storage',
   action: 'block',
   targetType: 'organization',
+  priority: 100,
   targetIds: {},
   exceptions: [],
   isActive: true,
@@ -216,6 +218,45 @@ describe('peripheralControl routes', () => {
     expect(body.data.id).toBe(policyId);
     expect(body.data.name).toBe('Block USB Storage');
     expect(body.data.deviceClass).toBe('storage');
+  });
+
+  it.each([-1, 1001, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects unsafe policy priority %s', async (priority) => {
+    const res = await app.request('/peripherals/policies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Block USB Storage',
+        deviceClass: 'storage',
+        action: 'block',
+        targetType: 'organization',
+        priority,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('persists and returns an explicitly selected safe priority', async () => {
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn((values) => ({
+        returning: vi.fn().mockResolvedValue([{ ...basePolicy, ...values, id: policyId }]),
+      })),
+    } as any);
+
+    const res = await app.request('/peripherals/policies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Block USB Storage',
+        deviceClass: 'storage',
+        action: 'block',
+        targetType: 'organization',
+        priority: 37,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).data.priority).toBe(37);
   });
 
   it('updates a policy (happy path)', async () => {
@@ -738,6 +779,7 @@ describe('peripheralControl routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.data[0].id).toBe(policyId);
+      expect(body.data[0].priority).toBe(100);
     });
 
     it('allows GET /policies/:id when caller has devices.read', async () => {

@@ -211,6 +211,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           device_class: { type: 'string', enum: [...peripheralDeviceClassEnum.enumValues] },
           policy_action: { type: 'string', enum: [...peripheralPolicyActionEnum.enumValues] },
           target_type: { type: 'string', enum: [...peripheralPolicyTargetTypeEnum.enumValues] },
+          priority: { type: 'number', description: 'Safe integer priority from 0 (highest) through 1000' },
           target_ids: { type: 'object' },
           is_active: { type: 'boolean' },
           exception: { type: 'object' },
@@ -222,6 +223,15 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const action = String(input.action ?? '');
       const policyId = typeof input.policy_id === 'string' ? input.policy_id : undefined;
+      const requestedPriority = input.priority;
+      if (requestedPriority !== undefined && (
+        typeof requestedPriority !== 'number'
+        || !Number.isSafeInteger(requestedPriority)
+        || requestedPriority < 0
+        || requestedPriority > 1000
+      )) {
+        return JSON.stringify({ error: 'priority must be a safe integer between 0 and 1000' });
+      }
 
       const fetchPolicy = async () => {
         if (!policyId) return null;
@@ -344,6 +354,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
             deviceClass: deviceClass as typeof peripheralPolicies.deviceClass.enumValues[number],
             action: policyAction as typeof peripheralPolicies.action.enumValues[number],
             targetType: targetType as typeof peripheralPolicies.targetType.enumValues[number],
+            priority: (requestedPriority as number | undefined) ?? 100,
             targetIds: (input.target_ids ?? {}) as {
               siteIds?: string[];
               groupIds?: string[];
@@ -408,6 +419,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
             targetType: typeof input.target_type === 'string'
               ? input.target_type as typeof peripheralPolicies.targetType.enumValues[number]
               : policy.targetType,
+            priority: (requestedPriority as number | undefined) ?? policy.priority,
             targetIds: (input.target_ids ?? policy.targetIds ?? {}) as {
               siteIds?: string[];
               groupIds?: string[];
