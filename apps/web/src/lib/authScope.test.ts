@@ -1,6 +1,7 @@
+import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { useAuthStore } from '../stores/auth';
-import { getJwtClaims, loginPathWithNext } from './authScope';
+import { getJwtClaims, loginPathWithNext, useJwtClaims } from './authScope';
 
 function makeToken(payload: Record<string, unknown>): string {
   const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
@@ -78,6 +79,58 @@ describe('getJwtClaims', () => {
     const c = getJwtClaims();
     expect(c.orgId).toBeNull();
     expect(c.partnerId).toBeNull();
+  });
+});
+
+describe('useJwtClaims', () => {
+  // #4010: the point of the hook over getJwtClaims() is that it distinguishes
+  // "no token yet" (unknown) from "token says not permitted" (denied), and
+  // re-renders when the token lands. Callers that destroy state on a denial —
+  // clearing a deep-link hash, redirecting — hang off exactly that difference.
+  it('reports resolved: false with all-null claims when no token is present', () => {
+    const { result } = renderHook(() => useJwtClaims());
+    expect(result.current).toEqual({ scope: null, orgId: null, partnerId: null, resolved: false });
+  });
+
+  it('reports resolved: true with decoded claims once a token is present', () => {
+    useAuthStore.setState({
+      tokens: { accessToken: makeToken({ scope: 'partner', partnerId: 'p-1' }), expiresInSeconds: 900 },
+    });
+    const { result } = renderHook(() => useJwtClaims());
+    expect(result.current).toEqual({ scope: 'partner', orgId: null, partnerId: 'p-1', resolved: true });
+  });
+
+  it('re-renders with the new claims when the token arrives after first render', () => {
+    const { result } = renderHook(() => useJwtClaims());
+    expect(result.current.resolved).toBe(false);
+
+    act(() => {
+      useAuthStore.setState({
+        tokens: { accessToken: makeToken({ scope: 'organization', orgId: 'org-1' }), expiresInSeconds: 900 },
+      });
+    });
+
+    expect(result.current).toEqual({ scope: 'organization', orgId: 'org-1', partnerId: null, resolved: true });
+  });
+
+  it('counts an undecodable token as resolved (we looked; the answer is no claims)', () => {
+    useAuthStore.setState({ tokens: { accessToken: 'notavalidjwt', expiresInSeconds: 900 } });
+    const { result } = renderHook(() => useJwtClaims());
+    expect(result.current).toEqual({ scope: null, orgId: null, partnerId: null, resolved: true });
+  });
+
+  it('goes back to unresolved when the token is cleared (logout)', () => {
+    useAuthStore.setState({
+      tokens: { accessToken: makeToken({ scope: 'system' }), expiresInSeconds: 900 },
+    });
+    const { result } = renderHook(() => useJwtClaims());
+    expect(result.current.resolved).toBe(true);
+
+    act(() => {
+      useAuthStore.setState({ tokens: null });
+    });
+
+    expect(result.current).toEqual({ scope: null, orgId: null, partnerId: null, resolved: false });
   });
 });
 

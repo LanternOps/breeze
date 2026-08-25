@@ -33,15 +33,23 @@ vi.mock('../../stores/orgStore', () => {
 });
 
 // Mutable JWT scope so individual tests can simulate partner vs. org-scoped sessions.
+// Every test here models a session whose access token has already landed, so
+// `resolved` is true throughout — the not-yet-resolved cold-load window that
+// #4010 turns on is covered by PatchesPage.scopeResolution.test.tsx, which drives
+// the real useJwtClaims against a live auth store instead of mocking it.
 const jwtScope = vi.hoisted(() => ({ scope: 'partner' as 'partner' | 'system' | 'organization' | null }));
 
-vi.mock('../../lib/authScope', () => ({
-  getJwtClaims: () => ({
+vi.mock('../../lib/authScope', () => {
+  const claims = () => ({
     scope: jwtScope.scope,
     partnerId: jwtScope.scope !== 'organization' ? 'p1' : null,
     orgId: jwtScope.scope === 'organization' ? 'org-1' : null,
-  }),
-}));
+  });
+  return {
+    getJwtClaims: claims,
+    useJwtClaims: () => ({ ...claims(), resolved: true }),
+  };
+});
 
 const fetchMock = vi.mocked(fetchWithAuth);
 

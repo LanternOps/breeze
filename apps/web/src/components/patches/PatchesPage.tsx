@@ -14,7 +14,7 @@ import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '../../stores/orgStore';
-import { getJwtClaims } from '../../lib/authScope';
+import { useJwtClaims } from '../../lib/authScope';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
@@ -79,7 +79,11 @@ export default function PatchesPage() {
   const { t } = useTranslation('patches');
   const { organizations, currentOrgId } = useOrgStore();
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
-  const { scope } = getJwtClaims();
+  // Reactive claims, not the one-shot getJwtClaims(): access tokens are never
+  // persisted, so on a cold load the store is empty at first paint and only
+  // fills once the refresh cookie has been exchanged. `scopeResolved` is what
+  // separates "not a partner" from "we don't know yet" (#4010).
+  const { scope, resolved: scopeResolved } = useJwtClaims();
   // Rings + approvals are partner-scoped: only partner/system users manage them.
   const canManageRings = scope === 'partner' || scope === 'system';
   const RING_SCOPE_HINT = t('patchesPage.ringScopeHint');
@@ -106,25 +110,33 @@ export default function PatchesPage() {
   // Sync the active tab from the hash on mount and on every hashchange — browser
   // back/forward and manual hash edits re-select the tab, mirroring DiscoveryPage.
   // The org-scope guard is re-applied on each sync (resolveTab): a #rings hash an
-  // org user can't access falls back to compliance, and when that downgrade fires
-  // we route through setActiveTab so the stale #rings is cleared from the URL
-  // rather than left pointing at a tab the user isn't on. Depending on
-  // canManageRings also re-runs the guard when scope/permissions arrive after the
-  // first render (defense-in-depth).
+  // org user can't access falls back to compliance.
+  //
+  // A downgrade only *clears* the hash once the scope is actually known (#4010).
+  // The first paint of a cold load always has an empty auth store, so an
+  // unconditional clear here would delete the `#rings` this very effect needs to
+  // re-read when the token lands a beat later — the deep link could never
+  // survive a reload, for anyone. While the scope is unresolved we render the
+  // fallback tab but leave the URL untouched, so the re-run (canManageRings /
+  // scopeResolved are both deps) can still recover the requested tab. An org
+  // user is unaffected: their downgrade is simply deferred to the moment their
+  // scope is known, and the rings body is never rendered in the meantime.
   useEffect(() => {
     const syncFromHash = () => {
       const raw = getTabFromHash();
       const resolved = resolveTab(raw, canManageRings);
-      if (resolved !== raw) {
-        setActiveTab(resolved); // downgrade — also clears the stale hash
-      } else {
+      if (resolved === raw) {
         setActiveTabState(resolved);
+      } else if (scopeResolved) {
+        setActiveTab(resolved); // known-denied downgrade — also clears the stale hash
+      } else {
+        setActiveTabState(resolved); // scope unknown — downgrade the view, keep the hash
       }
     };
     syncFromHash();
     window.addEventListener('hashchange', syncFromHash);
     return () => window.removeEventListener('hashchange', syncFromHash);
-  }, [canManageRings, setActiveTab]);
+  }, [canManageRings, scopeResolved, setActiveTab]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
