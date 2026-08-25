@@ -66,6 +66,13 @@ export interface User {
   // sessions persisted before this field (treat absent as capable; the server
   // enforces regardless).
   canManagePartnerWide?: boolean;
+  // #4018: whether the account has a password set (false for an SSO-provisioned
+  // account that was JIT-created without one). A companion plan task wires
+  // `hasPassword` into `GET /auth/me` for the profile page; nothing currently
+  // populates it on THIS store's `/users/me`-backed user object, so it reads as
+  // absent (undefined) here today. Treat absent as UNKNOWN, never as "has a
+  // password": always compare with `=== false`, never `!user?.hasPassword`.
+  hasPassword?: boolean;
   preferences?: UserPreferences;
 }
 
