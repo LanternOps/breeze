@@ -104,6 +104,7 @@ describe('getOrgCascadeDeleteOrder()', () => {
 
   it('registers health evidence and latest projection for ordinary tenant erasure', () => {
     expect(cascadeOrder).toContain('agent_health_observations');
+    expect(cascadeOrder).toContain('automation_action_results');
     expect(cascadeOrder).toContain('device_agent_health_latest');
     expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('agent_health_observations')).toBe(false);
     expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('device_agent_health_latest')).toBe(false);
