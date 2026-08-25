@@ -2087,7 +2087,7 @@ func (h *Heartbeat) sendSoftwareInventory() {
 		log.Error("failed to collect software inventory", "error", err.Error())
 		return
 	}
-	h.sendInventoryData("software", observation, fmt.Sprintf("software observation (%s, %d items)", observation.Completeness, observation.ItemCount))
+	_ = h.sendInventoryData("software", observation, fmt.Sprintf("software observation (%s, %d items)", observation.Completeness, observation.ItemCount))
 }
 
 func (h *Heartbeat) sendDiskInventory() {
