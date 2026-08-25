@@ -81,11 +81,22 @@ vi.mock('drizzle-orm', () => {
   };
 });
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: {
+// #3986 task 7 follow-up — this harness previously had NO `db.transaction`
+// stub at all (not merely unimplemented: the property didn't exist), so the
+// decommission route's new `db.transaction(async (tx) => ...)` call threw
+// "db.transaction is not a function" and every DELETE /devices/:id request
+// 500'd. `transaction` resolves by invoking the callback with the SAME `db`
+// object as `tx` — every mocked db method (select/update/insert/...) is
+// therefore reachable identically whether the route calls it via `db.x` or
+// the transaction's `tx.x`, which is enough for a mock harness that doesn't
+// otherwise distinguish "inside a tx" from "outside one".
+//
+// Built INSIDE the factory (not as an outer top-level const): `vi.mock(...)`
+// calls are hoisted above top-level variable initializers, so a `dbMock`
+// declared outside this factory and merely referenced inside it would throw
+// "Cannot access 'dbMock' before initialization" at import time.
+vi.mock('../db', () => {
+  const dbMock: Record<string, ReturnType<typeof vi.fn>> = {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -112,7 +123,25 @@ vi.mock('../db', () => ({
     // /devices and for any raw sql template. Returns an empty array
     // by default; tests override via vi.mocked(db.execute).mockResolvedValueOnce.
     execute: vi.fn(() => Promise.resolve([]))
-  }
+  };
+  dbMock.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(dbMock));
+
+  return {
+    runOutsideDbContext: vi.fn((fn) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    db: dbMock
+  };
+});
+
+// DELETE /devices/:id conditionally calls queueDeviceUninstall(tx, ...) when
+// uninstallAgent is true. Its predicate/insert SQL is already covered on
+// compiled SQL by deviceUninstallDrain.test.ts; this file only needs the
+// route-level wiring stubbed so it doesn't hit the real service (which would
+// issue further un-mocked tx.select/tx.insert calls against dbMock's
+// generic chains and likely throw or behave unpredictably).
+vi.mock('../services/deviceUninstallDrain', () => ({
+  queueDeviceUninstall: vi.fn(),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -171,6 +200,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { queueDeviceUninstall } from '../services/deviceUninstallDrain';
 
 describe('device routes', () => {
   let app: Hono;
@@ -228,6 +258,11 @@ describe('device routes', () => {
       where: vi.fn(() => Promise.resolve())
     }) as any);
     vi.mocked(db.execute).mockImplementation(() => Promise.resolve([]) as any);
+    // resetAllMocks above also wipes db.transaction's implementation — restore
+    // the "tx === db" default (see the dbMock comment above the vi.mock('../db')
+    // call) so DELETE /devices/:id's `db.transaction(async (tx) => ...)` still
+    // resolves instead of throwing "db.transaction is not a function".
+    vi.mocked(db.transaction).mockImplementation((cb: any) => cb(db));
     // resetAllMocks above also wipes assertTtlWithinCapMock's implementation —
     // restore the permissive default (mirrors "no partner cap configured",
     // i.e. the product-default 525_600-minute ceiling from resolveEnrollmentDefaults).
@@ -1033,6 +1068,12 @@ describe('device routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(body.device.status).toBe('decommissioned');
+
+      // #3986 task 7's default-false safety invariant, exercised here because
+      // this call sends NO body at all (the bulk-remove call shape) — must
+      // NOT queue an uninstall, and the response must say so explicitly.
+      expect(body.uninstallQueued).toBe(false);
+      expect(queueDeviceUninstall).not.toHaveBeenCalled();
     });
 
     it('should reject decommissioning an already decommissioned device', async () => {
