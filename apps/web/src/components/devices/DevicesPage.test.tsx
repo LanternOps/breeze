@@ -119,9 +119,9 @@ vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable, and
 // re-emits reboot + decommission so the GRID path through handleDeviceAction is
-// covered too — the real DeviceCard emits both from its own kebab
-// (DeviceCard.tsx:278 reboot, :320 decommission), and the #3698/#4009 gate
-// lives on the shared handler, so both surfaces inherit it.
+// covered too — the real DeviceCard's kebab emits both via the same
+// `onAction?.(...)` calls, and the #3698/#4009 gate lives on the shared handler,
+// so both surfaces inherit it.
 vi.mock('./DeviceCard', () => ({
   default: ({ device, onAction }: { device: { id: string; hostname: string }; onAction?: (action: string, device: unknown) => void }) => (
     <div data-testid={`device-card-${device.id}`}>
@@ -184,10 +184,16 @@ vi.mock('./DeviceList', () => ({
       ))}
       {/* Drives DevicesPage.handleDeviceAction for ONE device — the row-menu /
           grid-card path, as opposed to the bulk buttons above. The real row
-          kebab emits these from DeviceList.tsx (:2450 reboot, :2490 restore,
-          :2502 decommission). The decommission/restore buttons are deliberately
+          kebab emits the same three via `onAction?.(...)` from DeviceList's
+          actions cell. The decommission/restore buttons are deliberately
           text-free so they cannot collide with the sibling getByText assertions
-          that match on the word "decommissioned". */}
+          that match on the word "decommissioned".
+
+          Status is NOT modelled here: in the real menus `restore` renders only
+          for a decommissioned device and `decommission` only for one that is
+          not, so this stub proves handleDeviceAction's dispatch, never that the
+          two are mutually exclusive on screen. That conditional belongs to
+          DeviceList/DeviceCard's own suites. */}
       {devices.map(d => (
         <button
           key={`row-reboot-${d.id}`}
@@ -1480,6 +1486,14 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
 
   // The gate lives on the shared handleDeviceAction, so the grid card inherits
   // it — the same follow-up Todd flagged as gated-but-untested on #3698.
+  //
+  // Scope, so this is not read as a clean bill of health for the grid kebab:
+  // it proves the CONFIRM gate reaches the card, nothing more. DeviceCard has
+  // no deviceClass branch at all, where DeviceList swaps the whole actions cell
+  // for a "View" button on network rows (their id is a discovered_assets.id,
+  // not a devices.id — #1322). So the grid kebab still offers decommission,
+  // reboot and terminal for a network asset. That predates #4009 and is filed
+  // as #4014; the confirm added here at least puts a dialog in front of it.
   it('grid card decommission is gated on the same terms as the list row', async () => {
     const decommissionDevice = await mockedDecommission();
 

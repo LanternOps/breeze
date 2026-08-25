@@ -99,8 +99,9 @@ function summarizeFailedDevices(names: string[]): string {
 // #4009: `decommission` belongs here and was missed by #3698. The dialog copy
 // it needs (deviceActions.confirm.decommission.*) already shipped for the
 // detail page, which has always gated it; only the list and grid kebabs fired
-// it on a single click. That is the densest, easiest-to-mis-click surface in
-// the product, so it is the last one that should be ungated.
+// it on a single click. A kebab in a dense row/card grid is easier to hit by
+// accident than the detail page's own button, so it was the wrong one to leave
+// ungated.
 // Module scope — these are constant, so there is no reason to rebuild them on
 // every render.
 const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission']);
