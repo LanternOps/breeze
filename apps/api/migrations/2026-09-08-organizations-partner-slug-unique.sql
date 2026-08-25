@@ -2,7 +2,7 @@
 --
 -- The Drizzle model and three separate service paths already behave as if
 -- `organizations.slug` were unique, but NO database constraint has ever
--- existed for it — `0001-baseline.sql:4234` declares the column NOT NULL and
+-- existed for it — `0001-baseline.sql` declares the column NOT NULL and
 -- nothing more. Two orgs under the same partner could be created with the
 -- same slug through the ordinary UI and both returned 201.
 --
@@ -14,7 +14,9 @@
 --     such namespace — the only equality lookup on one is the dev seed, and it
 --     is already partner-scoped (db/seed.ts). A global index would stop two
 --     unrelated MSPs from both onboarding an "acme" and would leak
---     cross-tenant existence through the partner API's duplicate 409.
+--     cross-tenant existence through the duplicate 409 that routes/orgs.ts
+--     now returns. (Not routes/partnerApi/* — that namespace has its own,
+--     pre-existing generic 23505 mapping.)
 --
 --   * Case-insensitive. Every first-party generator lowercases
 --     (orgImport/slug.ts, aiToolsOrgs.slugifyOrgName, the two web slugify
@@ -32,18 +34,34 @@
 -- 1) Resolve pre-existing duplicates before the constraint can reject them.
 --    Canonical row per (partner_id, lower(slug)) = oldest by created_at (id as
 --    a deterministic tie-break); every other row is renamed to
---    '<slug truncated to 91>-<first 8 chars of its uuid>', which stays inside
---    the varchar(100) limit. Renaming rather than deleting: a duplicate slug is
+--    '<slug truncated to 91>-<first 8 chars of its uuid>'. 91 + 1 + 8 EXACTLY
+--    fills varchar(100) — there is zero slack, so neither number may be
+--    changed without the other. Renaming rather than deleting: a duplicate slug is
 --    a cosmetic identifier clash, never a reason to drop a tenant's row.
 --
 --    The rename is not proven collision-free (a pre-existing slug could already
 --    look like '<base>-<8 hex>'), and that is deliberate: if one survives, the
 --    CREATE UNIQUE INDEX below aborts the whole migration loudly instead of
 --    this block silently mangling data a second time.
+--
+--    RLS: `organizations` is ENABLE + FORCE ROW LEVEL SECURITY
+--    (2026-04-11-organizations-rls.sql) and its UPDATE policy is
+--    `USING (breeze_has_org_access(id))`, which short-circuits TRUE only for
+--    `breeze.scope = 'system'`. FORCE applies to the table OWNER too, and
+--    production is DigitalOcean managed Postgres where the admin role is NOT a
+--    superuser (see 2026-07-16-td-synnex-sftp-price-file.sql, which documents
+--    the same trap). Without the set_config below this UPDATE would match ZERO
+--    rows in production while passing every local test on the superuser
+--    `breeze` role — the rename would never run, and the index creation below
+--    would fail the deploy instead of healing it. `true` = transaction-local,
+--    so it unwinds with autoMigrate's per-file transaction.
 DO $$
 DECLARE
   cleaned integer;
+  remaining integer;
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+
   WITH ranked AS (
     SELECT id,
            slug,
@@ -62,6 +80,18 @@ BEGIN
   GET DIAGNOSTICS cleaned = ROW_COUNT;
   IF cleaned > 0 THEN
     RAISE WARNING '#3967: renamed % duplicate organizations.slug row(s) to <slug>-<id-prefix> before adding organizations_partner_slug_uniq', cleaned;
+  END IF;
+
+  -- Prove the rename actually landed. CREATE UNIQUE INDEX is DDL and is not
+  -- RLS-filtered, so it would catch a survivor anyway — but it reports a bare
+  -- 23505 with no count. Fail here instead, where the message can say how many
+  -- and point at the cause (a rename that itself collided, or an UPDATE that
+  -- was filtered to zero rows).
+  SELECT count(*) INTO remaining FROM (
+    SELECT 1 FROM organizations GROUP BY partner_id, lower(slug) HAVING count(*) > 1
+  ) dupes;
+  IF remaining > 0 THEN
+    RAISE EXCEPTION '#3967: % duplicate (partner_id, lower(slug)) group(s) survived the rename; organizations_partner_slug_uniq cannot be created', remaining;
   END IF;
 END $$;
 
