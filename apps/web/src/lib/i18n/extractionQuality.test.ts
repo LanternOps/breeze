@@ -23,12 +23,15 @@ function readSource(relativePath: string): string {
  * (`t('key', { value })`) so the whole phrase is one translatable unit, or an
  * explicit `{' '}` separator where the two parts are genuinely independent.
  *
- * Scope: same-line, zero-gap adjacency of a single-argument `t()` call, which is
- * the shape the codemod produced. It deliberately does NOT match `{t(k, {...})}`
- * followed by another call, nor children separated by a newline. Both quote
- * styles are matched, since the repo contains `t("key")` call sites too.
+ * Scope: same-line, zero-gap adjacency of a single-argument translation call,
+ * which is the shape the codemod produced. It deliberately does NOT match
+ * `{t(k, {...})}` followed by another call, nor children separated by a newline.
+ * Both quote styles are matched, and both calling conventions — the
+ * `useTranslation()` hook's `t()` and the module singleton's `i18n.t()`, which
+ * the repo uses side by side. Missing the `i18n.t()` form left a live glued
+ * heading ("RevokeMyLaptop?") invisible to the first cut of this guard.
  */
-const ADJACENCY = /\{t\((['"])([^'"]+)\1\)\}\{/g;
+const ADJACENCY = /\{(?:i18n\.)?t\((['"])([^'"]+)\1\)\}\{/g;
 
 /**
  * Adjacencies that are correct as written, because the expression that follows
@@ -147,7 +150,7 @@ function englishValueForKey(key: string): string | undefined {
  * giving it the value "Due {{date}}" for the badge made the header render
  * "Due {{date}}" in all eight locales.
  */
-const BARE_CALL = /(?<![\w.])t\((['"])([^'"]+)\1\s*\)/g;
+const BARE_CALL = /(?<![\w.])(?:i18n\.)?t\((['"])([^'"]+)\1\s*\)/g;
 
 /**
  * Keys whose placeholders are shown to the user ON PURPOSE, because the tokens
@@ -324,7 +327,9 @@ describe('i18n extraction quality', () => {
     };
     const files: Array<[string, string]> = [
       ['components/Glued.tsx', "<p>{t('sso.of')}{total}</p>"],
+      ['components/GluedSingleton.tsx', "<p>{i18n.t('sso.of')}{total}</p>"],
       ['components/Separated.tsx', "<p>{t('sso.of')}{' '}{total}</p>"],
+      ['components/SeparatedDoubleQuoted.tsx', '<p>{t("sso.of")}{" "}{total}</p>'],
       ['components/TrailingSpaceValue.tsx', "<p>{t('sso.showing')}{total}</p>"],
       ['components/SelfSpacing.tsx', "<p>{t('billing.tax')}{rate ? ` (${rate}%)` : ''}</p>"],
     ];
@@ -334,6 +339,7 @@ describe('i18n extraction quality', () => {
     // template literal that supplies its own space must be reviewed by hand.
     expect(gluedAdjacencies(files, key => english[key])).toEqual([
       'components/Glued.tsx: sso.of',
+      'components/GluedSingleton.tsx: sso.of',
       'components/SelfSpacing.tsx: billing.tax',
     ]);
   });
@@ -341,6 +347,24 @@ describe('i18n extraction quality', () => {
   // Guard for the reused-key failure mode that review caught in this PR's own
   // first cut: a key used as a bare label in one place and interpolated in
   // another renders its raw {{token}} at the bare call site.
+  it('flags a bare placeholder call in either calling convention', () => {
+    const english: Record<string, string> = {
+      'page.dueDate': 'Due {{date}}',
+      'page.header': 'Due Date',
+    };
+    const files: Array<[string, string]> = [
+      ['components/Hook.tsx', "<th>{t('page.dueDate')}</th>"],
+      ['components/Singleton.tsx', "<th>{i18n.t('page.dueDate')}</th>"],
+      ['components/Filled.tsx', "<span>{t('page.dueDate', { date })}</span>"],
+      ['components/Plain.tsx', "<th>{t('page.header')}</th>"],
+    ];
+
+    expect(unfilledPlaceholderCalls(files, key => english[key])).toEqual([
+      'components/Hook.tsx: page.dueDate',
+      'components/Singleton.tsx: page.dueDate',
+    ]);
+  });
+
   it('never renders an unfilled {{placeholder}} from a bare t() call', () => {
     const files = [...walkTsx(srcDir)].map(
       path => [relative(srcDir, path).split(sep).join('/'), readFileSync(path, 'utf8')] as [string, string],

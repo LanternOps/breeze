@@ -836,7 +836,7 @@ export function RoleFormModal({
           <div className="space-y-2">
             <label className="text-sm font-medium">{i18n.t('settings:roleManager.permissions')}</label>
             <p className="text-xs text-muted-foreground">
-              {i18n.t('settings:roleManager.clickOnAResourceNameToToggleAllActionsOrClickAnActionHea')}{inheritedPermissions.length > 0 && (
+              {i18n.t('settings:roleManager.clickOnAResourceNameToToggleAllActionsOrClickAnActionHea')}{' '}{inheritedPermissions.length > 0 && (
                 <span className="ml-1">
                   {i18n.t('settings:roleManager.checkboxesWith')}<span className="inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" /> {i18n.t('settings:roleManager.areInheritedFromTheParentRole')}</span>
               )}

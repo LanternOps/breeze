@@ -1534,6 +1534,7 @@
     "cancel": "Cancel",
     "rename": "Rename",
     "revoke": "Revoke",
+    "revokeConfirmTitle": "Revoke {{device}}?",
     "registerThisBrowser": "Register this browser",
     "optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo": "Optional — your phone is already an approver once you sign in to the mobile app. Register this browser too and you'll be prompted for Windows Hello, Touch ID, or your device's biometric.",
     "deviceName": "Device name",

@@ -1534,6 +1534,7 @@
     "cancel": "İptal",
     "rename": "Yeniden adlandır",
     "revoke": "İptal Et",
+    "revokeConfirmTitle": "{{device}} iptal edilsin mi?",
     "registerThisBrowser": "Bu tarayıcıyı kaydedin",
     "optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo": "İsteğe bağlı — mobil uygulamada oturum açtığınızda telefonunuz zaten onaylayan konumundadır. Bu tarayıcıyı da kaydettirdiğinizde sizden Windows Hello, Touch ID veya cihazınızın biyometrisi istenecektir.",
     "deviceName": "Cihaz adı",
