@@ -210,6 +210,113 @@ function sortByHierarchy<T extends { assignmentLevel: string; assignmentPriority
 // Feature-Specific Resolvers
 // ============================================
 
+/** Outcome of {@link resolveGoverningAlertRulePolicyForDevice}. */
+export interface GoverningAlertRulePolicy {
+  /**
+   * The policy whose alert rules would run on this device, or null when no
+   * assigned policy would provide any.
+   */
+  winningPolicyId: string | null;
+  /** Whether the candidate policy is assigned to this device at all. */
+  candidateAssigned: boolean;
+}
+
+/**
+ * Would `candidatePolicyId`'s alert rules be the ones that run on this device,
+ * if the draft currently open in the editor were saved?
+ *
+ * This is the targeting half of the config-policy rule Test verdict (#3988), and
+ * it deliberately does NOT reuse {@link resolveAlertRulesForDevice}. That
+ * resolver inner-joins the persisted rule rows, which makes it answer the wrong
+ * question in both directions for an editor:
+ *
+ *  - A policy whose alert rules are not saved yet (the tech is authoring the
+ *    very first one, so there is no feature link and no row) cannot appear in
+ *    that join at all, so the draft's own policy would always be reported as
+ *    not governing the device.
+ *  - Conversely, resolving on the feature LINK alone would let a policy holding
+ *    an EMPTY alert_rule link outrank one that actually has rules — which is not
+ *    what happens at runtime, where a policy contributing no rows simply does
+ *    not win.
+ *
+ * So the candidate is overlaid onto real runtime behaviour: the candidate policy
+ * competes as though it already held a rule, every OTHER policy competes only if
+ * it currently holds at least one persisted alert rule, and the ordinary
+ * hierarchy sort (level, then assignment priority, then age) picks the winner.
+ * Assignment status, ownership, and the role/OS filters are unchanged.
+ *
+ * Runs under {@link withPartnerWideVisibility} (a system RLS context) like every
+ * sibling resolver, so it is NOT a tenancy boundary: it is self-tenanted by the
+ * device's own hierarchy, and the caller must have already authorized both the
+ * device and the candidate policy.
+ */
+export async function resolveGoverningAlertRulePolicyForDevice(
+  deviceId: string,
+  candidatePolicyId: string
+): Promise<GoverningAlertRulePolicy> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return { winningPolicyId: null, candidateAssigned: false };
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  // Both reads share one elevated context: splitting them would run the second
+  // under the caller's RLS, where a partner-wide policy is invisible and its
+  // rules would look absent.
+  return withPartnerWideVisibility(async () => {
+    const assigned = await db
+      .select({
+        configPolicyId: configurationPolicies.id,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions));
+
+    const candidateAssigned = assigned.some((row) => row.configPolicyId === candidatePolicyId);
+    if (assigned.length === 0) return { winningPolicyId: null, candidateAssigned };
+
+    // Which of the assigned policies actually hold alert rules today. The
+    // candidate is exempt: its rules are the draft being tested.
+    const policyIdsWithRules = await db
+      .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
+      .from(configPolicyFeatureLinks)
+      .innerJoin(
+        configPolicyAlertRules,
+        eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(
+        and(
+          eq(configPolicyFeatureLinks.featureType, 'alert_rule'),
+          inArray(
+            configPolicyFeatureLinks.configPolicyId,
+            [...new Set(assigned.map((row) => row.configPolicyId))]
+          )
+        )
+      );
+    const haveRules = new Set(policyIdsWithRules.map((row) => row.configPolicyId));
+
+    const contenders = assigned.filter(
+      (row) => row.configPolicyId === candidatePolicyId || haveRules.has(row.configPolicyId)
+    );
+    if (contenders.length === 0) return { winningPolicyId: null, candidateAssigned };
+
+    return {
+      winningPolicyId: sortByHierarchy(contenders)[0]!.configPolicyId,
+      candidateAssigned,
+    };
+  });
+}
+
 /**
  * Resolves alert rules for a device via the hierarchy.
  * Returns all alert rule rows from the WINNING assignment (closest level wins).

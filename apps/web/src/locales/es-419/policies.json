@@ -252,7 +252,9 @@
         "thisRuleUsesUnsupportedMetrics": "Esta regla usa una métrica que el motor de alertas no puede evaluar ({{metrics}}). Elija una métrica compatible —o elimine la condición— antes de guardar; el servidor rechaza las reglas que la contienen.",
         "thisConditionUsesAnUnsupportedMetric": "El motor de alertas no evalúa la métrica «{{metric}}», por lo que esta condición se muestra solo de lectura.",
         "valueCount": "Valor (cantidad)",
-        "metricNotSet": "sin definir"
+        "metricNotSet": "sin definir",
+        "testRule": "Probar regla",
+        "testRuleHint": "Evalúa estas condiciones en un dispositivo ahora, incluidos los cambios sin guardar."
       },
       "automationTab": {
         "schedule": "Cronograma",
