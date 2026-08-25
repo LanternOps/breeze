@@ -7,6 +7,8 @@
 // upstream count memos return 0 when decommissioned devices are already
 // visible (includeDecommissioned), and the component renders nothing for
 // count <= 0 — so it self-dismisses once the rows are shown.
+import { useTranslation } from 'react-i18next';
+
 export default function DecommissionedHiddenHint({
   count,
   onShow,
@@ -14,13 +16,14 @@ export default function DecommissionedHiddenHint({
   count: number;
   onShow: () => void;
 }) {
+  const { t } = useTranslation('devices');
   if (count <= 0) return null;
   return (
     <span
       data-testid="decommissioned-hidden-hint"
       className="text-sm text-muted-foreground"
     >
-      {count} decommissioned hidden
+      {t('decommissionedHiddenHint.label', { count })}
       {' — '}
       <button
         type="button"
@@ -28,7 +31,7 @@ export default function DecommissionedHiddenHint({
         onClick={onShow}
         className="underline underline-offset-2 transition hover:text-foreground"
       >
-        show
+        {t('decommissionedHiddenHint.show')}
       </button>
     </span>
   );

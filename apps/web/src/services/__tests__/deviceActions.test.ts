@@ -461,7 +461,7 @@ describe('deviceActions service', () => {
       const out = summarizeBulkWakeFailures(failed);
       expect(out).toMatch(/3 with no online peer at their site/);
       expect(out).toMatch(/1 with no MAC on file/);
-      expect(out).toMatch(/1 decommissioned/);
+      expect(out).toMatch(/1 removed/);
     });
 
     it('collapses IPv6_ONLY and NO_SUBNET into one bucket', () => {

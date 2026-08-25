@@ -769,7 +769,7 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
 
     // Hidden rows are called out; only the online card renders.
     const hint = await screen.findByTestId('decommissioned-hidden-hint');
-    expect(hint).toHaveTextContent('2 decommissioned hidden');
+    expect(hint).toHaveTextContent('2 removed hidden');
     expect(screen.getByTestId(`device-card-${DEV_1}`)).toBeTruthy();
     expect(screen.queryByTestId(`device-card-${DEV_2}`)).toBeNull();
 
@@ -1054,7 +1054,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     // 2; a prefix-only match would never notice.
     expect(
       screen.getByText(
-        /1 of 3 selected devices are decommissioned and will be skipped.*Continue with the remaining 2 device\(s\)\?/i,
+        /1 of 3 selected devices are removed and will be skipped.*Continue with the remaining 2 device\(s\)\?/i,
       ),
     ).toBeTruthy();
 
@@ -1122,7 +1122,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     await waitFor(() => {
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-      expect(messages.some(m => /all 2 selected device\(s\) are decommissioned/i.test(m))).toBe(true);
+      expect(messages.some(m => /all 2 selected device\(s\) are removed/i.test(m))).toBe(true);
     });
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
     expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
@@ -1422,7 +1422,7 @@ describe('DevicesPage — network filter + decommissioned gate compose (#1322 ×
     expect(await screen.findByTestId('confirm-decommissioned-skip')).toBeTruthy();
     // Denominator is the AGENT selection (3), not the raw 4 — the network row is
     // already accounted for by its own toast.
-    expect(screen.getByText(/1 of 3 selected devices are decommissioned/i)).toBeTruthy();
+    expect(screen.getByText(/1 of 3 selected devices are removed/i)).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
 

@@ -58,7 +58,7 @@ function bulkCommandFailureLabel(code: BulkCommandFailureCode): string {
     case 'SITE_ACCESS_DENIED':
       return 'in a site you cannot access';
     case 'DECOMMISSIONED':
-      return 'decommissioned';
+      return 'removed';
     case 'INSERT_FAILED':
       return 'could not be queued (server error)';
     default:
@@ -320,7 +320,7 @@ function bulkWakeFailureLabel(code: string): string {
     case 'TARGET_NOT_FOUND':
       return 'not found or access denied';
     case 'DECOMMISSIONED':
-      return 'decommissioned';
+      return 'removed';
     case 'RELAY_OVERRIDE_INVALID':
       // Bulk path never uses override; surface generically if it ever
       // does appear so we notice in telemetry.
@@ -389,7 +389,7 @@ export async function decommissionDevice(deviceId: string): Promise<{ success: b
   });
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to decommission device'));
+    throw new Error(await getErrorMessage(response, 'Failed to remove device'));
   }
 
   const data = await response.json();

@@ -168,7 +168,7 @@ describe('RunProgressPanel rendering', () => {
     expect(a.textContent).toContain('Service Spooler restarted');
 
     const b = screen.getByTestId(`run-progress-target-${DEVICE_B}`);
-    expect(b.textContent?.toLowerCase()).toContain('decommissioned');
+    expect(b.textContent?.toLowerCase()).toContain('removed');
   });
 
   it('caps an unbounded result summary rather than blowing out the row', async () => {

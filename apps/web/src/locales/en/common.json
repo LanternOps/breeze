@@ -2009,7 +2009,7 @@
         "skipReasons": {
           "siteDenied": "Site not accessible to you",
           "notMember": "No longer affected by this finding",
-          "decommissioned": "Device is decommissioned",
+          "decommissioned": "Device is removed",
           "timeout": "Timed out after 30 minutes",
           "dispatchEnqueueFailed": "Never dispatched — queueing failed"
         },

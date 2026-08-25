@@ -941,7 +941,7 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
     );
 
     const hint = screen.getByTestId('decommissioned-hidden-hint');
-    expect(hint).toHaveTextContent('1 decommissioned hidden');
+    expect(hint).toHaveTextContent('1 removed hidden');
 
     fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
     expect(onShow).toHaveBeenCalledTimes(1);
@@ -1106,7 +1106,7 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     openRowMenu();
 
     expect(runScriptBtn()).toBeDisabled();
-    expect(runScriptBtn()).toHaveAttribute('title', 'Device is decommissioned');
+    expect(runScriptBtn()).toHaveAttribute('title', 'Device is removed');
     fireEvent.click(runScriptBtn());
     expect(onAction).not.toHaveBeenCalled();
   });
@@ -1166,7 +1166,7 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
   it.each([
     ['offline', 'Device is offline'],
     ['maintenance', 'Device is in maintenance mode'],
-    ['decommissioned', 'Device is decommissioned'],
+    ['decommissioned', 'Device is removed'],
     ['quarantined', 'Device is quarantined'],
     ['updating', 'Device is updating'],
     ['pending', 'Device is pending enrollment'],
@@ -1217,7 +1217,7 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
 
     const btn = screen.getByRole('button', { name: /^reboot$/i });
     expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute('title', 'Device is decommissioned');
+    expect(btn).toHaveAttribute('title', 'Device is removed');
     fireEvent.click(btn);
     expect(onAction).not.toHaveBeenCalled();
   });
