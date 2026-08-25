@@ -872,16 +872,19 @@ remediationSuggestionRoutes.post(
     });
 
     if (!execution.ok) {
-      return c.json({
-        error: execution.error,
-        maintenanceSuppressedDeviceIds: execution.maintenanceSuppressedDeviceIds,
-      }, execution.status);
+      return c.json({ error: execution.error }, execution.status);
     }
 
-    const scriptExecutionId = execution.executions[0]?.executionId;
-    if (!scriptExecutionId) {
-      return c.json({ error: 'Script execution did not return an execution ID' }, 500);
+    const admission = execution.admission.targets.find(
+      (target) => target.requestedDeviceId === deviceId,
+    );
+    if (!admission || admission.admission !== 'admitted' || !admission.executionId) {
+      return c.json({
+        admission: admission?.admission ?? 'denied',
+        reasonCode: admission?.reasonCode ?? 'not_found_or_inaccessible',
+      }, 422);
     }
+    const scriptExecutionId = admission.executionId;
 
     const now = new Date();
     const [updated] = await db
@@ -936,6 +939,7 @@ remediationSuggestionRoutes.post(
         targetType: updated.targetType,
         scriptId: updated.scriptId,
         scriptExecutionId,
+        requestId: execution.admission.requestId,
         elevationRequestId: updated.elevationRequestId,
         riskTier: updated.riskTier,
       },
@@ -943,16 +947,7 @@ remediationSuggestionRoutes.post(
 
     return c.json({
       data: serializeSuggestion(updated),
-      execution: {
-        batchId: execution.batchId,
-        scriptId: execution.scriptId,
-        devicesTargeted: execution.devicesTargeted,
-        maintenanceSuppressedDeviceIds: execution.maintenanceSuppressedDeviceIds.length > 0
-          ? execution.maintenanceSuppressedDeviceIds
-          : undefined,
-        executions: execution.executions,
-        status: execution.status,
-      },
+      execution: execution.admission,
     }, 201);
   }
 );
