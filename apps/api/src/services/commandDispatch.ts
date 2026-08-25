@@ -1,6 +1,7 @@
 import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { deviceCommands, peripheralPolicyDeviceStates } from '../db/schema';
+import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 
@@ -83,6 +84,7 @@ export async function claimPendingCommandsForDevice(
           status: 'cancelled',
           completedAt: new Date(),
           result: { status: 'failed', error: 'peripheral_policy_protocol_v2_not_reported' },
+          ...terminalPayloadErasureSet(),
         })
         .where(and(
           eq(deviceCommands.deviceId, deviceId),

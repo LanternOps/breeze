@@ -49,7 +49,7 @@ describe('migration ordering', () => {
     // forms like `DROP TABLE IF EXISTS` or `ALTER TABLE IF EXISTS` are
     // intentionally excluded — they're a no-op against an absent table.
     const patterns = [
-      /\bREFERENCES\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
+      /\bREFERENCES\s+(?!ON\b)(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
       /\bALTER\s+TABLE\s+(?!IF\s+EXISTS\b)(?:ONLY\s+)?(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
       /\bCREATE\s+POLICY\s+[^;]*?\bON\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
       /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?[^;]*?\bON\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,

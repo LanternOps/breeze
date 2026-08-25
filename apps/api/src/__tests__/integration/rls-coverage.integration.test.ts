@@ -1905,7 +1905,11 @@ describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
           keyId: seededKeyId,
           publicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
           privateKeyEnc: 'enc:v1:forge',
-          status: 'active',
+          // Visibility is independent of lifecycle status. Use a retired row
+          // so this suite remains isolated when a preceding signing/rollback
+          // suite has legitimately created the deployment's one active key.
+          status: 'retired',
+          retiredAt: new Date(),
         });
       });
       insertedKeyIds.push(seededKeyId);
