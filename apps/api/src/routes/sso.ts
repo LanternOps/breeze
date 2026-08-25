@@ -1791,6 +1791,130 @@ ssoRoutes.post(
   }
 );
 
+// Start a REAUTH-mode IdP round-trip (#4018).
+//
+// Deliberately NOT behind requireMfa(): this route exists precisely because a
+// passwordless SSO account cannot satisfy requireMfa() yet — gating it the way
+// /link/start is gated would reproduce the deadlock it fixes.
+//
+// The provider is resolved from the caller's OWN linked identity, never from a
+// request parameter, so this can only ever re-authenticate against an IdP the
+// user already has a binding with.
+ssoRoutes.post('/reauth/start', authMiddleware, async (c) => {
+  const auth = c.get('auth') as AuthContext;
+
+  const redis = getRedis();
+  const rateCheck = await rateLimiter(redis, `sso:reauth:${auth.user.id}`, 5, 15 * 60);
+  if (!rateCheck.allowed) {
+    return c.json({
+      error: 'Too many attempts. Please try again later.',
+      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
+
+  // An account WITH a password uses the existing password step-up. Allowing
+  // both would make this a weaker parallel road to factor enrollment.
+  const [userRow] = await db
+    .select({ passwordHash: users.passwordHash })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+  if (!userRow) return c.json({ error: 'User not found' }, 404);
+  if (userRow.passwordHash != null) {
+    return c.json({ error: 'Account has a password' }, 400);
+  }
+
+  const [identity] = await db
+    .select({ providerId: userSsoIdentities.providerId })
+    .from(userSsoIdentities)
+    .where(eq(userSsoIdentities.userId, auth.user.id))
+    .orderBy(userSsoIdentities.createdAt, userSsoIdentities.id)
+    .limit(1);
+  if (!identity) {
+    return c.json({ error: 'No linked SSO identity' }, 404);
+  }
+
+  const [provider] = await db
+    .select()
+    .from(ssoProviders)
+    .where(eq(ssoProviders.id, identity.providerId))
+    .limit(1);
+  if (!provider || provider.status === 'inactive') {
+    return c.json({ error: 'Provider not found' }, 404);
+  }
+  if (provider.type !== 'oidc') {
+    return c.json({ error: 'Only OIDC re-authentication is currently supported' }, 400);
+  }
+
+  let config: OIDCConfig;
+  try {
+    config = getOIDCConfig(provider);
+  } catch (err) {
+    console.warn(`[sso] provider ${provider.id} has an invalid configuration:`, err);
+    return c.json({ error: 'SSO provider configuration is invalid' }, 400);
+  }
+
+  const initiatorEpochs = await getUserEpochs(auth.user.id);
+  const initiatingSid = auth.token?.sid;
+  if (!initiatorEpochs || !initiatingSid) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const pkce = generatePKCEChallenge();
+  const state = generateState();
+  const nonce = generateNonce();
+
+  // sso_sessions is system-scope-only under RLS: this insert must not run in
+  // the authenticated request's org/partner-scoped context. Mirrors
+  // /link/start's insert (see the comment there for the full rationale).
+  await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () =>
+      db.insert(ssoSessions).values({
+        providerId: provider.id,
+        state,
+        nonce,
+        codeVerifier: pkce.codeVerifier,
+        redirectUrl: '/settings/profile',
+        reauthUserId: auth.user.id,
+        providerVersion: provider.configVersion,
+        initiatingAuthEpoch: initiatorEpochs.authEpoch,
+        initiatingMfaEpoch: initiatorEpochs.mfaEpoch,
+        initiatingSessionId: initiatingSid,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000)
+      })
+    )
+  );
+
+  const authUrl = buildAuthorizationUrl({
+    config,
+    state,
+    nonce,
+    redirectUri: buildSsoCallbackUri(),
+    pkce,
+    // Force a real re-authentication. max_age=0 is the load-bearing half:
+    // prompt=login alone is advisory and several IdPs honour it inconsistently.
+    prompt: 'login',
+    maxAge: 0,
+  });
+
+  const stateCookie = buildSsoStateCookie(state);
+  if (!stateCookie) {
+    return c.json({ error: 'SSO login binding secret is not configured on this instance' }, 500);
+  }
+  c.header('Set-Cookie', stateCookie, { append: true });
+
+  writeRouteAudit(c, {
+    orgId: provider.orgId,
+    action: 'sso.reauth.started',
+    resourceType: 'sso_provider',
+    resourceId: provider.id,
+    resourceName: provider.name,
+    details: { partnerId: provider.partnerId, userId: auth.user.id }
+  });
+
+  return c.json({ authUrl });
+});
+
 // ============================================
 // SSO Login Flow (Public)
 // ============================================
