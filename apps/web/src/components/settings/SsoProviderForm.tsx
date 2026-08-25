@@ -274,7 +274,11 @@ export default function SsoProviderForm({
 
           <div className="space-y-2">
             <label htmlFor="provider-client-secret" className="text-sm font-medium">
-              {t('ssoProviderForm.clientSecret')}{isEditing && hasClientSecret && (
+              {/* The separator is a real space, not just the span's margin: the
+                  label's accessible name concatenates its text nodes verbatim, so
+                  without it screen readers announce "Client SecretLeave blank…".
+                  The pre-extraction source had it as JSX newline whitespace. */}
+              {t('ssoProviderForm.clientSecret')}{' '}{isEditing && hasClientSecret && (
                 <span className="ml-2 text-xs text-muted-foreground">{t('ssoProviderForm.leaveBlankToKeepExisting')}</span>
               )}
             </label>

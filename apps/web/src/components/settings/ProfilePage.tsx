@@ -799,7 +799,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                       <p className="truncate text-sm font-medium">{passkey.name || t('profilePage.passkey')}</p>
                     )}
                     <p className="text-xs text-muted-foreground">
-                      {t('profilePage.lastUsed')}{formatPasskeyDate(passkey.lastUsedAt)}
+                      {t('profilePage.lastUsedAt', { date: formatPasskeyDate(passkey.lastUsedAt) })}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">

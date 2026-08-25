@@ -392,7 +392,7 @@ export default function RoleManager({
                   <tr>
                     <td colSpan={6} className="border-b bg-muted/20 px-6 py-4">
                       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        {t('roleManager.permissionsFor')}{role.name}
+                        {t('roleManager.permissionsForRole', { role: role.name })}
                       </div>
                       {/* Render precedence (intentional ordering):
                             1. Role-specific fetch error (with Retry) — must beat

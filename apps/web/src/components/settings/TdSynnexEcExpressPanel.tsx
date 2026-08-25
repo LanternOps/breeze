@@ -425,7 +425,7 @@ function TdSynnexEcExpressPanel() {
                     <p className="text-xs text-muted-foreground">{product.description}</p>
                   )}
                   <div className="text-xs text-muted-foreground">
-                    {t('tdSynnexEcExpressPanel.sYNNEXSKU')}{product.synnexSku}
+                    {t('tdSynnexEcExpressPanel.synnexSku', { sku: product.synnexSku })}
                     {product.mfgPartNo ? t('tdSynnexEcExpressPanel.manufacturerPart', { part: product.mfgPartNo }) : ''}
                   </div>
                 </div>
