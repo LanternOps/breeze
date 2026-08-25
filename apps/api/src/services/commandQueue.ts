@@ -127,6 +127,7 @@ export const CommandTypes = {
 
   // Peripheral control — pushes full active policy set to agent
   PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
+  PERIPHERAL_POLICY_SYNC_V2: 'peripheral_policy_sync_v2',
 
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
@@ -404,6 +405,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
   // Peripheral control — pushes full active policy set to agent
   CommandTypes.PERIPHERAL_POLICY_SYNC,
+  CommandTypes.PERIPHERAL_POLICY_SYNC_V2,
   // Reboots — manual and maintenance-window-automated
   'reboot',
   'schedule_reboot',

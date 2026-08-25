@@ -918,7 +918,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     device.id,
     10,
     'agent',
-    agent?.tenantDraining ? ['self_uninstall'] : undefined
+    agent?.tenantDraining ? ['self_uninstall'] : undefined,
+    {
+      peripheralPolicyProtocolVersion: normalizePeripheralPolicyProtocolVersion(
+        data.securityCapabilities?.peripheralPolicyProtocolVersion,
+      ),
+    },
   );
 
   // Policy probe config (buildPolicyProbeConfigUpdate) is deliberately NOT

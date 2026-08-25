@@ -1,6 +1,6 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { deviceCommands } from '../db/schema';
+import { deviceCommands, peripheralPolicyDeviceStates } from '../db/schema';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 
@@ -66,12 +66,40 @@ export async function claimPendingCommandsForDevice(
   // are claimable; anything else stays `pending` and is reaped/cancelled by
   // the normal lifecycle. The drain callers pass ['self_uninstall'].
   typeAllowlist?: readonly string[],
+  capabilities?: { peripheralPolicyProtocolVersion?: number },
 ): Promise<DeviceCommandRow[]> {
   // Only HTTP delivery paths (heartbeat responses) claim batches; the agent
   // WebSocket never embeds command batches in frames (#2407 removed the
   // connect-time/heartbeat_ack claims — no agent version ever consumed them),
   // so the per-frame payload budget that #2399 added here is gone with it.
   return db.transaction(async (tx) => {
+    if (targetRole === 'agent' && capabilities?.peripheralPolicyProtocolVersion !== 2) {
+      await tx
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt: new Date(),
+          result: { status: 'failed', error: 'peripheral_policy_protocol_v2_not_reported' },
+        })
+        .where(and(
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.status, 'pending'),
+          eq(deviceCommands.targetRole, 'agent'),
+          eq(deviceCommands.type, 'peripheral_policy_sync_v2'),
+        ));
+      await tx
+        .update(peripheralPolicyDeviceStates)
+        .set({
+          deliveryStatus: 'rejected',
+          lastErrorCode: 'protocol_capability_not_reported',
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(peripheralPolicyDeviceStates.deviceId, deviceId),
+          eq(peripheralPolicyDeviceStates.deliveryStatus, 'pending'),
+        ));
+    }
+
     const pendingCommands = await tx
       .select()
       .from(deviceCommands)
@@ -81,6 +109,9 @@ export async function claimPendingCommandsForDevice(
           eq(deviceCommands.status, 'pending'),
           eq(deviceCommands.targetRole, targetRole),
           ...(typeAllowlist ? [inArray(deviceCommands.type, [...typeAllowlist])] : []),
+          ...(targetRole === 'agent' && capabilities?.peripheralPolicyProtocolVersion !== 2
+            ? [notInArray(deviceCommands.type, ['peripheral_policy_sync_v2'])]
+            : []),
         ),
       )
       .orderBy(deviceCommands.createdAt)

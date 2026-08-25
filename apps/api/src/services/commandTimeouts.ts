@@ -70,6 +70,7 @@ const SHORT_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.SET_LOG_LEVEL,
   CommandTypes.CAPTURE_PPROF,
   CommandTypes.PERIPHERAL_POLICY_SYNC,
+  CommandTypes.PERIPHERAL_POLICY_SYNC_V2,
   CommandTypes.COLLECT_BOOT_PERFORMANCE,
   CommandTypes.MANAGE_STARTUP_ITEM,
   CommandTypes.COLLECT_AUDIT_POLICY,

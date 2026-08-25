@@ -3736,7 +3736,10 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { peripheralPolicyProtocolVersion: 2 },
+      }),
     });
 
     expect(resp.status).toBe(200);
@@ -3745,6 +3748,9 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       { id: 'cmd-good', type: 'run_script', payload: { scriptId: 'script-1' } },
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
+      'device-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+    );
   });
 
   // #2774 — the heartbeat is the PRIMARY command carrier (the GET poll is
@@ -3777,9 +3783,13 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
-      'self_uninstall',
-    ]);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
+      'device-1',
+      10,
+      'agent',
+      ['self_uninstall'],
+      { peripheralPolicyProtocolVersion: 0 },
+    );
   });
 
   // #3409 PR4c-2 Amendment A — the claim gate trusts the capability THIS

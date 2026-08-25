@@ -48,6 +48,7 @@ export default defineConfig({
       'src/services/cpeResolution.integration.test.ts',
       // Real-DB proof for dual-axis, per-device peripheral policy resolution.
       'src/services/peripheralEffectivePolicy.integration.test.ts',
+      'src/services/peripheralPolicyState.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.
