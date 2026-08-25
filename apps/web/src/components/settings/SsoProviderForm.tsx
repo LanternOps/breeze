@@ -276,7 +276,7 @@ export default function SsoProviderForm({
             <label htmlFor="provider-client-secret" className="text-sm font-medium">
               {/* The separator is a real space, not just the span's margin: the
                   label's accessible name concatenates its text nodes verbatim, so
-                  without it screen readers announce "Client SecretLeave blank…".
+                  without it the hint runs straight into the label with no gap.
                   The pre-extraction source had it as JSX newline whitespace. */}
               {t('ssoProviderForm.clientSecret')}{' '}{isEditing && hasClientSecret && (
                 <span className="ml-2 text-xs text-muted-foreground">{t('ssoProviderForm.leaveBlankToKeepExisting')}</span>

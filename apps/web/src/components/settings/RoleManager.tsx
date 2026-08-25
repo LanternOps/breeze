@@ -357,7 +357,7 @@ export default function RoleManager({
                         type="button"
                         onClick={() => onCloneRole?.(role)}
                         className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
-                        title={t('roleManager.cloneRole')}
+                        title={t('roleManager.cloneRole', { name: role.name })}
                       >
                         {t('roleManager.clone')}</button>
                       {!role.isSystem && (

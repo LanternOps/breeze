@@ -665,7 +665,7 @@ export default function AccessReviewPage() {
                         deadlineStatus?.isOverdue ? 'text-destructive font-medium' : ''
                       )}
                     >
-                      {t('accessReviewPage.dueDate', { date: formatDate(selectedReview.dueDate) })}
+                      {t('accessReviewPage.dueOn', { date: formatDate(selectedReview.dueDate) })}
                     </span>
                   )}
                 </div>

@@ -1186,7 +1186,8 @@
     "campaign": "Kampanya",
     "completed": "Tamamlandı",
     "reviewer": "İncelemeci",
-    "dueDate": "Son tarih: {{date}}",
+    "dueDate": "Son Tarih",
+    "dueOn": "Son tarih: {{date}}",
     "actions": "Eylemler",
     "view": "Görüntüle",
     "noCompletedAccessReviewCampaignsYet": "Henüz tamamlanmış erişim inceleme kampanyası yok.\nİncelenecek ",
@@ -2292,7 +2293,7 @@
     "lastTestFailed": "Son test başarısız oldu",
     "configured": "Yapılandırıldı",
     "notConfigured": "Yapılandırılmadı",
-    "manufacturerPart": "· MFG {{part}}"
+    "manufacturerPart": " · Üretici {{part}}"
   },
   "tdSynnexSftpPanel": {
     "tDSYNNEXPriceFile": "TD SYNNEX Fiyat Dosyası",

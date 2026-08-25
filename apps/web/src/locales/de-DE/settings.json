@@ -1186,7 +1186,8 @@
     "campaign": "Kampagne",
     "completed": "Abgeschlossen",
     "reviewer": "Prüfer",
-    "dueDate": "Fällig am {{date}}",
+    "dueDate": "Fälligkeitsdatum",
+    "dueOn": "Fällig am {{date}}",
     "actions": "Aktionen",
     "view": "Ansicht",
     "noCompletedAccessReviewCampaignsYet": "Noch keine abgeschlossenen Zugriffsüberprüfungskampagnen.",
@@ -2292,7 +2293,7 @@
     "lastTestFailed": "Der letzte Test ist fehlgeschlagen",
     "configured": "Konfiguriert",
     "notConfigured": "Nicht konfiguriert",
-    "manufacturerPart": "· MFG {{part}}"
+    "manufacturerPart": " · Hrst. {{part}}"
   },
   "themingSettings": {
     "light": "Licht",

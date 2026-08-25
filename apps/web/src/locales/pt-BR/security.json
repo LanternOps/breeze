@@ -587,6 +587,7 @@
     "startScan": "Iniciar varredura",
     "startScansWatchProgressAndReviewScan": "Inicie varreduras, acompanhe o progresso e revise o histórico de varreduras nos dispositivos.",
     "started": "Iniciado {{time}}",
+    "startedColumn": "Iniciado",
     "status": "Status: {{status}}",
     "status2": "Status",
     "type": "Tipo"

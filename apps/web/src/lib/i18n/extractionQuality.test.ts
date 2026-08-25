@@ -22,8 +22,13 @@ function readSource(relativePath: string): string {
  * language that orders the value before the label. The fix is interpolation
  * (`t('key', { value })`) so the whole phrase is one translatable unit, or an
  * explicit `{' '}` separator where the two parts are genuinely independent.
+ *
+ * Scope: same-line, zero-gap adjacency of a single-argument `t()` call, which is
+ * the shape the codemod produced. It deliberately does NOT match `{t(k, {...})}`
+ * followed by another call, nor children separated by a newline. Both quote
+ * styles are matched, since the repo contains `t("key")` call sites too.
  */
-const ADJACENCY = /\{t\('([^']+)'\)\}\{/g;
+const ADJACENCY = /\{t\((['"])([^'"]+)\1\)\}\{/g;
 
 /**
  * Adjacencies that are correct as written, because the expression that follows
@@ -94,10 +99,14 @@ export function gluedAdjacencies(
   for (const [file, source] of files) {
     for (const match of source.matchAll(ADJACENCY)) {
       // The regex ends on the following child's opening brace; re-read from
-      // there so an explicit `{' '}` separator is recognised.
-      if (source.slice(match.index + match[0].length - 1).startsWith("{' '}")) continue;
-      const key = match[1];
+      // there so an explicit separator is recognised in either quote style.
+      const rest = source.slice(match.index + match[0].length - 1);
+      if (rest.startsWith("{' '}") || rest.startsWith('{" "}')) continue;
+      const key = match[2];
       const value = englishValue(key);
+      // An unresolvable key is not this guard's problem: keyUsage.test.ts
+      // already fails on any literal t() key missing from the en catalogs, so
+      // skipping it here cannot hide one.
       if (value === undefined || value !== value.trimEnd()) continue;
       found.push(`${file}: ${key}`);
     }
@@ -124,6 +133,53 @@ function englishValueForKey(key: string): string | undefined {
     if (typeof value === 'string') return value;
   }
   return undefined;
+}
+
+/**
+ * A `t('key')` call with no interpolation object. i18next leaves an unmatched
+ * `{{token}}` in the output verbatim (no `missingInterpolationHandler` is
+ * configured), so calling a key whose value carries placeholders without
+ * supplying them renders the raw `{{token}}` to the user.
+ *
+ * This is how a *reused* key goes wrong: one call site interpolates it, another
+ * uses it as a bare label. It is exactly the bug review caught in the first cut
+ * of this PR — `accessReviewPage.dueDate` was an existing column header, and
+ * giving it the value "Due {{date}}" for the badge made the header render
+ * "Due {{date}}" in all eight locales.
+ */
+const BARE_CALL = /(?<![\w.])t\((['"])([^'"]+)\1\s*\)/g;
+
+/**
+ * Keys whose placeholders are shown to the user ON PURPOSE, because the tokens
+ * are the template syntax the user is being invited to type. These are form
+ * `placeholder=` hints, not rendered copy.
+ */
+const REVIEWED_PLACEHOLDER_PREVIEWS = new Set<string>([
+  'notificationChannelForm.alertValueValueIsValueThresholdValue',
+  'notificationChannelForm.resolvedValueValueHasReturnedToNormal',
+  'inboundEmail.subjectPlaceholder',
+  'inboundEmail.bodyPlaceholder',
+]);
+
+/**
+ * Reports every bare `t('key')` whose English value still contains a `{{token}}`
+ * the call cannot fill.
+ */
+export function unfilledPlaceholderCalls(
+  files: Iterable<[string, string]>,
+  englishValue: (key: string) => string | undefined,
+): string[] {
+  const found: string[] = [];
+  for (const [file, source] of files) {
+    for (const match of source.matchAll(BARE_CALL)) {
+      const key = match[2];
+      if (REVIEWED_PLACEHOLDER_PREVIEWS.has(key)) continue;
+      const value = englishValue(key);
+      if (value === undefined || !value.includes('{{')) continue;
+      found.push(`${file}: ${key}`);
+    }
+  }
+  return found.sort();
 }
 
 describe('i18n extraction quality', () => {
@@ -246,7 +302,7 @@ describe('i18n extraction quality', () => {
   });
 
   // Regression guard for #3965: the extraction codemod dropped the space
-  // between a label and its value at 14 call sites.
+  // between a label and its value across the settings screens.
   it('never glues a t() label to the expression that follows it', () => {
     const files = [...walkTsx(srcDir)].map(
       path => [relative(srcDir, path).split(sep).join('/'), readFileSync(path, 'utf8')] as [string, string],
@@ -280,5 +336,41 @@ describe('i18n extraction quality', () => {
       'components/Glued.tsx: sso.of',
       'components/SelfSpacing.tsx: billing.tax',
     ]);
+  });
+
+  // Guard for the reused-key failure mode that review caught in this PR's own
+  // first cut: a key used as a bare label in one place and interpolated in
+  // another renders its raw {{token}} at the bare call site.
+  it('never renders an unfilled {{placeholder}} from a bare t() call', () => {
+    const files = [...walkTsx(srcDir)].map(
+      path => [relative(srcDir, path).split(sep).join('/'), readFileSync(path, 'utf8')] as [string, string],
+    );
+
+    const leaking = unfilledPlaceholderCalls(files, englishValueForKey);
+
+    expect(leaking, `bare t() call on a key with placeholders:\n${leaking.join('\n')}`).toEqual([]);
+  }, 30_000);
+
+  it('separates a reused key\'s interpolated and bare forms', () => {
+    // The column header and the badge are two different keys precisely so the
+    // header cannot inherit the badge's placeholder.
+    expect(i18n.t('settings:accessReviewPage.dueDate', { lng: 'en' })).toBe('Due Date');
+    expect(i18n.t('settings:accessReviewPage.dueOn', { lng: 'en', date: '8/24/2026' }))
+      .toBe('Due 8/24/2026');
+    expect(i18n.t('security:securitySecurityScanManager.startedColumn', { lng: 'en' }))
+      .toBe('Started');
+  });
+
+  it('renders the fixed count summaries with their separators intact', () => {
+    expect(i18n.t('settings:ssoProviderList.countSummary', { lng: 'en', shown: 0, total: 0 }))
+      .toBe('0 of 0 providers');
+    expect(i18n.t('settings:accessReviewForm.stepSummary', { lng: 'en', current: 1, total: 3 }))
+      .toBe('Step 1 of 3');
+    expect(i18n.t('settings:accessReviewPage.showingSummary', { lng: 'en', shown: 12, total: 40 }))
+      .toBe('Showing 12 of 40 users');
+    expect(i18n.t('settings:roleManager.permissionsForRole', { lng: 'en', role: 'Partner Billing' }))
+      .toBe('Permissions for Partner Billing');
+    expect(i18n.t('settings:profilePage.lastUsedAt', { lng: 'en', date: '8/24/2026' }))
+      .toBe('Last used: 8/24/2026');
   });
 });
