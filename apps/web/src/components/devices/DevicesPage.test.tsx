@@ -1506,11 +1506,11 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
 
     // The SAME keys DeviceActions.tsx renders — proving no new copy was needed
     // and that the two screens still read identically.
-    expect(await screen.findByText('Decommission Device')).toBeTruthy();
-    expect(screen.getByText(/decommission host-alpha\?/i)).toBeTruthy();
+    expect(await screen.findByText('Remove Device')).toBeTruthy();
+    expect(screen.getByText(/remove host-alpha\?/i)).toBeTruthy();
 
     const confirmBtn = await screen.findByTestId('confirm-device-action');
-    expect(confirmBtn.textContent).toBe('Decommission');
+    expect(confirmBtn.textContent).toBe('Remove');
     // DeviceActions.tsx grades decommission `destructive`. ConfirmDialog encodes
     // that as a stop-octagon, not just a colour, so a drift to `warning` here
     // would visibly downgrade the severity on the denser of the two surfaces.
@@ -1578,7 +1578,7 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
     fireEvent.click(await screen.findByTestId(`card-decommission-${DEV_1}`));
 
     expect(decommissionDevice).not.toHaveBeenCalled();
-    expect(await screen.findByText('Decommission Device')).toBeTruthy();
+    expect(await screen.findByText('Remove Device')).toBeTruthy();
   });
 
   // Deliberate scope boundary (#4009): `restore` is the UNDO of a decommission.
