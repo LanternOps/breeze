@@ -23,6 +23,7 @@ import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
+import { withAlertActorNames } from './actorNames';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
 import { filterAlertsBySiteScope } from '../tickets/siteScope';
@@ -280,8 +281,12 @@ alertsRoutes.get(
         .where(inArray(alertCorrelationMembers.alertId, alertIds))
       : [];
 
+    // Resolve acknowledgedBy/resolvedBy user ids to display names so clients
+    // never have to print a raw UUID (#3966).
+    const alertsWithActorNames = await withAlertActorNames(alertsList);
+
     return c.json({
-      data: attachAlertCorrelationSummaries(alertsList, correlationRows),
+      data: attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows),
       pagination: { page, limit, total }
     });
   }
@@ -987,8 +992,10 @@ alertsRoutes.get(
         .orderBy(desc(alertNotifications.createdAt))
     ));
 
+    const [alertWithActorNames] = await withAlertActorNames([alert]);
+
     return c.json(withMlAlertContext({
-      ...alert,
+      ...alertWithActorNames,
       device: device ? {
         id: device.id,
         hostname: device.hostname,

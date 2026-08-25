@@ -47,8 +47,13 @@ export type Alert = {
   triggeredAt: string;
   acknowledgedAt?: string;
   acknowledgedBy?: string;
+  // Display name for acknowledgedBy/resolvedBy, resolved server-side (#3966).
+  // `null` means the id no longer resolves to a user (deleted account) — render
+  // a generic label, never the raw UUID.
+  acknowledgedByName?: string | null;
   resolvedAt?: string;
   resolvedBy?: string;
+  resolvedByName?: string | null;
   context?: Record<string, unknown>;
   contextData?: Record<string, unknown>;
   anomalyContext?: MetricAnomalyAlertContext | null;
