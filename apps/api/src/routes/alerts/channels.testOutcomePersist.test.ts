@@ -296,3 +296,65 @@ describe('POST /alerts/channels/:id/test — persisted test outcome (#3697)', ()
     expect(stored).toContain('no_service');
   });
 });
+
+// The reason reaches the operator on TWO surfaces: the persisted card (above)
+// and the toast fired at test time, which renders `testResult.message` from
+// this response. The response carried the RAW provider text, so the card was
+// scrubbed while the toast next to it showed the credential (#3992).
+describe('POST /alerts/channels/:id/test — the toast surface (#3992)', () => {
+  beforeEach(() => {
+    updateSetRef.current = undefined;
+    updateRowCountRef.current = 1;
+    capturedExceptionsRef.current = [];
+    channelRowRef.current = emailChannel();
+  });
+
+  it('does not echo a slack webhook URL back in the response the toast renders', async () => {
+    const webhookUrl = fakeSlackWebhookUrl('YYYYYYYYYYYYYYYYYYYYYYYY');
+    channelRowRef.current = emailChannel({ type: 'slack', config: { webhookUrl } });
+    senderResultRef.current = { success: false, error: `HTTP 404: no_service for ${webhookUrl}` };
+
+    const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+    const body = await res.json() as { testResult: { success: boolean; message: string } };
+
+    expect(body.testResult.success).toBe(false);
+    expect(body.testResult.message).not.toContain(webhookUrl);
+    expect(body.testResult.message).not.toContain('YYYYYYYYYYYYYYYYYYYYYYYY');
+    expect(body.testResult.message).toContain('no_service');
+  });
+
+  // Card and toast must not diverge: an operator who dismisses the toast and
+  // reads the card should see the same sentence.
+  it('renders the same reason on both surfaces', async () => {
+    senderResultRef.current = { success: false, error: RESEND_ERROR };
+
+    const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+    const body = await res.json() as { testResult: { message: string } };
+
+    expect(body.testResult.message).toBe(updateSetRef.current?.lastTestError);
+    expect(body.testResult.message).toBe(RESEND_ERROR);
+  });
+
+  it('leaves a successful test message untouched', async () => {
+    senderResultRef.current = { success: true };
+
+    const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+    const body = await res.json() as { testResult: { success: boolean; message: string } };
+
+    expect(body.testResult.success).toBe(true);
+    expect(body.testResult.message).toBe('Test email sent successfully');
+  });
+
+  // scrubChannelTestError returns null for an empty/whitespace-only message
+  // (never as a result of scrubbing itself — redaction substitutes a non-empty
+  // placeholder). The toast must not go blank when a sender hands us one.
+  it('falls back to a generic reason when scrubbing leaves nothing', async () => {
+    senderResultRef.current = { success: false, error: '   ' };
+
+    const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+    const body = await res.json() as { testResult: { message: string } };
+
+    expect(body.testResult.message.trim().length).toBeGreaterThan(0);
+    expect(body.testResult.message).toContain('check the channel configuration');
+  });
+});
