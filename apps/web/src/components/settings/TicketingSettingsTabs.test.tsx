@@ -2,7 +2,17 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { grantedActions } = vi.hoisted(() => ({ grantedActions: new Set<string>() }));
-vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' }) }));
+// Every case in this file describes an already-WARM page: the partner scope is
+// known before the group renders. The cold-load window (`status: 'unresolved'`,
+// which is where every direct landing on this surface actually starts) is what
+// TicketingSettingsTabs.coldLoad.test.tsx covers, driving the real auth store.
+vi.mock('../../lib/authScope', () => {
+  const claims = { scope: 'partner' as const, orgId: null, partnerId: 'partner-1' };
+  return {
+    getJwtClaims: () => claims,
+    useJwtClaims: () => ({ status: 'resolved' as const, claims }),
+  };
+});
 vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({
     can: (resource: string, action: string) => grantedActions.has(`${resource}:${action}`),

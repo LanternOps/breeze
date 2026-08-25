@@ -37,7 +37,8 @@
       "selectedOrganization": "der ausgewählten Organisation",
       "messageOne": "Patch auf {{count}} Gerät in {{org}} freigeben?",
       "messageMany": "Patch auf {{count}} Geräten in {{org}} freigeben?"
-    }
+    },
+    "checkingAccess": "Zugriff wird geprüft..."
   },
   "patchComplianceView": {
     "unknownDevice": "Unbekannt",

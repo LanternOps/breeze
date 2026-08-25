@@ -2467,7 +2467,8 @@
     "categories": "Categorie",
     "export": "Esporta",
     "inboundEmail": "Email in ingresso",
-    "cannedResponses": "Risposte predefinite"
+    "cannedResponses": "Risposte predefinite",
+    "checkingAccess": "Verifica dell’accesso in corso..."
   },
   "ticketFormsCard": {
     "heading": "Moduli di raccolta",

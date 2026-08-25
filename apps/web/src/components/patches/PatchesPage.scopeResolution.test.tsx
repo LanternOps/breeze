@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
@@ -212,5 +212,76 @@ describe('PatchesPage #rings deep link vs. late-arriving JWT scope (#4010)', () 
 
     await waitFor(() => expect(navTab('Update Rings')).toHaveClass('border-primary'));
     expect(window.location.hash).toBe('#rings');
+  });
+});
+
+// PatchesPage renders <PatchApprovalModal> UNCONDITIONALLY — it sits in the page
+// body, not behind `{modalOpen && ...}`, and nothing returns early in front of
+// it. So the modal's own hooks run during this cold load, with `patch={null}`,
+// long before anyone opens it. That is what made #4013's second site genuinely
+// reachable rather than merely fragile: its
+// `useMemo(() => getJwtClaims().scope === 'organization', [])` captured the
+// empty-store answer HERE and kept it for the life of the page, so the org user
+// who eventually opened the modal was offered an Approve button the API refuses.
+describe('PatchApprovalModal opened after a cold load of PatchesPage (#4013)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    orgState.currentOrgId = 'org-1';
+    useAuthStore.setState({ tokens: null });
+    window.history.replaceState({}, '', '/#patches');
+    fetchMock.mockImplementation(async (input: unknown) => {
+      if (String(input) === '/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-1',
+              title: 'Security Update',
+              severity: 'critical',
+              source: 'Microsoft',
+              os: 'Windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'pending',
+            },
+          ],
+        });
+      }
+      return emptyDataFetch(input);
+    });
+  });
+
+  afterEach(() => {
+    useAuthStore.setState({ tokens: null });
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('org scope arriving after the page mounted: the modal still explains the partner-level denial', async () => {
+    render(<PatchesPage />);
+    // The modal has already mounted (and, before the fix, already frozen its
+    // scope) by the time this row is on screen.
+    await waitFor(() => expect(navTab('Patches')).toHaveClass('border-primary'));
+
+    tokenArrives({ scope: 'organization', orgId: 'org-1' });
+
+    // ResponsiveTable renders a table row AND a card for the same patch; either
+    // affordance opens the same modal.
+    fireEvent.click((await screen.findAllByTestId('patch-row-patch-1-review'))[0]);
+
+    expect(await screen.findByText(/patch approvals are managed at the partner level/i)).toBeInTheDocument();
+    expect(screen.getByTestId('patch-approval-submit')).toBeDisabled();
+  });
+
+  it('partner scope arriving after the page mounted: the modal offers Approve', async () => {
+    orgState.currentOrgId = null;
+    render(<PatchesPage />);
+    await waitFor(() => expect(navTab('Patches')).toHaveClass('border-primary'));
+
+    tokenArrives({ scope: 'partner', partnerId: 'p-1' });
+
+    // ResponsiveTable renders a table row AND a card for the same patch; either
+    // affordance opens the same modal.
+    fireEvent.click((await screen.findAllByTestId('patch-row-patch-1-review'))[0]);
+
+    await waitFor(() => expect(screen.getByTestId('patch-approval-submit')).not.toBeDisabled());
+    expect(screen.queryByText(/patch approvals are managed at the partner level/i)).toBeNull();
   });
 });

@@ -8,7 +8,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
-import { getJwtClaims } from '../../lib/authScope';
+import { getJwtClaims, useJwtClaims } from '../../lib/authScope';
 
 export type PatchApprovalAction = 'approve' | 'decline' | 'defer';
 
@@ -84,20 +84,50 @@ export default function PatchApprovalModal({
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
   // Approval is partner-scoped. Partner/system users can approve partner-wide
   // (no ring) or ring-scoped (ring selected). Org-scoped users cannot approve.
-  const isOrgScope = useMemo(() => getJwtClaims().scope === 'organization', []);
+  //
+  // THREE states, not two (#4013). PatchesPage renders this modal
+  // UNCONDITIONALLY — it is not behind `{modalOpen && ...}` — so it first
+  // renders during the page's cold load, long before the user opens it and
+  // before /auth/refresh has produced an access token. Access tokens are never
+  // persisted, so at that moment every user decodes as `scope: null`. The
+  // previous `useMemo(() => getJwtClaims().scope === 'organization', [])` froze
+  // that answer for the life of the PAGE, so an org-scoped user who cold-loaded
+  // /patches was shown an enabled Approve button with no explanation.
+  //
+  // 'unresolved' is neither: not a denial (no "partner level" banner — we have
+  // not been told no), and not a grant (submit stays disabled — we have not been
+  // told yes). Only a resolved org scope is 'denied', which keeps this gate on
+  // the same predicate `handleSubmit` and the server enforce.
+  //
+  // Note the deliberate contrast with `ringAccess` in PatchesPage.tsx, which
+  // looks like the same pattern and treats one case the opposite way: a resolved
+  // but UNDECODABLE token (all-null claims) is 'denied' there and 'allowed'
+  // here. That is not drift. `ringAccess` gates visibility of a whole feature
+  // surface with no matching server predicate to mirror, so the conservative
+  // default is to hide it. This gates one mutating action whose server-side rule
+  // already exists, so inventing a stricter client rule would show a false "you
+  // cannot do this" for a case the server does not actually reject on scope —
+  // it rejects the broken token itself, with a 401. Do not "harmonize" these
+  // two without reading both.
+  const jwt = useJwtClaims();
+  const approvalAccess: 'unresolved' | 'allowed' | 'denied' =
+    jwt.status === 'unresolved' ? 'unresolved' : jwt.claims.scope === 'organization' ? 'denied' : 'allowed';
   const canSubmit = useMemo(() => {
     if (isSubmitting) return false;
-    if (isOrgScope) return false;
+    if (approvalAccess !== 'allowed') return false;
     if (action !== 'defer') return true;
     return deferUntil.trim().length > 0;
-  }, [action, deferUntil, isSubmitting, isOrgScope]);
+  }, [action, deferUntil, isSubmitting, approvalAccess]);
 
   if (!patch) return null;
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
     // Approval is partner-scoped. Org-scoped users cannot approve — block early
-    // before opening the approve confirm dialog.
+    // before opening the approve confirm dialog. The one-shot read is correct
+    // HERE (and only here): an event handler wants the scope as of the click,
+    // and the answer cannot outlive the call. Render-time gates use the reactive
+    // `useJwtClaims()` above.
     const { scope } = getJwtClaims();
     if (scope === 'organization') {
       setSubmitError(t('patchApprovalModal.errors.partnerLevel'));
@@ -237,9 +267,19 @@ export default function PatchApprovalModal({
           </div>
         )}
 
-        {isOrgScope && !submitError && (
-          <div className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
-            {t('patchApprovalModal.errors.partnerLevel')}
+        {/* Both non-'allowed' states disable submit, so both owe the user a
+            VISIBLE reason. A disabled button is out of the tab order in every
+            major browser and has no hover on touch, so the `title` below can
+            never be the only explanation — that would make the modal read as
+            broken rather than busy. */}
+        {approvalAccess !== 'allowed' && !submitError && (
+          <div
+            data-testid="patch-approval-scope-notice"
+            className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground"
+          >
+            {approvalAccess === 'denied'
+              ? t('patchApprovalModal.errors.partnerLevel')
+              : t('patchApprovalModal.checkingAccess')}
           </div>
         )}
 
@@ -263,7 +303,13 @@ export default function PatchApprovalModal({
             onClick={handleSubmit}
             disabled={!canSubmit}
             data-testid="patch-approval-submit"
-            title={isOrgScope ? t('patchApprovalModal.errors.partnerLevel') : undefined}
+            title={
+              approvalAccess === 'denied'
+                ? t('patchApprovalModal.errors.partnerLevel')
+                : approvalAccess === 'unresolved'
+                  ? t('patchApprovalModal.checkingAccess')
+                  : undefined
+            }
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span className="inline-flex items-center gap-2">
