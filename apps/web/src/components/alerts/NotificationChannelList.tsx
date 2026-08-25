@@ -44,6 +44,9 @@ type NotificationChannelListProps = {
   onEdit?: (channel: NotificationChannel) => void;
   onDelete?: (channel: NotificationChannel) => void;
   onTest?: (channel: NotificationChannel) => void;
+  /** Offered from the empty state, so a list with no rows has the create
+   *  action in front of it rather than only in the page header. */
+  onCreate?: () => void;
   pageSize?: number;
 };
 
@@ -173,6 +176,7 @@ export default function NotificationChannelList({
   onEdit,
   onDelete,
   onTest,
+  onCreate,
   pageSize = 10
 }: NotificationChannelListProps) {
   const { t } = useTranslation('alerts');
@@ -194,6 +198,17 @@ export default function NotificationChannelList({
       return matchesQuery && matchesType;
     });
   }, [channels, query, typeFilter]);
+
+  // "No results" and "nothing exists yet" are different states. Keyed off the
+  // UNFILTERED list plus the search and type controls being at rest, so a
+  // search that matches nothing still gets the adjust-your-search message.
+  //
+  // Deliberately NOT a claim that the tenant is new: a zero-length page can
+  // also come from a retained `currentPage` after the row count shrinks, which
+  // this predicate does not cover and which pre-dates this change (see #4008).
+  // It only distinguishes "the list is empty and the filters are untouched".
+  const hasNoChannelsAtAll =
+    channels.length === 0 && query.trim().length === 0 && typeFilter === 'all';
 
   const totalPages = Math.ceil(filteredChannels.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
@@ -254,9 +269,26 @@ export default function NotificationChannelList({
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {paginatedChannels.length === 0 ? (
           <div className="col-span-full rounded-md border border-dashed p-6 text-center">
-            <p className="text-sm text-muted-foreground">
-              {t('notificationChannelList.noNotificationChannelsFoundTryAdjustingYour')}
-            </p>
+            {hasNoChannelsAtAll ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  {t('notificationChannelList.noChannelsYet')}
+                </p>
+                {onCreate && (
+                  <button
+                    type="button"
+                    onClick={onCreate}
+                    className="mt-3 inline-flex items-center rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                  >
+                    {t('notificationChannelsPage.newChannel')}
+                  </button>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t('notificationChannelList.noNotificationChannelsFoundTryAdjustingYour')}
+              </p>
+            )}
           </div>
         ) : (
           paginatedChannels.map(channel => {

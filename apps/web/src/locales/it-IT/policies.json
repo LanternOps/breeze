@@ -143,6 +143,7 @@
       "archived2": "Archiviata",
       "features": "Funzionalità",
       "noPoliciesFoundTryAdjustingYourSearch": "Nessun criterio trovato. Prova a modificare la ricerca.",
+      "noPoliciesYet": "Nessun criterio di configurazione. Creane uno, poi assegnalo a organizzazioni, siti o dispositivi.",
       "partnerWidePolicyAppliesToEveryOrganization": "Criterio a livello di partner — si applica a ogni organizzazione",
       "allOrgs": "A livello di partner",
       "page": "Pagina",

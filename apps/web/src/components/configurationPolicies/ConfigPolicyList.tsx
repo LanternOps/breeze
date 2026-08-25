@@ -100,6 +100,17 @@ export default function ConfigPolicyList({
       return matchesQuery && matchesStatus;
     });
   }, [policies, query, statusFilter]);
+  // "No results" and "nothing exists yet" are different states and need
+  // different copy. Keyed off the UNFILTERED list plus the search and status
+  // controls being at rest, so a search that happens to match nothing still
+  // gets the adjust-your-search message.
+  //
+  // Deliberately NOT a claim that the tenant is new: a zero-length page can
+  // also come from a retained `currentPage` after the row count shrinks, which
+  // this predicate does not cover and which pre-dates this change (see #4008).
+  // It only distinguishes "the list is empty and the filters are untouched".
+  const hasNoPoliciesAtAll =
+    policies.length === 0 && query.trim().length === 0 && statusFilter === "all";
   const totalPages = Math.ceil(filteredPolicies.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedPolicies = filteredPolicies.slice(
@@ -194,8 +205,32 @@ export default function ConfigPolicyList({
                   colSpan={5}
                   className="px-4 py-6 text-center text-sm text-muted-foreground"
                 >
-                  {i18n.t(
-                    "policies:configurationPolicies.configPolicyList.noPoliciesFoundTryAdjustingYourSearch",
+                  {hasNoPoliciesAtAll ? (
+                    // Nothing to adjust: the list is empty and the search and
+                    // status controls are untouched, so telling the user to
+                    // change a search they never made is unhelpful. This does
+                    // NOT establish that the tenant has no policies — the list
+                    // can be org-scoped, and a malformed HTTP 200 is coerced to
+                    // [] upstream — so the copy stays a suggestion, not a claim.
+                    <>
+                      <p>
+                        {i18n.t(
+                          "policies:configurationPolicies.configPolicyList.noPoliciesYet",
+                        )}
+                      </p>
+                      <a
+                        href="/configuration-policies/new"
+                        className="mt-3 inline-flex items-center rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                      >
+                        {i18n.t(
+                          "policies:configurationPolicies.configurationPoliciesPage.newPolicy",
+                        )}
+                      </a>
+                    </>
+                  ) : (
+                    i18n.t(
+                      "policies:configurationPolicies.configPolicyList.noPoliciesFoundTryAdjustingYourSearch",
+                    )
                   )}
                 </td>
               </tr>

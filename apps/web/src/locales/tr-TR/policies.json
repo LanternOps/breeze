@@ -143,6 +143,7 @@
       "archived2": "Arşivlendi",
       "features": "Özellikler",
       "noPoliciesFoundTryAdjustingYourSearch": "Politika bulunamadı. Aramanızı ayarlamayı deneyin.",
+      "noPoliciesYet": "Henüz yapılandırma politikası yok. Bir tane oluşturun, ardından kuruluşlara, sitelere veya cihazlara atayın.",
       "partnerWidePolicyAppliesToEveryOrganization": "İş ortağı çapında politika — her kuruluş için geçerlidir",
       "allOrgs": "İş ortağı çapında",
       "page": "Sayfa",
