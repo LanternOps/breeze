@@ -210,6 +210,28 @@ commandsRoutes.get('/:id/commands', async (c) => {
   return c.json({ commands: deliverableCommands });
 });
 
+// #2774 / #3986 — drain narrowing for the result endpoint below. This prose
+// lives ABOVE the route declaration on purpose: the site-scope route scanner
+// (apps/api/src/__tests__/helpers/routeScan.ts) reads a fixed
+// HANDLER_SLICE_BYTES window from the route declaration, comments included, and
+// a handler whose device-table condition falls past that window silently reads
+// as "touches no device data" — dropping it out of the scan and marking its
+// SITE_SCOPE_INPUT_EXEMPT entry stale. Keeping the explanation outside the
+// window keeps the handler visible to the scanner. See #4019.
+//
+// The endpoint accepts results ONLY for the command types the claim allowlist
+// permits while the agent sits on a narrowed drain surface. Being on the drain
+// ROUTE allowlist is not the same as being harmless: this route has a second,
+// id-shaped entrance.
+//
+// A NON-UUID commandId short-circuits into the `sw-install-…` branch, which
+// writes deployment history via `applySoftwareInstallResult` with NO
+// `device_commands` row to consult — its only gate is that the device UUID
+// embedded in the caller-supplied id matches the authenticated device. A
+// command-type allowlist cannot see that path at all, so a draining agent could
+// keep stamping deployment_results rows for its org. Refuse the whole shape
+// while draining; the drain only ever delivers real, UUID-keyed
+// `device_commands` rows.
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
@@ -225,19 +247,6 @@ commandsRoutes.post(
 
     const deviceId = agent.deviceId;
 
-    // #2774 / #3986 — while the agent sits on a narrowed drain surface, this
-    // endpoint accepts results ONLY for the command types the claim allowlist
-    // permits. Being on the drain ROUTE allowlist is not the same as being
-    // harmless: this route has a second, id-shaped entrance.
-    //
-    // A NON-UUID commandId short-circuits into the `sw-install-…` branch
-    // below, which writes deployment history via `applySoftwareInstallResult`
-    // with NO `device_commands` row to consult — its only gate is that the
-    // device UUID embedded in the caller-supplied id matches the authenticated
-    // device. A command-type allowlist cannot see that path at all, so a
-    // draining agent could keep stamping deployment_results rows for its org.
-    // Refuse the whole shape while draining; the drain only ever delivers
-    // real, UUID-keyed `device_commands` rows.
     const drainClaimAllowlist = agent.claimTypeAllowlist;
     if (drainClaimAllowlist && !uuidRegex.test(commandId)) {
       return c.json({ error: 'drain_restricted' }, 403);
