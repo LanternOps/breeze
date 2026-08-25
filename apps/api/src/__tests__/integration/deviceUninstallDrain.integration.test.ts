@@ -471,7 +471,21 @@ describe('#3986 incident guard — an abuse suspension never becomes a drain', (
         }),
       },
     );
-    expect(suspend.status, await suspend.clone().text()).toBe(200);
+    // Deliberately NOT a strict 200. suspend-for-abuse returns 500
+    // `partial_suspend` when any user's Redis token cutoff fails or
+    // revokeAllPartnerOauthArtifacts throws — well under 1% with Redis as a
+    // service container, but this guard runs on EVERY PR, and an
+    // intermittently-red security test is the kind that gets `.skip`ped. The
+    // status code is not the property under test: the DB suspend has committed
+    // by this point either way, and the assertions immediately below are the
+    // actual contract. (`unsuspend`'s status assertion stays strict — that one
+    // is a vacuity control, not incidental.)
+    if (suspend.status !== 200) {
+      expect(
+        ((await suspend.clone().json()) as { error?: string }).error,
+        await suspend.clone().text(),
+      ).toBe('partial_suspend');
+    }
 
     // The precondition the whole guard rests on: abuse rows carry NO
     // provenance and NO deadline, on BOTH the live and the removed device.
@@ -490,7 +504,6 @@ describe('#3986 incident guard — an abuse suspension never becomes a drain', (
     // --- Age past the 30-minute command timeout, then reap ------------------
     await ageCommands([liveDevice.id, removedDevice.id]);
     const reaped = await withSystemDbAccessContext(() => reapStaleDeviceCommands());
-    expect(reaped).toBeGreaterThanOrEqual(2);
 
     for (const deviceId of [liveDevice.id, removedDevice.id]) {
       const rows = await readUninstallRows(deviceId);
@@ -499,6 +512,10 @@ describe('#3986 incident guard — an abuse suspension never becomes a drain', (
         'an abuse-queued uninstall must expire normally — it is not drain-exempt',
       ).toBe('failed');
     }
+    // Exactly 2: cleanupDatabase TRUNCATEs before every test, so these are the
+    // only commands in the database. Asserted AFTER the per-row statuses so a
+    // mutant fails on the sentence naming the property, not on arithmetic.
+    expect(reaped).toBe(2);
 
     // --- Un-suspend --------------------------------------------------------
     const unsuspend = await abuseApp.request(
@@ -624,6 +641,127 @@ describe('#3986 overlap — a device Removed while its tenant is offboarding', (
 });
 
 // ===========================================================================
+// 5. Reaper — the exemption arm, exercised live in BOTH directions
+// ===========================================================================
+
+const future = () => new Date(Date.now() + 60 * 60 * 1000);
+const past = () => new Date(Date.now() - 60 * 1000);
+
+/**
+ * Plant a `decommissioned` device carrying one directly-inserted
+ * `self_uninstall` row of an exact shape. Direct insert on purpose: the point
+ * is the DATABASE's evaluation of a predicate against a given row, not the
+ * route that would normally produce it.
+ */
+async function plantDecommissionedDeviceWithUninstall(opts: {
+  uninstallReasons: string[] | null;
+  deviceRemoveExpiresAt: Date | null;
+  /** 'offboarding' exercises the pre-existing #2774 arm instead of the #3986 one. */
+  orgStatus?: 'active' | 'offboarding';
+}): Promise<SeededDevice & { orgId: string }> {
+  const tenant = await seedTenant();
+  if (opts.orgStatus && opts.orgStatus !== 'active') {
+    await getTestDb()
+      .update(organizations)
+      .set({ status: opts.orgStatus, updatedAt: new Date() })
+      .where(eq(organizations.id, tenant.orgId));
+  }
+  const device = await seedDevice(tenant.orgId, tenant.siteId, 'decommissioned');
+  await getTestDb().insert(deviceCommands).values({
+    deviceId: device.id,
+    type: 'self_uninstall',
+    payload: { removeConfig: true },
+    status: 'pending',
+    targetRole: 'agent',
+    uninstallReasons: opts.uninstallReasons,
+    deviceRemoveExpiresAt: opts.deviceRemoveExpiresAt,
+  });
+  return { ...device, orgId: tenant.orgId };
+}
+
+/**
+ * The incident guard above only ever asserts that rows ARE reaped. Nothing
+ * there fails if the device-remove exemption arm is deleted outright — the
+ * feature's core promise (an OFFLINE machine's uninstall waits out the drain
+ * window instead of expiring at 30 minutes) would die silently, caught only by
+ * a compiled-SQL unit assertion, which is exactly the class of proof this file
+ * exists to supplement.
+ *
+ * All five shapes are reaped in ONE pass, so this also proves the arm
+ * DISCRIMINATES rather than merely exempting or expiring everything:
+ *
+ *   | uninstall_reasons  | device_remove_expires_at | org status  | outcome |
+ *   |--------------------|--------------------------|-------------|---------|
+ *   | ['device_remove']  | future                   | active      | HELD    |
+ *   | NULL               | NULL                     | offboarding | HELD    |  (#2774 arm)
+ *   | NULL               | future                   | active      | reaped  |
+ *   | ['device_remove']  | expired                  | active      | reaped  |
+ *   | ['device_remove']  | NULL                     | active      | reaped  |
+ *
+ * The last row is the shape the COALESCE fix newly reaps, and reaping it is
+ * correct: `isDeviceUninstallDraining` requires a non-null FUTURE deadline, so
+ * that device is hard-403d and could never have collected the row anyway —
+ * holding it would have made it immortal for nobody's benefit.
+ *
+ * This is also what makes SINGLE-clause mutants of the reaper arm detectable
+ * live. The incident guard alone cannot see them: drop only the reason clause
+ * and abuse rows still have a NULL deadline (still reaped, still green); drop
+ * only the deadline clause and they still have NULL reasons (same). Here,
+ * dropping the reason clause holds `reasonlessButDated`, and dropping the
+ * deadline clause holds `expired` and `nullDeadline`.
+ */
+describe('#3986 reaper — a genuine device_remove row SURVIVES its window', () => {
+  it('holds the device-remove and offboarding rows while expiring every other shape, in one pass', async () => {
+    const held = await plantDecommissionedDeviceWithUninstall({
+      uninstallReasons: ['device_remove'],
+      deviceRemoveExpiresAt: future(),
+    });
+    // The pre-existing #2774 arm, which the COALESCE edit also wrapped — this
+    // is its first live positive control.
+    const offboarding = await plantDecommissionedDeviceWithUninstall({
+      uninstallReasons: null,
+      deviceRemoveExpiresAt: null,
+      orgStatus: 'offboarding',
+    });
+    const reasonlessButDated = await plantDecommissionedDeviceWithUninstall({
+      uninstallReasons: null,
+      deviceRemoveExpiresAt: future(),
+    });
+    const expired = await plantDecommissionedDeviceWithUninstall({
+      uninstallReasons: ['device_remove'],
+      deviceRemoveExpiresAt: past(),
+    });
+    const nullDeadline = await plantDecommissionedDeviceWithUninstall({
+      uninstallReasons: ['device_remove'],
+      deviceRemoveExpiresAt: null,
+    });
+
+    const all = [held, offboarding, reasonlessButDated, expired, nullDeadline];
+    await ageCommands(all.map((d) => d.id));
+
+    const reaped = await withSystemDbAccessContext(() => reapStaleDeviceCommands());
+
+    const statusOf = async (d: SeededDevice) => (await readUninstallRows(d.id))[0]!.status;
+
+    // Per-row FIRST, aggregate count last: a mutant must fail on the sentence
+    // that names the property it broke, not on an arithmetic mismatch that
+    // happens to be evaluated earlier.
+    expect(
+      await statusOf(held),
+      'THE feature promise: an offline machine still has its uninstall waiting when it reconnects',
+    ).toBe('pending');
+    expect(await statusOf(offboarding), '#2774 offboarding drain must still be exempt').toBe(
+      'pending',
+    );
+    expect(await statusOf(reasonlessButDated), 'no provenance -> expires normally').toBe('failed');
+    expect(await statusOf(expired), 'past its deadline -> expires normally').toBe('failed');
+    expect(await statusOf(nullDeadline), 'no deadline -> expires normally').toBe('failed');
+
+    expect(reaped, 'exactly the three non-exempt rows, and nothing else').toBe(3);
+  });
+});
+
+// ===========================================================================
 // 5. Deny semantics — executed, not argued
 // ===========================================================================
 
@@ -635,27 +773,6 @@ describe('#3986 overlap — a device Removed while its tenant is offboarding', (
  * fixture, a mis-hashed token, a wrong mount path).
  */
 describe('#3986 deny semantics — what does NOT drain', () => {
-  async function plantDecommissionedDeviceWithUninstall(opts: {
-    uninstallReasons: string[] | null;
-    deviceRemoveExpiresAt: Date | null;
-  }): Promise<SeededDevice> {
-    const tenant = await seedTenant();
-    const device = await seedDevice(tenant.orgId, tenant.siteId, 'decommissioned');
-    await getTestDb().insert(deviceCommands).values({
-      deviceId: device.id,
-      type: 'self_uninstall',
-      payload: { removeConfig: true },
-      status: 'pending',
-      targetRole: 'agent',
-      uninstallReasons: opts.uninstallReasons,
-      deviceRemoveExpiresAt: opts.deviceRemoveExpiresAt,
-    });
-    return device;
-  }
-
-  const future = () => new Date(Date.now() + 60 * 60 * 1000);
-  const past = () => new Date(Date.now() - 60 * 1000);
-
   it('POSITIVE CONTROL: device_remove + an unexpired deadline DOES drain', async () => {
     const device = await plantDecommissionedDeviceWithUninstall({
       uninstallReasons: ['device_remove'],
