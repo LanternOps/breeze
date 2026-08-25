@@ -126,7 +126,13 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // #4018 Finding 1: unconditionally reject, mirroring the real
+  // requireMfa()'s unsatisfied-session response shape exactly
+  // (middleware/auth.ts:862). /reauth/start must NEVER be wired to this —
+  // if someone adds requireMfa() to its middleware chain, this mock makes
+  // every request through it 403, which is what the dedicated regression
+  // test below asserts against.
+  requireMfa: vi.fn(() => async (c: any) => c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)),
   dbAccessContextFromAuth: vi.fn((auth: any) => ({
     scope: auth.scope,
     orgId: auth.orgId ?? null,
@@ -138,7 +144,7 @@ vi.mock('../middleware/auth', () => ({
   withAuthDbAccessContext: vi.fn((_auth: any, fn: () => any) => fn())
 }));
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getUserEpochs, rateLimiter } from '../services';
 import { authMiddleware } from '../middleware/auth';
 
@@ -293,6 +299,40 @@ describe('POST /sso/reauth/start', () => {
     }));
     const insertedArg = insertValues.mock.calls[0][0];
     expect(insertedArg.linkUserId).toBeUndefined();
+
+    // #4018 Finding 2: sso_sessions is system-scope-only under RLS. Dropping
+    // this wrapping from the insert is the silent-RLS-drop bug (the write
+    // would be discarded by RLS at runtime with no error) and this suite
+    // would otherwise stay green — assert both wrappers actually ran, mirroring
+    // the precedent at sso.test.ts:1082-1083.
+    expect(runOutsideDbContext).toHaveBeenCalled();
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+  });
+
+  // #4018 Finding 1: the entire plan hinges on this route NOT being gated by
+  // requireMfa() — a passwordless SSO user cannot satisfy it, which is why
+  // this route exists. The requireMfa mock above (module-level) is wired to
+  // unconditionally 403 "the way the real requireMfa() does for an
+  // unsatisfied session" (middleware/auth.ts:862); since the route registers
+  // only `authMiddleware` (never requireMfa()), that rejecting middleware is
+  // never part of this route's chain, so a fully valid happy-path request
+  // must still succeed. If requireMfa() were ever added to the route's
+  // middleware chain, this would 403 instead and the test would fail.
+  it('never invokes requireMfa() — a happy-path request succeeds even though the requireMfa mock unconditionally rejects', async () => {
+    mockUserRow({ id: USER_ID, passwordHash: null });
+    mockSsoIdentityRows([{ providerId: PROVIDER_ID }]);
+    mockProviderRow(ACTIVE_OIDC_PROVIDER);
+    captureInsert();
+    vi.mocked(getUserEpochs).mockResolvedValueOnce({ authEpoch: 3, mfaEpoch: 1 } as any);
+
+    const res = await app.request('/sso/reauth/start', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const { authUrl } = await res.json();
+    expect(authUrl).toBeTruthy();
   });
 
   it('503s when the caller has no sid or epochs are unavailable', async () => {
