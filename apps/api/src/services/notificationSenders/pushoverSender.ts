@@ -6,6 +6,8 @@
  */
 
 import type { AlertSeverity } from '../email';
+import { formatHttpFailure, formatHttpFailureDetail } from '../httpFailureMessage';
+import { collectChannelSecretStrings } from '../notificationChannelSecrets';
 
 const PUSHOVER_MESSAGES_URL = 'https://api.pushover.net/1/messages.json';
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -179,9 +181,22 @@ export async function sendPushoverNotification(
     }
 
     if (!response.ok || parsed.status !== 1) {
+      // Redact the channel's own credentials from the RAW body before it is
+      // transformed. Nothing scrubs this string on the live alert path — it
+      // goes straight into alert_notifications.error_message (#3992).
+      const secrets = collectChannelSecretStrings('pushover', config);
       const errMsg = parsed.errors?.length
         ? parsed.errors.join('; ')
-        : `HTTP ${response.status}: ${responseBody.slice(0, 500)}`;
+        : formatHttpFailure(response.status, responseBody, { secrets });
+      // `errMsg` is operator-facing: the dispatcher persists it into
+      // alert_notifications.error_message and it is rendered in the UI, so it is
+      // short and markup-free (#3992). This sender keeps no other copy of the
+      // body, so without this line the shortening would be the end of it on the
+      // live alert path. Not a new secrets surface — the dispatcher's own
+      // console.error already carried the unshortened form before #3992.
+      console.error(
+        `[PushoverSender] Failed to send: ${formatHttpFailureDetail(response.status, responseBody, secrets)}`
+      );
       return {
         success: false,
         statusCode: response.status,

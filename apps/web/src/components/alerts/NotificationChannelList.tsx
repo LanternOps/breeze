@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { NotificationChannelType } from '@breeze/shared';
+import { formatRelativeTime } from './alertConfig';
 
 export type { NotificationChannelType };
 
@@ -44,6 +45,9 @@ type NotificationChannelListProps = {
   onEdit?: (channel: NotificationChannel) => void;
   onDelete?: (channel: NotificationChannel) => void;
   onTest?: (channel: NotificationChannel) => void;
+  /** Offered from the empty state, so a list with no rows has the create
+   *  action in front of it rather than only in the page header. */
+  onCreate?: () => void;
   pageSize?: number;
 };
 
@@ -83,23 +87,14 @@ const channelTypeConfig: Record<
   }
 };
 
+// Delegates to the shared `alerts:relativeTime.*` catalog rather than keeping a
+// private copy. The private copy was extracted into title-cased strings that
+// also dropped the `{{count}}` placeholder the caller passes, so the card read
+// "Last test: Hours Ago" — no case agreement and no number (#3992). The shared
+// node is correct in all eight locales and is what the alerts list already uses.
 function formatLastTested(dateString: string | undefined, t: AlertsT): string {
   if (!dateString) return t('notificationChannelList.neverTested');
-
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffMins < 1) return t('notificationChannelList.justNow');
-  if (diffMins < 60) return t('notificationChannelList.minutesAgo', { count: diffMins });
-  if (diffHours < 24) return t('notificationChannelList.hoursAgo', { count: diffHours });
-  if (diffDays < 7) return t('notificationChannelList.daysAgo', { count: diffDays });
-  return date.toLocaleDateString();
+  return formatRelativeTime(dateString);
 }
 
 /**
@@ -173,6 +168,7 @@ export default function NotificationChannelList({
   onEdit,
   onDelete,
   onTest,
+  onCreate,
   pageSize = 10
 }: NotificationChannelListProps) {
   const { t } = useTranslation('alerts');
@@ -194,6 +190,17 @@ export default function NotificationChannelList({
       return matchesQuery && matchesType;
     });
   }, [channels, query, typeFilter]);
+
+  // "No results" and "nothing exists yet" are different states. Keyed off the
+  // UNFILTERED list plus the search and type controls being at rest, so a
+  // search that matches nothing still gets the adjust-your-search message.
+  //
+  // Deliberately NOT a claim that the tenant is new: a zero-length page can
+  // also come from a retained `currentPage` after the row count shrinks, which
+  // this predicate does not cover and which pre-dates this change (see #4008).
+  // It only distinguishes "the list is empty and the filters are untouched".
+  const hasNoChannelsAtAll =
+    channels.length === 0 && query.trim().length === 0 && typeFilter === 'all';
 
   const totalPages = Math.ceil(filteredChannels.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
@@ -254,9 +261,26 @@ export default function NotificationChannelList({
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {paginatedChannels.length === 0 ? (
           <div className="col-span-full rounded-md border border-dashed p-6 text-center">
-            <p className="text-sm text-muted-foreground">
-              {t('notificationChannelList.noNotificationChannelsFoundTryAdjustingYour')}
-            </p>
+            {hasNoChannelsAtAll ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  {t('notificationChannelList.noChannelsYet')}
+                </p>
+                {onCreate && (
+                  <button
+                    type="button"
+                    onClick={onCreate}
+                    className="mt-3 inline-flex items-center rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                  >
+                    {t('notificationChannelsPage.newChannel')}
+                  </button>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t('notificationChannelList.noNotificationChannelsFoundTryAdjustingYour')}
+              </p>
+            )}
           </div>
         ) : (
           paginatedChannels.map(channel => {

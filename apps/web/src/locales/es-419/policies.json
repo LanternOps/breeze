@@ -143,6 +143,7 @@
       "archived2": "Archivado",
       "features": "Características",
       "noPoliciesFoundTryAdjustingYourSearch": "No se encontraron políticas. Intente ajustar su búsqueda.",
+      "noPoliciesYet": "Aún no hay políticas de configuración. Cree una y luego asígnela a organizaciones, sitios o dispositivos.",
       "partnerWidePolicyAppliesToEveryOrganization": "Política en todo el socio: se aplica a todas las organizaciones",
       "allOrgs": "En todo el socio",
       "page": "Página",

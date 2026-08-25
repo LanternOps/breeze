@@ -143,6 +143,7 @@
       "archived2": "Archiviert",
       "features": "Funktionen",
       "noPoliciesFoundTryAdjustingYourSearch": "Keine Richtlinien gefunden. Versuchen Sie, Ihre Suche anzupassen.",
+      "noPoliciesYet": "Noch keine Konfigurationsrichtlinien. Erstellen Sie eine und weisen Sie sie dann Organisationen, Standorten oder Geräten zu.",
       "partnerWidePolicyAppliesToEveryOrganization": "Partnerweite Richtlinie – gilt für jede Organisation",
       "allOrgs": "Partnerweit",
       "page": "Seite",

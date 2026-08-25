@@ -9,9 +9,17 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
-vi.mock('../../lib/authScope', () => ({
-  getJwtClaims: vi.fn(),
-}));
+// Every case in this file describes an already-WARM page: the scope is known
+// before the modal renders, so `useJwtClaims` simply reports the same claims as
+// resolved. The cold-load window (`status: 'unresolved'`) is what
+// PatchApprovalModal.coldLoad.test.tsx covers, driving the real auth store.
+vi.mock('../../lib/authScope', () => {
+  const getJwtClaims = vi.fn();
+  return {
+    getJwtClaims,
+    useJwtClaims: () => ({ status: 'resolved' as const, claims: getJwtClaims() }),
+  };
+});
 
 import { getJwtClaims } from '../../lib/authScope';
 const getJwtClaimsMock = vi.mocked(getJwtClaims);

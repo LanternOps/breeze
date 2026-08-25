@@ -39,7 +39,9 @@ diagnoseRoutes.post(
       }, { userId: auth.user.id, timeoutMs: 30000 });
 
       if (screenshotResult.status !== 'completed') {
-        return c.json({ error: screenshotResult.error || 'Screenshot capture failed' }, 502);
+        // 500, not 502: Cloudflare replaces an origin 502 body with its own
+        // branded page, which would blank the agent's reason on hosted deployments.
+        return c.json({ error: screenshotResult.error || 'Screenshot capture failed', code: 'agent_execution_failed' }, 500);
       }
 
       let screenshotData: { imageBase64?: string; width?: number; height?: number; capturedAt?: string };

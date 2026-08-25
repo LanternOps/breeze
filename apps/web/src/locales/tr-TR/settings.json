@@ -2472,7 +2472,8 @@
     "categories": "Kategoriler",
     "export": "Dışa aktar",
     "inboundEmail": "Gelen E-posta",
-    "cannedResponses": "Hazır yanıtlar"
+    "cannedResponses": "Hazır yanıtlar",
+    "checkingAccess": "Erişiminiz kontrol ediliyor..."
   },
   "ticketFormsCard": {
     "heading": "Başvuru formları",

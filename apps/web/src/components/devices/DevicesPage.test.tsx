@@ -110,7 +110,10 @@ vi.mock('./ScriptPickerModal', () => ({
       </button>
     ) : null,
 }));
-vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
+// A spy, not a bare stub: the modal renders null either way, so the ONLY way a
+// test can observe whether runDeviceAction's `settings` branch ran is whether
+// this component was invoked at all (#4014).
+vi.mock('./DeviceSettingsModal', () => ({ default: vi.fn(() => null) }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
@@ -139,6 +142,22 @@ vi.mock('./DeviceCard', () => ({
         aria-label="card decommission"
         data-testid={`card-decommission-${device.id}`}
         onClick={() => onAction?.('decommission', device)}
+      />
+      {/* The two non-confirm-gated kebab actions, so the #4014 network guard
+          can be proven for an action that does NOT pass through the #4009
+          confirm dialog — a guard that only held for confirm-gated actions
+          would look green here while leaving run-script and settings open. */}
+      <button
+        type="button"
+        aria-label="card run script"
+        data-testid={`card-run-script-${device.id}`}
+        onClick={() => onAction?.('run-script', device)}
+      />
+      <button
+        type="button"
+        aria-label="card settings"
+        data-testid={`card-settings-${device.id}`}
+        onClick={() => onAction?.('settings', device)}
       />
     </div>
   ),
@@ -1567,12 +1586,12 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
   // it — the same follow-up Todd flagged as gated-but-untested on #3698.
   //
   // Scope, so this is not read as a clean bill of health for the grid kebab:
-  // it proves the CONFIRM gate reaches the card, nothing more. DeviceCard has
-  // no deviceClass branch at all, where DeviceList swaps the whole actions cell
-  // for a "View" button on network rows (their id is a discovered_assets.id,
-  // not a devices.id — #1322). So the grid kebab still offers decommission,
-  // reboot and terminal for a network asset. That predates #4009 and is filed
-  // as #4014; the confirm added here at least puts a dialog in front of it.
+  // it proves the CONFIRM gate reaches the card, nothing more. The separate
+  // network-class gap this note used to flag — DeviceCard having no
+  // deviceClass branch, where DeviceList swaps the whole actions cell for a
+  // "View" button — was #4014 and is now fixed. Note that DeviceCard is
+  // STUBBED in this file, so no test here can vet the real card's kebab; that
+  // lives in DeviceCard.networkClass.test.tsx against the real component.
   it('grid card decommission is gated on the same terms as the list row', async () => {
     const decommissionDevice = await mockedDecommission();
 
@@ -1599,6 +1618,153 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
     expect(screen.queryByTestId('confirm-device-action')).toBeNull();
   });
 });
+
+// #4014: the SINGLE-device funnel had no network guard. `handleBulkAction` has
+// dropped network rows since #1322, but `handleDeviceAction` — the shared entry
+// point behind the list kebab, the grid card and DeviceSettingsModal — took any
+// device it was handed. The real DeviceCard (stubbed in this file) had no
+// deviceClass branch at all, so the grid kebab offered Terminal / Run Script /
+// Reboot / Settings / Remove for a network-discovered asset, whose id is
+// a `discovered_assets.id` and NOT a `devices.id`. The card now collapses to a
+// "View" button (pinned against the real component in
+// DeviceCard.networkClass.test.tsx); this pins the handler's backstop, so a
+// future surface that wires `onAction` cannot silently re-open the hole.
+describe('DevicesPage — single-device actions refuse network rows (#4014)', () => {
+  const NET_1 = '44444444-4444-4444-4444-444444444444';
+
+  beforeEach(async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null); // no advanced filter
+    vi.mocked(fetchAllDevices).mockResolvedValue({ data: [] } as never);
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [{
+        id: NET_1,
+        deviceClass: 'network',
+        assetType: 'printer',
+        hostname: 'Lobby Printer',
+        status: 'online',
+        lastSeenAt: new Date().toISOString(),
+        orgId: 'org-1',
+        siteId: 'site-1',
+        tags: [],
+        ipAddress: '192.168.1.55',
+      }],
+      total: 1,
+      pagesWalked: 1,
+    } as never);
+  });
+
+  async function toastMessages(): Promise<string[]> {
+    const { showToast } = await import('../shared/Toast');
+    return vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+  }
+
+  it('refuses reboot from the grid card — no command queued on the asset id', async () => {
+    const { sendDeviceCommand } = await import('../../services/deviceActions');
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-reboot-${NET_1}`));
+
+    await waitFor(async () => {
+      expect(await toastMessages()).toContainEqual(
+        expect.stringMatching(/applies to agent devices only/i)
+      );
+    });
+    expect(vi.mocked(sendDeviceCommand)).not.toHaveBeenCalled();
+    // Refused outright, NOT merely put behind the #4009 confirm dialog — a
+    // dialog here would still end in a 404 once the operator said yes.
+    expect(screen.queryByTestId('confirm-device-action')).toBeNull();
+  });
+
+  it('refuses decommission from the grid card — no undo toast, no DELETE', async () => {
+    const { decommissionDevice } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-decommission-${NET_1}`));
+
+    await waitFor(async () => {
+      expect(await toastMessages()).toContainEqual(
+        expect.stringMatching(/applies to agent devices only/i)
+      );
+    });
+    expect(vi.mocked(decommissionDevice)).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('confirm-device-action')).toBeNull();
+    // runDeviceAction's decommission branch raises the 5s undo toast the moment
+    // it is entered, so its absence proves the branch was never reached.
+    expect(vi.mocked(showToast).mock.calls.map(c => c[0].type)).not.toContain('undo');
+  });
+
+  it('refuses the same action from the list row kebab (one guard, both surfaces)', async () => {
+    const { sendDeviceCommand } = await import('../../services/deviceActions');
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-reboot-${NET_1}`));
+
+    await waitFor(async () => {
+      expect(await toastMessages()).toContainEqual(
+        expect.stringMatching(/applies to agent devices only/i)
+      );
+    });
+    expect(vi.mocked(sendDeviceCommand)).not.toHaveBeenCalled();
+  });
+
+  // The guard is a single early return with no per-action branching, but it
+  // sits in front of BOTH the confirm-gated and the ungated paths. reboot and
+  // decommission above only exercise the confirm-gated one; these two prove the
+  // ungated actions (which reach runDeviceAction directly) are refused as well.
+  it('refuses run-script — the script picker never opens on an asset id', async () => {
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-run-script-${NET_1}`));
+
+    await waitFor(async () => {
+      expect(await toastMessages()).toContainEqual(
+        expect.stringMatching(/applies to agent devices only/i)
+      );
+    });
+    expect(screen.queryByTestId('pick-script')).toBeNull();
+  });
+
+  it('refuses settings — the device settings modal never opens on an asset id', async () => {
+    const settingsModal = await import('./DeviceSettingsModal');
+    const settingsSpy = vi.mocked(settingsModal.default);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-settings-${NET_1}`));
+
+    await waitFor(async () => {
+      expect(await toastMessages()).toContainEqual(
+        expect.stringMatching(/applies to agent devices only/i)
+      );
+    });
+    // DeviceSettingsModal is only rendered once settingsDevice is set, which
+    // only runDeviceAction's `settings` branch does.
+    expect(settingsSpy).not.toHaveBeenCalled();
+  });
+
+  it('still runs the action for an agent row (the guard is not a blanket block)', async () => {
+    const { sendDeviceCommand } = await import('../../services/deviceActions');
+    vi.mocked(sendDeviceCommand).mockResolvedValue(undefined as never);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-reboot-${DEV_1}`));
+
+    // reboot is confirm-gated (#4009), so the dialog is the correct next step.
+    fireEvent.click(await screen.findByTestId('confirm-device-action'));
+    await waitFor(() => {
+      expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledWith(DEV_1, 'reboot');
+    });
+  });
+});
+
 
 // The #1322 network-row filter and the #2465 decommissioned gate run back-to-back
 // over the same selection and had never been exercised TOGETHER. Ordering is

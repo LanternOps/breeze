@@ -2419,7 +2419,8 @@
     "categories": "Kategorien",
     "export": "Exportieren",
     "inboundEmail": "Eingehende E-Mail",
-    "cannedResponses": "Vorgefertigte Antworten"
+    "cannedResponses": "Vorgefertigte Antworten",
+    "checkingAccess": "Zugriff wird geprüft..."
   },
   "ticketFormsCard": {
     "heading": "Aufnahmeformulare",

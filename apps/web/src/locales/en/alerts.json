@@ -835,6 +835,7 @@
     "sms": "SMS",
     "pushover": "Pushover",
     "noNotificationChannelsFoundTryAdjustingYour": "No notification channels found. Try adjusting your search or filters.",
+    "noChannelsYet": "No notification channels yet. Create one to start sending alerts to email, Slack, Teams or a webhook.",
     "partnerWideChannelReceivesAlertsFromEvery": "Partner-wide channel — receives alerts from every organization",
     "allOrgs": "Partner-wide",
     "testing": "Testing...",

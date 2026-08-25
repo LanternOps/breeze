@@ -212,7 +212,9 @@ registryRoutes.get(
       return c.json({ data: keys });
     } catch (error) {
       console.error('Failed to parse agent response for registry keys:', error);
-      return c.json({ error: 'Failed to parse agent response for registry keys' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for registry keys', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -254,7 +256,9 @@ registryRoutes.get(
       return c.json({ data: values });
     } catch (error) {
       console.error('Failed to parse agent response for registry values:', error);
-      return c.json({ error: 'Failed to parse agent response for registry values' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for registry values', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -294,7 +298,9 @@ registryRoutes.get(
       const payload = JSON.parse(result.stdout || '{}');
       const value = mapRegistryValueFromAgent(payload);
       if (!value) {
-        return c.json({ error: 'Invalid registry value payload from agent' }, 502);
+        // 500, not 502: Cloudflare replaces an origin 502 body with its own
+        // branded page, blanking this message on hosted deployments.
+        return c.json({ error: 'Invalid registry value payload from agent', code: 'invalid_agent_response' }, 500);
       }
 
       const fullPath = value.name === '(Default)'
@@ -309,7 +315,9 @@ registryRoutes.get(
       });
     } catch (error) {
       console.error('Failed to parse agent response for registry value:', error);
-      return c.json({ error: 'Failed to parse agent response for registry value' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for registry value', code: 'invalid_agent_response' }, 500);
     }
   }
 );

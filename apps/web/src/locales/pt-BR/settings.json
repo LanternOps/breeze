@@ -2472,7 +2472,8 @@
     "categories": "Categorias",
     "export": "Exportar",
     "inboundEmail": "E-mail de entrada",
-    "cannedResponses": "Respostas prontas"
+    "cannedResponses": "Respostas prontas",
+    "checkingAccess": "Verificando seu acesso..."
   },
   "ticketFormsCard": {
     "heading": "Formulários de abertura",
