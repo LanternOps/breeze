@@ -82,7 +82,6 @@
     "multiFactorAuthenticationIsRequiredTo": "Se requiere autenticación multifactor para generar enlaces.",
     "setUpMfaInYourProfile": "Configure MFA en la configuración de su perfil",
     "andSignInAgainThenRetry": "e inicie sesión nuevamente, luego vuelva a intentarlo.",
-    "ssoMfaTrustGuidance": "Su organización lo autentica mediante un proveedor de identidad. Pídale a su administrador que habilite la confianza en MFA para él, o registre un factor en la configuración de su perfil.",
     "retry": "Reintentar",
     "multiFactorAuthenticationIsRequiredTo2": "Se requiere autenticación multifactor para generar instaladores.",
     "installerDownloadedRunItOn": "Instalador descargado. Ejecútelo",
