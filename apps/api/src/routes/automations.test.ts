@@ -204,6 +204,48 @@ describe('automations routes', () => {
     expect(body.pagination.total).toBe(2);
   });
 
+  // The web list renders the "Managed by AI agent" badge and its edit lock off
+  // this field alone (#3824). `shapeAutomationForResponse` spreads the whole
+  // row today, so the field rides along for free — this pins that, because
+  // narrowing the list query to an explicit column set would silently unlock
+  // every managed automation in the UI with no other test failing.
+  it('carries managedByAgentId on the list response so the web edit lock can render', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 2 }])
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockResolvedValue([
+                  {
+                    id: '11111111-1111-4111-8111-111111111111',
+                    name: 'Triage agent — alert triage',
+                    managedByAgentId: '22222222-2222-4222-8222-222222222222'
+                  },
+                  { id: 'auto-2', name: 'Ordinary automation', managedByAgentId: null }
+                ])
+              })
+            })
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations?limit=10&page=1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].managedByAgentId).toBe('22222222-2222-4222-8222-222222222222');
+    expect(body.data[1].managedByAgentId).toBeNull();
+  });
+
   it('should get an automation by id with run history', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce({

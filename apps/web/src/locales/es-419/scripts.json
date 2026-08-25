@@ -19,6 +19,10 @@
       "create": "Cree un flujo de trabajo automatizado con desencadenantes, condiciones y acciones.",
       "edit": "Modificar la configuración de la automatización."
     },
+    "managed": {
+      "title": "Gestionada por un agente de IA",
+      "description": "Esta automatización la mantiene su agente de IA. Configure el agente en lugar de esta automatización."
+    },
     "actions": {
       "create": "Crear automatización",
       "saveChanges": "Guardar cambios"
@@ -215,6 +219,8 @@
     "empty": "No se encontraron automatizaciones. Intente ajustar su búsqueda o filtros.",
     "partnerWideTitle": "Automatización en todo el socio: se aplica a todas las organizaciones",
     "allOrgs": "En todo el socio",
+    "managedByAgent": "Gestionada por un agente de IA",
+    "managedByAgentHint": "Esta automatización la mantiene su agente de IA. Configure el agente en lugar de esta automatización.",
     "never": "Nunca",
     "actions": {
       "viewHistory": "Ver historial",

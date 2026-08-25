@@ -19,6 +19,10 @@
       "create": "Crea un workflow automatizzato con trigger, condizioni e azioni.",
       "edit": "Modifica la configurazione dell'automazione."
     },
+    "managed": {
+      "title": "Gestita da un agente AI",
+      "description": "Questa automazione è gestita dal suo agente AI. Configura l’agente anziché questa automazione."
+    },
     "actions": {
       "create": "Crea automazione",
       "saveChanges": "Salva modifiche"
@@ -215,6 +219,8 @@
     "empty": "Nessuna automazione trovata. Prova a modificare la ricerca o i filtri.",
     "partnerWideTitle": "Automazione a livello di partner - si applica a ogni organizzazione",
     "allOrgs": "A livello di partner",
+    "managedByAgent": "Gestita da un agente AI",
+    "managedByAgentHint": "Questa automazione è gestita dal suo agente AI. Configura l’agente anziché questa automazione.",
     "never": "Mai",
     "actions": {
       "viewHistory": "Visualizza cronologia",
