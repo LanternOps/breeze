@@ -155,6 +155,55 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     expect(screen.getByTestId('ticketing-tab-statuses')).toBeInTheDocument();
   });
 
+  it('a hashchange onto a partner-only sub-tab during the unresolved window defers rather than denies', async () => {
+    // Browser back/forward can land on a partner-only sub-tab before the refresh
+    // round trip has finished. The hashchange listener runs the same parseHash
+    // as mount, so the gate must reach the same pending state that way too.
+    render(<TicketingSettingsTabs />);
+    expect(await screen.findByTestId('ticketing-tab-panel-statuses')).toBeInTheDocument();
+
+    act(() => {
+      window.location.hash = '#tab=canned';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+
+    expect(screen.getByTestId('ticketing-tab-panel-pending')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticketing-tab-canned')).toBeNull();
+    expect(window.location.hash).toBe('#tab=canned');
+
+    tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
+
+    await waitFor(() => expect(screen.getByTestId('stub-canned-responses-card')).toBeInTheDocument());
+    expect(window.location.hash).toBe('#tab=canned');
+  });
+
+  it('a token going away again re-hides the partner-only tabs instead of keeping the stale grant', async () => {
+    // #4013 was a "this value never updates" bug, so pin the reverse direction
+    // too. In practice the only path that nulls an in-memory token mid-session
+    // is logout (stores/auth.ts — a failed or throttled refresh never calls
+    // setTokens(null)), and every logout path navigates away; this is a guard
+    // against a future regression, not a live sequence.
+    window.location.hash = '#tab=inbound';
+    render(<TicketingSettingsTabs />);
+
+    tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
+    await waitFor(() => expect(screen.getByTestId('stub-inbound-email-card')).toBeInTheDocument());
+
+    act(() => {
+      useAuthStore.setState({ tokens: null });
+    });
+
+    // Back to pending, NOT to a denial we were never told about — and the
+    // deep-linked sub-tab is still in the URL, so the grant restores in place.
+    await waitFor(() => expect(screen.getByTestId('ticketing-tab-panel-pending')).toBeInTheDocument());
+    expect(screen.queryByTestId('stub-inbound-email-card')).toBeNull();
+    expect(screen.queryByTestId('ticketing-tab-inbound')).toBeNull();
+    expect(window.location.hash).toBe('#tab=inbound');
+
+    tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
+    await waitFor(() => expect(screen.getByTestId('stub-inbound-email-card')).toBeInTheDocument());
+  });
+
   it('a present-but-undecodable token is a settled denial, not a permanent "pending"', async () => {
     window.location.hash = '#tab=canned';
     render(<TicketingSettingsTabs />);

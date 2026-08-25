@@ -15,9 +15,17 @@ import { usePermissions } from '../../lib/permissions';
 const VALID_TABS = ['statuses', 'priorities', 'categories', 'forms', 'export', 'inbound', 'canned'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
-// The sub-tabs that only exist for partner-scoped users. Declared once so the
-// tab list, the panel gates and the "still resolving" placeholder can't drift.
-const PARTNER_ONLY_TABS: readonly Tab[] = ['forms', 'inbound', 'canned'];
+// The sub-tabs that only exist for partner-scoped users. The tab list below is
+// BUILT from this and the pending-placeholder gate reads its ids, so those two
+// cannot drift. The three panel bodies are still written out individually —
+// each mounts a different card — and share the one `canManageInbound` gate
+// rather than this list.
+const PARTNER_ONLY_TABS: Array<{ id: Tab; labelKey: string }> = [
+  { id: 'forms', labelKey: 'ticketingSettingsTabs.intakeForms' },
+  { id: 'inbound', labelKey: 'ticketingSettingsTabs.inboundEmail' },
+  { id: 'canned', labelKey: 'ticketingSettingsTabs.cannedResponses' }
+];
+const PARTNER_ONLY_TAB_IDS: readonly Tab[] = PARTNER_ONLY_TABS.map((tab) => tab.id);
 
 // Inbound email settings + queue are a partner-scoped surface (the queue routes
 // are additionally admin-gated server-side). The mailbox card has a separate
@@ -78,9 +86,14 @@ export default function TicketingSettingsTabs({
   const { can } = usePermissions();
   const canReadMailbox = can('ticket_mailbox', 'read');
 
-  // Render the Inbound Email tab only for partner-scoped users (matches how the
-  // Sidebar gates other partner-only settings surfaces). Decoded client-side as
-  // a UX hint only — the server re-checks every request.
+  // Gate Inbound Email, Intake Forms and Canned Responses on partner scope
+  // (matching how the Sidebar gates other partner-only settings surfaces): all
+  // three have CRUD routes that require partner scope server-side, and intake
+  // forms can be authored partner-wide ("All orgs"). BASE_TABS renders for any
+  // scope, so these three are added on top rather than gated out of it.
+  // Decoded client-side as a UX hint only — the server re-checks every request,
+  // and org-owned forms are still creatable here via the form editor's org
+  // selector.
   //
   // THREE states, not two (#4013). Access tokens are deliberately never
   // persisted (`partialize` in stores/auth.ts keeps only `user` +
@@ -101,22 +114,12 @@ export default function TicketingSettingsTabs({
   // latter gets the placeholder below. Nothing here writes the URL or discards
   // state, so there is no #4010-style destructive branch to defer.
   const canManageInbound = inboundAccess === 'allowed';
-  // Canned responses + intake forms (like inbound) are partner-scoped surfaces —
-  // the CRUD routes require partner scope server-side, and intake forms can be
-  // authored partner-wide ("All orgs"). The standalone TicketingSettingsTabs
-  // renders BASE_TABS for any scope, so gate these on partner scope rather than
-  // leaving them in BASE_TABS. Org-owned forms are still creatable here via the
-  // form editor's org selector.
   const TABS = useMemo(
     () =>
-      canManageInbound
-        ? [
-            ...BASE_TABS.map((tab) => ({ ...tab, label: t(/* i18n-dynamic */ tab.labelKey) })),
-            { id: 'forms' as Tab, labelKey: 'ticketingSettingsTabs.intakeForms', label: t('ticketingSettingsTabs.intakeForms') },
-            { id: 'inbound' as Tab, labelKey: 'ticketingSettingsTabs.inboundEmail', label: t('ticketingSettingsTabs.inboundEmail') },
-            { id: 'canned' as Tab, labelKey: 'ticketingSettingsTabs.cannedResponses', label: t('ticketingSettingsTabs.cannedResponses') }
-          ]
-        : BASE_TABS.map((tab) => ({ ...tab, label: t(/* i18n-dynamic */ tab.labelKey) })),
+      [...BASE_TABS, ...(canManageInbound ? PARTNER_ONLY_TABS : [])].map((tab) => ({
+        ...tab,
+        label: t(/* i18n-dynamic */ tab.labelKey)
+      })),
     [canManageInbound, t]
   );
 
@@ -156,12 +159,23 @@ export default function TicketingSettingsTabs({
         ))}
       </div>
 
-      {/* Deep-linked onto a partner-only sub-tab before the scope is known: say
-          the answer is pending instead of leaving an indefinite blank body. The
-          M365 consent return lands here (`initialTab='inbound'` from
-          PartnerSettingsPage) on a cold load, as does a `#tab=` deep link. A
-          settled 'denied' deliberately renders nothing, as before. */}
-      {inboundAccess === 'unresolved' && PARTNER_ONLY_TABS.includes(activeTab) && (
+      {/* Deep-linked onto a partner-only sub-tab before the scope is known (a
+          `#tab=` link, or `initialTab='inbound'` from PartnerSettingsPage on the
+          M365 consent return): say the answer is pending rather than render an
+          unexplained blank body.
+          On an ordinary cold load this is rarely what the user is looking at —
+          AuthOverlay masks the whole window while the access token is absent
+          (`shouldHide` requires `tokens?.accessToken`). Keep it regardless: it
+          is the ONLY DOM difference between 'unresolved' and 'denied', so
+          without it nothing would notice a future "simplification" back to a
+          boolean; and it is the sole cue on the one path AuthOverlay does not
+          re-arm for — a token cleared after the overlay has already faded out
+          for this mount.
+          A settled 'denied' still renders nothing, as before. That leaves a
+          pre-existing gap (an org user who hand-crafts `#tab=inbound` gets a
+          blank body rather than "no access"), deliberately untouched here: it
+          is not what #4013 broke. */}
+      {inboundAccess === 'unresolved' && PARTNER_ONLY_TAB_IDS.includes(activeTab) && (
         <div data-testid="ticketing-tab-panel-pending" className="text-sm text-muted-foreground">
           {t('ticketingSettingsTabs.checkingAccess')}
         </div>

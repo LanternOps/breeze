@@ -96,22 +96,28 @@ export default function PatchApprovalModal({
   //
   // 'unresolved' is neither: not a denial (no "partner level" banner — we have
   // not been told no), and not a grant (submit stays disabled — we have not been
-  // told yes). Only a resolved org scope is a denial, which keeps the predicate
-  // identical to the one `handleSubmit` and the server enforce.
+  // told yes). Only a resolved org scope is 'denied', which keeps this gate on
+  // the same predicate `handleSubmit` and the server enforce.
+  //
+  // Note the deliberate contrast with `ringAccess` in PatchesPage.tsx, which
+  // looks like the same pattern and treats one case the opposite way: a resolved
+  // but UNDECODABLE token (all-null claims) is 'denied' there and 'allowed'
+  // here. That is not drift. `ringAccess` gates visibility of a whole feature
+  // surface with no matching server predicate to mirror, so the conservative
+  // default is to hide it. This gates one mutating action whose server-side rule
+  // already exists, so inventing a stricter client rule would show a false "you
+  // cannot do this" for a case the server does not actually reject on scope —
+  // it rejects the broken token itself, with a 401. Do not "harmonize" these
+  // two without reading both.
   const jwt = useJwtClaims();
-  const approvalScope: 'unresolved' | 'orgScoped' | 'eligible' =
-    jwt.status === 'unresolved'
-      ? 'unresolved'
-      : jwt.claims.scope === 'organization'
-        ? 'orgScoped'
-        : 'eligible';
-  const isOrgScope = approvalScope === 'orgScoped';
+  const approvalAccess: 'unresolved' | 'allowed' | 'denied' =
+    jwt.status === 'unresolved' ? 'unresolved' : jwt.claims.scope === 'organization' ? 'denied' : 'allowed';
   const canSubmit = useMemo(() => {
     if (isSubmitting) return false;
-    if (approvalScope !== 'eligible') return false;
+    if (approvalAccess !== 'allowed') return false;
     if (action !== 'defer') return true;
     return deferUntil.trim().length > 0;
-  }, [action, deferUntil, isSubmitting, approvalScope]);
+  }, [action, deferUntil, isSubmitting, approvalAccess]);
 
   if (!patch) return null;
 
@@ -261,9 +267,19 @@ export default function PatchApprovalModal({
           </div>
         )}
 
-        {isOrgScope && !submitError && (
-          <div className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
-            {t('patchApprovalModal.errors.partnerLevel')}
+        {/* Both non-'allowed' states disable submit, so both owe the user a
+            VISIBLE reason. A disabled button is out of the tab order in every
+            major browser and has no hover on touch, so the `title` below can
+            never be the only explanation — that would make the modal read as
+            broken rather than busy. */}
+        {approvalAccess !== 'allowed' && !submitError && (
+          <div
+            data-testid="patch-approval-scope-notice"
+            className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground"
+          >
+            {approvalAccess === 'denied'
+              ? t('patchApprovalModal.errors.partnerLevel')
+              : t('patchApprovalModal.checkingAccess')}
           </div>
         )}
 
@@ -288,9 +304,9 @@ export default function PatchApprovalModal({
             disabled={!canSubmit}
             data-testid="patch-approval-submit"
             title={
-              isOrgScope
+              approvalAccess === 'denied'
                 ? t('patchApprovalModal.errors.partnerLevel')
-                : approvalScope === 'unresolved'
+                : approvalAccess === 'unresolved'
                   ? t('patchApprovalModal.checkingAccess')
                   : undefined
             }

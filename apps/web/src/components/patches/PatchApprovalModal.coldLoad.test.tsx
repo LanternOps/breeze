@@ -76,6 +76,7 @@ describe('PatchApprovalModal vs. late-arriving JWT scope (#4013)', () => {
     rerender(<PatchApprovalModal open patch={PATCH} ringId={null} onClose={() => {}} />);
 
     expect(await screen.findByText(PARTNER_LEVEL)).toBeInTheDocument();
+    expect(screen.getByTestId('patch-approval-scope-notice')).toHaveTextContent(PARTNER_LEVEL);
     const submit = screen.getByTestId('patch-approval-submit');
     expect(submit).toBeDisabled();
     expect(submit).toHaveAttribute('title', 'Patch approvals are managed at the partner level');
@@ -104,10 +105,37 @@ describe('PatchApprovalModal vs. late-arriving JWT scope (#4013)', () => {
     expect(submit).toBeDisabled();
     expect(submit).toHaveAttribute('title', 'Checking your access...');
     expect(screen.queryByText(PARTNER_LEVEL)).toBeNull();
+    // ...and the reason is VISIBLE, not tooltip-only: a disabled button is out
+    // of the tab order and has no hover on touch, so `title` alone would leave
+    // the modal reading as broken rather than busy.
+    expect(screen.getByTestId('patch-approval-scope-notice')).toHaveTextContent('Checking your access...');
 
     tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
 
     await waitFor(() => expect(screen.getByTestId('patch-approval-submit')).not.toBeDisabled());
+    expect(screen.queryByTestId('patch-approval-scope-notice')).toBeNull();
+  });
+
+  it('a token going away again re-withholds Approve instead of keeping the stale grant', async () => {
+    // #4013 was a "this value never updates" bug, so pin the reverse direction
+    // too: the grant must not outlive the token that justified it. In practice
+    // the only path that nulls an in-memory token mid-session is logout
+    // (stores/auth.ts — a failed/throttled refresh never calls setTokens(null)),
+    // and every logout path navigates away, so this is a guard against a future
+    // regression rather than a live sequence.
+    render(<PatchApprovalModal open patch={PATCH} ringId={null} onClose={() => {}} />);
+
+    tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
+    await waitFor(() => expect(screen.getByTestId('patch-approval-submit')).not.toBeDisabled());
+
+    act(() => {
+      useAuthStore.setState({ tokens: null });
+    });
+
+    await waitFor(() => expect(screen.getByTestId('patch-approval-submit')).toBeDisabled());
+    // Back to pending, NOT to a denial we were never told about.
+    expect(screen.getByTestId('patch-approval-scope-notice')).toHaveTextContent('Checking your access...');
+    expect(screen.queryByText(PARTNER_LEVEL)).toBeNull();
   });
 
   it('a present-but-undecodable token resolves without claiming a partner-level denial', async () => {
