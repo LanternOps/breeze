@@ -93,9 +93,24 @@ function summarizeFailedDevices(names: string[]): string {
 // #3698: destructive single-device actions, confirm-gated to match the device
 // detail page. `lock` is deliberately NOT here: it is reversible and does not
 // disconnect the machine, which is where DeviceActions.tsx draws the same line.
+// `restore` fails the same test and then some: it UNDOES a decommission, so
+// gating it would put a dialog in front of the recovery path.
+//
+// #4009: `decommission` belongs here and was missed by #3698. The dialog copy
+// it needs (deviceActions.confirm.decommission.*) already shipped for the
+// detail page, which has always gated it; only the list and grid kebabs fired
+// it on a single click. A kebab in a dense row/card grid is easier to hit by
+// accident than the detail page's own button, so it was the wrong one to leave
+// ungated.
 // Module scope — these are constant, so there is no reason to rebuild them on
 // every render.
-const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown']);
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission']);
+
+// ConfirmDialog encodes severity by SHAPE as well as colour (stop-octagon vs
+// caution-triangle), so the grading has to match the detail page rather than
+// drift from it: DeviceActions.tsx marks shutdown and decommission
+// `destructive` and every other confirm `warning`.
+const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission']);
 
 // The command name is snake_case; the locale keys are camelCase.
 const confirmKeyFor = (action: string): string =>
@@ -1467,7 +1482,7 @@ export default function DevicesPage() {
             hostname: pendingDeviceAction.device.hostname,
           })}
           confirmLabel={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.confirm`)}
-          variant={pendingDeviceAction.action === 'shutdown' ? 'destructive' : 'warning'}
+          variant={DESTRUCTIVE_CONFIRM_ACTIONS.has(pendingDeviceAction.action) ? 'destructive' : 'warning'}
           confirmTestId="confirm-device-action"
         />
       )}
