@@ -230,6 +230,7 @@ export default function DeviceCard({
         <div className="relative">
           <button
             type="button"
+            data-testid={`device-${device.id}-actions-menu`}
             onClick={(e) => {
               e.stopPropagation();
               setMenuOpen(!menuOpen);
@@ -300,21 +301,38 @@ export default function DeviceCard({
               </button>
               <hr className="my-1" />
               {device.status === "decommissioned" ? (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAction?.("restore", device);
-                    setMenuOpen(false);
-                  }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  {t("deviceCard.restore")}{" "}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    data-testid={`device-${device.id}-action-restore`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAction?.("restore", device);
+                      setMenuOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    {t("deviceCard.restore")}{" "}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`device-${device.id}-action-permanent-delete`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAction?.("permanent-delete", device);
+                      setMenuOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {t("deviceCard.permanentlyDelete")}
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"
+                  data-testid={`device-${device.id}-action-remove`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onAction?.("decommission", device);

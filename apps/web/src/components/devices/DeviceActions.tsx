@@ -275,6 +275,7 @@ export default function DeviceActions({
         <div className="relative">
           <button
             type="button"
+            data-testid="device-actions-menu"
             onClick={() => setMenuOpen(!menuOpen)}
             className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted"
           >
@@ -405,14 +406,38 @@ export default function DeviceActions({
                   : t("deviceActions.enterMaintenance")}
               </button>
               <hr className="my-1" />
-              <button
-                type="button"
-                onClick={() => handleAction("decommission")}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="h-4 w-4" />
-                {t("deviceActions.decommission")}{" "}
-              </button>
+              {device.status === "decommissioned" ? (
+                <>
+                  <button
+                    type="button"
+                    data-testid="device-action-restore"
+                    onClick={() => handleAction("restore")}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    {t("deviceActions.restore")}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="device-action-permanent-delete"
+                    onClick={() => handleAction("permanent-delete")}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {t("deviceActions.permanentlyDelete")}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="device-action-remove"
+                  onClick={() => handleAction("decommission")}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t("deviceActions.decommission")}{" "}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -543,6 +568,7 @@ export default function DeviceActions({
         <div className="relative">
           <button
             type="button"
+            data-testid="device-actions-menu"
             onClick={() => {
               setMenuOpen(!menuOpen);
               setPowerMenuOpen(false);
@@ -618,14 +644,38 @@ export default function DeviceActions({
                 {t("deviceActions.deviceSettings")}{" "}
               </button>
               <hr className="my-1" />
-              <button
-                type="button"
-                onClick={() => handleAction("decommission")}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="h-4 w-4" />
-                {t("deviceActions.decommission")}{" "}
-              </button>
+              {device.status === "decommissioned" ? (
+                <>
+                  <button
+                    type="button"
+                    data-testid="device-action-restore"
+                    onClick={() => handleAction("restore")}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    {t("deviceActions.restore")}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="device-action-permanent-delete"
+                    onClick={() => handleAction("permanent-delete")}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {t("deviceActions.permanentlyDelete")}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="device-action-remove"
+                  onClick={() => handleAction("decommission")}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t("deviceActions.decommission")}{" "}
+                </button>
+              )}
             </div>
           )}
         </div>
