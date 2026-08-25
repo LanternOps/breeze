@@ -866,6 +866,18 @@ Refs #3987"
 
 ---
 
+### Task 14b (rider, carried from PR1's final review): fix the shared skip-dialog copy
+
+PR1 routed the bulk `decommission` action through the existing `confirmDecommissionedSkip` dialog so a bulk Remove no longer fires `DELETE`s at already-removed devices. That dialog's copy is shared with the agent-command bulk actions and ends with *"Any that are offline will run this when they next check in."* — true for a queued command, **false for a Remove**, which applies immediately.
+
+The dialog's behaviour is correct; only the trailing clause is wrong, and fixing it needs a new key across all 8 locale dirs — which is why it was parked out of PR1 rather than bolted onto its fix wave.
+
+- [ ] Split the message so the bulk-Remove path gets its own key without the check-in clause; leave the command path's copy unchanged.
+- [ ] Add the new key to all 8 locale dirs, translated (never the bare English word in a non-English locale).
+- [ ] `pnpm --filter @breeze/web exec vitest run src/lib/i18n/ src/components/devices/`
+
+---
+
 ### Task 15: Wire the dialog through the dispatchers
 
 **Files:** `apps/web/src/services/deviceActions.ts:386`, `apps/web/src/components/devices/DevicesPage.tsx:796`, `apps/web/src/components/devices/DeviceDetailPage.tsx:363`
