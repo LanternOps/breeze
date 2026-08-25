@@ -197,8 +197,11 @@ commandsRoutes.get('/:id/commands', async (c) => {
         agent.deviceId,
         10,
         agent.role,
-        // #2774 — offboarding drain: only self_uninstall is deliverable.
-        agent.tenantDraining ? ['self_uninstall'] : undefined
+        // #2774 / #3986 — drain narrowing (tenant offboarding OR device
+        // remove). Derived ONCE in agentAuthMiddleware; `undefined` here means
+        // "not draining, claim anything", which is also this parameter's
+        // default — so read the context value, never restate the literal.
+        agent.claimTypeAllowlist
       );
       return decryptClaimedCommandsForDelivery(commands);
     })
@@ -221,6 +224,24 @@ commandsRoutes.post(
     }
 
     const deviceId = agent.deviceId;
+
+    // #2774 / #3986 — while the agent sits on a narrowed drain surface, this
+    // endpoint accepts results ONLY for the command types the claim allowlist
+    // permits. Being on the drain ROUTE allowlist is not the same as being
+    // harmless: this route has a second, id-shaped entrance.
+    //
+    // A NON-UUID commandId short-circuits into the `sw-install-…` branch
+    // below, which writes deployment history via `applySoftwareInstallResult`
+    // with NO `device_commands` row to consult — its only gate is that the
+    // device UUID embedded in the caller-supplied id matches the authenticated
+    // device. A command-type allowlist cannot see that path at all, so a
+    // draining agent could keep stamping deployment_results rows for its org.
+    // Refuse the whole shape while draining; the drain only ever delivers
+    // real, UUID-keyed `device_commands` rows.
+    const drainClaimAllowlist = agent.claimTypeAllowlist;
+    if (drainClaimAllowlist && !uuidRegex.test(commandId)) {
+      return c.json({ error: 'drain_restricted' }, 403);
+    }
 
     // Commands dispatched directly over WebSocket can use non-UUID IDs and
     // intentionally have no device_commands row.
@@ -281,6 +302,17 @@ commandsRoutes.post(
 
     if (!command) {
       return c.json({ error: 'Command not found' }, 404);
+    }
+
+    // The type half of the drain narrowing (the id-shape half ran above). The
+    // claim allowlist already stops a draining agent from being HANDED anything
+    // but `self_uninstall`, but a row it claimed before the drain started — or
+    // one pushed over some other path — must not be ackable either: the result
+    // handlers below are a large fan-out (security findings, filesystem
+    // analysis, vault sync, backup verification, restore jobs, CIS, software
+    // remediation) that all write tenant data.
+    if (drainClaimAllowlist && !drainClaimAllowlist.includes(command.type)) {
+      return c.json({ error: 'drain_restricted' }, 403);
     }
 
     const commandTargetRole = command.targetRole === 'watchdog' ? 'watchdog' : 'agent';

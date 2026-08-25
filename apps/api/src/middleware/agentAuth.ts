@@ -10,6 +10,7 @@ import { enforceAgentCertificateBinding, readAgentCertificateAssertion } from '.
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getAgentTenantState } from '../services/tenantStatus';
+import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
   computeReservedIngestLimit,
@@ -43,6 +44,33 @@ export interface AgentAuthContext {
    * commands additionally narrow the claim to `self_uninstall` only.
    */
   tenantDraining?: boolean;
+  /**
+   * #3986 — true when THIS DEVICE (not its tenant) is inside the device-remove
+   * uninstall drain window: `status='decommissioned'` AND a non-terminal
+   * `self_uninstall` carrying the `device_remove` reason AND an unexpired
+   * `device_remove_expires_at`. The single source of that predicate is
+   * `services/deviceUninstallDrain.isDeviceUninstallDraining` — never re-derive
+   * it, and never widen it to "decommissioned + any pending self_uninstall":
+   * abuse-suspension queues `self_uninstall` onto already-decommissioned rows
+   * with no reason and no deadline, and admitting those would resurrect a
+   * suspended partner's agent channel.
+   *
+   * Distinct from `tenantDraining` on purpose. Both narrow the ROUTE surface
+   * and the claim allowlist identically, but only this one means "the machine
+   * itself is being removed", which is what the heartbeat's minimal drain
+   * branch keys on.
+   */
+  deviceUninstallDraining?: boolean;
+  /**
+   * The ONE derived command-type allowlist for every `device_commands` claim
+   * site on this request. `undefined` means unrestricted — which is also
+   * `claimPendingCommandsForDevice`'s default for a missing `typeAllowlist`,
+   * so a claim site that forgets to consult a drain flag silently claims
+   * EVERYTHING. Deriving the value once here and passing it through is what
+   * removes that trap: the only thing a claim site has to remember is to pass
+   * `agent.claimTypeAllowlist`.
+   */
+  claimTypeAllowlist?: readonly string[];
 }
 
 export type AgentCredentialRole = 'agent' | 'watchdog';
@@ -270,6 +298,18 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'co
 const DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', 'rotate-token']);
 
 /**
+ * The ONLY command type a drained agent — tenant-offboarding (#2774) or
+ * device-remove (#3986) — may claim, ack, or have delivered.
+ *
+ * Exported so no handler has to restate the literal. `claimPendingCommandsForDevice`'s
+ * `typeAllowlist` parameter is OPTIONAL and defaults to unrestricted, so every
+ * restatement is a place a future edit can silently drop the narrowing and
+ * hand a departing (or removed) machine the full command surface. There is
+ * exactly one definition, surfaced on the agent context as `claimTypeAllowlist`.
+ */
+export const DRAIN_CLAIM_TYPE_ALLOWLIST = ['self_uninstall'] as const;
+
+/**
  * #2774 — the narrowed agent surface during an `offboarding` drain window.
  * Only what self_uninstall delivery needs survives:
  * - heartbeat: the primary command carrier (claims device_commands) + liveness
@@ -416,8 +456,48 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
+  // #3986 Layer 1 — a removed device is STILL denied by default. The single
+  // exception is the device-remove uninstall drain: `self_uninstall` was queued
+  // by DELETE /devices/:id with `uninstallAgent:true`, the deadline has not
+  // passed, and the agent has to be able to reach us to collect it. Without
+  // this window that command is undeliverable by construction (no heartbeat, no
+  // command poll, no result post), which is the whole reason the window exists.
+  //
+  // Everything else about `decommissioned` is unchanged, and deliberately so:
+  //   - `uninstallAgent:false` (no queued uninstall)  -> today's 403
+  //   - deadline expired                              -> today's 403
+  //   - abuse-suspension's reason-less self_uninstall -> today's 403
+  // The reason + deadline clauses live in `isDeviceUninstallDraining`; do not
+  // re-derive or relax them here (see its module doc for the incident they
+  // prevent).
+  //
+  // Layer 1b — ONLY the main-agent credential. The watchdog heartbeat branch
+  // (routes/agents/heartbeat.ts) writes device state WITHOUT the terminal-status
+  // guard the main branch has, and `self_uninstall` is `targetRole='agent'`
+  // anyway, so a watchdog has nothing to collect here. Checked BEFORE the
+  // predicate query so a watchdog credential costs no extra round trip.
+  //
+  // System DB context is REQUIRED, not decorative: the predicate joins `devices`,
+  // which is RLS-scoped, and a contextless read defaults to scope 'none' — it
+  // would return zero rows and silently report "not draining" for every device,
+  // making the uninstall permanently undeliverable. No context is active here
+  // (the request-long wrap is opened much further down), so this establishes
+  // system scope rather than inheriting a narrower one.
+  //
+  // Runs before the rate limiters, exactly where the old unconditional throw
+  // was, so a non-draining removed device sees byte-for-byte today's response.
+  // The extra query is reached only by a VALID token on a decommissioned
+  // device, and the unconditional device lookup above already costs one query
+  // per request, so this adds no meaningful amplification.
+  let deviceUninstallDraining = false;
   if (device.status === 'decommissioned') {
-    throw new HTTPException(403, { message: 'Device has been decommissioned' });
+    deviceUninstallDraining =
+      match.role === 'agent'
+      && (await withSystemDbAccessContext(() => isDeviceUninstallDraining(device.id)));
+
+    if (!deviceUninstallDraining) {
+      throw new HTTPException(403, { message: 'Device has been decommissioned' });
+    }
   }
 
   if (device.status === 'quarantined') {
@@ -491,6 +571,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // updated value. Note: we update even on the first request (when
     // lastSeenIp is NULL) so the first IP-change comparison has something
     // to compare to.
+    //
+    // #3986 — this runs BEFORE the drain route gate below, so a device inside
+    // the device-remove uninstall drain does update `last_seen_ip`. Kept
+    // deliberately: the column means "the last source IP we saw this token
+    // used from", and that stays literally true (and forensically useful) for
+    // a machine collecting its own uninstall. It is NOT a liveness signal —
+    // `last_seen_at` is, and that one is guarded on terminal status in the
+    // heartbeat handler, so the device still reads as Removed in the UI.
     if (device.lastSeenIp !== sourceIp) {
       void withSystemDbAccessContext(async () => {
         await db
@@ -592,8 +680,26 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   }
 
   const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
-  if (tenantState === 'draining' && !isDrainAllowedAgentPath(pathSegments, agentId)) {
-    return c.json({ error: 'tenant_offboarding' }, 403);
+  // #3986 Layer 2 — a DEVICE drain narrows the route surface exactly as a
+  // TENANT drain does. This is the layer that does the real containment work:
+  // Layer 1 only decided the credential still authenticates, and without this
+  // a removed machine would keep the whole authenticated agent surface —
+  // inventory push, BitLocker/FileVault recovery-key ingest
+  // (PUT /:id/security/recovery-keys), PAM elevation requests
+  // (POST /:id/elevation-requests), patch/event-log/peripheral ingest, and
+  // every third-party extension's `<prefix>/agent/:id/*` namespace
+  // (extensions/gateway.ts routes those through THIS middleware). A
+  // command-type allowlist alone cannot see any of that.
+  //
+  // Distinct error codes so the agent (and an operator reading logs) can tell
+  // "my tenant is leaving" from "this machine was removed"; tenant drain keeps
+  // its established `tenant_offboarding` code when both apply.
+  const drainNarrowed = tenantState === 'draining' || deviceUninstallDraining;
+  if (drainNarrowed && !isDrainAllowedAgentPath(pathSegments, agentId)) {
+    return c.json(
+      { error: tenantState === 'draining' ? 'tenant_offboarding' : 'device_uninstall_draining' },
+      403,
+    );
   }
 
   // Security remediation Wave 5, Task 6 — shared certificate/device binding
@@ -635,6 +741,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // that mint credentials only ever see the current-token hash here.
     authTokenHash: tokenHash,
     tenantDraining: tenantState === 'draining',
+    deviceUninstallDraining,
+    // #3986 Layer 3 — derived ONCE, here. Three handlers used to each restate
+    // `agent.tenantDraining ? ['self_uninstall'] : undefined` at their claim
+    // call; a fourth claim site that forgot would have silently claimed every
+    // command type, because `claimPendingCommandsForDevice`'s `typeAllowlist`
+    // defaults to unrestricted. `undefined` here still means unrestricted, but
+    // now there is exactly one place that decides it.
+    claimTypeAllowlist: drainNarrowed ? DRAIN_CLAIM_TYPE_ALLOWLIST : undefined,
   });
 
   // #1105 — high-frequency, high-concurrency routes that self-manage their DB

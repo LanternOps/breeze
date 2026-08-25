@@ -329,6 +329,10 @@ describe('agent commands routes', () => {
         siteId: 'site-1',
         role: 'agent',
         tenantDraining: true,
+        // #3986 — derived ONCE by agentAuthMiddleware; every claim site reads
+        // it instead of restating the literal, so the harness must mirror the
+        // real context shape.
+        claimTypeAllowlist: ['self_uninstall'] as const,
       });
       await next();
     });
@@ -1002,5 +1006,168 @@ describe('agent commands routes', () => {
       // Only the pre-read: the diagnostic read must stay on the 0-row branch.
       expect(selectMock).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// #3986 Layer 4 — the RESULT endpoint while the agent is on a narrowed drain
+// surface. Being on the drain ROUTE allowlist is not the same as being
+// harmless: this route has two entrances, and only one of them ever looks at a
+// device_commands row.
+describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986)', () => {
+  const agentId = 'ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776';
+  const commandId = '22222222-2222-4222-8222-222222222222';
+  const deploymentUuid = '11111111-1111-4111-8111-111111111111';
+  const deviceUuid = '33333333-3333-4333-8333-333333333333';
+
+  function buildApp(opts: { draining: boolean; deviceId?: string }): Hono {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: opts.deviceId ?? 'device-1',
+        agentId: 'agent-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        role: 'agent',
+        ...(opts.draining
+          ? { deviceUninstallDraining: true, claimTypeAllowlist: ['self_uninstall'] as const }
+          : {}),
+      });
+      await next();
+    });
+    app.route('/agents', commandsRoutes);
+    return app;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // mockReset, not just clearAllMocks: `clearAllMocks` leaves UNCONSUMED
+    // `mockReturnValueOnce` entries queued, and the suite above ends with one
+    // deliberately unconsumed (the diagnostic re-read that must not happen).
+    // Inheriting it would shift every queued row in this block by one — which
+    // is exactly how a drain assertion could pass against the wrong fixture.
+    selectMock.mockReset();
+    updateMock.mockReset();
+    secretGateContexts.length = 0;
+    secretGateWithholds = false;
+    insideSystemDbContext = false;
+  });
+
+  function postResult(app: Hono, id: string) {
+    return app.request(`/agents/${agentId}/commands/${id}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId: id, status: 'completed', exitCode: 0, stdout: 'ok' }),
+    });
+  }
+
+  it('rejects a non-UUID command result while draining', async () => {
+    // `sw-install-<deployment>-<device>` has NO device_commands row: the
+    // handler writes deployment_results gated only on the embedded device UUID
+    // matching the authenticated device, so a command-TYPE allowlist cannot
+    // see it at all. A removed machine must not keep stamping deployment
+    // history for the org.
+    const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
+    const updateChain = chainMock([]);
+    updateMock.mockReturnValue(updateChain);
+
+    const res = await postResult(buildApp({ draining: true, deviceId: deviceUuid }), swCommandId);
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: 'drain_restricted' });
+    // The real assertion: nothing was written to deployment_results.
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('the SAME sw-install result still lands when NOT draining (proves the refusal is the drain gate)', async () => {
+    const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
+    const updateChain = chainMock([]);
+    updateMock.mockReturnValue(updateChain);
+
+    const res = await postResult(buildApp({ draining: false, deviceId: deviceUuid }), swCommandId);
+
+    expect(res.status).toBe(200);
+    expect(updateMock).toHaveBeenCalled();
+  });
+
+  it('rejects a result for a non-self_uninstall command while draining', async () => {
+    // A UUID-keyed row of some other type — claimed before the drain opened,
+    // or pushed over another path. The result handlers below this check are a
+    // wide fan-out (security findings, filesystem analysis, vault sync, backup
+    // verification, restore jobs, CIS, software remediation) that all write
+    // tenant data, so the ack must be refused too, not just the claim.
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'script',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: {},
+        },
+      ])
+    );
+
+    const res = await postResult(buildApp({ draining: true }), commandId);
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: 'drain_restricted' });
+    // Refused BEFORE any terminalizing write to device_commands.
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('ACCEPTS the self_uninstall result while draining — the ack the window exists for', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'self_uninstall',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: { removeConfig: true },
+        },
+      ])
+    );
+    updateMock.mockReturnValue(chainMock([{ id: commandId }]));
+
+    const res = await postResult(buildApp({ draining: true }), commandId);
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ success: true });
+    expect(updateMock).toHaveBeenCalled();
+  });
+
+  it('leaves a non-draining agent free to ack any command type', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'script',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: {},
+        },
+      ])
+    );
+    updateMock.mockReturnValue(chainMock([{ id: commandId }]));
+
+    const res = await postResult(buildApp({ draining: false }), commandId);
+
+    expect(res.status).toBe(200);
+  });
+
+  it('narrows the GET poll claim for a DEVICE drain too, not just a tenant drain', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([]);
+
+    const res = await buildApp({ draining: true }).request(`/agents/${agentId}/commands`, {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(200);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+      'self_uninstall',
+    ]);
   });
 });
