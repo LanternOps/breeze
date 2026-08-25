@@ -160,6 +160,10 @@ export const heartbeatSchema = z.object({
   // Installed breeze-backup version, reported by the agent so
   // devices.backup_version stays fresh (mirrors watchdogVersion above).
   backupVersion: z.string().max(20).optional().catch(undefined),
+  rollbackComponentVersions: z.record(
+    z.enum(['agent', 'helper', 'user-helper', 'watchdog', 'backup']),
+    z.string().min(1).max(20),
+  ).optional().catch(undefined),
   // #2288 — the control-plane base URL the agent used for this heartbeat.
   serverUrl: z.string().max(512).optional().catch(undefined),
   ipHistoryUpdate: z.object({

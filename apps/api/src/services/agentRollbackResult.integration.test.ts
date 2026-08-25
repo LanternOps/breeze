@@ -30,9 +30,13 @@ async function createFixture(): Promise<Fixture> {
     )
     INSERT INTO devices (
       org_id, site_id, agent_id, hostname, os_type, os_version, architecture,
-      agent_version, watchdog_version, backup_version, rollback_protocol_version
+      agent_version, watchdog_version, backup_version, rollback_protocol_version,
+      rollback_component_versions
     ) SELECT ${org.id}, id, ${`agent-${randomUUID()}`}, ${`host-${randomUUID()}`},
-      'windows', '11', 'amd64', '2.0.0', '2.0.0', '2.0.0', 1
+      'windows', '11', 'amd64', '2.0.0', '2.0.0', '2.0.0', 1,
+      ${JSON.stringify({
+        agent: '2.0.0', helper: '2.0.0', 'user-helper': '2.0.0', watchdog: '2.0.0', backup: '2.0.0',
+      })}::jsonb
     FROM site RETURNING id
   `) as unknown as Array<{ id: string }>;
   return { orgId: org.id, userId: user!.id, deviceId: device!.id };
@@ -51,6 +55,8 @@ async function createDirective(fixture: Fixture): Promise<string> {
       '2.0.0', '1.9.0',
       ${JSON.stringify({
         agent: { current: '2.0.0', target: '1.9.0' },
+        helper: { current: '2.0.0', target: '1.9.0' },
+        'user-helper': { current: '2.0.0', target: '1.9.0' },
         watchdog: { current: '2.0.0', target: '1.9.0' },
         backup: { current: '2.0.0', target: '1.9.0' },
       })}::jsonb,
@@ -138,7 +144,10 @@ describe('rollback observation durable ingestion', () => {
     expect(state).toEqual({ status: 'requested', latestPhase: null });
 
     await getTestDb().execute(sql`
-      UPDATE devices SET agent_version = '1.9.0', watchdog_version = '1.9.0', backup_version = '1.9.0'
+      UPDATE devices SET agent_version = '1.9.0', watchdog_version = '1.9.0', backup_version = '1.9.0',
+        rollback_component_versions = ${JSON.stringify({
+          agent: '1.9.0', helper: '1.9.0', 'user-helper': '1.9.0', watchdog: '1.9.0', backup: '1.9.0',
+        })}::jsonb
       WHERE id = ${fixture.deviceId}
     `);
     const proven = observation(fixture, rollbackId, { phase: 'healthy' });

@@ -63,13 +63,20 @@ describe('buildRollbackArtifacts', () => {
   it('builds agent plus each durably observed installed companion', () => {
     const rows = [
       release(),
+      release({ component: 'helper', downloadUrl: 'https://updates.example/helper.exe', fileSize: 70n }),
+      release({ component: 'user-helper', downloadUrl: 'https://updates.example/user-helper.exe', fileSize: 75n }),
       release({ component: 'watchdog', downloadUrl: 'https://updates.example/watchdog.exe', fileSize: 80n }),
       release({ component: 'backup', downloadUrl: 'https://updates.example/backup.exe', fileSize: 90n }),
     ];
     const built = buildRollbackArtifacts({
-      targetVersion: '1.9.0', currentVersions: { agent: '2.0.0', watchdog: '2.0.0', backup: '2.0.0' }, releases: rows,
+      targetVersion: '1.9.0',
+      currentVersions: {
+        agent: '2.0.0', helper: '2.0.0', 'user-helper': '2.0.0', watchdog: '2.0.0', backup: '2.0.0',
+      },
+      releases: rows,
     });
-    expect(built.artifacts.map((row) => row.component)).toEqual(['agent', 'watchdog', 'backup']);
+    expect(built.artifacts.map((row) => row.component))
+      .toEqual(['agent', 'helper', 'user-helper', 'watchdog', 'backup']);
     expect(built.componentVersions.backup).toEqual({ current: '2.0.0', target: '1.9.0' });
   });
 

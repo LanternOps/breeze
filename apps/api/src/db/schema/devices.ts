@@ -167,6 +167,7 @@ export const devices = pgTable('devices', {
   // downgrades clear stale claims back to zero.
   peripheralPolicyProtocolVersion: integer('peripheral_policy_protocol_version').notNull().default(0),
   rollbackProtocolVersion: integer('rollback_protocol_version').notNull().default(0),
+  rollbackComponentVersions: jsonb('rollback_component_versions').$type<Record<string, string> | null>(),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally
   // every heartbeat (self-healing), so a resolved condition clears next beat.

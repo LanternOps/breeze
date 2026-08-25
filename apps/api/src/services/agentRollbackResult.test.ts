@@ -12,11 +12,20 @@ const directive: RollbackDirectiveProjection = {
   targetVersion: '1.9.0',
   componentVersions: {
     agent: { current: '2.0.0', target: '1.9.0' },
+    helper: { current: '2.0.0', target: '1.9.0' },
+    'user-helper': { current: '2.0.0', target: '1.9.0' },
     watchdog: { current: '2.0.0', target: '1.9.0' },
     backup: { current: '2.0.0', target: '1.9.0' },
   },
   status: 'requested',
   latestPhase: null,
+};
+
+const currentLive = {
+  agent: '2.0.0', helper: '2.0.0', 'user-helper': '2.0.0', watchdog: '2.0.0', backup: '2.0.0',
+};
+const targetLive = {
+  agent: '1.9.0', helper: '1.9.0', 'user-helper': '1.9.0', watchdog: '1.9.0', backup: '1.9.0',
 };
 
 const observation = (overrides: Partial<RollbackObservationV1> = {}): RollbackObservationV1 => ({
@@ -41,7 +50,7 @@ describe('evaluateRollbackObservationTransition', () => {
     expect(evaluateRollbackObservationTransition({
       directive,
       observation: value,
-      liveVersions: { agent: '2.0.0', watchdog: '2.0.0', backup: '2.0.0' },
+      liveVersions: currentLive,
     })).toMatchObject({ accepted: false, advance: false });
   });
 
@@ -49,7 +58,7 @@ describe('evaluateRollbackObservationTransition', () => {
     expect(evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'in_progress', latestPhase: 'received' },
       observation: observation({ phase: 'staged' }),
-      liveVersions: { agent: '2.0.0', watchdog: '2.0.0', backup: '2.0.0' },
+      liveVersions: currentLive,
     })).toEqual({ accepted: true, advance: true, status: 'in_progress', rejectionCode: null });
   });
 
@@ -57,7 +66,7 @@ describe('evaluateRollbackObservationTransition', () => {
     expect(evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'in_progress', latestPhase: 'staged' },
       observation: observation({ phase: 'downloaded' }),
-      liveVersions: { agent: '2.0.0', watchdog: '2.0.0', backup: '2.0.0' },
+      liveVersions: currentLive,
     })).toEqual({ accepted: true, advance: false, status: 'in_progress', rejectionCode: 'phase_not_forward' });
   });
 
@@ -65,7 +74,7 @@ describe('evaluateRollbackObservationTransition', () => {
     const result = evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'in_progress', latestPhase: 'restart_requested' },
       observation: observation({ phase: 'healthy' }),
-      liveVersions: { agent: '1.9.0', watchdog: '1.9.0', backup: '2.0.0' },
+      liveVersions: { ...targetLive, backup: '2.0.0' },
     });
     expect(result).toEqual({ accepted: true, advance: false, status: 'in_progress', rejectionCode: 'live_component_mismatch' });
   });
@@ -74,7 +83,7 @@ describe('evaluateRollbackObservationTransition', () => {
     expect(evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'in_progress', latestPhase: 'restart_requested' },
       observation: observation({ phase: 'healthy' }),
-      liveVersions: { agent: '1.9.0', watchdog: '1.9.0', backup: '1.9.0' },
+      liveVersions: targetLive,
     })).toEqual({ accepted: true, advance: true, status: 'completed', rejectionCode: null });
   });
 
@@ -85,7 +94,7 @@ describe('evaluateRollbackObservationTransition', () => {
     expect(evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'in_progress', latestPhase: 'staged' },
       observation: observation({ phase, failureCode: `${phase}_code` }),
-      liveVersions: { agent: '2.0.0', watchdog: '2.0.0', backup: '2.0.0' },
+      liveVersions: currentLive,
     })).toEqual({ accepted: true, advance: true, status, rejectionCode: null });
   });
 
@@ -93,7 +102,7 @@ describe('evaluateRollbackObservationTransition', () => {
     expect(evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'failed', latestPhase: 'failed' },
       observation: observation({ phase: 'healthy' }),
-      liveVersions: { agent: '1.9.0', watchdog: '1.9.0', backup: '1.9.0' },
+      liveVersions: targetLive,
     })).toMatchObject({ accepted: true, advance: false, rejectionCode: 'already_terminal' });
   });
 });

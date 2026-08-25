@@ -29,9 +29,11 @@ async function createFixture(capability = 1): Promise<Fixture> {
     INSERT INTO devices (
       org_id, site_id, agent_id, hostname, os_type, os_version, architecture,
       agent_version, agent_edition, rollback_protocol_version
+      , rollback_component_versions
     ) SELECT
       ${org.id}, id, ${`agent-${randomUUID()}`}, ${`host-${randomUUID()}`},
-      'windows', '11', 'amd64', ${CURRENT_VERSION}, 'self-host', ${capability}
+      'windows', '11', 'amd64', ${CURRENT_VERSION}, 'self-host', ${capability},
+      ${JSON.stringify({ agent: CURRENT_VERSION })}::jsonb
     FROM inserted_site RETURNING id
   `) as unknown as Array<{ id: string }>;
   return { orgId: org.id, userId: user!.id, deviceId: row!.id };
@@ -193,6 +195,26 @@ describe('agent rollback atomic creation', () => {
         authEpoch: grant.authEpoch,
         mfaEpoch: grant.mfaEpoch,
         sid: grant.sid,
-      }))).rejects.toThrow(/protocol v1/);
+    }))).rejects.toThrow(/protocol v1/);
+  });
+
+  it('fails closed when a protocol-v1 device has no complete component inventory', async () => {
+    const fixture = await createFixture();
+    await getTestDb().execute(sql`
+      UPDATE devices SET rollback_component_versions = NULL WHERE id = ${fixture.deviceId}
+    `);
+    const reason = 'Inventory unavailable';
+    const grant = await mintRollbackGrant(fixture, reason);
+    await expect(withDbAccessContext(orgContext(fixture.orgId, fixture.userId), () =>
+      createAgentRollbackDirective({
+        deviceId: fixture.deviceId,
+        targetVersion: TARGET_VERSION,
+        reason,
+        authorizedBy: fixture.userId,
+        stepUpGrantId: grant.id,
+        authEpoch: grant.authEpoch,
+        mfaEpoch: grant.mfaEpoch,
+        sid: grant.sid,
+      }))).rejects.toThrow(/component inventory/);
   });
 });

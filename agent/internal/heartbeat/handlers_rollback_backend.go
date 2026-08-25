@@ -118,7 +118,15 @@ func (h *Heartbeat) initializeRollbackController() {
 	}
 	u := updater.New(&updater.Config{ServerURL: h.serverURL, BackupServerURL: h.backupServerURL(), AuthToken: h.secureToken, CurrentVersion: h.agentVersion, PinnedManifestPubKeys: h.pinnedManifestPubKeys(), RequireManifestSigningKeyID: h.requireManifestSigningKeyID()})
 	backend := &agentRollbackBackend{updater: u, componentPaths: paths, journalPath: filepath.Join(config.GetDataDir(), "agent-rollback-swap.json"), currentVersions: func() map[rollbackstate.Component]string {
-		return map[rollbackstate.Component]string{"agent": h.agentVersion, "helper": h.helperMgr.InstalledVersion(), "watchdog": h.installedWatchdogVersion(), "backup": h.installedBackupVersion()}
+		inventory, complete := h.rollbackComponentVersions()
+		if !complete {
+			return nil
+		}
+		versions := make(map[rollbackstate.Component]string, len(inventory))
+		for component, version := range inventory {
+			versions[rollbackstate.Component(component)] = version
+		}
+		return versions
 	}}
 	engine := rollbackstate.NewEngine(rollbackstate.NewStore(filepath.Join(config.GetDataDir(), "agent-rollback-state.json")), rollbackstate.Environment{DeviceID: h.config.DeviceID, OrgID: h.config.OrgID, CurrentVersion: h.agentVersion, Backend: backend, VerifySignature: u.VerifySignedPayload})
 	h.rollbackController = engine

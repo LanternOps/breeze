@@ -3028,6 +3028,57 @@ describe('POST /agents/:id/heartbeat — backupVersion telemetry', () => {
   });
 });
 
+describe('POST /agents/:id/heartbeat — rollback component inventory', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    deviceRoleSource: 'auto', lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  function arrange(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('persists the complete claimed inventory', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+    const inventory = { agent: '0.66.0', helper: '0.66.0', 'user-helper': '0.66.0' };
+    const resp = await post({
+      agentVersion: '0.66.0',
+      securityCapabilities: { rollbackProtocolVersion: 1 },
+      rollbackComponentVersions: inventory,
+    });
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.rollbackComponentVersions).toEqual(inventory);
+  });
+
+  it('clears stale inventory when a protocol-v1 agent cannot prove completeness', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+    const resp = await post({
+      agentVersion: '0.66.0',
+      securityCapabilities: { rollbackProtocolVersion: 1 },
+    });
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.rollbackComponentVersions).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------
 // #2288 — active control-plane URL persistence
 // ---------------------------------------------------------------------

@@ -248,6 +248,7 @@ interface RollbackDeviceSnapshot {
   rollbackProtocolVersion: number;
   watchdogVersion: string | null;
   backupVersion: string | null;
+  rollbackComponentVersions: Record<string, string> | null;
 }
 
 function asProtocolPlatform(value: string): AgentRollbackDirectiveV1['platform'] {
@@ -275,6 +276,7 @@ async function loadDeviceSnapshot(deviceId: string): Promise<RollbackDeviceSnaps
     rollbackProtocolVersion: devices.rollbackProtocolVersion,
     watchdogVersion: devices.watchdogVersion,
     backupVersion: devices.backupVersion,
+    rollbackComponentVersions: devices.rollbackComponentVersions,
   }).from(devices).where(eq(devices.id, deviceId)).limit(1);
   if (!row) throw new AgentRollbackValidationError('device not found in authorized scope');
   return row;
@@ -285,7 +287,30 @@ function snapshotMatches(left: RollbackDeviceSnapshot, right: RollbackDeviceSnap
     && left.architecture === right.architecture && left.agentVersion === right.agentVersion
     && left.agentEdition === right.agentEdition
     && left.rollbackProtocolVersion === right.rollbackProtocolVersion
-    && left.watchdogVersion === right.watchdogVersion && left.backupVersion === right.backupVersion;
+    && left.watchdogVersion === right.watchdogVersion && left.backupVersion === right.backupVersion
+    && componentInventoryKey(left.rollbackComponentVersions) === componentInventoryKey(right.rollbackComponentVersions);
+}
+
+function componentInventoryKey(inventory: Record<string, string> | null): string {
+  return JSON.stringify(Object.entries(inventory ?? {}).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function validatedRollbackComponentVersions(snapshot: RollbackDeviceSnapshot):
+Partial<Record<RollbackComponent, string>> & { agent: string } {
+  const inventory = snapshot.rollbackComponentVersions;
+  if (!inventory || inventory.agent !== snapshot.agentVersion) {
+    throw new AgentRollbackValidationError('complete installed rollback component inventory is unavailable');
+  }
+  const allowed = new Set<RollbackComponent>(COMPONENT_ORDER);
+  for (const [component, version] of Object.entries(inventory)) {
+    if (!allowed.has(component as RollbackComponent) || !normalizedStableVersion(version)) {
+      throw new AgentRollbackValidationError(`installed rollback component ${component} is not trustworthy`);
+    }
+    if (component === 'user-helper' && snapshot.osType !== 'windows') {
+      throw new AgentRollbackValidationError('user-helper is not a valid installed component on this platform');
+    }
+  }
+  return inventory as Partial<Record<RollbackComponent, string>> & { agent: string };
 }
 
 export async function createAgentRollbackDirective(
@@ -316,11 +341,7 @@ export async function createAgentRollbackDirective(
   }
   const releaseRows = (await loadReleaseRows({ platform, architecture, edition }))
     .filter((row) => valid(row.version) === valid(target.version));
-  const currentVersions: Partial<Record<RollbackComponent, string>> & { agent: string } = {
-    agent: snapshot.agentVersion,
-    ...(snapshot.watchdogVersion ? { watchdog: snapshot.watchdogVersion } : {}),
-    ...(snapshot.backupVersion ? { backup: snapshot.backupVersion } : {}),
-  };
+  const currentVersions = validatedRollbackComponentVersions(snapshot);
   const releaseSet = buildRollbackArtifacts({
     targetVersion: target.version,
     currentVersions,
@@ -380,7 +401,8 @@ export async function createAgentRollbackDirective(
       SELECT id, org_id AS "orgId", os_type AS "osType", architecture,
              agent_version AS "agentVersion", agent_edition AS "agentEdition",
              rollback_protocol_version AS "rollbackProtocolVersion",
-             watchdog_version AS "watchdogVersion", backup_version AS "backupVersion"
+             watchdog_version AS "watchdogVersion", backup_version AS "backupVersion",
+             rollback_component_versions AS "rollbackComponentVersions"
       FROM devices WHERE id = ${snapshot.id} FOR UPDATE
     `) as unknown as RollbackDeviceSnapshot[];
     const locked = lockedRows[0];

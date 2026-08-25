@@ -26,11 +26,7 @@ export interface RollbackDirectiveProjection {
   latestPhase: AgentRollbackPhase | null;
 }
 
-export interface RollbackLiveVersions {
-  agent: string;
-  watchdog: string | null;
-  backup: string | null;
-}
+export type RollbackLiveVersions = Record<string, string | null> | null;
 
 export interface RollbackTransitionDecision {
   accepted: boolean;
@@ -61,12 +57,7 @@ function terminalStatus(phase: RollbackObservationPhase): AgentRollbackStatus {
 }
 
 function liveComponentVersion(component: string, live: RollbackLiveVersions): string | null {
-  if (component === 'agent') return live.agent;
-  if (component === 'watchdog') return live.watchdog;
-  if (component === 'backup') return live.backup;
-  // The current rollback producer owns only components represented by durable
-  // heartbeat columns. Fail closed if that set grows before heartbeat truth does.
-  return null;
+  return live?.[component] ?? null;
 }
 
 export function evaluateRollbackObservationTransition(input: {
@@ -98,10 +89,11 @@ export function evaluateRollbackObservationTransition(input: {
   if (PHASE_ORDER[observation.phase] <= priorOrder) return unchanged('phase_not_forward');
 
   if (observation.phase === 'healthy') {
-    const complete = Object.entries(directive.componentVersions).every(([component, versions]) =>
+    const complete = liveVersions !== null
+      && Object.entries(directive.componentVersions).every(([component, versions]) =>
       versions.target === directive.targetVersion
       && liveComponentVersion(component, liveVersions) === versions.target);
-    if (!complete || liveVersions.agent !== directive.targetVersion) {
+    if (!complete || liveVersions?.agent !== directive.targetVersion) {
       return unchanged('live_component_mismatch');
     }
   }
@@ -119,6 +111,7 @@ interface LockedDeviceRow {
   agentVersion: string;
   watchdogVersion: string | null;
   backupVersion: string | null;
+  rollbackComponentVersions: Record<string, string> | null;
 }
 
 interface LockedDirectiveRow extends RollbackDirectiveProjection {
@@ -132,7 +125,8 @@ export async function ingestRollbackObservation(
   return db.transaction(async (tx) => {
     const deviceRows = await tx.execute(sql`
       SELECT id, org_id AS "orgId", agent_version AS "agentVersion",
-             watchdog_version AS "watchdogVersion", backup_version AS "backupVersion"
+             watchdog_version AS "watchdogVersion", backup_version AS "backupVersion",
+             rollback_component_versions AS "rollbackComponentVersions"
       FROM devices
       WHERE id = ${deviceId}
       FOR KEY SHARE
@@ -151,25 +145,18 @@ export async function ingestRollbackObservation(
     const directive = directiveRows[0];
     if (!directive) return { acknowledgedObservationId: null };
 
+    const liveVersions = device.rollbackComponentVersions;
     const decision = evaluateRollbackObservationTransition({
       directive,
       observation,
-      liveVersions: {
-        agent: device.agentVersion,
-        watchdog: device.watchdogVersion,
-        backup: device.backupVersion,
-      },
+      liveVersions,
     });
     if (!decision.accepted) return { acknowledgedObservationId: null };
 
     const liveComponentVersions = Object.fromEntries(
       Object.keys(directive.componentVersions).map((component) => [
         component,
-        liveComponentVersion(component, {
-          agent: device.agentVersion,
-          watchdog: device.watchdogVersion,
-          backup: device.backupVersion,
-        }),
+        liveComponentVersion(component, liveVersions),
       ]),
     );
     const inserted = await tx.execute(sql`

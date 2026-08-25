@@ -42,6 +42,24 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     if (malformed.success) expect(malformed.data.rollbackObservation).toBeUndefined();
   });
 
+  it('accepts a bounded rollback component inventory and drops malformed inventory', () => {
+    const valid = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackComponentVersions: {
+        agent: '2.0.0', helper: '2.0.0', 'user-helper': '2.0.0', watchdog: '2.0.0', backup: '2.0.0',
+      },
+    });
+    expect(valid.success).toBe(true);
+    if (valid.success) expect(valid.data.rollbackComponentVersions?.helper).toBe('2.0.0');
+
+    const malformed = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackComponentVersions: { agent: '2.0.0', unknown: '2.0.0' },
+    });
+    expect(malformed.success).toBe(true);
+    if (malformed.success) expect(malformed.data.rollbackComponentVersions).toBeUndefined();
+  });
+
   it('parses a full battery snapshot (#2142)', () => {
     const result = heartbeatSchema.safeParse({
       ...minimal,

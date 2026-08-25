@@ -595,6 +595,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.backupVersion = data.backupVersion;
   }
 
+  // Rollback protocol v1 agents must replace this as a complete snapshot on
+  // every heartbeat. Missing inventory from a claiming agent clears prior
+  // truth so authorization fails closed instead of trusting stale components.
+  if (data.securityCapabilities?.rollbackProtocolVersion === 1) {
+    deviceUpdates.rollbackComponentVersions = data.rollbackComponentVersions ?? null;
+  }
+
   // #2288 — active control-plane URL. Absent (old agent) leaves the stored
   // value untouched; a malformed value is dropped, never a heartbeat failure.
   // http(s) only: this is agent-reported telemetry that gets echoed into the

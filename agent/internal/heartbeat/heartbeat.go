@@ -94,13 +94,14 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual              *bool          `json:"isVirtual,omitempty"`
-	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
-	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
-	DroppedLogs            int64          `json:"droppedLogs,omitempty"`
-	HelperVersion          string         `json:"helperVersion,omitempty"`
-	WatchdogVersion        string         `json:"watchdogVersion,omitempty"`
-	BackupVersion          string         `json:"backupVersion,omitempty"`
+	IsVirtual                 *bool             `json:"isVirtual,omitempty"`
+	VirtualizationPlatform    string            `json:"virtualizationPlatform,omitempty"`
+	HealthStatus              map[string]any    `json:"healthStatus,omitempty"`
+	DroppedLogs               int64             `json:"droppedLogs,omitempty"`
+	HelperVersion             string            `json:"helperVersion,omitempty"`
+	WatchdogVersion           string            `json:"watchdogVersion,omitempty"`
+	BackupVersion             string            `json:"backupVersion,omitempty"`
+	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -3925,6 +3926,9 @@ func (h *Heartbeat) sendHeartbeat() {
 			PeripheralPolicyProtocolVersion: 2,
 			RollbackProtocolVersion:         1,
 		},
+	}
+	if componentVersions, complete := h.rollbackComponentVersions(); complete {
+		payload.RollbackComponentVersions = componentVersions
 	}
 	if h.rollbackController != nil {
 		if observation, err := h.rollbackController.PendingObservation(); err != nil {
