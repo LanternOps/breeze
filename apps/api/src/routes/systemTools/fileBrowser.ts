@@ -43,8 +43,8 @@ fileBrowserRoutes.get(
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
     if (isCommandFailure(result)) {
-      const { message, status } = mapCommandFailure(result, 'Failed to list files.');
-      return c.json({ error: message }, status);
+      const { message, status, code } = mapCommandFailure(result, 'Failed to list files.');
+      return c.json({ error: message, code }, status);
     }
 
     try {
@@ -57,7 +57,9 @@ fileBrowserRoutes.get(
       const listedPath = typeof data.path === 'string' && data.path ? data.path : path;
       return c.json({ data: data.entries || [], path: listedPath });
     } catch {
-      return c.json({ error: 'Failed to parse agent response for file listing' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, which would blank this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for file listing', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -86,15 +88,17 @@ fileBrowserRoutes.get(
     });
 
     if (isCommandFailure(result)) {
-      const { message, status } = mapCommandFailure(result, 'Failed to list drives.');
-      return c.json({ error: message }, status);
+      const { message, status, code } = mapCommandFailure(result, 'Failed to list drives.');
+      return c.json({ error: message, code }, status);
     }
 
     try {
       const data = JSON.parse(result.stdout || '{}');
       return c.json({ data: data.drives || [] });
     } catch {
-      return c.json({ error: 'Failed to parse agent response for drive listing' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, which would blank this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for drive listing', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -125,24 +129,25 @@ fileBrowserRoutes.get(
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
     if (isCommandFailure(result)) {
-      const raw = result.error || '';
-      if (raw.toLowerCase().includes('not found')) {
-        return c.json({ error: raw }, 404);
-      }
-      const { message, status } = mapCommandFailure(result, 'Failed to read file.');
-      return c.json({ error: message }, status);
+      // The local `not found` test that used to live here is now part of
+      // classifyCommandFailure, which also recognises the agent's other two
+      // spellings (`path does not exist:`, `source path does not exist:`) —
+      // neither contains the words "not found", so a plain mistyped path used
+      // to fall through to the catch-all instead of answering 404.
+      const { message, status, code } = mapCommandFailure(result, 'Failed to read file.');
+      return c.json({ error: message, code }, status);
     }
 
     try {
       const payload = JSON.parse(result.stdout || '{}');
       const encodedContent = typeof payload.content === 'string' ? payload.content : '';
       if (!encodedContent) {
-        return c.json({ error: 'Invalid file payload from agent' }, 502);
+        return c.json({ error: 'Invalid file payload from agent', code: 'invalid_agent_response' }, 500);
       }
       if (
         !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encodedContent)
       ) {
-        return c.json({ error: 'Invalid file payload from agent' }, 502);
+        return c.json({ error: 'Invalid file payload from agent', code: 'invalid_agent_response' }, 500);
       }
 
       const fileData = Buffer.from(encodedContent, 'base64');
@@ -170,7 +175,9 @@ fileBrowserRoutes.get(
       return c.body(fileData);
     } catch (error) {
       console.error('Failed to parse agent response for file download:', error);
-      return c.json({ error: 'Failed to parse agent response for file download' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, which would blank this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for file download', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -284,6 +291,9 @@ fileBrowserRoutes.post(
           destPath: item.destPath,
           status: success ? 'success' : 'failure',
           error: failure?.message,
+          // Stable discriminant so a caller can tell an agent refusal from a
+          // device fault without matching on English prose.
+          code: failure?.code,
           unverified: failure?.unverified || undefined,
         });
 
@@ -306,12 +316,16 @@ fileBrowserRoutes.post(
           destPath: item.destPath,
           status: 'failure',
           error: err instanceof Error ? err.message : 'Unexpected error',
+          code: 'agent_execution_failed',
         });
       }
     }
 
-    const allFailed = results.length > 0 && results.every(r => r.status === 'failure');
-    return c.json({ results }, allFailed ? 502 : 200);
+    // Always 200: the batch itself was processed, and `results` carries each
+    // item's status/code/error. Answering 502 when every item failed made
+    // Cloudflare replace this body with its branded error page, so the caller
+    // lost the per-item reasons entirely and could only say "Copy failed".
+    return c.json({ results }, 200);
   }
 );
 
@@ -350,6 +364,9 @@ fileBrowserRoutes.post(
           destPath: item.destPath,
           status: success ? 'success' : 'failure',
           error: failure?.message,
+          // Stable discriminant so a caller can tell an agent refusal from a
+          // device fault without matching on English prose.
+          code: failure?.code,
           unverified: failure?.unverified || undefined,
         });
 
@@ -372,12 +389,16 @@ fileBrowserRoutes.post(
           destPath: item.destPath,
           status: 'failure',
           error: err instanceof Error ? err.message : 'Unexpected error',
+          code: 'agent_execution_failed',
         });
       }
     }
 
-    const allFailed = results.length > 0 && results.every(r => r.status === 'failure');
-    return c.json({ results }, allFailed ? 502 : 200);
+    // Always 200: the batch itself was processed, and `results` carries each
+    // item's status/code/error. Answering 502 when every item failed made
+    // Cloudflare replace this body with its branded error page, so the caller
+    // lost the per-item reasons entirely and could only say "Copy failed".
+    return c.json({ results }, 200);
   }
 );
 
@@ -417,6 +438,9 @@ fileBrowserRoutes.post(
           path,
           status: success ? 'success' : 'failure',
           error: failure?.message,
+          // Stable discriminant so a caller can tell an agent refusal from a
+          // device fault without matching on English prose.
+          code: failure?.code,
           unverified: failure?.unverified || undefined,
         });
 
@@ -438,12 +462,16 @@ fileBrowserRoutes.post(
           path,
           status: 'failure',
           error: err instanceof Error ? err.message : 'Unexpected error',
+          code: 'agent_execution_failed',
         });
       }
     }
 
-    const allFailed = results.length > 0 && results.every(r => r.status === 'failure');
-    return c.json({ results }, allFailed ? 502 : 200);
+    // Always 200: the batch itself was processed, and `results` carries each
+    // item's status/code/error. Answering 502 when every item failed made
+    // Cloudflare replace this body with its branded error page, so the caller
+    // lost the per-item reasons entirely and could only say "Copy failed".
+    return c.json({ results }, 200);
   }
 );
 
@@ -468,15 +496,17 @@ fileBrowserRoutes.get(
     const result = await executeCommand(deviceId, CommandTypes.FILE_TRASH_LIST, {}, { userId: auth.user?.id, timeoutMs: 30000 });
 
     if (isCommandFailure(result)) {
-      const { message, status } = mapCommandFailure(result, 'Failed to list trash.');
-      return c.json({ error: message }, status);
+      const { message, status, code } = mapCommandFailure(result, 'Failed to list trash.');
+      return c.json({ error: message, code }, status);
     }
 
     try {
       const data = JSON.parse(result.stdout || '{}');
       return c.json({ data: data.items || [] });
     } catch {
-      return c.json({ error: 'Failed to parse trash list response' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, which would blank this message on hosted deployments.
+      return c.json({ error: 'Failed to parse trash list response', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -525,6 +555,9 @@ fileBrowserRoutes.post(
           status: success ? 'success' : 'failure',
           restoredPath,
           error: failure?.message,
+          // Stable discriminant so a caller can tell an agent refusal from a
+          // device fault without matching on English prose.
+          code: failure?.code,
           unverified: failure?.unverified || undefined,
         });
 
@@ -546,6 +579,7 @@ fileBrowserRoutes.post(
           trashId,
           status: 'failure',
           error: err instanceof Error ? err.message : 'Unexpected error',
+          code: 'agent_execution_failed',
         });
       }
     }
@@ -599,8 +633,8 @@ fileBrowserRoutes.post(
     }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
 
     if (isCommandFailure(result)) {
-      const { message, status } = mapCommandFailure(result, 'Failed to purge trash.', { mutating: true });
-      return c.json({ error: message }, status);
+      const { message, status, code } = mapCommandFailure(result, 'Failed to purge trash.', { mutating: true });
+      return c.json({ error: message, code }, status);
     }
 
     try {

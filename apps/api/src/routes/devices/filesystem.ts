@@ -229,7 +229,9 @@ filesystemRoutes.post(
     );
 
     if (!queued.command) {
-      return c.json({ error: queued.error || 'Failed to queue filesystem analysis' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own branded
+      // page, which would blank the queue's reason on hosted deployments.
+      return c.json({ error: queued.error || 'Failed to queue filesystem analysis', code: 'agent_execution_failed' }, 500);
     }
 
     writeRouteAudit(c, {

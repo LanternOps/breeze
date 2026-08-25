@@ -62,7 +62,9 @@ processesRoutes.get(
       });
     } catch (parseError) {
       console.error('Failed to parse agent response for process listing:', parseError);
-      return c.json({ error: 'Failed to parse agent response for process listing' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for process listing', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -99,7 +101,9 @@ processesRoutes.get(
       return c.json({ data: payload });
     } catch (error) {
       console.error('Failed to parse agent response for process details:', error);
-      return c.json({ error: 'Failed to parse agent response for process details' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for process details', code: 'invalid_agent_response' }, 500);
     }
   }
 );

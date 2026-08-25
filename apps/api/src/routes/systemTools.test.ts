@@ -227,7 +227,7 @@ describe('system tools routes', () => {
     expect(mockExecuteCommand).not.toHaveBeenCalled();
   });
 
-  it('returns 502 on invalid process payload from agent', async () => {
+  it('returns 500 on invalid process payload from agent', async () => {
     mockDeviceSelect();
     mockExecuteCommand.mockResolvedValue({
       status: 'completed',
@@ -236,9 +236,12 @@ describe('system tools routes', () => {
 
     const res = await app.request(`/system-tools/devices/${deviceId}/processes`);
 
-    expect(res.status).toBe(502);
+    // 500, not 502: an origin 502 body is replaced by Cloudflare's branded
+    // error page on hosted deployments, so the client can never read this.
+    expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error).toContain('Failed to parse agent response');
+    expect(body.code).toBe('invalid_agent_response');
   });
 
   it('gets process details via agent command', async () => {
@@ -754,7 +757,7 @@ describe('system tools routes', () => {
     expect(body.meta.total).toBe(1);
   });
 
-  it('returns 502 on invalid scheduled task payload from agent', async () => {
+  it('returns 500 on invalid scheduled task payload from agent', async () => {
     mockDeviceSelect();
     mockExecuteCommand.mockResolvedValue({
       status: 'completed',
@@ -763,9 +766,12 @@ describe('system tools routes', () => {
 
     const res = await app.request(`/system-tools/devices/${deviceId}/tasks?limit=2&page=1`);
 
-    expect(res.status).toBe(502);
+    // 500, not 502: an origin 502 body is replaced by Cloudflare's branded
+    // error page on hosted deployments, so the client can never read this.
+    expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error).toContain('Failed to parse agent response');
+    expect(body.code).toBe('invalid_agent_response');
   });
 
   it('gets task details via agent command', async () => {
@@ -945,12 +951,16 @@ describe('system tools routes', () => {
         })
       });
 
-      // All items failed, so the route returns 502
-      expect(res.status).toBe(502);
+      // 200 even when every item failed: the batch WAS processed, and the
+      // per-item detail below is the payload that matters. Answering 502 got
+      // this body replaced by Cloudflare's branded page, so the UI could only
+      // say "Copy failed" with no per-item reason at all.
+      expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.results).toHaveLength(1);
       expect(body.results[0].status).toBe('failure');
       expect(body.results[0].error).toBe('Permission denied');
+      expect(body.results[0].code).toBe('agent_execution_failed');
     });
   });
 

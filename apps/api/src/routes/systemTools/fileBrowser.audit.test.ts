@@ -155,7 +155,8 @@ describe('file browser sensitive-read audit', () => {
       `/devices/${DEVICE_ID}/files/download?path=${encodeURIComponent('/private/file.txt')}`,
     );
 
-    expect(res.status).toBe(502);
+    // 500, not 502 — Cloudflare swallows an origin 502 body.
+    expect(res.status).toBe(500);
     expect(auditSensitiveReadMock).not.toHaveBeenCalled();
   });
 
