@@ -1,4 +1,5 @@
 -- Persist the actual initiating authorization subject on durable recovery work.
+-- Sequenced after the already-shipped 2026-09-10 migration set.
 -- Historical created_by / initiated_by attribution is deliberately not used to
 -- infer origin: API-key, OAuth, and interactive user work are indistinguishable
 -- through those columns alone.

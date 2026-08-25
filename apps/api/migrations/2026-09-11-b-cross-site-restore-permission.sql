@@ -1,5 +1,6 @@
 -- Seed the distinct cross-site restore capability and grant it to existing
 -- system Org Admin roles. Ordinary backup:write remains site-scoped.
+-- Sequenced after the already-shipped 2026-09-10 migration set.
 --
 -- Partner Admin already holds the wildcard '*:*' permission, so no redundant
 -- literal grant is needed. Org Admin roles are seeded per-partner, so this

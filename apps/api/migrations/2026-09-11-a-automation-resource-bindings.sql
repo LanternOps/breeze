@@ -1,4 +1,5 @@
 -- Durable automation resource ownership bindings (S0 Track A, Task 2).
+-- Sequenced after the already-shipped 2026-09-10 migration set.
 --
 -- Every row copies the standalone automation's dual owner axes and records the
 -- resource ownership observed when the reference was admitted. Legacy action
