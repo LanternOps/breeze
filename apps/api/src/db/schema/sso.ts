@@ -125,6 +125,12 @@ export const ssoSessions = pgTable('sso_sessions', {
   // has no partner_id/org_id, so the tenant-cascade sweep never reaches it.
   linkUserId: uuid('link_user_id').references(() => users.id, { onDelete: 'cascade' }),
 
+  // Reauth-mode marker (#4018): when set, the callback mints a single-use
+  // enrollment step-up grant for this user instead of logging in or linking.
+  // Same ON DELETE CASCADE rationale as linkUserId above. Mutually exclusive
+  // with linkUserId (sso_sessions_single_mode_chk).
+  reauthUserId: uuid('reauth_user_id').references(() => users.id, { onDelete: 'cascade' }),
+
   // SR2-11 pending-transaction binding.
   //
   // providerVersion: sso_providers.config_version at creation. NULL only for

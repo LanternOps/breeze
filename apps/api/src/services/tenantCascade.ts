@@ -432,8 +432,8 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
          OR user_id IN (SELECT id FROM users WHERE org_id = ${orgId})
     `,
   },
-  // sso_sessions.link_user_id already cascades on user delete; the provider
-  // FK does not.
+  // sso_sessions.link_user_id and .reauth_user_id both cascade on user delete;
+  // the provider FK does not — which is what this provider-keyed clear is for.
   {
     table: 'sso_sessions',
     clearSql: (orgId) => sql`
