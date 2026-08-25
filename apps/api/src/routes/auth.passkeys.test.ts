@@ -1099,9 +1099,12 @@ describe('passkey MFA auth routes', () => {
   it('does not overwrite an existing TOTP factor method when registering a passkey', async () => {
     // SR2-20: this account is already MFA-protected (has TOTP), so
     // register/verify requires a fresh existing-factor step-up grant.
-    // Query order: userIsMfaProtected (gate) first, then the transaction's
-    // own "current MFA" read (hasExistingFactor check) second.
+    // Query order: userIsMfaProtected (gate) first, then #4018's
+    // resolveEnrollmentStepUp terminal read (passwordHash — this is a password
+    // account, so it is a no-op), then the transaction's own "current MFA" read
+    // (hasExistingFactor check).
     dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 0 }]);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
     dbState.selectQueue.push([{ mfaSecret: 'enc-secret', mfaMethod: 'totp' }]);
     vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
 
@@ -1140,8 +1143,10 @@ describe('passkey MFA auth routes', () => {
 
   it('makes passkey the primary MFA method when the user has no existing factor', async () => {
     // SR2-20: no-factor account — initial enrollment stays password-only, no
-    // step-up grant required.
+    // step-up grant required. #4018 adds the passwordHash read between the
+    // gate and the transaction's own "current MFA" read.
     dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
     dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]);
 
     const res = await app.request('/auth/passkeys/register/verify', {

@@ -38,6 +38,7 @@ import {
   type PendingMfaRecord,
   requireCurrentPasswordStepUp,
   resolveCurrentUserTokenContext,
+  resolveEnrollmentStepUp,
   setRefreshTokenCookie,
   toPublicTokens,
   userRequiresSetup,
@@ -60,8 +61,15 @@ const webAuthnCredentialSchema = z
   );
 
 const passkeyNameSchema = z.string().trim().min(1).max(255);
+// #4018: BOTH enrollment proofs are optional HERE — resolveEnrollmentStepUp
+// decides which road this account may take, and "neither supplied" must be its
+// opaque 401 rather than a 400 from this schema, so the rejection never reveals
+// whether the account has a password. `deletePasskeySchema` below is untouched:
+// deleting a factor is not a first-factor enrollment and an
+// enroll_first_factor grant must never authorize it.
 const registerOptionsSchema = z.object({
-  currentPassword: z.string().min(1).max(256),
+  currentPassword: z.string().min(1).max(256).optional(),
+  ssoReauthGrantId: z.string().uuid().optional(),
   name: passkeyNameSchema.optional(),
   // SR2-20: existing-factor step-up grant required when the account is
   // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
@@ -70,6 +78,7 @@ const registerOptionsSchema = z.object({
 const registerVerifySchema = z.object({
   credential: webAuthnCredentialSchema,
   name: passkeyNameSchema.optional(),
+  ssoReauthGrantId: z.string().uuid().optional(),
   stepUpGrantId: z.string().optional()
 });
 const passkeyMfaOptionsSchema = z.object({
@@ -116,10 +125,18 @@ passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('jso
   }
 
   const auth = c.get('auth');
-  const { currentPassword, stepUpGrantId } = c.req.valid('json');
+  const { currentPassword, ssoReauthGrantId, stepUpGrantId } = c.req.valid('json');
 
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd');
-  if (passwordError) return passwordError;
+  // Password, or (passwordless SSO accounts only, #4018) a grant from a fresh
+  // forced re-authentication at the IdP. Non-consuming — this is the gate; the
+  // SAME grant is consumed at /passkeys/register/verify below.
+  const enrollmentError = await resolveEnrollmentStepUp(
+    c,
+    auth,
+    { currentPassword, ssoReauthGrantId },
+    { keyPrefix: 'passkey:pwd', consume: false }
+  );
+  if (enrollmentError) return enrollmentError;
 
   // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
   // requires a fresh existing-factor proof. Non-consuming here — the SAME
@@ -142,7 +159,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   }
 
   const auth = c.get('auth');
-  const { credential, name, stepUpGrantId } = c.req.valid('json');
+  const { credential, name, ssoReauthGrantId, stepUpGrantId } = c.req.valid('json');
 
   let verification;
   try {
@@ -177,6 +194,19 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   // terminal factor write.
   const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
   if (stepUpError) return stepUpError;
+
+  // #4018: terminal burn for the passwordless SSO road — one
+  // enroll_first_factor grant registers exactly one passkey. `passwordAlreadyProven`
+  // because this endpoint carries no password field at all: the password road
+  // was satisfied at /passkeys/register/options, and re-demanding it here would
+  // break every existing password-account registration.
+  const enrollmentConsumeError = await resolveEnrollmentStepUp(
+    c,
+    auth,
+    { ssoReauthGrantId },
+    { keyPrefix: 'passkey:pwd', consume: true, passwordAlreadyProven: true }
+  );
+  if (enrollmentConsumeError) return enrollmentConsumeError;
 
   // SR2-07/SR2-19: the insert AND the users.mfaEnabled flip are folded into
   // ONE transaction with the epoch bump + refresh-family revoke — registering

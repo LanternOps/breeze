@@ -321,6 +321,132 @@ export async function enforceExistingFactorStepUp(
   return null;
 }
 
+// ============================================
+// First-factor enrollment step-up (#4018)
+// ============================================
+
+/**
+ * The single decision point for "may this caller install a FIRST MFA factor?".
+ *
+ * Two roads, never both:
+ *   - password — the historical path, unchanged, and evaluated FIRST.
+ *   - SSO re-auth grant — for accounts with `password_hash IS NULL`, which have
+ *     no password to prove and previously could not enroll at all (#4018). The
+ *     grant is minted only by the SSO re-auth callback (`GET /sso/callback`,
+ *     reauth mode) after a forced, fresh IdP authentication.
+ *
+ * The SSO road is refused outright for an account that HAS a password: two
+ * roads of differing strength to the same door is how a step-up gets bypassed.
+ *
+ * It is ALSO refused for a passwordless account that already holds any factor.
+ * The grant's operation is `enroll_first_factor` and that is all it may ever
+ * do: without this check a passwordless account with a TOTP secret or a
+ * registered passkey could re-auth at its IdP and use the resulting grant to
+ * install a SECOND factor, side-stepping {@link enforceExistingFactorStepUp}
+ * (SR2-20), which exists precisely to require proving an EXISTING factor
+ * before adding a new one. The predicate is {@link userIsMfaProtected} — the
+ * same one SR2-20 uses — so the two gates can never drift apart. A protected
+ * account simply falls through to the unchanged step-up requirements.
+ *
+ * Every rejection is the same opaque `Invalid credentials` 401 the password
+ * path already returns, so the response never reveals whether the account has
+ * a password, has a factor, or exists at all.
+ *
+ * `opts.consume` mirrors the {@link validateStepUpGrant}/{@link consumeStepUpGrant}
+ * split the SR2-20 grant already uses: `false` at the gate of a two-step flow
+ * (`/mfa/setup`, `/passkeys/register/options`), `true` at the terminal factor
+ * write (`/mfa/enable`, `/passkeys/register/verify`), so one SSO round-trip
+ * yields exactly one enrollment and a fat-fingered TOTP code does not burn the
+ * grant.
+ *
+ * `opts.passwordAlreadyProven` is for the TERMINAL call of such a two-step
+ * flow, whose GATE already ran this function and satisfied the password road
+ * (re-verifying there would double-charge the per-user step-up rate limit, and
+ * `/passkeys/register/verify` carries no password field at all). It ONLY
+ * short-circuits the password road; the SSO road still consumes the grant.
+ * Never set it on an endpoint that is not downstream of such a gate.
+ */
+export async function resolveEnrollmentStepUp(
+  c: Context,
+  auth: AuthContext,
+  input: { currentPassword?: string; ssoReauthGrantId?: string },
+  opts: { keyPrefix: string; consume: boolean; passwordAlreadyProven?: boolean },
+): Promise<Response | null> {
+  // Road 1, FIRST and byte-for-byte the historical path: a password was
+  // offered, so a password is what must check out. requireCurrentPasswordStepUp
+  // already returns the same opaque 401 when the account has no hash at all, so
+  // a passwordless account that offers a password is rejected here rather than
+  // sliding onto the SSO road — one request, one road, chosen by what it sent.
+  if (input.currentPassword) {
+    return requireCurrentPasswordStepUp(c, auth.user.id, input.currentPassword, opts.keyPrefix);
+  }
+
+  // No password offered. Decide whether this account is even eligible for the
+  // SSO road before looking at the grant.
+  //
+  // System DB access, same idiom and same reason as {@link userIsMfaProtected}:
+  // the `/mfa/verify` Case-2 caller runs with NO ambient access context (its
+  // `await authMiddleware(c, async () => {})` tears the context down when that
+  // empty `next` returns — see the I3 note there). A contextless read under
+  // forced RLS as `breeze_app` matches ZERO rows rather than erroring, so an
+  // unwrapped probe would land on `!user` and 401 EVERY caller of that path,
+  // password accounts included. Nested inside a request context this is a
+  // no-op, so the other callers are unaffected.
+  const [user] = await runWithSystemDbAccess(() =>
+    db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1)
+  );
+  if (!user) return c.json({ error: 'Invalid credentials' }, 401);
+
+  if (user.passwordHash != null) {
+    // The gate of this flow already verified the password; nothing is left for
+    // the terminal call to do. Deliberately still a live DB read rather than an
+    // assumption that the gate ran — this must fail CLOSED for a passwordless
+    // account that reaches a terminal write with no grant.
+    if (opts.passwordAlreadyProven) return null;
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  if (!input.ssoReauthGrantId) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  // FIRST factor only — see the doc comment above. Checked BEFORE the grant is
+  // consumed so a refused enrollment never burns the caller's grant.
+  if (await userIsMfaProtected(auth.user.id)) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const epochs = await getUserEpochs(auth.user.id);
+  const sid = auth.token?.sid;
+  if (!epochs || !sid) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  // Must reconstruct the mint-site tuple in `routes/sso.ts` (reauth branch)
+  // MEMBER FOR MEMBER: bindsMatch fails closed on any difference, so a
+  // divergence here would silently reject every legitimate grant.
+  const bind = {
+    userId: auth.user.id,
+    operation: 'enroll_first_factor' as const,
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    sid,
+  };
+
+  const ok = opts.consume
+    ? await consumeStepUpGrant(input.ssoReauthGrantId, bind)
+    : await validateStepUpGrant(input.ssoReauthGrantId, bind);
+  if (!ok) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  return null;
+}
+
 /**
  * True when the account holds a re-auth factor STRONGER than a password that
  * the browser register UI can actually exercise: TOTP MFA or an active

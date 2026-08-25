@@ -44,6 +44,7 @@ import {
   auditLogin,
   userRequiresSetup,
   requireCurrentPasswordStepUp,
+  resolveEnrollmentStepUp,
   enforceExistingFactorStepUp,
   parsePendingMfa,
   evaluatePendingMfa,
@@ -59,8 +60,20 @@ const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
 const passwordOnlySchema = z.object({
   currentPassword: z.string().min(1).max(256)
 });
-const mfaEnableWithPasswordSchema = mfaEnableSchema.extend({
-  currentPassword: z.string().min(1).max(256),
+
+// #4018: the FIRST-FACTOR ENROLLMENT endpoints accept either proof. Both are
+// optional HERE and resolveEnrollmentStepUp decides which road this account is
+// allowed to take — "neither supplied" must be its opaque 401, not a 400 from
+// this schema, because the shape of the rejection must not tell an attacker
+// whether the account has a password. `passwordOnlySchema` above stays
+// password-only: /mfa/recovery-codes is not an enrollment.
+const enrollmentStepUpSchema = z.object({
+  currentPassword: z.string().min(1).max(256).optional(),
+  ssoReauthGrantId: z.string().uuid().optional()
+});
+const mfaEnableWithStepUpSchema = mfaEnableSchema.extend({
+  currentPassword: z.string().min(1).max(256).optional(),
+  ssoReauthGrantId: z.string().uuid().optional(),
   // SR2-20: existing-factor step-up grant required when the account is
   // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
   stepUpGrantId: z.string().optional()
@@ -72,19 +85,30 @@ const mfaDisableSchema = mfaVerifySchema.extend({
 export const mfaRoutes = new Hono();
 
 // MFA setup (requires auth + current-password re-prompt)
-mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', passwordOnlySchema), async (c) => {
+mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUpSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
-  const { currentPassword } = c.req.valid('json');
+  const { currentPassword, ssoReauthGrantId } = c.req.valid('json');
 
-  // Re-verify password before allowing MFA factor installation. A stolen
-  // access token is not sufficient — the user must prove possession of
-  // the password to attach a new TOTP secret.
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
-  if (passwordError) return passwordError;
+  // Re-verify identity before allowing MFA factor installation. A stolen
+  // access token is not sufficient — the user must prove possession of the
+  // password, or (passwordless SSO accounts only, #4018) present a grant from
+  // a fresh forced re-authentication at their IdP.
+  //
+  // NON-consuming: this endpoint only stashes a candidate secret in Redis. The
+  // single-use burn happens at the terminal factor write that confirms it
+  // (/mfa/verify case 2, or /mfa/enable), so one SSO round-trip covers the
+  // whole setup -> confirm flow.
+  const stepUpError = await resolveEnrollmentStepUp(
+    c,
+    auth,
+    { currentPassword, ssoReauthGrantId },
+    { keyPrefix: 'mfa:pwd', consume: false }
+  );
+  if (stepUpError) return stepUpError;
 
   // Check if MFA is already enabled
   const [user] = await db
@@ -442,6 +466,20 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
   if (stepUpConsumeError) return stepUpConsumeError;
 
+  // #4018: terminal burn for the passwordless SSO road. This is the confirm
+  // half of the /mfa/setup flow whose gate validated the grant non-consumingly,
+  // so ONE enroll_first_factor grant installs exactly one factor.
+  // `passwordAlreadyProven` because this branch never had a password gate of
+  // its own — /mfa/setup holds it — and must stay unchanged for password
+  // accounts.
+  const enrollmentConsumeError = await resolveEnrollmentStepUp(
+    c,
+    auth,
+    { ssoReauthGrantId: c.req.valid('json').ssoReauthGrantId },
+    { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true }
+  );
+  if (enrollmentConsumeError) return enrollmentConsumeError;
+
   // SR2-07/SR2-19: fold the factor write into the atomic epoch-bump +
   // refresh-family-revoke transaction, then best-effort post-commit cleanup +
   // remote-session teardown — enabling MFA is a security-relevant factor
@@ -610,17 +648,26 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
 });
 
 // MFA enable compatibility endpoint for frontend settings flow
-mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPasswordSchema), async (c) => {
+mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithStepUpSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
-  const { code, currentPassword, stepUpGrantId } = c.req.valid('json');
+  const { code, currentPassword, ssoReauthGrantId, stepUpGrantId } = c.req.valid('json');
 
-  // Re-verify password before flipping mfaEnabled=true on the user row.
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
-  if (passwordError) return passwordError;
+  // Re-verify identity before flipping mfaEnabled=true on the user row:
+  // password, or (passwordless SSO accounts only, #4018) a fresh SSO re-auth
+  // grant. Same two-phase idiom as the SR2-20 grant below — VALIDATE here,
+  // CONSUME after the TOTP code proves out — so a mistyped code does not burn
+  // the user's single-use grant and force another IdP round-trip.
+  const enrollmentError = await resolveEnrollmentStepUp(
+    c,
+    auth,
+    { currentPassword, ssoReauthGrantId },
+    { keyPrefix: 'mfa:pwd', consume: false }
+  );
+  if (enrollmentError) return enrollmentError;
 
   // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
   // requires a fresh existing-factor proof (no-op for initial enrollment).
@@ -687,6 +734,19 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
   // not written.
   const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
   if (stepUpConsumeError) return stepUpConsumeError;
+
+  // #4018: same terminal burn for the passwordless SSO road — one
+  // enroll_first_factor grant installs exactly one factor. `passwordAlreadyProven`
+  // because the password road was already satisfied at the gate above; without
+  // it this second call would re-verify the password and double-charge the
+  // per-user step-up rate limit.
+  const enrollmentConsumeError = await resolveEnrollmentStepUp(
+    c,
+    auth,
+    { currentPassword, ssoReauthGrantId },
+    { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true }
+  );
+  if (enrollmentConsumeError) return enrollmentConsumeError;
 
   const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-enable', async (tx) => {
     await tx

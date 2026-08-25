@@ -1498,10 +1498,14 @@ describe('auth routes', () => {
       };
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(consumeMFAToken).mockResolvedValue(true);
+      // One row satisfies both reads on this path: userIsMfaProtected sees no
+      // mfaEnabled/passkeyCount (no factor yet), and #4018's
+      // resolveEnrollmentStepUp sees a passwordHash — i.e. an ordinary password
+      // account, whose enrollment road is unchanged.
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
           })
         })
       } as any);
@@ -1554,7 +1558,7 @@ describe('auth routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash', mfaEnabled: true, passkeyCount: 0 }])
           })
         })
       } as any);
@@ -1576,7 +1580,7 @@ describe('auth routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash', mfaEnabled: true, passkeyCount: 0 }])
           })
         })
       } as any);
@@ -1602,7 +1606,7 @@ describe('auth routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash', mfaEnabled: true, passkeyCount: 0 }])
           })
         })
       } as any);
@@ -2476,7 +2480,10 @@ describe('auth routes', () => {
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(consumeMFAToken).mockResolvedValue(true);
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      // Password-reprompt select runs first, then enable's own select
+      // Password-reprompt select runs first, then enable's own selects. The
+      // fallback row carries passwordHash so #4018's terminal
+      // resolveEnrollmentStepUp still sees a password account (it reads nothing
+      // else, and userIsMfaProtected reads only mfaEnabled/passkeyCount).
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -2488,7 +2495,7 @@ describe('auth routes', () => {
         .mockReturnValue({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
             })
           })
         } as any);
@@ -2536,7 +2543,7 @@ describe('auth routes', () => {
         .mockReturnValue({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash', mfaEnabled: true, passkeyCount: 0 }])
             })
           })
         } as any);
@@ -2585,21 +2592,21 @@ describe('auth routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash', mfaEnabled: true, passkeyCount: 0 }])
             })
           })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash', mfaEnabled: true, passkeyCount: 0 }])
             })
           })
         } as any)
         .mockReturnValue({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
             })
           })
         } as any);
@@ -2719,7 +2726,19 @@ describe('auth routes', () => {
       expect(consumeMFAToken).not.toHaveBeenCalled();
     });
 
+    // #4018: BOTH enrollment proofs are optional in the schema now, so "no
+    // proof at all" is resolveEnrollmentStepUp's opaque 401 rather than a 400
+    // from zod. That is the point: the shape of the rejection must not tell an
+    // attacker whether this account has a password.
     it('POST /auth/mfa/enable should reject missing currentPassword (G1)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+          })
+        })
+      } as any);
+
       const res = await app.request('/auth/mfa/enable', {
         method: 'POST',
         headers: {
@@ -2729,7 +2748,9 @@ describe('auth routes', () => {
         body: JSON.stringify({ code: '123456' })
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      expect(db.transaction).not.toHaveBeenCalled();
     });
 
     it('POST /auth/mfa/enable should return 401 on wrong password (G1)', async () => {
@@ -2754,7 +2775,17 @@ describe('auth routes', () => {
       expect(res.status).toBe(401);
     });
 
+    // #4018: see the /mfa/enable G1 note above — no proof at all is now an
+    // opaque 401, not a 400.
     it('POST /auth/mfa/setup should reject missing currentPassword (G1)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+          })
+        })
+      } as any);
+
       const res = await app.request('/auth/mfa/setup', {
         method: 'POST',
         headers: {
@@ -2764,7 +2795,8 @@ describe('auth routes', () => {
         body: JSON.stringify({})
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
     });
 
     it('POST /auth/mfa/setup should return 401 on wrong password (G1)', async () => {

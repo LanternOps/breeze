@@ -58,6 +58,11 @@ export const mfaVerifySchema = z.object({
   // already-protected account's TOTP-add can satisfy the existing-factor
   // step-up gate. Ignored on Case 1 (login completion).
   stepUpGrantId: z.string().optional(),
+  // #4018: presented on setup-confirm (Case 2) by a PASSWORDLESS SSO account,
+  // which has no password to satisfy the enrollment step-up. Consumed there as
+  // the terminal write of the /mfa/setup flow. Ignored on Case 1 (login
+  // completion — that path is pre-auth and mints no factor).
+  ssoReauthGrantId: z.string().uuid().optional(),
 });
 
 export const phoneVerifySchema = z.object({
