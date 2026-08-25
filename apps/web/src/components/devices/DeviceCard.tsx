@@ -152,7 +152,20 @@ export default function DeviceCard({
   const effectiveTimezone =
     timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+  // #4014: this card had no `deviceClass` handling at all, so the grid offered
+  // the full agent kebab for network-discovered assets. A `network` row's `id`
+  // is a `discovered_assets.id`, NOT a `devices.id` (#1322) — every action here
+  // posts that foreign id at a `/devices/:id` endpoint, where it resolves to no
+  // row and 404s. The list row already collapses to a single "View"
+  // (DeviceList.tsx); the grid card mirrors that treatment exactly, reusing the
+  // same `deviceList.view` copy and `-open-network` test id.
+  const isNetwork = (device.deviceClass ?? "agent") === "network";
+
   useEffect(() => {
+    // A discovered asset has no agent and no metric history; firing the request
+    // anyway is a guaranteed 404 on every card mount.
+    if (isNetwork) return;
+
     let isCancelled = false;
 
     const loadHistory = async () => {
@@ -189,7 +202,7 @@ export default function DeviceCard({
     return () => {
       isCancelled = true;
     };
-  }, [device.id]);
+  }, [device.id, isNetwork]);
 
   const cpuHistory =
     historyState === "ready" ? metricHistory.map((point) => point.cpu) : [];
@@ -240,204 +253,241 @@ export default function DeviceCard({
             <p className="text-xs text-muted-foreground">{device.osVersion}</p>
           </div>
         </div>
-        <div className="relative">
+        {isNetwork ? (
+          // Mirrors DeviceList.tsx's network row: the whole action surface
+          // collapses to one "View", which opens the read-only network detail
+          // page (DevicesPage.handleSelectDevice routes `network` there).
           <button
             type="button"
-            data-testid={`device-${device.id}-actions-menu`}
+            data-testid={`device-${device.id}-open-network`}
             onClick={(e) => {
               e.stopPropagation();
-              setMenuOpen(!menuOpen);
+              onClick?.(device);
             }}
-            aria-label={`Actions for ${device.hostname}`}
-            className="flex h-8 w-8 items-center justify-center rounded-md opacity-40 transition hover:bg-muted hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
           >
-            <MoreVertical className="h-4 w-4" />
+            {t("deviceList.view")}
           </button>
-          {menuOpen && (
-            <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAction?.("terminal", device);
-                  setMenuOpen(false);
-                }}
-                disabled={!online}
-                title={liveSessionTitle}
-                aria-describedby={!online ? gateHintId : undefined}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-              >
-                <Terminal className="h-4 w-4" />
-                {t("deviceCard.remoteTerminal")}{" "}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAction?.("run-script", device);
-                  setMenuOpen(false);
-                }}
-                disabled={!commandQueueable}
-                title={queuedCommandTitle}
-                aria-describedby={!commandQueueable ? gateHintId : undefined}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-              >
-                <FileCode className="h-4 w-4" />
-                {t("deviceCard.runScript")}{" "}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAction?.("reboot", device);
-                  setMenuOpen(false);
-                }}
-                disabled={!commandQueueable}
-                title={queuedCommandTitle}
-                aria-describedby={!commandQueueable ? gateHintId : undefined}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-              >
-                <RotateCcw className="h-4 w-4" />
-                {t("deviceCard.reboot")}{" "}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAction?.("settings", device);
-                  setMenuOpen(false);
-                }}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
-              >
-                <Settings className="h-4 w-4" />
-                {t("deviceCard.settings")}{" "}
-              </button>
-              <hr className="my-1" />
-              {device.status === "decommissioned" ? (
-                <>
+        ) : (
+          <div className="relative">
+            <button
+              type="button"
+              data-testid={`device-${device.id}-actions-menu`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(!menuOpen);
+              }}
+              aria-label={`Actions for ${device.hostname}`}
+              className="flex h-8 w-8 items-center justify-center rounded-md opacity-40 transition hover:bg-muted hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <MoreVertical className="h-4 w-4" />
+            </button>
+            {menuOpen && (
+              <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAction?.("terminal", device);
+                    setMenuOpen(false);
+                  }}
+                  disabled={!online}
+                  title={liveSessionTitle}
+                  aria-describedby={!online ? gateHintId : undefined}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                >
+                  <Terminal className="h-4 w-4" />
+                  {t("deviceCard.remoteTerminal")}{" "}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAction?.("run-script", device);
+                    setMenuOpen(false);
+                  }}
+                  disabled={!commandQueueable}
+                  title={queuedCommandTitle}
+                  aria-describedby={!commandQueueable ? gateHintId : undefined}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                >
+                  <FileCode className="h-4 w-4" />
+                  {t("deviceCard.runScript")}{" "}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAction?.("reboot", device);
+                    setMenuOpen(false);
+                  }}
+                  disabled={!commandQueueable}
+                  title={queuedCommandTitle}
+                  aria-describedby={!commandQueueable ? gateHintId : undefined}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  {t("deviceCard.reboot")}{" "}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAction?.("settings", device);
+                    setMenuOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <Settings className="h-4 w-4" />
+                  {t("deviceCard.settings")}{" "}
+                </button>
+                <hr className="my-1" />
+                {device.status === "decommissioned" ? (
+                  <>
+                    <button
+                      type="button"
+                      data-testid={`device-${device.id}-action-restore`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAction?.("restore", device);
+                        setMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      {t("deviceCard.restore")}{" "}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`device-${device.id}-action-permanent-delete`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAction?.("permanent-delete", device);
+                        setMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      {t("deviceCard.permanentlyDelete")}
+                    </button>
+                  </>
+                ) : (
                   <button
                     type="button"
-                    data-testid={`device-${device.id}-action-restore`}
+                    data-testid={`device-${device.id}-action-remove`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onAction?.("restore", device);
-                      setMenuOpen(false);
-                    }}
-                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                    {t("deviceCard.restore")}{" "}
-                  </button>
-                  <button
-                    type="button"
-                    data-testid={`device-${device.id}-action-permanent-delete`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAction?.("permanent-delete", device);
+                      onAction?.("decommission", device);
                       setMenuOpen(false);
                     }}
                     className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
                   >
                     <Trash2 className="h-4 w-4" />
-                    {t("deviceCard.permanentlyDelete")}
+                    {t("deviceCard.decommission")}{" "}
                   </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  data-testid={`device-${device.id}-action-remove`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAction?.("decommission", device);
-                    setMenuOpen(false);
-                  }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  {t("deviceCard.decommission")}{" "}
-                </button>
-              )}
-              {gateHint && (
-                // Visible so the reason survives touch (no hover) and does not
-                // depend on focusing a disabled button, which is impossible.
-                <>
-                  <hr className="my-1" />
-                  <p
-                    id={gateHintId}
-                    data-testid={`device-${device.id}-action-gate-hint`}
-                    className="px-4 py-2 text-xs text-muted-foreground"
-                  >
-                    {gateHint}
-                  </p>
-                </>
-              )}
-            </div>
-          )}
-        </div>
+                )}
+                {gateHint && (
+                  // Visible so the reason survives touch (no hover) and does not
+                  // depend on focusing a disabled button, which is impossible.
+                  <>
+                    <hr className="my-1" />
+                    <p
+                      id={gateHintId}
+                      data-testid={`device-${device.id}-action-gate-hint`}
+                      className="px-4 py-2 text-xs text-muted-foreground"
+                    >
+                      {gateHint}
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-4">
-        <div>
-          <div className="mb-1 flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">CPU</span>
-            <span className="font-medium">{device.cpuPercent}%</span>
-          </div>
-          {historyState === "ready" ? (
+      {isNetwork ? (
+        // A discovered asset reports no CPU/RAM — DevicesPage fills those
+        // fields with a placeholder 0, which would render as a confident
+        // "0%" reading for a printer. The list already shows "—" in those
+        // columns for exactly this reason (DeviceList.tsx agentCell).
+        <div className="mt-4 grid grid-cols-2 gap-4">
+          {(["CPU", "RAM"] as const).map((label) => (
             <div
-              className={
-                device.cpuPercent > 80
-                  ? "text-destructive"
-                  : device.cpuPercent > 60
-                    ? "text-warning"
-                    : "text-success"
-              }
+              key={label}
+              className="flex items-center justify-between text-xs"
             >
-              <MiniSparkline
-                testId={`cpu-sparkline-${device.id}`}
-                data={cpuHistory}
-              />
+              <span className="text-muted-foreground">{label}</span>
+              <span className="font-medium text-muted-foreground">
+                {t("deviceList.text")}
+              </span>
             </div>
-          ) : (
-            <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
-              {historyState === "loading"
-                ? t("deviceCard.loadingTrend")
-                : historyState === "error"
-                  ? t("deviceCard.trendUnavailable")
-                  : t("deviceCard.noTrendData")}
-            </div>
-          )}
+          ))}
         </div>
-        <div>
-          <div className="mb-1 flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">RAM</span>
-            <span className="font-medium">{device.ramPercent}%</span>
+      ) : (
+        <div className="mt-4 grid grid-cols-2 gap-4">
+          <div>
+            <div className="mb-1 flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">CPU</span>
+              <span className="font-medium">{device.cpuPercent}%</span>
+            </div>
+            {historyState === "ready" ? (
+              <div
+                className={
+                  device.cpuPercent > 80
+                    ? "text-destructive"
+                    : device.cpuPercent > 60
+                      ? "text-warning"
+                      : "text-success"
+                }
+              >
+                <MiniSparkline
+                  testId={`cpu-sparkline-${device.id}`}
+                  data={cpuHistory}
+                />
+              </div>
+            ) : (
+              <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
+                {historyState === "loading"
+                  ? t("deviceCard.loadingTrend")
+                  : historyState === "error"
+                    ? t("deviceCard.trendUnavailable")
+                    : t("deviceCard.noTrendData")}
+              </div>
+            )}
           </div>
-          {historyState === "ready" ? (
-            <div
-              className={
-                device.ramPercent > 80
-                  ? "text-destructive"
-                  : device.ramPercent > 60
-                    ? "text-warning"
-                    : "text-success"
-              }
-            >
-              <MiniSparkline
-                testId={`ram-sparkline-${device.id}`}
-                data={ramHistory}
-              />
+          <div>
+            <div className="mb-1 flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">RAM</span>
+              <span className="font-medium">{device.ramPercent}%</span>
             </div>
-          ) : (
-            <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
-              {historyState === "loading"
-                ? t("deviceCard.loadingTrend")
-                : historyState === "error"
-                  ? t("deviceCard.trendUnavailable")
-                  : t("deviceCard.noTrendData")}
-            </div>
-          )}
+            {historyState === "ready" ? (
+              <div
+                className={
+                  device.ramPercent > 80
+                    ? "text-destructive"
+                    : device.ramPercent > 60
+                      ? "text-warning"
+                      : "text-success"
+                }
+              >
+                <MiniSparkline
+                  testId={`ram-sparkline-${device.id}`}
+                  data={ramHistory}
+                />
+              </div>
+            ) : (
+              <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
+                {historyState === "loading"
+                  ? t("deviceCard.loadingTrend")
+                  : historyState === "error"
+                    ? t("deviceCard.trendUnavailable")
+                    : t("deviceCard.noTrendData")}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
         <span>{device.siteName}</span>

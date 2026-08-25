@@ -688,6 +688,18 @@ export default function DevicesPage() {
 
   const handleDeviceAction = async (action: string, device: Device) => {
     if (actionInProgress) return;
+    // #4014: every branch of runDeviceAction below addresses an enrolled agent
+    // through a `/devices/:id` endpoint, but a network row's `id` is a
+    // `discovered_assets.id`, NOT a `devices.id` (#1322) — it matches no device
+    // row and 404s. handleBulkAction has filtered these out since #1322; this
+    // is the single-device funnel every kebab and card shares, so enforce the
+    // same invariant once here instead of once per calling component. Both
+    // surfaces already hide the actions for network rows (DeviceList's actions
+    // cell, DeviceCard's kebab), so this is the backstop, not the gate.
+    if ((device.deviceClass ?? 'agent') === 'network') {
+      showToast({ type: 'error', message: t('devicesPage.toasts.agentOnlyAction') });
+      return;
+    }
     if (CONFIRM_REQUIRED_ACTIONS.has(action)) {
       setPendingDeviceAction({ action, device });
       return;
