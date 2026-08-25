@@ -254,6 +254,9 @@ describe('tenancyRegistry', () => {
     expect(CORE_TENANT_EXPORT_POLICY.agent_health_observations?.columns.overall).toMatchObject({
       decision: 'include',
     });
+    expect(CORE_TENANT_EXPORT_POLICY.automation_action_results?.columns.terminal_source).toMatchObject({
+      decision: 'include',
+    });
     expect(CORE_TENANT_EXPORT_POLICY.device_agent_health_latest?.columns.observation_id).toMatchObject({
       decision: 'include',
     });

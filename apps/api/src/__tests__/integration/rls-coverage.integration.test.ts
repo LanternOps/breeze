@@ -3821,8 +3821,8 @@ describe('device_mtls_certificates RLS — direct-org auto-discovery (Shape 1)',
   });
 });
 
-describe('agent health RLS — direct-org auto-discovery (Shape 1)', () => {
-  it.each(['agent_health_observations', 'device_agent_health_latest'])(
+describe('fleet evidence RLS — direct-org auto-discovery (Shape 1)', () => {
+  it.each(['agent_health_observations', 'automation_action_results', 'device_agent_health_latest'])(
     '%s is direct-org and has forced four-command policy coverage',
     async (tableName) => {
       expect(ORG_ID_KEYED_TENANT_TABLES.has(tableName)).toBe(false);
