@@ -309,6 +309,22 @@ describe('automations routes', () => {
     expect(body.trigger.type).toBe('manual');
   });
 
+  it('rejects user-authored ai_triage wiring before inserting an automation', async () => {
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'Unmanaged triage',
+        trigger: { type: 'event', eventType: 'alert.triggered' },
+        actions: [{ type: 'ai_triage' }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'ai_triage_is_system_managed' });
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
   it('encrypts and redacts webhook automation trigger secrets on create', async () => {
     vi.mocked(db.insert).mockReturnValueOnce({
       values: vi.fn((values: any) => ({
@@ -385,6 +401,108 @@ describe('automations routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.enabled).toBe(false);
+  });
+
+  it.each(['PATCH', 'PUT'])('%s rejects even an enabled toggle on a managed automation', async (method) => {
+    const agentId = '33333333-3333-4333-8333-333333333333';
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'Managed triage',
+            orgId: 'org-123',
+            managedByAgentId: agentId,
+            enabled: true,
+            trigger: { type: 'event', eventType: 'alert.triggered' },
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'automation_managed_by_agent',
+      agentId,
+    });
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('rejects PATCHing an ai_triage action onto an ordinary automation', async () => {
+    // The create gate alone is trivially bypassed: POST an ordinary automation,
+    // then PATCH the system-managed action onto it.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'Ordinary automation',
+            orgId: 'org-123',
+            managedByAgentId: null,
+            enabled: true,
+            conditions: [],
+            trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ actions: [{ type: 'ai_triage' }] }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'ai_triage_is_system_managed' });
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('keeps ordinary automation updates unchanged when managedByAgentId is null', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'Ordinary automation',
+            orgId: 'org-123',
+            managedByAgentId: null,
+            enabled: true,
+            conditions: [],
+            trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'Ordinary automation',
+            orgId: 'org-123',
+            managedByAgentId: null,
+            enabled: false,
+            trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.update)).toHaveBeenCalled();
   });
 
   it('rejects an UPDATE from a site-restricted caller when the new target set escapes their sites', async () => {
@@ -481,6 +599,31 @@ describe('automations routes', () => {
     expect(body.success).toBe(true);
   });
 
+  it('rejects deletion of a managed automation before issuing a delete', async () => {
+    const agentId = '33333333-3333-4333-8333-333333333333';
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'Managed triage',
+            orgId: 'org-123',
+            managedByAgentId: agentId,
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'automation_managed_by_agent', agentId });
+    expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
+
   it('should trigger an automation using configured device targets', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -506,6 +649,33 @@ describe('automations routes', () => {
     const body = await res.json();
     expect(body.message).toContain('triggered');
     expect(body.run.devicesTargeted).toBe(2);
+  });
+
+  it('rejects manual triggering of a managed automation before creating a run', async () => {
+    const agentId = '33333333-3333-4333-8333-333333333333';
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'Managed triage',
+            orgId: 'org-123',
+            managedByAgentId: agentId,
+            enabled: true,
+            trigger: { type: 'event', eventType: 'alert.triggered' },
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111/trigger', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'automation_managed_by_agent', agentId });
+    expect(vi.mocked(createAutomationRunRecord)).not.toHaveBeenCalled();
   });
 
   it('should prevent triggering disabled automations', async () => {

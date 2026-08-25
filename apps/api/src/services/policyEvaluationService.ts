@@ -20,6 +20,7 @@ import {
   resolveComplianceRulesForDevice,
   scanDueComplianceChecks,
 } from './featureConfigResolver';
+import { isManagedAutomation } from './aiAgents/managedAutomation';
 
 export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
 
@@ -1130,9 +1131,9 @@ async function triggerRemediationAutomation(
     )
     .limit(1);
 
-  if (!automation || !automation.enabled) {
-    return null;
-  }
+  // Both policy-remediation paths run per evaluated device, so a policy pointed
+  // at the managed row would create one agent run per device in the fleet.
+  if (!automation || !automation.enabled || isManagedAutomation(automation)) return null;
 
   const [run] = await db
     .insert(automationRuns)
@@ -1843,9 +1844,7 @@ async function triggerConfigPolicyRemediation(
     )
     .limit(1);
 
-  if (!automation || !automation.enabled) {
-    return false;
-  }
+  if (!automation || !automation.enabled || isManagedAutomation(automation)) return false;
 
   const [run] = await db
     .insert(automationRuns)

@@ -33,6 +33,12 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
+import {
+  AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE,
+  MANAGED_AUTOMATION_ERROR_CODE,
+  containsAiTriageAction,
+  isManagedAutomation,
+} from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
 
 export const automationRoutes = new Hono();
@@ -900,6 +906,14 @@ automationRoutes.post(
       return c.json({ error: 'actions are required' }, 400);
     }
 
+    // ai_triage wiring is seeded per AI agent (services/aiAgents/managedAutomation.ts)
+    // and resolved through automations.managed_by_agent_id. A user-authored copy would
+    // be an unmanaged automation whose action has no owning agent, and — worse — would
+    // carry the automation's whole configured target set into the agent gate.
+    if (containsAiTriageAction(data.actions)) {
+      return c.json({ error: AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE }, 400);
+    }
+
     try {
       const automationId = randomUUID();
       const trigger = withWebhookDefaults(
@@ -987,6 +1001,12 @@ async function handleUpdateAutomation(c: Context) {
     return c.json({ error: 'Automation not found' }, 404);
   }
 
+  // Even a plain enabled toggle goes through the agent so there is one switch
+  // for both the agent policy and its system-managed trigger wiring.
+  if (isManagedAutomation(automation)) {
+    return c.json({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: automation.managedByAgentId }, 409);
+  }
+
   // Partner-wide automations mutate behavior across every org under the
   // partner — administrable only with the partner-wide capability (#2133).
   if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
@@ -1042,6 +1062,14 @@ async function handleUpdateAutomation(c: Context) {
     }
 
     if (data.actions !== undefined) {
+      // Same rejection as the create route. Without it the create gate is
+      // trivially bypassed: POST an ordinary automation, then PATCH the
+      // ai_triage action onto it. The row is unmanaged, so the action has no
+      // owning agent to resolve and executeAiTriageAction refuses it once per
+      // configured device — a failing run rather than a 400, for no reason.
+      if (containsAiTriageAction(data.actions)) {
+        return c.json({ error: AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE }, 400);
+      }
       updates.actions = normalizeAutomationActions(data.actions);
     }
 
@@ -1132,6 +1160,10 @@ automationRoutes.delete(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
+    if (isManagedAutomation(automation)) {
+      return c.json({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: automation.managedByAgentId }, 409);
+    }
+
     // Deleting a partner-wide automation affects every org under the partner.
     if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
@@ -1185,6 +1217,14 @@ async function triggerAutomationRun(
   const automation = await getAutomationWithOrgCheck(automationId, auth);
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  // A managed trigger is alert.triggered, so a manual run has no event to bind
+  // to. createAutomationRunRecord would instead resolve the automation's whole
+  // configured target set: one button press, one agent run per device — the
+  // exact fleet fan-out this PR closes, reached through a different door.
+  if (isManagedAutomation(automation)) {
+    return c.json({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: automation.managedByAgentId }, 409);
   }
 
   // Manually triggering a partner-wide automation fans actions out to devices
@@ -1285,6 +1325,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return c.json({ error: 'Automation not found' }, 404);
   }
 
+  // Managed rows cannot become webhooks: their event trigger is seeded and the update route rejects changes.
   let trigger;
   try {
     trigger = normalizeAutomationTrigger(decryptAutomationTriggerSecret(automation.trigger));

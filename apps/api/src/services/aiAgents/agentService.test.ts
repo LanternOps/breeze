@@ -14,6 +14,9 @@ const state = vi.hoisted(() => ({
   audit: vi.fn(),
   publish: vi.fn(),
   validateRecipients: vi.fn(),
+  ensureManagedTriageAutomation: vi.fn(),
+  setManagedAutomationEnabled: vi.fn(),
+  syncManagedAutomation: vi.fn(),
 }));
 
 const schema = vi.hoisted(() => ({
@@ -82,6 +85,12 @@ vi.mock('./recipients', () => {
   }
   return { InvalidAgentRecipientsError, validateAgentRecipients: state.validateRecipients };
 });
+
+vi.mock('./managedAutomation', () => ({
+  ensureManagedTriageAutomation: state.ensureManagedTriageAutomation,
+  setManagedAutomationEnabled: state.setManagedAutomationEnabled,
+  syncManagedAutomation: state.syncManagedAutomation,
+}));
 
 vi.mock('../auditService', () => ({ createAuditLog: state.audit }));
 vi.mock('../eventBus', () => ({ getEventBus: () => ({ publish: state.publish }) }));
@@ -194,6 +203,12 @@ const createInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  state.ensureManagedTriageAutomation.mockReset();
+  state.ensureManagedTriageAutomation.mockResolvedValue(undefined);
+  state.setManagedAutomationEnabled.mockReset();
+  state.setManagedAutomationEnabled.mockResolvedValue(undefined);
+  state.syncManagedAutomation.mockReset();
+  state.syncManagedAutomation.mockResolvedValue(undefined);
   state.validateRecipients.mockResolvedValue(undefined);
   state.currentRow = null;
   state.listRows = [];
@@ -231,6 +246,41 @@ describe('assertAgentWriteAllowed', () => {
 });
 
 describe('agent mutations', () => {
+  it('seeds the managed automation from the inserted triage-agent row', async () => {
+    const inserted = { ...storedRow, kind: 'triage', name: 'Triage Bot' };
+    state.returnedRow = inserted;
+
+    await createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, kind: 'triage', name: 'Triage Bot' } as never,
+    );
+
+    expect(state.ensureManagedTriageAutomation).toHaveBeenCalledTimes(1);
+    expect(state.ensureManagedTriageAutomation).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'a1',
+      kind: 'triage',
+      name: 'Triage Bot',
+      orgId: 'o1',
+      partnerId: null,
+      createdBy: 'u1',
+    }));
+  });
+
+  it('does not audit or publish a create whose managed automation seed fails', async () => {
+    state.returnedRow = { ...storedRow, kind: 'triage' };
+    state.ensureManagedTriageAutomation.mockRejectedValue(new Error('seed failed'));
+
+    await expect(createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, kind: 'triage' } as never,
+    )).rejects.toThrow('seed failed');
+
+    expect(state.audit).not.toHaveBeenCalled();
+    expect(state.publish).not.toHaveBeenCalled();
+  });
+
   it('creates through the write gate and records audit and event side effects', async () => {
     state.returnedRow = storedRow;
 
@@ -416,6 +466,34 @@ describe('agent mutations', () => {
       expect.objectContaining({ agentId: 'a1', change: 'disabled' }),
       'ai-agents',
     );
+    expect(state.setManagedAutomationEnabled).toHaveBeenCalledWith('a1', false);
+  });
+
+  it('syncs a renamed agent to its managed automation', async () => {
+    state.currentRow = { ...storedRow, kind: 'triage' };
+    state.returnedRow = { ...storedRow, kind: 'triage', name: 'Renamed' };
+
+    await updateAgent(auth(), 'a1', { name: 'Renamed' });
+
+    expect(state.syncManagedAutomation).toHaveBeenCalledWith('a1', { name: 'Renamed' });
+  });
+
+  it('re-enables the managed automation when its agent is enabled', async () => {
+    state.currentRow = { ...storedRow, kind: 'triage', enabled: false };
+    state.returnedRow = { ...storedRow, kind: 'triage', enabled: true };
+
+    await updateAgent(auth(), 'a1', { enabled: true });
+
+    expect(state.syncManagedAutomation).toHaveBeenCalledWith('a1', { enabled: true });
+  });
+
+  it('does not sync the managed automation when name and enabled are unchanged', async () => {
+    state.currentRow = { ...storedRow, kind: 'triage' };
+    state.returnedRow = { ...storedRow, kind: 'triage', instructions: 'Updated guidance' };
+
+    await updateAgent(auth(), 'a1', { instructions: 'Updated guidance' });
+
+    expect(state.syncManagedAutomation).not.toHaveBeenCalled();
   });
 
   it('publishes partner-wide mutations instead of silently skipping them', async () => {
