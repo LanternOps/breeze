@@ -45,6 +45,7 @@ import { createAuditLog } from './auditService';
 // internal calls interceptable by `vi.spyOn(mod, ...)` (an ESM live-binding
 // reference, which bare in-module calls bypass).
 import * as self from './tenantCascade';
+import { pgErrorCode } from '../utils/pgErrors';
 
 /**
  * Authoritative list of `org_id`-scoped public tables that participate
@@ -817,9 +818,18 @@ function extractRowCount(result: unknown): number {
 }
 
 function isUndefinedTable(err: unknown): boolean {
-  const code = (err as { code?: string })?.code;
-  // Postgres SQLSTATE 42P01 = undefined_table
-  return code === '42P01';
+  // Postgres SQLSTATE 42P01 = undefined_table.
+  //
+  // Read through `pgErrorCode`, NOT off the top-level error. These errors come
+  // from `db.execute(...)`, and `drizzle-orm/postgres-js` rethrows the
+  // postgres-js `PostgresError` wrapped in a `DrizzleQueryError` whose own
+  // `.code` is undefined — the SQLSTATE is on `.cause`. A top-level read
+  // therefore returns false for a genuinely missing table, which inverts this
+  // helper's whole purpose: both call sites use it to TOLERATE an optional
+  // table that a deployment does not have, so a false here turns "skip it and
+  // carry on" into "write a failed-erasure audit and abort", partway through a
+  // GDPR erasure or a partner purge.
+  return pgErrorCode(err) === '42P01';
 }
 
 /**

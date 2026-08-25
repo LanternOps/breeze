@@ -296,6 +296,11 @@ import { initializeWingetIndexSyncWorker, shutdownWingetIndexSyncWorker } from '
 import { initializeVulnerabilityJobs, shutdownVulnerabilityJobs } from './jobs/vulnerabilityJobs';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
+// AI agents wave 3c: importing this module also REGISTERS the run enqueuer with
+// services/aiAgents/runService at module scope, so the manual-trigger route can
+// enqueue even in a process whose background workers never booted.
+import { initializeAiAgentRunner, shutdownAiAgentRunner } from './jobs/aiAgentRunner';
+
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
@@ -517,7 +522,8 @@ app.use('*', securityMiddleware());
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
-    capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+    capture: (message, tags) =>
+      captureMessage(message, { eventCode: 'body_limit_rejected', tags }),
   })
 );
 app.use('*', globalRateLimit());
@@ -1421,6 +1427,8 @@ async function initializeWorkers(): Promise<void> {
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
     ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
     ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
+    // initializeAiAgentRunner is synchronous (returns void), so wrap it.
+    ['aiAgentRunner', async () => { initializeAiAgentRunner(); }],
     ['auditBaselineJobs', initializeAuditBaselineJobs],
     ['cisJobs', initializeCisJobs],
     ['automationWorker', initializeAutomationWorker],
@@ -1705,6 +1713,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAbuseSignalsWorker,
     shutdownUserRiskRetention,
     shutdownAutomationWorker,
+    shutdownAiAgentRunner,
     shutdownSoftwareRemediationWorker,
     shutdownSoftwareComplianceWorker,
     shutdownAuditBaselineJobs,
@@ -1878,7 +1887,8 @@ async function bootstrap(): Promise<void> {
   const eventLoopMonitor = startEventLoopMonitor({
     onSample: createStarvationReporter({
       thresholdMs: getEventLoopStarvationThresholdMs,
-      capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+      capture: (message, tags) =>
+        captureMessage(message, { eventCode: 'event_loop_starvation', tags }),
     }),
   });
   // Say whether the instance can see its own loop, and at what settings. Without

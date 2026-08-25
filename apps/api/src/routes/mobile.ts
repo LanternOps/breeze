@@ -121,9 +121,10 @@ function registrationConflict(
   if (registrationConflictThrottle.shouldReport(`${reason}:${userId}`)) {
     captureMessage(
       'mobile push registration conflicted — the phone is not receiving notifications',
-      'warning',
-      undefined,
-      { area: 'mobile-device-identity', reason }
+      {
+        eventCode: 'mobile_push_registration_conflict',
+        tags: { mobile_registration_reason: reason },
+      }
     );
   }
   return c.json(
@@ -364,9 +365,10 @@ mobileRoutes.post(
       // this state re-registers on every app foreground.
       captureMessage(
         'mobile push registration fell back to push-derived device id — block enforcement stays inert for this caller',
-        'warning',
-        undefined,
-        { area: 'mobile-device-identity', reason: plan.fallbackReason }
+        {
+          eventCode: 'mobile_push_registration_fallback',
+          tags: { mobile_registration_reason: plan.fallbackReason },
+        }
       );
     }
 

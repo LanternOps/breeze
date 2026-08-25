@@ -1,4 +1,5 @@
 import type { Context } from 'hono';
+import type { AuditResult } from '@breeze/shared';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partnerUsers, organizationUsers, organizations, userPasskeys } from '../../db/schema';
@@ -1162,7 +1163,7 @@ export function writeAuthAudit(
   opts: {
     orgId?: string;
     action: string;
-    result: 'success' | 'failure' | 'denied';
+    result: AuditResult;
     reason?: string;
     userId?: string;
     email?: string;

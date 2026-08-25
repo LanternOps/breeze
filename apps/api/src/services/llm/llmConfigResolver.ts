@@ -226,12 +226,9 @@ export async function getAnthropicClientForPartner(partnerId: string | null): Pr
   if (!resolved.apiKey?.trim()) {
     const error = new LlmUnavailableError('AI is not configured on this deployment.');
     captureAtMostHourly('blank-platform-key:platform', () => {
-      captureMessage(
-        'AI is not configured on this deployment.',
-        'warning',
-        undefined,
-        { service: 'llmConfigResolver' },
-      );
+      captureMessage('AI is not configured on this deployment.', {
+        eventCode: 'llm_platform_key_missing',
+      });
     });
     throw error;
   }

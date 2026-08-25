@@ -92,12 +92,23 @@ export function isTransientLockError(err: unknown): boolean {
  * writers of the same rows, because losing a lock race should cost a retry,
  * not an entire inventory report.
  *
- * IMPORTANT — only wrap a NESTED drizzle transaction (one running inside a
- * request-long `withDbAccessContext`, which drizzle emits as a SAVEPOINT).
- * Retrying a statement that aborted the OUTER transaction cannot work: every
- * follow-up fails with 25P02 until the outer transaction ends. A nested
- * transaction rolls back to its savepoint and leaves the outer usable — see
- * dbSavepointErrorIsolation.integration.test.ts for the isolation proof.
+ * IMPORTANT — `fn` must own a transaction boundary that the victim's rollback
+ * actually reaches. Exactly two shapes qualify:
+ *
+ *  1. A NESTED drizzle transaction (one running inside a request-long
+ *     `withDbAccessContext`, which drizzle emits as a SAVEPOINT) — it rolls
+ *     back to its savepoint and leaves the outer transaction usable. See
+ *     dbSavepointErrorIsolation.integration.test.ts for the isolation proof.
+ *     Example: the software-inventory ingest in routes/agents/inventory.ts.
+ *  2. A TOP-LEVEL transaction opened by `fn` itself from OUTSIDE any held
+ *     context (e.g. `retryOnTransientLockError(..., () => correlateOrg(orgId))`
+ *     in jobs/vulnerabilityJobs.ts, where each call opens its own
+ *     withSystemDbAccessContext) — the victim has fully rolled back, so the
+ *     retry starts clean.
+ *
+ * What must NEVER be wrapped is a bare statement whose failure aborted an
+ * enclosing transaction the retry cannot escape: every follow-up then fails
+ * with 25P02 until that transaction ends, and the retries are pure noise.
  */
 export async function retryOnTransientLockError<T>(
   label: string,

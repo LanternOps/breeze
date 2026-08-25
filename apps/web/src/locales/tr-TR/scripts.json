@@ -19,6 +19,10 @@
       "create": "Tetikleyiciler, koşullar ve eylemlerle otomatik bir iş akışı oluşturun.",
       "edit": "Otomasyon yapılandırmasını değiştirin."
     },
+    "managed": {
+      "title": "Yapay zeka aracısı tarafından yönetiliyor",
+      "description": "Bu otomasyon, kendi yapay zeka aracısı tarafından yönetilir. Bunun yerine aracıyı yapılandırın."
+    },
     "actions": {
       "create": "Otomasyon Oluşturun",
       "saveChanges": "Değişiklikleri Kaydet"
@@ -215,6 +219,8 @@
     "empty": "Otomasyon bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
     "partnerWideTitle": "İş ortağı çapında otomasyon — her kuruluş için geçerlidir",
     "allOrgs": "İş ortağı çapında",
+    "managedByAgent": "Yapay zeka aracısı tarafından yönetiliyor",
+    "managedByAgentHint": "Bu otomasyon, kendi yapay zeka aracısı tarafından yönetilir. Bunun yerine aracıyı yapılandırın.",
     "never": "Hiçbir zaman",
     "actions": {
       "viewHistory": "Geçmişi görüntüle",

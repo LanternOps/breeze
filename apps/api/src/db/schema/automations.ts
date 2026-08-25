@@ -4,6 +4,7 @@ import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { scripts } from './scripts';
 import { users } from './users';
+import { aiAgents } from './aiAgents';
 
 export const automationTriggerTypeEnum = pgEnum('automation_trigger_type', ['schedule', 'event', 'webhook', 'manual']);
 export const automationOnFailureEnum = pgEnum('automation_on_failure', ['stop', 'continue', 'notify']);
@@ -33,6 +34,16 @@ export const automations = pgTable('automations', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
   partnerId: uuid('partner_id').references(() => partners.id),
+  /**
+   * Set on the seeded, system-managed automation that wires an AI agent's
+   * trigger (wave 3d, #3824). The ai_triage action resolves its agent through
+   * this column; the routes layer rejects user edits to managed rows; the
+   * seeder upserts on the partial unique automations_managed_by_agent_uq.
+   * ON DELETE RESTRICT — agents are never hard-deleted.
+   */
+  managedByAgentId: uuid('managed_by_agent_id').references(() => aiAgents.id, {
+    onDelete: 'restrict',
+  }),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),

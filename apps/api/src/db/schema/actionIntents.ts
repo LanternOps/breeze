@@ -50,10 +50,9 @@ export type ActionIntentStatus = (typeof actionIntentStatusEnum)[number];
 
 // 'ai_agent' (wave 3, #3824): a headless agent proposal. Distinct from 'chat'
 // because nobody is watching a chat pane — supervised agent intents must be
-// notified. computeExpiresAt (intentService.ts) currently branches only on
-// `source === 'chat'`, so 'ai_agent' silently inherits the 24-hour MCP
-// expiry window rather than an agent-specific one; picking a deadline that
-// actually fits headless agent proposals is a decision for the next PR.
+// notified. computeExpiresAt (intentService.ts) gives it an explicit
+// AGENT_INTENT_EXPIRY_MS branch (wave 3b) — deliberately 24h, no longer
+// inherited from the MCP window by accident.
 export const actionIntentSourceEnum = ['chat', 'mcp_api', 'ai_agent'] as const;
 export type ActionIntentSource = (typeof actionIntentSourceEnum)[number];
 

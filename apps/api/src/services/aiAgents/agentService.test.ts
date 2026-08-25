@@ -13,6 +13,10 @@ const state = vi.hoisted(() => ({
   selectWhere: undefined as unknown,
   audit: vi.fn(),
   publish: vi.fn(),
+  validateRecipients: vi.fn(),
+  ensureManagedTriageAutomation: vi.fn(),
+  setManagedAutomationEnabled: vi.fn(),
+  syncManagedAutomation: vi.fn(),
 }));
 
 const schema = vi.hoisted(() => ({
@@ -65,6 +69,27 @@ vi.mock('../../db', () => ({
       }),
     })),
   },
+}));
+
+// Membership validation has its own suite (recipients.test.ts) against mocked
+// membership queries; here it is stubbed so this suite's fixtures count as
+// valid-membership, and the CONTRACT — called with the owner and exactly the
+// recipients object that will be stored, before any write — is asserted below.
+vi.mock('./recipients', () => {
+  class InvalidAgentRecipientsError extends Error {
+    readonly code = 'invalid_recipients';
+    constructor(public invalidUserIds: string[], public invalidRoleIds: string[]) {
+      super('invalid_recipients');
+      this.name = 'InvalidAgentRecipientsError';
+    }
+  }
+  return { InvalidAgentRecipientsError, validateAgentRecipients: state.validateRecipients };
+});
+
+vi.mock('./managedAutomation', () => ({
+  ensureManagedTriageAutomation: state.ensureManagedTriageAutomation,
+  setManagedAutomationEnabled: state.setManagedAutomationEnabled,
+  syncManagedAutomation: state.syncManagedAutomation,
 }));
 
 vi.mock('../auditService', () => ({ createAuditLog: state.audit }));
@@ -178,6 +203,13 @@ const createInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  state.ensureManagedTriageAutomation.mockReset();
+  state.ensureManagedTriageAutomation.mockResolvedValue(undefined);
+  state.setManagedAutomationEnabled.mockReset();
+  state.setManagedAutomationEnabled.mockResolvedValue(undefined);
+  state.syncManagedAutomation.mockReset();
+  state.syncManagedAutomation.mockResolvedValue(undefined);
+  state.validateRecipients.mockResolvedValue(undefined);
   state.currentRow = null;
   state.listRows = [];
   state.returnedRow = null;
@@ -214,12 +246,69 @@ describe('assertAgentWriteAllowed', () => {
 });
 
 describe('agent mutations', () => {
+  it('seeds the managed automation from the inserted triage-agent row', async () => {
+    const inserted = { ...storedRow, kind: 'triage', name: 'Triage Bot' };
+    state.returnedRow = inserted;
+
+    await createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, kind: 'triage', name: 'Triage Bot' } as never,
+    );
+
+    expect(state.ensureManagedTriageAutomation).toHaveBeenCalledTimes(1);
+    expect(state.ensureManagedTriageAutomation).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'a1',
+      kind: 'triage',
+      name: 'Triage Bot',
+      orgId: 'o1',
+      partnerId: null,
+      createdBy: 'u1',
+    }));
+  });
+
+  it('hands the seeder the stored row\u2019s own enabled flag, not a hardcoded true', async () => {
+    // createAiAgentSchema defaults enabled to false, so the seeded wiring must
+    // start off with the agent. Passing the persisted row (rather than a
+    // hand-built object) is what keeps the two in step.
+    const inserted = { ...storedRow, kind: 'triage', name: 'Triage Bot', enabled: false };
+    state.returnedRow = inserted;
+
+    await createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, kind: 'triage', name: 'Triage Bot', enabled: false } as never,
+    );
+
+    expect(state.ensureManagedTriageAutomation).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
+  });
+
+  it('does not audit or publish a create whose managed automation seed fails', async () => {
+    state.returnedRow = { ...storedRow, kind: 'triage' };
+    state.ensureManagedTriageAutomation.mockRejectedValue(new Error('seed failed'));
+
+    await expect(createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, kind: 'triage' } as never,
+    )).rejects.toThrow('seed failed');
+
+    expect(state.audit).not.toHaveBeenCalled();
+    expect(state.publish).not.toHaveBeenCalled();
+  });
+
   it('creates through the write gate and records audit and event side effects', async () => {
     state.returnedRow = storedRow;
 
     await createAgent(auth(), { orgId: 'o1', partnerId: null }, createInput as never);
 
     expect(state.insertedValues).toMatchObject({ orgId: 'o1', partnerId: null, kind: 'alert_triage' });
+    expect(state.validateRecipients).toHaveBeenCalledWith(
+      { orgId: 'o1', partnerId: null },
+      createInput.recipients,
+    );
     expect(state.audit).toHaveBeenCalledWith(expect.objectContaining({
       action: 'ai.agent.created', resourceType: 'ai_agent', resourceId: 'a1', result: 'success',
     }));
@@ -229,6 +318,27 @@ describe('agent mutations', () => {
       expect.objectContaining({ agentId: 'a1', change: 'created' }),
       'ai-agents',
     );
+  });
+
+  it('refuses invalid recipients before anything is written', async () => {
+    const { InvalidAgentRecipientsError } = await import('./recipients');
+    state.validateRecipients.mockRejectedValue(
+      new InvalidAgentRecipientsError(['u-bad'], []),
+    );
+    state.returnedRow = storedRow;
+
+    await expect(createAgent(auth(), { orgId: 'o1', partnerId: null }, createInput as never))
+      .rejects.toBeInstanceOf(InvalidAgentRecipientsError);
+    expect(state.insertedValues).toBeNull();
+    expect(state.audit).not.toHaveBeenCalled();
+    expect(state.publish).not.toHaveBeenCalled();
+
+    // Same contract on update: a recipients patch is validated (as the merged
+    // object) before the UPDATE is issued.
+    state.currentRow = storedRow;
+    await expect(updateAgent(auth(), 'a1', { recipients: { userIds: ['u-bad'] } } as never))
+      .rejects.toBeInstanceOf(InvalidAgentRecipientsError);
+    expect(state.updatedValues).toBeNull();
   });
 
   it('refuses a second active agent of the same kind before the insert runs', async () => {
@@ -317,6 +427,12 @@ describe('agent mutations', () => {
       triggers: { ...storedRow.triggers, respectMaintenanceWindows: false },
       recipients: { ...storedRow.recipients, userIds: ['u2'] },
     });
+    // The validated object IS the merged object that gets stored — validating
+    // only the patch would let a stale-but-stored sibling id survive unchecked.
+    expect(state.validateRecipients).toHaveBeenCalledWith(
+      { orgId: 'o1', partnerId: null },
+      { ...storedRow.recipients, userIds: ['u2'] },
+    );
     expect(state.audit).toHaveBeenCalledWith(expect.objectContaining({
       action: 'ai.agent.updated', resourceId: 'a1', result: 'success',
     }));
@@ -339,6 +455,8 @@ describe('agent mutations', () => {
     expect(state.updatedValues).not.toHaveProperty('ownerScope');
     expect(state.updatedValues).not.toHaveProperty('orgId');
     expect(state.updatedValues).not.toHaveProperty('partnerId');
+    // No recipients in the patch → no membership validation round-trip.
+    expect(state.validateRecipients).not.toHaveBeenCalled();
   });
 
   it('rejects the DB-legal act mode as unsupported', async () => {
@@ -366,6 +484,34 @@ describe('agent mutations', () => {
       expect.objectContaining({ agentId: 'a1', change: 'disabled' }),
       'ai-agents',
     );
+    expect(state.setManagedAutomationEnabled).toHaveBeenCalledWith('a1', false);
+  });
+
+  it('syncs a renamed agent to its managed automation', async () => {
+    state.currentRow = { ...storedRow, kind: 'triage' };
+    state.returnedRow = { ...storedRow, kind: 'triage', name: 'Renamed' };
+
+    await updateAgent(auth(), 'a1', { name: 'Renamed' });
+
+    expect(state.syncManagedAutomation).toHaveBeenCalledWith('a1', { name: 'Renamed' });
+  });
+
+  it('re-enables the managed automation when its agent is enabled', async () => {
+    state.currentRow = { ...storedRow, kind: 'triage', enabled: false };
+    state.returnedRow = { ...storedRow, kind: 'triage', enabled: true };
+
+    await updateAgent(auth(), 'a1', { enabled: true });
+
+    expect(state.syncManagedAutomation).toHaveBeenCalledWith('a1', { enabled: true });
+  });
+
+  it('does not sync the managed automation when name and enabled are unchanged', async () => {
+    state.currentRow = { ...storedRow, kind: 'triage' };
+    state.returnedRow = { ...storedRow, kind: 'triage', instructions: 'Updated guidance' };
+
+    await updateAgent(auth(), 'a1', { instructions: 'Updated guidance' });
+
+    expect(state.syncManagedAutomation).not.toHaveBeenCalled();
   });
 
   it('publishes partner-wide mutations instead of silently skipping them', async () => {

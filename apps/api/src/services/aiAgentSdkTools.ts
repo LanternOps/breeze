@@ -26,7 +26,7 @@ import {
   peripheralPolicyActionEnum,
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
-import { INVOICE_STATUSES } from '@breeze/shared';
+import { ACTOR_TYPES, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -1406,7 +1406,7 @@ export function createBreezeMcpServer(
         action: z.string().max(100).optional(),
         resourceType: z.string().max(100).optional(),
         resourceId: uuid.optional(),
-        actorType: z.enum(['user', 'api_key', 'agent', 'system', 'ai_agent']).optional(),
+        actorType: z.enum(ACTOR_TYPES).optional(),
         hoursBack: z.number().int().min(1).max(168).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },

@@ -135,7 +135,7 @@ export default function AccessReviewList({
           <option value="completed">{t('accessReviewList.completed')}</option>
         </select>
         <div className="text-sm text-muted-foreground">
-          {filteredReviews.length} {t('accessReviewList.of')}{reviews.length} {t('accessReviewList.reviews')}</div>
+          {t('accessReviewList.countSummary', { shown: filteredReviews.length, total: reviews.length })}</div>
       </div>
 
       <div className="overflow-hidden rounded-lg border">

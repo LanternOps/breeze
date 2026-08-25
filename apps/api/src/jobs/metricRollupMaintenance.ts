@@ -11,11 +11,12 @@ import {
 } from '../services/metricRollupMaintenance';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { cronFromEnv } from './scheduleRegistry';
 
 const QUEUE_NAME = 'metric-rollup-maintenance';
 const JOB_NAME = 'metric-rollup-maintenance';
 const REPEAT_JOB_ID = 'metric-rollup-maintenance';
-const DAILY_CRON = process.env.METRIC_ROLLUP_MAINTENANCE_CRON || '15 3 * * *';
+const DAILY_CRON = cronFromEnv('METRIC_ROLLUP_MAINTENANCE_CRON', 'metric-rollup-maintenance');
 
 export type MetricRollupMaintenanceJobData = {
   requestedAt?: string;

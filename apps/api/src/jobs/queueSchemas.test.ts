@@ -72,8 +72,23 @@ describe('automationQueueJobDataSchema', () => {
       },
     },
     {
+      // Backward compatibility: pre-deploy execute-run jobs have no triggerContext.
       name: 'execute-run',
       payload: { type: 'execute-run', runId: 'run-1', targetDeviceIds: ['device-1'] },
+    },
+    {
+      name: 'execute-run (with triggerContext)',
+      payload: {
+        type: 'execute-run',
+        runId: 'run-1',
+        targetDeviceIds: ['device-1'],
+        triggerContext: {
+          alertId: 'alert-1',
+          eventId: 'evt-1',
+          severity: 'critical',
+          ruleId: null,
+        },
+      },
     },
     {
       name: 'trigger-config-policy-schedule (assignmentTargets[])',
@@ -138,6 +153,33 @@ describe('automationQueueJobDataSchema', () => {
     {
       name: 'execute-run with empty runId and unexpected key',
       payload: { type: 'execute-run', runId: '', unexpected: true },
+    },
+    {
+      name: 'execute-run with an out-of-enum triggerContext severity',
+      payload: {
+        type: 'execute-run',
+        runId: 'run-1',
+        triggerContext: {
+          alertId: 'alert-1',
+          eventId: 'evt-1',
+          severity: 'urgent',
+          ruleId: 'rule-1',
+        },
+      },
+    },
+    {
+      name: 'execute-run with an unknown key inside triggerContext',
+      payload: {
+        type: 'execute-run',
+        runId: 'run-1',
+        triggerContext: {
+          alertId: 'alert-1',
+          eventId: 'evt-1',
+          severity: 'high',
+          ruleId: 'rule-1',
+          unexpected: true,
+        },
+      },
     },
     {
       name: 'trigger-config-policy-schedule with an out-of-enum level',

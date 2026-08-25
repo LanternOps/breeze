@@ -187,6 +187,12 @@ export const notificationChannels = pgTable('notification_channels', {
   enabled: boolean('enabled').notNull().default(true),
   lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
   lastTestStatus: varchar('last_test_status', { length: 16 }),
+  // Why the last test failed (#3697). NULL when the last test passed or the
+  // channel was never tested — a stale reason under a green verdict would be
+  // worse than none. Secret-scrubbed and length-capped before write: provider
+  // errors can echo back the destination, and for slack/teams/webhook the
+  // destination URL *is* the credential (see notificationChannelSecrets.ts).
+  lastTestError: text('last_test_error'),
   // Feature #4: per-channel sliding-window throttle. NULL = unlimited.
   throttleMaxPerWindow: integer('throttle_max_per_window'),
   throttleWindowSeconds: integer('throttle_window_seconds').default(3600),

@@ -9,6 +9,7 @@
     "description": "Le nuove richieste appariranno qui quando servirà la tua decisione."
   },
   "requestedBy": "Richiesto da {{client}}",
+  "proposedByAgent": "Proposto da {{agent}} (agente IA)",
   "risk": {
     "low": "Rischio basso",
     "medium": "Rischio medio",

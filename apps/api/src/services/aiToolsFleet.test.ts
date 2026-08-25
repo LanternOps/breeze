@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
@@ -188,6 +188,7 @@ vi.mock('../routes/patches/helpers', () => ({
 }));
 
 import { policyAccessCondition } from './configurationPolicy';
+import { db } from '../db';
 import { registerFleetTools } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
 import { upsertPatchApproval } from '../routes/patches/helpers';
@@ -280,6 +281,100 @@ describe('registerFleetTools', () => {
 // ============================================
 // Handler-level tests for new actions
 // ============================================
+
+describe('manage_automations managed-row protection', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_automations')!;
+  const auth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: null,
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+  const managed = {
+    id: 'automation-1',
+    name: 'Managed triage',
+    orgId: 'org-1',
+    partnerId: null,
+    trigger: { type: 'event', eventType: 'alert.triggered' },
+    conditions: null,
+    managedByAgentId: 'agent-1',
+  };
+  const defaultSelectImplementation = vi.mocked(db.select).getMockImplementation();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([managed]),
+        }),
+      }),
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.select).mockImplementation(defaultSelectImplementation!);
+  });
+
+  it('refuses to disable a managed automation before updating it', async () => {
+    const result = JSON.parse(await tool.handler({
+      action: 'disable',
+      automationId: managed.id,
+    }, auth));
+
+    expect(result).toEqual({
+      error: 'automation_managed_by_agent',
+      agentId: 'agent-1',
+    });
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  // Structural, and the limitation is worth stating: manage_automations returns
+  // early for create/update/delete, so no behavioural test can reach those
+  // branches today. Pinning the source is narrow but honest — it fails if the
+  // ai_triage guard is dropped from either branch when they are re-enabled.
+  it('guards create and update against user-authored ai_triage in source', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = await readFile(join(here, 'aiToolsFleet.ts'), 'utf8');
+
+    const handlerStart = src.indexOf("safeHandler('manage_automations'");
+    expect(handlerStart).toBeGreaterThan(-1);
+    const handlerEnd = src.indexOf('registerTool({', handlerStart);
+    const handler = src.slice(handlerStart, handlerEnd);
+
+    const createIdx = handler.indexOf("if (action === 'create')");
+    const updateIdx = handler.indexOf("if (action === 'update')");
+    const deleteIdx = handler.indexOf("if (action === 'delete')");
+    expect(createIdx).toBeGreaterThan(-1);
+    expect(updateIdx).toBeGreaterThan(createIdx);
+    expect(deleteIdx).toBeGreaterThan(updateIdx);
+
+    expect(handler.slice(createIdx, updateIdx)).toContain('containsAiTriageAction(input.actions)');
+    expect(handler.slice(updateIdx, deleteIdx)).toContain('containsAiTriageAction(input.actions)');
+  });
+
+  it('refuses to run a managed automation before inserting an automation run', async () => {
+    const result = JSON.parse(await tool.handler({
+      action: 'run',
+      automationId: managed.id,
+    }, auth));
+
+    expect(result).toEqual({
+      error: 'automation_managed_by_agent',
+      agentId: 'agent-1',
+    });
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+});
 
 describe('manage_maintenance_windows handler', () => {
   const toolMap = new Map<string, AiTool>();

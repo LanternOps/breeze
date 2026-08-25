@@ -125,5 +125,15 @@ export const updateAiAgentSchema = z.object({
   cooldownSeconds: z.number().int().min(0).max(86400).optional(),
 });
 
+/**
+ * Manual "run now" trigger body. `.strict()` so a caller cannot smuggle an
+ * `orgId`/`kind`/`dedupeKey` past the route into `createAndEnqueueAgentRun` —
+ * the org comes from the device row and the kind from the agent row.
+ */
+export const triggerAgentRunSchema = z.object({
+  deviceId: z.string().guid(),
+}).strict();
+
 export type CreateAiAgentInput = z.infer<typeof createAiAgentSchema>;
 export type UpdateAiAgentInput = z.infer<typeof updateAiAgentSchema>;
+export type TriggerAgentRunInput = z.infer<typeof triggerAgentRunSchema>;

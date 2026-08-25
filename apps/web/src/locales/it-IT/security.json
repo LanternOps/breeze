@@ -587,6 +587,7 @@
     "startScan": "Avvia scansione",
     "startScansWatchProgressAndReviewScan": "Avvia scansioni, segui l'avanzamento e consulta la cronologia delle scansioni sui dispositivi.",
     "started": "Avviata {{time}}",
+    "startedColumn": "Avviata",
     "status": "Stato: {{status}}",
     "status2": "Stato",
     "type": "Tipo"
@@ -1139,7 +1140,7 @@
       "noPolicy": "Nessun criterio (configurazione manuale)",
       "deviceIds": "ID dispositivi",
       "deviceIdsHelp": "Un UUID per riga, oppure separati da virgole.",
-      "deviceIdsPlaceholder": "device-uuid-1&#10;device-uuid-2",
+      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
       "detectionClasses": "Classi di rilevamento"
     },
     "actions": {

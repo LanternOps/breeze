@@ -38,6 +38,22 @@ export const USER_STATUSES = ['active', 'invited', 'disabled'] as const;
 // Notification Channel Types
 export const NOTIFICATION_CHANNEL_TYPES = ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms', 'pushover'] as const;
 
+// Audit Actor Types — the runtime source for the `actor_type` Postgres enum,
+// the shared `ActorType` union, the audit query validator, the AI tool schemas
+// and the OpenAPI spec. 'agent' is the Go device agent; 'ai_agent' is the
+// autonomous AI agent principal.
+//
+// Widen HERE and nowhere else. Type positions pick the new value up for free;
+// the two runtime surfaces that cannot (the Drizzle `pgEnum` and the OpenAPI
+// JSON) are pinned by apps/api/src/db/schema/audit.enums.test.ts. A new value
+// still needs a migration (`ALTER TYPE ... ADD VALUE`) — the Postgres type is
+// authored by hand-written SQL and is NOT derived from this array (#3908).
+export const ACTOR_TYPES = ['user', 'api_key', 'agent', 'system', 'ai_agent'] as const;
+
+// Audit Results — same contract as ACTOR_TYPES above, for the `audit_result`
+// Postgres enum.
+export const AUDIT_RESULTS = ['success', 'failure', 'denied'] as const;
+
 // Remote Session Types
 export const REMOTE_SESSION_TYPES = ['terminal', 'desktop', 'file_transfer'] as const;
 

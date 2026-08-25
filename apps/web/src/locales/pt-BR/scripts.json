@@ -19,6 +19,10 @@
       "create": "Crie um fluxo automatizado com gatilhos, condições e ações.",
       "edit": "Modifique a configuração da automação."
     },
+    "managed": {
+      "title": "Gerenciada por um agente de IA",
+      "description": "Esta automação é mantida pelo seu agente de IA. Configure o agente em vez desta automação."
+    },
     "actions": {
       "create": "Criar automação",
       "saveChanges": "Salvar alterações"
@@ -215,6 +219,8 @@
     "empty": "Nenhuma automação encontrada. Tente ajustar a busca ou os filtros.",
     "partnerWideTitle": "Automação em todo o parceiro — aplica-se a todas as organizações",
     "allOrgs": "Todo o parceiro",
+    "managedByAgent": "Gerenciada por um agente de IA",
+    "managedByAgentHint": "Esta automação é mantida pelo seu agente de IA. Configure o agente em vez desta automação.",
     "never": "Nunca",
     "actions": {
       "viewHistory": "Ver histórico",

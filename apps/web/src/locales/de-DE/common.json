@@ -492,6 +492,9 @@
         "days": "Tagen",
         "weeks": "Wochen",
         "months": "Monaten"
+      },
+      "enumOverrides": {
+        "decommissioned": "Entfernt"
       }
     }
   },
@@ -2009,7 +2012,7 @@
         "skipReasons": {
           "siteDenied": "Standort für Sie nicht zugänglich",
           "notMember": "Von diesem Befund nicht mehr betroffen",
-          "decommissioned": "Gerät ist außer Betrieb genommen",
+          "decommissioned": "Gerät ist entfernt",
           "timeout": "Nach 30 Minuten abgelaufen",
           "dispatchEnqueueFailed": "Nie gesendet – Einreihen in die Warteschlange fehlgeschlagen"
         },

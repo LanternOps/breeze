@@ -1,4 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -148,6 +149,14 @@ export const organizations = pgTable('organizations', {
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),
+  // #3967 — slug uniqueness is PER PARTNER, case-insensitive, and lifetime
+  // (soft-deleted rows still hold their slug). Rationale and the evidence for
+  // each of those three choices live in
+  // migrations/2026-09-08-organizations-partner-slug-unique.sql. Do NOT
+  // downgrade this to a bare `.unique()` on the column: that would mean a
+  // GLOBAL namespace and would stop two unrelated MSPs both onboarding an
+  // "acme".
+  partnerSlugUnique: uniqueIndex('organizations_partner_slug_uniq').on(table.partnerId, sql`lower(${table.slug})`),
 }));
 
 export const sites = pgTable('sites', {

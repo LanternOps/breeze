@@ -15,9 +15,19 @@ import {
   type AiAgentPolicySnapshot,
 } from '@breeze/shared';
 import { envFlag } from '../../config/env';
-import { db } from '../../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+} from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
-import { aiAgents, aiBudgets, organizations, type AiAgentRow } from '../../db/schema';
+// Direct module imports, NOT the ../../db/schema barrel: this module now sits
+// on the intent-release path (wave 3b), and pulling the barrel would force
+// every partial-mock unit test of that path to stub the entire schema surface.
+import { aiAgents, type AiAgentRow } from '../../db/schema/aiAgents';
+import { aiBudgets } from '../../db/schema/ai';
+import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 
 type PolicyRowFields = Pick<
@@ -208,11 +218,45 @@ export async function resolveEffectiveAgent(
     throw new HTTPException(403, { message: 'Organization not accessible' });
   }
 
+  return resolveEffectiveAgentInner(orgId, kind);
+}
+
+/**
+ * Trigger-path variant of resolveEffectiveAgent. There is no caller
+ * AuthContext when an alert or a queue job wakes an agent — the "authority"
+ * is the trigger wiring itself, which runs under a system DB context. This
+ * MUST only ever be called from run admission (runService) and release
+ * tooling; it performs the same org->partner pinning as the authorized
+ * loader, minus the canAccessOrg gate.
+ */
+export async function resolveEffectiveAgentSystem(
+  orgId: string,
+  kind: AiAgentKind,
+): Promise<ResolvedAgent | null> {
+  // Already system-scoped (the common case: a BullMQ worker that opened its own
+  // system context): read straight through. Re-entering would open a SECOND
+  // pooled connection while the first is still held, for no visibility gain —
+  // same skip branch, same reason, as readWithPartnerAxisVisibility.
+  if (getCurrentDbAccessContext()?.scope === 'system') {
+    return resolveEffectiveAgentInner(orgId, kind);
+  }
+
+  // Load-bearing: a bare system wrapper is a no-op inside an ambient request
+  // context, so exit that context before establishing system visibility.
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => resolveEffectiveAgentInner(orgId, kind)));
+}
+
+async function resolveEffectiveAgentInner(
+  orgId: string,
+  kind: AiAgentKind,
+): Promise<ResolvedAgent | null> {
   const [org] = await db
     .select({ id: organizations.id, partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
+  // The trigger path treats a missing organization as an error, not a skip.
   if (!org) throw new HTTPException(404, { message: 'Organization not found' });
 
   const [orgRow] = await db

@@ -5,6 +5,8 @@
  * Documentation is served via Swagger UI at /api/v1/docs
  */
 
+import { ACTOR_TYPES, AUDIT_RESULTS } from '@breeze/shared';
+
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
@@ -415,8 +417,18 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           triggeredAt: { type: 'string', format: 'date-time' },
           acknowledgedAt: { type: 'string', format: 'date-time', nullable: true },
           acknowledgedBy: { type: 'string', format: 'uuid', nullable: true },
+          acknowledgedByName: {
+            type: 'string',
+            nullable: true,
+            description: 'Display name for acknowledgedBy. Null when the id no longer resolves to a user.'
+          },
           resolvedAt: { type: 'string', format: 'date-time', nullable: true },
           resolvedBy: { type: 'string', format: 'uuid', nullable: true },
+          resolvedByName: {
+            type: 'string',
+            nullable: true,
+            description: 'Display name for resolvedBy. Null when the id no longer resolves to a user.'
+          },
           resolutionNote: { type: 'string', nullable: true },
           suppressedUntil: { type: 'string', format: 'date-time', nullable: true }
         }
@@ -756,7 +768,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         properties: {
           id: { type: 'string', format: 'uuid' },
           timestamp: { type: 'string', format: 'date-time' },
-          actorType: { type: 'string', enum: ['user', 'system', 'agent'] },
+          actorType: { type: 'string', enum: [...ACTOR_TYPES] },
           actorId: { type: 'string', format: 'uuid' },
           actorEmail: { type: 'string' },
           action: { type: 'string' },
@@ -766,7 +778,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           details: { type: 'object' },
           ipAddress: { type: 'string' },
           userAgent: { type: 'string' },
-          result: { type: 'string', enum: ['success', 'failure'] }
+          result: { type: 'string', enum: [...AUDIT_RESULTS] }
         }
       }
     },
@@ -4219,13 +4231,13 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           { $ref: '#/components/parameters/pageParam' },
           { $ref: '#/components/parameters/limitParam' },
           { name: 'actorId', in: 'query', schema: { type: 'string', format: 'uuid' } },
-          { name: 'actorType', in: 'query', schema: { type: 'string', enum: ['user', 'system', 'agent'] } },
+          { name: 'actorType', in: 'query', schema: { type: 'string', enum: [...ACTOR_TYPES] } },
           { name: 'action', in: 'query', schema: { type: 'string' } },
           { name: 'resourceType', in: 'query', schema: { type: 'string' } },
           { name: 'resourceId', in: 'query', schema: { type: 'string', format: 'uuid' } },
           { name: 'from', in: 'query', schema: { type: 'string', format: 'date-time' } },
           { name: 'to', in: 'query', schema: { type: 'string', format: 'date-time' } },
-          { name: 'result', in: 'query', schema: { type: 'string', enum: ['success', 'failure'] } }
+          { name: 'result', in: 'query', schema: { type: 'string', enum: [...AUDIT_RESULTS] } }
         ],
         responses: {
           '200': {

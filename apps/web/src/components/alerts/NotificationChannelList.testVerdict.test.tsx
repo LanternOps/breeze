@@ -69,6 +69,60 @@ describe('NotificationChannelList — last test verdict', () => {
     expect(failing.textContent).not.toEqual(passingText);
   });
 
+  // The reason (#3697, second half). "Failed" tells an operator their on-call
+  // routing is broken; it does not tell them the recipient domain was rejected.
+  // The provider message that says exactly that used to live only in a
+  // five-second toast, so a reload lost it for good.
+  describe('the failure reason', () => {
+    const REASON =
+      'Invalid `to` field. Please use our testing email address instead of domains like `example.com`.';
+
+    it('shows why a failed test failed', () => {
+      render(
+        <NotificationChannelList
+          channels={[channel({ lastTestStatus: 'failed', lastTestError: REASON })]}
+        />
+      );
+
+      expect(screen.getByTestId('notification-channel-last-test-error').textContent).toContain(REASON);
+    });
+
+    // A green verdict must never sit above last week's error. The API NULLs the
+    // column on a passing test; this is the client-side half of that contract,
+    // so a stale field from a cached list cannot resurrect the old reason.
+    it('shows no reason when the last test passed', () => {
+      render(
+        <NotificationChannelList
+          channels={[channel({ lastTestStatus: 'success', lastTestError: REASON })]}
+        />
+      );
+
+      expect(screen.queryByTestId('notification-channel-last-test-error')).toBeNull();
+    });
+
+    it('shows no reason for a channel that was never tested', () => {
+      render(<NotificationChannelList channels={[channel({})]} />);
+
+      expect(screen.queryByTestId('notification-channel-last-test-error')).toBeNull();
+    });
+
+    // Webhook/PagerDuty/Pushover errors carry up to 500 characters of the
+    // destination's own response body. The card clamps that to two lines, so
+    // the full string has to remain reachable — otherwise clamping silently
+    // recreates the "operator cannot see what is wrong" defect.
+    it('keeps the full reason reachable when the visible line is clamped', () => {
+      const long = `HTTP 500: ${'diagnostic detail '.repeat(30)}`;
+
+      render(
+        <NotificationChannelList
+          channels={[channel({ lastTestStatus: 'failed', lastTestError: long })]}
+        />
+      );
+
+      expect(screen.getByTestId('notification-channel-last-test-error').getAttribute('title')).toBe(long);
+    });
+  });
+
   it('shows no verdict for a channel that was never tested', () => {
     render(<NotificationChannelList channels={[channel({})]} />);
 

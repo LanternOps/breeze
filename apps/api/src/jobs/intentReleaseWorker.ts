@@ -1,13 +1,16 @@
 import { Job, Worker } from 'bullmq';
+import type { AiAgentRecipients } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
+import { aiAgentRuns, aiAgents } from '../db/schema/aiAgents';
 import { approvalRequests } from '../db/schema/approvals';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { createNotification } from '../services/userNotifications';
+import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
@@ -617,6 +620,100 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
 }
 
 /**
+ * The run + agent behind an agent-originated intent, loaded under GENUINE
+ * system scope. `runOutsideDbContext` first is load-bearing: a bare system
+ * wrapper inside an ambient context is a passthrough (db/index.ts), and while
+ * this worker normally runs contextless, the notify path must stay correct if
+ * it is ever invoked from inside a request transaction.
+ */
+async function loadRunAndAgent(runId: string): Promise<{
+  run: {
+    id: string;
+    agentId: string;
+    /**
+     * The MERGED recipient set from the run's immutable snapshot — the only
+     * correct source. `ai_agents.recipients` on the row `run.agent_id` points
+     * at is always the PARTNER BASELINE (resolveEffectiveAgentSystem pins
+     * `agentId: partnerRow.id`), so using it silently drops every recipient an
+     * organization added through its override, and notifies nobody at all when
+     * only the override configured any. `mergeAgentPolicies` already unions
+     * the two sets into `effective.recipients`.
+     */
+    recipients: Partial<AiAgentRecipients>;
+  } | null;
+  agent: {
+    id: string;
+    orgId: string | null;
+    partnerId: string | null;
+    recipients: Partial<AiAgentRecipients>;
+  } | null;
+}> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [run] = await db
+        .select({
+          id: aiAgentRuns.id,
+          agentId: aiAgentRuns.agentId,
+          policySnapshot: aiAgentRuns.policySnapshot,
+        })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, runId))
+        .limit(1);
+      if (!run) return { run: null, agent: null };
+      const [agent] = await db
+        .select({
+          id: aiAgents.id,
+          orgId: aiAgents.orgId,
+          partnerId: aiAgents.partnerId,
+          recipients: aiAgents.recipients,
+        })
+        .from(aiAgents)
+        .where(eq(aiAgents.id, run.agentId))
+        .limit(1);
+      return {
+        run: {
+          id: run.id,
+          agentId: run.agentId,
+          recipients: run.policySnapshot?.effective?.recipients ?? {},
+        },
+        agent: agent ?? null,
+      };
+    }));
+}
+
+/**
+ * Same status switch the requester path uses below — the copy MUST derive
+ * from the freshly re-read `intent.status`, never the outbox event (see the
+ * long rationale in notifyRequesterOfOutcome) — but worded for a recipient
+ * who never asked for anything: an AGENT proposed this, a human decided it.
+ */
+function agentOutcomeCopy(intent: { targetSummary: string; status: string }): {
+  title: string;
+  message: string;
+  priority: 'normal' | 'high';
+} {
+  const summary = intent.targetSummary;
+  switch (intent.status) {
+    case 'approved':
+    case 'executing':
+      return { title: 'Agent action approved', message: `${summary} was approved and is now running.`, priority: 'normal' };
+    case 'completed':
+      return { title: 'Agent action completed', message: `${summary} was approved and has finished.`, priority: 'normal' };
+    case 'failed':
+      // Approved but did not run. The distinction matters most here.
+      return { title: 'Agent action failed', message: `${summary} was approved but could not run.`, priority: 'high' };
+    case 'rejected':
+      return { title: 'Agent proposal denied', message: `${summary} was denied and will not run.`, priority: 'normal' };
+    case 'cancelled':
+      return { title: 'Agent proposal cancelled', message: `${summary} was cancelled and will not run.`, priority: 'normal' };
+    case 'expired':
+      return { title: 'Agent proposal expired', message: `${summary} expired before anyone decided and will not run.`, priority: 'normal' };
+    default:
+      return { title: 'Agent proposal update', message: `${summary} changed state.`, priority: 'normal' };
+  }
+}
+
+/**
  * Tell the requester how their intent ended.
  *
  * The point of doing this from the outbox rather than inline at decide time:
@@ -641,6 +738,8 @@ async function notifyRequesterOfOutcome(
         targetSummary: actionIntents.targetSummary,
         status: actionIntents.status,
         approvalScope: actionIntents.approvalScope,
+        requestingAgentRunId: actionIntents.requestingAgentRunId,
+        requestingClientLabel: actionIntents.requestingClientLabel,
       })
       .from(actionIntents)
       .where(eq(actionIntents.id, intentId))
@@ -651,11 +750,52 @@ async function notifyRequesterOfOutcome(
     captureException(new Error(`intent ${intentId} not found for outcome notification`));
     return;
   }
+  // Agent-originated intent (wave 3b): a headless proposal has NO requester,
+  // so "the requester was watching" is false at every approval scope — this
+  // branch must run BEFORE both the four_eyes early-out and the
+  // no-human-requester guard below, either of which would swallow it. Notify
+  // the agent's validated recipients, resolved against LIVE membership
+  // (resolveRecipientUserIds), never the raw stored ids. Copy derives from
+  // the re-read intent.status exactly like the requester path, because the
+  // outbox event may be late or release may have failed after approval.
+  if (!intent.requestedByUserId && intent.requestingAgentRunId) {
+    const { run, agent } = await loadRunAndAgent(intent.requestingAgentRunId);
+    if (!run || !agent) return;
+    // Merged set from the run snapshot, not the baseline agent row's column
+    // (see loadRunAndAgent). resolveRecipientUserIds ignores the owner fields
+    // of its first argument and re-derives membership against the intent org.
+    const userIds = await resolveRecipientUserIds(
+      { orgId: agent.orgId, partnerId: agent.partnerId, recipients: run.recipients },
+      intent.orgId,
+    );
+    const { title, message, priority } = agentOutcomeCopy(intent);
+    for (const userId of userIds) {
+      // runOutsideDbContext first — a bare system wrapper inside an ambient
+      // request context is a passthrough, and this is a cross-user insert.
+      await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          createNotification({
+            userId,
+            orgId: intent.orgId,
+            type: 'ai',
+            priority,
+            title,
+            message: `${intent.requestingClientLabel ?? 'AI agent'}: ${message}`,
+            link: '/approvals',
+            metadata: { intentId: intent.id, agentId: agent.id, agentRunId: run.id, status: intent.status },
+            // Status-scoped: a later, MORE ACCURATE status (approved -> failed)
+            // must not be suppressed by the earlier notification's dedupe row.
+            dedupeKey: `agent-intent-outcome:${intent.id}:${intent.status}`,
+          })));
+    }
+    return;
+  }
+
   // Defensive today: no creation path sets requestingApiKeyId yet —
   // createActionIntent attributes every intent to auth.user.id (see
   // actorContext.ts). When API-key-owned MCP intents land (Plan 2), those rows
   // have no human requester and correctly stay silent; agent-originated
-  // intents (wave 3b) get their own recipient routing instead of this early
+  // intents (wave 3b) were routed to recipients above, before this early
   // return. org_id is NOT NULL in the schema, so it is deliberately not
   // checked here.
   if (!intent.requestedByUserId) return;

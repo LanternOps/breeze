@@ -717,9 +717,9 @@ async function reportBackupJobPredicateMiss(params: {
         `[BackupPersistence] Backup result for job ${jobId} (reported device ${deviceId}, source: ${source}) ` +
         `matched no job row — the job was deleted, or is not visible in this tenant context.`;
       console.warn(msg);
-      captureMessage(msg, 'warning', undefined, {
-        backup_result_drop: 'job-not-found',
-        backup_result_source: source,
+      captureMessage(msg, {
+        eventCode: 'backup_result_job_not_found',
+        tags: { backup_result_source: source },
       });
       return;
     }
@@ -1103,9 +1103,9 @@ export async function applyBackupCommandResultToJob(params: {
       `flight, or the caller passed an org that was never this job's. Attributing the snapshot to ` +
       `${effectiveOrgId} (the job row's current owner).`;
     console.warn(msg);
-    captureMessage(msg, 'warning', undefined, {
-      backup_result_org_divergence: 'true',
-      backup_result_source: source,
+    captureMessage(msg, {
+      eventCode: 'backup_result_org_divergence',
+      tags: { backup_result_source: source },
     });
   }
 

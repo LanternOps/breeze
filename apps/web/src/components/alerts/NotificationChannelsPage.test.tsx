@@ -73,6 +73,45 @@ describe('runChannelSave', () => {
     expect(ON_UNAUTHORIZED).not.toHaveBeenCalled();
   });
 
+  // #3989 — the exact reported symptom. The route answers with the reason in a
+  // plain `details` string array, and the user used to see only the generic
+  // top-level sentence: identical whether the scheme was wrong, the hostname
+  // was missing, or SSRF protection rejected the target.
+  //
+  // Asserts the toast TEXT, not merely that an error toast happened. The test
+  // above checks `{ type: 'error' }` only, so the whole regression could return
+  // while it stayed green.
+  it('surfaces the details[] reasons in the error toast, not just the generic error', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse(
+        {
+          error: 'Invalid webhook channel configuration',
+          details: ['Webhook URL must use HTTPS', 'Webhook URL hostname is required'],
+        },
+        false,
+        400
+      )
+    );
+
+    await expect(
+      runChannelSave(
+        { url: '/alerts/channels', method: 'POST', payload: {}, channelName: '', isCreate: true },
+        { onUnauthorized: ON_UNAUTHORIZED }
+      )
+    ).rejects.toThrow();
+
+    // ONE exact error-toast call, not a join across every call. Joining passes
+    // if the two reasons arrive in separate toasts, or in a success toast —
+    // neither of which is the contract. The extractor's own unit test asserts
+    // the exact string; this asserts the integration actually delivers it.
+    expect(showToastMock).toHaveBeenCalledTimes(1);
+    expect(showToastMock).toHaveBeenCalledWith({
+      message:
+        'Invalid webhook channel configuration: Webhook URL must use HTTPS; Webhook URL hostname is required',
+      type: 'error',
+    });
+  });
+
   it('calls onUnauthorized and does not show an error toast on 401', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 401));
     const onUnauthorized = vi.fn();

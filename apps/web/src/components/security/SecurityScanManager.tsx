@@ -559,7 +559,7 @@ export default function SecurityScanManager() {
                     {t("securitySecurityScanManager.status2")}
                   </th>
                   <th className="px-4 py-3">
-                    {t("securitySecurityScanManager.started")}
+                    {t("securitySecurityScanManager.startedColumn")}
                   </th>
                   <th className="px-4 py-3">
                     {t("securitySecurityScanManager.duration")}

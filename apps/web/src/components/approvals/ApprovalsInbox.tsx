@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Check, Loader2, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, Bot, Check, Loader2, ShieldCheck, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useEventStream } from '@/hooks/useEventStream';
 import {
@@ -51,6 +51,10 @@ interface PendingApproval {
   approvalScope: string | null;
   isRecursive: boolean;
   createdAt: string;
+  /** Wave 3b: who proposed this intent. Serialize emits it on every row;
+   *  anything but 'ai_agent' renders the classic requester attribution. */
+  origin: 'human' | 'ai_agent';
+  agentName: string | null;
 }
 
 const riskClass: Record<RiskTier, string> = {
@@ -308,7 +312,22 @@ export default function ApprovalsInbox() {
                       </span>
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      {t('requestedBy', { client: approval.requestingClientLabel })}
+                      {approval.origin === 'ai_agent' ? (
+                        <>
+                          {/* Purple Bot badge matches NotificationCenter's `ai` typeConfig. */}
+                          <span
+                            className="mr-1.5 inline-flex items-center rounded-full bg-purple-100 px-1.5 py-0.5 align-middle text-purple-700 dark:bg-purple-900/40 dark:text-purple-200"
+                            data-testid={`approval-agent-badge-${approval.id}`}
+                          >
+                            <Bot className="h-3.5 w-3.5" aria-hidden="true" />
+                          </span>
+                          {t('proposedByAgent', {
+                            agent: approval.agentName ?? approval.requestingClientLabel,
+                          })}
+                        </>
+                      ) : (
+                        t('requestedBy', { client: approval.requestingClientLabel })
+                      )}
                       <span aria-hidden="true"> &middot; </span>
                       {formatRelativeTime(new Date(approval.createdAt))}
                       <span aria-hidden="true"> &middot; </span>

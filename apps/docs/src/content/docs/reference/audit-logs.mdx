@@ -33,7 +33,7 @@ Each audit log entry contains the following fields:
 | `id` | UUID | Unique identifier for the log entry |
 | `orgId` | UUID | Organization the action belongs to (multi-tenant scoping) |
 | `timestamp` | Timestamp | When the action occurred (defaults to current time) |
-| `actorType` | Enum | Who performed the action: `user`, `api_key`, `agent`, or `system` |
+| `actorType` | Enum | Who performed the action: `user`, `api_key`, `agent`, `system`, or `ai_agent` |
 | `actorId` | UUID | Identifier of the actor (user ID, agent ID, etc.) |
 | `actorEmail` | String (255) | Email address of the actor (when available) |
 | `action` | String (100) | The action performed (e.g., `user.login`, `device.create`, `script.execute`) |
@@ -768,7 +768,7 @@ All audit log queries are automatically scoped to the caller's organization. The
 1. Verify that the action handler calls `writeAuditEvent()` or `writeRouteAudit()`. Events are written asynchronously, so failures do not block request handling.
 2. Check the API server console for `[audit] Failed to write audit log:` messages, which indicate database insert failures.
 3. Confirm the `orgId` is being passed. Events with a null or undefined `orgId` are silently dropped. Look for `[audit] Dropped event (no orgId):` warnings in the console.
-4. Ensure the `actorType` value is one of the four valid enum values: `user`, `api_key`, `agent`, or `system`.
+4. Ensure the `actorType` value is one of the five valid enum values: `user`, `api_key`, `agent`, `system`, or `ai_agent`.
 </Steps>
 
 ### Agent diagnostic logs are not appearing

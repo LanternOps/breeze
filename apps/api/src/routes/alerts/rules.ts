@@ -2,9 +2,9 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { alertRules, alertTemplates, alerts, devices, deviceGroups, organizations, sites } from '../../db/schema';
+import { alertRules, alertTemplates, alerts, devices, deviceGroupMemberships, deviceGroups, organizations, sites } from '../../db/schema';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
-import { conditionPayloadsFrom, retiredConditionTypeError } from '../../services/alertConditions';
+import { conditionPayloadsFrom, evaluateConditions, retiredConditionTypeError } from '../../services/alertConditions';
 import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -849,36 +849,109 @@ rulesRoutes.post(
       return c.json({ error: 'Alert template not found' }, 404);
     }
 
-    // Evaluate conditions against device
-    // This is a simplified simulation - real implementation would evaluate all conditions
-    const conditions = template.conditions as Record<string, unknown>;
+    // Resolve what would ACTUALLY be evaluated. The firing path reads
+    // overrideSettings.conditions before falling back to the template
+    // (getApplicableRules, services/alertService.ts), so a rule whose
+    // conditions were overridden has to be tested against the override —
+    // reading template.conditions here reported on conditions the rule does
+    // not use (#3752).
+    const testOverrides = getOverrides(rule.overrideSettings);
+    const effectiveConditions = (testOverrides.conditions as unknown) ?? template.conditions;
+    const effectiveSeverity = (testOverrides.severity as string | undefined) ?? template.severity;
 
-    // Check if device matches targets
-    let targetMatch = true;
-    if (rule.targetType === 'device') {
-      targetMatch = rule.targetId === device.id;
-    }
-
-    // Simulate condition evaluation
-    const conditionResults: Array<{ condition: string; result: boolean; reason: string }> = [];
-
-    // Example condition evaluation - would be more complex in production
-    if (conditions && typeof conditions === 'object') {
-      for (const key of Object.keys(conditions)) {
-        // Simulate evaluation based on condition type
-        conditionResults.push({
-          condition: key,
-          result: false, // Would evaluate actual condition
-          reason: `Test evaluation of ${key} condition`
-        });
+    // Does the rule actually target this device? Mirrors the SQL target
+    // matching in getApplicableRules() — the firing path for standalone
+    // alertRules, which is this endpoint's rule type — so the two must stay in
+    // sync. Config-policy-linked alert rules resolve targets through a separate
+    // path (getApplicableRulesFromPolicy) that this endpoint does not exercise.
+    // Previously only 'device' was checked and every other target type reported
+    // a match it had never evaluated.
+    let targetMatch: boolean;
+    let targetReason: string;
+    switch (rule.targetType) {
+      case 'all':
+        targetMatch = true;
+        targetReason = 'Rule applies to all devices';
+        break;
+      case 'org':
+        targetMatch = rule.targetId === device.orgId;
+        targetReason = targetMatch
+          ? 'Device belongs to the targeted organization'
+          : 'Device belongs to a different organization than the rule targets';
+        break;
+      case 'site':
+        targetMatch = rule.targetId === device.siteId;
+        targetReason = targetMatch
+          ? 'Device belongs to the targeted site'
+          : 'Device is not in the targeted site';
+        break;
+      case 'group': {
+        const [membership] = await db
+          .select({ groupId: deviceGroupMemberships.groupId })
+          .from(deviceGroupMemberships)
+          .where(
+            and(
+              eq(deviceGroupMemberships.deviceId, device.id),
+              eq(deviceGroupMemberships.groupId, rule.targetId)
+            )
+          )
+          .limit(1);
+        targetMatch = Boolean(membership);
+        targetReason = targetMatch
+          ? 'Device is a member of the targeted device group'
+          : 'Device is not a member of the targeted device group';
+        break;
       }
+      case 'device':
+        targetMatch = rule.targetId === device.id;
+        targetReason = targetMatch
+          ? 'Rule targets this device'
+          : 'Rule targets a different device';
+        break;
+      default:
+        targetMatch = false;
+        targetReason = `Unrecognized rule target type "${rule.targetType}"`;
     }
+
+    // Run the real evaluator. The previous code pushed `result: false` for
+    // every top-level key of the conditions object, so the verdict was a
+    // function of key count rather than of device state — no rule with any
+    // condition could ever report that it would fire (#3752).
+    const evaluation = await evaluateConditions(effectiveConditions, device.id);
+
+    const conditionResults: Array<{ condition: string; result: boolean; reason: string }> = [
+      ...evaluation.conditionsMet.map(description => ({
+        condition: description,
+        result: true,
+        reason: description,
+      })),
+      ...evaluation.conditionsNotMet.map(description => ({
+        condition: description,
+        result: false,
+        reason: description,
+      })),
+    ];
+
+    // A disabled rule is excluded by getApplicableRules and therefore never
+    // fires, however well its conditions evaluate. Report that rather than
+    // implying the rule is live.
+    //
+    // Note: OR groups mean `conditionResults.every(...)` is NOT the verdict —
+    // a compound rule can trigger with some conditions unmet. evaluation
+    // .triggered is the value the firing path uses.
+    //
+    // SCOPE: this is the condition + target verdict, not a promise that an
+    // alert row appears. createAlert() additionally applies cooldown, open-alert
+    // dedup and flapping suppression (services/alertService.ts), none of which
+    // are simulated here. The UI says so rather than overstating a green result.
+    const wouldTrigger = rule.isActive && targetMatch && evaluation.triggered;
 
     return c.json({
       rule: {
         id: rule.id,
         name: rule.name,
-        severity: template.severity
+        severity: effectiveSeverity,
+        enabled: rule.isActive
       },
       device: {
         id: device.id,
@@ -886,8 +959,13 @@ rulesRoutes.post(
         osType: device.osType
       },
       targetMatch,
+      targetReason,
       conditionResults,
-      wouldTrigger: targetMatch && conditionResults.every(r => r.result),
+      // Measured values behind the verdict (metric, actual value, threshold).
+      // Returned for API consumers and for a follow-up that surfaces "82% vs a
+      // threshold of 80%" in the modal; the current UI does not render it.
+      evaluationContext: evaluation.context,
+      wouldTrigger,
       testedAt: new Date().toISOString()
     });
   }

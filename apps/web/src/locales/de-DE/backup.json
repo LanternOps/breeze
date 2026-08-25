@@ -359,7 +359,7 @@
     "recoveryBootstrap": "Wiederherstellungs-Bootstrap",
     "createInspectAuthenticateAndRevokeRecoveryTokensFor": "Erstellen, prüfen, authentifizieren und widerrufen Sie Wiederherstellungstoken für manuelle Wiederherstellungsworkflows. Auf dieser Registerkarte werden manuelle Wiederherstellungsumgebungen gebootet und herunterladbare Wiederherstellungspakete bereitgestellt.",
     "cliTemplate": "CLI-Vorlage",
-    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token &lt;token&gt; --server &lt;api-server&gt;",
+    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token <token> --server <api-server>",
     "createRecoveryToken": "Wiederherstellungstoken erstellen",
     "generateANewTokenForASpecificBackup": "Generieren Sie ein neues Token für einen bestimmten Backup-Snapshot und ein bestimmtes Wiederherstellungsprofil.",
     "snapshot": "Snapshot",

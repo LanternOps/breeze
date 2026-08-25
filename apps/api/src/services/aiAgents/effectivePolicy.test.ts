@@ -1,6 +1,75 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicy } from '@breeze/shared';
-import { mergeAgentPolicies, normalizeAgentPolicy } from './effectivePolicy';
+
+const dbMockState = vi.hoisted(() => ({
+  organizationRows: [] as unknown[],
+  aiAgentRows: [] as unknown[][],
+  budgetRows: [] as unknown[],
+  ambientContext: undefined as { scope: string } | undefined,
+  systemContextActive: false,
+  order: [] as string[],
+}));
+
+vi.mock('../../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn((table: unknown) => {
+        const tableName = (table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')];
+        let rows: unknown[];
+
+        if (tableName === 'organizations') {
+          dbMockState.order.push(
+            dbMockState.systemContextActive
+              ? 'organizations:system'
+              : 'organizations:outside-system',
+          );
+          rows = dbMockState.organizationRows;
+        } else if (tableName === 'ai_agents') {
+          rows = dbMockState.aiAgentRows.shift() ?? [];
+        } else if (tableName === 'ai_budgets') {
+          rows = dbMockState.budgetRows;
+        } else {
+          throw new Error(`Unexpected table: ${String(tableName)}`);
+        }
+
+        return {
+          where: vi.fn(() => ({
+            limit: vi.fn(async () => rows),
+          })),
+        };
+      }),
+    })),
+  },
+  getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => {
+    dbMockState.order.push('runOutsideDbContext');
+    return fn();
+  }),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    dbMockState.order.push('withSystemDbAccessContext');
+    const previousContext = dbMockState.ambientContext;
+    dbMockState.ambientContext = { scope: 'system' };
+    dbMockState.systemContextActive = true;
+    try {
+      return await fn();
+    } finally {
+      dbMockState.systemContextActive = false;
+      dbMockState.ambientContext = previousContext;
+    }
+  }),
+}));
+
+import {
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+} from '../../db';
+import type { AuthContext } from '../../middleware/auth';
+import {
+  mergeAgentPolicies,
+  normalizeAgentPolicy,
+  resolveEffectiveAgent,
+  resolveEffectiveAgentSystem,
+} from './effectivePolicy';
 
 const PARTNER_USER_ID = '00000000-0000-4000-8000-000000000001';
 const ORG_USER_ID = '00000000-0000-4000-8000-000000000002';
@@ -10,6 +79,10 @@ const ALERT_RULE_A = '00000000-0000-4000-8000-000000000005';
 const SITE_A = '00000000-0000-4000-8000-000000000006';
 const GROUP_A = '00000000-0000-4000-8000-000000000007';
 const GROUP_B = '00000000-0000-4000-8000-000000000008';
+const ORG_ID = '00000000-0000-4000-8000-000000000009';
+const PARTNER_ID = '00000000-0000-4000-8000-000000000010';
+const PARTNER_AGENT_ID = '00000000-0000-4000-8000-000000000011';
+const ORG_AGENT_ID = '00000000-0000-4000-8000-000000000012';
 
 function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
@@ -34,6 +107,61 @@ function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
     ...over,
   };
 }
+
+function seedResolverRows(options: { partnerBaseline?: boolean } = {}): void {
+  const { partnerBaseline = true } = options;
+  const partner = {
+    id: PARTNER_AGENT_ID,
+    partnerId: PARTNER_ID,
+    orgId: null,
+    kind: 'triage',
+    ...policy({
+      model: 'partner-model',
+      toolAllowlist: ['run_script', 'disk_cleanup'],
+      limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxDevicesPerRun: 10 },
+    }),
+  };
+  const org = {
+    id: ORG_AGENT_ID,
+    partnerId: PARTNER_ID,
+    orgId: ORG_ID,
+    kind: 'triage',
+    ...policy({
+      mode: 'shadow',
+      model: 'org-model',
+      toolAllowlist: ['run_script'],
+      limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxDevicesPerRun: 3 },
+      cooldownSeconds: 600,
+    }),
+  };
+
+  dbMockState.organizationRows = [{ id: ORG_ID, partnerId: PARTNER_ID }];
+  dbMockState.aiAgentRows = [[org], partnerBaseline ? [partner] : []];
+  dbMockState.budgetRows = [{ allowedModels: ['org-model'] }];
+}
+
+function withoutResolvedAt<T extends { resolvedAt: string }>(snapshot: T): Omit<T, 'resolvedAt'> {
+  const { resolvedAt: _resolvedAt, ...rest } = snapshot;
+  return rest;
+}
+
+const canAccessOrg = vi.fn(() => true);
+const authStub = { canAccessOrg } as unknown as AuthContext;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  dbMockState.organizationRows = [];
+  dbMockState.aiAgentRows = [];
+  dbMockState.budgetRows = [];
+  dbMockState.ambientContext = undefined;
+  dbMockState.systemContextActive = false;
+  dbMockState.order = [];
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('mergeAgentPolicies — tighten only', () => {
   it('uses the partner policy unchanged when there is no org override', () => {
@@ -171,5 +299,66 @@ describe('mergeAgentPolicies — tighten only', () => {
     expect(normalized.limits).toEqual(AI_AGENT_LIMIT_DEFAULTS);
     expect(normalized.triggers.alertSeverities).toEqual(['critical', 'high']);
     expect(normalized.recipients).toEqual({ userIds: [], roleIds: [] });
+  });
+});
+
+describe('resolveEffectiveAgentSystem', () => {
+  it('returns the same merged snapshot as the authorized resolver', async () => {
+    seedResolverRows();
+    const authorized = await resolveEffectiveAgent(authStub, ORG_ID, 'triage');
+    expect(canAccessOrg).toHaveBeenCalledWith(ORG_ID);
+    expect(authorized?.effective).toMatchObject({
+      mode: 'shadow',
+      model: 'org-model',
+      toolAllowlist: ['run_script'],
+      cooldownSeconds: 600,
+    });
+    expect(authorized?.effective.limits.maxDevicesPerRun).toBe(3);
+
+    seedResolverRows();
+    const system = await resolveEffectiveAgentSystem(ORG_ID, 'triage');
+
+    expect(system).not.toBeNull();
+    expect(withoutResolvedAt(system!)).toEqual(withoutResolvedAt(authorized!));
+  });
+
+  it('returns null without a partner baseline for both resolver variants', async () => {
+    seedResolverRows({ partnerBaseline: false });
+    await expect(resolveEffectiveAgentSystem(ORG_ID, 'triage')).resolves.toBeNull();
+
+    seedResolverRows({ partnerBaseline: false });
+    await expect(resolveEffectiveAgent(authStub, ORG_ID, 'triage')).resolves.toBeNull();
+  });
+
+  it('does not touch the authorized resolver auth gate', async () => {
+    seedResolverRows();
+
+    await expect(resolveEffectiveAgentSystem(ORG_ID, 'triage')).resolves.not.toBeNull();
+
+    expect(canAccessOrg).not.toHaveBeenCalled();
+  });
+
+  it('escapes ambient context before entering system context for all reads', async () => {
+    seedResolverRows();
+
+    await expect(resolveEffectiveAgentSystem(ORG_ID, 'triage')).resolves.not.toBeNull();
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(dbMockState.order.slice(0, 3)).toEqual([
+      'runOutsideDbContext',
+      'withSystemDbAccessContext',
+      'organizations:system',
+    ]);
+  });
+
+  it('reuses an existing system context without holding another connection', async () => {
+    seedResolverRows();
+    dbMockState.ambientContext = { scope: 'system' };
+
+    await expect(resolveEffectiveAgentSystem(ORG_ID, 'triage')).resolves.not.toBeNull();
+
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });

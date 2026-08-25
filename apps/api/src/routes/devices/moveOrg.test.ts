@@ -355,7 +355,10 @@ describe('POST /devices/:id/move-org', () => {
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
-      expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual(['agent_health_observations']);
+      expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
+        'agent_health_observations',
+        'software_inventory_observations',
+      ]);
 
       expect(statements).toContain(
         `DELETE FROM demo_things WHERE device_id = ${DEVICE_ID}`,

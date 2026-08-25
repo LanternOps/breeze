@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
@@ -5,6 +6,7 @@ import {
   AI_AGENT_KINDS,
   type AiAgentDto,
   createAiAgentSchema,
+  triggerAgentRunSchema,
   updateAiAgentSchema,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
@@ -18,7 +20,11 @@ import {
   AgentInvariantError, AgentKindConflictError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
+import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
+import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
+import { verifyDeviceAccess } from '../services/aiTools';
+import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveOrgId } from './networkShared';
 
@@ -34,12 +40,14 @@ const requireAiRead = requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PER
 const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action);
 const scopes = requireScope('organization', 'partner', 'system');
 
-// NOTE (deviation from the plan, deliberate): these handlers do NOT call
-// writeRouteAudit. agentService.recordMutation already writes the
+// NOTE (deviation from the plan, deliberate): the agent-MUTATION handlers do
+// not call writeRouteAudit. agentService.recordMutation already writes the
 // ai.agent.created/updated/disabled audit row through createAuditLog, and both
 // paths land in the same audit_logs table — auditing here too would double every
 // agent mutation. The service is the single audit point precisely because wave 3
-// mutates agents from schedulers that have no Hono context.
+// mutates agents from schedulers that have no Hono context. POST /:id/runs is
+// different: createAndEnqueueAgentRun emits console/event-bus observability but
+// writes no audit row, so the route must record the human actor who initiated it.
 
 const UUID = z.string().guid();
 
@@ -103,6 +111,15 @@ function mapError(c: Context, err: unknown) {
   }
   if (err instanceof AgentKindConflictError) {
     return c.json({ error: err.message, code: err.code }, 409);
+  }
+  // Membership-validation failure on recipients (services/aiAgents/recipients.ts):
+  // actionable client error — the body names exactly which ids were refused.
+  if (err instanceof InvalidAgentRecipientsError) {
+    return c.json({
+      error: 'invalid_recipients',
+      invalidUserIds: err.invalidUserIds,
+      invalidRoleIds: err.invalidRoleIds,
+    }, 400);
   }
   // The pre-check in createAgent cannot win a concurrent create; the partial
   // unique index settles that race. Answer it the same way rather than letting
@@ -210,6 +227,81 @@ aiAgentsRoutes.get(
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(limit);
     return c.json({ data: runs });
+  },
+);
+
+// Triggering autonomous work on a customer machine is at least as consequential
+// as editing the policy, so it carries the same write-permission and MFA gates as
+// every mutating route in this file.
+aiAgentsRoutes.post(
+  '/:id/runs',
+  scopes,
+  requireAiWrite,
+  requireMfa(),
+  zValidator('json', triggerAgentRunSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const id = uuidParam(c, 'id');
+    if (!id) return c.json({ error: 'Agent not found' }, 404);
+
+    const agent = await getAgent(auth, id);
+    if (!agent) return c.json({ error: 'Agent not found' }, 404);
+
+    const { deviceId } = c.req.valid('json');
+    const access = await verifyDeviceAccess(deviceId, auth);
+    if ('error' in access) return c.json({ error: access.error }, 404);
+
+    // Every outcome below is audited: `createAndEnqueueAgentRun` writes no audit
+    // row of its own, so this closure is the only record of which human asked
+    // for autonomous work on this device — including when the answer was "no".
+    const auditTrigger = (result: 'success' | 'failure', details: Record<string, unknown>) => {
+      writeRouteAudit(c, {
+        orgId: access.device.orgId,
+        action: 'ai_agent.run.manual_trigger',
+        resourceType: 'ai_agent',
+        resourceId: agent.id,
+        resourceName: agent.name,
+        details,
+        result,
+      });
+    };
+
+    // The loaded row is an authorization/visibility handle and supplies the
+    // requested kind. Admission deliberately re-resolves the effective agent,
+    // which may be an org override or partner baseline different from this row.
+    // Runs belong to the device's organization, never the agent's: a visible
+    // partner-wide agent has no orgId of its own.
+    const result = await createAndEnqueueAgentRun({
+      orgId: access.device.orgId,
+      kind: agent.kind,
+      triggerKind: 'manual',
+      deviceId,
+      // A human pressing "run now" twice means twice. Dedupe keys collapse
+      // repeated event-driven delivery, not distinct explicit instructions.
+      dedupeKey: `manual:${randomUUID()}`,
+      triggerRef: { requestedByUserId: auth.user.id, agentId: agent.id },
+    });
+
+    if (!result.created) {
+      auditTrigger('failure', { deviceId, reason: result.skipped });
+      // Admission declined, so no run row exists. An honest conflict — including
+      // for `kill_switch_off` — beats reporting success for work nobody queued.
+      return c.json({ error: 'run_skipped', reason: result.skipped }, 409);
+    }
+
+    if (result.run.status === 'failed') {
+      auditTrigger('failure', { deviceId, runId: result.run.id, errorCode: result.run.errorCode });
+      // Admission inserted the row and then marked it terminal-failed because the
+      // BullMQ enqueue did not land; 202 would promise processing that cannot happen.
+      return c.json({
+        error: 'run_enqueue_failed',
+        code: result.run.errorCode ?? 'enqueue_failed',
+        runId: result.run.id,
+      }, 503);
+    }
+
+    auditTrigger('success', { deviceId, runId: result.run.id, triggerKind: 'manual' });
+    return c.json({ data: { runId: result.run.id, status: result.run.status } }, 202);
   },
 );
 

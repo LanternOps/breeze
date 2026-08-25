@@ -145,15 +145,19 @@ describe('deleteDeviceCascade lock ordering', () => {
       execute: vi.fn().mockImplementation((query: unknown) => {
         const text = JSON.stringify(query);
         statements.push(text);
-        // node-postgres shape: what a driver swap would hand back. The point of
-        // this fixture is that `[0].prior_ms` is NOT reachable on it, so the
-        // service cannot learn what to restore.
+        // A result the decoder genuinely cannot read: it is neither a
+        // postgres-js array nor a node-postgres `{rows}`.
+        //
+        // This fixture used to BE `{ rows: [{ prior_ms: '7000' }] }`, chosen
+        // when the decoder only understood arrays. It now understands `{rows}`
+        // too — that shape carries the answer, and treating it as unreadable
+        // made a parseable result fail — so simulating "unreadable" needs a
+        // shape that really is.
         if (text.includes('pg_settings')) {
-          return Promise.resolve({ rows: [{ prior_ms: '7000' }], rowCount: 1 });
+          return Promise.resolve({ unexpected: 'shape' });
         }
-        // Stay in that same node-postgres shape for every other statement,
-        // rather than handing back undefined — a driver returns results, and
-        // the point here is a shape swap, not a missing response.
+        // Other statements stay in a readable node-postgres shape: the point
+        // here is one undecodable prior value, not a broken driver.
         return Promise.resolve({ rows: [{ id: 'device-1' }], rowCount: 1 });
       }),
       delete: vi.fn().mockImplementation(() => {
@@ -205,6 +209,23 @@ describe('deleteDeviceCascade lock ordering', () => {
     // The SQL CASE keeps the caller's 500ms, and because nothing changed there
     // is no restore statement afterwards — one set_config total, not two.
     expect(statements.filter((t) => t.includes('set_config')).length).toBe(1);
+
+    // Assert the CONDITIONAL is actually in the generated SQL. The mock returns
+    // prior_ms=500 whatever it is handed, so a count of set_config calls proves
+    // nothing about never-widening: replacing the CASE with an unconditional
+    // 3000ms assignment leaves every other assertion in this test green. The
+    // decision is made by Postgres, so the only thing observable from here is
+    // that the expression was sent.
+    const tighten = statements.find((t) => t.includes('pg_settings'))!;
+    expect(tighten, 'the never-widen CASE is not in the generated SQL').toContain('CASE WHEN');
+    // Pin the COMPARISON, not just that a CASE exists. Flipping `>` to `<`
+    // widens a stricter caller and left a `CASE WHEN`/`ELSE` check green: the
+    // mock returns prior_ms=500 whatever SQL it is handed, so the direction of
+    // the test is invisible from the JS side. Only the operator distinguishes
+    // "keep the stricter value" from "replace it".
+    expect(tighten, 'the tighten no longer keeps the caller when prior < bound')
+      .toContain('prior.ms > ');
+    expect(tighten).toContain('ELSE prior.ms END');
     // Still took the lock and still completed under the caller's own bound.
     expect(statements.some((t) => t.includes('FOR UPDATE'))).toBe(true);
     expect(statements).toContain('__DELETE_DEVICES_ROW__');

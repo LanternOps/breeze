@@ -734,10 +734,8 @@ export async function polishCatalogText(
     // tenant-attributed) — a dashboard layer on top of the log above, restoring
     // operator visibility if the model regresses to inventing specs on live quotes.
     if (overClaimed) {
-      captureMessage('[catalog-polish] fact guard: AI over-claimed a numeric spec not in the input', 'warning', {
-        orgId: actor.orgId,
-        added: factChanges.added,
-        removed: factChanges.removed,
+      captureMessage('[catalog-polish] fact guard: AI over-claimed a numeric spec not in the input', {
+        eventCode: 'catalog_polish_fact_over_claim',
       });
     }
     result = {

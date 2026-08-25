@@ -24,6 +24,7 @@ vi.mock('../../db/schema', () => ({
   alerts: { ruleId: 'alert.ruleId', status: 'alert.status' },
   devices: { id: 'device.id', orgId: 'device.orgId', siteId: 'device.siteId' },
   deviceGroups: { id: 'group.id', orgId: 'group.orgId', siteId: 'group.siteId' },
+  deviceGroupMemberships: { deviceId: 'membership.deviceId', groupId: 'membership.groupId' },
   sites: { id: 'site.id', orgId: 'site.orgId' },
   organizations: { id: 'org.id', partnerId: 'org.partnerId' },
 }));

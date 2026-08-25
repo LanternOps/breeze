@@ -8,7 +8,9 @@ import {
   clearAccountFailures,
   isAccountLocked,
   ACCOUNT_LOCKOUT_MAX,
-  ACCOUNT_LOCKOUT_WINDOW_SECONDS
+  ACCOUNT_LOCKOUT_WINDOW_SECONDS,
+  getRefreshRateLimit,
+  getRefreshRateWindowSeconds
 } from './rate-limit';
 import type { Redis } from 'ioredis';
 
@@ -34,7 +36,11 @@ describe('rate-limit service', () => {
     };
 
     mockRedis = {
-      multi: vi.fn(() => mockMulti)
+      multi: vi.fn(() => mockMulti),
+      // #3696: refundOnReject issues a standalone zrem (not part of the
+      // multi/exec pipeline above) — default to a resolved no-op so tests
+      // that don't care about the refund path don't need to stub it.
+      zrem: vi.fn().mockResolvedValue(0)
     } as unknown as Partial<Redis>;
   });
 
@@ -175,6 +181,88 @@ describe('rate-limit service', () => {
       expect(mockMulti.zcard).toHaveBeenCalledWith('test-key');
       expect(mockMulti.zrange).toHaveBeenCalledWith('test-key', 0, 0, 'WITHSCORES');
       expect(mockMulti.expire).toHaveBeenCalledWith('test-key', 60);
+    });
+
+    // #3696: refundOnReject — rejected attempts must not consume window
+    // capacity, so a client honouring the advertised Retry-After isn't
+    // rejected again by its own queued-up rejections.
+    describe('refundOnReject', () => {
+      function mockRejectedExec(cost: number) {
+        const now = Date.now();
+        mockMulti.exec.mockResolvedValue([
+          [null, 0],
+          [null, cost],
+          [null, 6], // count over the limit of 5
+          [null, [(now - 1000).toString(), (now - 1000).toString()]],
+          [null, 1]
+        ]);
+      }
+
+      it('zrems exactly the members this call just zadded when rejected', async () => {
+        mockRejectedExec(2);
+
+        const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60, 2, { refundOnReject: true });
+
+        expect(result.allowed).toBe(false);
+        const zaddCallArgs = mockMulti.zadd.mock.calls[0] as unknown[];
+        // zadd(key, score, member, score, member, ...) — odd indices (1-based
+        // after the key) are the member strings.
+        const expectedMembers = zaddCallArgs.slice(1).filter((_, i) => i % 2 === 1);
+        expect(expectedMembers).toHaveLength(2);
+        expect(mockRedis.zrem).toHaveBeenCalledWith('test-key', ...expectedMembers);
+      });
+
+      it('does NOT call zrem when refundOnReject is true but the request is allowed', async () => {
+        const now = Date.now();
+        mockMulti.exec.mockResolvedValue([
+          [null, 0],
+          [null, 1],
+          [null, 1], // under the limit of 5
+          [null, [now.toString(), now.toString()]],
+          [null, 1]
+        ]);
+
+        const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60, 1, { refundOnReject: true });
+
+        expect(result.allowed).toBe(true);
+        expect(mockRedis.zrem).not.toHaveBeenCalled();
+      });
+
+      it('does NOT call zrem on rejection when refundOnReject is omitted (default, non-regression)', async () => {
+        mockRejectedExec(1);
+
+        const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60);
+
+        expect(result.allowed).toBe(false);
+        expect(mockRedis.zrem).not.toHaveBeenCalled();
+      });
+
+      it('does NOT call zrem on rejection when refundOnReject is explicitly false', async () => {
+        mockRejectedExec(1);
+
+        const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60, 1, { refundOnReject: false });
+
+        expect(result.allowed).toBe(false);
+        expect(mockRedis.zrem).not.toHaveBeenCalled();
+      });
+
+      it('swallows a zrem failure, logs it, and still resolves with allowed:false', async () => {
+        mockRejectedExec(1);
+        mockRedis.zrem = vi.fn().mockRejectedValue(new Error('redis down'));
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(
+          rateLimiter(mockRedis as Redis, 'test-key', 5, 60, 1, { refundOnReject: true })
+        ).resolves.toMatchObject({ allowed: false });
+
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[rate-limit] refund failed for key:',
+          'test-key',
+          expect.any(Error)
+        );
+
+        consoleErrorSpy.mockRestore();
+      });
     });
   });
 
@@ -434,5 +522,70 @@ describe('rate-limit env overrides', () => {
 
     const locked = await mod.isAccountLocked(null, 'victim@example.com');
     expect(locked).toBe(false);
+  });
+});
+
+// #3696: per-refresh-family rate limit getters. Unlike ACCOUNT_LOCKOUT_MAX
+// above, these read process.env at CALL time (not module load), so a plain
+// static import + process.env mutation is enough — no vi.resetModules /
+// dynamic import needed.
+describe('refresh rate limit getters (#3696)', () => {
+  const REFRESH_RATE_ENV_KEYS = [
+    'AUTH_REFRESH_RATE_LIMIT',
+    'AUTH_REFRESH_RATE_WINDOW_SECONDS'
+  ] as const;
+
+  const originalEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const k of REFRESH_RATE_ENV_KEYS) {
+      originalEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    for (const k of REFRESH_RATE_ENV_KEYS) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  it('getRefreshRateLimit defaults to 60 when AUTH_REFRESH_RATE_LIMIT is unset', () => {
+    expect(getRefreshRateLimit()).toBe(60);
+  });
+
+  it('getRefreshRateWindowSeconds defaults to 60 when AUTH_REFRESH_RATE_WINDOW_SECONDS is unset', () => {
+    expect(getRefreshRateWindowSeconds()).toBe(60);
+  });
+
+  it('getRefreshRateLimit honours AUTH_REFRESH_RATE_LIMIT', () => {
+    process.env.AUTH_REFRESH_RATE_LIMIT = '120';
+    expect(getRefreshRateLimit()).toBe(120);
+  });
+
+  it('getRefreshRateWindowSeconds honours AUTH_REFRESH_RATE_WINDOW_SECONDS', () => {
+    process.env.AUTH_REFRESH_RATE_WINDOW_SECONDS = '30';
+    expect(getRefreshRateWindowSeconds()).toBe(30);
+  });
+
+  it('getRefreshRateLimit falls back to 60 on a non-numeric value', () => {
+    process.env.AUTH_REFRESH_RATE_LIMIT = 'not-a-number';
+    expect(getRefreshRateLimit()).toBe(60);
+  });
+
+  it('getRefreshRateLimit falls back to 60 on a negative value', () => {
+    process.env.AUTH_REFRESH_RATE_LIMIT = '-5';
+    expect(getRefreshRateLimit()).toBe(60);
+  });
+
+  it('getRefreshRateWindowSeconds falls back to 60 on a non-numeric value', () => {
+    process.env.AUTH_REFRESH_RATE_WINDOW_SECONDS = 'nope';
+    expect(getRefreshRateWindowSeconds()).toBe(60);
+  });
+
+  it('getRefreshRateWindowSeconds falls back to 60 on a negative value', () => {
+    process.env.AUTH_REFRESH_RATE_WINDOW_SECONDS = '-1';
+    expect(getRefreshRateWindowSeconds()).toBe(60);
   });
 });

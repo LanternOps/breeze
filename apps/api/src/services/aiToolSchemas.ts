@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
+import { ACTOR_TYPES, INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
 import { backupProfileSelectionsSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
@@ -847,7 +847,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.string().max(100).optional(),
     resourceType: z.string().max(100).optional(),
     resourceId: uuid.optional(),
-    actorType: z.enum(['user', 'api_key', 'agent', 'system', 'ai_agent']).optional(),
+    actorType: z.enum(ACTOR_TYPES).optional(),
     hoursBack: z.number().int().min(1).max(168).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),

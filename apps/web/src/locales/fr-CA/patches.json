@@ -37,7 +37,8 @@
       "selectedOrganization": "l’organisation sélectionnée",
       "messageOne": "Approuver le correctif sur {{count}} appareil dans {{org}} ?",
       "messageMany": "Approuver le correctif sur {{count}} appareils dans {{org}} ?"
-    }
+    },
+    "checkingAccess": "Vérification de votre accès..."
   },
   "patchComplianceView": {
     "unknownDevice": "Inconnu",

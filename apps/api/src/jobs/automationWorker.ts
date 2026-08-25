@@ -22,6 +22,7 @@ import {
 import { type BreezeEvent, getEventBus } from '../services/eventBus';
 import {
   type AutomationTrigger,
+  type AutomationTriggerContext,
   createAutomationRunRecord,
   executeAutomationRun,
   executeConfigPolicyAutomationRun,
@@ -96,6 +97,24 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizePayload(value: unknown): Record<string, unknown> {
   return isPlainRecord(value) ? value : {};
+}
+
+const TRIGGER_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+
+/**
+ * There are SIX publishers of `alert.triggered` with heterogeneous payloads
+ * (alertService.ts:155 and :706, automationRuntime.ts:1303, networkBaseline.ts:681,
+ * warrantyAlertEvaluator.ts:277, metricAnomalyPromotion.ts:278) — some omit `ruleId`
+ * entirely, and severity is not guaranteed to be one of the five literals. An
+ * out-of-enum value passed straight through would fail `automationTriggerContextSchema`
+ * at the execute-run DEQUEUE boundary and dead-letter the whole run, so coerce
+ * anything unrecognised to null here instead.
+ */
+function normalizeTriggerSeverity(value: unknown): AutomationTriggerContext['severity'] {
+  return typeof value === 'string'
+    && (TRIGGER_SEVERITIES as readonly string[]).includes(value)
+    ? value as AutomationTriggerContext['severity']
+    : null;
 }
 
 function getNestedValue(payload: Record<string, unknown>, path: string): unknown {
@@ -256,19 +275,24 @@ export async function enqueueConfigPolicyRun(
   return { jobId: job.id ? String(job.id) : stableJobId };
 }
 
-async function executeRunInline(runId: string, targetDeviceIds?: string[]): Promise<void> {
+async function executeRunInline(
+  runId: string,
+  targetDeviceIds?: string[],
+  triggerContext?: AutomationTriggerContext,
+): Promise<void> {
   await runWithSystemDbAccess(async () => {
-    await executeAutomationRun(runId, targetDeviceIds);
+    await executeAutomationRun(runId, targetDeviceIds, triggerContext);
   });
 }
 
 export async function enqueueAutomationRun(
   runId: string,
   targetDeviceIds?: string[],
+  triggerContext?: AutomationTriggerContext,
 ): Promise<{ enqueued: boolean; jobId?: string }> {
   if (!isRedisAvailable()) {
     setImmediate(() => {
-      executeRunInline(runId, targetDeviceIds).catch((error) => {
+      executeRunInline(runId, targetDeviceIds, triggerContext).catch((error) => {
         console.error(`[AutomationWorker] Inline run execution failed for ${runId}:`, error);
       });
     });
@@ -301,6 +325,7 @@ export async function enqueueAutomationRun(
         type: 'execute-run',
         runId,
         targetDeviceIds,
+        ...(triggerContext ? { triggerContext } : {}),
       },
       {
         jobId: stableJobId,
@@ -317,7 +342,7 @@ export async function enqueueAutomationRun(
     console.error(`[AutomationWorker] Failed to enqueue run ${runId}, using inline fallback:`, error);
 
     setImmediate(() => {
-      executeRunInline(runId, targetDeviceIds).catch((err) => {
+      executeRunInline(runId, targetDeviceIds, triggerContext).catch((err) => {
         console.error(`[AutomationWorker] Inline fallback failed for ${runId}:`, err);
       });
     });
@@ -481,6 +506,34 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
     return { skipped: 'filter_mismatch' };
   }
 
+  // `typeof === 'string'` rather than `!== null`: an absent property (a
+  // partially-selected row) would read as MANAGED under `!== null` and start
+  // binding/skipping every ordinary customer automation. Fail toward unmanaged.
+  const isManaged = typeof automation.managedByAgentId === 'string';
+  let boundDeviceIds: string[] | undefined;
+  let triggerContext: AutomationTriggerContext | undefined;
+  if (isManaged) {
+    const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : null;
+    if (!deviceId) {
+      // A managed automation binds to the triggering device — an event with no
+      // device has nothing to triage. Skip loudly, never fan out.
+      return { skipped: 'managed_automation_event_has_no_device' };
+    }
+    if (typeof payload.automationId === 'string') {
+      // Alert was CREATED by an automation (create_alert publishes automationId).
+      // Triaging automation output invites feedback loops; deliberate default
+      // until wave 6 revisits it.
+      return { skipped: 'managed_automation_skips_automation_created_alerts' };
+    }
+    boundDeviceIds = [deviceId];
+    triggerContext = {
+      alertId: typeof payload.alertId === 'string' ? payload.alertId : null,
+      eventId: data.eventId ?? null,
+      severity: normalizeTriggerSeverity(payload.severity),
+      ruleId: typeof payload.ruleId === 'string' ? payload.ruleId : null,
+    };
+  }
+
   const { run, targetDeviceIds } = await createAutomationRunRecord({
     automation,
     triggeredBy: `event:${data.eventType}`,
@@ -489,15 +542,20 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
       eventType: data.eventType,
       eventTimestamp: data.eventTimestamp,
     },
+    ...(boundDeviceIds ? { boundDeviceIds } : {}),
   });
 
-  await enqueueAutomationRun(run.id, targetDeviceIds);
+  if (triggerContext) {
+    await enqueueAutomationRun(run.id, targetDeviceIds, triggerContext);
+  } else {
+    await enqueueAutomationRun(run.id, targetDeviceIds);
+  }
 
   return { runId: run.id };
 }
 
 async function processExecuteRun(data: ExecuteRunJobData): Promise<{ runId: string }> {
-  await executeAutomationRun(data.runId, data.targetDeviceIds);
+  await executeAutomationRun(data.runId, data.targetDeviceIds, data.triggerContext);
   return { runId: data.runId };
 }
 
@@ -1043,8 +1101,11 @@ export async function shutdownAutomationWorker(): Promise<void> {
 }
 
 // Exported for unit/integration tests of config-policy assignment device
-// resolution (#2286). Internal helper, not part of the worker's public surface.
+// resolution (#2286) and of the #3824 event-target binding. Internal helpers,
+// not part of the worker's public surface.
 export const __testOnly = {
   resolveDeviceIdsForAssignment,
   processTriggerConfigPolicySchedule,
+  processTriggerEvent,
+  processExecuteRun,
 };

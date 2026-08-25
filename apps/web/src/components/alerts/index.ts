@@ -7,18 +7,14 @@ export { default as AlertDetails } from './AlertDetails';
 export type { NotificationHistory, StatusChange } from './AlertDetails';
 
 // Alert Rules
-export { default as AlertRuleList } from './AlertRuleList';
-export type {
-  AlertRule,
-  AlertRuleStatus,
-  AlertRuleTarget,
-  AlertRuleTargetType,
-  AlertRuleCondition,
-  AlertRuleConditionType,
-  MetricType,
-  ComparisonOperator
-} from './AlertRuleList';
-
+//
+// AlertRuleList / AlertRulesPage were removed with #3988: /alerts/rules/* has
+// been a 301 to /configuration-policies since d8a6bc833 (2026-02-22), so both
+// components — and the "Test" verdict fix #3923 landed in them six months
+// later — were unreachable from any route. Alert rules are edited in the
+// Configuration Policy Alerts tab
+// (components/configurationPolicies/featureTabs/AlertRuleTab.tsx), and the Test
+// verdict now lives beside it in AlertRuleTestModal.tsx.
 export { default as AlertRuleForm } from './AlertRuleForm';
 export type { AlertRuleFormValues, AlertRuleConditionFormValues } from './AlertRuleForm';
 
@@ -45,6 +41,5 @@ export { default as AlertsSummary, AlertsSummaryCompact } from './AlertsSummary'
 
 // Page Components
 export { default as AlertsPage } from './AlertsPage';
-export { default as AlertRulesPage } from './AlertRulesPage';
 export { default as AlertRuleEditPage } from './AlertRuleEditPage';
 export { default as NotificationChannelsPage } from './NotificationChannelsPage';

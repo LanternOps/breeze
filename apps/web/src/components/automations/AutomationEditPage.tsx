@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Bot } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -115,6 +115,9 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   const [error, setError] = useState<string>();
   const [defaultValues, setDefaultValues] = useState<Partial<AutomationFormValues>>();
   const [webhookUrl, setWebhookUrl] = useState<string>();
+  // #3824: a seeded, agent-owned automation is read-only — render a notice
+  // instead of the editor. The API 409s on save anyway.
+  const [managedByAgentId, setManagedByAgentId] = useState<string | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [scripts, setScripts] = useState<Script[]>([]);
@@ -138,6 +141,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       }
       const data = await response.json();
       const automation = data.automation ?? data;
+      setManagedByAgentId(asString(automation.managedByAgentId) ?? null);
 
       const trigger = isPlainRecord(automation.trigger)
         ? automation.trigger
@@ -392,20 +396,35 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         </div>
       )}
 
-      <AutomationForm
-        onSubmit={handleSubmit}
-        onCancel={handleCancel}
-        defaultValues={isNew ? { ownerScope: defaultOwnerScope, ...defaultValues } : defaultValues}
-        webhookUrl={webhookUrl}
-        showOwnerScope={isNew && isPartnerScope}
-        submitLabel={isNew ? t('automationEditPage.actions.create') : t('automationEditPage.actions.saveChanges')}
-        loading={saving}
-        sites={sites}
-        groups={groups}
-        scripts={scripts}
-        notificationChannels={notificationChannels}
-        softwareCatalog={softwareCatalog}
-      />
+      {managedByAgentId ? (
+        <div
+          className="rounded-lg border border-purple-500/40 bg-purple-500/10 p-6"
+          data-testid="automation-managed-notice"
+        >
+          <div className="flex items-center gap-2 text-purple-700 dark:text-purple-200">
+            <Bot className="h-5 w-5" />
+            <h2 className="text-sm font-semibold">{t('automationEditPage.managed.title')}</h2>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {t('automationEditPage.managed.description')}
+          </p>
+        </div>
+      ) : (
+        <AutomationForm
+          onSubmit={handleSubmit}
+          onCancel={handleCancel}
+          defaultValues={isNew ? { ownerScope: defaultOwnerScope, ...defaultValues } : defaultValues}
+          webhookUrl={webhookUrl}
+          showOwnerScope={isNew && isPartnerScope}
+          submitLabel={isNew ? t('automationEditPage.actions.create') : t('automationEditPage.actions.saveChanges')}
+          loading={saving}
+          sites={sites}
+          groups={groups}
+          scripts={scripts}
+          notificationChannels={notificationChannels}
+          softwareCatalog={softwareCatalog}
+        />
+      )}
     </div>
   );
 }

@@ -365,7 +365,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           let cancelled = false;
           showToast({
             type: "undo",
-            message: `Decommissioning "${device.hostname}"...`,
+            message: `Removing "${device.hostname}"...`,
             duration: 5000,
             onUndo: () => {
               cancelled = true;
@@ -382,7 +382,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
               await decommissionDevice(device.id);
               showToast({
                 type: "success",
-                message: `${device.hostname} has been decommissioned`,
+                message: `${device.hostname} has been removed`,
               });
               void navigateTo("/devices");
             } catch (err) {
@@ -391,7 +391,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
                 message:
                   err instanceof Error
                     ? err.message
-                    : `Failed to decommission ${device.hostname}`,
+                    : `Failed to remove ${device.hostname}`,
               });
             }
           }, 5000);

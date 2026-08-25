@@ -218,7 +218,11 @@ describe('cascadeDeleteOrg', () => {
     expect(stats.totalRowsDeleted).toBe(5 + 3 * cascadeOrder.length);
   });
 
-  it('tolerates a missing associated system-scoped table (42P01)', async () => {
+  it('tolerates a missing associated system-scoped table (42P01, FLAT shape)', async () => {
+    // The flat shape — SQLSTATE on the error itself. Kept, but note it does
+    // NOT exercise what production actually throws: see the wrapped-shape test
+    // below, which is the one that fails against a top-level `.code` read.
+    //
     // Override the default mock to make ONLY the device_commands DELETE
     // throw 42P01; everything else returns 0.
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
@@ -241,9 +245,51 @@ describe('cascadeDeleteOrg', () => {
     expect(stats.totalRowsDeleted).toBe(0);
   });
 
+  /**
+   * The shape production ACTUALLY throws.
+   *
+   * `drizzle-orm/postgres-js` catches the postgres-js `PostgresError` and
+   * rethrows a `DrizzleQueryError` whose own `.code` is undefined — the
+   * SQLSTATE is on `.cause`. The flat fixture above passes whether
+   * `isUndefinedTable` reads `err.code` or unwraps, so it proved nothing; this
+   * one fails against the top-level read.
+   *
+   * What that broken read cost: `isUndefinedTable` returns false for a
+   * genuinely missing table, so the `!isUndefinedTable(err)` branch fires,
+   * writes an erasure-FAILED forensic audit, and throws — aborting a GDPR org
+   * erasure partway through on any deployment that simply does not have one of
+   * the optional tables. The helper exists to tolerate exactly that.
+   */
+  it('tolerates a missing associated table when the SQLSTATE is WRAPPED (DrizzleQueryError)', async () => {
+    vi.mocked(db.execute).mockImplementation(((q: unknown) => {
+      const text = sqlToText(q);
+      if (text.includes('pg_constraint') || text.includes('contype')) {
+        return Promise.resolve(mockState.fkEdges);
+      }
+      if (text.includes('device_commands')) {
+        // Faithful to Drizzle: own `.code` undefined, SQLSTATE on `.cause`.
+        const cause: any = new Error('relation "device_commands" does not exist');
+        cause.code = '42P01';
+        const wrapped: any = new Error('Failed query: delete from device_commands');
+        wrapped.name = 'DrizzleQueryError';
+        wrapped.cause = cause;
+        return Promise.reject(wrapped);
+      }
+      return Promise.resolve({ rowCount: 0 });
+    }) as any);
+
+    // Must COMPLETE. Against the top-level read this rejects instead.
+    const stats = await cascadeDeleteOrg(
+      '00000000-0000-0000-0000-000000000001',
+      '00000000-0000-0000-0000-000000000002',
+    );
+    expect(stats.totalRowsDeleted).toBe(0);
+  });
+
   it('re-throws and aborts cascade on a non-42P01 error', async () => {
     // FK edge query returns []; the first DELETE call AFTER the associated
-    // pre-clears (device_commands + the two SSO FK children, #2195) throws a
+    // pre-clears (ASSOCIATED_SYSTEM_SCOPED_TABLES — seven of them now, not the
+    // three this comment used to name) throws a
     // non-42P01 — i.e. the first ordered cascade-table DELETE, which is the
     // path that wraps errors with `DELETE from "<table>"` context.
     const associatedCount = __testOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES.length;

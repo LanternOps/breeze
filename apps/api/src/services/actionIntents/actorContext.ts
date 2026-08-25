@@ -1,8 +1,15 @@
 import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { users } from '../../db/schema/users';
 import { apiKeys } from '../../db/schema/apiKeys';
+import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
+import { organizations } from '../../db/schema/orgs';
+import { devices } from '../../db/schema/devices';
 import type { ActionIntent } from '../../db/schema/actionIntents';
+import {
+  AgentRunOwnershipError,
+  buildAgentAuthContext,
+} from '../aiAgents/agentAuthContext';
 import { getUserPermissions, canAccessOrg as permsCanAccessOrg } from '../permissions';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import type { TokenPayload } from '../jwt';
@@ -32,21 +39,11 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
 
   // The migration's action_intents_one_actor_chk CHECK guarantees exactly
   // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId is set.
-  // An agent-originated intent (requestingAgentRunId set) falling through to
-  // here is EXPECTED, not corruption: createActionIntent fails closed on the
-  // 'ai_agent' principal, so no code today produces an agent-originated
-  // intent — and if one ever reaches this function ahead of PR 3b's
-  // requester-less release path, failing closed here is the designed
-  // behavior. Fail closed the same as any other actor_invalid case rather
-  // than throwing out of a background worker — but log the two states
-  // distinguishably: a run-attributed intent is well-formed and merely
-  // unsupported, while an all-NULL actor row would be a data-integrity
-  // violation the CHECK should have made impossible.
+  // An agent-originated intent reconstructs the RUN's agent identity (wave
+  // 3b): structural, never a user token — checkToolPermission keeps denying
+  // the resulting principal, and release authority is checkAgentReleaseAuthority.
   if (intent.requestingAgentRunId) {
-    console.error(
-      `[actorContext] intent ${intent.id} is agent-originated (run ${intent.requestingAgentRunId}); requester-less release reconstruction is not implemented until PR 3b — failing closed`,
-    );
-    return null;
+    return buildAgentOwnedAuthContext(intent, intent.requestingAgentRunId);
   }
   console.error(
     `[actorContext] intent ${intent.id} has no actor column set (requestedByUserId/requestingApiKeyId/requestingAgentRunId all NULL) — data-integrity violation`,
@@ -63,7 +60,7 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
  * trust every historical record, turning a fail-closed marker into an
  * escalation. `unknown` is trusted by nothing.
  */
-function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
+export function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
   switch (intent.originPrincipalKind) {
     case 'user_session':
       return { kind: 'user_session' };
@@ -80,12 +77,17 @@ function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
     case 'system':
       return { kind: 'system', reason: 'intent-origin-system' };
     case 'ai_agent':
-      // Recorded but NOT buildable here yet: the ai_agent principal requires
-      // agentId + runId resolved from requesting_agent_run_id, which is PR
-      // 3b's release-reconstruction work. Mapping to `unknown` keeps this
-      // fail-closed (`unknown` is trusted by nothing) instead of minting a
-      // half-formed agent principal.
-      return { kind: 'unknown' };
+      // agentId is originPrincipalId; runId is the FK column. Both are
+      // REQUIRED on the principal type — an agent intent without them cannot
+      // exist (action_intents_agent_origin_chk), so falling to 'unknown' here
+      // would only hide corruption.
+      return intent.requestingAgentRunId && intent.originPrincipalId
+        ? {
+            kind: 'ai_agent',
+            agentId: intent.originPrincipalId,
+            runId: intent.requestingAgentRunId,
+          }
+        : { kind: 'unknown' };
     default: {
       // Compile-time exhaustiveness: when the origin-kind union widens again,
       // this assignment errors instead of silently downgrading the new kind
@@ -214,6 +216,119 @@ async function buildUserOwnedAuthContext(
       canAccessSite: siteAccessCheck(allowedSiteIds),
     };
   });
+}
+
+/**
+ * Agent-owned intents (`requesting_agent_run_id` set, `source: 'ai_agent'`,
+ * wave 3b). Reconstructs the RUN's agent AuthContext — the same shape PR 3c's
+ * runner will hold live — via `buildAgentAuthContext`, whose
+ * `assertRunOwnership` re-proves the agent→run→org lineage at release time.
+ * Any doubt (missing run/agent/org, run pointing at another org or agent than
+ * the intent records, ownership mismatch) maps to `null` ⇒ `actor_invalid`,
+ * the same fail-closed shape as the other branches.
+ *
+ * The context carries `token: null` and an attribution-only synthetic user;
+ * `checkToolPermission`/`checkPermissionRequirements` continue to deny the
+ * `ai_agent` principal outright — release authority for agent intents is the
+ * separate structural check in `agentReleaseAuthority.ts`.
+ */
+async function buildAgentOwnedAuthContext(
+  intent: ActionIntent,
+  runId: string,
+): Promise<AuthContext | null> {
+  // runOutsideDbContext is load-bearing: the release worker runs with no
+  // ambient request context (where a bare system wrapper is fine), but the
+  // inline chat release path calls this INSIDE a request context, where
+  // withSystemDbAccessContext alone is a passthrough to the ambient org
+  // scope (db/index.ts ~440) and these cross-axis reads would be denied.
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async (): Promise<AuthContext | null> => {
+      const [run] = await db
+        .select({
+          id: aiAgentRuns.id,
+          agentId: aiAgentRuns.agentId,
+          orgId: aiAgentRuns.orgId,
+          deviceId: aiAgentRuns.deviceId,
+        })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, runId))
+        .limit(1);
+      if (!run) {
+        console.error(
+          `[actorContext] intent ${intent.id} references agent run ${runId}, which does not exist — failing closed`,
+        );
+        return null;
+      }
+      // The composite FK (requesting_agent_run_id, org_id) →
+      // ai_agent_runs(id, org_id) guarantees the org match, and
+      // action_intents_agent_origin_chk pins originPrincipalId. Assert both
+      // anyway so a future schema change fails loud instead of executing an
+      // intent under the wrong run's identity.
+      if (run.orgId !== intent.orgId || run.agentId !== intent.originPrincipalId) {
+        console.error(
+          `[actorContext] intent ${intent.id} run ${runId} lineage mismatch `
+          + `(run.orgId=${run.orgId} intent.orgId=${intent.orgId} `
+          + `run.agentId=${run.agentId} originPrincipalId=${intent.originPrincipalId}) — failing closed`,
+        );
+        return null;
+      }
+      const [agent] = await db
+        .select({
+          id: aiAgents.id,
+          orgId: aiAgents.orgId,
+          partnerId: aiAgents.partnerId,
+          name: aiAgents.name,
+          kind: aiAgents.kind,
+        })
+        .from(aiAgents)
+        .where(eq(aiAgents.id, run.agentId))
+        .limit(1);
+      if (!agent) {
+        return null;
+      }
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, run.orgId))
+        .limit(1);
+      if (!org) {
+        return null;
+      }
+      // The device's CURRENT site, not the site at proposal time — spec §3.2
+      // pins a device-bound run to its device's site, and release must
+      // reflect where the device lives NOW.
+      let deviceSiteId: string | null = null;
+      if (run.deviceId) {
+        const [device] = await db
+          .select({ siteId: devices.siteId })
+          .from(devices)
+          .where(eq(devices.id, run.deviceId))
+          .limit(1);
+        deviceSiteId = device?.siteId ?? null;
+      }
+      try {
+        return buildAgentAuthContext(
+          {
+            id: agent.id,
+            orgId: agent.orgId,
+            partnerId: agent.partnerId,
+            name: agent.name,
+            kind: agent.kind,
+          },
+          { id: run.id, orgId: run.orgId, deviceId: run.deviceId, deviceSiteId },
+          { id: run.orgId, partnerId: org.partnerId },
+        );
+      } catch (error) {
+        if (error instanceof AgentRunOwnershipError) {
+          console.error(
+            `[actorContext] intent ${intent.id} run ${runId}: ${error.message} — failing closed`,
+          );
+          return null;
+        }
+        throw error;
+      }
+    }),
+  );
 }
 
 /**

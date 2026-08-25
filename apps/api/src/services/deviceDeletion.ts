@@ -1,6 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 // The wrapper, NOT raw `@sentry/node`: it carries the init guard and scrubEvent.
 import { captureMessage } from './sentry';
+import { tightenLockTimeout, lockTimeoutWasChanged } from '../db/lockTimeout';
 import { devices } from '../db/schema';
 // Shared postgres-js/drizzle row-count reader. Imported rather than re-derived:
 // this repo already has several copies of the same three-shape check, and
@@ -29,28 +30,6 @@ import {
  * must not stay in force for the child deletes or for the caller's later work.
  */
 const DEVICE_LOCK_TIMEOUT_MS = 3000;
-
-/**
- * Read the `prior_ms` column out of the tighten-and-report statement below.
- *
- * postgres-js resolves to an array-like of row objects, so the value is at
- * `[0].prior_ms`. `bigint` comes back as a string, hence the Number().
- *
- * Returns null if it is not there in the shape we expect. That is NOT a
- * decision point about whether to bound the lock — by the time this runs the
- * bound has ALREADY been applied inside the same SQL statement, so an
- * unreadable value only costs us the ability to restore the caller's original
- * setting afterwards. See the call site for why that direction is safe.
- */
-function extractPriorLockTimeoutMs(result: unknown): number | null {
-  const row = Array.isArray(result)
-    ? (result[0] as { prior_ms?: unknown } | undefined)
-    : undefined;
-  const raw = row?.prior_ms;
-  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
-  if (typeof raw === 'string' && /^\d+$/.test(raw)) return Number(raw);
-  return null;
-}
 
 /**
  * Minimal transaction surface this needs — satisfied by a Drizzle tx handle.
@@ -157,19 +136,7 @@ export async function deleteDeviceCascade(
   // is always worth tightening. A caller already stricter than the bound keeps
   // its own value — this must never WIDEN a stricter caller, since SET LOCAL
   // lasts for the rest of the outer transaction.
-  const tightened = await tx.execute(sql`
-    WITH prior AS (SELECT setting::bigint AS ms FROM pg_settings WHERE name = 'lock_timeout')
-    SELECT prior.ms AS prior_ms,
-           set_config(
-             'lock_timeout',
-             (CASE WHEN prior.ms = 0 OR prior.ms > ${DEVICE_LOCK_TIMEOUT_MS}
-                   THEN ${DEVICE_LOCK_TIMEOUT_MS}
-                   ELSE prior.ms END)::text || 'ms',
-             true
-           ) AS applied
-    FROM prior
-  `);
-  const priorMs = extractPriorLockTimeoutMs(tightened);
+  const priorMs = await tightenLockTimeout(tx, DEVICE_LOCK_TIMEOUT_MS);
   // Restore only if we both changed it and can name what it was. Skipping the
   // restore leaves the 3s bound in force for the caller's remaining work, which
   // is STRICTER than what they had — the safe direction. Reported with an
@@ -179,15 +146,13 @@ export async function deleteDeviceCascade(
   // did exactly when the caller's value was 0 (disabled) or looser than the
   // bound. A stricter caller was left alone, so there is nothing to put back
   // and re-issuing its own value would just be a wasted round trip.
-  const changed = priorMs !== null && (priorMs === 0 || priorMs > DEVICE_LOCK_TIMEOUT_MS);
+  const changed = lockTimeoutWasChanged(priorMs, DEVICE_LOCK_TIMEOUT_MS);
   const restoreTo = changed ? priorMs : null;
   if (priorMs === null) {
-    captureMessage(
-      'device cascade could not read the prior lock_timeout',
-      'warning',
-      undefined,
-      { device_deletion_warning: 'lock-timeout-unreadable' }
-    );
+    captureMessage('device cascade could not read the prior lock_timeout', {
+      eventCode: 'device_deletion_lock_timeout_unreadable',
+      tags: { device_deletion_warning: 'lock-timeout-unreadable' },
+    });
   }
   const locked = await tx.execute(
     sql`SELECT id FROM devices WHERE id = ${deviceId} FOR UPDATE`
@@ -209,12 +174,10 @@ export async function deleteDeviceCascade(
   // signal that the RLS/absent-row branch actually happened.
   const lockedRows = extractRowCount(locked);
   if (lockedRows === 0) {
-    captureMessage(
-      'device cascade ran without holding the devices row lock',
-      'warning',
-      undefined,
-      { device_deletion_warning: 'parent-lock-missing' }
-    );
+    captureMessage('device cascade ran without holding the devices row lock', {
+      eventCode: 'device_deletion_parent_lock_missing',
+      tags: { device_deletion_warning: 'parent-lock-missing' },
+    });
   }
 
   const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;

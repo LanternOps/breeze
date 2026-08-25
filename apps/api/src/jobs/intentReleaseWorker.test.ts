@@ -5,20 +5,32 @@ import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/can
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
+  const aiAgentRunsTbl = { id: col('id'), agentId: col('agent_id') };
+  const aiAgentsTbl = { id: col('id'), orgId: col('org_id'), partnerId: col('partner_id'), recipients: col('recipients') };
 
   const notifyMock = {
     createNotification: vi.fn(async (_input: Record<string, unknown>) => 'notif-1' as string | null),
   };
+  const recipientsMock = {
+    // Membership resolution is unit-tested where it lives
+    // (services/aiAgents/recipients.test.ts); here it is a collaborator — the
+    // worker must hand it the loaded agent row plus the INTENT's org, and
+    // notify exactly what it returns.
+    resolveRecipientUserIds: vi.fn(async (_agent: unknown, _orgId: string) => [] as string[]),
+  };
   return {
     notifyMock,
-    schema: { actionIntentsTbl, approvalRequestsTbl },
+    recipientsMock,
+    schema: { actionIntentsTbl, approvalRequestsTbl, aiAgentRunsTbl, aiAgentsTbl },
     dbState: {
       selectActionIntentsResults: [] as unknown[][],
       selectApprovalRequestsResults: [] as unknown[][],
+      selectAgentRunsResults: [] as unknown[][],
+      selectAgentsResults: [] as unknown[][],
     },
     intentServiceMock: { transitionIntent: vi.fn() },
     actorContextMock: { buildAuthContextForIntent: vi.fn() },
@@ -98,6 +110,12 @@ vi.mock('../db', () => ({
             if (table === schema.approvalRequestsTbl) {
               return Promise.resolve(dbState.selectApprovalRequestsResults.shift() ?? []);
             }
+            if (table === schema.aiAgentRunsTbl) {
+              return Promise.resolve(dbState.selectAgentRunsResults.shift() ?? []);
+            }
+            if (table === schema.aiAgentsTbl) {
+              return Promise.resolve(dbState.selectAgentsResults.shift() ?? []);
+            }
             throw new Error('unexpected select table in mock');
           }),
         })),
@@ -111,6 +129,13 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema/actionIntents', () => ({ actionIntents: schema.actionIntentsTbl }));
 vi.mock('../db/schema/approvals', () => ({ approvalRequests: schema.approvalRequestsTbl }));
+// Partial: only the two table objects become routable sentinels; every other
+// export stays real so transitive importers (revalidateRelease ->
+// agentReleaseAuthority -> effectivePolicy) keep loading unchanged.
+vi.mock('../db/schema/aiAgents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db/schema/aiAgents')>();
+  return { ...actual, aiAgentRuns: schema.aiAgentRunsTbl, aiAgents: schema.aiAgentsTbl };
+});
 
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/sentry', () => ({ captureException: sentryMock.captureException }));
@@ -203,6 +228,10 @@ vi.mock('../services/userNotifications', () => ({
   createNotification: notifyMock.createNotification,
 }));
 
+vi.mock('../services/aiAgents/recipients', () => ({
+  resolveRecipientUserIds: recipientsMock.resolveRecipientUserIds,
+}));
+
 // bullmq is a real dependency we don't want to spin up — mock Worker/Job to
 // inert stand-ins since these tests only exercise the exported functions,
 // never `createWorker` itself.
@@ -219,7 +248,7 @@ import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseW
 // The mocked db handle the worker threads into the digest recompute — imported
 // so that call can be asserted against the real object rather than
 // expect.anything().
-import { db as mockedDb } from '../db';
+import { db as mockedDb, runOutsideDbContext as mockedRunOutside } from '../db';
 import type { ActionIntent } from '../db/schema/actionIntents';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
@@ -299,6 +328,8 @@ const FOUR_EYES_INTENT = {
 function resetDbState() {
   dbState.selectActionIntentsResults.length = 0;
   dbState.selectApprovalRequestsResults.length = 0;
+  dbState.selectAgentRunsResults.length = 0;
+  dbState.selectAgentsResults.length = 0;
 }
 
 /** Clears GOOGLE_HEADLESS_SECRET_ACTIONS keys in place (see the hoisted
@@ -1441,5 +1472,148 @@ describe('processIntentReleaseJob', () => {
       expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
       { requireNotExpired: 'release' },
     );
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Agent-originated outcome notifications (wave 3b, Task 8)
+// ---------------------------------------------------------------------------
+
+describe('agent-originated outcome notifications', () => {
+  const AGENT_INTENT = {
+    id: 'intent-1',
+    orgId: 'org-1',
+    // Headless proposal: "the requester is watching" is false — there is no
+    // requester at all.
+    requestedByUserId: null,
+    requestingAgentRunId: 'run-1',
+    requestingClientLabel: 'Patch triage',
+    targetSummary: 'run_script(deviceId=d-1)',
+    status: 'rejected',
+    // SUPERVISED on purpose: both the four_eyes-only early-out and the
+    // no-human-requester guard would swallow this row if the agent branch
+    // did not run before them.
+    approvalScope: 'supervised',
+  };
+  // The partner baseline row lists only user-a; org-1's override added user-b,
+  // so the run's immutable snapshot carries the merged union. Notifying from
+  // AGENT_ROW.recipients would silently drop the recipient the ORG configured.
+  const RUN_ROW = {
+    id: 'run-1',
+    agentId: 'agent-1',
+    policySnapshot: { effective: { recipients: { userIds: ['user-a', 'user-b'], roleIds: [] } } },
+  };
+  const AGENT_ROW = { id: 'agent-1', orgId: 'org-1', partnerId: null, recipients: { userIds: ['user-a'] } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+  });
+
+  it('notifies every validated recipient of a supervised agent intent', async () => {
+    dbState.selectActionIntentsResults.push([AGENT_INTENT]);
+    dbState.selectAgentRunsResults.push([RUN_ROW]);
+    dbState.selectAgentsResults.push([AGENT_ROW]);
+    recipientsMock.resolveRecipientUserIds.mockResolvedValueOnce(['user-a', 'user-b']);
+
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    expect(result).toEqual({ released: false });
+    // Live membership resolution, keyed on the INTENT's org (the tenant whose
+    // data the notification describes), never the raw stored ids.
+    expect(recipientsMock.resolveRecipientUserIds).toHaveBeenCalledWith(
+      {
+        orgId: AGENT_ROW.orgId,
+        partnerId: AGENT_ROW.partnerId,
+        // MERGED, from the run snapshot — not AGENT_ROW.recipients.
+        recipients: { userIds: ['user-a', 'user-b'], roleIds: [] },
+      },
+      'org-1',
+    );
+    expect(notifyMock.createNotification).toHaveBeenCalledTimes(2);
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-a',
+        orgId: 'org-1',
+        type: 'ai',
+        link: '/approvals',
+        title: 'Agent proposal denied',
+        message: 'Patch triage: run_script(deviceId=d-1) was denied and will not run.',
+        metadata: { intentId: 'intent-1', agentId: 'agent-1', agentRunId: 'run-1', status: 'rejected' },
+        // Status-scoped: a later, MORE ACCURATE status must not be suppressed
+        // by the earlier notification's dedupe row.
+        dedupeKey: 'agent-intent-outcome:intent-1:rejected',
+      }),
+    );
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-b' }),
+    );
+    // The run/agent load AND each cross-user insert must escape any ambient
+    // context first — a bare system wrapper inside one is a passthrough.
+    expect(vi.mocked(mockedRunOutside).mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('derives agent copy from the re-read status, never the event type', async () => {
+    // intent_approved arrives but the release did not run (lost CAS) and the
+    // row now says failed — recipients must hear the truth, at high priority.
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    dbState.selectActionIntentsResults.push([{ ...AGENT_INTENT, status: 'failed' }]);
+    dbState.selectAgentRunsResults.push([RUN_ROW]);
+    dbState.selectAgentsResults.push([AGENT_ROW]);
+    recipientsMock.resolveRecipientUserIds.mockResolvedValueOnce(['user-a']);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as {
+      title: string; message: string; priority: string; dedupeKey: string;
+    };
+    expect(arg.title).toBe('Agent action failed');
+    expect(arg.message).not.toContain('is now running');
+    expect(arg.priority).toBe('high');
+    expect(arg.dedupeKey).toBe('agent-intent-outcome:intent-1:failed');
+  });
+
+  it('stays silent when the run is gone', async () => {
+    dbState.selectActionIntentsResults.push([AGENT_INTENT]);
+    dbState.selectAgentRunsResults.push([]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    expect(recipientsMock.resolveRecipientUserIds).not.toHaveBeenCalled();
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when the agent row is gone', async () => {
+    dbState.selectActionIntentsResults.push([AGENT_INTENT]);
+    dbState.selectAgentRunsResults.push([RUN_ROW]);
+    dbState.selectAgentsResults.push([]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    expect(recipientsMock.resolveRecipientUserIds).not.toHaveBeenCalled();
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('notifies nobody when live membership resolution returns empty', async () => {
+    dbState.selectActionIntentsResults.push([AGENT_INTENT]);
+    dbState.selectAgentRunsResults.push([RUN_ROW]);
+    dbState.selectAgentsResults.push([AGENT_ROW]);
+    recipientsMock.resolveRecipientUserIds.mockResolvedValueOnce([]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('a requester-less NON-agent intent (API-key sourced) stays on the silent path', async () => {
+    dbState.selectActionIntentsResults.push([
+      { ...FOUR_EYES_INTENT, status: 'rejected', requestedByUserId: null, requestingAgentRunId: null },
+    ]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    expect(recipientsMock.resolveRecipientUserIds).not.toHaveBeenCalled();
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
   });
 });

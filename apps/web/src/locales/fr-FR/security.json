@@ -585,6 +585,7 @@
     "startScan": "Démarrer le scan",
     "startScansWatchProgressAndReviewScan": "Lancez les scans, observez la progression et consultez l’historique des scans sur plusieurs appareils.",
     "started": "Démarré à {{time}}",
+    "startedColumn": "Démarré",
     "status": "Statut : {{status}}",
     "status2": "Statut",
     "type": "Type",
@@ -1139,7 +1140,7 @@
       "noPolicy": "Pas de politique (configuration manuelle)",
       "deviceIds": "IDs des appareils",
       "deviceIdsHelp": "Un UUID par ligne, ou séparé par virgule.",
-      "deviceIdsPlaceholder": "device-uuid-1&#10;device-uuid-2",
+      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
       "detectionClasses": "Classes de détection"
     },
     "actions": {

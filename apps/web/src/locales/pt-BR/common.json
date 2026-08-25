@@ -492,6 +492,9 @@
         "days": "dias",
         "weeks": "semanas",
         "months": "meses"
+      },
+      "enumOverrides": {
+        "decommissioned": "Removido"
       }
     }
   },
@@ -2009,7 +2012,7 @@
         "skipReasons": {
           "siteDenied": "Site não acessível para você",
           "notMember": "Não é mais afetado por esta constatação",
-          "decommissioned": "Dispositivo está descomissionado",
+          "decommissioned": "O dispositivo foi removido",
           "timeout": "Expirou após 30 minutos",
           "dispatchEnqueueFailed": "Nunca despachado — falha ao enfileirar"
         },

@@ -492,6 +492,9 @@
         "days": "giorni",
         "weeks": "settimane",
         "months": "mesi"
+      },
+      "enumOverrides": {
+        "decommissioned": "Rimosso"
       }
     }
   },
@@ -2009,7 +2012,7 @@
         "skipReasons": {
           "siteDenied": "Sede non accessibile per te",
           "notMember": "Non più interessato da questo rilievo",
-          "decommissioned": "Dispositivo dismesso",
+          "decommissioned": "Il dispositivo è rimosso",
           "timeout": "Scaduto dopo 30 minuti",
           "dispatchEnqueueFailed": "Mai inviato: accodamento non riuscito"
         },

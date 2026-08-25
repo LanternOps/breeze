@@ -486,9 +486,7 @@ describe('getAnthropicClientForPartner', () => {
     expect(captureMessage).toHaveBeenCalledTimes(1);
     expect(captureMessage).toHaveBeenCalledWith(
       'AI is not configured on this deployment.',
-      'warning',
-      undefined,
-      { service: 'llmConfigResolver' },
+      { eventCode: 'llm_platform_key_missing' },
     );
 
     vi.advanceTimersByTime(60 * 60 * 1000);

@@ -32,6 +32,9 @@ export type NotificationChannel = {
   config: Record<string, unknown>;
   lastTestedAt?: string;
   lastTestStatus?: 'success' | 'failed';
+  // Why the last test failed (#3697). NULL/absent when it passed. The API
+  // scrubs the channel's own secrets out of this before persisting it.
+  lastTestError?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -41,6 +44,9 @@ type NotificationChannelListProps = {
   onEdit?: (channel: NotificationChannel) => void;
   onDelete?: (channel: NotificationChannel) => void;
   onTest?: (channel: NotificationChannel) => void;
+  /** Offered from the empty state, so a list with no rows has the create
+   *  action in front of it rather than only in the page header. */
+  onCreate?: () => void;
   pageSize?: number;
 };
 
@@ -170,6 +176,7 @@ export default function NotificationChannelList({
   onEdit,
   onDelete,
   onTest,
+  onCreate,
   pageSize = 10
 }: NotificationChannelListProps) {
   const { t } = useTranslation('alerts');
@@ -191,6 +198,17 @@ export default function NotificationChannelList({
       return matchesQuery && matchesType;
     });
   }, [channels, query, typeFilter]);
+
+  // "No results" and "nothing exists yet" are different states. Keyed off the
+  // UNFILTERED list plus the search and type controls being at rest, so a
+  // search that matches nothing still gets the adjust-your-search message.
+  //
+  // Deliberately NOT a claim that the tenant is new: a zero-length page can
+  // also come from a retained `currentPage` after the row count shrinks, which
+  // this predicate does not cover and which pre-dates this change (see #4008).
+  // It only distinguishes "the list is empty and the filters are untouched".
+  const hasNoChannelsAtAll =
+    channels.length === 0 && query.trim().length === 0 && typeFilter === 'all';
 
   const totalPages = Math.ceil(filteredChannels.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
@@ -251,9 +269,26 @@ export default function NotificationChannelList({
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {paginatedChannels.length === 0 ? (
           <div className="col-span-full rounded-md border border-dashed p-6 text-center">
-            <p className="text-sm text-muted-foreground">
-              {t('notificationChannelList.noNotificationChannelsFoundTryAdjustingYour')}
-            </p>
+            {hasNoChannelsAtAll ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  {t('notificationChannelList.noChannelsYet')}
+                </p>
+                {onCreate && (
+                  <button
+                    type="button"
+                    onClick={onCreate}
+                    className="mt-3 inline-flex items-center rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                  >
+                    {t('notificationChannelsPage.newChannel')}
+                  </button>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t('notificationChannelList.noNotificationChannelsFoundTryAdjustingYour')}
+              </p>
+            )}
           </div>
         ) : (
           paginatedChannels.map(channel => {
@@ -346,6 +381,28 @@ export default function NotificationChannelList({
                       : t('notificationChannelList.neverTested')}
                   </span>
                 </div>
+
+                {/* WHY it failed (#3697). "Failed" alone tells an operator their
+                    on-call routing is broken but not what to do about it, and
+                    the provider message that says exactly that ("use our testing
+                    email address instead of domains like example.com") used to
+                    live only in a five-second toast — gone on reload.
+
+                    Rendered as plain text rather than the hover/expand the issue
+                    floated: a tooltip is unreachable by touch and by keyboard,
+                    and this is the one line on the card an operator needs most.
+                    Clamped to two lines with the full string on `title`, because
+                    webhook/PagerDuty/Pushover errors can carry up to 500
+                    characters of the destination's own response body. */}
+                {channel.lastTestStatus === 'failed' && channel.lastTestError && (
+                  <p
+                    className="mt-1 line-clamp-2 text-xs text-red-600"
+                    title={channel.lastTestError}
+                    data-testid="notification-channel-last-test-error"
+                  >
+                    {t('notificationChannelList.lastTestError', { reason: channel.lastTestError })}
+                  </p>
+                )}
 
                 {/* Actions */}
                 <div className="mt-4 flex items-center gap-2 border-t pt-4">

@@ -1157,8 +1157,9 @@ describe('software routes', () => {
       });
       expect(captureMessage).toHaveBeenCalledWith(
         'software version created with undetermined installer type',
-        'warning',
-        expect.objectContaining({ downloadUrlHost: 'vendor.example.com' }),
+        expect.objectContaining({
+          eventCode: 'software_version_installer_type_unknown',
+        }),
       );
     });
 
@@ -1168,7 +1169,10 @@ describe('software routes', () => {
       await createVersion({
         downloadUrl: 'https://vendor.example.com/get?token=SECRET-CAPABILITY',
       });
-      const logged = vi.mocked(captureMessage).mock.calls.at(-1)?.[2];
+      // captureMessage no longer accepts an `extra` bag at all (BREEZE-18: it
+      // was never attached to the event and scrubEvent deleted it anyway), so
+      // assert the whole options object carries no capability string.
+      const logged = vi.mocked(captureMessage).mock.calls.at(-1)?.[1];
       expect(JSON.stringify(logged)).not.toContain('SECRET-CAPABILITY');
     });
 

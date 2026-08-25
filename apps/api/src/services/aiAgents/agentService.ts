@@ -9,6 +9,12 @@ import { getEventBus } from '../eventBus';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
+import {
+  ensureManagedTriageAutomation,
+  setManagedAutomationEnabled,
+  syncManagedAutomation,
+} from './managedAutomation';
+import { validateAgentRecipients } from './recipients';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -268,6 +274,13 @@ export async function createAgent(
 ): Promise<AiAgentRow> {
   assertAgentWriteAllowed(auth, owner);
 
+  // Recipients are membership-validated BEFORE anything is written: a typo'd
+  // or cross-tenant id must never be persisted, because notification-time
+  // resolution silently drops what it cannot verify (services/aiAgents/
+  // recipients.ts) — an invalid entry stored here would be a recipient that
+  // silently never hears anything.
+  await validateAgentRecipients(owner, input.recipients ?? {});
+
   // Pre-check the partial unique indexes on (partner_id, kind) and (org_id,
   // kind) WHERE disabled_at IS NULL. Letting the insert trip 23505 is not an
   // option here: the whole request runs inside one withDbAccessContext
@@ -303,6 +316,10 @@ export async function createAgent(
     .returning();
   if (!row) throw new AgentInvariantError('Agent not created');
 
+  // Seed before the audit: this whole request is one withDbAccessContext
+  // transaction, so a wiring failure must roll the agent insert back rather
+  // than leave an audited agent with no trigger automation.
+  await ensureManagedTriageAutomation(row);
   await recordMutation(row, auth, 'created');
   return row;
 }
@@ -318,6 +335,16 @@ export async function updateAgent(
   }
   assertAgentWriteAllowed(auth, existing);
 
+  // Validate the MERGED recipients — the exact object updatePolicyColumns
+  // persists ({ ...stored, ...patch }), so what is checked is what is stored.
+  if (input.recipients !== undefined) {
+    const stored = normalizeAgentPolicy(existing);
+    await validateAgentRecipients(
+      { orgId: existing.orgId, partnerId: existing.partnerId },
+      { ...stored.recipients, ...input.recipients },
+    );
+  }
+
   const [row] = await db
     .update(aiAgents)
     .set({
@@ -330,6 +357,14 @@ export async function updateAgent(
     .returning();
   if (!row) throw new AgentAccessDeniedError('Agent not found');
 
+  // Mirroring the disable direction too is deliberate symmetry: one switch
+  // updates both the agent policy and its managed wiring before audit.
+  const managedPatch: { name?: string; enabled?: boolean } = {};
+  if (input.name !== undefined && input.name !== existing.name) managedPatch.name = row.name;
+  if (input.enabled !== undefined && input.enabled !== existing.enabled) managedPatch.enabled = row.enabled;
+  if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
+    await syncManagedAutomation(row.id, managedPatch);
+  }
   await recordMutation(row, auth, 'updated');
   return row;
 }
@@ -354,6 +389,9 @@ export async function disableAgent(auth: AuthContext, id: string): Promise<AiAge
     .returning();
   if (!row) throw new AgentAccessDeniedError('Agent not found');
 
+  // Agents are never hard-deleted (managed_by_agent_id is ON DELETE RESTRICT),
+  // so soft-disable must also stop the wiring from generating queue traffic.
+  await setManagedAutomationEnabled(row.id, false);
   await recordMutation(row, auth, 'disabled');
   return row;
 }

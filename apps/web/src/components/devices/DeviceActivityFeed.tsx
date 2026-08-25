@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AuditResult } from "@breeze/shared";
 import {
   Activity,
   AlertTriangle,
@@ -25,7 +26,7 @@ type ActivityEvent = {
   id: string;
   action?: string;
   message?: string;
-  result?: "success" | "failure" | "denied";
+  result?: AuditResult;
   initiatedBy?: string | null;
   timestamp?: string;
   actor?: { type?: string; name?: string; email?: string | null };

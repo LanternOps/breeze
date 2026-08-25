@@ -470,7 +470,7 @@ export interface Policy {
 // Alert Types
 // ============================================
 
-import { NOTIFICATION_CHANNEL_TYPES } from '../constants';
+import { ACTOR_TYPES, AUDIT_RESULTS, NOTIFICATION_CHANNEL_TYPES } from '../constants';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';
@@ -538,8 +538,8 @@ export interface RemoteSession {
 // Audit Types
 // ============================================
 
-export type ActorType = 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
-export type AuditResult = 'success' | 'failure' | 'denied';
+export type ActorType = (typeof ACTOR_TYPES)[number];
+export type AuditResult = (typeof AUDIT_RESULTS)[number];
 
 export interface AuditLog {
   id: string;
