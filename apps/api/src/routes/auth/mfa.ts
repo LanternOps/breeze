@@ -25,7 +25,7 @@ import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema } from '.
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { mintStepUpGrant } from '../../services/mfaStepUpGrant';
+import { mintStepUpGrant, rollbackResourceDigest } from '../../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -732,6 +732,12 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
 
   const auth = c.get('auth');
   const body = c.req.valid('json');
+  if (body.operation === 'agent_rollback' && !body.resource) {
+    return c.json({ error: 'Rollback resource binding is required' }, 400);
+  }
+  if (body.operation !== 'agent_rollback' && body.resource) {
+    return c.json({ error: 'Resource binding is only valid for agent rollback' }, 400);
+  }
 
   // Rate-limit per user (I2). Every other MFA-verification endpoint throttles
   // per user; without this the only bound is the 300/60s-per-IP global limit,
@@ -805,7 +811,10 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
     operation: body.operation,
     authEpoch: epochs.authEpoch,
     mfaEpoch: epochs.mfaEpoch,
-    sid: auth.token.sid
+    sid: auth.token.sid,
+    resourceDigest: body.operation === 'agent_rollback'
+      ? rollbackResourceDigest(body.resource!)
+      : '',
   });
   if (!grantId) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);

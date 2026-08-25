@@ -12,6 +12,7 @@ permissionsCatalogRoutes.use('*', authMiddleware);
 const RESOURCE_LABELS: Record<string, string> = {
   backup: 'Backup & Recovery',
   devices: 'Devices',
+  agent_rollback: 'Agent Rollback',
   scripts: 'Scripts',
   alerts: 'Alerts',
   tickets: 'Tickets',
@@ -53,7 +54,8 @@ const ACTION_LABELS: Record<string, string> = {
   admin: 'Administer',
   accept_risk: 'Accept Risk',
   read_all: 'Read All',
-  decide: 'Decide'
+  decide: 'Decide',
+  create: 'Create'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

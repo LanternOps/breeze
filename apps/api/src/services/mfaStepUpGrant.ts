@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { getRedis } from './redis';
 
 /**
@@ -30,7 +30,7 @@ import { getRedis } from './redis';
  */
 /** Operations a step-up grant can authorize. A grant minted for one operation
  * can never validate/consume for another (bindsMatch checks equality). */
-export type StepUpOperation = 'add_factor' | 'register_approver_device';
+export type StepUpOperation = 'add_factor' | 'register_approver_device' | 'agent_rollback';
 
 export interface StepUpGrant {
   id: string;
@@ -39,9 +39,11 @@ export interface StepUpGrant {
   authEpoch: number;
   mfaEpoch: number;
   sid: string;
+  resourceDigest: string;
 }
 
-type GrantBind = Omit<StepUpGrant, 'id'>;
+export type StepUpGrantBinding = Omit<StepUpGrant, 'id'>;
+type GrantBind = Omit<StepUpGrantBinding, 'resourceDigest'> & { resourceDigest?: string };
 
 const TTL_SECONDS = 300;
 const key = (id: string) => `mfa:stepup:${id}`;
@@ -51,7 +53,23 @@ function bindsMatch(record: GrantBind, bind: GrantBind): boolean {
     && record.operation === bind.operation
     && record.authEpoch === bind.authEpoch
     && record.mfaEpoch === bind.mfaEpoch
-    && record.sid === bind.sid;
+    && record.sid === bind.sid
+    && (record.resourceDigest ?? '') === (bind.resourceDigest ?? '');
+}
+
+export function rollbackResourceDigest(input: {
+  deviceId: string;
+  currentVersion: string;
+  targetVersion: string;
+  reason: string;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    currentVersion: input.currentVersion,
+    deviceId: input.deviceId,
+    reason: input.reason,
+    targetVersion: input.targetVersion,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
 /**
@@ -66,7 +84,8 @@ export async function mintStepUpGrant(bind: GrantBind): Promise<string | null> {
   if (!redis) return null;
   try {
     const id = randomUUID();
-    await redis.setex(key(id), TTL_SECONDS, JSON.stringify(bind));
+    const normalized: StepUpGrantBinding = { ...bind, resourceDigest: bind.resourceDigest ?? '' };
+    await redis.setex(key(id), TTL_SECONDS, JSON.stringify(normalized));
     return id;
   } catch {
     return null;

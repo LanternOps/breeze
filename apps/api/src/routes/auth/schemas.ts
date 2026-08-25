@@ -129,14 +129,39 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // instead of silently letting a grant type this schema doesn't know about
 // slip through validation, or letting a value this schema accepts fail to
 // match any real operation.
-const STEP_UP_OPERATIONS = ['add_factor', 'register_approver_device'] as const satisfies readonly StepUpOperation[];
+const STEP_UP_OPERATIONS = [
+  'add_factor',
+  'register_approver_device',
+  'agent_rollback',
+] as const satisfies readonly StepUpOperation[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)
   .default('add_factor');
+const rollbackStepUpResource = z.object({
+  deviceId: z.string().uuid(),
+  currentVersion: z.string().min(1).max(100),
+  targetVersion: z.string().min(1).max(100),
+  reason: z.string().trim().min(1).max(1000),
+});
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
-  z.object({ method: z.literal('totp'), code: stepUpSixDigit, operation: stepUpOperation }),
-  z.object({ method: z.literal('sms'), code: stepUpSixDigit, operation: stepUpOperation }),
-  z.object({ method: z.literal('passkey'), credential: stepUpAssertion, operation: stepUpOperation }),
+  z.object({
+    method: z.literal('totp'),
+    code: stepUpSixDigit,
+    operation: stepUpOperation,
+    resource: rollbackStepUpResource.optional(),
+  }),
+  z.object({
+    method: z.literal('sms'),
+    code: stepUpSixDigit,
+    operation: stepUpOperation,
+    resource: rollbackStepUpResource.optional(),
+  }),
+  z.object({
+    method: z.literal('passkey'),
+    credential: stepUpAssertion,
+    operation: stepUpOperation,
+    resource: rollbackStepUpResource.optional(),
+  }),
 ]);
 
 export const acceptInviteSchema = z.object({

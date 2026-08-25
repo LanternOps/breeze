@@ -115,6 +115,8 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'devices', action: 'delete', description: 'Delete/decommission devices' },
   { resource: 'devices', action: 'execute', description: 'Execute commands on devices' },
 
+  { resource: 'agent_rollback', action: 'create', description: 'Authorize a signed agent rollback' },
+
   // Network topology (discovery topology view + saved layout)
   { resource: 'topology', action: 'read', description: 'View network topology and saved layout' },
   { resource: 'topology', action: 'write', description: 'Persist topology node layout (drag-to-save)' },
@@ -305,6 +307,7 @@ export const SYSTEM_ROLES = [
       // reach across orgs.
       'ai_agents:read', 'ai_agents:write',
       'approvals:decide',
+      'agent_rollback:create',
       // Tenant variables (#3409): managing the definitions is an admin task;
       // running a script that USES one only needs scripts:execute.
       'variables:read', 'variables:manage'

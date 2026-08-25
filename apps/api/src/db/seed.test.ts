@@ -120,6 +120,19 @@ describe('SYSTEM_ROLES ⊆ DEFAULT_PERMISSIONS', () => {
   });
 });
 
+describe('agent rollback RBAC', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name);
+
+  it('seeds agent_rollback:create and grants it explicitly only to Org Admin', () => {
+    expect(DEFAULT_PERMISSIONS).toContainEqual(expect.objectContaining({ resource: 'agent_rollback', action: 'create' }));
+    expect(byName('Partner Admin')?.permissions).toContain('*:*');
+    expect(byName('Org Admin')?.permissions).toContain('agent_rollback:create');
+    for (const role of SYSTEM_ROLES.filter((candidate) => !['Partner Admin', 'Org Admin'].includes(candidate.name))) {
+      expect(role.permissions).not.toContain('agent_rollback:create');
+    }
+  });
+});
+
 describe('ticket mailbox permissions', () => {
   it('registers and seeds the ticket mailbox permissions', () => {
     expect(PERMISSION_GRANTS.TICKET_MAILBOX_READ).toEqual({ resource: 'ticket_mailbox', action: 'read' });
