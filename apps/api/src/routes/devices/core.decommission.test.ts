@@ -91,8 +91,15 @@ vi.mock('../../services/commandQueue', () => ({
 // only need to assert the ROUTE's wiring: is it called at all (the
 // uninstallAgent default-false safety invariant), with the right tx/device
 // id/actor, and does its result reach the response + audit trail.
+// #3986 task 8 — restore composes `releaseDeviceRemoveReason` the same way
+// decommission composes `queueDeviceUninstall`; that helper's own predicate
+// SQL is already covered on compiled SQL by deviceUninstallDrain.test.ts
+// (task 6). Here we only need the ROUTE's wiring: is it called with the
+// right device id/reason, and does its result (cancelled / retainedOtherOwner
+// / alreadyDispatched) reach the response + audit trail.
 vi.mock('../../services/deviceUninstallDrain', () => ({
   queueDeviceUninstall: vi.fn(),
+  releaseDeviceRemoveReason: vi.fn(),
 }));
 
 vi.mock('../agents/enrollment', () => ({
@@ -112,7 +119,7 @@ import { db } from '../../db';
 import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
 import { disconnectAgent } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
+import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -397,5 +404,155 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
         details: expect.objectContaining({ uninstallQueued: false }),
       }));
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3986 task 8 — POST /devices/:id/restore must release any device-remove-
+// owned uninstall so restoring a device doesn't leave a live self_uninstall
+// queued behind it. Restore had NO behavioural coverage anywhere in the API
+// before this file — only the 403 permission/MFA matrix in
+// core.permissions.test.ts:363. These are the first ones.
+//
+// `releaseDeviceRemoveReason`'s own predicate/strip SQL is covered on
+// compiled SQL by deviceUninstallDrain.test.ts; here we only assert the
+// ROUTE's wiring — is it called with the right device id + reason, and does
+// its result reach both the JSON response and the audit trail.
+// ---------------------------------------------------------------------------
+describe('POST /devices/:id/restore — uninstall release wiring', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/devices', coreRoutes);
+  });
+
+  const DECOMMISSIONED_DEVICE = { ...ONLINE_DEVICE, status: 'decommissioned' as const };
+
+  // getDeviceWithOrgAndSiteCheck issues db.select().from(devices).where(...)
+  // .limit(1); then the restore handler runs a bare `db.update(...).set(...)
+  // .where(...).returning()` (no transaction — restore does not compose
+  // `releaseDeviceRemoveReason` into its own tx; that helper opens and
+  // commits its own transaction internally, matching the interface handed
+  // down from task 6).
+  function rigRestore(device: unknown) {
+    const limit = vi.fn().mockResolvedValue(device ? [device] : []);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.select).mockReturnValue({ from } as never);
+
+    const returning = vi.fn().mockResolvedValue([
+      { ...(device as object), status: 'offline' },
+    ]);
+    const updWhere = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where: updWhere });
+    vi.mocked(db.update).mockReturnValue({ set } as never);
+
+    return { set };
+  }
+
+  it('cancels a pending device_remove uninstall on restore', async () => {
+    rigRestore(DECOMMISSIONED_DEVICE);
+    vi.mocked(releaseDeviceRemoveReason).mockResolvedValueOnce({
+      cancelled: 1,
+      retainedOtherOwner: 0,
+      alreadyDispatched: 0,
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.uninstallAlreadyDispatched).toBe(false);
+    expect(releaseDeviceRemoveReason).toHaveBeenCalledWith(DEVICE_ID, 'device_restored');
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'device.restore',
+      details: expect.objectContaining({ uninstallAlreadyDispatched: false }),
+    }));
+  });
+
+  it('leaves a tenant-offboarding-owned uninstall row alive, stripping only device_remove', async () => {
+    rigRestore(DECOMMISSIONED_DEVICE);
+    // retainedOtherOwner: 1 means the row survived the strip because
+    // tenant_offboarding still holds it — releaseDeviceRemoveReason already
+    // guarantees only `device_remove` was removed from uninstall_reasons;
+    // the route must not treat this as an already-dispatched uninstall.
+    vi.mocked(releaseDeviceRemoveReason).mockResolvedValueOnce({
+      cancelled: 0,
+      retainedOtherOwner: 1,
+      alreadyDispatched: 0,
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.uninstallAlreadyDispatched).toBe(false);
+  });
+
+  it('reports uninstallAlreadyDispatched: true when the row is already sent', async () => {
+    rigRestore(DECOMMISSIONED_DEVICE);
+    vi.mocked(releaseDeviceRemoveReason).mockResolvedValueOnce({
+      cancelled: 0,
+      retainedOtherOwner: 0,
+      alreadyDispatched: 1,
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    // The machine may already be gone — the caller must be able to tell this
+    // from the response alone, not just the audit trail.
+    expect(body.uninstallAlreadyDispatched).toBe(true);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'device.restore',
+      details: expect.objectContaining({ uninstallAlreadyDispatched: true }),
+    }));
+  });
+
+  it('restores an ordinary device with no uninstall queued at all', async () => {
+    rigRestore(DECOMMISSIONED_DEVICE);
+    vi.mocked(releaseDeviceRemoveReason).mockResolvedValueOnce({
+      cancelled: 0,
+      retainedOtherOwner: 0,
+      alreadyDispatched: 0,
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.uninstallAlreadyDispatched).toBe(false);
+    expect(releaseDeviceRemoveReason).toHaveBeenCalledWith(DEVICE_ID, 'device_restored');
+  });
+
+  it('does not call releaseDeviceRemoveReason when the device is not decommissioned (400)', async () => {
+    rigRestore({ ...ONLINE_DEVICE, status: 'online' });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
   });
 });

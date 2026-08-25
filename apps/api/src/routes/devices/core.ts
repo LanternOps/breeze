@@ -63,7 +63,7 @@ import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/s
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
+import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
@@ -1560,15 +1560,43 @@ coreRoutes.post(
       .where(eq(devices.id, deviceId))
       .returning();
 
+    // Release our hold on any device-remove-owned uninstall (#3986 task 8) so
+    // it doesn't fire on the device's next check-in now that it's back.
+    // `releaseDeviceRemoveReason` strips only the `device_remove` reason —
+    // a row a tenant-offboarding drain also owns stays alive for that owner
+    // — and cancels the underlying command only while it is still `pending`.
+    //
+    // A row already `sent` CANNOT be recalled here: `claimPendingCommandsForDevice`
+    // (commandDispatch.ts) commits `pending → sent` before the HTTP response
+    // reaches the agent, and the agent's self-uninstall handler hands
+    // teardown to a detached helper and acks immediately (handlers_uninstall.go).
+    // Once a row is `sent` there is no safe claimed-state transition today —
+    // the real fix is an agent-side pre-teardown fence (a `begin` endpoint
+    // that CASes `sent → executing`, serialized against restore), which needs
+    // a Go agent change out of scope for this plan. Tracked as a follow-up:
+    // https://github.com/LanternOps/breeze/issues/3995. Restore deliberately
+    // still SUCCEEDS in that case —
+    // it is a user-facing recovery action and must not be wedged by a race
+    // that lasts seconds — but reports `uninstallAlreadyDispatched: true` so
+    // the caller can tell the user plainly the machine may already be gone
+    // and will need a reinstall.
+    const releaseResult = await releaseDeviceRemoveReason(deviceId, 'device_restored');
+    const uninstallAlreadyDispatched = releaseResult.alreadyDispatched > 0;
+
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.restore',
       resourceType: 'device',
       resourceId: updated?.id ?? deviceId,
-      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
+      details: { uninstallAlreadyDispatched },
     });
 
-    return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
+    return c.json({
+      success: true,
+      device: updated ? stripSensitiveDeviceFields(updated) : updated,
+      uninstallAlreadyDispatched,
+    });
   }
 );
 
