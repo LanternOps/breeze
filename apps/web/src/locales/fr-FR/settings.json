@@ -2419,7 +2419,8 @@
     "categories": "Catégories",
     "export": "Exporter",
     "inboundEmail": "Email entrant",
-    "cannedResponses": "Réponses préfabriquées"
+    "cannedResponses": "Réponses préfabriquées",
+    "checkingAccess": "Vérification de votre accès..."
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",

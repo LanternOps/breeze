@@ -8,7 +8,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
-import { getJwtClaims } from '../../lib/authScope';
+import { getJwtClaims, useJwtClaims } from '../../lib/authScope';
 
 export type PatchApprovalAction = 'approve' | 'decline' | 'defer';
 
@@ -84,20 +84,44 @@ export default function PatchApprovalModal({
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
   // Approval is partner-scoped. Partner/system users can approve partner-wide
   // (no ring) or ring-scoped (ring selected). Org-scoped users cannot approve.
-  const isOrgScope = useMemo(() => getJwtClaims().scope === 'organization', []);
+  //
+  // THREE states, not two (#4013). PatchesPage renders this modal
+  // UNCONDITIONALLY — it is not behind `{modalOpen && ...}` — so it first
+  // renders during the page's cold load, long before the user opens it and
+  // before /auth/refresh has produced an access token. Access tokens are never
+  // persisted, so at that moment every user decodes as `scope: null`. The
+  // previous `useMemo(() => getJwtClaims().scope === 'organization', [])` froze
+  // that answer for the life of the PAGE, so an org-scoped user who cold-loaded
+  // /patches was shown an enabled Approve button with no explanation.
+  //
+  // 'unresolved' is neither: not a denial (no "partner level" banner — we have
+  // not been told no), and not a grant (submit stays disabled — we have not been
+  // told yes). Only a resolved org scope is a denial, which keeps the predicate
+  // identical to the one `handleSubmit` and the server enforce.
+  const jwt = useJwtClaims();
+  const approvalScope: 'unresolved' | 'orgScoped' | 'eligible' =
+    jwt.status === 'unresolved'
+      ? 'unresolved'
+      : jwt.claims.scope === 'organization'
+        ? 'orgScoped'
+        : 'eligible';
+  const isOrgScope = approvalScope === 'orgScoped';
   const canSubmit = useMemo(() => {
     if (isSubmitting) return false;
-    if (isOrgScope) return false;
+    if (approvalScope !== 'eligible') return false;
     if (action !== 'defer') return true;
     return deferUntil.trim().length > 0;
-  }, [action, deferUntil, isSubmitting, isOrgScope]);
+  }, [action, deferUntil, isSubmitting, approvalScope]);
 
   if (!patch) return null;
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
     // Approval is partner-scoped. Org-scoped users cannot approve — block early
-    // before opening the approve confirm dialog.
+    // before opening the approve confirm dialog. The one-shot read is correct
+    // HERE (and only here): an event handler wants the scope as of the click,
+    // and the answer cannot outlive the call. Render-time gates use the reactive
+    // `useJwtClaims()` above.
     const { scope } = getJwtClaims();
     if (scope === 'organization') {
       setSubmitError(t('patchApprovalModal.errors.partnerLevel'));
@@ -263,7 +287,13 @@ export default function PatchApprovalModal({
             onClick={handleSubmit}
             disabled={!canSubmit}
             data-testid="patch-approval-submit"
-            title={isOrgScope ? t('patchApprovalModal.errors.partnerLevel') : undefined}
+            title={
+              isOrgScope
+                ? t('patchApprovalModal.errors.partnerLevel')
+                : approvalScope === 'unresolved'
+                  ? t('patchApprovalModal.checkingAccess')
+                  : undefined
+            }
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span className="inline-flex items-center gap-2">
