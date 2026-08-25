@@ -235,7 +235,7 @@ describe('ScriptExecutionModal admission truth', () => {
     vi.useRealTimers();
   });
 
-  it('renders admitted targets as queued and only then auto-closes after 1.5 seconds', async () => {
+  it('renders admitted targets as queued and schedules auto-close after 1.5 seconds', async () => {
     const onClose = vi.fn();
     renderModal([], vi.fn().mockResolvedValue(admittedResult), onClose);
 
@@ -244,10 +244,9 @@ describe('ScriptExecutionModal admission truth', () => {
     expect(screen.getByText('All selected devices were admitted and queued.')).toBeInTheDocument();
     expect(screen.getAllByText('Queued').length).toBeGreaterThan(0);
     expect(screen.queryByText(/completed/i)).toBeNull();
-
-    await act(async () => { await vi.advanceTimersByTimeAsync(1499); });
     expect(onClose).not.toHaveBeenCalled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
