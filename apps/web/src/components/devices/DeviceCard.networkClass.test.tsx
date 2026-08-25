@@ -153,6 +153,42 @@ describe('DeviceCard network-class guard (#4014)', () => {
     });
   });
 
+  // Review finding: with the kebab and the metrics gone, nothing on the card
+  // said WHY it looked different from its siblings — a printer rendered the
+  // generic monitor glyph, a blank OS line and two dashes, which reads as a
+  // broken agent. The list answers that with a Class badge; the grid now does
+  // too, with the same copy and testid.
+  it('explains itself with the list\'s own Network class badge', () => {
+    render(<DeviceCard device={networkPrinter} />);
+
+    const badge = screen.getByTestId(`device-${networkPrinter.id}-class-badge`);
+    expect(badge.textContent?.trim()).toBe('Network');
+    expect(badge).toHaveAttribute('title', 'Network-discovered device');
+  });
+
+  it('does not badge an agent card', () => {
+    render(<DeviceCard device={agentDevice} />);
+
+    expect(screen.queryByTestId(`device-${agentDevice.id}-class-badge`)).toBeNull();
+    // The agent card keeps the OS version line the badge replaces.
+    expect(screen.getByText('11')).toBeInTheDocument();
+  });
+
+  // The metrics effect gained `isNetwork` in its dependency array. Cards are
+  // keyed by device.id so this transition does not happen in the real grid,
+  // but dropping the dep would leave the fetch permanently skipped for a
+  // component that later becomes an agent — silent and invisible.
+  it('starts fetching metrics if the same card instance becomes an agent', async () => {
+    const { rerender } = render(<DeviceCard device={networkPrinter} />);
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+
+    rerender(<DeviceCard device={{ ...networkPrinter, deviceClass: 'agent' }} />);
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${networkPrinter.id}/metrics?range=1h`);
+    });
+  });
+
   it('treats a row with no deviceClass as an agent (default), keeping the kebab', () => {
     const legacy: Device = { ...agentDevice, deviceClass: undefined };
     render(<DeviceCard device={legacy} onAction={vi.fn()} />);

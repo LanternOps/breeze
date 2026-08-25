@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Monitor,
   MoreVertical,
+  Network,
   Terminal,
   RotateCcw,
   FileCode,
@@ -237,7 +238,14 @@ export default function DeviceCard({
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-            {osIcons[device.os] || <Monitor className="h-5 w-5" />}
+            {isNetwork ? (
+              // A discovered asset has no OS, so `osIcons[""]` would fall back
+              // to the generic monitor glyph — the same one a workstation gets.
+              // The list uses a Network glyph on these rows; match it.
+              <Network className="h-5 w-5" />
+            ) : (
+              osIcons[device.os] || <Monitor className="h-5 w-5" />
+            )}
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -250,7 +258,22 @@ export default function DeviceCard({
                 {t(/* i18n-dynamic */ statusFullLabelKeys[device.status])}
               </span>
             </div>
-            <p className="text-xs text-muted-foreground">{device.osVersion}</p>
+            {isNetwork ? (
+              // Nothing else on the card says WHY this one has no actions and
+              // no metrics. The list answers that with a Class badge; without
+              // it the grid card just looks like a broken agent. Same copy,
+              // same testid, same palette as DeviceList's class column.
+              <span
+                data-testid={`device-${device.id}-class-badge`}
+                title={t("deviceList.networkDiscoveredDevice")}
+                className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-info/30 bg-info/15 px-2 py-0.5 text-[10px] font-medium text-info"
+              >
+                <Network className="h-3 w-3" />
+                {t("deviceList.network")}
+              </span>
+            ) : (
+              <p className="text-xs text-muted-foreground">{device.osVersion}</p>
+            )}
           </div>
         </div>
         {isNetwork ? (

@@ -110,7 +110,10 @@ vi.mock('./ScriptPickerModal', () => ({
       </button>
     ) : null,
 }));
-vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
+// A spy, not a bare stub: the modal renders null either way, so the ONLY way a
+// test can observe whether runDeviceAction's `settings` branch ran is whether
+// this component was invoked at all (#4014).
+vi.mock('./DeviceSettingsModal', () => ({ default: vi.fn(() => null) }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
@@ -139,6 +142,22 @@ vi.mock('./DeviceCard', () => ({
         aria-label="card decommission"
         data-testid={`card-decommission-${device.id}`}
         onClick={() => onAction?.('decommission', device)}
+      />
+      {/* The two non-confirm-gated kebab actions, so the #4014 network guard
+          can be proven for an action that does NOT pass through the #4009
+          confirm dialog — a guard that only held for confirm-gated actions
+          would look green here while leaving run-script and settings open. */}
+      <button
+        type="button"
+        aria-label="card run script"
+        data-testid={`card-run-script-${device.id}`}
+        onClick={() => onAction?.('run-script', device)}
+      />
+      <button
+        type="button"
+        aria-label="card settings"
+        data-testid={`card-settings-${device.id}`}
+        onClick={() => onAction?.('settings', device)}
       />
     </div>
   ),
@@ -1605,7 +1624,7 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
 // point behind the list kebab, the grid card and DeviceSettingsModal — took any
 // device it was handed. The real DeviceCard (stubbed in this file) had no
 // deviceClass branch at all, so the grid kebab offered Terminal / Run Script /
-// Reboot / Settings / Decommission for a network-discovered asset, whose id is
+// Reboot / Settings / Remove for a network-discovered asset, whose id is
 // a `discovered_assets.id` and NOT a `devices.id`. The card now collapses to a
 // "View" button (pinned against the real component in
 // DeviceCard.networkClass.test.tsx); this pins the handler's backstop, so a
@@ -1690,6 +1709,41 @@ describe('DevicesPage — single-device actions refuse network rows (#4014)', ()
       );
     });
     expect(vi.mocked(sendDeviceCommand)).not.toHaveBeenCalled();
+  });
+
+  // The guard is a single early return with no per-action branching, but it
+  // sits in front of BOTH the confirm-gated and the ungated paths. reboot and
+  // decommission above only exercise the confirm-gated one; these two prove the
+  // ungated actions (which reach runDeviceAction directly) are refused as well.
+  it('refuses run-script — the script picker never opens on an asset id', async () => {
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-run-script-${NET_1}`));
+
+    await waitFor(async () => {
+      expect(await toastMessages()).toContainEqual(
+        expect.stringMatching(/applies to agent devices only/i)
+      );
+    });
+    expect(screen.queryByTestId('pick-script')).toBeNull();
+  });
+
+  it('refuses settings — the device settings modal never opens on an asset id', async () => {
+    const settingsModal = await import('./DeviceSettingsModal');
+    const settingsSpy = vi.mocked(settingsModal.default);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-settings-${NET_1}`));
+
+    await waitFor(async () => {
+      expect(await toastMessages()).toContainEqual(
+        expect.stringMatching(/applies to agent devices only/i)
+      );
+    });
+    // DeviceSettingsModal is only rendered once settingsDevice is set, which
+    // only runDeviceAction's `settings` branch does.
+    expect(settingsSpy).not.toHaveBeenCalled();
   });
 
   it('still runs the action for an agent row (the guard is not a blanket block)', async () => {
