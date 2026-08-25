@@ -28,6 +28,7 @@ import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
@@ -196,6 +197,60 @@ const createOrganizationSchema = z.object({
 const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
   status: z.enum(['active', 'suspended', 'trial', 'churned', 'offboarding']).optional(),
 });
+
+// #3967 — `organizations.slug` is unique PER PARTNER, case-insensitively, and
+// for the lifetime of the row (`organizations_partner_slug_uniq`; see
+// migrations/2026-09-08-organizations-partner-slug-unique.sql for why each of
+// those three properties was chosen).
+//
+// Two things enforce it and they are not interchangeable:
+//   * the index, which is the actual guarantee; and
+//   * this pre-check, which exists only so the caller gets a 409 with a
+//     sentence instead of a raw 23505 rendered as a 500.
+// The pre-check is inherently racy (two concurrent creates both pass it), so
+// every write path below ALSO maps the unique violation to the same 409.
+//
+// It has to run under a SYSTEM db context: `organizations` is policed by
+// breeze_has_org_access(id), so a partner-scope caller whose accessible org set
+// excludes the clashing org would read zero rows here and fall through to the
+// 23505 anyway.
+const ORG_SLUG_UNIQUE_INDEX = 'organizations_partner_slug_uniq';
+
+interface OrgSlugConflict {
+  id: string;
+  deletedAt: Date | null;
+}
+
+async function findOrgSlugConflict(
+  partnerId: string,
+  slug: string,
+  excludeOrgId?: string
+): Promise<OrgSlugConflict | null> {
+  const conditions = [
+    eq(organizations.partnerId, partnerId),
+    sql`lower(${organizations.slug}) = lower(${slug})`
+  ];
+  if (excludeOrgId) conditions.push(ne(organizations.id, excludeOrgId));
+
+  const [row] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: organizations.id, deletedAt: organizations.deletedAt })
+        .from(organizations)
+        .where(and(...conditions))
+        .limit(1)
+    )
+  );
+  return row ?? null;
+}
+
+// A clash against a soft-deleted org is invisible to the caller, so say so —
+// otherwise "already in use" points at an organization they cannot find.
+function orgSlugConflictMessage(conflict: OrgSlugConflict | null): string {
+  return conflict?.deletedAt
+    ? 'That organization slug is still reserved by a deleted organization'
+    : 'That organization slug is already in use';
+}
 
 const listSitesSchema = z.object({
   orgId: z.string().guid().optional(),
@@ -1410,6 +1465,13 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     return c.json({ error: 'Partner not found' }, 404);
   }
 
+  // #3967 — refuse a duplicate slug with a 409 before inserting. Backed by the
+  // 23505 catch below, which is what actually closes the race.
+  const slugConflict = await findOrgSlugConflict(targetPartnerId, data.slug);
+  if (slugConflict) {
+    return c.json({ error: orgSlugConflictMessage(slugConflict) }, 409);
+  }
+
   const insertValues = {
     partnerId: targetPartnerId,
     currencyCode: partnerRow.currencyCode,
@@ -1430,7 +1492,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   // request's auth-scoped tx via runOutsideDbContext and open a fresh
   // system-scoped tx for just this insert. Atomicity with the rest of the
   // handler isn't a concern — the only follow-up here is an audit write.
-  const [organization] = await runOutsideDbContext(() =>
+  const insertOrganization = () => runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const created = await db.insert(organizations).values(insertValues).returning();
       // The `contacts` mirror is written inside this SAME system-scoped context,
@@ -1445,6 +1507,24 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
       return created;
     })
   );
+
+  // The pre-check above is racy by construction; organizations_partner_slug_uniq
+  // is what actually holds, so translate its violation into the same 409 rather
+  // than letting a 23505 surface as a 500.
+  let organization: Awaited<ReturnType<typeof insertOrganization>>[number] | undefined;
+  try {
+    [organization] = await insertOrganization();
+  } catch (error) {
+    if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
+      // Only reachable when a concurrent write claimed the slug between the
+      // pre-check and this statement. Logged because a spike here means the
+      // pre-check has stopped working, and a bare 409 would look identical to
+      // ordinary user error in Sentry.
+      console.warn(`[orgs] ${ORG_SLUG_UNIQUE_INDEX} race lost — duplicate slug rejected by the index, not the pre-check`);
+      return c.json({ error: 'That organization slug is already in use' }, 409);
+    }
+    throw error;
+  }
 
   writeRouteAudit(c, {
     orgId: organization?.id,
@@ -1761,6 +1841,29 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     return c.json({ error: 'No updates provided' }, 400);
   }
 
+  // #3967 — same per-partner slug guard as create. The org's own partner is
+  // resolved under a system context rather than taken from `auth.partnerId`,
+  // which is null for a system-scope caller and would silently scope the clash
+  // query to the wrong tenant.
+  if (data.slug !== undefined) {
+    const [target] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
+          .limit(1)
+      )
+    );
+    if (!target) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+    const slugConflict = await findOrgSlugConflict(target.partnerId, data.slug, id);
+    if (slugConflict) {
+      return c.json({ error: orgSlugConflictMessage(slugConflict) }, 409);
+    }
+  }
+
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (data.name !== undefined) updates.name = data.name;
   if (data.slug !== undefined) updates.slug = data.slug;
@@ -1819,9 +1922,24 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     return rows;
   };
 
-  const [organization] = suspendedLifecycleOverride
-    ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
-    : await runUpdate();
+  // See the create path: the slug pre-check above cannot close the race, so the
+  // index's 23505 gets the same 409 treatment here too.
+  let organization: Awaited<ReturnType<typeof runUpdate>>[number] | undefined;
+  try {
+    [organization] = suspendedLifecycleOverride
+      ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
+      : await runUpdate();
+  } catch (error) {
+    if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
+      // Only reachable when a concurrent write claimed the slug between the
+      // pre-check and this statement. Logged because a spike here means the
+      // pre-check has stopped working, and a bare 409 would look identical to
+      // ordinary user error in Sentry.
+      console.warn(`[orgs] ${ORG_SLUG_UNIQUE_INDEX} race lost — duplicate slug rejected by the index, not the pre-check`);
+      return c.json({ error: 'That organization slug is already in use' }, 409);
+    }
+    throw error;
+  }
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);

@@ -941,7 +941,7 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
     );
 
     const hint = screen.getByTestId('decommissioned-hidden-hint');
-    expect(hint).toHaveTextContent('1 decommissioned hidden');
+    expect(hint).toHaveTextContent('1 removed hidden');
 
     fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
     expect(onShow).toHaveBeenCalledTimes(1);
@@ -1106,7 +1106,7 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     openRowMenu();
 
     expect(runScriptBtn()).toBeDisabled();
-    expect(runScriptBtn()).toHaveAttribute('title', 'Device is decommissioned');
+    expect(runScriptBtn()).toHaveAttribute('title', 'Device is removed');
     fireEvent.click(runScriptBtn());
     expect(onAction).not.toHaveBeenCalled();
   });
@@ -1166,7 +1166,7 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
   it.each([
     ['offline', 'Device is offline'],
     ['maintenance', 'Device is in maintenance mode'],
-    ['decommissioned', 'Device is decommissioned'],
+    ['decommissioned', 'Device is removed'],
     ['quarantined', 'Device is quarantined'],
     ['updating', 'Device is updating'],
     ['pending', 'Device is pending enrollment'],
@@ -1217,7 +1217,7 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
 
     const btn = screen.getByRole('button', { name: /^reboot$/i });
     expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute('title', 'Device is decommissioned');
+    expect(btn).toHaveAttribute('title', 'Device is removed');
     fireEvent.click(btn);
     expect(onAction).not.toHaveBeenCalled();
   });
@@ -1270,6 +1270,30 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     render(<DeviceList devices={[baseDevice]} />);
     openRowMenu();
     expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
+  });
+
+  // #3987 fix wave 2: the entire `status === 'decommissioned'` menu branch —
+  // including the pre-existing Restore button, not just the new
+  // permanent-delete one — had never been rendered by a test. Pair every
+  // negative with a positive: a lone .not.toBeInTheDocument() would pass
+  // whether or not the branch is wired correctly.
+  it('decommissioned device: shows Restore + permanent delete, not the remove action', () => {
+    const device: Device = { ...baseDevice, status: 'decommissioned' };
+    render(<DeviceList devices={[device]} includeDecommissioned />);
+    openRowMenu();
+
+    expect(screen.getByTestId(`device-${device.id}-action-restore`)).toBeInTheDocument();
+    expect(screen.getByTestId(`device-${device.id}-action-permanent-delete`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${device.id}-action-remove`)).not.toBeInTheDocument();
+  });
+
+  it('non-decommissioned device: shows the remove action, not Restore/permanent-delete', () => {
+    render(<DeviceList devices={[baseDevice]} />);
+    openRowMenu();
+
+    expect(screen.getByTestId(`device-${baseDevice.id}-action-remove`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${baseDevice.id}-action-restore`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${baseDevice.id}-action-permanent-delete`)).not.toBeInTheDocument();
   });
 });
 

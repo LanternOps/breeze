@@ -329,6 +329,11 @@ services:
       # apps/api/src/config/envComposeParity.test.ts.
       # Auth / security / session
       ENABLE_2FA: ${ENABLE_2FA:-}
+      # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
+      # Mapped so the knob is actually reachable inside the container — a value
+      # present only in .env is inert unless it is listed here.
+      AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-}
+      AUTH_REFRESH_RATE_WINDOW_SECONDS: ${AUTH_REFRESH_RATE_WINDOW_SECONDS:-}
       BREEZE_PLATFORM_ADMINS: ${BREEZE_PLATFORM_ADMINS:-}
       SESSION_SECRET: ${SESSION_SECRET:-}
       IP_ALLOWLIST_ENFORCEMENT_MODE: ${IP_ALLOWLIST_ENFORCEMENT_MODE:-}

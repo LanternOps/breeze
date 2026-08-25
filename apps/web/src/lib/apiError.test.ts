@@ -225,4 +225,89 @@ describe('extractApiError — new shapes', () => {
   it('falls back when nothing parses', () => {
     expect(extractApiError({ weird: 1 }, 'fallback msg')).toBe('fallback msg');
   });
+
+  // #3989 — hand-rolled route validators return `details` as a plain array of
+  // strings, not a zod payload. `joinZodIssues` wants objects carrying
+  // `.message` and returns null for strings, so this was dropped entirely and
+  // the user saw only the generic top-level `error`: the same sentence whether
+  // the scheme was wrong, the hostname was missing, or SSRF protection rejected
+  // the target.
+  it('renders a plain string[] details alongside the top-level error', () => {
+    expect(
+      extractApiError(
+        {
+          error: 'Invalid webhook channel configuration',
+          details: ['Webhook URL must use HTTPS', 'Webhook URL hostname is required'],
+        },
+        'FALLBACK'
+      )
+    ).toBe(
+      'Invalid webhook channel configuration: Webhook URL must use HTTPS; Webhook URL hostname is required'
+    );
+  });
+
+  it('ignores non-string entries rather than printing [object Object]', () => {
+    // EXACT, not toContain: `toContain('real message')` also passes when the
+    // output additionally contains "[object Object]" or "null", which is the
+    // precise thing this test exists to rule out.
+    expect(
+      extractApiError({ error: 'Nope', details: [{ a: 1 }, 'real message', null] }, 'FALLBACK')
+    ).toBe('Nope: real message');
+  });
+
+  // The ordering bug: with a zod-issues branch tried BEFORE a string branch,
+  // this returned 'Bad request: name is required' and silently dropped the
+  // plain string. Both representations can appear in one array and both are
+  // reasons the user needs.
+  it('keeps BOTH object .message and plain-string entries in a mixed array', () => {
+    expect(
+      extractApiError(
+        {
+          error: 'Bad request',
+          details: [{ message: 'name is required' }, 'Webhook URL must use HTTPS']
+        },
+        'FALLBACK'
+      )
+    ).toBe('Bad request: name is required; Webhook URL must use HTTPS');
+  });
+
+  // A pure zod issues array must render EXACTLY as it did before the array
+  // branches were merged. `toBe`, not `toContain`: toContain would also pass
+  // on duplicated text, a changed prefix, or extra trailing garbage, which is
+  // precisely what a bad merge would produce.
+  it('renders a pure zod issues array identically after the branch merge', () => {
+    expect(
+      extractApiError({ error: 'Bad', details: [{ message: 'name is required' }] }, 'FALLBACK')
+    ).toBe('Bad: name is required');
+  });
+
+  // The aggregate shape: the top-level error is the SAME text as the details,
+  // just joined. No individual message equals it, so a per-message rule alone
+  // prints the whole thing twice.
+  it('suppresses details that are only the top-level error split into parts', () => {
+    expect(
+      extractApiError(
+        {
+          error: 'name is required; email is invalid',
+          details: [{ message: 'name is required' }, { message: 'email is invalid' }]
+        },
+        'FALLBACK'
+      )
+    ).toBe('name is required; email is invalid');
+  });
+
+  // The per-message dedup: comparing the top-level error against the WHOLE
+  // joined details string only dedupes when every detail repeats it, so this
+  // input printed 'name is required' twice.
+  it('drops only the detail that repeats the top-level error, keeping the rest', () => {
+    expect(
+      extractApiError(
+        {
+          error: 'name is required',
+          details: [{ message: 'name is required' }, 'Webhook URL must use HTTPS']
+        },
+        'FALLBACK'
+      )
+    ).toBe('name is required: Webhook URL must use HTTPS');
+  });
 });

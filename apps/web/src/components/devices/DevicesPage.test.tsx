@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
@@ -118,9 +118,10 @@ vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable, and
-// re-emits reboot so the GRID path through handleDeviceAction is covered too —
-// the real DeviceCard emits it from its own kebab (DeviceCard.tsx), and #3698's
-// gate lives on the shared handler, so both surfaces inherit it.
+// re-emits reboot + decommission so the GRID path through handleDeviceAction is
+// covered too — the real DeviceCard's kebab emits both via the same
+// `onAction?.(...)` calls, and the #3698/#4009 gate lives on the shared handler,
+// so both surfaces inherit it.
 vi.mock('./DeviceCard', () => ({
   default: ({ device, onAction }: { device: { id: string; hostname: string }; onAction?: (action: string, device: unknown) => void }) => (
     <div data-testid={`device-card-${device.id}`}>
@@ -132,6 +133,12 @@ vi.mock('./DeviceCard', () => ({
         aria-label="card reboot"
         data-testid={`card-reboot-${device.id}`}
         onClick={() => onAction?.('reboot', device)}
+      />
+      <button
+        type="button"
+        aria-label="card decommission"
+        data-testid={`card-decommission-${device.id}`}
+        onClick={() => onAction?.('decommission', device)}
       />
     </div>
   ),
@@ -176,7 +183,17 @@ vi.mock('./DeviceList', () => ({
         </button>
       ))}
       {/* Drives DevicesPage.handleDeviceAction for ONE device — the row-menu /
-          grid-card path, as opposed to the bulk buttons above. */}
+          grid-card path, as opposed to the bulk buttons above. The real row
+          kebab emits the same three via `onAction?.(...)` from DeviceList's
+          actions cell. The decommission/restore buttons are deliberately
+          text-free so they cannot collide with the sibling getByText assertions
+          that match on the word "decommissioned".
+
+          Status is NOT modelled here: in the real menus `restore` renders only
+          for a decommissioned device and `decommission` only for one that is
+          not, so this stub proves handleDeviceAction's dispatch, never that the
+          two are mutually exclusive on screen. That conditional belongs to
+          DeviceList/DeviceCard's own suites. */}
       {devices.map(d => (
         <button
           key={`row-reboot-${d.id}`}
@@ -186,6 +203,24 @@ vi.mock('./DeviceList', () => ({
         >
           row reboot {d.id}
         </button>
+      ))}
+      {devices.map(d => (
+        <button
+          key={`row-decommission-${d.id}`}
+          type="button"
+          aria-label={`row decommission ${d.id}`}
+          data-testid={`row-decommission-${d.id}`}
+          onClick={() => onAction?.('decommission', d)}
+        />
+      ))}
+      {devices.map(d => (
+        <button
+          key={`row-restore-${d.id}`}
+          type="button"
+          aria-label={`row restore ${d.id}`}
+          data-testid={`row-restore-${d.id}`}
+          onClick={() => onAction?.('restore', d)}
+        />
       ))}
       {onShowDecommissioned && (
         <button
@@ -769,7 +804,7 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
 
     // Hidden rows are called out; only the online card renders.
     const hint = await screen.findByTestId('decommissioned-hidden-hint');
-    expect(hint).toHaveTextContent('2 decommissioned hidden');
+    expect(hint).toHaveTextContent('2 removed hidden');
     expect(screen.getByTestId(`device-card-${DEV_1}`)).toBeTruthy();
     expect(screen.queryByTestId(`device-card-${DEV_2}`)).toBeNull();
 
@@ -1054,7 +1089,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     // 2; a prefix-only match would never notice.
     expect(
       screen.getByText(
-        /1 of 3 selected devices are decommissioned and will be skipped.*Continue with the remaining 2 device\(s\)\?/i,
+        /1 of 3 selected devices are removed and will be skipped.*Continue with the remaining 2 device\(s\)\?/i,
       ),
     ).toBeTruthy();
 
@@ -1122,7 +1157,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     await waitFor(() => {
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-      expect(messages.some(m => /all 2 selected device\(s\) are decommissioned/i.test(m))).toBe(true);
+      expect(messages.some(m => /all 2 selected device\(s\) are already removed/i.test(m))).toBe(true);
     });
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
     expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
@@ -1151,6 +1186,82 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     const [, deviceIds] = vi.mocked(executeScript).mock.calls[0];
     // Offline device still gets the script — it runs on reconnect.
     expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2].sort());
+  });
+
+  // #3987 fix wave: bulk Remove ("decommission") was the one action exempted
+  // from this gate — reasoning "retiring dead machines IS the use case" — which
+  // is true for OFFLINE devices but not for ones that are ALREADY removed.
+  // bulkDecommissionDevices fires one DELETE /devices/:id per selected device,
+  // and the API 400s "Device is already decommissioned" for an already-removed
+  // one, so an ungated mixed/all-removed selection fired doomed requests.
+  it('bulk Remove: skips the already-removed device and still removes the offline one', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: [] } as never);
+
+    boundaryFleet();
+    await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    expect(await screen.findByTestId('confirm-decommissioned-skip')).toBeTruthy();
+    expect(vi.mocked(bulkDecommissionDevices)).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
+
+    await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
+    // DEV_3 (already decommissioned) must NOT be re-submitted — that's the
+    // doomed request the API 400s. DEV_2 (offline) IS a legitimate target:
+    // retiring a dead machine is still the use case.
+    const submitted = vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as Array<{ id: string; hostname: string }>;
+    expect([...submitted.map(d => d.id)].sort()).toEqual([DEV_1, DEV_2].sort());
+  });
+
+  it('bulk Remove: refuses outright when EVERY selected device is already removed', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+      ],
+    } as never);
+    await renderMixedFleet([DEV_1, DEV_2]);
+
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /all 2 selected device\(s\) are already removed/i.test(m))).toBe(true);
+    });
+    expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
+    expect(vi.mocked(bulkDecommissionDevices)).not.toHaveBeenCalled();
+  });
+
+  // #3987 fix wave 2: a partial-failure batch previously collapsed into a bare
+  // "Bulk Remove Failed" — the user couldn't tell how many succeeded, which
+  // devices failed, or why. Assert the toast now names both counts and the
+  // failed hostnames.
+  it('bulk Remove: partial failure names both counts and the failed device', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'online' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'online' },
+      ],
+    } as never);
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({
+      succeeded: 1,
+      failed: [{ id: DEV_2, hostname: 'host-beta' }],
+    } as never);
+    await renderMixedFleet([DEV_1, DEV_2]);
+
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /1/.test(m) && /host-beta/.test(m))).toBe(true);
+    });
   });
 
   // Queued commands can fire at devices with no connected agent. A 201 there
@@ -1352,6 +1463,143 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   });
 });
 
+// #4009: `decommission` from the row kebab / grid card fired on a single click
+// while the device DETAIL page had always confirmed it — the same split-brain
+// #3698 set out to remove, left on the one kebab action that pulls a machine out
+// of monitoring. Nothing had to be built: the dialog renderer already composes
+// `deviceActions.confirm.${action}.*` and those decommission strings already
+// shipped for the detail page. Only CONFIRM_REQUIRED_ACTIONS omitted the action,
+// which is precisely the kind of one-token regression a test pins cheaply.
+//
+// Note the 5s undo toast inside runDeviceAction is NOT this gate. It is a
+// post-hoc recovery window that a user who has looked away never sees, and it
+// was already there while the bug was live.
+describe('DevicesPage — decommission from the row/grid kebab is confirm-gated (#4009)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+  });
+
+  async function mockedDecommission() {
+    const { decommissionDevice } = await import('../../services/deviceActions');
+    vi.mocked(decommissionDevice).mockResolvedValue(undefined as never);
+    return vi.mocked(decommissionDevice);
+  }
+
+  async function toastTypes(): Promise<string[]> {
+    const { showToast } = await import('../shared/Toast');
+    return vi.mocked(showToast).mock.calls.map(c => c[0].type);
+  }
+
+  it('row kebab opens the dialog instead of decommissioning, in the detail page\'s own words', async () => {
+    const decommissionDevice = await mockedDecommission();
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+
+    // Pre-#4009 this went straight into runDeviceAction, whose decommission
+    // branch synchronously raises the undo toast and schedules the API call.
+    // Neither may happen before the operator has answered.
+    expect(decommissionDevice).not.toHaveBeenCalled();
+    expect(await toastTypes()).not.toContain('undo');
+
+    // The SAME keys DeviceActions.tsx renders — proving no new copy was needed
+    // and that the two screens still read identically. The VALUES moved to
+    // "Remove" in #3987/#3994 (the action id stayed `decommission`); asserting
+    // the rendered text is what makes a future divergence between the two
+    // screens visible here, so these track the copy deliberately.
+    expect(await screen.findByText('Remove Device')).toBeTruthy();
+    expect(screen.getByText(/remove host-alpha\?/i)).toBeTruthy();
+
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
+    expect(confirmBtn.textContent).toBe('Remove');
+    // DeviceActions.tsx grades decommission `destructive`. ConfirmDialog encodes
+    // that as a stop-octagon, not just a colour, so a drift to `warning` here
+    // would visibly downgrade the severity on the denser of the two surfaces.
+    expect(confirmBtn.className).toContain('bg-destructive');
+  });
+
+  it('cancelling the dialog decommissions nothing', async () => {
+    const decommissionDevice = await mockedDecommission();
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+    await screen.findByTestId('confirm-device-action');
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByTestId('confirm-device-action')).toBeNull());
+    expect(decommissionDevice).not.toHaveBeenCalled();
+    expect(await toastTypes()).not.toContain('undo');
+  });
+
+  it('confirming still decommissions the device, undo window and all', async () => {
+    const decommissionDevice = await mockedDecommission();
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
+
+    // Only setTimeout is faked: the undo window is a plain 5s timer inside
+    // runDeviceAction, and faking Date/microtasks as well would disturb React's
+    // own scheduling for the rest of this render.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(confirmBtn);
+      // The decommission branch runs synchronously up to the timer, so both of
+      // these are already settled: gate cleared, nothing sent yet.
+      expect(await toastTypes()).toContain('undo');
+      expect(decommissionDevice).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(decommissionDevice).toHaveBeenCalledTimes(1);
+    expect(decommissionDevice).toHaveBeenCalledWith(DEV_1);
+  });
+
+  // The gate lives on the shared handleDeviceAction, so the grid card inherits
+  // it — the same follow-up Todd flagged as gated-but-untested on #3698.
+  //
+  // Scope, so this is not read as a clean bill of health for the grid kebab:
+  // it proves the CONFIRM gate reaches the card, nothing more. DeviceCard has
+  // no deviceClass branch at all, where DeviceList swaps the whole actions cell
+  // for a "View" button on network rows (their id is a discovered_assets.id,
+  // not a devices.id — #1322). So the grid kebab still offers decommission,
+  // reboot and terminal for a network asset. That predates #4009 and is filed
+  // as #4014; the confirm added here at least puts a dialog in front of it.
+  it('grid card decommission is gated on the same terms as the list row', async () => {
+    const decommissionDevice = await mockedDecommission();
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-decommission-${DEV_1}`));
+
+    expect(decommissionDevice).not.toHaveBeenCalled();
+    expect(await screen.findByText('Remove Device')).toBeTruthy();
+  });
+
+  // Deliberate scope boundary (#4009): `restore` is the UNDO of a decommission.
+  // Gating it would put a dialog in front of the recovery path, so it stays
+  // ungated — pinned here so a future "confirm every lifecycle action" sweep has
+  // to argue with a test rather than quietly change the answer.
+  it('restore stays ungated — it is the recovery path, not a destructive one', async () => {
+    const { restoreDevice } = await import('../../services/deviceActions');
+    vi.mocked(restoreDevice).mockResolvedValue(undefined as never);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-restore-${DEV_1}`));
+
+    await waitFor(() => expect(vi.mocked(restoreDevice)).toHaveBeenCalledWith(DEV_1));
+    expect(screen.queryByTestId('confirm-device-action')).toBeNull();
+  });
+});
+
 // The #1322 network-row filter and the #2465 decommissioned gate run back-to-back
 // over the same selection and had never been exercised TOGETHER. Ordering is
 // load-bearing: a network row's id is a discovered_assets.id, not a devices.id,
@@ -1422,7 +1670,7 @@ describe('DevicesPage — network filter + decommissioned gate compose (#1322 ×
     expect(await screen.findByTestId('confirm-decommissioned-skip')).toBeTruthy();
     // Denominator is the AGENT selection (3), not the raw 4 — the network row is
     // already accounted for by its own toast.
-    expect(screen.getByText(/1 of 3 selected devices are decommissioned/i)).toBeTruthy();
+    expect(screen.getByText(/1 of 3 selected devices are removed/i)).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
 
@@ -1457,16 +1705,15 @@ describe('DevicesPage — ungated bulk actions still work on an all-offline flee
 
   it('decommissions every offline device — no gate, no confirm', async () => {
     const { bulkDecommissionDevices } = await import('../../services/deviceActions');
-    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ decommissioned: 2, failed: [] } as never);
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: [] } as never);
 
     await renderOfflineFleet();
     fireEvent.click(screen.getByTestId('bulk-decommission'));
 
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
-    expect([...(vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as string[])].sort()).toEqual(
-      [DEV_1, DEV_2].sort(),
-    );
+    const submitted = vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as Array<{ id: string; hostname: string }>;
+    expect([...submitted.map(d => d.id)].sort()).toEqual([DEV_1, DEV_2].sort());
   });
 
   it('flags every offline device into maintenance — no gate, no confirm', async () => {

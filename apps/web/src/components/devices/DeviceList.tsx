@@ -2334,6 +2334,7 @@ export default function DeviceList({
                             <button
                               type="button"
                               aria-label={t("deviceList.deviceActions")}
+                              data-testid={`device-${device.id}-actions-menu`}
                               ref={
                                 rowMenuOpenId === device.id
                                   ? rowMenuButtonRef
@@ -2484,20 +2485,36 @@ export default function DeviceList({
                                   </button>
                                   <hr className="my-1" />
                                   {device.status === "decommissioned" ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        onAction?.("restore", device);
-                                        setRowMenuOpenId(null);
-                                      }}
-                                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
-                                    >
-                                      <RotateCcw className="h-4 w-4" />
-                                      {t("deviceList.restore")}{" "}
-                                    </button>
+                                    <>
+                                      <button
+                                        type="button"
+                                        data-testid={`device-${device.id}-action-restore`}
+                                        onClick={() => {
+                                          onAction?.("restore", device);
+                                          setRowMenuOpenId(null);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                                      >
+                                        <RotateCcw className="h-4 w-4" />
+                                        {t("deviceList.restore")}{" "}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        data-testid={`device-${device.id}-action-permanent-delete`}
+                                        onClick={() => {
+                                          onAction?.("permanent-delete", device);
+                                          setRowMenuOpenId(null);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                        {t("deviceList.permanentlyDelete")}
+                                      </button>
+                                    </>
                                   ) : (
                                     <button
                                       type="button"
+                                      data-testid={`device-${device.id}-action-remove`}
                                       onClick={() => {
                                         onAction?.("decommission", device);
                                         setRowMenuOpenId(null);

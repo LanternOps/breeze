@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { bootstrapFromCfAccessRedirect, bootstrapFromSsoCode, restoreAccessTokenFromCookie, settleSsoLoginGate, useAuthStore } from '../../stores/auth';
+import { bootstrapFromCfAccessRedirect, bootstrapFromSsoCode, restoreAccessTokenFromCookieDetailed, settleSsoLoginGate, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import { navigateTo } from '../../lib/navigation';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -57,7 +57,7 @@ function consumeCfAccessLoginParam(): boolean {
 
 export default function AuthOverlay() {
   const { t } = useTranslation('auth');
-  const { isAuthenticated, isLoading, tokens, sessionExpiredReason } = useAuthStore();
+  const { isAuthenticated, isLoading, tokens, sessionExpiredReason, authThrottledUntil } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
@@ -83,6 +83,11 @@ export default function AuthOverlay() {
       // `handleSessionExpired` owns the navigation this must stay dormant, or
       // its soft nav races the hard redirect and drops `next`/`reason`.
       if (state.sessionExpiredReason) return;
+      // A rate-limited refresh legitimately takes longer than this timer
+      // (the server's window is 60s). Bouncing to /login here would reinstate
+      // exactly the forced logout #3696 removes — the throttle mask below owns
+      // the recovery, including its own auto-retry.
+      if (state.authThrottledUntil && state.authThrottledUntil > Date.now()) return;
       if (!state.isAuthenticated || !state.tokens?.accessToken) {
         redirectToLogin();
       }
@@ -199,11 +204,17 @@ export default function AuthOverlay() {
       setRecoverAttempted(true);
       setIsRecovering(true);
 
-      void restoreAccessTokenFromCookie().then((restored) => {
+      void restoreAccessTokenFromCookieDetailed().then((outcome) => {
         if (cancelled) return;
         setIsRecovering(false);
 
-        if (!restored) {
+        // 'throttled' (#3696) is NOT a dead session — the server rate-limited
+        // /auth/refresh and never judged the cookie. Bouncing to /login here is
+        // the forced-logout bug. The throttle mask below takes over: it shows
+        // why the page is waiting and retries when the window elapses.
+        if (outcome === 'throttled') return;
+
+        if (outcome !== 'restored') {
           redirectToLogin();
         }
       });
@@ -265,6 +276,31 @@ export default function AuthOverlay() {
     );
   }
 
+  // Refresh-throttle mask (#3696). Rendered AFTER the expiry branch (a real
+  // expiry always wins) but BEFORE the `fadeState === 'hidden'` early return,
+  // for the same reason the expiry mask is: by the time a mid-session refresh
+  // gets throttled this overlay has faded out and unmounted, and without this
+  // branch the user sees a fully-painted page whose every data call 401'd with
+  // no explanation — the silent variant of this bug, which is worse than the
+  // logout because it looks like real (empty) data.
+  //
+  // Non-destructive by construction: the session is untouched, nothing is
+  // logged out, and recovery is automatic.
+  //
+  // Gated on there being no usable access token, and that gate is load-bearing.
+  // The justification above only holds when the token is gone — that is what
+  // makes the data calls 401. A throttle can also arrive on a refresh the user
+  // never needed: AdminSessionManager runs a keepalive `refreshAccessToken()`
+  // on an interval while `isAuthenticated` (AdminSessionManager.tsx:308-320),
+  // so a 429 there lands while the access token is still valid and every data
+  // call is still succeeding. Masking that session would be wrong on its own,
+  // and `AuthThrottledMask` ends its countdown with `window.location.reload()`
+  // — so an unconditional branch would throw away unsaved work to "recover" a
+  // session that was never impaired. See #3696 review.
+  if (authThrottledUntil !== null && !tokens?.accessToken) {
+    return <AuthThrottledMask retryAt={authThrottledUntil} />;
+  }
+
   if (fadeState === 'hidden') {
     return null;
   }
@@ -295,4 +331,79 @@ export default function AuthOverlay() {
 
 function redirectToLogin() {
   void navigateTo('/login', { replace: true });
+}
+
+/**
+ * Shown while POST /auth/refresh is rate-limited (#3696). The session is fine —
+ * this is a wait, not an eviction — so the copy must not say "expired".
+ *
+ * Recovery is a full reload rather than an in-place retry: the web app is an
+ * Astro MPA whose access token is memory-only, so a fresh document is exactly
+ * what re-runs the bootstrap refresh. The reload is what spends the next slot.
+ */
+function AuthThrottledMask({ retryAt }: { retryAt: number }) {
+  const { t } = useTranslation('auth');
+  const [secondsLeft, setSecondsLeft] = useState(() =>
+    Math.max(0, Math.ceil((retryAt - Date.now()) / 1000))
+  );
+
+  useEffect(() => {
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+      setSecondsLeft(remaining);
+      if (remaining === 0 && typeof window !== 'undefined') {
+        window.location.reload();
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [retryAt]);
+
+  return (
+    <div
+      data-testid="auth-throttled-overlay"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background"
+    >
+      <div className="max-w-sm text-center">
+        <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+        <p className="mt-4 text-sm font-medium">
+          {t('common.refreshThrottledTitle', {
+            defaultValue: 'Too many requests — reconnecting',
+          })}
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {t('common.refreshThrottledBody', {
+            count: secondsLeft,
+            defaultValue: "You're still signed in. Retrying in {{count}}s…",
+          })}
+        </p>
+        <div className="mt-4 flex items-center justify-center gap-4">
+          <button
+            type="button"
+            data-testid="auth-throttled-retry"
+            className="text-sm text-primary underline underline-offset-4"
+            onClick={() => window.location.reload()}
+          >
+            {t('common.refreshThrottledRetry', { defaultValue: 'Retry now' })}
+          </button>
+          {/* Escape hatch: a client stuck in a repeating throttle would
+              otherwise have no way out of the mask short of clearing storage.
+              Signing out is always available and is never automatic — the
+              whole point of #3696 is that WE must not decide to sign them out. */}
+          <button
+            type="button"
+            data-testid="auth-throttled-signout"
+            className="text-sm text-muted-foreground underline underline-offset-4"
+            onClick={() => {
+              useAuthStore.getState().logout();
+              void navigateTo('/login', { replace: true });
+            }}
+          >
+            {t('common.signOut', { defaultValue: 'Sign Out' })}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

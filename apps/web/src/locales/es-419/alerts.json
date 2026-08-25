@@ -427,7 +427,7 @@
     "conditionNotMet": "No cumplida: {{condition}}",
     "noConditionsEvaluated": "No se evaluó ninguna condición para esta regla.",
     "evaluatedAgainst": "Evaluado contra {{hostname}}",
-    "fireSuppressionNote": "El período de enfriamiento, una alerta que ya está abierta o la supresión por fluctuaciones (flapping) pueden seguir impidiendo que se cree una alerta cuando se ejecute la regla."
+    "fireSuppressionNote": "Una ventana de mantenimiento activa, el período de enfriamiento, una alerta que ya está abierta o la supresión por fluctuaciones (flapping) pueden seguir impidiendo que se cree una alerta cuando se ejecute la regla."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Cargando plantilla de alerta...",

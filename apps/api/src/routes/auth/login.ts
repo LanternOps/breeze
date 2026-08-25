@@ -10,6 +10,8 @@ import {
   hashPassword,
   rateLimiter,
   loginLimiter,
+  getRefreshRateLimit,
+  getRefreshRateWindowSeconds,
   getRedis,
   isRefreshTokenJtiRevoked,
   revokeAllUserTokens,
@@ -748,19 +750,46 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  // Rate limit per user — 10 refreshes per minute
+  // Rate limit per refresh-token FAMILY (one browser profile's session chain —
+  // `fam` is preserved across rotation). See getRefreshRateLimit() for why the
+  // budget is what it is: `apps/web` is an Astro MPA, so every navigation
+  // spends exactly one refresh, and a per-USER budget sized for an SPA capped
+  // an operator at ten page views per minute AND let one wedged tab starve the
+  // same person's other devices (#3696).
   const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
   if (!e2eMode) {
     const redis = getRedis();
     if (!redis) {
       return c.json({ error: 'Service temporarily unavailable' }, 503);
     }
-    const refreshRateKey = `refresh:${payload.sub}`;
-    const refreshRateCheck = await rateLimiter(redis, refreshRateKey, 10, 60);
+    const refreshRateKey = `refresh:fam:${payload.fam}`;
+    const refreshRateCheck = await rateLimiter(
+      redis,
+      refreshRateKey,
+      getRefreshRateLimit(),
+      getRefreshRateWindowSeconds(),
+      1,
+      // Rejected attempts must not consume the window, or the `Retry-After` we
+      // advertise below is unhonourable: it is derived from the OLDEST entry,
+      // so a client that waits exactly that long can still be rejected by its
+      // own queued-up rejections and be pushed further out each time (#3696).
+      { refundOnReject: true }
+    );
     if (!refreshRateCheck.allowed) {
+      // Clamp to >=1: `resetAt` can round to 0 when the oldest entry in the
+      // sliding window is about to age out, and a `Retry-After: 0` reads as
+      // "retry immediately", which is exactly the hammering we're rejecting.
+      const retryAfter = Math.max(
+        1,
+        Math.ceil((refreshRateCheck.resetAt.getTime() - Date.now()) / 1000)
+      );
+      // Standard header as well as the JSON field: the web client reads the
+      // header so it can honour the throttle without parsing the body, and
+      // proxies/monitoring understand it (#3696).
+      c.header('Retry-After', String(retryAfter));
       return c.json({
         error: 'Too many refresh attempts. Please try again later.',
-        retryAfter: Math.ceil((refreshRateCheck.resetAt.getTime() - Date.now()) / 1000)
+        retryAfter
       }, 429);
     }
   }

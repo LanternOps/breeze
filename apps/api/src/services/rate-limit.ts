@@ -19,12 +19,33 @@ function failClosed(windowSeconds: number): RateLimitResult {
   };
 }
 
+export interface RateLimiterOptions {
+  /**
+   * Give the just-recorded entries back when the request is REJECTED, so a
+   * rejected attempt does not consume window capacity (issue #3696).
+   *
+   * The default (false) is the correct, punitive behaviour for credential-style
+   * limiters: hammering while throttled should keep you throttled. But it makes
+   * `resetAt` a lie for a well-behaved client — `resetAt` is derived from the
+   * OLDEST entry in the window, so a client that honours the advertised wait
+   * can still be rejected on its next attempt because its own rejected
+   * attempts are sitting in the window behind it, and each rejection pushes
+   * the recovery further out.
+   *
+   * Opt in for buckets that throttle an ALREADY-AUTHENTICATED holder and
+   * advertise `Retry-After`, where honouring the wait must actually work. Raw
+   * request volume there is still bounded by the global per-IP limiter.
+   */
+  refundOnReject?: boolean;
+}
+
 export async function rateLimiter(
   redis: Redis | null,
   key: string,
   limit: number,
   windowSeconds: number,
-  cost = 1
+  cost = 1,
+  options: RateLimiterOptions = {}
 ): Promise<RateLimitResult> {
   // If Redis is unavailable, fail closed — deny the request for security
   if (!redis) {
@@ -62,9 +83,22 @@ export async function rateLimiter(
       ? Number(oldestResult[1])
       : now;
     const resetAt = new Date(oldestScore + windowSeconds * 1000);
+    const allowed = count <= limit;
+
+    if (!allowed && options.refundOnReject) {
+      // Remove exactly the members this call added. Best-effort: a failure here
+      // only means the caller is treated the old (punitive) way, never that a
+      // request is wrongly allowed — `allowed` was already decided above.
+      const members = zaddArgs.filter((_, i) => i % 2 === 1) as string[];
+      try {
+        await redis.zrem(key, ...members);
+      } catch (err) {
+        console.error('[rate-limit] refund failed for key:', key, err);
+      }
+    }
 
     return {
-      allowed: count <= limit,
+      allowed,
       remaining: Math.max(0, limit - count),
       resetAt
     };
@@ -108,6 +142,42 @@ export function getAccountLockoutMax(): number {
 
 export function getAccountLockoutWindowSeconds(): number {
   return positiveIntFromEnv('LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS', 15 * 60);
+}
+
+// Budget for POST /auth/refresh, keyed per refresh-token FAMILY (issue #3696).
+//
+// This limiter sits after the refresh JWT's signature has been verified but
+// BEFORE reuse-detection and the user/epoch validity checks, so it is a cheap
+// volume guard, not an authorization control: it bounds how fast a caller
+// holding a structurally-valid refresh token may spend it, protecting the
+// Redis/Postgres session lookups, the rotation writes and the token mint from
+// a runaway client (a stuck poll loop, a wedged tab). Credential-guessing is
+// not its job — an attacker without a signed refresh token never reaches it,
+// and raw request volume is separately capped by the global per-IP limiter.
+//
+// Why the budget moved from 10/60s per USER:
+//
+//  - `apps/web` is an Astro MPA and access tokens are memory-only, so EVERY
+//    full-page navigation starts a fresh JS realm that must spend one refresh.
+//    10/60s therefore capped a signed-in operator at ten page views per minute
+//    — well inside normal triage pace. The eleventh navigation 429'd and the
+//    client treated the throttle as an expiry and evicted to /login.
+//    Reproduced at 10 navigations in 24 seconds.
+//  - Keying per user meant one wedged browser tab starved the SAME person's
+//    other devices. The family id is preserved across rotation, so a family is
+//    effectively one browser profile's session chain — the granularity that
+//    actually matches "one navigation, one refresh".
+//
+// 60/60s keeps the runaway-client ceiling low in absolute terms while putting
+// it far beyond any human click rate, including several tabs at once.
+// Operator-overridable at runtime (read per call, no restart needed) via
+// AUTH_REFRESH_RATE_LIMIT / AUTH_REFRESH_RATE_WINDOW_SECONDS.
+export function getRefreshRateLimit(): number {
+  return positiveIntFromEnv('AUTH_REFRESH_RATE_LIMIT', 60);
+}
+
+export function getRefreshRateWindowSeconds(): number {
+  return positiveIntFromEnv('AUTH_REFRESH_RATE_WINDOW_SECONDS', 60);
 }
 
 // Back-compat read-only exports — DO NOT USE in new code, prefer the getters

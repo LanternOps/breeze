@@ -10,6 +10,7 @@ import {
   apiResetPassword,
   apiVerifyMFA,
   AuthSessionExpiredError,
+  AuthThrottledError,
   fetchAndApplyPreferences,
   fetchWithAuth,
   handleSessionExpired,
@@ -36,6 +37,25 @@ const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
     status,
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
+
+// Like makeResponse, but with a real Headers bag. Needed for the #3696
+// throttle tests: the client reads `Retry-After` off a 429 to decide how long
+// to wait, and the header-less double above exercises only the fallback path.
+const makeResponseWithHeaders = (
+  payload: unknown,
+  ok: boolean,
+  status: number,
+  headers: Record<string, string> = {}
+): Response =>
+  ({
+    ok,
+    status,
+    headers: new Headers(headers),
+    json: vi.fn().mockResolvedValue(payload)
+  }) as unknown as Response;
+
+const refreshCallsOf = (fetchMock: { mock: { calls: unknown[][] } }) =>
+  fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
 
 const baseUser: User = {
   id: 'user-1',
@@ -360,32 +380,264 @@ describe('auth store fetchWithAuth', () => {
 
   // Issue #3041: a 429 on /auth/refresh is the rate limiter rejecting the
   // request before it was ever evaluated — no verdict was reached on the
-  // refresh cookie, so it is transient exactly like a 502. It used to fall
-  // through to the hard-failure branch, which is how a runaway remote-desktop
-  // viewer poll could exhaust the shared per-IP budget and dump an operator
-  // with a perfectly valid session on the login screen.
-  it('retries a 429 on refresh and keeps the session', async () => {
-    useAuthStore.getState().login(baseUser, baseTokens);
-    const refreshedTokens: Tokens = { accessToken: 'access-after-429', expiresInSeconds: 3600 };
-    const apiSuccess = makeResponse({ data: { ok: true } }, true, 200);
+  // refresh cookie, so the session is still valid. It used to fall through to
+  // the hard-failure branch, which is how a runaway remote-desktop viewer poll
+  // could exhaust the shared per-IP budget and dump an operator with a
+  // perfectly valid session on the login screen.
+  //
+  // Issue #3696 sharpened the handling: a 429 is no longer folded into the
+  // generic 'transient' bucket. The transient backoff ladder spends its whole
+  // budget in ~0.9s — always INSIDE the server's 60s window — so every retry
+  // was a guaranteed 429 that additionally consumed a slot in the server's
+  // sliding window and dug the client deeper. A 429 now returns immediately
+  // and the caller waits out the server-supplied `Retry-After` once.
+  it('waits out a 429 on refresh rather than retrying into it, and keeps the session', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      const refreshedTokens: Tokens = { accessToken: 'access-after-429', expiresInSeconds: 3600 };
+      const apiSuccess = makeResponse({ data: { ok: true } }, true, 200);
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))       // original request
-      .mockResolvedValueOnce(makeResponse({ error: 'Too many requests' }, false, 429))  // refresh throttled
-      .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }, true, 200))      // refresh recovers
-      .mockResolvedValueOnce(apiSuccess);                                               // original replayed
-    vi.stubGlobal('fetch', fetchMock);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))  // original request
+        .mockResolvedValueOnce(                                                      // refresh throttled
+          makeResponseWithHeaders({ error: 'Too many refresh attempts.', retryAfter: 1 }, false, 429, {
+            'Retry-After': '1'
+          })
+        )
+        .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }, true, 200)) // refresh recovers
+        .mockResolvedValueOnce(apiSuccess);                                          // original replayed
+      vi.stubGlobal('fetch', fetchMock);
 
-    const response = await fetchWithAuth('/devices');
+      const pending = fetchWithAuth('/devices');
 
-    expect(response).toBe(apiSuccess);
-    // The session must survive being rate limited.
-    expect(useAuthStore.getState().isAuthenticated).toBe(true);
-    expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
-    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
-    const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
-    expect(refreshCalls).toHaveLength(2);
+      // Settle the 401 + the throttled refresh WITHOUT advancing the clock. The
+      // regression this guards: the old code fired two more refreshes inside
+      // ~0.9s, burning budget it could never win back.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+      // The wait is user-visible, not silent — AuthOverlay masks on this.
+      expect(useAuthStore.getState().authThrottledUntil).not.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      const response = await pending;
+
+      expect(response).toBe(apiSuccess);
+      // The session must survive being rate limited.
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      // Mask cleared once the session recovered.
+      expect(useAuthStore.getState().authThrottledUntil).toBeNull();
+      expect(refreshCallsOf(fetchMock)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // THE #3696 REGRESSION. Reproduced live before the fix: eleven sidebar
+  // navigations in ~24s (the web app is an Astro MPA, so each one spends a
+  // refresh) tripped the per-user 10/60s budget and the client hard-redirected
+  // to /login?reason=session-expired with ~15 minutes of session left.
+  //
+  // A throttle is not a verdict on the refresh cookie. Even when it PERSISTS
+  // past the bounded wait, the session must survive: no logout(), no redirect,
+  // no "session expired" copy.
+  it('never logs out on a 429, even one that persists past the bounded wait', async () => {
+    vi.useFakeTimers();
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+        .mockResolvedValue(
+          makeResponseWithHeaders({ error: 'Too many refresh attempts.', retryAfter: 1 }, false, 429, {
+            'Retry-After': '1'
+          })
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+
+      // Surfaced as its own type — deliberately NOT an AuthSessionExpiredError,
+      // which dozens of callers swallow on the assumption the page is already
+      // navigating to /login (that swallow is the silent-blank-page variant).
+      expect(result).toBeInstanceOf(AuthThrottledError);
+      expect(result).not.toBeInstanceOf(AuthSessionExpiredError);
+
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().tokens).not.toBeNull();
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      expect(replace).not.toHaveBeenCalled();
+      // Mask stays up so the page can never render as loaded-but-empty.
+      expect(useAuthStore.getState().authThrottledUntil).not.toBeNull();
+      // Bounded: the initial refresh plus exactly one retry after one wait.
+      expect(refreshCallsOf(fetchMock)).toHaveLength(2);
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // The bootstrap path (authenticated in the persisted store, no in-memory
+  // access token) is the one EVERY full-page navigation takes, so it is the
+  // path #3696 actually fires on. It must not evict on a throttle either.
+  it('does not evict on a 429 during the bootstrap refresh', async () => {
+    vi.useFakeTimers();
+    const { replace, restore } = mockLocation('/integrations');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ error: 'Too many refresh attempts.', retryAfter: 1 }, false, 429, {
+          'Retry-After': '1'
+        })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/webhooks').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+
+      expect(result).toBeInstanceOf(AuthThrottledError);
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(replace).not.toHaveBeenCalled();
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      // No headerless request was fired — only refreshes went out.
+      expect(refreshCallsOf(fetchMock)).toHaveLength(fetchMock.mock.calls.length);
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // Guard the other direction: not evicting on a THROTTLE must not stop us
+  // evicting on a real verdict. A 429 followed by a hard 401 is a dead session.
+  it('still evicts when the refresh reaches a hard 401 after a throttle', async () => {
+    vi.useFakeTimers();
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+        )
+        .mockResolvedValue(makeResponse({ error: 'Invalid refresh token' }, false, 401));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+
+      expect(result).toBeInstanceOf(AuthSessionExpiredError);
+      expect(useAuthStore.getState().isAuthenticated).toBe(false);
+      expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+      expect(replace).toHaveBeenCalled();
+      // The mask must not outlive the session it was masking.
+      expect(useAuthStore.getState().authThrottledUntil).toBeNull();
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // The mask must not outlive its cause on ANY exit path. 'restored' and
+  // 'auth-failed' are covered above; this covers the third — the retry after
+  // the wait comes back 5xx, i.e. still no verdict, but no longer a throttle.
+  it('clears the throttle mask when the post-wait retry is a transient failure', async () => {
+    vi.useFakeTimers();
+    const { restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+        )
+        .mockResolvedValue(makeResponse({ error: 'bad gateway' }, false, 502));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+
+      // A sustained 5xx is still a bounded-retries-then-evict path (unchanged
+      // by #3696) — what must NOT happen is the throttle mask being left up.
+      expect(result).toBeInstanceOf(AuthSessionExpiredError);
+      expect(useAuthStore.getState().authThrottledUntil).toBeNull();
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // A `Retry-After: 0` (the sliding window's oldest entry about to age out)
+  // must never be honoured literally — that is a busy-loop against the very
+  // limiter that is rejecting us. Clamped to a floor of one second.
+  it('clamps a zero/absent Retry-After to a non-zero wait', async () => {
+    vi.useFakeTimers();
+    const { restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ error: 'Too many refresh attempts.' }, false, 429, {
+          'Retry-After': '0'
+        })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const until = useAuthStore.getState().authThrottledUntil;
+      expect(until).not.toBeNull();
+      expect(until! - Date.now()).toBeGreaterThan(0);
+      // Still exactly one refresh — the clamp did not turn into an immediate retry.
+      expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      await pending;
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // The detailed restore helper is what AuthOverlay / AuthGuard branch on, so
+  // 'throttled' has to reach them distinctly from 'auth-failed' — collapsing
+  // the two is what produced the bare, unexplained soft redirect to /login.
+  it('surfaces a 429 as a distinct "throttled" outcome to restore callers', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(await pending).toBe('throttled');
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The retry is bounded: a sustained gateway outage still evicts once the
