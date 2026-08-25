@@ -195,6 +195,10 @@ vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobByCommandId: vi.fn(),
 }));
 
+vi.mock('../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: vi.fn(),
+}));
+
 vi.mock('../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
   CommandTypes: {
