@@ -920,6 +920,14 @@ describe('agentAuthMiddleware - device-remove uninstall drain (#3986)', () => {
     ['wrong api version', '/api/v2/agents/agent-1/heartbeat'],
     ['missing api prefix', '/v1/agents/agent-1/heartbeat'],
     // Right mount, wrong agent id in the id position.
+    //
+    // WEAK GUARD, deliberately kept and labelled: `createContext`'s `param()`
+    // hardcodes 'agent-1' regardless of the path, so this asserts only that the
+    // id position is still compared to the authenticated agent id. The OLD
+    // from-the-end predicate compared it too, so no revert probe fails on this
+    // row — it is regression cover for the index arithmetic surviving the
+    // rewrite, NOT evidence of a hole the rewrite closed. Deriving `param()`
+    // from the path would make it strictly worse (the ids would then agree).
     ['another agent id', '/api/v1/agents/agent-99/heartbeat'],
   ];
 
@@ -1120,6 +1128,17 @@ describe('agentAuthMiddleware - core agent path anchoring (#3986)', () => {
     );
     expect(indexSource).toContain("app.route('/api/v1', api)");
     expect(indexSource).toContain("api.route('/agents', agentRoutes)");
+    // Occurrence counts, not just presence: a SECOND mount of either sub-app
+    // (e.g. agentRoutes also mounted under another prefix) would leave both
+    // strings intact while giving agent requests a path shape the anchored
+    // predicate refuses during a drain.
+    expect(indexSource.split("api.route('/agents', agentRoutes)")).toHaveLength(2);
+    expect(indexSource.split("app.route('/api/v1', api)")).toHaveLength(2);
+    // Residual limitation, stated rather than papered over: this is still a
+    // source-text check. Re-mounting `agentRoutes` inside a DIFFERENT sub-app
+    // whose own prefix is not `/api/v1` would slip past it. Anchoring fails
+    // CLOSED in that case (drain mode refuses), so the blast radius is a loud
+    // refusal, not a silent admit.
   });
 
   it('a crafted `agents/<id>/<action>` TAIL under an extension mount does not opt out of the request DB context', async () => {
