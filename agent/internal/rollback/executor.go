@@ -93,7 +93,7 @@ func (e *Engine) transition(state *stateFile, rec *record, phase Phase, failure 
 	rec.Phase = phase
 	rec.Observation = observation(rec.Directive, phase, e.env.Now(), failure)
 	state.Active = rec
-	state.Pending = &rec.Observation
+	state.Pending = append(state.Pending, rec.Observation)
 	if phase == PhaseHealthy || phase == PhaseFailed || phase == PhaseRecovered {
 		state.Tombstones[rec.Directive.RollbackID] = *rec
 		state.Active = nil
@@ -220,10 +220,10 @@ func (e *Engine) PendingObservation() (*Observation, error) {
 	e.store.mu.Lock()
 	defer e.store.mu.Unlock()
 	state, err := e.store.loadLocked()
-	if err != nil || state.Pending == nil {
+	if err != nil || len(state.Pending) == 0 {
 		return nil, err
 	}
-	copy := *state.Pending
+	copy := state.Pending[0]
 	return &copy, nil
 }
 func (e *Engine) Acknowledge(id string) error {
@@ -233,8 +233,11 @@ func (e *Engine) Acknowledge(id string) error {
 	if err != nil {
 		return err
 	}
-	if state.Pending != nil && state.Pending.ObservationID == id {
-		state.Pending = nil
+	for index := range state.Pending {
+		if state.Pending[index].ObservationID != id {
+			continue
+		}
+		state.Pending = append(state.Pending[:index], state.Pending[index+1:]...)
 		return e.store.saveLocked(state)
 	}
 	return nil

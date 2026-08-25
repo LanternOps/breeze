@@ -86,6 +86,24 @@ func testEngine(t *testing.T, backend *fakeBackend) (*Engine, Directive) {
 	return engine, d
 }
 
+func drainRollbackObservations(t *testing.T, engine *Engine) []Observation {
+	t.Helper()
+	var observations []Observation
+	for {
+		pending, err := engine.PendingObservation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pending == nil {
+			return observations
+		}
+		observations = append(observations, *pending)
+		if err := engine.Acknowledge(pending.ObservationID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestExecuteRejectsBeforeBackend(t *testing.T) {
 	mutations := map[string]func(*Directive){"expired": func(d *Directive) { d.ExpiresAt = "2026-08-25T11:59:59Z" }, "device": func(d *Directive) { d.DeviceID = "wrong" }, "org": func(d *Directive) { d.OrgID = "wrong" }, "platform": func(d *Directive) { d.Platform = "wrong" }, "arch": func(d *Directive) { d.Architecture = "wrong" }, "current": func(d *Directive) { d.CurrentVersion = "wrong" }, "signature": func(d *Directive) { d.DirectiveSignature = base64.StdEncoding.EncodeToString(make([]byte, 64)) }, "key": func(d *Directive) { d.DirectiveSigningKeyID = "unknown" }, "binding": func(d *Directive) { d.Artifacts[0].TargetVersion = "1.8.0" }}
 	for name, mutate := range mutations {
@@ -122,6 +140,38 @@ func TestExecuteConcurrentDuplicatesAreIdempotentAndReplayBound(t *testing.T) {
 	}
 }
 
+func TestRollbackObservationsPersistAndAcknowledgeInPhaseOrder(t *testing.T) {
+	backend := &fakeBackend{healthy: true}
+	engine, directive := testEngine(t, backend)
+	if err := engine.Execute(context.Background(), directive); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewEngine(engine.store, engine.env)
+	want := []Phase{PhaseReceived, PhaseDownloaded, PhaseVerified, PhaseStaged, PhaseSwapped, PhaseRestartRequested}
+	for index, phase := range want {
+		pending, err := restarted.PendingObservation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pending == nil || pending.Phase != phase {
+			t.Fatalf("pending phase %d = %+v, want %s", index, pending, phase)
+		}
+		if err := restarted.Acknowledge(pending.ObservationID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pending, err := restarted.PendingObservation(); err != nil || pending != nil {
+		t.Fatalf("queue after acknowledgements = %+v, err=%v", pending, err)
+	}
+	if err := restarted.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	healthy, err := restarted.PendingObservation()
+	if err != nil || healthy == nil || healthy.Phase != PhaseHealthy {
+		t.Fatalf("terminal observation = %+v, err=%v", healthy, err)
+	}
+}
+
 func TestReconcileProducesHealthyOrRecoveredTerminalTruth(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		t.Run(map[bool]string{true: "healthy", false: "recovered"}[healthy], func(t *testing.T) {
@@ -134,25 +184,19 @@ func TestReconcileProducesHealthyOrRecoveredTerminalTruth(t *testing.T) {
 			if err := restarted.Reconcile(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			obs, err := restarted.PendingObservation()
-			if err != nil {
-				t.Fatal(err)
-			}
+			observations := drainRollbackObservations(t, restarted)
 			want := PhaseRecovered
 			if healthy {
 				want = PhaseHealthy
 			}
-			if obs == nil || obs.Phase != want {
-				t.Fatalf("phase = %+v, want %s", obs, want)
+			if len(observations) == 0 || observations[len(observations)-1].Phase != want {
+				t.Fatalf("observations = %+v, want terminal %s", observations, want)
 			}
 			if !healthy && backend.recover.Load() != 1 {
 				t.Fatal("unhealthy target was not recovered")
 			}
 			if !healthy && backend.restart.Load() != 2 {
 				t.Fatal("recovered old set was not restarted")
-			}
-			if err := restarted.Acknowledge(obs.ObservationID); err != nil {
-				t.Fatal(err)
 			}
 			if again, _ := restarted.PendingObservation(); again != nil {
 				t.Fatal("acknowledged observation was resent")
@@ -169,16 +213,13 @@ func TestExecutionFailuresNeverLeaveSilentMixedSuccess(t *testing.T) {
 			if err := engine.Execute(context.Background(), directive); err == nil {
 				t.Fatal("injected failure was ignored")
 			}
-			obs, err := engine.PendingObservation()
-			if err != nil {
-				t.Fatal(err)
-			}
+			observations := drainRollbackObservations(t, engine)
 			want := PhaseFailed
 			if failAt == "swap" || failAt == "restart" {
 				want = PhaseRecovered
 			}
-			if obs == nil || obs.Phase != want {
-				t.Fatalf("phase = %+v, want %s", obs, want)
+			if len(observations) == 0 || observations[len(observations)-1].Phase != want {
+				t.Fatalf("observations = %+v, want terminal %s", observations, want)
 			}
 			if (failAt == "swap" || failAt == "restart") && backend.recover.Load() != 1 {
 				t.Fatal("crossed boundary was not recovered")

@@ -19,7 +19,8 @@ type stateFile struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Active        *record           `json:"active,omitempty"`
 	Tombstones    map[string]record `json:"tombstones"`
-	Pending       *Observation      `json:"pendingObservation,omitempty"`
+	Pending       []Observation     `json:"pendingObservations,omitempty"`
+	LegacyPending *Observation      `json:"pendingObservation,omitempty"`
 }
 
 type Store struct {
@@ -47,6 +48,10 @@ func (s *Store) loadLocked() (stateFile, error) {
 	if state.Tombstones == nil {
 		state.Tombstones = map[string]record{}
 	}
+	if len(state.Pending) == 0 && state.LegacyPending != nil {
+		state.Pending = append(state.Pending, *state.LegacyPending)
+	}
+	state.LegacyPending = nil
 	return state, nil
 }
 
