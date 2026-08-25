@@ -1153,6 +1153,55 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2].sort());
   });
 
+  // #3987 fix wave: bulk Remove ("decommission") was the one action exempted
+  // from this gate — reasoning "retiring dead machines IS the use case" — which
+  // is true for OFFLINE devices but not for ones that are ALREADY removed.
+  // bulkDecommissionDevices fires one DELETE /devices/:id per selected device,
+  // and the API 400s "Device is already decommissioned" for an already-removed
+  // one, so an ungated mixed/all-removed selection fired doomed requests.
+  it('bulk Remove: skips the already-removed device and still removes the offline one', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: 0 } as never);
+
+    boundaryFleet();
+    await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    expect(await screen.findByTestId('confirm-decommissioned-skip')).toBeTruthy();
+    expect(vi.mocked(bulkDecommissionDevices)).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
+
+    await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
+    // DEV_3 (already decommissioned) must NOT be re-submitted — that's the
+    // doomed request the API 400s. DEV_2 (offline) IS a legitimate target:
+    // retiring a dead machine is still the use case.
+    expect([...(vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as string[])].sort()).toEqual(
+      [DEV_1, DEV_2].sort(),
+    );
+  });
+
+  it('bulk Remove: refuses outright when EVERY selected device is already removed', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+      ],
+    } as never);
+    await renderMixedFleet([DEV_1, DEV_2]);
+
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /all 2 selected device\(s\) are removed/i.test(m))).toBe(true);
+    });
+    expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
+    expect(vi.mocked(bulkDecommissionDevices)).not.toHaveBeenCalled();
+  });
+
   // Queued commands can fire at devices with no connected agent. A 201 there
   // means "a row was inserted", NOT "the machine rebooted" — there is no dispatch
   // step, and staleCommandReaper flips it to failed ~30min later with nothing
