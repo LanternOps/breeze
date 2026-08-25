@@ -158,6 +158,9 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: { __column: 'organizations.id' },
     partnerId: { __column: 'organizations.partnerId' },
+    // #3967 — the slug-clash probe interpolates this column into a raw
+    // lower(...) comparison, so it needs a sentinel of its own.
+    slug: { __column: 'organizations.slug' },
     status: { __column: 'organizations.status' },
     deletedAt: { __column: 'organizations.deletedAt' },
     createdAt: { __column: 'organizations.createdAt' }
@@ -234,6 +237,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { eq, inArray } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
@@ -1926,8 +1930,27 @@ describe('org routes', () => {
   });
 
   describe('POST /orgs/organizations', () => {
+    // db.select is called twice on this path: the partner currency lookup, then
+    // the #3967 slug-clash probe. Both are `.from().where().limit()`, so each
+    // test queues them in order rather than relying on a single blanket mock
+    // (or, as these two used to, on a mock leaking in from an earlier test).
+    const selectRows = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows)
+        })
+      })
+    }) as any;
+
+    const queueCreateSelects = (clashRows: unknown[] = []) => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectRows([{ currencyCode: 'USD' }]))
+        .mockReturnValueOnce(selectRows(clashRows));
+    };
+
     it('should create an organization', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      queueCreateSelects();
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org' }])
@@ -1952,6 +1975,7 @@ describe('org routes', () => {
 
     it('should allow system scope create with explicit partnerId', async () => {
       setAuthContext({ scope: 'system', partnerId: null });
+      queueCreateSelects();
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{ id: 'org-1', partnerId: 'partner-999', name: 'Org' }])
@@ -1988,6 +2012,127 @@ describe('org routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('partnerId is required');
+    });
+
+    // #3967 — organizations.slug had no unique index and no app-layer guard, so
+    // two orgs under one partner could both be created with the same slug and
+    // both return 201.
+    describe('slug uniqueness (#3967)', () => {
+      it('returns 409 instead of creating a second org with the same slug', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        queueCreateSelects([{ id: 'org-existing', deletedAt: null }]);
+
+        const res = await app.request('/orgs/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'QA Sweep Org Dup', slug: 'qa-sweep-org' })
+        });
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('That organization slug is already in use');
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('says so when the slug is held by a soft-deleted org the caller cannot see', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        queueCreateSelects([{ id: 'org-gone', deletedAt: new Date('2026-01-01') }]);
+
+        const res = await app.request('/orgs/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Acme Again', slug: 'acme' })
+        });
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('That organization slug is still reserved by a deleted organization');
+      });
+
+      it('scopes the clash probe to the partner and compares case-insensitively', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        const clashWhere: unknown[] = [];
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectRows([{ currencyCode: 'USD' }]))
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                clashWhere.push(condition);
+                return { limit: vi.fn().mockResolvedValue([]) };
+              })
+            })
+          } as any);
+        vi.mocked(db.insert).mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org' }])
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Org', slug: 'Mixed-Case-Slug' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(clashWhere).toHaveLength(1);
+        // Compile the real predicate: a shape assertion on the mock would pass
+        // just as happily against a global, case-sensitive query.
+        const compiled = new PgDialect().sqlToQuery(clashWhere[0] as any);
+        // Case-insensitive on BOTH sides, matching (partner_id, lower(slug)).
+        expect(compiled.sql).toMatch(/lower\(\$\d+\) = lower\(\$\d+\)/);
+        expect(compiled.params).toContainEqual({ __column: 'organizations.slug' });
+        expect(compiled.params).toContain('Mixed-Case-Slug');
+        // Partner-scoped, not global.
+        expect(compiled.params).toContainEqual({ __column: 'organizations.partnerId' });
+        expect(compiled.params).toContain('partner-123');
+        // Lifetime scope: a soft-deleted holder still owns its slug, so the
+        // probe must NOT filter deleted_at (see the migration's rationale).
+        expect(compiled.params).not.toContainEqual({ __column: 'organizations.deletedAt' });
+      });
+
+      it('maps the unique-index violation to 409 when two creates race past the probe', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        queueCreateSelects();
+        vi.mocked(db.insert).mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockRejectedValue(
+              Object.assign(new Error('duplicate key value violates unique constraint'), {
+                cause: { code: '23505', constraint_name: 'organizations_partner_slug_uniq' }
+              })
+            )
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Org', slug: 'org' })
+        });
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('That organization slug is already in use');
+      });
+
+      it('rethrows a unique violation that is not the slug index', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        queueCreateSelects();
+        vi.mocked(db.insert).mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockRejectedValue(
+              Object.assign(new Error('duplicate key'), {
+                cause: { code: '23505', constraint_name: 'organizations_partner_quick_support_uniq' }
+              })
+            )
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Org', slug: 'org' })
+        });
+
+        expect(res.status).toBe(500);
+      });
     });
   });
 
@@ -2070,6 +2215,146 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+    });
+
+    // #3967 — renaming an org's slug onto a sibling's must 409, not silently
+    // produce a second holder (pre-fix) or a raw 23505 500 (index only).
+    describe('slug uniqueness (#3967)', () => {
+      const patchSlug = (body: Record<string, unknown> = { slug: 'taken-slug' }) =>
+        app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+      const queueUpdateSelects = (
+        clashRows: unknown[] = [],
+        onClashWhere?: (condition: unknown) => void
+      ) => {
+        vi.mocked(db.select)
+          // 1) the target org's own partner, read under a system context
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-777' }])
+              })
+            })
+          } as any)
+          // 2) the clash probe
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                onClashWhere?.(condition);
+                return { limit: vi.fn().mockResolvedValue(clashRows) };
+              })
+            })
+          } as any);
+      };
+
+      it('returns 409 when a sibling org already holds the new slug', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueUpdateSelects([{ id: 'org-2', deletedAt: null }]);
+
+        const res = await patchSlug();
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('That organization slug is already in use');
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('says so when the new slug is held by a soft-deleted org', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueUpdateSelects([{ id: 'org-gone', deletedAt: new Date('2026-01-01') }]);
+
+        const res = await patchSlug();
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('That organization slug is still reserved by a deleted organization');
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it("resolves the partner from the org itself, and excludes the org's own row", async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let clashCondition: unknown;
+        queueUpdateSelects([], (condition) => { clashCondition = condition; });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', slug: 'taken-slug' }])
+            })
+          })
+        } as any);
+
+        const res = await patchSlug();
+
+        expect(res.status).toBe(200);
+        const compiled = new PgDialect().sqlToQuery(clashCondition as any);
+        // partner-777 comes from the org row, NOT from auth.partnerId — which is
+        // null for this system-scope caller and would have scoped the probe to
+        // the wrong tenant.
+        expect(compiled.params).toContainEqual({ __column: 'organizations.partnerId' });
+        expect(compiled.params).toContain('partner-777');
+        expect(compiled.sql).toContain('<>');
+        expect(compiled.params).toContainEqual({ __column: 'organizations.id' });
+        expect(compiled.params).toContain('org-1');
+      });
+
+      it('404s when the org to rename does not exist', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          })
+        } as any);
+
+        const res = await patchSlug();
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('maps the unique-index violation to 409 when an update races past the probe', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueUpdateSelects();
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              // No constraint_name on the driver node — exercises
+              // isPgUniqueViolation's documented message fallback, which only
+              // applies to the node that actually carries the SQLSTATE.
+              returning: vi.fn().mockRejectedValue(
+                Object.assign(new Error('update failed'), {
+                  cause: {
+                    code: '23505',
+                    message: 'duplicate key value violates unique constraint "organizations_partner_slug_uniq"'
+                  }
+                })
+              )
+            })
+          })
+        } as any);
+
+        const res = await patchSlug();
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('That organization slug is already in use');
+      });
+
+      it('leaves updates that do not touch the slug alone', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Renamed' }])
+            })
+          })
+        } as any);
+
+        const res = await patchSlug({ name: 'Renamed' });
+
+        expect(res.status).toBe(200);
+        expect(db.select).not.toHaveBeenCalled();
+      });
     });
 
     it('revokes tenant access (including the agent fleet) when an org is suspended', async () => {

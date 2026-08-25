@@ -355,13 +355,25 @@ describe('organization routes', () => {
     });
 
     it('should create an organization', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ currencyCode: 'CAD' }])
+      vi.mocked(db.select)
+        // 1) partner currency lookup
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ currencyCode: 'CAD' }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        // 2) #3967 slug-clash probe — queued explicitly rather than left to the
+        // factory default, which the previous test's persistent mockReturnValue
+        // would otherwise shadow with a chain that has no .limit().
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
       const values = vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([
           { id: 'org-1', name: 'Org One', slug: 'org-one' }
