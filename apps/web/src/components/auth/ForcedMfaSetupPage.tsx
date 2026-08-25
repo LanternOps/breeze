@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import MFASetupForm from './MFASetupForm';
 import {
   AuthSessionExpiredError,
+  AuthThrottledError,
   fetchWithAuth,
   restoreAccessTokenFromCookie,
   useAuthStore,
@@ -35,6 +36,10 @@ export default function ForcedMfaSetupPage() {
     setForced(params.get('forced') === '1');
   }, []);
 
+  // NOTE: AuthLayout mounts no AuthOverlay, so the refresh-throttle mask that
+  // covers the dashboard (#3696) does NOT appear here. This page therefore has
+  // to recognise AuthThrottledError itself — see the catch blocks below.
+  //
   // This page renders under AuthLayout (no AuthGuard/DashboardWrapper), and it
   // is always reached via a full-page navigation, so the in-memory access token
   // is gone on mount. Proactively trade the refresh cookie for a fresh access
@@ -72,6 +77,16 @@ export default function ForcedMfaSetupPage() {
       // Session died and fetchWithAuth is already redirecting to /login — don't
       // flash a misleading "Network error" over the navigation.
       if (err instanceof AuthSessionExpiredError) return;
+      // A rate-limited /auth/refresh is not a network error and not an expiry —
+      // the session is fine and the user just has to wait. Saying "Network
+      // error" on a security-sensitive enrollment page sends people to support
+      // for something that resolves itself (#3696).
+      if (err instanceof AuthThrottledError) {
+        setError(t('common.refreshThrottledError', {
+          defaultValue: 'Too many requests — you are still signed in. Please wait a moment and try again.'
+        }));
+        return;
+      }
       setError(t('common.networkError', { defaultValue: 'Network error' }));
     } finally {
       setLoading(false);
@@ -102,6 +117,16 @@ export default function ForcedMfaSetupPage() {
       }, 1500);
     } catch (err) {
       if (err instanceof AuthSessionExpiredError) return;
+      // A rate-limited /auth/refresh is not a network error and not an expiry —
+      // the session is fine and the user just has to wait. Saying "Network
+      // error" on a security-sensitive enrollment page sends people to support
+      // for something that resolves itself (#3696).
+      if (err instanceof AuthThrottledError) {
+        setError(t('common.refreshThrottledError', {
+          defaultValue: 'Too many requests — you are still signed in. Please wait a moment and try again.'
+        }));
+        return;
+      }
       setError(t('common.networkError', { defaultValue: 'Network error' }));
     } finally {
       setLoading(false);

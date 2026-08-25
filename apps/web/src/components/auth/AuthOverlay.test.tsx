@@ -538,6 +538,36 @@ describe('AuthOverlay refresh-throttle mask (#3696)', () => {
     expect(reload).toHaveBeenCalled();
   });
 
+  // THE branch-order regression. The throttle mask is checked BEFORE the
+  // `fadeState === 'hidden'` early return for the same reason the expiry mask
+  // is: by the time a mid-session refresh gets throttled, this overlay has long
+  // since faded out and started returning null. Move the branch below that
+  // return and the page renders as fully-painted-but-empty — symptom (b) of
+  // #3696, the one the reporter called worse than the logout because it isn't
+  // self-evident. Every other test here starts with tokens: null, so the fade
+  // lifecycle never runs and none of them can catch that reordering.
+  it('masks the page when a throttle arrives AFTER the overlay already faded out', async () => {
+    useAuthStore.setState({
+      isAuthenticated: true,
+      tokens: { accessToken: 'access-token', expiresInSeconds: 900 },
+      isLoading: false,
+      sessionExpiredReason: null,
+      authThrottledUntil: null,
+    });
+    render(<AuthOverlay />);
+
+    // Drive it all the way to fadeState === 'hidden' (renders null).
+    await fadeOverlayOut();
+    expect(screen.queryByTestId('auth-throttled-overlay')).not.toBeInTheDocument();
+
+    // Now a background refresh gets rate-limited mid-session.
+    act(() => {
+      useAuthStore.setState({ tokens: null, authThrottledUntil: Date.now() + 30_000 });
+    });
+
+    expect(await screen.findByTestId('auth-throttled-overlay')).toBeInTheDocument();
+  });
+
   it('lets a real expiry win over a stale throttle', async () => {
     useAuthStore.setState({
       authThrottledUntil: Date.now() + 30_000,

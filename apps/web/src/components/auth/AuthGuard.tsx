@@ -10,7 +10,7 @@ interface AuthGuardProps {
 
 export default function AuthGuard({ children }: AuthGuardProps) {
   const { t } = useTranslation('auth');
-  const { isAuthenticated, isLoading, tokens } = useAuthStore();
+  const { isAuthenticated, isLoading, tokens, authThrottledUntil } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
@@ -24,8 +24,15 @@ export default function AuthGuard({ children }: AuthGuardProps) {
     // Safety net: if still loading after 10s, force through to avoid permanent hang
     const safetyTimer = setTimeout(() => {
       setIsChecking(false);
-      setIsRecovering(false);
       useAuthStore.getState().setLoading(false);
+      // ...but a rate-limited refresh legitimately outlasts this timer (the
+      // server's window is up to 90s). Clearing `isRecovering` here while a
+      // throttle is still in force drops through to the redirect below and
+      // re-creates the forced logout of #3696 — with no explanation, since the
+      // eviction path was never entered. Leave recovery armed while throttled.
+      const { authThrottledUntil: throttledUntil } = useAuthStore.getState();
+      if (throttledUntil && throttledUntil > Date.now()) return;
+      setIsRecovering(false);
     }, 10000);
 
     return () => {
@@ -54,9 +61,13 @@ export default function AuthGuard({ children }: AuthGuardProps) {
       // the redirect-to-login below must stay dormant. AuthOverlay's throttle
       // mask owns that state.
       void restoreAccessTokenFromCookieDetailed().then((outcome) => {
-        if (!cancelled) {
-          setIsRecovering(outcome === 'throttled');
-        }
+        if (cancelled) return;
+        setIsRecovering(false);
+        // 'throttled' (#3696) is NOT a dead session: the server rate-limited
+        // /auth/refresh and never judged the cookie. Returning here leaves the
+        // guard rendering its spinner instead of redirecting; the store retries
+        // and AuthOverlay's throttle mask (where mounted) explains the wait.
+        if (outcome === 'throttled') return;
       });
       return () => { cancelled = true; };
     }
@@ -65,13 +76,17 @@ export default function AuthGuard({ children }: AuthGuardProps) {
       return () => { cancelled = true; };
     }
 
-    // Not authenticated — redirect to login
+    // Not authenticated — redirect to login. Never while a refresh throttle is
+    // still in force: no verdict was reached on the session (#3696).
+    if (authThrottledUntil && authThrottledUntil > Date.now()) {
+      return () => { cancelled = true; };
+    }
     if (!isAuthenticated || !tokens?.accessToken) {
       void navigateTo('/login', { replace: true });
     }
 
     return () => { cancelled = true; };
-  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering]);
+  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering, authThrottledUntil]);
 
   // Fast path: authenticated with token — render children immediately
   if (!isChecking && !isLoading && isAuthenticated && tokens?.accessToken) {

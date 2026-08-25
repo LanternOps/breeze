@@ -398,7 +398,18 @@ function parseRetryAfterMs(response: Response, body: { retryAfter?: unknown } | 
     : Number.isFinite(fromBody) && fromBody > 0
       ? fromBody
       : NaN;
-  if (!Number.isFinite(seconds)) return DEFAULT_REFRESH_RETRY_AFTER_MS;
+  if (!Number.isFinite(seconds)) {
+    // Reaching here means a 429 arrived with NO usable wait: a proxy/CDN
+    // stripping Retry-After, or a server regression. The default keeps the
+    // client correct, but silently guessing the window would hide the cause —
+    // and if the operator has retuned AUTH_REFRESH_RATE_WINDOW_SECONDS the
+    // guess is simply wrong. Make it visible.
+    console.warn(
+      '[auth] /auth/refresh returned 429 with no usable Retry-After; ' +
+        `falling back to ${DEFAULT_REFRESH_RETRY_AFTER_MS}ms`
+    );
+    return DEFAULT_REFRESH_RETRY_AFTER_MS;
+  }
   return Math.min(MAX_REFRESH_RETRY_AFTER_MS, Math.max(1_000, Math.round(seconds * 1_000)));
 }
 
@@ -866,9 +877,19 @@ export class AuthSessionExpiredError extends Error {
  * assumption that the page is already navigating to /login. Inheriting that
  * would make every one of them swallow a throttle silently and render an empty
  * page — the exact "looks loaded, has no data" failure this fix exists to
- * remove. Callers that don't know this type fall through to their normal error
- * UI, and `authThrottledUntil` keeps AuthOverlay's waiting mask on top either
- * way, so the state is never invisible.
+ * remove. Callers that don't know this type instead fall through to their
+ * normal error UI.
+ *
+ * SCOPE, precisely: on pages rendered by `DashboardLayout.astro` (and the
+ * `/account/*` pages) `authThrottledUntil` also puts AuthOverlay's waiting mask
+ * on top, so the throttle is impossible to miss. Pages built on the bare
+ * `Layout.astro` / `AuthLayout.astro` shells mount no AuthOverlay — the
+ * full-screen remote-access viewers (`pages/remote/**`) and the forced-MFA
+ * enrollment page — so there the mask does NOT appear and the throttle is only
+ * as visible as the caller's own error handling makes it. `ForcedMfaSetupPage`
+ * handles this type explicitly; the remote viewers do not yet (tracked
+ * separately — mounting a `fixed inset-0` mask over a live video/terminal
+ * surface needs its own design pass).
  */
 export class AuthThrottledError extends Error {
   readonly retryAt: number;

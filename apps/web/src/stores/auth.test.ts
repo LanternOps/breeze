@@ -550,6 +550,38 @@ describe('auth store fetchWithAuth', () => {
     }
   });
 
+  // The mask must not outlive its cause on ANY exit path. 'restored' and
+  // 'auth-failed' are covered above; this covers the third — the retry after
+  // the wait comes back 5xx, i.e. still no verdict, but no longer a throttle.
+  it('clears the throttle mask when the post-wait retry is a transient failure', async () => {
+    vi.useFakeTimers();
+    const { restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+        )
+        .mockResolvedValue(makeResponse({ error: 'bad gateway' }, false, 502));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+
+      // A sustained 5xx is still a bounded-retries-then-evict path (unchanged
+      // by #3696) — what must NOT happen is the throttle mask being left up.
+      expect(result).toBeInstanceOf(AuthSessionExpiredError);
+      expect(useAuthStore.getState().authThrottledUntil).toBeNull();
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
   // A `Retry-After: 0` (the sliding window's oldest entry about to age out)
   // must never be honoured literally — that is a busy-loop against the very
   // limiter that is rejecting us. Clamped to a floor of one second.
