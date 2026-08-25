@@ -2278,7 +2278,7 @@
     "decommissionFailed": "Impossibile rimuovere il vecchio dispositivo",
     "decommissionOldDevice": "Rimuovi il vecchio dispositivo",
     "decommissionSucceeded": "Vecchio dispositivo rimosso",
-    "message": "Questo dispositivo potrebbe sostituire {{hostname}}: controlla e dismetti la vecchia scheda.",
+    "message": "Questo dispositivo potrebbe sostituire {{hostname}}: controlla e rimuovi la vecchia scheda.",
     "oldDeviceDecommissioned": "Vecchio dispositivo rimosso: non c'è altro da controllare.",
     "oldDeviceUnavailable": "La scheda del vecchio dispositivo non è più disponibile.",
     "title": "Possibile registrazione duplicata",

@@ -2278,7 +2278,7 @@
     "decommissionFailed": "Das alte Gerät konnte nicht entfernt werden",
     "decommissionOldDevice": "Altes Gerät entfernen",
     "decommissionSucceeded": "Altes Gerät entfernt",
-    "message": "Dieses Gerät ersetzt möglicherweise {{hostname}} – prüfen Sie den alten Eintrag und nehmen Sie ihn außer Betrieb.",
+    "message": "Dieses Gerät ersetzt möglicherweise {{hostname}} – prüfen Sie den alten Eintrag und entfernen Sie ihn.",
     "oldDeviceDecommissioned": "Altes Gerät entfernt – nichts mehr zu prüfen.",
     "oldDeviceUnavailable": "Der alte Geräteeintrag ist nicht mehr verfügbar.",
     "title": "Mögliche doppelte Registrierung",

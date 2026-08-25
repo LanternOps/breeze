@@ -2278,7 +2278,7 @@
     "decommissionFailed": "No se pudo quitar el dispositivo antiguo",
     "decommissionOldDevice": "Quitar dispositivo antiguo",
     "decommissionSucceeded": "Dispositivo antiguo quitado",
-    "message": "Este dispositivo podría reemplazar a {{hostname}}: revisa y retira el registro antiguo.",
+    "message": "Este dispositivo podría reemplazar a {{hostname}}: revisa y quita el registro antiguo.",
     "oldDeviceDecommissioned": "Dispositivo antiguo quitado: no queda nada por revisar.",
     "oldDeviceUnavailable": "El registro del dispositivo antiguo ya no está disponible.",
     "title": "Posible inscripción duplicada",

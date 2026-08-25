@@ -2278,7 +2278,7 @@
     "decommissionFailed": "Échec du retrait de l’ancien appareil",
     "decommissionOldDevice": "Retirer l’ancien appareil",
     "decommissionSucceeded": "Ancien appareil retiré",
-    "message": "Cet appareil remplace peut-être {{hostname}} — vérifiez et mettez hors service l’ancienne fiche.",
+    "message": "Cet appareil remplace peut-être {{hostname}} — vérifiez et retirez l’ancienne fiche.",
     "oldDeviceDecommissioned": "Ancien appareil retiré — plus rien à vérifier.",
     "oldDeviceUnavailable": "La fiche de l’ancien appareil n’est plus disponible.",
     "title": "Inscription potentiellement en double",
