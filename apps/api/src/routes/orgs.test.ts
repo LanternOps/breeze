@@ -2262,6 +2262,17 @@ describe('org routes', () => {
         expect(db.update).not.toHaveBeenCalled();
       });
 
+      it('says so when the new slug is held by a soft-deleted org', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueUpdateSelects([{ id: 'org-gone', deletedAt: new Date('2026-01-01') }]);
+
+        const res = await patchSlug();
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('That organization slug is still reserved by a deleted organization');
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
       it("resolves the partner from the org itself, and excludes the org's own row", async () => {
         setAuthContext({ scope: 'system', partnerId: null });
         let clashCondition: unknown;
@@ -2308,9 +2319,15 @@ describe('org routes', () => {
         vi.mocked(db.update).mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
+              // No constraint_name on the driver node — exercises
+              // isPgUniqueViolation's documented message fallback, which only
+              // applies to the node that actually carries the SQLSTATE.
               returning: vi.fn().mockRejectedValue(
-                Object.assign(new Error('duplicate key value violates unique constraint "organizations_partner_slug_uniq"'), {
-                  cause: { code: '23505' }
+                Object.assign(new Error('update failed'), {
+                  cause: {
+                    code: '23505',
+                    message: 'duplicate key value violates unique constraint "organizations_partner_slug_uniq"'
+                  }
                 })
               )
             })

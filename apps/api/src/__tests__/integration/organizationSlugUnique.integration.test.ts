@@ -19,8 +19,9 @@ import { join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { organizations } from '../../db/schema';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
-import { getTestDb } from './setup';
+import { getAppDb, getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const MIGRATION_FILE = join(
@@ -29,16 +30,7 @@ const MIGRATION_FILE = join(
 );
 const INDEX = 'organizations_partner_slug_uniq';
 
-function isUniqueViolation(error: unknown): boolean {
-  let candidate: unknown = error;
-  for (let depth = 0; candidate && typeof candidate === 'object' && depth < 5; depth++) {
-    const e = candidate as { code?: unknown; message?: unknown; cause?: unknown };
-    if (e.code === '23505') return true;
-    if (typeof e.message === 'string' && e.message.includes(INDEX)) return true;
-    candidate = e.cause;
-  }
-  return false;
-}
+const isUniqueViolation = (error: unknown) => isPgUniqueViolation(error, INDEX);
 
 describe('organizations.slug uniqueness (#3967)', () => {
   runDb('the unique index exists, on (partner_id, lower(slug)), with no partial predicate', async () => {
@@ -142,8 +134,9 @@ describe('organizations.slug uniqueness (#3967)', () => {
       expect(byId.get(keeper.id)).toBe('dup-slug');
       expect(byId.get(loser.id)).toBe(`DUP-SLUG-${loser.id.slice(0, 8)}`);
 
-      // Re-applying must be a no-op (autoMigrate replays on every boot of a
-      // database that has not recorded the file).
+      // Re-applying must be a no-op: autoMigrate replays any file the target
+      // database's breeze_migrations ledger has not recorded (fresh DB,
+      // restored backup), not just on a first boot.
       await db.execute(sql.raw(migration));
       const afterSecondRun = await db.execute(sql`
         SELECT id, slug FROM organizations WHERE partner_id = ${partner.id}
@@ -153,6 +146,53 @@ describe('organizations.slug uniqueness (#3967)', () => {
       }
     } finally {
       // Leave the schema as we found it even if an expectation above threw.
+      await db.execute(sql.raw(
+        `CREATE UNIQUE INDEX IF NOT EXISTS ${INDEX} ON organizations (partner_id, lower(slug))`,
+      ));
+    }
+  });
+
+  // The migration's dedupe UPDATE is the one statement in this PR that runs
+  // against an RLS-FORCED table with no ambient context. Local/CI migrations
+  // run as a superuser, which is exempt; production is DigitalOcean managed
+  // Postgres where the admin role is NOT one (see
+  // 2026-07-16-td-synnex-sftp-price-file.sql, which documents the same trap).
+  // Replaying the file as the unprivileged `breeze_app` role is the only way to
+  // prove the `set_config('breeze.scope','system')` inside the DO block is
+  // doing its job: without it this test observes 0 renames and the index
+  // creation aborts.
+  runDb('the migration dedupes even when applied by a role RLS actually applies to', async () => {
+    const db = getTestDb();
+    const appDb = getAppDb();
+    const partner = await createPartner();
+    const migration = readFileSync(MIGRATION_FILE, 'utf8');
+
+    await db.execute(sql.raw(`DROP INDEX IF EXISTS ${INDEX}`));
+    try {
+      const keeper = await createOrganization({ partnerId: partner.id, slug: 'rls-dup' });
+      const loser = await createOrganization({ partnerId: partner.id, slug: 'RLS-DUP' });
+      await db.execute(sql`
+        UPDATE organizations SET created_at = now() - interval '1 day' WHERE id = ${keeper.id}
+      `);
+
+      // Only the DO block: `breeze_app` deliberately cannot create indexes
+      // ("must be owner of table organizations"), and that DDL is not the part
+      // RLS can silently neuter. Sliced out of the real file rather than
+      // retyped, so the assertion tracks the shipped SQL.
+      const dedupeBlock = migration.slice(
+        migration.indexOf('DO $$'),
+        migration.indexOf('END $$;') + 'END $$;'.length,
+      );
+      expect(dedupeBlock).toContain("set_config('breeze.scope', 'system', true)");
+      await appDb.execute(sql.raw(dedupeBlock));
+
+      const after = await db.execute(sql`
+        SELECT id, slug FROM organizations WHERE partner_id = ${partner.id}
+      `);
+      const byId = new Map((after as unknown as { id: string; slug: string }[]).map((r) => [r.id, r.slug]));
+      expect(byId.get(keeper.id)).toBe('rls-dup');
+      expect(byId.get(loser.id)).toBe(`RLS-DUP-${loser.id.slice(0, 8)}`);
+    } finally {
       await db.execute(sql.raw(
         `CREATE UNIQUE INDEX IF NOT EXISTS ${INDEX} ON organizations (partner_id, lower(slug))`,
       ));

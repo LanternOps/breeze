@@ -28,6 +28,7 @@ import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
@@ -213,6 +214,8 @@ const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partn
 // breeze_has_org_access(id), so a partner-scope caller whose accessible org set
 // excludes the clashing org would read zero rows here and fall through to the
 // 23505 anyway.
+const ORG_SLUG_UNIQUE_INDEX = 'organizations_partner_slug_uniq';
+
 interface OrgSlugConflict {
   id: string;
   deletedAt: Date | null;
@@ -247,20 +250,6 @@ function orgSlugConflictMessage(conflict: OrgSlugConflict | null): string {
   return conflict?.deletedAt
     ? 'That organization slug is still reserved by a deleted organization'
     : 'That organization slug is already in use';
-}
-
-// Drizzle wraps the driver error and the original `{ code, constraint_name }`
-// can sit anywhere on the cause chain, so walk it (and fall back to the
-// constraint name appearing in a message) rather than checking one level.
-function isOrgSlugUniqueViolation(error: unknown): boolean {
-  let candidate: unknown = error;
-  for (let depth = 0; candidate && typeof candidate === 'object' && depth < 5; depth++) {
-    const e = candidate as { code?: unknown; constraint_name?: unknown; message?: unknown; cause?: unknown };
-    if (e.code === '23505' && e.constraint_name === 'organizations_partner_slug_uniq') return true;
-    if (typeof e.message === 'string' && e.message.includes('organizations_partner_slug_uniq')) return true;
-    candidate = e.cause;
-  }
-  return false;
 }
 
 const listSitesSchema = z.object({
@@ -1526,7 +1515,12 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   try {
     [organization] = await insertOrganization();
   } catch (error) {
-    if (isOrgSlugUniqueViolation(error)) {
+    if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
+      // Only reachable when a concurrent write claimed the slug between the
+      // pre-check and this statement. Logged because a spike here means the
+      // pre-check has stopped working, and a bare 409 would look identical to
+      // ordinary user error in Sentry.
+      console.warn(`[orgs] ${ORG_SLUG_UNIQUE_INDEX} race lost — duplicate slug rejected by the index, not the pre-check`);
       return c.json({ error: 'That organization slug is already in use' }, 409);
     }
     throw error;
@@ -1936,7 +1930,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
       : await runUpdate();
   } catch (error) {
-    if (isOrgSlugUniqueViolation(error)) {
+    if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
+      // Only reachable when a concurrent write claimed the slug between the
+      // pre-check and this statement. Logged because a spike here means the
+      // pre-check has stopped working, and a bare 409 would look identical to
+      // ordinary user error in Sentry.
+      console.warn(`[orgs] ${ORG_SLUG_UNIQUE_INDEX} race lost — duplicate slug rejected by the index, not the pre-check`);
       return c.json({ error: 'That organization slug is already in use' }, 409);
     }
     throw error;

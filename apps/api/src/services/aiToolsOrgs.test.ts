@@ -339,6 +339,64 @@ describe('manage_organizations create_org', () => {
     expect(out.error).toMatch(/name is required/i);
     expect(mockDb.insert).not.toHaveBeenCalled();
   });
+
+  // #3967 — organizations_partner_slug_uniq is on (partner_id, lower(slug)),
+  // so the reserved set has to be compared case-insensitively.
+  it('treats a legacy mixed-case slug as taken', async () => {
+    selectQueue.push([{ currencyCode: 'CAD' }]);
+    selectQueue.push([{ slug: 'Acme-Dental' }]); // legacy row, mixed case
+    insertQueue.push([{ id: ORG_1, name: 'Acme Dental', slug: 'acme-dental-2', status: 'active' }]);
+    insertQueue.push([{ id: SITE_1, name: 'Main Office' }]);
+
+    await getTools().manage.handler({ action: 'create_org', name: 'Acme Dental' }, partnerAuth());
+
+    // A case-SENSITIVE `taken` set proposes 'acme-dental' here, which the index
+    // then rejects with a 23505 the caller never asked for.
+    expect(insertValuesSpy.mock.calls[0]![1]).toMatchObject({ slug: 'acme-dental-2' });
+  });
+
+  it('maps a lost slug race to a retryable conflict, not an opaque tool failure', async () => {
+    selectQueue.push([{ currencyCode: 'CAD' }]);
+    selectQueue.push([]);
+    mockDb.insert.mockImplementationOnce(() => ({
+      values: () => ({
+        returning: () => Promise.reject(
+          Object.assign(new Error('duplicate key value violates unique constraint'), {
+            cause: { code: '23505', constraint_name: 'organizations_partner_slug_uniq' },
+          })
+        ),
+      }),
+    }));
+
+    const out = JSON.parse(
+      await getTools().manage.handler({ action: 'create_org', name: 'Acme Dental' }, partnerAuth())
+    );
+
+    expect(out.code).toBe('ORG_SLUG_CONFLICT');
+    expect(out.error).toMatch(/claimed by another request/i);
+  });
+
+  it('does NOT claim a slug conflict for a unique violation on a different index', async () => {
+    selectQueue.push([{ currencyCode: 'CAD' }]);
+    selectQueue.push([]);
+    mockDb.insert.mockImplementationOnce(() => ({
+      values: () => ({
+        returning: () => Promise.reject(
+          Object.assign(new Error('duplicate key'), {
+            cause: { code: '23505', constraint_name: 'organizations_partner_quick_support_uniq' },
+          })
+        ),
+      }),
+    }));
+
+    // Rethrown, so it reaches the tool dispatcher's generic handler rather than
+    // being mislabelled as a retryable slug race.
+    const out = JSON.parse(
+      await getTools().manage.handler({ action: 'create_org', name: 'Acme Dental' }, partnerAuth())
+    );
+    expect(out.code).not.toBe('ORG_SLUG_CONFLICT');
+    expect(out.error).toMatch(/Operation failed/i);
+  });
 });
 
 // ── manage_organizations: update_org ─────────────────────────────────────────
