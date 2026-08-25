@@ -35,7 +35,7 @@ import {
   SITE_ACCESS_DENIED,
   stripSensitiveDeviceFields,
 } from './helpers';
-import { listDevicesSchema, updateDeviceSchema } from './schemas';
+import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema } from './schemas';
 import {
   DEVICES_LIST_DEFAULT_LIMIT,
   DEVICES_LIST_HARD_MAX,
@@ -63,6 +63,7 @@ import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/s
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
@@ -1421,9 +1422,14 @@ coreRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
   requireMfa(),
+  // Body is OPTIONAL — every existing caller (including bulk Remove) sends
+  // none today and must keep working. `uninstallAgent` defaults to `false`
+  // via the schema itself; see decommissionDeviceSchema's doc comment.
+  optionalJsonValidator(decommissionDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
+    const { uninstallAgent } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -1437,14 +1443,31 @@ coreRoutes.delete(
       return c.json({ error: 'Device is already decommissioned' }, 400);
     }
 
-    const [updated] = await db
-      .update(devices)
-      .set({
-        status: 'decommissioned',
-        updatedAt: new Date()
-      })
-      .where(eq(devices.id, deviceId))
-      .returning();
+    // The status flip and the uninstall queue must commit or roll back
+    // together (#3986 task 7) — a rolled-back Remove must never leave an
+    // orphaned self_uninstall command behind. `queueDeviceUninstall` takes
+    // the transaction handle directly and does its own row locking; it must
+    // NOT be wrapped in runOutsideDbContext (device_commands has no RLS, so
+    // it doesn't need a system context, and exiting the context here would
+    // let the command commit independently of the decommission write).
+    let updated: typeof devices.$inferSelect | undefined;
+    let uninstallQueued = false;
+    await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(devices)
+        .set({
+          status: 'decommissioned',
+          updatedAt: new Date()
+        })
+        .where(eq(devices.id, deviceId))
+        .returning();
+      updated = row;
+
+      if (uninstallAgent) {
+        const queueResult = await queueDeviceUninstall(tx, deviceId, auth.user.id);
+        uninstallQueued = queueResult.queued || queueResult.mergedIntoExisting;
+      }
+    });
 
     // Resolve any "possible replacement of THIS device" linkage now that the
     // old device is decommissioned (#2764). The banner/badge on the newer
@@ -1494,10 +1517,15 @@ coreRoutes.delete(
       details: {
         remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok',
         agentWsDisconnect,
+        uninstallQueued,
       },
     });
 
-    return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
+    return c.json({
+      success: true,
+      device: updated ? stripSensitiveDeviceFields(updated) : updated,
+      uninstallQueued,
+    });
   }
 );
 

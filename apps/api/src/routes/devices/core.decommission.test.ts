@@ -85,6 +85,16 @@ vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 
+// #3986 task 7 — the route composes `queueDeviceUninstall` into its own
+// decommission transaction; the predicate/insert SQL it builds is already
+// covered on compiled SQL by deviceUninstallDrain.test.ts (task 6). Here we
+// only need to assert the ROUTE's wiring: is it called at all (the
+// uninstallAgent default-false safety invariant), with the right tx/device
+// id/actor, and does its result reach the response + audit trail.
+vi.mock('../../services/deviceUninstallDrain', () => ({
+  queueDeviceUninstall: vi.fn(),
+}));
+
 vi.mock('../agents/enrollment', () => ({
   getGlobalEnrollmentSecret: vi.fn().mockReturnValue(null),
 }));
@@ -102,6 +112,7 @@ import { db } from '../../db';
 import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
 import { disconnectAgent } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -128,10 +139,20 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
   // .limit(1); then the decommission handler runs db.update().set().where()
   // .returning() → the updated row.
   //
-  // Two db.update() chains run on the success path: the status flip (which
-  // calls .returning()) and the replacement-linkage clear (which does not —
-  // awaiting the where() result object is a no-op, so one shared rig serves
-  // both). `set` is returned so tests can inspect each chain's payload.
+  // Two update chains run on the success path: the status flip (which calls
+  // .returning(), and — #3986 task 7 — now runs as `tx.update(...)` inside
+  // `db.transaction(...)` so it commits/rolls back atomically with the
+  // uninstall queue) and the replacement-linkage clear (still a bare
+  // `db.update(...)`, which does not call .returning() — awaiting the
+  // where() result object is a no-op). Both share ONE `set` mock so
+  // `toHaveBeenCalledTimes`/`toHaveBeenNthCalledWith` assertions below see
+  // both writes on a single counter, in call order (tx write first).
+  //
+  // TRAP: `db.transaction` is stubbed as a bare `vi.fn()` with no
+  // implementation in the top-level mock — the first `db.transaction(async
+  // (tx) => ...)` in the real route would await `undefined` and never run
+  // the callback, silently skipping the status flip and taking every test in
+  // this file down with it. Must be rigged here to actually invoke `cb(tx)`.
   function rigDecommission(device: unknown) {
     const limit = vi.fn().mockResolvedValue(device ? [device] : []);
     const where = vi.fn().mockReturnValue({ limit });
@@ -144,7 +165,11 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     const updWhere = vi.fn().mockReturnValue({ returning });
     const set = vi.fn().mockReturnValue({ where: updWhere });
     vi.mocked(db.update).mockReturnValue({ set } as never);
-    return { set, updWhere };
+
+    const tx = { update: vi.fn().mockReturnValue({ set }) };
+    vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
+
+    return { set, updWhere, tx };
   }
 
   it('calls terminateDeviceRemoteSessions with the decommissioned device id', async () => {
@@ -259,6 +284,118 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
 
       expect(res.status).toBe(400);
       expect(set).not.toHaveBeenCalled();
+    });
+  });
+
+  // #3986 task 7 — DELETE /devices/:id accepts an optional `uninstallAgent`
+  // flag that queues a durable self_uninstall alongside the decommission
+  // write. THE SAFETY CONSTRAINT: it must default to false. The web UI that
+  // sends `true` ships in a later PR, and this route may deploy before it —
+  // if the default were `true`, every existing Remove call site (including
+  // bulk Remove over a whole fleet) would silently start uninstalling agents.
+  describe('uninstallAgent', () => {
+    it('defaults to NOT queueing an uninstall when no body is sent at all', async () => {
+      rigDecommission(ONLINE_DEVICE);
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.uninstallQueued).toBe(false);
+      expect(queueDeviceUninstall).not.toHaveBeenCalled();
+    });
+
+    it('defaults to NOT queueing when the body omits the field', async () => {
+      rigDecommission(ONLINE_DEVICE);
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.uninstallQueued).toBe(false);
+      expect(queueDeviceUninstall).not.toHaveBeenCalled();
+    });
+
+    it('queues a device_remove-stamped uninstall when uninstallAgent is true, inside the same transaction as the status write', async () => {
+      const { tx } = rigDecommission(ONLINE_DEVICE);
+      vi.mocked(queueDeviceUninstall).mockResolvedValueOnce({ queued: true, mergedIntoExisting: false });
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uninstallAgent: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.uninstallQueued).toBe(true);
+      // The SAME tx handed to `tx.update(devices)...` for the status flip —
+      // this is the atomicity guarantee: a rolled-back decommission write
+      // must not leave an orphaned uninstall command.
+      expect(queueDeviceUninstall).toHaveBeenCalledWith(tx, DEVICE_ID, 'user-123');
+    });
+
+    it('reports uninstallQueued: true when the request merges into an already-queued uninstall', async () => {
+      rigDecommission(ONLINE_DEVICE);
+      vi.mocked(queueDeviceUninstall).mockResolvedValueOnce({ queued: false, mergedIntoExisting: true });
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uninstallAgent: true }),
+      });
+
+      const body = await res.json();
+      expect(body.uninstallQueued).toBe(true);
+    });
+
+    it('rejects an unrecognized body field instead of silently ignoring it', async () => {
+      rigDecommission(ONLINE_DEVICE);
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uninstallAgent: true, bogus: 1 }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(queueDeviceUninstall).not.toHaveBeenCalled();
+    });
+
+    it('audits uninstallQueued either way', async () => {
+      rigDecommission(ONLINE_DEVICE);
+      vi.mocked(queueDeviceUninstall).mockResolvedValueOnce({ queued: true, mergedIntoExisting: false });
+
+      await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uninstallAgent: true }),
+      });
+
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'device.decommission',
+        details: expect.objectContaining({ uninstallQueued: true }),
+      }));
+
+      vi.mocked(writeRouteAudit).mockClear();
+      vi.mocked(queueDeviceUninstall).mockClear();
+      rigDecommission(ONLINE_DEVICE);
+
+      await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ uninstallQueued: false }),
+      }));
     });
   });
 });
