@@ -174,7 +174,7 @@ const protectedNames = [
 ] as const;
 
 const protectedCommands = [
-  'breeze-backup bmr-recover --token &lt;token&gt; --server &lt;api-server&gt;',
+  'breeze-backup bmr-recover --token <token> --server <api-server>',
   'breeze-agent enroll',
   'msiexec /i "{file}" /qn /norestart',
   'msiexec /x "{file}" /qn /norestart',
@@ -352,29 +352,40 @@ function routePathValueErrors(values: LeafValues, namespace: string): string[] {
 // A locale value reaches the DOM either as a React text node (plain `t()`) or
 // through <Trans>'s markup parser. React text-escapes the leading `&`, and
 // react-i18next does NOT decode entities inside <Trans> either — so an HTML
-// entity written into a JSON value can never decode in *any* render path. It
-// always reaches the user as the literal source text ("&ldquo;", "&times;").
+// entity written into a JSON value can never decode in *any* render path (Trans
+// unescapes only under `shouldUnescape`, which this app never enables — see
+// `index.ts`). It always reaches the user as the literal source text
+// ("&ldquo;", "&times;").
 // Author the character itself instead: “ ” × — a real \n, U+00A0 for &nbsp;.
 // Regression guard for #3964.
 const htmlEntityPattern = /&(?:[a-zA-Z][a-zA-Z0-9]{1,9}|#(?:[0-9]{2,5}|[xX][0-9a-fA-F]{2,4}));/;
 
 function htmlEntityValueErrors(values: LeafValues, namespace: string): string[] {
   const errors: string[] = [];
-  for (const [key, value] of values) {
-    // `flattenValues` stops at arrays, so scan array leaves element-wise.
-    const candidates: [string, unknown][] = Array.isArray(value)
-      ? value.map((entry, index) => [`${key}[${index}]`, entry] as [string, unknown])
-      : [[key, value]];
-    for (const [label, candidate] of candidates) {
-      if (typeof candidate !== 'string') continue;
-      const match = candidate.match(htmlEntityPattern);
-      if (!match) continue;
-      errors.push(
-        `${label}: value contains the HTML entity ${JSON.stringify(match[0])}, ` +
-          'which renders literally; use the character itself instead',
-      );
+  // `flattenValues` stops at arrays, so a container leaf has to be walked here
+  // or an entity nested inside one is never scanned. Recurse rather than only
+  // mapping array elements: an array of objects hides its strings a level down.
+  const visit = (label: string, node: unknown): void => {
+    if (typeof node === 'string') {
+      const match = node.match(htmlEntityPattern);
+      if (match) {
+        errors.push(
+          `${label}: value contains the HTML entity ${JSON.stringify(match[0])}, ` +
+            'which renders literally; use the character itself instead',
+        );
+      }
+      return;
     }
-  }
+    if (Array.isArray(node)) {
+      node.forEach((entry, index) => visit(`${label}[${index}]`, entry));
+      return;
+    }
+    if (isRecord(node)) {
+      for (const [key, entry] of Object.entries(node)) visit(`${label}.${key}`, entry);
+    }
+  };
+
+  for (const [key, value] of values) visit(key, value);
   return errors;
 }
 
@@ -543,6 +554,17 @@ describe('locale parity guard helpers', () => {
       'suppress.howLong: value contains the HTML entity "&ldquo;", which renders literally; use the character itself instead',
       'patch.close: value contains the HTML entity "&times;", which renders literally; use the character itself instead',
       'scan.placeholder: value contains the HTML entity "&#10;", which renders literally; use the character itself instead',
+    ]);
+  });
+
+  it('finds an entity nested inside a container leaf', () => {
+    expect(
+      htmlEntityValueErrors(
+        new Map([['wizard.steps', [{ label: 'Pick a device' }, { label: 'Confirm &amp; run' }]]]),
+        'devices.json',
+      ),
+    ).toEqual([
+      'wizard.steps[1].label: value contains the HTML entity "&amp;", which renders literally; use the character itself instead',
     ]);
   });
 
