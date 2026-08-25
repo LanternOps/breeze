@@ -171,6 +171,30 @@ describe('peripheral_policies RLS — dual-axis (2026-07-01 migration)', () => {
     expect(visible.map((r) => r.id)).toContain(inserted[0]?.id);
   });
 
+  it('persists the v2 priority default on both ownership axes', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const partnerId = await seedPartnerPolicy(partner.id);
+
+    const [orgPolicy] = await withDbAccessContext(orgContext(org.id), () =>
+      db.insert(peripheralPolicies).values({
+        ...BASE_POLICY,
+        name: 'Org policy with default priority',
+        orgId: org.id,
+        partnerId: null,
+      }).returning(),
+    );
+    createdPolicies.push(orgPolicy!.id);
+
+    const rows = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ id: peripheralPolicies.id, priority: peripheralPolicies.priority })
+        .from(peripheralPolicies)
+        .where(inArray(peripheralPolicies.id, [partnerId, orgPolicy!.id])),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.priority === 100)).toBe(true);
+  });
+
   it('the one-owner CHECK rejects a policy that sets BOTH axes and one that sets NEITHER', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

@@ -263,6 +263,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'pax8_subscription_snapshots',
   'peripheral_events',
   'peripheral_policies',
+  'peripheral_policy_delivery_events',
+  'peripheral_policy_device_states',
   'playbook_definitions',
   'playbook_executions',
   'plugin_installations',
@@ -514,6 +516,7 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   'audit_log_chain',
   'audit_chain_anchors',
   'ml_feedback_events',
+  'peripheral_policy_delivery_events',
 ]);
 
 interface FkEdge {
