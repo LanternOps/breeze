@@ -143,7 +143,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_group_memberships', 'device_hardware', 'device_ip_history',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
-  'device_reliability', 'device_reliability_history', 'device_sessions',
+  'device_reliability', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
   'device_vulnerabilities', 'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
@@ -161,7 +161,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'security_threats',
   'sensitive_data_findings', 'sensitive_data_scans',
   'service_process_check_results',
-  'software_inventory', 'software_policy_audit', 'software_remediation_requests', 'sql_instances',
+  'software_inventory', 'software_inventory_observations', 'software_policy_audit', 'software_remediation_requests', 'sql_instances',
   'support_sessions',
   'tickets', 'time_series_metrics', 'tunnel_sessions',
 ] as const;
@@ -175,6 +175,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
  */
 export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'agent_health_observations',
+  'software_inventory_observations',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
@@ -242,7 +243,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // Core device tables
   // Latest projection references the immutable observation, so it must be
   // deleted before the observation in the explicit device cascade.
-  'device_agent_health_latest', 'agent_health_observations',
+  'device_agent_health_latest', 'device_software_inventory_state',
+  'agent_health_observations', 'software_inventory_observations',
   'device_group_memberships', 'group_membership_log',
   'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',

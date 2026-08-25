@@ -141,7 +141,10 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
   });
 
   it('keeps database-cascade restamps registered in the complete org-denormalized contract', () => {
-    expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual(['agent_health_observations']);
+    expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
+      'agent_health_observations',
+      'software_inventory_observations',
+    ]);
     expect(deviceOrgDenormalizedTables).toEqual(
       expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),
     );
