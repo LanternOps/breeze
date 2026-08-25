@@ -6,6 +6,7 @@ export * from './auth';
 export * from './deviceOptions';
 export * from './agentHealth';
 export * from './scriptAdmission';
+export * from './softwareInventoryObservation';
 
 // ============================================
 // Multi-Tenancy Types

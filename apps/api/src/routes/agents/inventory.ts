@@ -3,15 +3,13 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { vpnPresenceIngestSchema } from '@breeze/shared';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
   deviceHardware,
   deviceDisks,
   deviceNetwork,
-  deviceVulnerabilities,
-  softwareInventory,
 } from '../../db/schema';
 import {
   agentWarrantyInfoSchema,
@@ -21,11 +19,13 @@ import {
   updateNetworkSchema,
 } from './schemas';
 import { sanitizeDate } from './helpers';
-import { resolveInventoryVersion } from './agentSelfInventory';
-import { retryOnTransientLockError } from '../../utils/pgErrors';
 import { upsertAgentWarranty } from '../../services/warrantySync';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
+import {
+  ingestSoftwareInventoryReport,
+  SoftwareInventoryObservationConflictError,
+} from '../../services/softwareInventoryObservations';
 
 export const inventoryRoutes = new Hono();
 // Inventory ingest is the main agent's job; reject watchdog-role tokens.
@@ -97,7 +97,7 @@ inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
 
 inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', updateSoftwareSchema), async (c) => {
   const agentId = c.req.param('id');
-  const data = c.req.valid('json');
+  const report = c.req.valid('json');
 
   const [device] = await db
     .select()
@@ -109,162 +109,23 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  // The ordering below makes the BREEZE-3 deadlock unreachable against the
-  // risk-score pass, but device_vulnerabilities has other writers (correlation,
-  // status changes, the waiver reaper). Losing a lock race to one of those must
-  // not cost the whole inventory report the way it did before — this route runs
-  // inside agentAuth's request-long context, so `db.transaction` is a SAVEPOINT
-  // and is safe to re-run (see retryOnTransientLockError).
-  await retryOnTransientLockError(`Inventory software device=${device.id}`, () => db.transaction(async (tx) => {
-    // The wipe-and-reinsert below churns software_inventory row ids, and
-    // device_vulnerabilities.software_inventory_id references them (ON DELETE
-    // SET NULL). The fleet aggregation layer displays a NULL-linked finding as
-    // an OS finding (vulnerabilityFleetAggregation.ts groupKey), so without
-    // repair every software report would misclassify the device's software
-    // findings in the UI until the next correlation run. Capture what each
-    // finding pointed at, then re-link to the replacement row.
-    //
-    // `FOR UPDATE OF device_vulnerabilities` + `ORDER BY device_vulnerabilities.id`
-    // is load-bearing, not a tidy-up: it is the fix for the BREEZE-3/BREEZE-W
-    // deadlock pair (pg 40P01, ~4k dropped software reports in 6 days).
-    //
-    // This select covers exactly the findings the DELETE below will touch via
-    // the ON DELETE SET NULL cascade, and exactly the ones the re-link UPDATEs
-    // touch afterwards. Without the locking clause this transaction acquired
-    // its device_vulnerabilities row locks implicitly, in whatever order the
-    // FK cascade walked software_inventory — which is NOT id order. The
-    // `risk-score-refresh` pass walks the same rows ordered by id (one UPDATE
-    // per row, see refreshRiskScores in jobs/vulnerabilityJobs.ts), so the two
-    // acquired the same locks in opposite orders and Postgres killed one side.
-    //
-    // #2751 added the ORDER BY on the refresh side only; that is not enough,
-    // and BREEZE-W kept firing on 0.100.0 with the ordering already shipped.
-    // Both sides must ascend by id — two ascending acquirers cannot form a
-    // cycle. Locking here up front pins the whole set in id order before the
-    // cascade can invert it.
-    const linkedFindings = await tx
-      .select({
-        findingId: deviceVulnerabilities.id,
-        name: softwareInventory.name,
-        vendor: softwareInventory.vendor,
-      })
-      .from(deviceVulnerabilities)
-      .innerJoin(softwareInventory, eq(deviceVulnerabilities.softwareInventoryId, softwareInventory.id))
-      .where(and(
-        eq(deviceVulnerabilities.deviceId, device.id),
-        eq(softwareInventory.deviceId, device.id)
-      ))
-      .orderBy(deviceVulnerabilities.id)
-      // Only the findings — locking the joined software_inventory rows here too
-      // would be harmless (the DELETE takes them immediately after) but adds
-      // nothing, and `OF` keeps the intent explicit.
-      .for('update', { of: deviceVulnerabilities });
-
-    await tx
-      .delete(softwareInventory)
-      .where(eq(softwareInventory.deviceId, device.id));
-
-    let replacementRows: { id: string; name: string; vendor: string | null }[] = [];
-    if (data.software.length > 0) {
-      const now = new Date();
-      const rows = data.software.map((item) => ({
-        deviceId: device.id,
+  try {
+    const decision = await ingestSoftwareInventoryReport({
+      device: {
+        id: device.id,
         orgId: device.orgId,
-        name: item.name,
-        // The agent's own entry comes from the MSI's Uninstall registry key,
-        // which self-updates never rewrite — take the live heartbeat version
-        // instead so the agent stops reading as outdated software (#3591).
-        version: resolveInventoryVersion(item.name, item.version, device.agentVersion),
-        vendor: item.vendor || null,
-        installDate: sanitizeDate(item.installDate),
-        installLocation: item.installLocation || null,
-        uninstallString: item.uninstallString || null,
-        fileHash: item.fileHash || null,
-        hashAlgorithm: item.hashAlgorithm || null,
-        lastSeen: now
-      }));
-      await tx.insert(softwareInventory).values(rows);
-      // .returning() on the insert would serialize up to 10k rows back over
-      // the wire when only the handful of names carried by linked findings
-      // matter — select just the candidate replacement rows instead,
-      // normalized the same way the re-link match below is.
-      if (linkedFindings.length > 0) {
-        const findingNames = [...new Set(linkedFindings.map((f) => f.name.trim().toLowerCase()))];
-        replacementRows = await tx
-          .select({
-            id: softwareInventory.id,
-            name: softwareInventory.name,
-            vendor: softwareInventory.vendor,
-          })
-          .from(softwareInventory)
-          .where(and(
-            eq(softwareInventory.deviceId, device.id),
-            inArray(sql`lower(trim(${softwareInventory.name}))`, findingNames)
-          ));
-      }
+        agentVersion: device.agentVersion,
+      },
+      report,
+      receivedAt: new Date(),
+    });
+    return c.json({ success: true, ...decision });
+  } catch (error) {
+    if (error instanceof SoftwareInventoryObservationConflictError) {
+      return c.json({ error: 'Software inventory observation conflict' }, 409);
     }
-
-    if (linkedFindings.length > 0 && data.software.length > 0) {
-      // Match by (name, vendor), normalized the same way the correlation
-      // layer matches products (lower(trim(...)) — see the
-      // softwareProductResolutions join in vulnerabilityCorrelation.ts), so a
-      // casing/whitespace change between reports doesn't drop the link.
-      // Version is deliberately ignored: upgrades keep the link and the
-      // correlation job re-evaluates version ranges on its next run. First
-      // row wins for duplicate keys. Findings whose software is gone keep a
-      // NULL link; correlateOrg's resolve pass closes them.
-      const relinkKey = (name: string, vendor: string | null) =>
-        JSON.stringify([name.trim().toLowerCase(), (vendor ?? '').trim().toLowerCase()]);
-
-      const newRowByKey = new Map<string, string>();
-      for (const row of replacementRows) {
-        const key = relinkKey(row.name, row.vendor);
-        if (!newRowByKey.has(key)) newRowByKey.set(key, row.id);
-      }
-
-      const findingIdsByNewRow = new Map<string, string[]>();
-      let severed = 0;
-      for (const finding of linkedFindings) {
-        const newRowId = newRowByKey.get(relinkKey(finding.name, finding.vendor));
-        if (!newRowId) {
-          severed++;
-          continue;
-        }
-        const ids = findingIdsByNewRow.get(newRowId) ?? [];
-        ids.push(finding.findingId);
-        findingIdsByNewRow.set(newRowId, ids);
-      }
-
-      for (const [newRowId, findingIds] of findingIdsByNewRow) {
-        await tx
-          .update(deviceVulnerabilities)
-          .set({ softwareInventoryId: newRowId, updatedAt: new Date() })
-          .where(inArray(deviceVulnerabilities.id, findingIds));
-      }
-
-      if (severed > 0) {
-        // Expected for genuinely uninstalled software (the next correlation
-        // pass resolves those findings), but a spike of these fleet-wide is
-        // the signature of truncated agent-side collection silently converting
-        // open findings to patched — keep the trail.
-        console.warn(
-          `[Inventory] Software report for device ${device.id} severed ${severed} vuln finding link(s) with no replacement row (uninstalled or renamed software)`
-        );
-      }
-    }
-
-    if (linkedFindings.length > 0 && data.software.length === 0) {
-      // An empty report against a device with linked findings just severed
-      // every link in one statement. Legitimate only if all software was
-      // actually removed — it is also the signature of a truncated agent-side
-      // collection, so leave a trail.
-      console.warn(
-        `[Inventory] Software report for device ${device.id} emptied the inventory and detached ${linkedFindings.length} vuln finding link(s)`
-      );
-    }
-  }));
-
-  return c.json({ success: true, count: data.software.length });
+    throw error;
+  }
 });
 
 inventoryRoutes.put('/:id/disks', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', updateDisksSchema), async (c) => {

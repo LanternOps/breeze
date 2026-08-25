@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { softwareInventoryReportSchema } from '@breeze/shared';
 
 // ============================================
 // Enrollment
@@ -595,18 +596,7 @@ export const updateHardwareSchema = z.object({
   gpuModel: z.string().optional()
 });
 
-export const updateSoftwareSchema = z.object({
-  software: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    vendor: z.string().optional(),
-    installDate: z.string().optional(),
-    installLocation: z.string().optional(),
-    uninstallString: z.string().optional(),
-    fileHash: z.string().max(128).optional(),
-    hashAlgorithm: z.string().max(10).optional(),
-  })).max(10000)
-});
+export const updateSoftwareSchema = softwareInventoryReportSchema;
 
 export const updateDisksSchema = z.object({
   disks: z.array(z.object({
