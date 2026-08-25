@@ -28,7 +28,7 @@ import { getTestDb } from './setup';
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-08-24-recovery-authorization-subject.sql',
+  '../../../migrations/2026-09-11-c-recovery-authorization-subject.sql',
 );
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
