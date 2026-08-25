@@ -50,7 +50,7 @@ func TestHandleAgentRollbackStrictlyDecodesAndDispatches(t *testing.T) {
 }
 
 func TestRollbackObservationPersistsOnWireUntilAcknowledged(t *testing.T) {
-	observation := &rollbackstate.Observation{SchemaVersion: 1, ObservationID: "observation-1", RollbackID: "rollback-1", DeviceID: "device-1", Phase: rollbackstate.PhaseRestartRequested, ObservedAt: time.Unix(1, 0).UTC()}
+	observation := &rollbackstate.Observation{SchemaVersion: 1, ObservationID: "observation-1", RollbackID: "rollback-1", DeviceID: "device-1", Phase: rollbackstate.PhaseRestartRequested, CurrentVersion: "2.0.0", ComponentVersions: map[string]string{"agent": "1.9.0"}, ObservedAt: time.Unix(1, 0).UTC(), ErrorCode: "restart_failed"}
 	payload, err := json.Marshal(HeartbeatPayload{Status: "ok", AgentVersion: "2.0.0", RollbackObservation: observation})
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +61,13 @@ func TestRollbackObservationPersistsOnWireUntilAcknowledged(t *testing.T) {
 	}
 	if decoded["rollbackObservation"] == nil {
 		t.Fatal("pending rollback observation omitted from heartbeat wire payload")
+	}
+	wire := decoded["rollbackObservation"].(map[string]any)
+	if wire["targetVersion"] != nil || wire["failureCode"] != nil {
+		t.Fatalf("non-frozen rollback fields leaked onto wire: %+v", wire)
+	}
+	if wire["errorCode"] != "restart_failed" || wire["componentVersions"].(map[string]any)["agent"] != "1.9.0" {
+		t.Fatalf("frozen rollback fields missing from wire: %+v", wire)
 	}
 	controller := &fakeRollbackController{pending: observation}
 	h := &Heartbeat{rollbackController: controller}

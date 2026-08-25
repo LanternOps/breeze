@@ -290,9 +290,9 @@ export const heartbeatSchema = z.object({
       'recovered',
     ]),
     currentVersion: z.string().min(1).max(100),
-    targetVersion: z.string().min(1).max(100),
+    componentVersions: z.record(z.string().min(1).max(64), z.string().min(1).max(100)),
     observedAt: z.string().datetime({ offset: true }),
-    failureCode: z.string().min(1).max(128).regex(/^[a-z0-9_]+$/).optional().catch(undefined),
+    errorCode: z.string().min(1).max(128).regex(/^[a-z0-9_]+$/).optional().catch(undefined),
   }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
   // agent believes it needs to migrate hosted↔self-host. Informational: a bad

@@ -11,9 +11,9 @@ export interface RollbackObservationV1 {
   deviceId: string;
   phase: RollbackObservationPhase;
   currentVersion: string;
-  targetVersion: string;
+  componentVersions: Record<string, string>;
   observedAt: string;
-  failureCode?: string;
+  errorCode?: string;
 }
 
 export interface RollbackDirectiveProjection {
@@ -60,6 +60,29 @@ function liveComponentVersion(component: string, live: RollbackLiveVersions): st
   return live?.[component] ?? null;
 }
 
+function observationVersionsBound(
+  directive: RollbackDirectiveProjection,
+  observation: RollbackObservationV1,
+): boolean {
+  const entries = Object.entries(directive.componentVersions);
+  if (Object.keys(observation.componentVersions).length !== entries.length) return false;
+  const targetPhase = observation.phase === 'swapped'
+    || observation.phase === 'restart_requested'
+    || observation.phase === 'healthy';
+  const currentPhase = observation.phase === 'received'
+    || observation.phase === 'downloaded'
+    || observation.phase === 'verified'
+    || observation.phase === 'staged'
+    || observation.phase === 'recovered';
+  return entries.every(([component, binding]) => {
+    const reported = observation.componentVersions[component];
+    if (targetPhase) return reported === binding.target;
+    if (currentPhase) return reported === binding.current;
+    return reported === binding.current;
+  }) || (observation.phase === 'failed' && entries.every(([component, binding]) =>
+    observation.componentVersions[component] === binding.target));
+}
+
 export function evaluateRollbackObservationTransition(input: {
   directive: RollbackDirectiveProjection;
   observation: RollbackObservationV1;
@@ -75,10 +98,7 @@ export function evaluateRollbackObservationTransition(input: {
   if (observation.deviceId !== directive.deviceId || observation.rollbackId !== directive.id) {
     return { ...unchanged('identity_mismatch'), accepted: false };
   }
-  if (
-    observation.currentVersion !== directive.currentVersion
-    || observation.targetVersion !== directive.targetVersion
-  ) {
+  if (observation.currentVersion !== directive.currentVersion || !observationVersionsBound(directive, observation)) {
     return { ...unchanged('version_binding_mismatch'), accepted: false };
   }
   if (TERMINAL_STATUSES.has(directive.status)) return unchanged('already_terminal');
@@ -153,12 +173,6 @@ export async function ingestRollbackObservation(
     });
     if (!decision.accepted) return { acknowledgedObservationId: null };
 
-    const liveComponentVersions = Object.fromEntries(
-      Object.keys(directive.componentVersions).map((component) => [
-        component,
-        liveComponentVersion(component, liveVersions),
-      ]),
-    );
     const inserted = await tx.execute(sql`
       INSERT INTO agent_rollback_events (
         rollback_id, org_id, device_id, phase, observation_id, observed_at,
@@ -166,8 +180,8 @@ export async function ingestRollbackObservation(
       ) VALUES (
         ${directive.id}, ${directive.orgId}, ${deviceId}, ${observation.phase},
         ${observation.observationId}, ${observation.observedAt}::timestamptz,
-        ${observation.currentVersion}, ${JSON.stringify(liveComponentVersions)}::jsonb,
-        ${observation.failureCode ?? decision.rejectionCode}, ${JSON.stringify(observation)}::jsonb
+        ${observation.currentVersion}, ${JSON.stringify(observation.componentVersions)}::jsonb,
+        ${observation.errorCode ?? decision.rejectionCode}, ${JSON.stringify(observation)}::jsonb
       )
       ON CONFLICT (rollback_id, observation_id) DO NOTHING
       RETURNING id
@@ -188,7 +202,7 @@ export async function ingestRollbackObservation(
       await tx.execute(sql`
         UPDATE agent_rollback_directives
         SET latest_phase = ${observation.phase}, status = ${decision.status},
-            last_error_code = ${observation.failureCode ?? null}, updated_at = NOW()
+            last_error_code = ${observation.errorCode ?? null}, updated_at = NOW()
         WHERE id = ${directive.id}
           AND status = ${directive.status}
           AND latest_phase IS NOT DISTINCT FROM ${directive.latestPhase}

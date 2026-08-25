@@ -69,14 +69,19 @@ async function createDirective(fixture: Fixture): Promise<string> {
 }
 
 function observation(fixture: Fixture, rollbackId: string, overrides: Partial<RollbackObservationV1> = {}): RollbackObservationV1 {
+  const phase = overrides.phase ?? 'restart_requested';
+  const reportsTarget = phase === 'swapped' || phase === 'restart_requested' || phase === 'healthy';
+  const version = reportsTarget ? '1.9.0' : '2.0.0';
   return {
     schemaVersion: 1,
     observationId: randomUUID().replaceAll('-', '').padEnd(64, '0'),
     rollbackId,
     deviceId: fixture.deviceId,
-    phase: 'restart_requested',
+    phase,
     currentVersion: '2.0.0',
-    targetVersion: '1.9.0',
+    componentVersions: {
+      agent: version, helper: version, 'user-helper': version, watchdog: version, backup: version,
+    },
     observedAt: new Date().toISOString(),
     ...overrides,
   };
@@ -167,7 +172,7 @@ describe('rollback observation durable ingestion', () => {
     ));
     await withDbAccessContext(orgContext(fixture), () => ingestRollbackObservation(
       fixture.deviceId,
-      observation(fixture, rollbackId, { phase: 'failed', failureCode: 'restart_failed' }),
+      observation(fixture, rollbackId, { phase: 'failed', errorCode: 'restart_failed' }),
     ));
     const [state] = await getTestDb().execute(sql`
       SELECT d.status, d.latest_phase AS "latestPhase", count(e.id)::int AS events

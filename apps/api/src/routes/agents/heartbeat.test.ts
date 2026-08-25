@@ -444,7 +444,7 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
       deviceId: 'device-1',
       phase: 'restart_requested',
       currentVersion: '2.0.0',
-      targetVersion: '1.9.0',
+      componentVersions: { agent: '1.9.0' },
       observedAt: '2026-08-25T12:00:00Z',
     };
     ingestRollbackObservationMock.mockResolvedValueOnce({

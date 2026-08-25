@@ -58,15 +58,15 @@ const (
 )
 
 type Observation struct {
-	SchemaVersion  int       `json:"schemaVersion"`
-	ObservationID  string    `json:"observationId"`
-	RollbackID     string    `json:"rollbackId"`
-	DeviceID       string    `json:"deviceId"`
-	Phase          Phase     `json:"phase"`
-	CurrentVersion string    `json:"currentVersion"`
-	TargetVersion  string    `json:"targetVersion"`
-	ObservedAt     time.Time `json:"observedAt"`
-	FailureCode    string    `json:"failureCode,omitempty"`
+	SchemaVersion     int               `json:"schemaVersion"`
+	ObservationID     string            `json:"observationId"`
+	RollbackID        string            `json:"rollbackId"`
+	DeviceID          string            `json:"deviceId"`
+	Phase             Phase             `json:"phase"`
+	CurrentVersion    string            `json:"currentVersion"`
+	ComponentVersions map[string]string `json:"componentVersions"`
+	ObservedAt        time.Time         `json:"observedAt"`
+	ErrorCode         string            `json:"errorCode,omitempty"`
 }
 
 type Backend interface {

@@ -156,6 +156,13 @@ func TestRollbackObservationsPersistAndAcknowledgeInPhaseOrder(t *testing.T) {
 		if pending == nil || pending.Phase != phase {
 			t.Fatalf("pending phase %d = %+v, want %s", index, pending, phase)
 		}
+		wantVersion := directive.ComponentVersions["agent"].Current
+		if phase == PhaseSwapped || phase == PhaseRestartRequested {
+			wantVersion = directive.ComponentVersions["agent"].Target
+		}
+		if pending.ComponentVersions["agent"] != wantVersion {
+			t.Fatalf("pending phase %s component version = %q, want %q", phase, pending.ComponentVersions["agent"], wantVersion)
+		}
 		if err := restarted.Acknowledge(pending.ObservationID); err != nil {
 			t.Fatal(err)
 		}

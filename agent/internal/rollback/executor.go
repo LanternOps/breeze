@@ -84,14 +84,31 @@ func (e *Engine) validate(d Directive) (string, error) {
 	return digestHex(payload), nil
 }
 
-func observation(d Directive, phase Phase, now time.Time, failure string) Observation {
+func observationComponentVersions(d Directive, phase, prior Phase) map[string]string {
+	useTarget := phase == PhaseSwapped || phase == PhaseRestartRequested || phase == PhaseHealthy
+	if phase == PhaseFailed {
+		useTarget = prior == PhaseSwapped || prior == PhaseRestartRequested || prior == PhaseHealthy
+	}
+	versions := make(map[string]string, len(d.ComponentVersions))
+	for component, binding := range d.ComponentVersions {
+		if useTarget {
+			versions[component] = binding.Target
+		} else {
+			versions[component] = binding.Current
+		}
+	}
+	return versions
+}
+
+func observation(d Directive, phase, prior Phase, now time.Time, failure string) Observation {
 	sum := sha256.Sum256([]byte(d.RollbackID + "\x00" + string(phase) + "\x00" + now.UTC().Format(time.RFC3339Nano) + "\x00" + failure))
-	return Observation{SchemaVersion: 1, ObservationID: hex.EncodeToString(sum[:]), RollbackID: d.RollbackID, DeviceID: d.DeviceID, Phase: phase, CurrentVersion: d.CurrentVersion, TargetVersion: d.TargetVersion, ObservedAt: now.UTC(), FailureCode: failure}
+	return Observation{SchemaVersion: 1, ObservationID: hex.EncodeToString(sum[:]), RollbackID: d.RollbackID, DeviceID: d.DeviceID, Phase: phase, CurrentVersion: d.CurrentVersion, ComponentVersions: observationComponentVersions(d, phase, prior), ObservedAt: now.UTC(), ErrorCode: failure}
 }
 
 func (e *Engine) transition(state *stateFile, rec *record, phase Phase, failure string) error {
+	prior := rec.Phase
 	rec.Phase = phase
-	rec.Observation = observation(rec.Directive, phase, e.env.Now(), failure)
+	rec.Observation = observation(rec.Directive, phase, prior, e.env.Now(), failure)
 	state.Active = rec
 	state.Pending = append(state.Pending, rec.Observation)
 	if phase == PhaseHealthy || phase == PhaseFailed || phase == PhaseRecovered {

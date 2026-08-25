@@ -35,7 +35,7 @@ const observation = (overrides: Partial<RollbackObservationV1> = {}): RollbackOb
   deviceId: directive.deviceId,
   phase: 'received',
   currentVersion: '2.0.0',
-  targetVersion: '1.9.0',
+  componentVersions: currentLive,
   observedAt: '2026-08-25T12:00:00Z',
   ...overrides,
 });
@@ -45,13 +45,21 @@ describe('evaluateRollbackObservationTransition', () => {
     ['wrong device', observation({ deviceId: '30000000-0000-4000-8000-000000000003' })],
     ['wrong rollback', observation({ rollbackId: '30000000-0000-4000-8000-000000000003' })],
     ['stale current version', observation({ currentVersion: '1.8.0' })],
-    ['changed target version', observation({ targetVersion: '1.8.0' })],
+    ['unbound component version', observation({ componentVersions: { ...currentLive, agent: '1.8.0' } })],
   ])('rejects %s without advancing', (_name, value) => {
     expect(evaluateRollbackObservationTransition({
       directive,
       observation: value,
       liveVersions: currentLive,
     })).toMatchObject({ accepted: false, advance: false });
+  });
+
+  it('rejects mixed-set failed evidence', () => {
+    expect(evaluateRollbackObservationTransition({
+      directive,
+      observation: observation({ phase: 'failed', componentVersions: { ...currentLive, backup: '1.9.0' } }),
+      liveVersions: currentLive,
+    })).toMatchObject({ accepted: false, rejectionCode: 'version_binding_mismatch' });
   });
 
   it('advances forward while allowing skipped telemetry phases', () => {
@@ -73,7 +81,7 @@ describe('evaluateRollbackObservationTransition', () => {
   it('rejects forged healthy until the live heartbeat proves every owned component is target', () => {
     const result = evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'in_progress', latestPhase: 'restart_requested' },
-      observation: observation({ phase: 'healthy' }),
+      observation: observation({ phase: 'healthy', componentVersions: targetLive }),
       liveVersions: { ...targetLive, backup: '2.0.0' },
     });
     expect(result).toEqual({ accepted: true, advance: false, status: 'in_progress', rejectionCode: 'live_component_mismatch' });
@@ -82,7 +90,7 @@ describe('evaluateRollbackObservationTransition', () => {
   it('completes only when target agent and the full owned component set are live', () => {
     expect(evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'in_progress', latestPhase: 'restart_requested' },
-      observation: observation({ phase: 'healthy' }),
+      observation: observation({ phase: 'healthy', componentVersions: targetLive }),
       liveVersions: targetLive,
     })).toEqual({ accepted: true, advance: true, status: 'completed', rejectionCode: null });
   });
@@ -93,7 +101,7 @@ describe('evaluateRollbackObservationTransition', () => {
   ] as const)('retains terminal %s truth', (phase, status) => {
     expect(evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'in_progress', latestPhase: 'staged' },
-      observation: observation({ phase, failureCode: `${phase}_code` }),
+      observation: observation({ phase, errorCode: `${phase}_code` }),
       liveVersions: currentLive,
     })).toEqual({ accepted: true, advance: true, status, rejectionCode: null });
   });
@@ -101,7 +109,7 @@ describe('evaluateRollbackObservationTransition', () => {
   it('never advances a terminal projection', () => {
     expect(evaluateRollbackObservationTransition({
       directive: { ...directive, status: 'failed', latestPhase: 'failed' },
-      observation: observation({ phase: 'healthy' }),
+      observation: observation({ phase: 'healthy', componentVersions: targetLive }),
       liveVersions: targetLive,
     })).toMatchObject({ accepted: true, advance: false, rejectionCode: 'already_terminal' });
   });

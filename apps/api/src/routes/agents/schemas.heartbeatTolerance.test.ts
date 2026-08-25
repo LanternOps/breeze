@@ -27,7 +27,7 @@ describe('heartbeatSchema — Layer A tolerance', () => {
         deviceId: '20000000-0000-4000-8000-000000000002',
         phase: 'restart_requested',
         currentVersion: '2.0.0',
-        targetVersion: '1.9.0',
+        componentVersions: { agent: '1.9.0' },
         observedAt: '2026-08-25T12:00:00Z',
       },
     });
