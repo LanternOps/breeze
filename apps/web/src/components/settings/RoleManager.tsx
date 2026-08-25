@@ -357,7 +357,7 @@ export default function RoleManager({
                         type="button"
                         onClick={() => onCloneRole?.(role)}
                         className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
-                        title={t('roleManager.cloneRole')}
+                        title={t('roleManager.cloneRole', { name: role.name })}
                       >
                         {t('roleManager.clone')}</button>
                       {!role.isSystem && (
@@ -392,7 +392,7 @@ export default function RoleManager({
                   <tr>
                     <td colSpan={6} className="border-b bg-muted/20 px-6 py-4">
                       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        {t('roleManager.permissionsFor')}{role.name}
+                        {t('roleManager.permissionsForRole', { role: role.name })}
                       </div>
                       {/* Render precedence (intentional ordering):
                             1. Role-specific fetch error (with Retry) — must beat
@@ -836,7 +836,7 @@ export function RoleFormModal({
           <div className="space-y-2">
             <label className="text-sm font-medium">{i18n.t('settings:roleManager.permissions')}</label>
             <p className="text-xs text-muted-foreground">
-              {i18n.t('settings:roleManager.clickOnAResourceNameToToggleAllActionsOrClickAnActionHea')}{inheritedPermissions.length > 0 && (
+              {i18n.t('settings:roleManager.clickOnAResourceNameToToggleAllActionsOrClickAnActionHea')}{' '}{inheritedPermissions.length > 0 && (
                 <span className="ml-1">
                   {i18n.t('settings:roleManager.checkboxesWith')}<span className="inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" /> {i18n.t('settings:roleManager.areInheritedFromTheParentRole')}</span>
               )}

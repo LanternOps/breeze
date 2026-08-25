@@ -581,7 +581,7 @@ export default function MFASettings({
                 )}
                 {localPhoneVerified && localPhoneLast4 && currentMethod !== 'sms' && (
                   <span className="text-xs text-muted-foreground">
-                    {t('mFASettings.phoneVerified')}{localPhoneLast4})
+                    {t('mFASettings.phoneVerifiedLast4', { last4: localPhoneLast4 })}
                   </span>
                 )}
               </div>

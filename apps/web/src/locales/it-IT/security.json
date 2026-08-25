@@ -587,6 +587,7 @@
     "startScan": "Avvia scansione",
     "startScansWatchProgressAndReviewScan": "Avvia scansioni, segui l'avanzamento e consulta la cronologia delle scansioni sui dispositivi.",
     "started": "Avviata {{time}}",
+    "startedColumn": "Avviata",
     "status": "Stato: {{status}}",
     "status2": "Stato",
     "type": "Tipo"

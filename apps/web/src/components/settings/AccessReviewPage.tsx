@@ -665,7 +665,7 @@ export default function AccessReviewPage() {
                         deadlineStatus?.isOverdue ? 'text-destructive font-medium' : ''
                       )}
                     >
-                      {t('accessReviewPage.due')}{formatDate(selectedReview.dueDate)}
+                      {t('accessReviewPage.dueOn', { date: formatDate(selectedReview.dueDate) })}
                     </span>
                   )}
                 </div>
@@ -698,7 +698,7 @@ export default function AccessReviewPage() {
                 <div className="space-y-2">
                   <p className="text-xs uppercase text-muted-foreground">{t('accessReviewPage.progress')}</p>
                   <p className="text-sm font-medium">
-                    {decisionCounts.reviewed} {t('accessReviewPage.of')}{decisionCounts.total} {t('accessReviewPage.reviewed')}</p>
+                    {t('accessReviewPage.reviewedSummary', { reviewed: decisionCounts.reviewed, total: decisionCounts.total })}</p>
                   <div className="h-2 w-48 rounded-full bg-muted">
                     <div
                       className={cn('h-2 rounded-full bg-emerald-500', widthPercentClass(progressPercent))}
@@ -753,7 +753,7 @@ export default function AccessReviewPage() {
                 </select>
               </div>
               <div className="text-sm text-muted-foreground">
-                {t('accessReviewPage.showing')}{filteredItems.length} {t('accessReviewPage.of')}{selectedReview.items.length} {t('accessReviewPage.users')}</div>
+                {t('accessReviewPage.showingSummary', { shown: filteredItems.length, total: selectedReview.items.length })}</div>
             </div>
 
             {selectedReview.status !== 'completed' && (

@@ -132,7 +132,7 @@ export default function AccessReviewForm({
         >
           <div className="flex items-center justify-between text-sm text-muted-foreground">
             <span>
-              {t('accessReviewForm.step')}{step + 1} {t('accessReviewForm.of')}{steps.length}
+              {t('accessReviewForm.stepSummary', { current: step + 1, total: steps.length })}
             </span>
             <div className="flex items-center gap-2">
               {steps.map((label, index) => (

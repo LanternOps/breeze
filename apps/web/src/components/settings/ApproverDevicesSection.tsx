@@ -429,7 +429,7 @@ function RevokeConfirmDialog({
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
               <AlertTriangle className="h-5 w-5 text-destructive" aria-hidden />
             </div>
-            <h2 className="text-lg font-semibold">{i18n.t('settings:approverDevicesSection.revoke')}{deviceTitle(device)}?</h2>
+            <h2 className="text-lg font-semibold">{i18n.t('settings:approverDevicesSection.revokeConfirmTitle', { device: deviceTitle(device) })}</h2>
           </div>
           <button
             type="button"

@@ -585,6 +585,7 @@
     "startScan": "Iniciar escaneo",
     "startScansWatchProgressAndReviewScan": "Inicie análisis, observe el progreso y revise el historial de análisis en todos los dispositivos.",
     "started": "Iniciado {{time}}",
+    "startedColumn": "Iniciado",
     "status": "Estado: {{status}}",
     "status2": "Estado",
     "type": "Tipo",

@@ -317,7 +317,6 @@ const pathLikeValueExemptKeys = new Set([
   'billing.json:billingUi.units.perYear',
   'billing.json:quotes.editor.units.perMonth',
   'billing.json:quotes.editor.units.perYear',
-  'settings.json:accessReviewPage.of',
 ]);
 
 function isBarePathValue(value: unknown): value is string {

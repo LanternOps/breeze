@@ -587,6 +587,7 @@
     "startScan": "Start scan",
     "startScansWatchProgressAndReviewScan": "Start scans, watch progress, and review scan history across devices.",
     "started": "Started {{time}}",
+    "startedColumn": "Started",
     "status": "Status: {{status}}",
     "status2": "Status",
     "type": "Type"
