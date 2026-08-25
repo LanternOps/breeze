@@ -105,6 +105,7 @@ const RESTORE_TIMEOUT_TYPES = new Set<string>([
 ]);
 
 const LONG_TIMEOUT_TYPES = new Set<string>([
+  CommandTypes.AGENT_ROLLBACK_V1,
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,

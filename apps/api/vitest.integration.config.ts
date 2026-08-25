@@ -49,6 +49,8 @@ export default defineConfig({
       // Real-DB proof for dual-axis, per-device peripheral policy resolution.
       'src/services/peripheralEffectivePolicy.integration.test.ts',
       'src/services/peripheralPolicyState.integration.test.ts',
+      // Real PostgreSQL + Redis proof for atomic signed rollback creation.
+      'src/services/agentRollback.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.

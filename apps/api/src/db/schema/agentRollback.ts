@@ -16,7 +16,7 @@ import { organizations } from './orgs';
 import { users } from './users';
 
 export type AgentRollbackStatus = 'requested' | 'in_progress' | 'completed' | 'failed' | 'recovered' | 'expired';
-export type AgentRollbackPhase = 'received' | 'downloaded' | 'verified' | 'staged' | 'swapped' | 'restart_requested' | 'healthy' | 'failed' | 'recovered';
+export type AgentRollbackPhase = 'requested' | 'received' | 'downloaded' | 'verified' | 'staged' | 'swapped' | 'restart_requested' | 'healthy' | 'failed' | 'recovered';
 
 export const agentRollbackDirectives = pgTable('agent_rollback_directives', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -85,5 +85,5 @@ export const agentRollbackEvents = pgTable('agent_rollback_events', {
   observationUq: uniqueIndex('agent_rollback_events_observation_uq').on(table.rollbackId, table.observationId),
   orgTimeIdx: index('agent_rollback_events_org_time_idx').on(table.orgId, table.observedAt, table.id),
   rollbackTimeIdx: index('agent_rollback_events_rollback_time_idx').on(table.rollbackId, table.observedAt, table.id),
-  phaseCheck: check('agent_rollback_events_phase_chk', sql`${table.phase} IN ('received', 'downloaded', 'verified', 'staged', 'swapped', 'restart_requested', 'healthy', 'failed', 'recovered')`),
+  phaseCheck: check('agent_rollback_events_phase_chk', sql`${table.phase} IN ('requested', 'received', 'downloaded', 'verified', 'staged', 'swapped', 'restart_requested', 'healthy', 'failed', 'recovered')`),
 }));

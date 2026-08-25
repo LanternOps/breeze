@@ -128,6 +128,7 @@ export const CommandTypes = {
   // Peripheral control — pushes full active policy set to agent
   PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
   PERIPHERAL_POLICY_SYNC_V2: 'peripheral_policy_sync_v2',
+  AGENT_ROLLBACK_V1: 'agent_rollback_v1',
 
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
@@ -233,6 +234,31 @@ export interface QueuedCommand {
   executedAt: Date | null;
   completedAt: Date | null;
   result: CommandResult | null;
+}
+
+type CommandQueueTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Persist a command inside a caller-owned transaction without dispatch side effects. */
+export async function insertQueuedCommandInTransaction(
+  tx: CommandQueueTx,
+  input: {
+    id: string;
+    deviceId: string;
+    type: CommandType;
+    payload: CommandPayload;
+    createdBy: string;
+  },
+): Promise<QueuedCommand> {
+  const [command] = await tx.insert(deviceCommands).values({
+    id: input.id,
+    deviceId: input.deviceId,
+    type: input.type,
+    payload: input.payload,
+    status: 'pending',
+    createdBy: input.createdBy,
+  }).returning();
+  if (!command) throw new Error('failed to persist queued command');
+  return command as QueuedCommand;
 }
 
 // Use the directly-imported runOutsideDbContext, NOT db.runOutsideDbContext.
