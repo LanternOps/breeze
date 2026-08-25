@@ -247,6 +247,63 @@ describe('executeAiTriageAction', () => {
     }
   });
 
+  it('fails the action when the admission gate created a run it could not enqueue', async () => {
+    // 3c inserts the ledger row, then announces/enqueues; a Redis blip makes it
+    // mark the row `failed`/`enqueue_failed` and STILL return created:true.
+    // Reporting that as a queued run leaves the automation green with no worker
+    // job, while the row owns the alert's dedupe key.
+    createAndEnqueueAgentRunMock.mockResolvedValue({
+      created: true,
+      run: { id: 'agent-run-1', status: 'failed', errorCode: 'enqueue_failed' },
+    });
+
+    const result = await __testOnly.executeAiTriageAction(
+      { type: 'ai_triage' },
+      0,
+      makeContext(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.log.level).toBe('error');
+    expect(result.log.message).not.toContain('queued agent run');
+    expect(result.log.details).toEqual({
+      agentRunId: 'agent-run-1',
+      errorCode: 'enqueue_failed',
+    });
+  });
+
+  it('fails the action on a terminal-failed run even without an errorCode', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({
+      created: true,
+      run: { id: 'agent-run-2', status: 'failed', errorCode: null },
+    });
+
+    const result = await __testOnly.executeAiTriageAction(
+      { type: 'ai_triage' },
+      0,
+      makeContext(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.log.details).toMatchObject({ errorCode: 'enqueue_failed' });
+  });
+
+  it('still reports success for a genuinely queued run', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({
+      created: true,
+      run: { id: 'agent-run-3', status: 'queued', errorCode: null },
+    });
+
+    const result = await __testOnly.executeAiTriageAction(
+      { type: 'ai_triage' },
+      0,
+      makeContext(),
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.log.message).toBe('ai_triage queued agent run');
+  });
+
   it('refuses ai_triage on an unmanaged automation', async () => {
     const result = await __testOnly.executeAiTriageAction(
       { type: 'ai_triage' },

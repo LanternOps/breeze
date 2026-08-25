@@ -173,6 +173,9 @@ async function seedFixture(): Promise<Fixture> {
         id: aiAgents.id,
         kind: aiAgents.kind,
         name: aiAgents.name,
+        // The seeded automation mirrors the agent's own switch rather than
+        // hardcoding true, so the projection has to carry it.
+        enabled: aiAgents.enabled,
         orgId: aiAgents.orgId,
         partnerId: aiAgents.partnerId,
         createdBy: aiAgents.createdBy,

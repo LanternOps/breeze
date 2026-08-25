@@ -539,6 +539,46 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     expect(enqueueAgentRunJob).not.toHaveBeenCalled();
   });
 
+  it('reclaims a dedupe row left `failed`/`enqueue_failed` by an earlier attempt', async () => {
+    seedAdmissionReads();
+    // The insert loses the (org_id, dedupe_key) race against a row this same
+    // gate inserted and then failed because the enqueue never landed. Without
+    // the reclaim, that row blocks its own retry forever: every redelivery of
+    // the alert answers `duplicate` and the alert is never triaged.
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, status: 'queued', deviceId: DEVICE_ID }];
+
+    const result = await createAndEnqueueAgentRun(input());
+
+    expect(result).toMatchObject({ created: true });
+    expect((result as { created: true; run: { id: string } }).run.id).toBe(RUN_ID);
+    // Compare-and-set on the terminal state, scoped to this org's key — never a
+    // blind overwrite of whatever holds the dedupe key.
+    // .at(-1): the stalled-run reaper (step 4c) issues the first UPDATE.
+    const where = compiled(dbMockState.updateWheres.at(-1) as SQL);
+    expect(where).toContain('"org_id"');
+    expect(where).toContain('"dedupe_key"');
+    expect(where).toContain('"status"');
+    expect(where).toContain('"error_code"');
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({ status: 'queued', errorCode: null });
+    expect(dbMockState.updateSets.at(-1)?.finishedAt).toBeNull();
+    expect(enqueueAgentRunJob).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  it('still reports duplicate when the dedupe row is not an enqueue_failed one', async () => {
+    seedAdmissionReads();
+    dbMockState.insertRows = [];
+    // The CAS matched nothing: the holder is queued/running/completed, i.e. a
+    // genuine duplicate trigger.
+    dbMockState.updateRows = [];
+
+    expect(await createAndEnqueueAgentRun(input())).toEqual({
+      created: false,
+      skipped: 'duplicate',
+    });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+  });
+
   it('rethrows a non-unique insert failure rather than reporting a skip', async () => {
     seedAdmissionReads();
     dbMockState.insertError = Object.assign(new Error('boom'), { cause: { code: '23503' } });

@@ -473,10 +473,58 @@ export async function createAndEnqueueAgentRun(
       })
       .onConflictDoNothing({ target: [aiAgentRuns.orgId, aiAgentRuns.dedupeKey] })
       .returning();
-    // The same trigger fired twice for this org.
-    if (!inserted) return skip('duplicate');
+    if (inserted) return { created: true, run: inserted };
 
-    return { created: true, run: inserted };
+    // The key is taken. Usually that IS the same trigger fired twice — but it
+    // is also how a run whose enqueue never landed blocks its own retry: step
+    // 10 below marks such a row `failed`/`enqueue_failed`, and it then holds
+    // (org_id, dedupe_key) forever, so every redelivery of that alert answers
+    // `duplicate` and the alert is never triaged. Reclaim it as a compare-and-
+    // set on that terminal state, inside the same transaction and advisory lock
+    // as every counter above: a row a worker could still be holding (`queued` /
+    // `running`) or one that genuinely ran is left alone and still reports
+    // `duplicate`. Re-stamping queuedAt is deliberate — the retry is a new
+    // attempt for cooldown and rate purposes, and reusing the row keeps the
+    // hourly count honest rather than adding a second row for one alert.
+    // Scope note: step 5's cooldown probe counts a failed row as a recent
+    // attempt (it filters on queuedAt, not status), so with a cooldown
+    // configured the retry reaches this reclaim only once that window has
+    // passed. That block is transient and intended; the PERMANENT one — the
+    // dedupe key held forever — is what this removes.
+    const [reclaimed] = await db
+      .update(aiAgentRuns)
+      .set({
+        agentId: resolved.agentId,
+        deviceId,
+        alertId: input.alertId ?? null,
+        triggerKind,
+        triggerEventId: input.triggerEventId ?? null,
+        triggerRef: input.triggerRef ?? {},
+        modeAtStart,
+        policySnapshot: resolved,
+        status: 'queued',
+        errorCode: null,
+        startedAt: null,
+        finishedAt: null,
+        queuedAt: new Date(),
+        correlationId: randomUUID(),
+      })
+      .where(and(
+        eq(aiAgentRuns.orgId, orgId),
+        eq(aiAgentRuns.dedupeKey, dedupeKey),
+        eq(aiAgentRuns.status, 'failed'),
+        eq(aiAgentRuns.errorCode, 'enqueue_failed'),
+      ))
+      .returning();
+    if (reclaimed) {
+      console.info('[aiAgentRunService] reclaimed an enqueue_failed run', {
+        runId: reclaimed.id, orgId, dedupeKey,
+      });
+      return { created: true, run: reclaimed };
+    }
+
+    // The same trigger fired twice for this org.
+    return skip('duplicate');
   });
 
   if (!admission.created) return admission;

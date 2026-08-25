@@ -70,6 +70,9 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // managedAutomationOwnerIsLive (the delete-path liveness probe) reads
+  // ai_agents through the same schema module.
+  aiAgents: {},
   automations: {},
   automationRuns: {},
   automationRunDeviceResults: {},
@@ -641,20 +644,36 @@ describe('automations routes', () => {
     expect(body.success).toBe(true);
   });
 
-  it('rejects deletion of a managed automation before issuing a delete', async () => {
-    const agentId = '33333333-3333-4333-8333-333333333333';
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{
-            id: '11111111-1111-4111-8111-111111111111',
-            name: 'Managed triage',
-            orgId: 'org-123',
-            managedByAgentId: agentId,
-          }]),
+  // The DELETE path issues two selects: the automation itself, then the
+  // owning agent's liveness (managedAutomationOwnerIsLive). Feeding them
+  // separately is what makes the "agent is disabled" case provable — a single
+  // blanket mock would answer both from the same row.
+  function mockManagedDeleteSelects(agentId: string, agentRows: any[]) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '11111111-1111-4111-8111-111111111111',
+              name: 'Managed triage',
+              orgId: 'org-123',
+              managedByAgentId: agentId,
+            }]),
+          }),
         }),
-      }),
-    } as any);
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(agentRows),
+          }),
+        }),
+      } as any);
+  }
+
+  it('rejects deletion of a managed automation while its agent is live', async () => {
+    const agentId = '33333333-3333-4333-8333-333333333333';
+    mockManagedDeleteSelects(agentId, [{ disabledAt: null }]);
 
     const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'DELETE',
@@ -664,6 +683,39 @@ describe('automations routes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'automation_managed_by_agent', agentId });
     expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
+
+  it('rejects deletion of a managed automation when the agent cannot be read (fails closed)', async () => {
+    const agentId = '33333333-3333-4333-8333-333333333333';
+    mockManagedDeleteSelects(agentId, []);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
+
+  it('allows deletion of a managed automation left behind by a disabled agent', async () => {
+    // disableAgent soft-deletes the agent and only flips this row to
+    // enabled:false; a disabled agent can never be re-enabled, so if delete
+    // stayed refused the row would be unremovable by any product path and
+    // every disable+recreate cycle would strand another one.
+    mockManagedDeleteSelects('33333333-3333-4333-8333-333333333333', [{ disabledAt: new Date() }]);
+    vi.mocked(db.delete).mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true });
+    expect(vi.mocked(db.delete)).toHaveBeenCalled();
   });
 
   it('should trigger an automation using configured device targets', async () => {

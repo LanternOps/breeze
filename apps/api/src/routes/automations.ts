@@ -38,6 +38,7 @@ import {
   MANAGED_AUTOMATION_ERROR_CODE,
   containsAiTriageAction,
   isManagedAutomation,
+  managedAutomationOwnerIsLive,
 } from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
 
@@ -1160,7 +1161,15 @@ automationRoutes.delete(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
-    if (isManagedAutomation(automation)) {
+    // Deletion is the ONE managed-row operation a user may reach, and only
+    // once the owning agent is soft-disabled. disableAgent flips this row to
+    // enabled:false but leaves managed_by_agent_id set, and a disabled agent
+    // can never be re-enabled — so without this branch every disable strands a
+    // row nothing in the product can remove, and each disable+recreate cycle
+    // strands another. Editing/triggering a managed row stays refused either
+    // way; the liveness probe fails closed.
+    if (isManagedAutomation(automation)
+      && await managedAutomationOwnerIsLive(automation.managedByAgentId as string)) {
       return c.json({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: automation.managedByAgentId }, 409);
     }
 

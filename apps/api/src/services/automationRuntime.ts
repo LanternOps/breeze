@@ -1469,6 +1469,31 @@ async function executeAiTriageAction(
   });
 
   if (result.created) {
+    // `created` is NOT "queued". 3c's gate inserts the ledger row first and
+    // announces/enqueues afterwards; when the publish or the BullMQ enqueue
+    // throws (a Redis blip is enough) it marks the row `failed` /
+    // `enqueue_failed` and STILL returns created:true with the failed run
+    // (runService step 10). Branching on `created` alone would log
+    // "queued agent run" at info, complete the automation run green, and leave
+    // NO worker job — while the row now owns (org_id, dedupe_key), so every
+    // redelivery of the same alert answers `duplicate` (a non-failure here) and
+    // the alert is never triaged. The manual trigger route answers 503 on this
+    // exact signal; the automation's equivalent is a failed action.
+    if (result.run.status === 'failed' || result.run.errorCode === 'enqueue_failed') {
+      return {
+        success: false,
+        log: logEntry('ai_triage agent run was created but could not be enqueued', 'error', {
+          actionType: 'ai_triage',
+          actionIndex,
+          deviceId: context.device.id,
+          details: {
+            agentRunId: result.run.id,
+            errorCode: result.run.errorCode ?? 'enqueue_failed',
+          },
+        }),
+      };
+    }
+
     // Like run_script, success means queued, not finished. The agent run
     // completes out-of-band and reports through ai.agent.run.* events and 3c
     // recipient notifications.

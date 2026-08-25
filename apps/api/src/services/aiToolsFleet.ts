@@ -91,6 +91,7 @@ import {
   MANAGED_AUTOMATION_ERROR_CODE,
   containsAiTriageAction,
   isManagedAutomation,
+  managedAutomationOwnerIsLive,
 } from './aiAgents/managedAutomation';
 import type {
   FleetFindingKind,
@@ -1735,7 +1736,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
-        if (isManagedAutomation(existing)) {
+        // Mirrors the REST delete route: a managed row becomes deletable once
+        // its agent is soft-disabled, because nothing else can ever remove it.
+        if (isManagedAutomation(existing)
+          && await managedAutomationOwnerIsLive(existing.managedByAgentId as string)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: existing.managedByAgentId });
         }
 

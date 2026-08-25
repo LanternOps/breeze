@@ -267,6 +267,24 @@ describe('agent mutations', () => {
     }));
   });
 
+  it('hands the seeder the stored row\u2019s own enabled flag, not a hardcoded true', async () => {
+    // createAiAgentSchema defaults enabled to false, so the seeded wiring must
+    // start off with the agent. Passing the persisted row (rather than a
+    // hand-built object) is what keeps the two in step.
+    const inserted = { ...storedRow, kind: 'triage', name: 'Triage Bot', enabled: false };
+    state.returnedRow = inserted;
+
+    await createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, kind: 'triage', name: 'Triage Bot', enabled: false } as never,
+    );
+
+    expect(state.ensureManagedTriageAutomation).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
+  });
+
   it('does not audit or publish a create whose managed automation seed fails', async () => {
     state.returnedRow = { ...storedRow, kind: 'triage' };
     state.ensureManagedTriageAutomation.mockRejectedValue(new Error('seed failed'));
