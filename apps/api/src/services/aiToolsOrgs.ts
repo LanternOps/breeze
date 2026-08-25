@@ -254,7 +254,12 @@ async function handleCreateOrg(
         .select({ slug: organizations.slug })
         .from(organizations)
         .where(eq(organizations.partnerId, partnerId));
-      const taken = new Set(existing.map((row) => row.slug));
+      // Lower-cased because organizations_partner_slug_uniq is on
+      // (partner_id, lower(slug)) (#3967): slugifyOrgName always produces a
+      // lowercase candidate, so a legacy mixed-case row like 'Acme' would not
+      // match a case-sensitive Set and the generated 'acme' would take a 23505
+      // at insert instead of being suffixed.
+      const taken = new Set(existing.map((row) => row.slug.toLowerCase()));
       const slug = generateUniqueOrgSlug(slugifyOrgName(name), taken);
 
       const [org] = await db

@@ -45,9 +45,14 @@ export async function getOrCreateQuickSupportOrg(
         partnerId,
         currencyCode: partnerRow.currencyCode,
         name: 'Quick Support',
-        // Full uuid, not an 8-char prefix: org slugs are globally unique, and a
-        // truncated prefix could collide across partners and make provisioning
-        // throw for whichever partner arrived second.
+        // Full uuid, not an 8-char prefix. Org slugs are unique per partner
+        // (organizations_partner_slug_uniq, #3967), so the partner id makes
+        // this collision-free by construction against that index; a truncated
+        // prefix would additionally risk colliding with a customer org that
+        // happens to be slugged 'quick-support-<same prefix>'. A partner who
+        // deliberately slugs one of their own orgs 'quick-support-<their own
+        // partner uuid>' still wedges their own Quick Support here — loudly,
+        // via the throw below, and only inside their own tenant.
         slug: `quick-support-${partnerId}`,
         type: 'quick_support',
         status: 'active',
