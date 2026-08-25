@@ -11,19 +11,26 @@ import (
 )
 
 type v2TestEnforcer struct {
-	unverified bool
-	calls      atomic.Int32
+	unverified  bool
+	calls       atomic.Int32
+	gateApplied atomic.Bool
 }
 
 func (f *v2TestEnforcer) outcome(applied bool) EnforceOutcome {
 	f.calls.Add(1)
 	return EnforceOutcome{Mechanism: "test", Applied: applied, Verified: !f.unverified}
 }
-func (f *v2TestEnforcer) ApplyGate(string, bool) EnforceOutcome { return f.outcome(true) }
-func (f *v2TestEnforcer) RevertGate(string) EnforceOutcome      { return f.outcome(false) }
-func (f *v2TestEnforcer) DisableDevice(string) EnforceOutcome   { return f.outcome(true) }
-func (f *v2TestEnforcer) ApplyReadOnly(string) EnforceOutcome   { return f.outcome(true) }
-func (f *v2TestEnforcer) RevertReadOnly(string) EnforceOutcome  { return f.outcome(false) }
+func (f *v2TestEnforcer) ApplyGate(string, bool) EnforceOutcome {
+	f.gateApplied.Store(true)
+	return f.outcome(true)
+}
+func (f *v2TestEnforcer) RevertGate(string) EnforceOutcome {
+	f.gateApplied.Store(false)
+	return f.outcome(false)
+}
+func (f *v2TestEnforcer) DisableDevice(string) EnforceOutcome  { return f.outcome(true) }
+func (f *v2TestEnforcer) ApplyReadOnly(string) EnforceOutcome  { return f.outcome(true) }
+func (f *v2TestEnforcer) RevertReadOnly(string) EnforceOutcome { return f.outcome(false) }
 
 func newV2TestStore(t *testing.T) *Store {
 	t.Helper()
@@ -290,7 +297,7 @@ func TestApplyPeripheralPolicyV2ClearLegacyAndEmptyEnforce(t *testing.T) {
 		envelope := testV2Envelope(t, 1, "clear_legacy", []PeripheralPolicyV2{})
 		var detects atomic.Int32
 		got := ApplyPeripheralPolicyV2(envelope, envelope.Identity, store, testV2Deps(&detects, &v2TestEnforcer{}))
-		if got.Outcome != "applied" || detects.Load() != 0 {
+		if got.Outcome != "applied" || detects.Load() != 1 {
 			t.Fatalf("clear result=%+v detects=%d", got, detects.Load())
 		}
 		legacy, err := store.Load()
@@ -347,5 +354,61 @@ func TestApplyPeripheralPolicyV2FailuresPreserveLastKnownGood(t *testing.T) {
 				t.Fatalf("LKG changed: state=%+v err=%v", state, err)
 			}
 		})
+	}
+}
+
+func TestApplyPeripheralPolicyV2PersistenceFailureRestoresEnforcement(t *testing.T) {
+	store := newV2TestStore(t)
+	old := testV2Envelope(t, 1, "enforce", []PeripheralPolicyV2{{
+		PolicyID: "old-block", Source: "organization", EffectiveClass: "storage", ConfiguredClass: "storage", Action: "block", Exceptions: []ExceptionRule{},
+	}})
+	if err := store.SaveV2State(PeripheralPolicyStateV2{
+		Identity: old.Identity, Phase: old.Phase, Revision: old.Revision, Digest: old.Digest, EffectivePolicies: old.EffectivePolicies,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.writeAtomic = func(string, []byte) error { return errors.New("disk full") }
+
+	enforcer := &v2TestEnforcer{}
+	enforcer.gateApplied.Store(true) // the persisted policy is the OS last-known-good state
+	next := testV2Envelope(t, 2, "enforce", []PeripheralPolicyV2{})
+	var detects atomic.Int32
+	got := ApplyPeripheralPolicyV2(next, next.Identity, store, testV2Deps(&detects, enforcer))
+	if got.ReasonCode != "persistence_failed" {
+		t.Fatalf("result = %+v", got)
+	}
+	if !enforcer.gateApplied.Load() {
+		t.Fatal("persistence failure left the new OS policy active instead of restoring last-known-good")
+	}
+}
+
+func TestApplyPeripheralPolicyV2ClearPersistenceFailureRestoresLegacyEnforcement(t *testing.T) {
+	store := newV2TestStore(t)
+	legacy := []Policy{{ID: "legacy-block", DeviceClass: "storage", Action: "block", IsActive: true}}
+	if err := store.Save(legacy); err != nil {
+		t.Fatal(err)
+	}
+	store.writeAtomic = func(path string, data []byte) error {
+		if path == store.v2Path {
+			return errors.New("disk full")
+		}
+		return atomicWriteFile(path, data)
+	}
+
+	enforcer := &v2TestEnforcer{}
+	enforcer.gateApplied.Store(true)
+	envelope := testV2Envelope(t, 1, "clear_legacy", []PeripheralPolicyV2{})
+	var detects atomic.Int32
+	got := ApplyPeripheralPolicyV2(envelope, envelope.Identity, store, testV2Deps(&detects, enforcer))
+	if got.ReasonCode != "persistence_failed" {
+		t.Fatalf("result = %+v", got)
+	}
+	if !enforcer.gateApplied.Load() {
+		t.Fatal("v2 persistence failure did not restore legacy OS enforcement")
+	}
+	store.writeAtomic = nil
+	persisted, err := store.Load()
+	if err != nil || len(persisted) != 1 || persisted[0].ID != legacy[0].ID {
+		t.Fatalf("legacy LKG = %+v, err=%v", persisted, err)
 	}
 }

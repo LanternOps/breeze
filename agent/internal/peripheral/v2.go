@@ -149,6 +149,8 @@ func ApplyPeripheralPolicyV2(envelope PeripheralPolicyEnvelopeV2, local Peripher
 	}
 
 	policies := effectivePoliciesAsLegacy(envelope.EffectivePolicies)
+	var detected []DetectedPeripheral
+	detectedReady := false
 	var results []EvaluationResult
 	if envelope.Phase == "enforce" {
 		if deps.Detect == nil {
@@ -158,6 +160,7 @@ func ApplyPeripheralPolicyV2(envelope PeripheralPolicyEnvelopeV2, local Peripher
 		if err != nil {
 			return rejectV2(envelope, "detection_failed")
 		}
+		detectedReady = true
 		results = evaluateEffectiveV2(detected, policies)
 	}
 	if deps.Enforcer == nil {
@@ -167,18 +170,28 @@ func ApplyPeripheralPolicyV2(envelope PeripheralPolicyEnvelopeV2, local Peripher
 	if classes == nil {
 		classes = EnforceableClasses()
 	}
+	recoveryPlan, recoveryReady := peripheralPolicyV2RecoveryPlan(current, legacy, detected, detectedReady, deps)
+	if !recoveryReady {
+		return rejectV2(envelope, "detection_failed")
+	}
+	restoreLastKnownGood := func() {
+		_ = Enforce(deps.Enforcer, recoveryPlan, classes)
+	}
 	outcome := Enforce(deps.Enforcer, Plan(results, policies), classes)
 	if CountUnverified(outcome) != 0 {
+		restoreLastKnownGood()
 		return rejectV2(envelope, "enforcement_failed")
 	}
 
 	if envelope.Phase == "clear_legacy" {
 		if err := store.Save([]Policy{}); err != nil {
+			restoreLastKnownGood()
 			return rejectV2(envelope, "persistence_failed")
 		}
 		persistedLegacy, err := store.Load()
 		if err != nil || len(persistedLegacy) != 0 {
 			_ = store.Save(legacy)
+			restoreLastKnownGood()
 			return rejectV2(envelope, "persistence_failed")
 		}
 	}
@@ -187,9 +200,46 @@ func ApplyPeripheralPolicyV2(envelope PeripheralPolicyEnvelopeV2, local Peripher
 		if envelope.Phase == "clear_legacy" {
 			_ = store.Save(legacy)
 		}
+		restoreLastKnownGood()
 		return rejectV2(envelope, "persistence_failed")
 	}
 	return PeripheralPolicyResultV2{SchemaVersion: 2, Phase: envelope.Phase, Revision: envelope.Revision, Digest: envelope.Digest, Outcome: "applied"}
+}
+
+func peripheralPolicyV2RecoveryPlan(
+	current *PeripheralPolicyStateV2,
+	legacy []Policy,
+	detected []DetectedPeripheral,
+	detectedReady bool,
+	deps PolicyV2Dependencies,
+) (EnforcementPlan, bool) {
+	policies := legacy
+	useEffectiveV2 := false
+	if current != nil {
+		useEffectiveV2 = true
+		if current.Phase == "enforce" {
+			policies = effectivePoliciesAsLegacy(current.EffectivePolicies)
+		} else {
+			policies = []Policy{}
+		}
+	}
+	if len(policies) == 0 {
+		return Plan(nil, policies), true
+	}
+	if !detectedReady {
+		if deps.Detect == nil {
+			return EnforcementPlan{}, false
+		}
+		var err error
+		detected, err = deps.Detect()
+		if err != nil {
+			return EnforcementPlan{}, false
+		}
+	}
+	if useEffectiveV2 {
+		return Plan(evaluateEffectiveV2(detected, policies), policies), true
+	}
+	return Plan(Evaluate(detected, policies), policies), true
 }
 
 func effectivePoliciesAsLegacy(effective []PeripheralPolicyV2) []Policy {
