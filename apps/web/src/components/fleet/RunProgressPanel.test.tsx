@@ -167,8 +167,11 @@ describe('RunProgressPanel rendering', () => {
     expect(a.textContent).toContain('WS-ACME-01');
     expect(a.textContent).toContain('Service Spooler restarted');
 
-    const b = screen.getByTestId(`run-progress-target-${DEVICE_B}`);
-    expect(b.textContent?.toLowerCase()).toContain('decommissioned');
+    // Scope to the skip-reason summary span, not the whole row — the row also
+    // renders a status chip ("Skipped") in the same `<li>`, so asserting over
+    // `row.textContent` would pass even if the skip-reason text were wrong.
+    const bSummary = screen.getByTestId(`run-progress-summary-${DEVICE_B}`);
+    expect(bSummary.textContent?.toLowerCase()).toContain('removed');
   });
 
   it('caps an unbounded result summary rather than blowing out the row', async () => {

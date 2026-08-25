@@ -427,7 +427,7 @@
     "conditionNotMet": "Non remplie : {{condition}}",
     "noConditionsEvaluated": "Aucune condition n’a été évaluée pour cette règle.",
     "evaluatedAgainst": "Évalué par rapport à {{hostname}}",
-    "fireSuppressionNote": "Le cooldown, une alerte déjà ouverte ou la suppression du flapping peuvent quand même empêcher la création d’une alerte lorsque la règle s’exécute."
+    "fireSuppressionNote": "Une fenêtre de maintenance active, le cooldown, une alerte déjà ouverte ou la suppression du flapping peuvent quand même empêcher la création d’une alerte lorsque la règle s’exécute."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Chargement du modèle d’alerte...",

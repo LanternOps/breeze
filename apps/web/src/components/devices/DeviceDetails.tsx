@@ -146,7 +146,7 @@ const statusLabels: Record<DeviceStatus, string> = {
   online: "Online",
   offline: "Offline",
   maintenance: "Maintenance",
-  decommissioned: "Decommissioned",
+  decommissioned: "Removed",
   quarantined: "Quarantined",
   updating: "Updating",
   pending: "Pending",

@@ -319,9 +319,10 @@ async function request<T>(
  */
 export async function coreRequest<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs?: number
 ): Promise<T> {
-  return requestWithPrefix<T>(endpoint, API_CORE_PREFIX, options);
+  return requestWithPrefix<T>(endpoint, API_CORE_PREFIX, options, timeoutMs);
 }
 
 export type DeviceAction = 'reboot' | 'shutdown' | 'wake' | 'update';
@@ -528,6 +529,109 @@ export async function getAlert(id: string): Promise<Alert> {
  * which invites a retry of an action that already succeeded.
  */
 export const ACKNOWLEDGE_TIMEOUT_MS = 45000;
+
+export interface BulkAckOutcome {
+  acknowledged: string[];
+  failed: string[];
+  /**
+   * Ids whose outcome the client genuinely does not know: the request timed
+   * out, the connection dropped, or the body was unusable. The server may well
+   * have committed them.
+   *
+   * Kept SEPARATE from `failed` because the two demand opposite handling.
+   * Acknowledging is irreversible, so restoring an unknown id as active invites
+   * an operator to acknowledge it a second time; leaving it hidden until the
+   * next authoritative fetch is the recoverable direction.
+   */
+  unknown: string[];
+  /** One entry per failed id, in completion order, for the caller to report. */
+  errors: unknown[];
+}
+
+/**
+ * Acknowledge many alerts in ONE request.
+ *
+ * Was four workers draining an in-memory queue of per-alert calls, because
+ * `POST /alerts/bulk` demanded `alerts:write` while Technicians are seeded
+ * `alerts:acknowledge` only — so the batched form 403'd for exactly the people
+ * who triage alerts from a phone. That is fixed server-side (#3727): bulk is
+ * now gated per action, and a bulk acknowledge accepts `alerts:acknowledge`.
+ *
+ * Why one request matters beyond tidiness: the caller flushes this on
+ * background, and iOS may suspend or reclaim the process moments later. A
+ * queue leaves most of a batch unsent in memory where nothing can recover it —
+ * the undo window has already released those ids, so the timer, later
+ * lifecycle events and the unmount cleanup all correctly refuse to re-send
+ * them. One dispatched request either lands whole or fails whole.
+ *
+ * Never rejects: the caller needs to know which ids landed so the rest can be
+ * restored individually. `skipped` ids are alerts the server found in a
+ * non-active state (already acknowledged, resolved elsewhere) — NOT failures,
+ * and deliberately not restored, because the row should follow server truth on
+ * the next fetch rather than reappear as active.
+ */
+export async function acknowledgeAlerts(ids: string[]): Promise<BulkAckOutcome> {
+  if (ids.length === 0) return { acknowledged: [], failed: [], unknown: [], errors: [] };
+  const requested = new Set(ids);
+  try {
+    const res = await coreRequest<{
+      updated?: number;
+      skipped?: number;
+      failed?: number;
+      updatedIds?: unknown;
+      skippedIds?: unknown;
+      failedIds?: unknown;
+    }>(
+      '/alerts/bulk',
+      { method: 'POST', body: JSON.stringify({ action: 'acknowledge', alertIds: ids }) },
+      // Same deadline the single-alert path uses. This is ONE request but the
+      // server still processes the batch SERIALLY, so a large batch can outrun
+      // it — which is why a timeout lands in `unknown`, not `failed`.
+      ACKNOWLEDGE_TIMEOUT_MS,
+    );
+
+    // Trust the arrays only if they satisfy the contract. A server that is
+    // older (counts only), newer, or simply wrong must not be able to make the
+    // client restore rows it actually acknowledged.
+    const asIds = (v: unknown): string[] | null =>
+      Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : null;
+    const upd = asIds(res.updatedIds);
+    const skp = asIds(res.skippedIds);
+    const fld = asIds(res.failedIds);
+
+    const seen = new Set<string>();
+    const wellFormed =
+      upd !== null && skp !== null && fld !== null &&
+      // every returned id was requested, and appears exactly once overall
+      [...upd, ...skp, ...fld].every((id) => requested.has(id) && !seen.has(id) && (seen.add(id), true)) &&
+      // and the arrays account for the whole batch
+      seen.size === requested.size;
+
+    if (!wellFormed) {
+      // Includes the counts-only server: it may have acknowledged everything,
+      // so restoring would be wrong and claiming success would be a lie.
+      return {
+        acknowledged: [], failed: [], unknown: [...ids],
+        errors: [new Error('bulk acknowledge: response did not account for the batch')],
+      };
+    }
+
+    // `skipped` is not a failure — the alert was already out of `active` state,
+    // so the row should follow server truth rather than reappear as active.
+    const failed = fld;
+    return {
+      acknowledged: [...upd, ...skp],
+      failed,
+      unknown: [],
+      errors: failed.length ? [new Error(`bulk acknowledge: ${failed.length} of ${ids.length} not acknowledged`)] : [],
+    };
+  } catch (err) {
+    // A transport error proves only that WE did not get a usable response — a
+    // 45s abort, a dropped connection or a truncated body can all sit on top of
+    // a server that committed. Every id is therefore unknown, never failed.
+    return { acknowledged: [], failed: [], unknown: [...ids], errors: [err] };
+  }
+}
 
 export async function acknowledgeAlert(id: string): Promise<Alert> {
   const response = await request<MobileAlertRecord>(

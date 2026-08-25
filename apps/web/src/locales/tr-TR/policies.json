@@ -252,7 +252,9 @@
         "thisRuleUsesUnsupportedMetrics": "Bu kural, uyarı motorunun değerlendiremediği bir ölçüm kullanır ({{metrics}}). Kaydetmeden önce desteklenen bir ölçüm seçin veya koşulu kaldırın; sunucu onu içeren kuralları reddeder.",
         "thisConditionUsesAnUnsupportedMetric": "\"{{metric}}\" ölçümü uyarı motoru tarafından değerlendirilmediğinden bu durum salt okunur olarak gösterilir.",
         "valueCount": "Değer (sayım)",
-        "metricNotSet": "ayarlanmadı"
+        "metricNotSet": "ayarlanmadı",
+        "testRule": "Kuralı test et",
+        "testRuleHint": "Bu koşulları, kaydedilmemiş değişiklikler dahil, şimdi bir cihazda değerlendirin."
       },
       "automationTab": {
         "schedule": "Program",

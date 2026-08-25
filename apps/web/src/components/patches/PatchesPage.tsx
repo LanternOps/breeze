@@ -14,7 +14,7 @@ import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '../../stores/orgStore';
-import { getJwtClaims } from '../../lib/authScope';
+import { useJwtClaims } from '../../lib/authScope';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
@@ -31,9 +31,11 @@ type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
 
 // Tab state lives in window.location.hash (`#patches`) per the project
-// convention for transient UI state (CLAUDE.md), matching DiscoveryPage and
-// DeviceDetails. The default `compliance` tab keeps the hash empty so the URL
-// stays clean.
+// convention for transient UI state (CLAUDE.md); DiscoveryPage and DeviceDetails
+// follow the same convention, but note that neither gates its hash-derived tab
+// on a permission — this page is the only one that does, which is what made the
+// #4010 ordering bug possible here and nowhere else. The default `compliance`
+// tab keeps the hash empty so the URL stays clean.
 function getTabFromHash(): TabKey {
   if (typeof window === 'undefined') return 'compliance';
   const hash = window.location.hash.replace(/^#/, '');
@@ -50,6 +52,11 @@ function setTabInHash(tab: TabKey) {
 // Resolve a hash-derived tab against the user's access. Rings are partner-scoped:
 // an org user landing on #rings (a stale bookmark, a hand-edited URL, or browser
 // back/forward) can't see the rings body, so fall back to compliance.
+//
+// This answers "which tab do we RENDER", never "may we rewrite the URL". Its
+// boolean is deliberately fail-closed and so is false both for a real denial and
+// for a scope that hasn't resolved yet; a caller that acts destructively on the
+// downgrade must consult ringAccess instead (see the sync effect below, #4010).
 function resolveTab(tab: TabKey, canManageRings: boolean): TabKey {
   return tab === 'rings' && !canManageRings ? 'compliance' : tab;
 }
@@ -79,18 +86,40 @@ export default function PatchesPage() {
   const { t } = useTranslation('patches');
   const { organizations, currentOrgId } = useOrgStore();
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
-  const { scope } = getJwtClaims();
+  // Reactive claims, not the one-shot getJwtClaims(): access tokens are never
+  // persisted, so on a cold load the store is empty at first paint and only
+  // fills once the refresh cookie has been exchanged (#4010).
+  //
   // Rings + approvals are partner-scoped: only partner/system users manage them.
-  const canManageRings = scope === 'partner' || scope === 'system';
+  // Keep all THREE access states rather than collapsing to a boolean — 'denied'
+  // and 'unresolved' both have to hide the rings UI, but only 'denied' may
+  // destroy the #rings deep link. Collapsing them is the bug.
+  const jwt = useJwtClaims();
+  const ringAccess: 'unresolved' | 'allowed' | 'denied' =
+    jwt.status === 'unresolved'
+      ? 'unresolved'
+      : jwt.claims.scope === 'partner' || jwt.claims.scope === 'system'
+        ? 'allowed'
+        : 'denied';
+  // Fail closed for everything that only HIDES or DISABLES ui.
+  const canManageRings = ringAccess === 'allowed';
   const RING_SCOPE_HINT = t('patchesPage.ringScopeHint');
 
   // The Update Rings tab is gated on the client-only JWT scope (canManageRings),
   // which is absent during SSR, so the server renders two tabs and the client
   // three. Render the tab list from an SSR-stable value until after mount so the
   // first client render matches the server markup — companion to the #2421
-  // active-tab fix below. canManageRings itself stays accurate everywhere else
-  // (the hash-resolution effect, ring actions) so the #rings deep-link and
-  // scope guards are unaffected.
+  // active-tab fix below.
+  //
+  // `mounted` is NOT a stand-in for "scope known". It flips on the first client
+  // effect, which is still well before the access token lands; the tab list is
+  // simply allowed to be briefly two-tabbed. What used to be wrong here was the
+  // assumption that canManageRings stayed accurate everywhere else — it does not
+  // during the pre-token window, and the hash-resolution effect below acting on
+  // that assumption is exactly what #4010 was. Anything that DESTROYS state on a
+  // falsy canManageRings must branch on ringAccess === 'denied'; anything that
+  // merely hides UI (this tab list, the ring action guards) is safe to fail
+  // closed on canManageRings.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
@@ -106,25 +135,39 @@ export default function PatchesPage() {
   // Sync the active tab from the hash on mount and on every hashchange — browser
   // back/forward and manual hash edits re-select the tab, mirroring DiscoveryPage.
   // The org-scope guard is re-applied on each sync (resolveTab): a #rings hash an
-  // org user can't access falls back to compliance, and when that downgrade fires
-  // we route through setActiveTab so the stale #rings is cleared from the URL
-  // rather than left pointing at a tab the user isn't on. Depending on
-  // canManageRings also re-runs the guard when scope/permissions arrive after the
-  // first render (defense-in-depth).
+  // org user can't access falls back to compliance.
+  //
+  // Only a *denial* may clear the hash — never an unresolved scope (#4010). The
+  // first paint of a cold load always has an empty auth store, so clearing on
+  // any falsy canManageRings deletes the `#rings` this very effect needs to
+  // re-read when the token lands a beat later, and the deep link can never
+  // survive a reload, for anyone. While the scope is unresolved we render the
+  // fallback tab but leave the URL untouched, so the re-run (ringAccess is a
+  // dep) recovers the requested tab. An org user is unaffected: their downgrade
+  // is deferred to the moment it is real, and the rings body is never rendered
+  // in the meantime.
+  //
+  // Deferring on the resolved -> unresolved transition (a token going away) is
+  // deliberate too: while /auth/refresh is rate limited the session is valid and
+  // yet tokenless for up to 90s (#3696), and wiping the hash there would be
+  // #4010 again in slow motion. Logout also lands here, and leaves `#rings`
+  // behind — harmless, because every logout path navigates away from the page.
   useEffect(() => {
     const syncFromHash = () => {
       const raw = getTabFromHash();
-      const resolved = resolveTab(raw, canManageRings);
-      if (resolved !== raw) {
-        setActiveTab(resolved); // downgrade — also clears the stale hash
-      } else {
+      const resolved = resolveTab(raw, ringAccess === 'allowed');
+      if (resolved === raw) {
         setActiveTabState(resolved);
+      } else if (ringAccess === 'denied') {
+        setActiveTab(resolved); // real denial — also clears the stale hash
+      } else {
+        setActiveTabState(resolved); // scope unknown — downgrade the view, keep the hash
       }
     };
     syncFromHash();
     window.addEventListener('hashchange', syncFromHash);
     return () => window.removeEventListener('hashchange', syncFromHash);
-  }, [canManageRings, setActiveTab]);
+  }, [ringAccess, setActiveTab]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   const [modalOpen, setModalOpen] = useState(false);

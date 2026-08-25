@@ -1,5 +1,6 @@
-import { Hono } from 'hono';
-import { zValidator } from '../../lib/validation';
+import { Hono, type MiddlewareHandler } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
 import { z } from 'zod';
 import { and, or, eq, ne, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -24,7 +25,7 @@ import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 import { withAlertActorNames } from './actorNames';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
 import { filterAlertsBySiteScope } from '../tickets/siteScope';
 
@@ -35,7 +36,14 @@ export const alertsRoutes = new Hono();
 // tenancy but NOT intra-org role, so a read-only org user otherwise passes
 // requireScope('organization') + own-org RLS and could mutate alert state.
 // Mirrors the mobile alert routes: acknowledge → ALERTS_ACKNOWLEDGE,
-// resolve/suppress/bulk → ALERTS_WRITE.
+// resolve/suppress → ALERTS_WRITE.
+//
+// /bulk is gated PER ACTION inside the handler instead (see below): a bulk
+// acknowledge is N single acknowledges, which ALERTS_ACKNOWLEDGE already
+// permits one at a time, so requiring ALERTS_WRITE for the batched form added
+// no capability — it only rate-limited a permission the role already held, and
+// forced the mobile client into a per-alert queue that loses work when the app
+// is backgrounded mid-flush.
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 const requireAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
 
@@ -397,11 +405,113 @@ alertsRoutes.get(
 alertsRoutes.post(
   '/bulk',
   requireScope('organization', 'partner', 'system'),
-  requireAlertWrite,
-  zValidator('json', bulkAlertActionSchema),
+  // NO route-level requireAlertWrite — the exact permission depends on the
+  // action, which is only known after the body is parsed.
+  //
+  // NO `zValidator` either, which is why the body is parsed by hand below.
+  // zValidator answers its own 400 before any handler code runs — including
+  // when given a hook — so with it in the chain a caller holding no alert
+  // permission could still tell a well-formed body from a malformed one by the
+  // status. Parsing inside the handler lets AUTHORISATION answer first. Still
+  // exactly one parse.
+  //
+  // Deliberately NOT a permission-checking middleware ahead of the validator,
+  // which is the obvious shape and is wrong here. `getUserPermissions` keeps a
+  // short process-local cache, and `middleware/auth.ts` warms it ONLY for
+  // organization scope, so a pre-body gate would resolve permissions while the
+  // client still controls when the body arrives, and the authorising read would
+  // then return the gate's own entry.
+  //
+  // The precise claim, because every looser one is false: no ROUTE-LEVEL
+  // authorising lookup happens before the body is consumed (organization-scope
+  // `authMiddleware` does resolve permissions earlier, at auth.ts — that is not
+  // this route's doing and is unchanged), and a request that would previously
+  // have reached the handler gains no extra route-level lookup. It is NOT true that nothing new
+  // is warmed — this runs before the media-type and schema checks, so an
+  // INVALID-body request now performs a lookup — warming a partner entry if it
+  // was cold — where `zValidator` used to reject it with no lookup at all. That
+  // is the deliberate cost of denying a caller holding NEITHER alert permission
+  // any verdict on the body; it is bounded by the coarse 403 immediately after.
+  //
+  // It does NOT make the read fresh, and nothing here claims it does. Two
+  // distinct staleness windows, deliberately not conflated:
+  //   - concurrent lookups on one worker can ALL read the cache versions
+  //     before a successful `INCR`, so a bump can admit more than one
+  //     already-started decision, and a call that began before it need not see
+  //     the new version either. Bounded by how many are in flight, not by one.
+  //   - TTL-long reuse of a revoked grant needs the invalidation `INCR` itself
+  //     to fail (the failure is swallowed) or the version reads to fail.
+  // A partner entry may also already be warm from an earlier permission-gated
+  // request on the same process. All of that belongs to the permission service
+  // and predates this route. The point here is only that the AUTHORISING read
+  // still happens after the body, exactly as it did before.
+
   async (c) => {
     const auth = c.get('auth');
-    const { action, alertIds, until } = c.req.valid('json');
+    // Read the body BEFORE alert-permission authorisation, so the parse cost is
+    // paid once and the authorising lookup still lands after it (see the note on the route).
+    // A body that is not even JSON is indistinguishable from a schema failure
+    // to an unauthorised caller, which is the point.
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      rawBody = undefined;
+    }
+
+    // ONE route-level permission lookup, after the body. Reproduces what
+    // `requirePermission` middleware would have done on this route and would
+    // otherwise be lost: the ai_agent rejection, and `c.set('permissions')`,
+    // which the list handler's comment notes is set ONLY by requirePermission.
+    if (auth.principal?.kind === 'ai_agent') {
+      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    }
+    //
+    const bulkPerms = await getUserPermissions(auth.user.id, {
+      partnerId: auth.partnerId || undefined,
+      orgId: auth.orgId || undefined,
+    });
+    if (!bulkPerms) {
+      throw new HTTPException(403, { message: 'No permissions found' });
+    }
+    c.set('permissions', bulkPerms);
+    const canWrite = hasPermission(bulkPerms, PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+    const canAck = hasPermission(bulkPerms, PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
+
+    // COARSE first, and before any body verdict: a caller holding NEITHER alert
+    // permission must not be able to tell a well-formed body from a malformed
+    // one. Note the guarantee stops there — an acknowledge-only caller is
+    // unauthorised for resolve/suppress/dismiss and still sees 400 vs 403,
+    // because the action-specific check necessarily runs after the parse.
+    if (!canWrite && !canAck) {
+      throw new HTTPException(403, { message: 'Permission denied' });
+    }
+    // Authorised to do SOMETHING here, so it is now safe to say the body is
+    // wrong. Both verdicts live below the coarse check for that reason.
+    //
+    // The media-type check is explicit because `c.req.json()` does NOT do it:
+    // it will happily parse a valid JSON payload sent as `text/plain`, which
+    // `zValidator` rejected. Dropping the validator without this would widen
+    // what reaches the mutation.
+    if (!isJsonContentType(c.req.header('content-type'))) {
+      return c.json({ error: 'Content-Type must be application/json' }, 400);
+    }
+
+    // One parse: the raw read above, then one schema pass. `formatZodError` is
+    // the shared formatter `zValidator` itself uses, so the 400 body keeps the
+    // `{ error, details: { formErrors, fieldErrors } }` contract clients
+    // already parse rather than becoming a bare Zod issue array.
+    const parsed = bulkAlertActionSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json(formatZodError(parsed.error), 400);
+    }
+
+    // Action-specific. `acknowledge` accepts ALERTS_ACKNOWLEDGE or
+    // ALERTS_WRITE; every other action still demands ALERTS_WRITE.
+    const { action, alertIds, until } = parsed.data;
+    if (!(action === 'acknowledge' ? canWrite || canAck : canWrite)) {
+      throw new HTTPException(403, { message: 'Permission denied' });
+    }
 
     // Resolve + validate the suppression deadline once (mirrors the single
     // POST /alerts/:id/suppress contract) so every alert gets the same `until`.
@@ -442,7 +552,15 @@ alertsRoutes.post(
     }
 
     const now = new Date();
+    // Counts AND ids. The counts are what the web toast reads; the ids are what
+    // lets a client reconcile optimistic local state exactly, instead of
+    // inferring from `updated === alertIds.length` and guessing on a partial.
+    // Additive to the response — existing consumers read only the three counts
+    // (apps/web AlertsPage types them as optional).
     const results = { updated: 0, skipped: 0, failed: 0 };
+    const updatedIds: string[] = [];
+    const skippedIds: string[] = [];
+    const failedIds: string[] = [];
 
     for (const alert of accessible) {
       try {
@@ -455,6 +573,7 @@ alertsRoutes.post(
         if (action === 'acknowledge') {
           if (alert.status !== 'active') {
             results.skipped++;
+            skippedIds.push(alert.id);
             continue;
           }
           written = await db
@@ -470,6 +589,7 @@ alertsRoutes.post(
           // A resolved or dismissed alert can't be suppressed (matches the single endpoint).
           if (alert.status === 'resolved' || alert.status === 'dismissed') {
             results.skipped++;
+            skippedIds.push(alert.id);
             continue;
           }
           written = await db
@@ -485,6 +605,7 @@ alertsRoutes.post(
           // precisely so already-resolved alerts can be cleared for good.
           if (alert.status === 'dismissed') {
             results.skipped++;
+            skippedIds.push(alert.id);
             continue;
           }
           written = await db
@@ -499,6 +620,7 @@ alertsRoutes.post(
         } else {
           if (alert.status === 'resolved' || alert.status === 'dismissed') {
             results.skipped++;
+            skippedIds.push(alert.id);
             continue;
           }
           written = await db
@@ -515,9 +637,11 @@ alertsRoutes.post(
           // Status changed between our snapshot and the write — don't emit
           // events/feedback for a mutation that didn't happen.
           results.skipped++;
+          skippedIds.push(alert.id);
           continue;
         }
         results.updated++;
+        updatedIds.push(alert.id);
 
         // The single suppress/dismiss endpoints don't publish an event-bus event,
         // only ML feedback — mirror that here and keep publishEvent for ack/resolve.
@@ -577,24 +701,55 @@ alertsRoutes.post(
       } catch (dbErr) {
         console.error(`[alerts/bulk] Failed to ${action} alert ${alert.id}:`, dbErr instanceof Error ? dbErr.message : dbErr);
         results.failed++;
+        failedIds.push(alert.id);
       }
     }
 
-    const first = accessible[0]!;
-    writeRouteAudit(c, {
-      orgId: first.orgId,
-      action: `alert.bulk_${action}`,
-      resourceType: 'alert',
-      resourceId: first.id,
-      resourceName: `Bulk ${action} (${results.updated} alerts)`,
-      details: {
-        alertIds: accessible.map(a => a.id),
-        updated: results.updated,
-        skipped: results.skipped,
-      },
-    });
+    // ONE AUDIT RECORD PER ORG, carrying only that org's ids.
+    //
+    // This used to write a single record pinned to `accessible[0].orgId` with
+    // `alertIds: accessible.map(a => a.id)` — every id in the batch. A
+    // partner-scope caller can legitimately submit alerts from several orgs
+    // (the org predicate above is `inArray(orgId, accessibleOrgIds)`), so that
+    // put org B's alert UUIDs inside org A's audit row, where an org-A-only
+    // audit reader can see them — audit list access is scoped by the row's
+    // orgId, not by the ids inside `details`, and the sanitizer passes string
+    // arrays through. Org B meanwhile got no record of its own alerts being
+    // acknowledged.
+    //
+    // It also makes the record honest in two smaller ways: `resourceId` now
+    // names an alert that was actually updated in that org rather than
+    // whichever alert happened to sort first (which could be one that was
+    // skipped or failed), and the counts are per-org rather than batch-wide.
+    const orgOf = new Map(accessible.map((a) => [a.id, a.orgId]));
+    const byOrg = new Map<string, { updated: string[]; skipped: string[]; failed: string[] }>();
+    const bucket = (orgId: string) => {
+      let b = byOrg.get(orgId);
+      if (!b) { b = { updated: [], skipped: [], failed: [] }; byOrg.set(orgId, b); }
+      return b;
+    };
+    for (const id of updatedIds) bucket(orgOf.get(id)!).updated.push(id);
+    for (const id of skippedIds) bucket(orgOf.get(id)!).skipped.push(id);
+    for (const id of failedIds) bucket(orgOf.get(id)!).failed.push(id);
 
-    return c.json(results);
+    for (const [orgId, b] of byOrg) {
+      writeRouteAudit(c, {
+        orgId,
+        action: `alert.bulk_${action}`,
+        resourceType: 'alert',
+        // Prefer an id this record can actually account for as changed.
+        resourceId: b.updated[0] ?? b.skipped[0] ?? b.failed[0]!,
+        resourceName: `Bulk ${action} (${b.updated.length} alerts)`,
+        details: {
+          alertIds: [...b.updated, ...b.skipped, ...b.failed],
+          updated: b.updated.length,
+          skipped: b.skipped.length,
+          failed: b.failed.length,
+        },
+      });
+    }
+
+    return c.json({ ...results, updatedIds, skippedIds, failedIds });
   }
 );
 
