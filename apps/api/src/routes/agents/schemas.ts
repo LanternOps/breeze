@@ -266,6 +266,30 @@ export const heartbeatSchema = z.object({
     peripheralPolicyProtocolVersion: z.number().int().optional().catch(undefined),
     rollbackProtocolVersion: z.number().int().optional().catch(undefined),
   }).optional().catch(undefined),
+  // Signed rollback progress is informational and restart-resend safe. A
+  // malformed optional observation must never take the ordinary heartbeat
+  // offline; the server simply withholds an acknowledgement for that value.
+  rollbackObservation: z.object({
+    schemaVersion: z.literal(1),
+    observationId: z.string().regex(/^[a-f0-9]{64}$/),
+    rollbackId: z.string().uuid(),
+    deviceId: z.string().uuid(),
+    phase: z.enum([
+      'received',
+      'downloaded',
+      'verified',
+      'staged',
+      'swapped',
+      'restart_requested',
+      'healthy',
+      'failed',
+      'recovered',
+    ]),
+    currentVersion: z.string().min(1).max(100),
+    targetVersion: z.string().min(1).max(100),
+    observedAt: z.string().datetime({ offset: true }),
+    failureCode: z.string().min(1).max(128).regex(/^[a-z0-9_]+$/).optional().catch(undefined),
+  }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
   // agent believes it needs to migrate hosted↔self-host. Informational: a bad
   // value drops (.catch) rather than 400-ing the heartbeat.

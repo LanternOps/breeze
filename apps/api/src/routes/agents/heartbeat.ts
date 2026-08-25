@@ -50,6 +50,7 @@ import { decryptClaimedCommandsForDelivery } from '../../services/commandDeliver
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
+import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -1239,6 +1240,25 @@ if (latestHelper) {
   // block — pass it through.
   if (scoped instanceof Response) return scoped;
 
+  // The device heartbeat above has committed before rollback truth is
+  // evaluated. This second short org context lets terminal `healthy` rely on
+  // persisted live agent/companion versions without holding the main
+  // heartbeat transaction or updating the parent device alongside child rows.
+  let acknowledgedRollbackObservationId: string | undefined;
+  if (data.rollbackObservation) {
+    try {
+      const result = await withDbAccessContext(dbContext, () =>
+        ingestRollbackObservation(scoped.deviceId, data.rollbackObservation!),
+      );
+      acknowledgedRollbackObservationId = result.acknowledgedObservationId ?? undefined;
+    } catch (err) {
+      // No acknowledgement means the restart-safe agent retains and resends
+      // the observation. Ordinary heartbeat delivery remains available.
+      console.error(`[heartbeat] Failed to ingest rollback observation for agentId=${agentId}:`, err);
+      captureException(err);
+    }
+  }
+
   // #1105 — the org transaction is now released. Fetch the manifest trust
   // keyset OUTSIDE it: getActiveTrustKeyset opens its own system-scoped
   // context/connection, so no withDbAccessContext(org) is held while it
@@ -1458,6 +1478,7 @@ if (latestHelper) {
     uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
+    acknowledgedRollbackObservationId,
   });
 });
 

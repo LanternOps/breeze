@@ -51,6 +51,9 @@ export default defineConfig({
       'src/services/peripheralPolicyState.integration.test.ts',
       // Real PostgreSQL + Redis proof for atomic signed rollback creation.
       'src/services/agentRollback.integration.test.ts',
+      // Real PostgreSQL proof for restart-safe rollback observation ingestion,
+      // append-only dedupe, and terminal projection truth.
+      'src/services/agentRollbackResult.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.

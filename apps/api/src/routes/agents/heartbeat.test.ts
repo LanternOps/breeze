@@ -7,6 +7,7 @@ const selectMock = vi.fn();
 const updateMock = vi.fn();
 const insertMock = vi.fn();
 const runOutsideDbContextMock = vi.fn(async (fn: () => unknown) => fn());
+const ingestRollbackObservationMock = vi.hoisted(() => vi.fn());
 
 // Records the order of key lifecycle events so a test can assert the
 // manifest-trust-keyset fetch happens AFTER the org DB context closes
@@ -196,6 +197,10 @@ vi.mock('../../services/commandDispatch', () => ({
 
 vi.mock('../../services/eventBus', () => ({
   publishEvent: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../services/agentRollbackResult', () => ({
+  ingestRollbackObservation: ingestRollbackObservationMock,
 }));
 
 vi.mock('../../middleware/agentAuth', () => ({
@@ -429,6 +434,36 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+
+  it('acknowledges a durably ingested rollback observation after the device update commits', async () => {
+    const rollbackObservation = {
+      schemaVersion: 1,
+      observationId: 'a'.repeat(64),
+      rollbackId: '10000000-0000-4000-8000-000000000001',
+      deviceId: 'device-1',
+      phase: 'restart_requested',
+      currentVersion: '2.0.0',
+      targetVersion: '1.9.0',
+      observedAt: '2026-08-25T12:00:00Z',
+    };
+    ingestRollbackObservationMock.mockResolvedValueOnce({
+      acknowledgedObservationId: rollbackObservation.observationId,
+    });
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, rollbackObservation }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(ingestRollbackObservationMock).toHaveBeenCalledWith('device-1', rollbackObservation);
+    expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.lastIndexOf('dbContext:opened'));
+    await expect(resp.json()).resolves.toMatchObject({
+      acknowledgedRollbackObservationId: rollbackObservation.observationId,
+    });
   });
 
   it('always includes backup_server_url in configUpdate — value when env set', async () => {
