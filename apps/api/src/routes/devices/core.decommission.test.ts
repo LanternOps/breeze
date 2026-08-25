@@ -431,11 +431,12 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
   const DECOMMISSIONED_DEVICE = { ...ONLINE_DEVICE, status: 'decommissioned' as const };
 
   // getDeviceWithOrgAndSiteCheck issues db.select().from(devices).where(...)
-  // .limit(1); then the restore handler runs a bare `db.update(...).set(...)
-  // .where(...).returning()` (no transaction — restore does not compose
-  // `releaseDeviceRemoveReason` into its own tx; that helper opens and
-  // commits its own transaction internally, matching the interface handed
-  // down from task 6).
+  // .limit(1); then the restore handler runs `releaseDeviceRemoveReason` and
+  // the `devices` status write inside ONE `db.transaction` (#3986 task 8 fix
+  // round 1 — release-then-flip must be atomic so the device can never be
+  // observably restored while its uninstall is still pending). Same
+  // `db.transaction` rigging trap as `rigDecommission`: it must actually
+  // invoke `cb(tx)`.
   function rigRestore(device: unknown) {
     const limit = vi.fn().mockResolvedValue(device ? [device] : []);
     const where = vi.fn().mockReturnValue({ limit });
@@ -447,13 +448,15 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
     ]);
     const updWhere = vi.fn().mockReturnValue({ returning });
     const set = vi.fn().mockReturnValue({ where: updWhere });
-    vi.mocked(db.update).mockReturnValue({ set } as never);
 
-    return { set };
+    const tx = { update: vi.fn().mockReturnValue({ set }) };
+    vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
+
+    return { tx, set };
   }
 
   it('cancels a pending device_remove uninstall on restore', async () => {
-    rigRestore(DECOMMISSIONED_DEVICE);
+    const { tx } = rigRestore(DECOMMISSIONED_DEVICE);
     vi.mocked(releaseDeviceRemoveReason).mockResolvedValueOnce({
       cancelled: 1,
       retainedOtherOwner: 0,
@@ -469,7 +472,7 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.uninstallAlreadyDispatched).toBe(false);
-    expect(releaseDeviceRemoveReason).toHaveBeenCalledWith(DEVICE_ID, 'device_restored');
+    expect(releaseDeviceRemoveReason).toHaveBeenCalledWith(tx, DEVICE_ID, 'device_restored');
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'device.restore',
       details: expect.objectContaining({ uninstallAlreadyDispatched: false }),
@@ -525,7 +528,7 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
   });
 
   it('restores an ordinary device with no uninstall queued at all', async () => {
-    rigRestore(DECOMMISSIONED_DEVICE);
+    const { tx } = rigRestore(DECOMMISSIONED_DEVICE);
     vi.mocked(releaseDeviceRemoveReason).mockResolvedValueOnce({
       cancelled: 0,
       retainedOtherOwner: 0,
@@ -541,7 +544,7 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.uninstallAlreadyDispatched).toBe(false);
-    expect(releaseDeviceRemoveReason).toHaveBeenCalledWith(DEVICE_ID, 'device_restored');
+    expect(releaseDeviceRemoveReason).toHaveBeenCalledWith(tx, DEVICE_ID, 'device_restored');
   });
 
   it('does not call releaseDeviceRemoveReason when the device is not decommissioned (400)', async () => {
@@ -554,5 +557,51 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
 
     expect(res.status).toBe(400);
     expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
+  });
+
+  // #3986 task 8 fix round 1 — THE regression this round exists to pin.
+  // Flipping `devices.status` to non-decommissioned BEFORE releasing the
+  // device-remove reason reopens a live window: `isDeviceUninstallDraining`
+  // requires `status = 'decommissioned'`, so the instant the flip lands, an
+  // ordinary heartbeat (no type allowlist) can claim the still-`pending`
+  // self_uninstall as a normal command and wipe the just-restored machine.
+  // A test that only checks the END STATE (both writes eventually happened,
+  // final response is correct) would pass identically whether the route
+  // releases first or flips first — it has to assert ORDER.
+  it('releases the device-remove reason BEFORE flipping devices.status (ordering, not just outcome)', async () => {
+    const callOrder: string[] = [];
+
+    const limit = vi.fn().mockResolvedValue([DECOMMISSIONED_DEVICE]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.select).mockReturnValue({ from } as never);
+
+    const returning = vi.fn().mockResolvedValue([
+      { ...DECOMMISSIONED_DEVICE, status: 'offline' },
+    ]);
+    const updWhere = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where: updWhere });
+    const tx = {
+      update: vi.fn(() => {
+        callOrder.push('status-flip');
+        return { set };
+      }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
+
+    vi.mocked(releaseDeviceRemoveReason).mockImplementationOnce(async () => {
+      callOrder.push('release-device-remove-reason');
+      return { cancelled: 1, retainedOtherOwner: 0, alreadyDispatched: 0 };
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    // The dangerous ordering (flip-then-release) would record
+    // ['status-flip', 'release-device-remove-reason'] here instead.
+    expect(callOrder).toEqual(['release-device-remove-reason', 'status-flip']);
   });
 });

@@ -212,65 +212,75 @@ export async function queueDeviceUninstall(
  * the strip is cancelled, and every such cancellation includes
  * `terminalPayloadErasureSet()` like every other terminal writer in this
  * codebase.
+ *
+ * Takes the CALLER's transaction, mirroring `queueDeviceUninstall`'s `tx`
+ * parameter — this is not incidental symmetry. #3986 task 8 fix round 1:
+ * the restore route must release this reason and flip `devices.status`
+ * atomically, in that order (release BEFORE flip). `isDeviceUninstallDraining`
+ * requires `status = 'decommissioned'`; the moment the flip lands the device
+ * becomes an ordinary agent again and a heartbeat can claim a still-`pending`
+ * self_uninstall as an ordinary command with no type allowlist. Two separate
+ * round-trips (flip, then release) leaves that window open even with the
+ * safer statement order — only one transaction closes it, so this can no
+ * longer open its own.
  */
 export async function releaseDeviceRemoveReason(
+  tx: Tx,
   deviceId: string,
   reason: string,
 ): Promise<{ cancelled: number; retainedOtherOwner: number; alreadyDispatched: number }> {
-  return db.transaction(async (tx) => {
-    const stripped = await tx
+  const stripped = await tx
+    .update(deviceCommands)
+    .set({
+      uninstallReasons: sql`array_remove(${deviceCommands.uninstallReasons}, ${UNINSTALL_REASON_DEVICE_REMOVE})`,
+      deviceRemoveExpiresAt: sql`CASE WHEN array_remove(${deviceCommands.uninstallReasons}, ${UNINSTALL_REASON_DEVICE_REMOVE}) = '{}' THEN NULL ELSE ${deviceCommands.deviceRemoveExpiresAt} END`,
+    })
+    .where(
+      and(
+        eq(deviceCommands.deviceId, deviceId),
+        eq(deviceCommands.type, 'self_uninstall'),
+        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES]),
+        arrayContains(deviceCommands.uninstallReasons, [UNINSTALL_REASON_DEVICE_REMOVE]),
+      ),
+    )
+    .returning({
+      id: deviceCommands.id,
+      status: deviceCommands.status,
+      uninstallReasons: deviceCommands.uninstallReasons,
+    });
+
+  let cancelled = 0;
+  let retainedOtherOwner = 0;
+  let alreadyDispatched = 0;
+  const toCancelIds: string[] = [];
+
+  for (const row of stripped) {
+    const stillOwned = (row.uninstallReasons ?? []).length > 0;
+    if (stillOwned) {
+      retainedOtherOwner += 1;
+      continue;
+    }
+    if (row.status === 'pending') {
+      toCancelIds.push(row.id);
+    } else {
+      // 'sent' — already dispatched to the agent; do not flip it terminal
+      // out from under an in-flight delivery.
+      alreadyDispatched += 1;
+    }
+  }
+
+  if (toCancelIds.length > 0) {
+    await tx
       .update(deviceCommands)
       .set({
-        uninstallReasons: sql`array_remove(${deviceCommands.uninstallReasons}, ${UNINSTALL_REASON_DEVICE_REMOVE})`,
-        deviceRemoveExpiresAt: sql`CASE WHEN array_remove(${deviceCommands.uninstallReasons}, ${UNINSTALL_REASON_DEVICE_REMOVE}) = '{}' THEN NULL ELSE ${deviceCommands.deviceRemoveExpiresAt} END`,
+        status: 'cancelled',
+        completedAt: new Date(),
+        result: { reason },
+        ...terminalPayloadErasureSet(),
       })
-      .where(
-        and(
-          eq(deviceCommands.deviceId, deviceId),
-          eq(deviceCommands.type, 'self_uninstall'),
-          inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES]),
-          arrayContains(deviceCommands.uninstallReasons, [UNINSTALL_REASON_DEVICE_REMOVE]),
-        ),
-      )
-      .returning({
-        id: deviceCommands.id,
-        status: deviceCommands.status,
-        uninstallReasons: deviceCommands.uninstallReasons,
-      });
+      .where(inArray(deviceCommands.id, toCancelIds));
+    cancelled = toCancelIds.length;
+  }
 
-    let cancelled = 0;
-    let retainedOtherOwner = 0;
-    let alreadyDispatched = 0;
-    const toCancelIds: string[] = [];
-
-    for (const row of stripped) {
-      const stillOwned = (row.uninstallReasons ?? []).length > 0;
-      if (stillOwned) {
-        retainedOtherOwner += 1;
-        continue;
-      }
-      if (row.status === 'pending') {
-        toCancelIds.push(row.id);
-      } else {
-        // 'sent' — already dispatched to the agent; do not flip it terminal
-        // out from under an in-flight delivery.
-        alreadyDispatched += 1;
-      }
-    }
-
-    if (toCancelIds.length > 0) {
-      await tx
-        .update(deviceCommands)
-        .set({
-          status: 'cancelled',
-          completedAt: new Date(),
-          result: { reason },
-          ...terminalPayloadErasureSet(),
-        })
-        .where(inArray(deviceCommands.id, toCancelIds));
-      cancelled = toCancelIds.length;
-    }
-
-    return { cancelled, retainedOtherOwner, alreadyDispatched };
-  });
+  return { cancelled, retainedOtherOwner, alreadyDispatched };
 }

@@ -1551,37 +1551,56 @@ coreRoutes.post(
       return c.json({ error: 'Only decommissioned devices can be restored' }, 400);
     }
 
-    const [updated] = await db
-      .update(devices)
-      .set({
-        status: 'offline',
-        updatedAt: new Date()
-      })
-      .where(eq(devices.id, deviceId))
-      .returning();
-
-    // Release our hold on any device-remove-owned uninstall (#3986 task 8) so
-    // it doesn't fire on the device's next check-in now that it's back.
+    // Release-THEN-flip, atomically, in that exact order (#3986 task 8 fix
+    // round 1). `isDeviceUninstallDraining` requires `devices.status =
+    // 'decommissioned'`; the instant the status flip lands the device is an
+    // ordinary agent again, and a heartbeat landing in that window would
+    // claim a still-`pending` self_uninstall as an ordinary command — no
+    // type allowlist gates that path — and uninstall the machine the user
+    // just restored. Flipping status first (even briefly, even in the same
+    // transaction) reopens that window the instant Postgres applies the
+    // write, before the release statement runs. Releasing first closes it:
+    // by the time status ever becomes non-decommissioned, the pending
+    // command is already cancelled. Both writes share ONE `db.transaction`
+    // (mirroring `queueDeviceUninstall`'s composition in DELETE
+    // /devices/:id) so a failure after the release can't half-apply: the
+    // device stays decommissioned with the uninstall already released, safe
+    // to retry, instead of the reverse (restored device, live uninstall).
+    //
     // `releaseDeviceRemoveReason` strips only the `device_remove` reason —
     // a row a tenant-offboarding drain also owns stays alive for that owner
     // — and cancels the underlying command only while it is still `pending`.
     //
-    // A row already `sent` CANNOT be recalled here: `claimPendingCommandsForDevice`
-    // (commandDispatch.ts) commits `pending → sent` before the HTTP response
-    // reaches the agent, and the agent's self-uninstall handler hands
-    // teardown to a detached helper and acks immediately (handlers_uninstall.go).
-    // Once a row is `sent` there is no safe claimed-state transition today —
-    // the real fix is an agent-side pre-teardown fence (a `begin` endpoint
-    // that CASes `sent → executing`, serialized against restore), which needs
-    // a Go agent change out of scope for this plan. Tracked as a follow-up:
+    // A row already `sent` CANNOT be recalled here regardless of ordering:
+    // `claimPendingCommandsForDevice` (commandDispatch.ts) commits `pending
+    // → sent` before the HTTP response reaches the agent, and the agent's
+    // self-uninstall handler hands teardown to a detached helper and acks
+    // immediately (handlers_uninstall.go). Once a row is `sent` there is no
+    // safe claimed-state transition today — the real fix is an agent-side
+    // pre-teardown fence (a `begin` endpoint that CASes `sent → executing`,
+    // serialized against restore), which needs a Go agent change out of
+    // scope for this plan. Tracked as a follow-up:
     // https://github.com/LanternOps/breeze/issues/3995. Restore deliberately
-    // still SUCCEEDS in that case —
-    // it is a user-facing recovery action and must not be wedged by a race
-    // that lasts seconds — but reports `uninstallAlreadyDispatched: true` so
-    // the caller can tell the user plainly the machine may already be gone
-    // and will need a reinstall.
-    const releaseResult = await releaseDeviceRemoveReason(deviceId, 'device_restored');
-    const uninstallAlreadyDispatched = releaseResult.alreadyDispatched > 0;
+    // still SUCCEEDS in that case — it is a user-facing recovery action and
+    // must not be wedged by a race that lasts seconds — but reports
+    // `uninstallAlreadyDispatched: true` so the caller can tell the user
+    // plainly the machine may already be gone and will need a reinstall.
+    let updated: typeof devices.$inferSelect | undefined;
+    let uninstallAlreadyDispatched = false;
+    await db.transaction(async (tx) => {
+      const releaseResult = await releaseDeviceRemoveReason(tx, deviceId, 'device_restored');
+      uninstallAlreadyDispatched = releaseResult.alreadyDispatched > 0;
+
+      const [row] = await tx
+        .update(devices)
+        .set({
+          status: 'offline',
+          updatedAt: new Date()
+        })
+        .where(eq(devices.id, deviceId))
+        .returning();
+      updated = row;
+    });
 
     writeRouteAudit(c, {
       orgId: device.orgId,

@@ -328,46 +328,47 @@ describe('queueDeviceUninstall', () => {
 });
 
 /**
- * Fake `db.transaction` surface for `releaseDeviceRemoveReason`, which opens
- * its own transaction (no caller composes into this one).
+ * Fake CALLER transaction handle for `releaseDeviceRemoveReason` (#3986 task
+ * 8 fix round 1: it now takes `tx` as its first parameter instead of opening
+ * its own `db.transaction`, mirroring `queueDeviceUninstall` — the restore
+ * route composes it with the `devices` status write in ONE transaction, in
+ * release-then-flip order, so the "device is restored but the pending
+ * uninstall is still live" window can never be observed).
  */
-function rigReleaseTransaction(strippedRows: Array<{ id: string; status: string; uninstallReasons: string[] | null }>) {
+function rigReleaseTx(strippedRows: Array<{ id: string; status: string; uninstallReasons: string[] | null }>) {
   const stripUpdateLog: { values: Record<string, unknown>; where: unknown }[] = [];
   const cancelUpdateLog: { values: Record<string, unknown>; where: unknown }[] = [];
   let updateCallCount = 0;
 
-  transactionMock.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
-    const tx = {
-      update: vi.fn(() => {
-        updateCallCount += 1;
-        const isFirstCall = updateCallCount === 1;
-        return {
-          set: vi.fn((values: Record<string, unknown>) => ({
-            where: vi.fn((where: unknown) => {
-              if (isFirstCall) {
-                stripUpdateLog.push({ values, where });
-                return {
-                  returning: vi.fn(async () => strippedRows),
-                };
-              }
-              cancelUpdateLog.push({ values, where });
-              return Promise.resolve([]);
-            }),
-          })),
-        };
-      }),
-    };
-    return fn(tx);
-  });
+  const tx = {
+    update: vi.fn(() => {
+      updateCallCount += 1;
+      const isFirstCall = updateCallCount === 1;
+      return {
+        set: vi.fn((values: Record<string, unknown>) => ({
+          where: vi.fn((where: unknown) => {
+            if (isFirstCall) {
+              stripUpdateLog.push({ values, where });
+              return {
+                returning: vi.fn(async () => strippedRows),
+              };
+            }
+            cancelUpdateLog.push({ values, where });
+            return Promise.resolve([]);
+          }),
+        })),
+      };
+    }),
+  };
 
-  return { stripUpdateLog, cancelUpdateLog };
+  return { tx, stripUpdateLog, cancelUpdateLog };
 }
 
 describe('releaseDeviceRemoveReason', () => {
   it('strips only the device_remove reason (compiled SQL: array_remove bound to the exact reason, scoped to self_uninstall pending/sent rows carrying it)', async () => {
-    const { stripUpdateLog } = rigReleaseTransaction([]);
+    const { tx, stripUpdateLog } = rigReleaseTx([]);
 
-    await releaseDeviceRemoveReason('device-1', 'device_restored');
+    await releaseDeviceRemoveReason(tx as never, 'device-1', 'device_restored');
 
     expect(stripUpdateLog).toHaveLength(1);
     const strip = stripUpdateLog[0]!;
@@ -392,33 +393,33 @@ describe('releaseDeviceRemoveReason', () => {
   });
 
   it('releases only its own reason, leaving a tenant-owned uninstall live (retainedOtherOwner, no cancel)', async () => {
-    const { cancelUpdateLog } = rigReleaseTransaction([
+    const { tx, cancelUpdateLog } = rigReleaseTx([
       { id: 'cmd-1', status: 'pending', uninstallReasons: ['tenant_offboarding'] },
     ]);
 
-    const result = await releaseDeviceRemoveReason('device-1', 'device_restored');
+    const result = await releaseDeviceRemoveReason(tx as never, 'device-1', 'device_restored');
 
     expect(result).toEqual({ cancelled: 0, retainedOtherOwner: 1, alreadyDispatched: 0 });
     expect(cancelUpdateLog).toHaveLength(0);
   });
 
   it('reports alreadyDispatched for a row already in sent (no cancel, but reason is stripped)', async () => {
-    const { cancelUpdateLog } = rigReleaseTransaction([
+    const { tx, cancelUpdateLog } = rigReleaseTx([
       { id: 'cmd-1', status: 'sent', uninstallReasons: [] },
     ]);
 
-    const result = await releaseDeviceRemoveReason('device-1', 'device_restored');
+    const result = await releaseDeviceRemoveReason(tx as never, 'device-1', 'device_restored');
 
     expect(result).toEqual({ cancelled: 0, retainedOtherOwner: 0, alreadyDispatched: 1 });
     expect(cancelUpdateLog).toHaveLength(0);
   });
 
   it('cancels a pending row with no reasons left, including terminalPayloadErasureSet', async () => {
-    const { cancelUpdateLog } = rigReleaseTransaction([
+    const { tx, cancelUpdateLog } = rigReleaseTx([
       { id: 'cmd-1', status: 'pending', uninstallReasons: [] },
     ]);
 
-    const result = await releaseDeviceRemoveReason('device-1', 'device_restored');
+    const result = await releaseDeviceRemoveReason(tx as never, 'device-1', 'device_restored');
 
     expect(result).toEqual({ cancelled: 1, retainedOtherOwner: 0, alreadyDispatched: 0 });
     expect(cancelUpdateLog).toHaveLength(1);
@@ -434,12 +435,12 @@ describe('releaseDeviceRemoveReason', () => {
   });
 
   it('handles a mix of rows in one release call (partial cancel, partial retain)', async () => {
-    const { cancelUpdateLog } = rigReleaseTransaction([
+    const { tx, cancelUpdateLog } = rigReleaseTx([
       { id: 'cmd-1', status: 'pending', uninstallReasons: [] },
       { id: 'cmd-2', status: 'pending', uninstallReasons: ['tenant_offboarding'] },
     ]);
 
-    const result = await releaseDeviceRemoveReason('device-1', 'device_restored');
+    const result = await releaseDeviceRemoveReason(tx as never, 'device-1', 'device_restored');
 
     expect(result).toEqual({ cancelled: 1, retainedOtherOwner: 1, alreadyDispatched: 0 });
     expect(cancelUpdateLog).toHaveLength(1);
