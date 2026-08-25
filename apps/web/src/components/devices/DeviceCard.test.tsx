@@ -73,3 +73,21 @@ describe('DeviceCard sparkline history', () => {
     });
   });
 });
+
+// The sr-only status text previously fell back to a raw Title-Case of the
+// enum value ("Decommissioned"), so a screen reader announced a different
+// word than every visible "Removed" string on the same card. Assert it goes
+// through the same i18n label source as the visible text.
+describe('DeviceCard sr-only status text', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ metrics: [] }));
+  });
+
+  it('announces "Removed" (not the raw enum) for a decommissioned device', () => {
+    render(<DeviceCard device={{ ...baseDevice, status: 'decommissioned' }} />);
+
+    expect(screen.getByText('Removed')).toBeInTheDocument();
+    expect(screen.queryByText('Decommissioned')).not.toBeInTheDocument();
+  });
+});

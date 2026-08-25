@@ -43,6 +43,19 @@ const statusColors: Record<DeviceStatus, string> = {
   pending: "bg-muted-foreground",
 };
 
+// Canonical status values stay untouched; only their presentation keys vary.
+// Mirrors DeviceList.tsx's statusFullLabelKeys so the sr-only status text
+// agrees with the visible label rendered elsewhere on the same card.
+const statusFullLabelKeys: Record<DeviceStatus, string> = {
+  online: "deviceList.statuses.full.online",
+  offline: "deviceList.statuses.full.offline",
+  maintenance: "deviceList.statuses.full.maintenance",
+  decommissioned: "deviceList.statuses.full.decommissioned",
+  quarantined: "deviceList.statuses.full.quarantined",
+  updating: "deviceList.statuses.full.updating",
+  pending: "deviceList.statuses.full.pending",
+};
+
 const osIcons: Record<OSType, React.ReactNode> = {
   windows: (
     <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -221,7 +234,7 @@ export default function DeviceCard({
                 aria-hidden="true"
               />
               <span className="sr-only">
-                {device.status.charAt(0).toUpperCase() + device.status.slice(1)}
+                {t(/* i18n-dynamic */ statusFullLabelKeys[device.status])}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">{device.osVersion}</p>
