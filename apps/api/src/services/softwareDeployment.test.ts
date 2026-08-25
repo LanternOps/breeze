@@ -163,9 +163,18 @@ function insWithReturning(rows: unknown[]) {
   };
 }
 
-/** Insert without .returning() — for deploymentResults */
+/** Insert with exact per-device ids returned from deploymentResults. */
 function ins() {
-  return { values: vi.fn().mockResolvedValue([]) };
+  return {
+    values: vi.fn((values: Array<{ deviceId: string }> | { deviceId: string }) => ({
+      returning: vi.fn().mockResolvedValue(
+        (Array.isArray(values) ? values : [values]).map((value) => ({
+          id: `result-${value.deviceId}`,
+          deviceId: value.deviceId,
+        })),
+      ),
+    })),
+  };
 }
 
 /** Update chain: db.update().set().where() → void */
@@ -263,6 +272,20 @@ describe('createSoftwareDeployment', () => {
     expect(result.status).toBe('pending');
     expect(result.deployment).toEqual(deployment);
     expect(result.dispatchedDeviceIds).toEqual(['dev-1', 'dev-2']);
+    expect(result.deviceResults).toEqual([
+      {
+        deviceId: 'dev-1',
+        deploymentResultId: 'result-dev-1',
+        status: 'delivered',
+        deviceCommandId: null,
+      },
+      {
+        deviceId: 'dev-2',
+        deploymentResultId: 'result-dev-2',
+        status: 'delivered',
+        deviceCommandId: null,
+      },
+    ]);
     expect(sendCommandMock).toHaveBeenCalledTimes(2);
     expect(sendCommandMock.mock.calls[0]![1].type).toBe('software_install');
     // WS delivery succeeded for both devices — the offline fallback must not fire.
@@ -315,6 +338,20 @@ describe('createSoftwareDeployment', () => {
     // Both devices count as dispatched — one over WS, one queued.
     expect(result.status).toBe('pending');
     expect(result.dispatchedDeviceIds).toEqual(['dev-on', 'dev-off']);
+    expect(result.deviceResults).toEqual([
+      {
+        deviceId: 'dev-on',
+        deploymentResultId: 'result-dev-on',
+        status: 'delivered',
+        deviceCommandId: null,
+      },
+      {
+        deviceId: 'dev-off',
+        deploymentResultId: 'result-dev-off',
+        status: 'queued',
+        deviceCommandId: 'queued-cmd-off',
+      },
+    ]);
 
     // The queued fallback fired once, for the offline device, with the SAME
     // payload the WS command carried — including deploymentId for the

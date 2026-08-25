@@ -173,7 +173,7 @@ describe('automationRuntime', () => {
         0,
         contextFor(deviceId, 'org-a', scope),
       );
-      expect(result.success).toBe(true);
+      expect(result.outcome.status).toBe('delivered');
     }
 
     expect(loadTenantVariableScope).not.toHaveBeenCalled();
@@ -221,7 +221,7 @@ describe('automationRuntime', () => {
       contextFor('device-1', 'org-a', { orgIds: new Set(['org-a']) }),
     );
 
-    expect(result.success).toBe(true);
+    expect(result.outcome.status).toBe('delivered');
     expect(result.log.details).toMatchObject({ ignoredParameterKeys: ['api_key'] });
     // KEYS ONLY — the configured value must not be copied into the run log.
     expect(JSON.stringify(result.log.details)).not.toContain('configured-in-the-automation');
@@ -234,7 +234,7 @@ describe('automationRuntime', () => {
       contextFor('device-1', 'org-a', { orgIds: new Set(['org-a']) }),
     );
 
-    expect(result.success).toBe(true);
+    expect(result.outcome.status).toBe('delivered');
     expect(result.log.details).not.toHaveProperty('ignoredParameterKeys');
   });
 
