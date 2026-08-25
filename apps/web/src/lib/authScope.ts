@@ -40,9 +40,11 @@ export type JwtClaimsState =
   | { status: 'unresolved' }
   | { status: 'resolved'; claims: JwtClaims };
 
-const NO_CLAIMS: Readonly<JwtClaims> = { scope: null, orgId: null, partnerId: null };
+// Both are shared singletons handed straight back to callers, so freeze them for
+// real rather than relying on `Readonly<>`, which erases at runtime.
+const NO_CLAIMS: Readonly<JwtClaims> = Object.freeze({ scope: null, orgId: null, partnerId: null });
 
-const UNRESOLVED: Readonly<JwtClaimsState> = { status: 'unresolved' };
+const UNRESOLVED: Readonly<JwtClaimsState> = Object.freeze({ status: 'unresolved' as const });
 
 function decodeClaims(token: string | null | undefined): JwtClaims {
   if (!token) return NO_CLAIMS;

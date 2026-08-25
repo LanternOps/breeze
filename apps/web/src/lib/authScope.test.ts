@@ -143,13 +143,34 @@ describe('useJwtClaims', () => {
     expect(result.current).toEqual({ status: 'unresolved' });
   });
 
-  it('keeps the same object identity while the token is unchanged', () => {
-    // The value feeds effect dependency arrays; a fresh object every render would
-    // re-run them on every unrelated store write.
+  it('keeps the same object identity across re-renders while the token is unchanged', () => {
+    // Consumers derive effect dependencies from this value; a fresh object every
+    // render would re-run them on every unrelated store write. The RESOLVED
+    // branch is the one that matters — it builds a new object literal inside the
+    // memo callback, so it is where a future edit could silently drop the
+    // caching. (The unresolved branch returns a shared constant and would look
+    // stable even without the memo, so asserting only that proves nothing.)
+    useAuthStore.setState({
+      tokens: { accessToken: makeToken({ scope: 'partner', partnerId: 'p-1' }), expiresInSeconds: 900 },
+    });
     const { result, rerender } = renderHook(() => useJwtClaims());
     const first = result.current;
+    expect(first.status).toBe('resolved');
+
     rerender();
     expect(result.current).toBe(first);
+
+    // A genuinely new token must produce a new value, or the memo is over-caching.
+    act(() => {
+      useAuthStore.setState({
+        tokens: { accessToken: makeToken({ scope: 'system' }), expiresInSeconds: 900 },
+      });
+    });
+    expect(result.current).not.toBe(first);
+    expect(result.current).toEqual({
+      status: 'resolved',
+      claims: { scope: 'system', orgId: null, partnerId: null },
+    });
   });
 });
 
