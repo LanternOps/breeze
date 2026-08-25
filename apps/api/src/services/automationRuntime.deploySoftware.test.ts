@@ -68,6 +68,7 @@ vi.mock('./notificationSenders', () => ({
   sendWebhookNotification: vi.fn().mockResolvedValue({ success: false }),
 }));
 
+import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { executeDeploySoftwareActions, normalizeAutomationActions } from './automationRuntime';
 
 const WIN = { id: 'd-win', osType: 'windows' as const, orgId: 'org-1' };
@@ -267,6 +268,28 @@ describe('executeDeploySoftwareActions', () => {
     });
     expect(res.failed).toBe(true);
     expect(res.logs.some(l => /no latest version/i.test(l.message))).toBe(true);
+  });
+
+  it('records dispatch outcomes outside an ambient database transaction', async () => {
+    vi.mocked(runOutsideDbContext).mockClear();
+    vi.mocked(withSystemDbAccessContext).mockClear();
+
+    await executeDeploySoftwareActions({
+      actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+      devices: [WIN],
+      createdBy: null,
+      runId: 'run-1',
+      resolvedReferences: {
+        scriptsById: new Map(),
+        softwareCatalogsById: new Map(),
+        softwareVersionsByCatalogId: new Map(),
+        notificationChannelsById: new Map(),
+      },
+    } as any);
+
+    expect(recordDispatchMock).toHaveBeenCalledTimes(1);
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
   });
 
   it('creates one deployment per device org (partner-wide fan-out, #2133)', async () => {
