@@ -1271,6 +1271,30 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     openRowMenu();
     expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
   });
+
+  // #3987 fix wave 2: the entire `status === 'decommissioned'` menu branch —
+  // including the pre-existing Restore button, not just the new
+  // permanent-delete one — had never been rendered by a test. Pair every
+  // negative with a positive: a lone .not.toBeInTheDocument() would pass
+  // whether or not the branch is wired correctly.
+  it('decommissioned device: shows Restore + permanent delete, not the remove action', () => {
+    const device: Device = { ...baseDevice, status: 'decommissioned' };
+    render(<DeviceList devices={[device]} includeDecommissioned />);
+    openRowMenu();
+
+    expect(screen.getByTestId(`device-${device.id}-action-restore`)).toBeInTheDocument();
+    expect(screen.getByTestId(`device-${device.id}-action-permanent-delete`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${device.id}-action-remove`)).not.toBeInTheDocument();
+  });
+
+  it('non-decommissioned device: shows the remove action, not Restore/permanent-delete', () => {
+    render(<DeviceList devices={[baseDevice]} />);
+    openRowMenu();
+
+    expect(screen.getByTestId(`device-${baseDevice.id}-action-remove`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${baseDevice.id}-action-restore`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${baseDevice.id}-action-permanent-delete`)).not.toBeInTheDocument();
+  });
 });
 
 // #2465 CONTRACT: the bulk-action status gate lives in DevicesPage, but the

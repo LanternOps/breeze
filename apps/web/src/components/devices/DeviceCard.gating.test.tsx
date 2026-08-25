@@ -134,6 +134,27 @@ describe('DeviceCard action gating (#2488)', () => {
     fireEvent.click(terminalBtn());
     expect(onAction).not.toHaveBeenCalled();
   });
+
+  // #3987 fix wave 2: the entire `status === 'decommissioned'` menu branch —
+  // including the pre-existing Restore button, not just the new
+  // permanent-delete one — had never been rendered by a test. Pair every
+  // negative with a positive: a lone .not.toBeInTheDocument() would pass
+  // whether or not the branch is wired correctly.
+  it('decommissioned device: shows Restore + permanent delete, not the remove action', () => {
+    openCardMenu('decommissioned');
+
+    expect(screen.getByTestId('device-device-1-action-restore')).toBeInTheDocument();
+    expect(screen.getByTestId('device-device-1-action-permanent-delete')).toBeInTheDocument();
+    expect(screen.queryByTestId('device-device-1-action-remove')).not.toBeInTheDocument();
+  });
+
+  it('non-decommissioned device: shows the remove action, not Restore/permanent-delete', () => {
+    openCardMenu('online');
+
+    expect(screen.getByTestId('device-device-1-action-remove')).toBeInTheDocument();
+    expect(screen.queryByTestId('device-device-1-action-restore')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('device-device-1-action-permanent-delete')).not.toBeInTheDocument();
+  });
 });
 
 // #2630: a `title` never renders on touch, and a `disabled` button is removed
