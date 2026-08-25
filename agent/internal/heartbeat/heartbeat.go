@@ -731,6 +731,7 @@ type Heartbeat struct {
 type rollbackController interface {
 	Execute(context.Context, rollbackstate.Directive) error
 	Reconcile(context.Context) error
+	Active() bool
 	PendingObservation() (*rollbackstate.Observation, error)
 	Acknowledge(string) error
 }
@@ -4400,8 +4401,12 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// be verified.
 	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
+	rollbackActive := h.rollbackController != nil && h.rollbackController.Active()
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
+		if cmd.Type == tools.CmdAgentRollbackV1 {
+			rollbackActive = true
+		}
 		if !h.accepting.Load() {
 			log.Warn("rejecting command, agent shutting down", logging.KeyCommandID, cmd.ID)
 			break
@@ -4413,7 +4418,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle upgrade if requested and auto-update is enabled
-	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
+	if !rollbackActive && response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
 		if decision := mainAgentUpgradeDecision(response.UpgradeTo, h.agentVersion); !decision.Allowed {
 			// SECURITY: never auto-downgrade, and never accept a malformed or
 			// prerelease-mis-ordered target. A compromised/MITM'd control
@@ -4459,7 +4464,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle helper upgrade if requested
-	if response.HelperUpgradeTo != "" {
+	if !rollbackActive && response.HelperUpgradeTo != "" {
 		installedHelper := h.helperMgr.InstalledVersion()
 		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper, h.helperMgr.IsInstalled()); !allowed {
 			// SECURITY: never auto-downgrade the helper. The signed manifest
@@ -4486,7 +4491,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// WatchdogUpgradeTo), so a HEALTHY watchdog would never self-heal. The
 	// reliably-updating agent drives it instead, recovering already-stuck fleets
 	// whose watchdog is frozen at install-time version.
-	if response.WatchdogUpgradeTo != "" {
+	if !rollbackActive && response.WatchdogUpgradeTo != "" {
 		go h.handleWatchdogUpgrade(response.WatchdogUpgradeTo)
 	}
 
@@ -6325,6 +6330,12 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		return
 	}
 	defer h.watchdogUpgradeInProgress.Store(false)
+	lease, acquired := updater.TryBeginProcessMutation("watchdog-update")
+	if !acquired {
+		log.Debug("watchdog upgrade deferred, another component mutation is active", "targetVersion", targetVersion)
+		return
+	}
+	defer lease.Release()
 
 	install := h.watchdogInstaller
 	if install == nil {

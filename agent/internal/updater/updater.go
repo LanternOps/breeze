@@ -883,6 +883,17 @@ func (u *Updater) UpdateTo(version string) error {
 // Issue #816 / #845 follow-up (PR B): replaces UpdateToWithUserHelper and the
 // u.extras action-at-a-distance state with an explicit options parameter.
 func (u *Updater) UpdateToWithOptions(version string, opts UpdateOptions) error {
+	lease, ok := TryBeginProcessMutation("agent-update")
+	if !ok {
+		if opts.UserHelper != nil && opts.UserHelper.Temp != "" {
+			removeCleanup(opts.UserHelper.Temp)
+		}
+		if opts.Backup != nil && opts.Backup.Temp != "" {
+			removeCleanup(opts.Backup.Temp)
+		}
+		return ErrProcessMutationInProgress
+	}
+	defer lease.Release()
 	err := u.updateTo(version, opts)
 	if err != nil && opts.UserHelper != nil && opts.UserHelper.Temp != "" {
 		// Cleanup contract: see method doc. Preserved verbatim from
@@ -1568,6 +1579,11 @@ func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error
 // u.extras, which was a real footgun for any future dev-push surface that
 // shared an Updater instance with the heartbeat upgrade path.
 func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOptions) error {
+	lease, ok := TryBeginProcessMutation("agent-dev-update")
+	if !ok {
+		return ErrProcessMutationInProgress
+	}
+	defer lease.Release()
 	// Log only the host, never the full URL: dev_update's downloadUrl is
 	// operator/control-plane supplied and may legitimately carry a
 	// capability query string (e.g. a signed CDN asset URL), which must

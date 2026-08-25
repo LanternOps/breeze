@@ -226,6 +226,16 @@ func (e *Engine) PendingObservation() (*Observation, error) {
 	copy := state.Pending[0]
 	return &copy, nil
 }
+
+// Active fails closed on unreadable durable state so ordinary component
+// updates cannot race a rollback whose state file cannot be inspected.
+func (e *Engine) Active() bool {
+	e.store.mu.Lock()
+	defer e.store.mu.Unlock()
+	state, err := e.store.loadLocked()
+	return err != nil || state.Active != nil
+}
+
 func (e *Engine) Acknowledge(id string) error {
 	e.store.mu.Lock()
 	defer e.store.mu.Unlock()

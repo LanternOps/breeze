@@ -172,6 +172,26 @@ func TestRollbackObservationsPersistAndAcknowledgeInPhaseOrder(t *testing.T) {
 	}
 }
 
+func TestEngineActiveTracksRollbackAcrossRestartBoundary(t *testing.T) {
+	backend := &fakeBackend{healthy: true}
+	engine, directive := testEngine(t, backend)
+	if engine.Active() {
+		t.Fatal("new engine reported an active rollback")
+	}
+	if err := engine.Execute(context.Background(), directive); err != nil {
+		t.Fatal(err)
+	}
+	if !engine.Active() {
+		t.Fatal("restart-requested rollback was not active")
+	}
+	if err := engine.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if engine.Active() {
+		t.Fatal("terminal healthy rollback remained active")
+	}
+}
+
 func TestReconcileProducesHealthyOrRecoveredTerminalTruth(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		t.Run(map[bool]string{true: "healthy", false: "recovered"}[healthy], func(t *testing.T) {

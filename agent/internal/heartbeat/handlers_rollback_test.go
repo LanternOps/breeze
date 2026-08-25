@@ -17,6 +17,8 @@ type fakeRollbackController struct {
 	acknowledged string
 }
 
+func (f *fakeRollbackController) Active() bool { return false }
+
 func (f *fakeRollbackController) Execute(_ context.Context, d rollbackstate.Directive) error {
 	f.executed = append(f.executed, d)
 	return f.executeErr

@@ -21,11 +21,40 @@ type agentRollbackBackend struct {
 	componentPaths  map[rollbackstate.Component]string
 	journalPath     string
 	currentVersions func() map[rollbackstate.Component]string
+	mutationLease   *updater.ProcessMutationLease
+}
+
+func (b *agentRollbackBackend) verifyLiveVersions(d rollbackstate.Directive) error {
+	versions := b.currentVersions()
+	if len(versions) != len(d.ComponentVersions) {
+		return fmt.Errorf("rollback live component set changed")
+	}
+	for component, binding := range d.ComponentVersions {
+		if versions[rollbackstate.Component(component)] != binding.Current {
+			return fmt.Errorf("rollback live component version changed for %s", component)
+		}
+	}
+	return nil
+}
+
+func (b *agentRollbackBackend) releaseMutationLease() {
+	if b.mutationLease != nil {
+		b.mutationLease.Release()
+		b.mutationLease = nil
+	}
 }
 
 func (b *agentRollbackBackend) Prepare(_ context.Context, d rollbackstate.Directive) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	lease, acquired := updater.TryBeginProcessMutation("rollback-stage")
+	if !acquired {
+		return updater.ErrProcessMutationInProgress
+	}
+	defer lease.Release()
+	if err := b.verifyLiveVersions(d); err != nil {
+		return err
+	}
 	b.staged.Cleanup()
 	b.staged = updater.StagedRollbackSet{}
 	request := updater.RollbackStageRequest{DirectiveID: d.RollbackID, Platform: d.Platform, Architecture: d.Architecture, CurrentVersion: d.CurrentVersion, TargetVersion: d.TargetVersion, ReleaseManifest: d.ReleaseManifest, ManifestSignature: d.ManifestSignature, ManifestSigningKeyID: d.ManifestSigningKeyID, ComponentVersions: map[updater.RollbackComponent]updater.RollbackComponentVersion{}}
@@ -46,18 +75,30 @@ func (b *agentRollbackBackend) Prepare(_ context.Context, d rollbackstate.Direct
 func (b *agentRollbackBackend) Swap(_ context.Context, d rollbackstate.Directive) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	lease, acquired := updater.TryBeginProcessMutation("rollback-swap")
+	if !acquired {
+		return updater.ErrProcessMutationInProgress
+	}
+	b.mutationLease = lease
+	if err := b.verifyLiveVersions(d); err != nil {
+		b.releaseMutationLease()
+		return err
+	}
 	if b.staged.DirectiveID != d.RollbackID || len(b.staged.Artifacts) != len(d.Artifacts) {
+		b.releaseMutationLease()
 		return fmt.Errorf("rollback staged set mismatch")
 	}
 	set := updater.RollbackSwapSet{DirectiveID: d.RollbackID, JournalPath: b.journalPath}
 	for _, artifact := range b.staged.Artifacts {
 		live := b.componentPaths[rollbackstate.Component(artifact.Component)]
 		if live == "" {
+			b.releaseMutationLease()
 			return fmt.Errorf("no live path for rollback component %s", artifact.Component)
 		}
 		set.Artifacts = append(set.Artifacts, updater.RollbackSwapArtifact{Component: artifact.Component, StagedPath: artifact.StagedPath, LivePath: live})
 	}
 	if err := updater.SwapRollbackArtifactsRetainingJournal(set); err != nil {
+		b.releaseMutationLease()
 		return err
 	}
 	b.staged.Cleanup()
@@ -78,11 +119,18 @@ func (b *agentRollbackBackend) Healthy(_ context.Context, d rollbackstate.Direct
 	return true, nil
 }
 func (b *agentRollbackBackend) Finalize(context.Context, rollbackstate.Directive) error {
-	return updater.CommitRollbackSwap(b.journalPath)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := updater.CommitRollbackSwap(b.journalPath); err != nil {
+		return err
+	}
+	b.releaseMutationLease()
+	return nil
 }
 func (b *agentRollbackBackend) Recover(context.Context, rollbackstate.Directive) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	defer b.releaseMutationLease()
 	b.staged.Cleanup()
 	b.staged = updater.StagedRollbackSet{}
 	if _, err := os.Stat(b.journalPath); os.IsNotExist(err) {
