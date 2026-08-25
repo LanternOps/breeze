@@ -492,6 +492,9 @@
         "days": "Jours",
         "weeks": "semaines",
         "months": "Mois"
+      },
+      "enumOverrides": {
+        "decommissioned": "Retiré"
       }
     }
   },

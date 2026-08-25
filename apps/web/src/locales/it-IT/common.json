@@ -492,6 +492,9 @@
         "days": "giorni",
         "weeks": "settimane",
         "months": "mesi"
+      },
+      "enumOverrides": {
+        "decommissioned": "Rimosso"
       }
     }
   },

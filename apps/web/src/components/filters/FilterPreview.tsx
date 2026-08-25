@@ -125,7 +125,8 @@ function StatusIndicator({ status }: { status: string }) {
     online: 'bg-green-500',
     offline: 'bg-gray-400',
     maintenance: 'bg-amber-500',
-    decommissioned: 'bg-red-500'
+    // Removed is a terminal, non-error state — muted grey like offline, not red.
+    decommissioned: 'bg-gray-400'
   };
 
   return (
@@ -150,13 +151,24 @@ function OsBadge({ osType }: { osType: string }) {
   );
 }
 
+// Enum values whose raw name no longer matches the product's preferred wording
+// get an explicit locale-key override instead of a hard-coded English string —
+// see filters.value.enumOverrides in common.json (shared with ValueInput.tsx).
+const STATUS_LABEL_OVERRIDE_KEYS: Record<string, string> = {
+  decommissioned: 'filters.value.enumOverrides.decommissioned'
+};
+
 function StatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation('common');
   const statusColors: Record<string, string> = {
     online: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
     offline: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400',
     maintenance: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-    decommissioned: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+    // Removed is a terminal, non-error state — muted grey like offline, not red.
+    decommissioned: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400'
   };
+  const overrideKey = STATUS_LABEL_OVERRIDE_KEYS[status];
+  const label = overrideKey ? t(/* i18n-dynamic */ overrideKey) : status;
 
   return (
     <span
@@ -164,7 +176,7 @@ function StatusBadge({ status }: { status: string }) {
         statusColors[status] || 'bg-gray-100 text-gray-700'
       }`}
     >
-      {status}
+      {label}
     </span>
   );
 }
