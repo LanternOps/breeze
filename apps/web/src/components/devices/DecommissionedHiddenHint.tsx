@@ -1,12 +1,12 @@
 // Discoverability hint (#2251): decommissioned devices are hidden from the
 // Devices page by default, and nothing on the page used to say so — the only
-// unhide mechanism was knowing the status filter has a "Decommissioned"
-// option. This renders a lightweight "N decommissioned hidden — show" line
-// next to the device count (list view) / above the grid (grid view), where
-// "show" applies the existing Decommissioned status filter upstream. The
-// upstream count memos return 0 when decommissioned devices are already
-// visible (includeDecommissioned), and the component renders nothing for
-// count <= 0 — so it self-dismisses once the rows are shown.
+// unhide mechanism was knowing the status filter has a "Removed" option.
+// This renders a lightweight "N removed hidden — show" line next to the
+// device count (list view) / above the grid (grid view), where "show"
+// applies the existing decommissioned status filter upstream. The upstream
+// count memos return 0 when decommissioned devices are already visible
+// (includeDecommissioned), and the component renders nothing for count <= 0
+// — so it self-dismisses once the rows are shown.
 import { useTranslation } from 'react-i18next';
 
 export default function DecommissionedHiddenHint({

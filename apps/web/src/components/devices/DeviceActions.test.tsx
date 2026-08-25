@@ -289,10 +289,13 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
 
       await user.click(screen.getByTestId('device-action-remove'));
       expect(onAction).not.toHaveBeenCalled();
+      expect(await screen.findByText('Remove Device')).toBeInTheDocument();
     });
 
-    // The compact variant (used elsewhere in the fleet views) duplicates the
-    // same menu markup, so it gets the same status-branch coverage.
+    // The compact variant is currently unused in production — the sole
+    // production call site (DeviceDetails.tsx) never passes `compact` — but
+    // it duplicates the same menu markup, so this test guards it against
+    // regressions if/when a future fleet view adopts it.
     it('compact variant: offers Restore and Delete permanently — not Remove — on a removed device', async () => {
       const user = userEvent.setup();
       const onAction = vi.fn();
