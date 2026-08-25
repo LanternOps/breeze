@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -318,3 +319,21 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 	log.Info("update helper spawned, agent will exit via service stop")
 	return nil
 }
+
+// replaceRollbackFile uses Windows' write-through replacement primitive so a
+// stopped component changes from old to target in one filesystem operation.
+func replaceRollbackFile(stagedPath, livePath string) error {
+	staged, err := windows.UTF16PtrFromString(stagedPath)
+	if err != nil {
+		return err
+	}
+	live, err := windows.UTF16PtrFromString(livePath)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(staged, live, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+// MoveFileEx with MOVEFILE_WRITE_THROUGH already flushes the rename on
+// Windows. Directory handles cannot be portably flushed with os.File.Sync.
+func syncRollbackDir(_ string) error { return nil }

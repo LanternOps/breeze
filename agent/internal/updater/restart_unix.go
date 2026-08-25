@@ -55,6 +55,19 @@ func RestartWithHelper(_ BinaryPair, _ *BinaryPair, _ *BinaryPair) error {
 	return fmt.Errorf("RestartWithHelper is only supported on Windows")
 }
 
+func replaceRollbackFile(stagedPath, livePath string) error {
+	return os.Rename(stagedPath, livePath)
+}
+
+func syncRollbackDir(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }()
+	return dir.Sync()
+}
+
 func restartExec() error {
 	binary, err := os.Executable()
 	if err != nil {
