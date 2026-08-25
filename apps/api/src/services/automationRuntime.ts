@@ -60,6 +60,15 @@ function withAutomationRuntimeDb<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
+function recordAutomationRuntimeActionDispatch(
+  input: Parameters<typeof recordAutomationActionDispatch>[0],
+): Promise<boolean> {
+  // Runtime callers can be invoked beneath a request/test transaction. Keep
+  // action-result locks and reconciliation publications out of that ambient
+  // transaction, just like the action-side writes they describe.
+  return withAutomationRuntimeDb(() => recordAutomationActionDispatch(input));
+}
+
 /**
  * Ownership → org fan-out (#2133). An org-owned automation targets devices in
  * its own org; a partner-wide automation (orgId NULL) fans out to every org
@@ -1714,7 +1723,7 @@ async function persistActionExecutionOutcome(
   result: ActionExecutionResult,
 ): Promise<void> {
   const { outcome } = result;
-  await recordAutomationActionDispatch({
+  await recordAutomationRuntimeActionDispatch({
     runId,
     deviceId,
     actionIndex,
@@ -1736,7 +1745,7 @@ async function skipTrailingAutomationActions(
   failedActionIndex: number,
 ): Promise<void> {
   for (let actionIndex = failedActionIndex + 1; actionIndex < actions.length; actionIndex += 1) {
-    await recordAutomationActionDispatch({
+    await recordAutomationRuntimeActionDispatch({
       runId,
       deviceId,
       actionIndex,
@@ -1751,11 +1760,11 @@ async function seedDeviceAutomationActions(
   device: { id: string; orgId: string },
   actions: readonly AutomationAction[],
 ): Promise<void> {
-  await seedAutomationActionResults({
+  await withAutomationRuntimeDb(() => seedAutomationActionResults({
     runId,
     device,
     actions: actions.map((action, actionIndex) => ({ actionIndex, actionType: action.type })),
-  });
+  }));
 }
 
 async function sendOnFailureNotifications(
@@ -1886,7 +1895,7 @@ export async function executeDeploySoftwareActions(args: {
       failed = true;
       for (const device of args.devices) {
         failedDeviceIds.add(device.id);
-        await recordAutomationActionDispatch({
+        await recordAutomationRuntimeActionDispatch({
           runId: args.runId,
           deviceId: device.id,
           actionIndex,
@@ -1909,7 +1918,7 @@ export async function executeDeploySoftwareActions(args: {
     const eligibleByOrg = new Map<string, string[]>();
     for (const device of args.devices) {
       if (supportedOs.length > 0 && !supportedOs.includes(device.osType)) {
-        await recordAutomationActionDispatch({
+        await recordAutomationRuntimeActionDispatch({
           runId: args.runId,
           deviceId: device.id,
           actionIndex,
@@ -1926,7 +1935,7 @@ export async function executeDeploySoftwareActions(args: {
       }
       if (await withAutomationRuntimeDb(() =>
         isDeviceSoftwareCurrent(device.id, action.catalogId, info.catalogName, info.version.version))) {
-        await recordAutomationActionDispatch({
+        await recordAutomationRuntimeActionDispatch({
           runId: args.runId,
           deviceId: device.id,
           actionIndex,
@@ -1959,7 +1968,7 @@ export async function executeDeploySoftwareActions(args: {
       }));
       const exactDeviceResults = result.deviceResults ?? [];
       for (const deviceResult of exactDeviceResults) {
-        await recordAutomationActionDispatch({
+        await recordAutomationRuntimeActionDispatch({
           runId: args.runId,
           deviceId: deviceResult.deviceId,
           actionIndex,
@@ -1980,7 +1989,7 @@ export async function executeDeploySoftwareActions(args: {
         for (const id of eligible) {
           if (!exactDeviceResults.some((deviceResult) => deviceResult.deviceId === id)) {
             failedDeviceIds.add(id);
-            await recordAutomationActionDispatch({
+            await recordAutomationRuntimeActionDispatch({
               runId: args.runId,
               deviceId: id,
               actionIndex,
@@ -2109,7 +2118,7 @@ async function executeAutomationActionsInOrder(args: {
         });
         captureException(err);
         for (const device of activeDevices) {
-          await recordAutomationActionDispatch({
+          await recordAutomationRuntimeActionDispatch({
             runId: args.runId,
             deviceId: device.id,
             actionIndex,
@@ -2157,7 +2166,7 @@ async function executeAutomationActionsInOrder(args: {
           actionIndex,
           deviceId: device.id,
         }));
-        await recordAutomationActionDispatch({
+        await recordAutomationRuntimeActionDispatch({
           runId: args.runId,
           deviceId: device.id,
           actionIndex,
@@ -2556,7 +2565,7 @@ async function executeAutomationRunInner(
   }));
 
   await withAutomationRuntimeDb(() => db.update(automationRuns).set({ logs }).where(eq(automationRuns.id, run.id)));
-  await reconcileAutomationRun(run.id);
+  await withAutomationRuntimeDb(() => reconcileAutomationRun(run.id));
   if (deviceRows.length === 0 || normalized.actions.length === 0) {
     await withAutomationRuntimeDb(() => db.update(automationRuns).set({
       status: 'completed',
@@ -2965,7 +2974,7 @@ export async function executeConfigPolicyAutomationRun(
   }));
 
   await withAutomationRuntimeDb(() => db.update(automationRuns).set({ logs }).where(eq(automationRuns.id, run.id)));
-  await reconcileAutomationRun(run.id);
+  await withAutomationRuntimeDb(() => reconcileAutomationRun(run.id));
   if (deviceRows.length === 0 || actions.length === 0) {
     await withAutomationRuntimeDb(() => db.update(automationRuns).set({
       status: 'completed',
