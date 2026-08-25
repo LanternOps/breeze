@@ -1551,21 +1551,31 @@ coreRoutes.post(
       return c.json({ error: 'Only decommissioned devices can be restored' }, 400);
     }
 
-    // Release-THEN-flip, atomically, in that exact order (#3986 task 8 fix
-    // round 1). `isDeviceUninstallDraining` requires `devices.status =
-    // 'decommissioned'`; the instant the status flip lands the device is an
-    // ordinary agent again, and a heartbeat landing in that window would
-    // claim a still-`pending` self_uninstall as an ordinary command — no
-    // type allowlist gates that path — and uninstall the machine the user
-    // just restored. Flipping status first (even briefly, even in the same
-    // transaction) reopens that window the instant Postgres applies the
-    // write, before the release statement runs. Releasing first closes it:
-    // by the time status ever becomes non-decommissioned, the pending
-    // command is already cancelled. Both writes share ONE `db.transaction`
-    // (mirroring `queueDeviceUninstall`'s composition in DELETE
-    // /devices/:id) so a failure after the release can't half-apply: the
-    // device stays decommissioned with the uninstall already released, safe
-    // to retry, instead of the reverse (restored device, live uninstall).
+    // Release-THEN-flip, atomically, inside ONE `db.transaction` (#3986
+    // task 8 fix round 1; mirrors `queueDeviceUninstall`'s composition in
+    // DELETE /devices/:id). THE SAFETY PROPERTY IS THE TRANSACTION, not the
+    // statement order: under READ COMMITTED (the default here, and what
+    // `db.transaction` gives you — a real BEGIN/COMMIT on one connection),
+    // no other session can observe either write until both commit together.
+    // So no concurrent heartbeat can ever see "status flipped, uninstall
+    // still pending" — that combined state never exists as a committed fact
+    // regardless of which statement runs first inside the transaction.
+    //
+    // The race this guards against: `isDeviceUninstallDraining` requires
+    // `devices.status = 'decommissioned'`; once status is anything else the
+    // device is an ordinary agent again, and a heartbeat landing in that
+    // window would claim a still-`pending` self_uninstall as an ordinary
+    // command — no type allowlist gates that path — and uninstall the
+    // machine the user just restored. The transaction is what prevents any
+    // session from ever observing that window.
+    //
+    // Release-before-flip is kept anyway as DELIBERATE SECONDARY DEFENSE:
+    // if a future refactor splits these two writes back into separate
+    // transactions (exactly how this bug was introduced), this order still
+    // leaves the safe failure mode — a failure after the release leaves the
+    // device `decommissioned` with the uninstall already cancelled, so a
+    // retry is harmless — instead of the device-wiping one that flip-first
+    // would leave behind.
     //
     // `releaseDeviceRemoveReason` strips only the `device_remove` reason —
     // a row a tenant-offboarding drain also owns stays alive for that owner

@@ -214,15 +214,24 @@ export async function queueDeviceUninstall(
  * codebase.
  *
  * Takes the CALLER's transaction, mirroring `queueDeviceUninstall`'s `tx`
- * parameter — this is not incidental symmetry. #3986 task 8 fix round 1:
- * the restore route must release this reason and flip `devices.status`
- * atomically, in that order (release BEFORE flip). `isDeviceUninstallDraining`
- * requires `status = 'decommissioned'`; the moment the flip lands the device
- * becomes an ordinary agent again and a heartbeat can claim a still-`pending`
- * self_uninstall as an ordinary command with no type allowlist. Two separate
- * round-trips (flip, then release) leaves that window open even with the
- * safer statement order — only one transaction closes it, so this can no
- * longer open its own.
+ * parameter — this is not incidental symmetry. #3986 task 8 fix round 1: the
+ * restore route runs this release and the `devices.status` flip inside ONE
+ * transaction. THE SAFETY PROPERTY IS THE SHARED TRANSACTION, not which
+ * statement runs first: under READ COMMITTED, no other session can observe
+ * either write until both commit together, so "status flipped, uninstall
+ * still pending" never exists as a committed fact regardless of order. Two
+ * separate round-trips (this used to open its own `db.transaction`) broke
+ * that guarantee — a concurrent session could then observe the flip
+ * committed while the release hadn't happened yet.
+ *
+ * `isDeviceUninstallDraining` requires `status = 'decommissioned'`; once
+ * status is anything else a heartbeat can claim a still-`pending`
+ * self_uninstall as an ordinary command with no type allowlist, so this is
+ * what the shared transaction guards against. The caller additionally
+ * orders its two writes release-before-flip as deliberate secondary
+ * defense: if a future refactor ever splits the transaction back apart,
+ * that order leaves the safe failure mode (device stays decommissioned,
+ * uninstall already cancelled) rather than the device-wiping one.
  */
 export async function releaseDeviceRemoveReason(
   tx: Tx,
