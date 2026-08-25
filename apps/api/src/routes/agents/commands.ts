@@ -29,6 +29,7 @@ import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactResultAgainstCommandSecrets } from '../../services/commandSecretRedaction';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { applyCommandAutomationTerminal } from '../../services/automationTerminalEvidence';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -339,6 +340,7 @@ commandsRoutes.post(
     // should be RARER than the WS twin because the terminal pre-read above
     // usually short-circuits first — which is itself a useful signal.
     let updated: unknown;
+    const terminalCompletedAt = new Date();
     const updatedRows = await runOutsideDbContext(async () => withSystemDbAccessContext(async () =>
       dbWriteExpectingRows(
         'device_commands.rest_result_terminal_cas',
@@ -347,7 +349,7 @@ commandsRoutes.post(
             .update(deviceCommands)
             .set({
               status: normalizedData.status === 'completed' ? 'completed' : 'failed',
-              completedAt: new Date(),
+              completedAt: terminalCompletedAt,
               result: buildStoredCommandResult(command.type, normalizedData, stdout),
               // Credentials ride the payload for some command types (FileVault
               // rotation, and the #3409 script secret envelope); strip them
@@ -379,6 +381,17 @@ commandsRoutes.post(
     if (updatedRows.length === 0) {
       return c.json({ success: true });
     }
+
+    // The guarded command transition is the authority. Reconcile before the
+    // validation-error return so malformed terminal frames cannot strand an
+    // automation action after the command itself became terminal.
+    await applyCommandAutomationTerminal({
+      commandId,
+      result: normalizedData,
+      output: stdout ?? null,
+      error: normalizedData.error ?? normalizedData.stderr ?? null,
+      completedAt: terminalCompletedAt,
+    });
 
     if (validationError) {
       console.warn(`[agents] ${validationError}`);

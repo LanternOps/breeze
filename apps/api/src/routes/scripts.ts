@@ -44,6 +44,7 @@ import {
 import { scriptBundleRoutes } from './scriptBundle';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { applyAutomationActionTerminal } from '../services/automationActionResults';
 export const scriptRoutes = new Hono();
 
 // Helper functions
@@ -1226,12 +1227,23 @@ scriptRoutes.post(
         completedAt: new Date(),
         errorMessage: `Cancelled by user ${auth.user.email}`
       })
-      .where(eq(scriptExecutions.id, executionId))
+      .where(and(
+        eq(scriptExecutions.id, executionId),
+        inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
+      ))
       .returning();
 
     if (!updated) {
-      return c.json({ error: 'Failed to cancel execution' }, 500);
+      return c.json({ error: 'Execution is no longer cancellable' }, 409);
     }
+
+    await applyAutomationActionTerminal({
+      source: 'cancellation',
+      scriptExecutionId: updated.id,
+      terminalStatus: 'cancelled',
+      error: updated.errorMessage ?? null,
+      completedAt: updated.completedAt ?? new Date(),
+    });
 
     // Also cancel any pending device commands for this execution
     await db
