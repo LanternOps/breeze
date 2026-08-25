@@ -165,6 +165,18 @@ export function createWorkerReadinessRegistry(options: {
     notify();
   };
 
+  const recordInitializationFailure = (name: string, error: unknown): void => {
+    const consumer = getExpected(name);
+    const failedAt = timestamp();
+    consumer.state = 'failed';
+    consumer.running = false;
+    consumer.redisConnected = false;
+    consumer.transitionedAt = failedAt;
+    consumer.lastErrorAt = failedAt;
+    consumer.lastErrorCode = sanitizeErrorCode(error);
+    notify();
+  };
+
   return {
     expect(name, required): void {
       createExpected(name, required);
@@ -199,6 +211,21 @@ export function createWorkerReadinessRegistry(options: {
         // an already-instrumented worker cannot become invisible to readiness.
         createExpected(name, true);
       }
+      const runtime = worker as unknown as {
+        client?: Promise<{ status: string }>;
+        isRunning?: () => boolean;
+      };
+      if (
+        !runtime.client
+        || typeof runtime.client.then !== 'function'
+        || typeof runtime.isRunning !== 'function'
+      ) {
+        recordInitializationFailure(
+          name,
+          new TypeError('Worker runtime readiness probes are unavailable'),
+        );
+        return;
+      }
       if (attached.has(name)) {
         throw new Error(`Worker readiness consumer already attached: ${name}`);
       }
@@ -230,11 +257,11 @@ export function createWorkerReadinessRegistry(options: {
       // Listeners are installed before touching the client promise so a ready
       // event racing this initial status check cannot be missed.
       const initialState = getExpected(name).state;
-      void worker.client.then((client) => {
+      void runtime.client.then((client) => {
         if (
           getExpected(name).state === initialState
           && initialState === 'expected'
-          && worker.isRunning()
+          && runtime.isRunning?.()
           && client.status === 'ready'
         ) {
           updateLifecycle(name, 'running', true, true);
@@ -247,15 +274,7 @@ export function createWorkerReadinessRegistry(options: {
     },
 
     recordInitializationFailure(name, error): void {
-      const consumer = getExpected(name);
-      const failedAt = timestamp();
-      consumer.state = 'failed';
-      consumer.running = false;
-      consumer.redisConnected = false;
-      consumer.transitionedAt = failedAt;
-      consumer.lastErrorAt = failedAt;
-      consumer.lastErrorCode = sanitizeErrorCode(error);
-      notify();
+      recordInitializationFailure(name, error);
     },
 
     snapshot(): Readonly<Record<string, ConsumerReadinessState>> {

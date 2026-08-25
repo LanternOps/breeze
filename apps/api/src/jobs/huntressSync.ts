@@ -22,6 +22,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
 import { decryptSecret } from '../services/secretCrypto';
 import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from '../services/huntressConstants';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -1140,6 +1141,7 @@ function isHuntressAuthFailure(error: unknown): boolean {
 
 export async function initializeHuntressSyncJob(): Promise<void> {
   huntressSyncWorker = createHuntressSyncWorker();
+  attachWorkerObservability(huntressSyncWorker, 'huntressSyncWorker');
   huntressSyncWorker.on('error', (error) => {
     console.error('[HuntressSync] Worker error:', error);
     captureException(error);

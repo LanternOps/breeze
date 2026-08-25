@@ -33,6 +33,7 @@ import { createAuditLog } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import { AUTH_EMAIL_QUEUE, type AuthEmailJob } from '../services/authEmailQueue';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -212,6 +213,7 @@ export function initializeAuthEmailWorker(): void {
         concurrency: 5,
       },
     );
+  attachWorkerObservability(authEmailWorker, 'authEmailWorker');
 
     authEmailWorker.on('error', (error) => {
       console.error('[auth-email] Worker error:', error);

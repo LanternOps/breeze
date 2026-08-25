@@ -59,6 +59,7 @@ import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'audit-chain-verify';
 const JOB_NAME = 'audit-chain-verify';
@@ -310,6 +311,7 @@ export function createAuditChainVerifyWorker(): Worker {
       concurrency: 1,
     },
   );
+  attachWorkerObservability(verifyWorker, 'auditChainVerify');
   return verifyWorker;
 }
 

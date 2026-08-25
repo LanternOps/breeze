@@ -21,6 +21,7 @@ import {
 import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
 import { scheduleSoftwareRemediation } from './softwareRemediationWorker';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -543,6 +544,7 @@ async function scheduleComplianceScan(): Promise<void> {
 
 export async function initializeSoftwareComplianceWorker(): Promise<void> {
   softwareComplianceWorker = createSoftwareComplianceWorker();
+  attachWorkerObservability(softwareComplianceWorker, 'softwareComplianceWorker');
 
   softwareComplianceWorker.on('error', (error) => {
     console.error('[SoftwareComplianceWorker] Worker error', { error });

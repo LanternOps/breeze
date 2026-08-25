@@ -66,6 +66,7 @@ import { captureException } from '../services/sentry';
 import { hasNoLiveUnexhaustedBootstrapToken } from '../services/enrollmentKeyPurgeGuards';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'enrollment-key-cleanup';
 const JOB_NAME = 'enrollment-key-cleanup';
@@ -192,6 +193,7 @@ export async function scheduleEnrollmentKeyCleanup(
 export async function initializeEnrollmentKeyCleanupWorker(): Promise<void> {
   try {
     cleanupWorker = createEnrollmentKeyCleanupWorker();
+  attachWorkerObservability(cleanupWorker, 'enrollmentKeyCleanup');
 
     cleanupWorker.on('error', (error) => {
       console.error('[EnrollmentKeyCleanup] Worker error:', error);

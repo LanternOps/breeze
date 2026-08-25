@@ -7,6 +7,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
 import { syncSftpPriceFile } from '../services/tdSynnexSftpSync';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const TDS_SFTP_QUEUE = 'td-synnex-sftp-sync';
 /**
@@ -140,6 +141,7 @@ export async function scheduleTdSynnexSftpJobs(): Promise<void> {
 export async function initializeTdSynnexSftpWorkers(): Promise<void> {
   try {
     sftpWorker = createTdSynnexSftpWorker();
+  attachWorkerObservability(sftpWorker, 'tdSynnexSftpSyncWorker');
     sftpWorker.on('error', (error) => {
       console.error('[TdSynnexSftpWorker] Worker error:', error);
       captureException(error);

@@ -8,6 +8,7 @@ import { evaluateAuditBaselineDrift } from '../services/auditBaselineService';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -152,6 +153,7 @@ async function scheduleRecurringJobs(): Promise<void> {
 
 export async function initializeAuditBaselineJobs(): Promise<void> {
   auditBaselineWorker = createAuditBaselineWorker();
+  attachWorkerObservability(auditBaselineWorker, 'auditBaselineJobs');
 
   auditBaselineWorker.on('error', (error) => {
     console.error('[AuditBaselineJobs] Worker error:', error);

@@ -7,6 +7,7 @@ import { aiToolExecutions } from '../db/schema/ai';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Reaps `approval_requests` rows whose `expires_at` is in the past while still
@@ -238,6 +239,7 @@ export async function initializeApprovalExpiryReaper(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'approvalExpiryReaper');
   reaperWorker.on('error', (error) => {
     console.error('[ApprovalExpiryReaper] Worker error:', error);
     captureException(error);

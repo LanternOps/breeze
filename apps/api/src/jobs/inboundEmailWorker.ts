@@ -26,6 +26,7 @@ import {
   type InboundEmailQueueJob,
 } from '../services/inboundEmailQueue';
 import { processInboundEmail } from '../services/inboundEmail/inboundEmailService';
+import { attachWorkerObservability } from './workerObservability';
 
 let worker: Worker<InboundEmailQueueJob> | null = null;
 
@@ -51,6 +52,7 @@ export function initializeInboundEmailWorker(): Promise<void> {
     (job: Job<InboundEmailQueueJob>) => handleInboundEmail(job),
     { connection: getBullMQConnection(), concurrency: 5 }
   );
+  attachWorkerObservability(worker, 'inboundEmailWorker');
 
   worker.on('error', (error) => {
     console.error('[InboundEmail] Worker error:', error);

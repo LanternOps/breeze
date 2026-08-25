@@ -30,6 +30,7 @@ import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { attachWorkerObservability } from './workerObservability';
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
 // Per-run cap (env-tunable). Was a hardcoded 200 which silently truncated the
@@ -1069,6 +1070,7 @@ export async function initializeStaleCommandReaper(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'staleCommandReaper');
   reaperWorker.on('error', (error) => {
     console.error('[StaleCommandReaper] Worker error:', error);
     captureException(error);

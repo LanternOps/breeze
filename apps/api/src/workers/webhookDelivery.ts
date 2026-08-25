@@ -1,4 +1,6 @@
 import { createHmac, randomUUID } from 'crypto';
+import { EventEmitter } from 'node:events';
+import type { Worker } from 'bullmq';
 import { createBlockingRedisConnection, getRedisConnection } from '../services/redis';
 import type Redis from 'ioredis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
@@ -6,6 +8,7 @@ import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { sanitizeOutboundHeaders } from '../services/outboundHeaders';
 import * as dbModule from '../db';
+import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -213,8 +216,8 @@ function calculateRetryDelay(
 /**
  * WebhookDeliveryWorker - Processes webhook delivery jobs from Redis
  */
-class WebhookDeliveryWorker {
-  private isRunning = false;
+class WebhookDeliveryWorker extends EventEmitter {
+  private running = false;
   private onDeliveryComplete?: (result: WebhookDeliveryResult) => Promise<void>;
   /**
    * Dedicated connection for the `BRPOP` in `processNextJob` — see
@@ -223,6 +226,14 @@ class WebhookDeliveryWorker {
    * would churn a TCP connect + AUTH every 5 seconds forever.
    */
   private blockingRedis: Redis | null = null;
+
+  get client(): Promise<Redis> {
+    return Promise.resolve(this.getBlockingRedis());
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
 
   private getBlockingRedis(): Redis {
     if (!this.blockingRedis || this.blockingRedis.status === 'end') {
@@ -266,21 +277,25 @@ class WebhookDeliveryWorker {
    * Start processing webhook deliveries
    */
   async start(): Promise<void> {
-    if (this.isRunning) return;
-    this.isRunning = true;
+    if (this.running) return;
+    this.running = true;
+    this.emit('ready');
 
     console.log('[WebhookWorker] Starting webhook delivery worker');
 
-    while (this.isRunning) {
+    while (this.running) {
       await this.processNextJob();
     }
+    this.emit('closed');
   }
 
   /**
    * Stop the worker
    */
   stop(): void {
-    this.isRunning = false;
+    if (!this.running) return;
+    this.emit('closing');
+    this.running = false;
     console.log('[WebhookWorker] Stopping webhook delivery worker');
   }
 
@@ -298,6 +313,9 @@ class WebhookDeliveryWorker {
       // up to the full 5s block. Non-blocking commands below stay on the
       // shared connection.
       const result = await this.getBlockingRedis().brpop(WEBHOOK_QUEUE, 5);
+      // A successful blocking read (including a timeout with no job) proves
+      // the consumer connection recovered after any earlier disconnect.
+      this.emit('ready');
 
       if (!result) return; // Timeout, no jobs
 
@@ -355,6 +373,13 @@ class WebhookDeliveryWorker {
       await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(retryJob));
 
     } catch (err) {
+      if (this.blockingRedis?.status === 'ready') {
+        // Delivery/callback failures are job-level failures; the loop remains
+        // runnable and will take the next item.
+        this.emit('failed', undefined, err);
+      } else {
+        this.emit('error', err);
+      }
       console.error('[WebhookWorker] Error processing job:', err);
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
@@ -411,6 +436,10 @@ let workerInstance: WebhookDeliveryWorker | null = null;
 export function getWebhookWorker(): WebhookDeliveryWorker {
   if (!workerInstance) {
     workerInstance = new WebhookDeliveryWorker();
+    workerReadinessRegistry.attach(
+      'webhookDeliveryWorker',
+      workerInstance as unknown as Worker,
+    );
   }
   return workerInstance;
 }

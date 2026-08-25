@@ -13,6 +13,7 @@ import { and, eq, lt, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -113,6 +114,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export async function initializePlaybookRetention(): Promise<void> {
   try {
     retentionWorker = createPlaybookRetentionWorker();
+  attachWorkerObservability(retentionWorker, 'playbookRetention');
 
     retentionWorker.on('error', (error) => {
       console.error('[PlaybookRetention] Worker error:', error);

@@ -192,6 +192,12 @@ import {
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
+import { abuseSignalsEnabled } from './config/env';
+import { workerReadinessRegistry } from './services/workerReadinessRegistry';
+import {
+  declareExpectedConsumers,
+  initializeDeclaredWorkerGroup,
+} from './jobs/workerReadinessManifest';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -475,7 +481,14 @@ const readiness = createReadinessEvaluator({
 
     return computeWorkersHealthy({
       phase: workerInitPhase,
-      workerStatus,
+      workerStatus: Object.fromEntries(
+        Object.values(workerReadinessRegistry.snapshot())
+          .filter((consumer) => consumer.required)
+          .map((consumer) => [
+            consumer.name,
+            consumer.state === 'running' && consumer.running && consumer.redisConnected,
+          ]),
+      ),
       redisOk,
       shuttingDown: shutdownInProgress
     });
@@ -1247,12 +1260,6 @@ app.onError((err, c) => {
 const port = parseInt(process.env.API_PORT || '3001', 10);
 
 // Initialize background workers (only if Redis is available)
-const workerStatus: Record<string, boolean> = {};
-// `areWorkersHealthy()` used to be exported here. It had no callers repo-wide
-// and, now that readiness is evaluated live, a second copy of the worker-health
-// rule could only drift from what `/ready` reports. Use `readiness.get()`.
-export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
-
 let server: ReturnType<typeof serve> | null = null;
 let shutdownInProgress = false;
 let auditRetryInterval: NodeJS.Timeout | null = null;
@@ -1405,7 +1412,14 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
 }
 
 async function initializeWorkers(): Promise<void> {
-  if (!startupChecks.redisOk || !isRedisAvailable()) {
+  const redisAvailable = startupChecks.redisOk && isRedisAvailable();
+  declareExpectedConsumers({
+    redisAvailable,
+    abuseSignalsEnabled: abuseSignalsEnabled(),
+    registry: workerReadinessRegistry,
+  });
+
+  if (!redisAvailable) {
     console.warn('[WARN] Redis not available - background workers disabled');
     workerInitPhase = 'skipped-no-redis';
     readiness.invalidate();
@@ -1533,13 +1547,16 @@ async function initializeWorkers(): Promise<void> {
     ['contractWorker', initializeContractWorkers],
   ];
 
+  const failed: string[] = [];
   await Promise.allSettled(
     workers.map(async ([name, init]) => {
-      try {
-        await init();
-        workerStatus[name] = true;
-      } catch (error) {
-        workerStatus[name] = false;
+      const error = await initializeDeclaredWorkerGroup({
+        initializer: name,
+        initialize: init,
+        registry: workerReadinessRegistry,
+      });
+      if (error !== null) {
+        failed.push(name);
         console.error(`[CRITICAL] Failed to initialize ${name}:`, error);
         // A failed worker now pins /ready to not-ready for the process
         // lifetime (previously the boot race often hid it), so the reason has
@@ -1551,7 +1568,6 @@ async function initializeWorkers(): Promise<void> {
     })
   );
 
-  const failed = Object.entries(workerStatus).filter(([, ok]) => !ok).map(([n]) => n);
   workerInitPhase = 'started';
   // Drop any snapshot taken during the boot race so the next probe sees the
   // real outcome immediately instead of waiting out the TTL.

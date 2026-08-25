@@ -12,6 +12,7 @@ import { captureException } from '../services/sentry';
 import { compareBaselineScan, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { enqueueDiscoveryScan, type DiscoveredHostResult } from './discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -399,6 +400,7 @@ export async function enqueueBaselineComparison(
 
 export async function initializeNetworkBaselineWorker(): Promise<void> {
   networkBaselineWorkerInstance = createNetworkBaselineWorker();
+  attachWorkerObservability(networkBaselineWorkerInstance, 'networkBaselineWorker');
 
   networkBaselineWorkerInstance.on('error', (error) => {
     console.error('[NetworkBaselineWorker] Worker error:', error);

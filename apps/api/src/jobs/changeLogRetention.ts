@@ -12,6 +12,7 @@ import { lt } from 'drizzle-orm';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -77,6 +78,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export async function initializeChangeLogRetention(): Promise<void> {
   try {
     retentionWorker = createChangeLogRetentionWorker();
+  attachWorkerObservability(retentionWorker, 'changeLogRetention');
 
     retentionWorker.on('error', (error) => {
       console.error('[ChangeLogRetention] Worker error:', error);
@@ -125,4 +127,3 @@ export async function shutdownChangeLogRetention(): Promise<void> {
     retentionQueue = null;
   }
 }
-

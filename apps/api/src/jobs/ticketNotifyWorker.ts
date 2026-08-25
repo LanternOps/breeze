@@ -39,6 +39,7 @@ import type { TicketTemplateVars } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 
@@ -439,6 +440,7 @@ export function initializeTicketNotifyWorker(): Promise<void> {
     async (job: Job<TicketEvent>) => handleTicketEvent(job.data),
     { connection: getBullMQConnection(), concurrency: 5 }
   );
+  attachWorkerObservability(worker, 'ticketNotifyWorker');
 
   worker.on('error', (error) => {
     console.error('[TicketNotify] Worker error:', error);

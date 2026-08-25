@@ -178,6 +178,21 @@ describe('createWorkerReadinessRegistry', () => {
       .toThrow(/duplicateWorker/);
   });
 
+  it('fails closed without throwing when a Worker-shaped test double lacks runtime probes', () => {
+    const registry = createWorkerReadinessRegistry();
+    const worker = new EventEmitter() as unknown as Worker;
+    registry.expect('incompleteWorker', true);
+
+    expect(() => registry.attach('incompleteWorker', worker)).not.toThrow();
+    expect(registry.snapshot().incompleteWorker).toMatchObject({
+      state: 'failed',
+      running: false,
+      redisConnected: false,
+      lastErrorCode: 'TypeError',
+    });
+    expect(registry.requiredConsumersRunnable()).toBe(false);
+  });
+
   it('sanitizes invalid worker and job error names', () => {
     const registry = createWorkerReadinessRegistry();
     const { emitter, worker } = makeFakeWorker();

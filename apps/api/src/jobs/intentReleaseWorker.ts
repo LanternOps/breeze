@@ -38,6 +38,7 @@ import {
   MAX_RESULT_BYTES,
   type SecretToolResult,
 } from '../services/actionIntents/secretBearingTools';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Durable release worker (spec
@@ -927,6 +928,7 @@ export async function initializeIntentReleaseWorker(): Promise<void> {
   if (releaseWorker) return;
 
   releaseWorker = createWorker();
+  attachWorkerObservability(releaseWorker, 'intentReleaseWorker');
   releaseWorker.on('error', (error) => {
     console.error('[IntentReleaseWorker] Worker error:', error);
     captureException(error);

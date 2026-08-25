@@ -45,6 +45,7 @@ import {
   PartnerStripeError,
 } from '../services/partnerStripe';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'stripe-account-cache-refresh';
 const JOB_NAME = 'stripe-account-cache-refresh';
@@ -192,6 +193,7 @@ export async function scheduleStripeAccountCacheRefresh(queue: Queue = getStripe
 export async function initializeStripeAccountCacheRefreshWorker(): Promise<void> {
   try {
     refreshWorker = createStripeAccountCacheRefreshWorker();
+  attachWorkerObservability(refreshWorker, 'stripeAccountCacheRefresh');
 
     refreshWorker.on('error', (error) => {
       console.error('[StripeAccountCacheRefresh] Worker error:', error);

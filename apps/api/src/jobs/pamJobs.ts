@@ -25,6 +25,7 @@ import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { envInt } from '../utils/envInt';
+import { attachWorkerObservability } from './workerObservability';
 
 const ENFORCER_QUEUE = 'pam-elevation-expiry-enforcer';
 const ENFORCER_INTERVAL_MS = 60 * 1000; // every 60s
@@ -251,6 +252,7 @@ export async function initializePamJobs(): Promise<void> {
     },
     { connection: getBullMQConnection(), concurrency: 1 },
   );
+  attachWorkerObservability(enforcerWorker, 'pamExpiryEnforcerWorker');
   wireWorkerLogging(enforcerWorker, 'expiry-enforcer');
 
   staleWorker = new Worker<PamJobData>(
@@ -264,6 +266,7 @@ export async function initializePamJobs(): Promise<void> {
     },
     { connection: getBullMQConnection(), concurrency: 1 },
   );
+  attachWorkerObservability(staleWorker, 'pamStaleRequestWorker');
   wireWorkerLogging(staleWorker, 'stale-expirer');
 
   try {
