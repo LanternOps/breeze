@@ -492,6 +492,9 @@
         "days": "Jours",
         "weeks": "semaines",
         "months": "Mois"
+      },
+      "enumOverrides": {
+        "decommissioned": "Retiré"
       }
     }
   },
@@ -2009,7 +2012,7 @@
         "skipReasons": {
           "siteDenied": "Site auquel vous n'avez pas accès",
           "notMember": "N'est plus visé par ce constat",
-          "decommissioned": "Appareil mis hors service",
+          "decommissioned": "L’appareil est retiré",
           "timeout": "Expiré après 30 minutes",
           "dispatchEnqueueFailed": "Jamais envoyé — la mise en file d'attente a échoué"
         },

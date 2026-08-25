@@ -104,7 +104,7 @@ describe('PossibleReplacementBanner (#2764)', () => {
     expect(within(dialog).getByText(/OLD-LAPTOP-01/)).toBeInTheDocument();
     // The confirm button carries DeviceActions' own label, not a paraphrase.
     expect(screen.getByTestId('possible-replacement-confirm')).toHaveTextContent(
-      'Decommission',
+      'Remove',
     );
     // Only the initial summary GET — no DELETE has gone out.
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);

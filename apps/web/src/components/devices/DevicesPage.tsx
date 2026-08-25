@@ -939,13 +939,20 @@ export default function DevicesPage() {
       return;
     }
 
-    // Decommissioned gate (#2465). Agent commands are QUEUED, not delivered
-    // live: the API refuses exactly one status — `decommissioned` — and any
-    // other device (offline included) has its command stored `pending` and run
-    // on its next check-in. So gate on `decommissioned` ONLY. Filtering to
-    // `status === 'online'` here would look like the obvious fix and would in
-    // fact discard commands the backend would have honoured — see the verified
-    // API contract in bulkActionGating.ts before "tightening" this.
+    // Decommissioned gate (#2465). For the agent-command actions in this Set,
+    // commands are QUEUED, not delivered live: the API refuses exactly one
+    // status — `decommissioned` — and any other device (offline included) has
+    // its command stored `pending` and run on its next check-in. So gate on
+    // `decommissioned` ONLY. Filtering to `status === 'online'` here would look
+    // like the obvious fix and would in fact discard commands the backend
+    // would have honoured — see the verified API contract in
+    // bulkActionGating.ts before "tightening" this.
+    //
+    // `decommission` (bulk Remove) is ALSO in this Set, but not for a queued-
+    // command reason — it dispatches an immediate `DELETE`, not an agent
+    // command. It is gated here to skip devices that are already removed, so
+    // they don't 400 the batch. See the full explanation on
+    // DECOMMISSION_BLOCKED_BULK_ACTIONS in bulkActionGating.ts.
     //
     // Decommissioned rows are hidden by default, but a status filter that
     // includes them (or the #2251 "show" hint) puts them back in reach of a
@@ -977,9 +984,12 @@ export default function DevicesPage() {
 
   // Executes a bulk action against an already-vetted device set (network rows
   // dropped, decommissioned targets filtered + confirmed). Offline devices are
-  // deliberately still IN this set — their command queues and runs on reconnect.
-  // Entered either directly from handleBulkAction (nothing to skip) or from the
-  // decommissioned-skip confirm.
+  // deliberately still IN this set: for the queued agent-command actions, an
+  // offline device's command queues and runs on reconnect; for bulk Remove
+  // (`decommission`), an offline device is removed immediately (`DELETE`, not
+  // a queued command) — see DECOMMISSION_BLOCKED_BULK_ACTIONS in
+  // bulkActionGating.ts. Entered either directly from handleBulkAction
+  // (nothing to skip) or from the decommissioned-skip confirm.
   const runBulkAction = async (action: string, selectedDevices: Device[]) => {
     if (actionInProgress || selectedDevices.length === 0) return;
 
@@ -1106,11 +1116,28 @@ export default function DevicesPage() {
         }
 
         case 'decommission': {
-          const result = await bulkDecommissionDevices(deviceIds);
-          if (result.failed === 0) {
+          const result = await bulkDecommissionDevices(
+            selectedDevices.map(d => ({ id: d.id, hostname: d.hostname })),
+          );
+          if (result.failed.length === 0) {
             showToast({ type: 'success', message: t('devicesPage.toasts.bulkDecommissioned', { count: result.succeeded }) });
+          } else if (result.succeeded === 0) {
+            showToast({
+              type: 'error',
+              message: t('devicesPage.toasts.bulkDecommissionAllFailed', {
+                count: result.failed.length,
+                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+              }),
+            });
           } else {
-            showToast({ type: 'error', message: t('devicesPage.toasts.bulkDecommissionFailed', { succeeded: result.succeeded, failed: result.failed }) });
+            showToast({
+              type: 'error',
+              message: t('devicesPage.toasts.bulkDecommissionFailed', {
+                succeeded: result.succeeded,
+                failed: result.failed.length,
+                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+              }),
+            });
           }
           await fetchDevices();
           break;
@@ -1431,7 +1458,11 @@ export default function DevicesPage() {
       {/* Decommissioned-skip confirm (#2465): the selection contained retired,
           agent-less devices, which the API refuses. Name the count being dropped
           and make the user own the reduced batch. Offline devices are NOT
-          dropped — their command queues and runs when they reconnect. */}
+          dropped: for the queued agent-command actions their command queues
+          and runs when they reconnect; for bulk Remove (`decommission`) an
+          offline device is removed immediately (an immediate `DELETE`, not a
+          queued command) — see DECOMMISSION_BLOCKED_BULK_ACTIONS in
+          bulkActionGating.ts. */}
       {pendingDecommissionedSkip && (
         <ConfirmDialog
           open={true}

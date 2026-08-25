@@ -492,6 +492,9 @@
         "days": "gün",
         "weeks": "hafta",
         "months": "ay"
+      },
+      "enumOverrides": {
+        "decommissioned": "Çıkarıldı"
       }
     }
   },
@@ -2009,7 +2012,7 @@
         "skipReasons": {
           "siteDenied": "Siteye erişilemiyor",
           "notMember": "Artık bu bulgudan etkilenmiyor",
-          "decommissioned": "Cihaz kullanımdan kaldırıldı",
+          "decommissioned": "Cihaz çıkarıldı",
           "timeout": "30 dakika sonra zaman aşımına uğradı",
           "dispatchEnqueueFailed": "Hiçbir zaman gönderilmedi — sıraya alma işlemi başarısız oldu"
         },
