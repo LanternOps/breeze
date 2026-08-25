@@ -83,6 +83,97 @@ describe('FileManager downloads', () => {
     // Cancelled rows swap the cancel button for a dismiss affordance.
     expect(screen.getByTitle('Dismiss')).toBeInTheDocument();
   });
+
+  describe('over-cap pre-flight', () => {
+    // The agent refuses any file_read over 1MB. The listing already knows each
+    // entry's size, so these assert the UI never spends a doomed round trip —
+    // and, just as importantly, that it never blocks a transfer the agent WOULD
+    // have served.
+    const OVER_CAP = 2 * 1024 * 1024;
+    const AT_CAP = 1024 * 1024;
+
+    function renderWithEntry(entry: Record<string, unknown>) {
+      mockFetchWithAuth.mockImplementation((url: string) => {
+        if (url.includes('/download?')) {
+          return Promise.resolve({
+            ok: true,
+            blob: async () => new Blob(['x']),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ data: [entry] }),
+        });
+      });
+
+      return render(
+        <FileManager
+          deviceId="device-1"
+          deviceHostname="workstation-1"
+          initialPath="/"
+        />
+      );
+    }
+
+    function downloadUrlCalls() {
+      return mockFetchWithAuth.mock.calls.filter(
+        ([url]) => typeof url === 'string' && url.includes('/download?')
+      );
+    }
+
+    it('refuses an over-cap download with the real numbers and never calls the API', async () => {
+      renderWithEntry({ name: 'manual.pdf', path: '/manual.pdf', type: 'file', size: OVER_CAP });
+
+      await screen.findByText('manual.pdf');
+      fireEvent.click(screen.getByTitle('Download'));
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Too large to download (2.0 MB). The file browser transfers files up to 1.0 MB.')
+        ).toBeInTheDocument();
+      });
+      // The point of the guard: no round trip at all.
+      expect(downloadUrlCalls()).toHaveLength(0);
+      // And it must not be reported as the old generic failure.
+      expect(screen.queryByText('Failed to download')).not.toBeInTheDocument();
+    });
+
+    it('allows a file exactly at the cap through — the agent rejects only what exceeds it', async () => {
+      renderWithEntry({ name: 'atcap.bin', path: '/atcap.bin', type: 'file', size: AT_CAP });
+
+      await screen.findByText('atcap.bin');
+      fireEvent.click(screen.getByTitle('Download'));
+
+      await waitFor(() => expect(downloadUrlCalls()).toHaveLength(1));
+    });
+
+    it('lets a macOS alias through even when the alias file itself looks over-cap', async () => {
+      // `size` describes the alias, not the target the agent resolves and reads,
+      // so the client cannot judge it — fail open and let the agent decide.
+      renderWithEntry({
+        name: 'shortcut',
+        path: '/shortcut',
+        type: 'file',
+        size: OVER_CAP,
+        isAlias: true,
+        aliasTarget: '/elsewhere/real.pdf',
+      });
+
+      await screen.findByText('shortcut');
+      fireEvent.click(screen.getByTitle('Download'));
+
+      await waitFor(() => expect(downloadUrlCalls()).toHaveLength(1));
+    });
+
+    it('lets an entry with no reported size through rather than guessing', async () => {
+      renderWithEntry({ name: 'unsized.bin', path: '/unsized.bin', type: 'file' });
+
+      await screen.findByText('unsized.bin');
+      fireEvent.click(screen.getByTitle('Download'));
+
+      await waitFor(() => expect(downloadUrlCalls()).toHaveLength(1));
+    });
+  });
 });
 
 describe('FileManager uploads', () => {

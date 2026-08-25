@@ -133,7 +133,9 @@ servicesRoutes.get(
       });
     } catch (parseError) {
       console.error('Failed to parse agent response for service listing:', parseError);
-      return c.json({ error: 'Failed to parse agent response for service listing' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for service listing', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -169,12 +171,16 @@ servicesRoutes.get(
       const payload = JSON.parse(result.stdout || '{}');
       const service = mapServiceFromAgent(payload);
       if (!service) {
-        return c.json({ error: 'Invalid service payload from agent' }, 502);
+        // 500, not 502: Cloudflare replaces an origin 502 body with its own
+        // branded page, blanking this message on hosted deployments.
+        return c.json({ error: 'Invalid service payload from agent', code: 'invalid_agent_response' }, 500);
       }
       return c.json({ data: service });
     } catch (error) {
       console.error('Failed to parse agent response for service details:', error);
-      return c.json({ error: 'Failed to parse agent response for service details' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for service details', code: 'invalid_agent_response' }, 500);
     }
   }
 );
