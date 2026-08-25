@@ -420,11 +420,66 @@ describe('abortOrganizationOffboarding', () => {
     expect(invalidateAgentTenantCache).not.toHaveBeenCalled();
   });
 
-  it('a device-remove-owned row survives a tenant abort with its reason intact (co-owned row keeps the surviving owner)', async () => {
+  // Fix round 2 (HIGH): the abort path's tenantOwned predicate (gating the
+  // strip UPDATE that decides both cancellation and survival) previously had
+  // NO structural test coverage anywhere — every test above scripts the
+  // MOCK's return value directly, so flipping the real `or(...)` to `and(...)`
+  // in tenantOffboarding.ts, or swapping the arrayContains literal to
+  // 'device_remove', would leave every single one of them green. This test
+  // asserts the COMPILED where clause structurally, the same technique
+  // already used for the finalize path's `outstanding` query and for
+  // `countOutstandingUninstalls` — proving `or`, not `and`, and proving the
+  // 'device_remove' literal never appears in this predicate.
+  it('the strip UPDATE compiles a tenant-owned predicate (own reason OR legacy NULL), never device_remove', async () => {
+    updateReturningQueue.push([{ id: 'org-1' }]); // stamp-clear finds a stamp
+    queueSelect([{ id: 'd1' }]); // devices in org
+    updateReturningQueue.push([]); // strip: nothing matched (see next test)
+
+    await abortOrganizationOffboarding('org-1');
+
+    const [strip] = updatesFor(deviceCommands);
+    const whereJson = JSON.stringify(strip!.where);
+    expect(whereJson).toContain('self_uninstall');
+    expect(whereJson).toContain('"or"');
+    expect(whereJson).toContain('"isNull":"deviceCommands.uninstallReasons"');
+    expect(whereJson).toContain('"arrayContains":["deviceCommands.uninstallReasons"');
+    expect(whereJson).toContain('tenant_offboarding');
+    // The literal that would sweep a device-remove-only row into an
+    // unrelated org's abort must never appear in this predicate.
+    expect(whereJson).not.toContain('device_remove');
+  });
+
+  // Property 1 (structural exclusion), distinct from the co-owned-survival
+  // test below (property 3): a PURE device-remove-only row (no tenant
+  // reason, not NULL) must never even MATCH the strip's WHERE — it should be
+  // as if the row doesn't exist to this function at all. A row the real
+  // predicate excludes is one the mocked strip UPDATE's RETURNING would find
+  // zero of, so this proves the "nothing to cancel, nothing touched" outcome
+  // that structural exclusion produces — the finalize path has the
+  // equivalent test ("a device-remove-only row is structurally excluded").
+  it('a pure device-remove-only row is structurally excluded from the abort strip (no match, no write, no cancel)', async () => {
+    updateReturningQueue.push([{ id: 'org-1' }]); // stamp-clear finds a stamp
+    queueSelect([{ id: 'd1' }]); // devices in org
+    // The real WHERE (own reason OR NULL) would never match a
+    // ['device_remove']-only row, so RETURNING finds nothing.
+    updateReturningQueue.push([]);
+
+    const result = await abortOrganizationOffboarding('org-1');
+
+    expect(result).toEqual({ aborted: true, uninstallsCancelled: 0 });
+    // Only the strip UPDATE ran (it always fires, scoped by the org's device
+    // ids) — it just matched zero rows, so no cancel step and no row's
+    // reason/deadline were ever touched.
+    expect(updatesFor(deviceCommands)).toHaveLength(1);
+  });
+
+  it('a device-remove-owned row survives a tenant abort with its reason intact (co-owned row keeps the surviving owner — property 3, distinct from structural exclusion above)', async () => {
     updateReturningQueue.push([{ id: 'org-1' }]); // stamp-clear finds a stamp
     queueSelect([{ id: 'd1' }]); // devices in org
     // strip step: array_remove('tenant_offboarding') leaves 'device_remove'
-    // behind — the row is retained, not cancelled.
+    // behind — the row is retained, not cancelled. This row DID match the
+    // WHERE (it carried the tenant reason too, before the strip removed it)
+    // — unlike the pure-exclusion test above, which never matches at all.
     updateReturningQueue.push([{ id: 'cmd-1', uninstallReasons: ['device_remove'] }]);
 
     const result = await abortOrganizationOffboarding('org-1');

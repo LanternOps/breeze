@@ -394,7 +394,21 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
       result: { reason },
       ...terminalPayloadErasureSet(),
     })
-    .where(inArray(deviceCommands.id, toCancelIds))
+    // Re-check status IN (pending, sent), matching the strip step above and
+    // collectAndCancelOutstanding's cancel step below — defense-in-depth
+    // symmetry. Not currently exploitable (the strip and this cancel run
+    // sequentially with no intervening await into caller code, and every
+    // caller of this function holds the tenant row lock through commit), but
+    // this file already documents two prior incidents (#2877, #3996) that
+    // were exactly "a row's state moved between two writes that used to be
+    // one." A future refactor that splits strip/cancel apart for batching
+    // must not silently reopen that class of bug on this path only.
+    .where(
+      and(
+        inArray(deviceCommands.id, toCancelIds),
+        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+      )
+    )
     .returning({ id: deviceCommands.id });
   return cancelled.length;
 }
@@ -493,8 +507,7 @@ async function countOutstandingUninstalls(orgIds: string[]): Promise<number> {
  * Collect the drain outcome for the report, then cancel whatever is left with
  * an explicit result — the "never drained" signal the old flow lacked (#2774:
  * silently-expired commands looked like a cleaned fleet).
- */
-/**
+ *
  * Cancel only rows this service OWNS — its own reason, or a legacy NULL row
  * (same compatibility predicate as `countOutstandingUninstalls` and
  * `cancelDrainUninstallsForOrgIds` above: `array_remove(NULL, x)` is NULL in
@@ -525,11 +538,20 @@ async function countOutstandingUninstalls(orgIds: string[]): Promise<number> {
  * a device_remove-only row was never tenant offboarding's to report on, and
  * a co-owned row surviving the strip is still correctly reported as "this
  * tenant's own drain did not confirm it," even though the row itself lives
- * on for its other owner. The strip/cancel step below re-scopes by `id IN
- * (...)` against the exact ids this same tenant-owned select already
- * captured, rather than re-deriving the org/device scope — mirrors the
- * id-list pattern `cancelDrainUninstallsForOrgIds` uses for its own cancel
- * step, and sidesteps drizzle's single-`.where()`-per-statement limitation
+ * on for its other owner.
+ *
+ * Fix round 2: the terminal counts (`uninstallsCompleted`/`uninstallsFailed`)
+ * are ALSO scoped to `tenantOwned` now — they used to count any
+ * completed/failed self_uninstall on a device in the org, with no reason
+ * filter, inflating the permanent audit record with work this drain never
+ * owned (e.g. an abuse-suspension's unrelated, unmerged NULL-reason insert
+ * completing during the same window). See the comment at that query.
+ *
+ * The strip/cancel step below re-scopes by `id IN (...)` against the exact
+ * ids this same tenant-owned select already captured, rather than
+ * re-deriving the org/device scope — mirrors the id-list pattern
+ * `cancelDrainUninstallsForOrgIds` uses for its own cancel step, and
+ * sidesteps drizzle's single-`.where()`-per-statement limitation
  * (an UPDATE can't independently AND a devices join here without a second
  * subquery round-trip).
  */
@@ -550,6 +572,23 @@ async function collectAndCancelOutstanding(
     return { uninstallsCompleted: 0, uninstallsFailed: 0, neverDelivered: [], deliveredUnconfirmed: [] };
   }
 
+  // Fix round 2 (MEDIUM): scoped to tenant-owned rows, same as `outstanding`
+  // below — this used to count ANY completed/failed self_uninstall on a
+  // device in the org created after drainStartedAt, with no reason filter.
+  // Concretely: org X is offboarding; its partner is separately
+  // abuse-suspended (which inserts a fresh NULL-reason row per device
+  // unconditionally, no merge check) after drainStartedAt; that row
+  // completes and would have inflated tenant offboarding's PERMANENT AUDIT
+  // RECORD for work it never owned. Same predicate, same NULL-compatibility
+  // tradeoff as everywhere else in this file (cancelDrainUninstallsForOrgIds'
+  // doc comment above): a NULL row is legacy-tenant-owned by default, so an
+  // abuse-queued NULL row completing can still inflate this count — that is
+  // the SAME already-accepted tradeoff, not a new one; not re-litigated here.
+  const tenantOwned = or(
+    isNull(deviceCommands.uninstallReasons),
+    arrayContains(deviceCommands.uninstallReasons, [UNINSTALL_REASON_TENANT_OFFBOARDING])
+  );
+
   const terminalRows = await db
     .select({ status: deviceCommands.status })
     .from(deviceCommands)
@@ -559,16 +598,12 @@ async function collectAndCancelOutstanding(
         inArray(devices.orgId, orgIds),
         eq(deviceCommands.type, 'self_uninstall'),
         inArray(deviceCommands.status, ['completed', 'failed']),
+        tenantOwned,
         ...(drainStartedAt ? [gte(deviceCommands.createdAt, drainStartedAt)] : [])
       )
     );
   const uninstallsCompleted = terminalRows.filter((row) => row.status === 'completed').length;
   const uninstallsFailed = terminalRows.filter((row) => row.status === 'failed').length;
-
-  const tenantOwned = or(
-    isNull(deviceCommands.uninstallReasons),
-    arrayContains(deviceCommands.uninstallReasons, [UNINSTALL_REASON_TENANT_OFFBOARDING])
-  );
 
   const outstanding = await db
     .select({
