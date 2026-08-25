@@ -7,9 +7,11 @@ import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
 import BulkOrgImport from '../organizations/BulkOrgImport';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { extractApiError } from '@/lib/apiError';
+import { runAction, ActionError } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete';
@@ -81,6 +83,18 @@ export default function OrganizationsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [draggedOrgId, setDraggedOrgId] = useState<string | null>(null);
+  /**
+   * True from the moment a reorder PATCH is issued until its reconciliation
+   * settles. Dragging is disabled meanwhile, which SERIALIZES reorders: every
+   * stale-order race on this page needs a second drag to start while the first
+   * request (or its reconciling GET) is still in flight, so removing that
+   * overlap removes the class rather than guarding each instance.
+   *
+   * Before this change the overlap was blocked only as a side effect of the
+   * full-page loading spinner unmounting the draggable rows — which the silent
+   * reconciliation above deliberately no longer does.
+   */
+  const [reorderPending, setReorderPending] = useState(false);
   const [dragOverOrgId, setDragOverOrgId] = useState<string | null>(null);
 
   // Sites state
@@ -106,15 +120,33 @@ export default function OrganizationsPage() {
     return organizations.filter(org => org.name.toLowerCase().includes(q));
   }, [organizations, searchQuery]);
 
-  const fetchOrganizations = useCallback(async () => {
+  /**
+   * `silent` skips the page-level loading flag. `loading` is an EARLY RETURN
+   * that replaces the whole page with a spinner, which is right for the first
+   * load and wrong for a background reconciliation: the reorder catch would
+   * otherwise blank the list the user is looking at, right as its error toast
+   * appears, and take their scroll position and selected org with it.
+   */
+  const fetchOrganizations = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError(undefined);
       const organizations = await fetchAllOrganizations<Organization>(async (page, limit) => {
         const response = await fetchWithAuth(`/orgs/organizations?page=${page}&limit=${limit}`);
         if (!response.ok) {
           if (response.status === 401) {
-            void navigateTo('/login', { replace: true });
+            // handleSessionExpired, NOT a bare navigateTo('/login'): this GET
+            // runs immediately after a successful create/delete (via
+            // refreshOrgs), so its 401 lands while fetchWithAuth may already
+            // have started the real expiry redirect — which carries `next` and
+            // `reason`. A second, bare navigation replaces that destination
+            // with a plain /login. handleSessionExpired is idempotent
+            // (sessionExpiryInFlight), so calling it here either no-ops into
+            // the redirect already running, or performs the full logout for a
+            // 401 that survived a SUCCESSFUL refresh — the case where
+            // fetchWithAuth returns the 401 without handling it at all.
+            handleSessionExpired();
             return null;
           }
           throw new Error(t('organizationsPage.errors.fetchOrganizations'));
@@ -126,7 +158,7 @@ export default function OrganizationsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [t]);
 
@@ -251,16 +283,65 @@ export default function OrganizationsPage() {
   };
 
   const persistOrganizationOrder = useCallback(async (orderedIds: string[]) => {
+    setReorderPending(true);
     try {
-      const res = await fetchWithAuth('/orgs/organizations/order', {
-        method: 'PATCH',
-        body: JSON.stringify({ orderedIds })
+      // runAction, not setError: this handler was SILENT. It set the page error
+      // and then called fetchOrganizations() to revert the optimistic order —
+      // and that function calls setError(undefined) before its first await, so
+      // React batches the two updates and renders no failure at all. A toast
+      // survives the refetch.
+      await runAction({
+        request: () =>
+          fetchWithAuth('/orgs/organizations/order', {
+            method: 'PATCH',
+            body: JSON.stringify({ orderedIds })
+          }),
+        errorFallback: t('organizationsPage.errors.saveOrder'),
+        onUnauthorized: handleSessionExpired,
       });
-      if (!res.ok) throw new Error(`Reorder failed (${res.status})`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.saveOrder'));
-      // Revert by re-fetching the authoritative order from the server.
-      void fetchOrganizations();
+    } catch {
+      // Re-fetch the authoritative order. Two earlier attempts were wrong in
+      // instructive ways, so the reasoning is worth keeping:
+      //
+      //   1. Skipping reconciliation for status 0 (to dodge a redirect race)
+      //      left an ordinary dropped connection showing an order the server
+      //      never accepted, with only a transient toast and no correction.
+      //   2. Restoring a locally captured pre-drag array fixes that but CANNOT
+      //      be correct: `runAction` collapses every request-side throw to
+      //      status 0, so a PATCH that COMMITTED and then lost its response is
+      //      indistinguishable from one that never arrived. Restoring locally
+      //      would then show an order the server does not have — the same
+      //      lie, in the other direction. It also races an in-flight
+      //      authoritative GET and can clobber newer data with an older
+      //      snapshot.
+      //
+      // Only the server knows what actually persisted, so the closest thing to
+      // a correct answer is to ask it. Two limits, stated rather than implied:
+      //
+      //   - A slow GET could install an order that a later reorder already
+      //     superseded. That needs a SECOND drag to overlap the first request,
+      //     which `reorderPending` now prevents by disabling dragging until
+      //     this settles. A client generation counter was tried first and
+      //     reverted: it discarded genuinely current create/delete/import
+      //     refreshes — leaving a newly created org invisible — while still
+      //     not covering a GET resolving during an in-flight PATCH.
+      //     Serializing the drags removes the overlap those guards were
+      //     chasing. Two reorders from SEPARATE TABS can still interleave;
+      //     that one needs a revision or compare-and-swap on the endpoint,
+      //     which has neither.
+      //   - The list endpoint pages by `created_at, id` and applies the
+      //     partner's preferred order only WITHIN each page, so past the first
+      //     page it cannot report a cross-page order at all. Reconciliation is
+      //     therefore authoritative only up to that pre-existing server-side
+      //     limit, which this change does not introduce or fix.
+      //
+      // The refetch was previously unsafe purely because fetchOrganizations
+      // answered its own 401 with a bare navigateTo('/login'), which raced the
+      // richer session-expiry redirect. That is fixed at its source above, so
+      // the 401 path of this second GET is idempotent.
+      await fetchOrganizations({ silent: true });
+    } finally {
+      setReorderPending(false);
     }
   }, [fetchOrganizations, t]);
 
@@ -316,16 +397,23 @@ export default function OrganizationsPage() {
   const handleSubmit = async (values: OrganizationFormValues) => {
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth('/orgs/organizations', {
-        method: 'POST',
-        body: JSON.stringify(values)
+      // runAction, not setError. The failure has to be VISIBLE, and the page
+      // error banner is not: it renders outside this modal, which stays open on
+      // failure behind a `fixed inset-0 z-50` overlay, so the message landed
+      // underneath the form the user is still looking at. Nothing is rendered
+      // inside the dialog itself. The toast container is mounted after the page
+      // slot in DashboardLayout at the same z-50, so it paints above the
+      // overlay — which is what makes the API's own text reachable at all.
+      const createdOrg = await runAction<{ id?: string } | null>({
+        request: () =>
+          fetchWithAuth('/orgs/organizations', {
+            method: 'POST',
+            body: JSON.stringify(values)
+          }),
+        errorFallback: t('organizationsPage.errors.saveOrganization'),
+        onUnauthorized: handleSessionExpired,
+        parseSuccess: (data) => (data ?? null) as { id?: string } | null,
       });
-
-      if (!response.ok) {
-        throw new Error(t('organizationsPage.errors.saveOrganization'));
-      }
-
-      const createdOrg = await response.json().catch(() => null) as { id?: string } | null;
 
       await refreshOrgs();
       handleCloseModal();
@@ -359,7 +447,23 @@ export default function OrganizationsPage() {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
+      // runAction already surfaced an ActionError as a toast, and onUnauthorized
+      // is redirecting on 401 — re-storing either in the page banner would be a
+      // second, INVISIBLE copy (it renders behind this modal). Only a
+      // non-ActionError escaped runAction untoasted, so only that is surfaced.
+      if (!(err instanceof ActionError)) {
+        // A toast, NOT setError. The modal is still open on failure and the
+        // page banner renders behind its `fixed inset-0 z-50` overlay, so
+        // routing an unexpected error there reproduces the exact invisibility
+        // this change removes. Reachable in practice: `runAction` calls
+        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
+        // handleSessionExpired's logout or location.replace arrives here as a
+        // non-ActionError.
+        showToast({
+          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
+          type: 'error'
+        });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -370,13 +474,14 @@ export default function OrganizationsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/orgs/organizations/${selectedOrg.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/orgs/organizations/${selectedOrg.id}`, {
+            method: 'DELETE'
+          }),
+        errorFallback: t('organizationsPage.errors.deleteOrganization'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        throw new Error(t('organizationsPage.errors.deleteOrganization'));
-      }
 
       const deletedId = selectedOrg.id;
       await refreshOrgs();
@@ -386,7 +491,23 @@ export default function OrganizationsPage() {
         setSelectedOrg(null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
+      // runAction already surfaced an ActionError as a toast, and onUnauthorized
+      // is redirecting on 401 — re-storing either in the page banner would be a
+      // second, INVISIBLE copy (it renders behind this modal). Only a
+      // non-ActionError escaped runAction untoasted, so only that is surfaced.
+      if (!(err instanceof ActionError)) {
+        // A toast, NOT setError. The modal is still open on failure and the
+        // page banner renders behind its `fixed inset-0 z-50` overlay, so
+        // routing an unexpected error there reproduces the exact invisibility
+        // this change removes. Reachable in practice: `runAction` calls
+        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
+        // handleSessionExpired's logout or location.replace arrives here as a
+        // non-ActionError.
+        showToast({
+          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
+          type: 'error'
+        });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -442,20 +563,39 @@ export default function OrganizationsPage() {
         : '/orgs/sites';
       const method = siteModalMode === 'edit' ? 'PATCH' : 'POST';
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(payload)
+      // This handler already read the body — but it threw into `setError`,
+      // whose banner sits behind the still-open site modal. runAction keeps the
+      // extracted message and puts it somewhere the user can actually see.
+      await runAction({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
+        // `organizationsPage.errors.saveSite` interpolates {{status}}, which
+        // runAction does not expose when building the fallback — passing 0
+        // renders the nonsense "Failed to save site (0)". This is the existing
+        // status-free sibling, present in all 8 locales, so no new keys and
+        // nothing for localeParity to catch.
+        errorFallback: t('siteDetailPage.errors.saveSite'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('organizationsPage.errors.saveSite', { status: response.status })));
-      }
 
       await fetchSites(selectedOrg.id);
       handleCloseSiteModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
+      // See the org handlers above: runAction already toasted an ActionError,
+      // and onUnauthorized handles 401. Only a non-ActionError escape is
+      // unsurfaced, and the page banner is invisible behind this modal anyway.
+      if (!(err instanceof ActionError)) {
+        // A toast, NOT setError. The modal is still open on failure and the
+        // page banner renders behind its `fixed inset-0 z-50` overlay, so
+        // routing an unexpected error there reproduces the exact invisibility
+        // this change removes. Reachable in practice: `runAction` calls
+        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
+        // handleSessionExpired's logout or location.replace arrives here as a
+        // non-ActionError.
+        showToast({
+          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
+          type: 'error'
+        });
+      }
     } finally {
       setSiteSubmitting(false);
     }
@@ -465,15 +605,32 @@ export default function OrganizationsPage() {
     if (!selectedSite || !selectedOrg) return;
     setSiteSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/orgs/sites/${selectedSite.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE' }),
+        errorFallback: t('organizationsPage.errors.deleteSite'),
+        onUnauthorized: handleSessionExpired,
       });
-      if (!response.ok) throw new Error(t('organizationsPage.errors.deleteSite'));
 
       await fetchSites(selectedOrg.id);
       handleCloseSiteModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
+      // See the org handlers above: runAction already toasted an ActionError,
+      // and onUnauthorized handles 401. Only a non-ActionError escape is
+      // unsurfaced, and the page banner is invisible behind this modal anyway.
+      if (!(err instanceof ActionError)) {
+        // A toast, NOT setError. The modal is still open on failure and the
+        // page banner renders behind its `fixed inset-0 z-50` overlay, so
+        // routing an unexpected error there reproduces the exact invisibility
+        // this change removes. Reachable in practice: `runAction` calls
+        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
+        // handleSessionExpired's logout or location.replace arrives here as a
+        // non-ActionError.
+        showToast({
+          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
+          type: 'error'
+        });
+      }
     } finally {
       setSiteSubmitting(false);
     }
@@ -510,7 +667,7 @@ export default function OrganizationsPage() {
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={fetchOrganizations}
+          onClick={() => void fetchOrganizations()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('organizationsPage.actions.tryAgain')}
@@ -550,7 +707,7 @@ export default function OrganizationsPage() {
         <BulkOrgImport
           onImported={() => void fetchOrganizations()}
           onClose={() => setShowBulkImport(false)}
-          onUnauthorized={() => void navigateTo('/login', { replace: true })}
+          onUnauthorized={handleSessionExpired}
         />
       )}
 
@@ -587,7 +744,7 @@ export default function OrganizationsPage() {
             ) : (
               <ul className="divide-y">
                 {filteredOrgs.map(org => {
-                  const dragEnabled = searchQuery.trim().length === 0;
+                  const dragEnabled = searchQuery.trim().length === 0 && !reorderPending;
                   const isDragging = draggedOrgId === org.id;
                   const isDropTarget = dragOverOrgId === org.id && draggedOrgId !== org.id;
                   return (
