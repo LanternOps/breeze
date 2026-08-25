@@ -15,11 +15,15 @@ import { usePermissions } from '../../lib/permissions';
 const VALID_TABS = ['statuses', 'priorities', 'categories', 'forms', 'export', 'inbound', 'canned'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
-// The sub-tabs that only exist for partner-scoped users. The tab list below is
-// BUILT from this and the pending-placeholder gate reads its ids, so those two
-// cannot drift. The three panel bodies are still written out individually —
-// each mounts a different card — and share the one `canManageInbound` gate
-// rather than this list.
+// The sub-tabs that only exist for partner-scoped users. The tab list is BUILT
+// from this and the pending-placeholder gate reads its ids, so those two cannot
+// drift. The three panel bodies are still written out individually — each
+// mounts a different card — and share the one `canManageInbound` gate rather
+// than this list.
+//
+// Inbound email settings + queue are a partner-scoped surface (the queue routes
+// are additionally admin-gated server-side). The mailbox card has a separate
+// ticket_mailbox:read UX gate; every API route remains authoritative.
 const PARTNER_ONLY_TABS: Array<{ id: Tab; labelKey: string }> = [
   { id: 'forms', labelKey: 'ticketingSettingsTabs.intakeForms' },
   { id: 'inbound', labelKey: 'ticketingSettingsTabs.inboundEmail' },
@@ -27,9 +31,7 @@ const PARTNER_ONLY_TABS: Array<{ id: Tab; labelKey: string }> = [
 ];
 const PARTNER_ONLY_TAB_IDS: readonly Tab[] = PARTNER_ONLY_TABS.map((tab) => tab.id);
 
-// Inbound email settings + queue are a partner-scoped surface (the queue routes
-// are additionally admin-gated server-side). The mailbox card has a separate
-// ticket_mailbox:read UX gate; every API route remains authoritative.
+// Shown to every scope. The partner-only tabs above are appended to these.
 const BASE_TABS: Array<{ id: Tab; labelKey: string }> = [
   { id: 'statuses', labelKey: 'ticketingSettingsTabs.statuses' },
   { id: 'priorities', labelKey: 'ticketingSettingsTabs.prioritiesSLAs' },
