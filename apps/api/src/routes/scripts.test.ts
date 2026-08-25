@@ -18,8 +18,17 @@ const { executeScriptOnDevicesMock } = vi.hoisted(() => ({
   executeScriptOnDevicesMock: vi.fn(),
 }));
 
+const { applyAutomationActionTerminalMock } = vi.hoisted(() => ({
+  applyAutomationActionTerminalMock: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('../services/scriptExecution', () => ({
   executeScriptOnDevices: executeScriptOnDevicesMock,
+}));
+
+vi.mock('../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -1294,6 +1303,11 @@ describe('scripts routes', () => {
     });
 
     expect(res.status).toBe(200);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'cancellation',
+      scriptExecutionId: EXECUTION_ID,
+      terminalStatus: 'cancelled',
+    }));
   });
 
   it('cancels an execution unchanged when the caller has no site restriction', async () => {
@@ -1332,6 +1346,40 @@ describe('scripts routes', () => {
     });
 
     expect(res.status).toBe(200);
+  });
+
+  it('does not terminalize automation when a concurrent result wins the cancellation CAS', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'running',
+              deviceId: 'device-1',
+              deviceOrgId: ORG_ID,
+              deviceSiteId: 'site-allowed',
+            }]),
+          }),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(applyAutomationActionTerminalMock).not.toHaveBeenCalled();
+    expect(db.update).toHaveBeenCalledTimes(1);
   });
 
   it('should validate create payload', async () => {
