@@ -867,7 +867,8 @@ describe('agentAuthMiddleware - device-remove uninstall drain (#3986)', () => {
     '/api/v1/agents/agent-1/heartbeat',
     '/api/v1/agents/agent-1/commands',
     '/api/v1/agents/agent-1/commands/cmd-1/result',
-    '/api/v1/agents/agent-1/rotate-token',
+    // NOTE: `rotate-token` (the MINT half) is deliberately absent — see the
+    // dedicated describe block below. `/confirm` stays allowed.
     '/api/v1/agents/agent-1/rotate-token/confirm',
     '/api/v1/agents/agent-1/logs',
   ];
@@ -905,6 +906,21 @@ describe('agentAuthMiddleware - device-remove uninstall drain (#3986)', () => {
     ['extension gateway agent subpath', '/api/v1/ext/acme/agent/agent-1/commands/cmd-1/result'],
     // Nested path under a real agent route with an attacker-chosen final segment.
     ['nested winget-bootstrap path', '/api/v1/agents/agent-1/winget-bootstrap/file/heartbeat'],
+    // The CRAFTED TAIL. The old predicate indexed from the END, so any path
+    // whose tail read `agents/<id>/<action>` matched — and the AGENT supplies
+    // the tail, so no extension-author complicity was needed. Extension route
+    // paths are copied verbatim with no validation
+    // (extensions/contributionRegistry.ts), and the gateway mounts agent routes
+    // at both `<prefix>/agent/<id>/*` and `/api/v1/<routeNamespace>/agent/<id>/*`.
+    ['crafted extension tail (heartbeat)', '/api/v1/ext/acme/agent/agent-1/agents/agent-1/heartbeat'],
+    ['crafted extension tail (rotate-token)', '/api/v1/ext/acme/agent/agent-1/agents/agent-1/rotate-token'],
+    ['crafted extension tail (commands result)', '/api/v1/ext/acme/agent/agent-1/agents/agent-1/commands/cmd-1/result'],
+    ['crafted namespace tail', '/api/v1/workspace/agent/agent-1/agents/agent-1/commands'],
+    // Right shape, wrong mount root.
+    ['wrong api version', '/api/v2/agents/agent-1/heartbeat'],
+    ['missing api prefix', '/v1/agents/agent-1/heartbeat'],
+    // Right mount, wrong agent id in the id position.
+    ['another agent id', '/api/v1/agents/agent-99/heartbeat'],
   ];
 
   for (const [label, path] of drainBlockedPaths) {
@@ -975,6 +991,184 @@ describe('agentAuthMiddleware - device-remove uninstall drain (#3986)', () => {
     buildSelectMock([makeDevice({ status: 'online' })]);
     const blocked = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/hardware' });
     const result = await agentAuthMiddleware(blocked, vi.fn());
+    expect((result as any).body).toEqual({ error: 'tenant_offboarding' });
+  });
+});
+
+// #3986 fix round 1, HIGH-1 — `rotate-token` (the MINT half) is off the DEVICE
+// drain surface. `routes/agents/token.ts` carries no `devices.status` guard of
+// its own, and the credentials it mints OUTLIVE the drain window: nothing
+// revokes a staged or promoted rotation when the deadline passes, and
+// POST /devices/:id/restore touches no token hash. A stolen token on a removed
+// device could therefore be rotated into a fresh agent + watchdog + helper set
+// that lies dormant behind the post-expiry 403 and becomes the LIVE credential
+// the moment an operator restores the device. Rotation also demotes the
+// legitimate token, letting a thief deny the very uninstall the window exists
+// to deliver.
+describe('agentAuthMiddleware - rotate-token is off the device drain surface (#3986)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  it('refuses a draining removed device on rotate-token (credential MINT)', async () => {
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(403);
+    expect((result as any).body).toEqual({ error: 'device_uninstall_draining' });
+  });
+
+  it('still allows rotate-token/confirm for a draining removed device (finish a staged rotation)', async () => {
+    // The CONFIRM half is safe and necessary: it only promotes a credential the
+    // agent already holds on disk. Blocking it would lock out an agent that
+    // crashed mid-rotation, which is the crash window two-phase rotation exists
+    // to survive.
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/rotate-token/confirm',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('a mid-rotation agent can still heartbeat on its STAGED credential — so dropping rotate-token strands nothing', async () => {
+    // The whole justification for keeping rotate-token open was "don't strand a
+    // mid-stage rotation". A staged (pending) credential authenticates as
+    // role:'agent' through matchRoleScopedAgentTokenHash, so it clears Layer 1b
+    // and collects the uninstall without ever calling rotate-token.
+    const STAGED_TOKEN = 'brz_staged_token';
+    buildSelectMock([
+      makeDevice({
+        status: 'decommissioned',
+        agentTokenHash: sha('brz_old_current_token'),
+        pendingTokenHash: sha(STAGED_TOKEN),
+        pendingTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      }),
+    ]);
+
+    const c = createContext({ token: STAGED_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect((c.get('agent') as { role?: string }).role).toBe('agent');
+    expect((c.get('agent') as { deviceUninstallDraining?: boolean }).deviceUninstallDraining).toBe(true);
+  });
+
+  it('a TENANT drain keeps rotate-token (the #2774 surface is unchanged)', async () => {
+    // The two drain kinds have different action sets on purpose. An offboarding
+    // customer's machines are legitimately alive and still need rotations to
+    // complete; a removed machine does not.
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #3986 fix round 1, MEDIUM-1 — the drain path predicate and the self-managed
+// DB-context predicate are both anchored ABSOLUTELY on the core mount, not on
+// trailing segments.
+describe('agentAuthMiddleware - core agent path anchoring (#3986)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  it('pins CORE_AGENT_MOUNT_SEGMENTS to the actual mount lines in index.ts', async () => {
+    // The predicate hardcodes ['api','v1','agents']. If the mount ever moves,
+    // drain mode fails CLOSED (refuses the whole fleet) — a silent, fleet-wide
+    // outage. Catch it here instead.
+    const { readFileSync } = await import('node:fs');
+    const indexSource = readFileSync(
+      new URL('../index.ts', import.meta.url),
+      'utf-8',
+    );
+    expect(indexSource).toContain("app.route('/api/v1', api)");
+    expect(indexSource).toContain("api.route('/agents', agentRoutes)");
+  });
+
+  it('a crafted `agents/<id>/<action>` TAIL under an extension mount does not opt out of the request DB context', async () => {
+    // Same shape as the drain hole, on the self-managed-context predicate. The
+    // trailing-segment match used to let any path ending in `heartbeat` skip
+    // the request-long org wrap; a handler that assumed the ambient context
+    // would then run contextless, which under RLS is a silent zero-row read.
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/heartbeat',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
+  it('the REAL core heartbeat still opts out of the request DB context', async () => {
+    // Positive control: the anchoring must not have broken the #1105 opt-out
+    // for the three core routes that genuinely self-manage their context.
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('a crafted TAIL is refused during a TENANT drain too, not just a device drain', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/rotate-token',
+    });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(403);
     expect((result as any).body).toEqual({ error: 'tenant_offboarding' });
   });
 });

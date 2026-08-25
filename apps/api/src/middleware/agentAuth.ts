@@ -277,9 +277,11 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
 }
 
 /**
- * Final path segment of routes that open their own withDbAccessContext around
- * their DB work instead of relying on the request-long wrap in
- * agentAuthMiddleware. See the #1105 note at the wrap site. Auth still runs in
+ * Action segment of the CORE `/api/v1/agents/<agentId>/<action>` routes that
+ * open their own withDbAccessContext around their DB work instead of relying
+ * on the request-long wrap in agentAuthMiddleware. Matched through
+ * `isCoreAgentPath`, so a same-named segment anywhere else (an extension
+ * gateway route, a nested sub-path) does NOT opt out. See the #1105 note at the wrap site. Auth still runs in
  * full for these routes — only the org-context transaction wrap is skipped.
  *
  * `commands` (the GET command poll) is here because its handler claims commands
@@ -294,8 +296,40 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  */
 const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands']);
 
-/** Single-segment actions allowed during a drain: `/agents/<agentId>/<action>`. */
-const DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', 'rotate-token']);
+/**
+ * Single-segment actions allowed during a TENANT (`offboarding`) drain:
+ * `/api/v1/agents/<agentId>/<action>`. #2774's original set.
+ */
+const TENANT_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', 'rotate-token']);
+
+/**
+ * #3986 — the DEVICE-remove drain's set, which is deliberately NARROWER than
+ * the tenant one: `rotate-token` is dropped.
+ *
+ * `routes/agents/token.ts` has no independent `devices.status` guard, and the
+ * credentials it mints OUTLIVE the drain window — nothing revokes a staged or
+ * promoted rotation when the deadline passes, and `POST /devices/:id/restore`
+ * does not touch a single token hash. So a stolen agent token on a removed
+ * device could be rotated into a fresh agent + watchdog + helper credential
+ * set that lies dormant through the 403 after expiry and becomes the LIVE
+ * credential the moment an operator restores the device — which this very
+ * feature supports. Rotation also DEMOTES the legitimate token, so a thief can
+ * deny the real machine the uninstall the window exists to deliver.
+ *
+ * Dropping it costs nothing. A staged-but-unconfirmed rotation still
+ * authenticates as `role: 'agent'` through `matchRoleScopedAgentTokenHash`, so
+ * an agent mid-rotation passes the Layer 1b role gate and can heartbeat and
+ * collect its uninstall without ever calling `rotate-token`. #2774's
+ * "don't strand a mid-stage rotation" rationale covers the CONFIRM half (the
+ * machines there are legitimately alive and must stay manageable); it never
+ * justified the MINT half for a machine we are actively uninstalling.
+ *
+ * `rotate-token/confirm` is NOT in this set because it never was in either set
+ * — it is matched by its own two-segment branch below, and stays allowed for
+ * both drain kinds so an agent that already persisted a staged credential can
+ * finish and avoid being locked out mid-drain.
+ */
+const DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs']);
 
 /**
  * The ONLY command type a drained agent — tenant-offboarding (#2774) or
@@ -310,52 +344,101 @@ const DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', 'rotate-
 export const DRAIN_CLAIM_TYPE_ALLOWLIST = ['self_uninstall'] as const;
 
 /**
- * #2774 — the narrowed agent surface during an `offboarding` drain window.
+ * The CORE agent mount, as absolute leading path segments.
+ *
+ * `index.ts` mounts `app.route('/api/v1', api)` and `api.route('/agents', agentRoutes)`,
+ * so every core agent route is exactly `/api/v1/agents/<agentId>/...`.
+ * `agentAuth.test.ts` pins this against those two mount lines in `index.ts`, so
+ * a mount move is caught by a unit test rather than by drain mode silently
+ * refusing the whole fleet.
+ */
+const CORE_AGENT_MOUNT_SEGMENTS = ['api', 'v1', 'agents'] as const;
+
+/**
+ * True when `pathSegments` is EXACTLY `/api/v1/agents/<agentId>/…` with
+ * `expectedLength` segments in total.
+ *
+ * ABSOLUTE anchoring — indexed from the FRONT, with an exact length. The
+ * previous implementation indexed from the END (`at(3) === 'agents'`), which
+ * matched any path whose TAIL happened to look like `agents/<id>/<action>`.
+ * That was a real hole with a false comment on it: this middleware also serves
+ * the extension gateway, which mounts agent routes at `<prefix>/agent/<id>/*`
+ * (singular) and at `/api/v1/<routeNamespace>/agent/<id>/*`, and extension
+ * route paths are copied verbatim with no validation
+ * (extensions/contributionRegistry.ts). A crafted request such as
+ *
+ *   /api/v1/ext/acme/agent/<id>/agents/<id>/rotate-token
+ *
+ * has a matching tail and would have joined the drain surface. Nothing shipped
+ * registers such a route today, but the AGENT supplies the tail, so it needed
+ * no extension-author complicity — and the old comment claiming "no extension
+ * route can join the drain surface" is exactly what would have licensed
+ * someone to write one.
+ *
+ * Fails CLOSED in both directions: an unrecognised shape is refused during a
+ * drain, and if the core mount ever moves, drain mode blocks rather than
+ * admits.
+ */
+function isCoreAgentPath(
+  pathSegments: string[],
+  agentId: string,
+  expectedLength: number,
+): boolean {
+  if (pathSegments.length !== expectedLength) return false;
+  for (const [index, segment] of CORE_AGENT_MOUNT_SEGMENTS.entries()) {
+    if (pathSegments[index] !== segment) return false;
+  }
+  return pathSegments[CORE_AGENT_MOUNT_SEGMENTS.length] === agentId;
+}
+
+/** Index of the `<action>` segment in `/api/v1/agents/<agentId>/<action>`. */
+const CORE_AGENT_ACTION_INDEX = CORE_AGENT_MOUNT_SEGMENTS.length + 1;
+
+/**
+ * #2774 / #3986 — the narrowed agent surface during a drain window.
  * Only what self_uninstall delivery needs survives:
  * - heartbeat: the primary command carrier (claims device_commands) + liveness
  * - commands / commands/:id/result: the poll + ack pair
- * - rotate-token (+ confirm): auth maintenance — blocking a mid-stage rotation
- *   could strand the very credential the drain depends on
+ * - rotate-token/confirm: lets an agent that already persisted a staged
+ *   credential finish, so a mid-stage rotation can't lock it out mid-drain.
+ *   The MINT half (`rotate-token`) is allowed for a TENANT drain only — see
+ *   DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS for why a removed device must not
+ *   be able to mint credentials that outlive its window.
  * - logs: post-mortem evidence for devices that never drain
  * Everything else (inventory, patches, WS-adjacent, extension gateway) is
- * refused with an explicit 403 so a departing customer's machines don't keep
- * feeding a fully-capable RMM channel. The WS upgrade is refused outright in
- * agentWs.validateAgentToken — its push path bypasses device_commands.
+ * refused with an explicit 403 so a departing customer's — or a removed
+ * machine's — agent doesn't keep feeding a fully-capable RMM channel. The WS
+ * upgrade is refused outright in agentWs.validateAgentToken; its push path
+ * bypasses device_commands, so no type allowlist can see it.
  *
- * Every match is ANCHORED on the exact `agents/<agentId>/<action>` shape,
- * mirroring `shouldSkipAgentAuth` (routes/agents/index.ts). A
- * trailing-segment-only match would be a hole, not a shortcut: this
- * middleware also serves the extension gateway, which mounts agent routes at
- * `<prefix>/agent/<id>/*` (singular — see extensions/gateway.ts). Anchoring on
- * the core `/agents` mount segment means no extension route can join the drain
- * surface whatever it names its endpoints, and a nested path under a real
- * route (`.../winget-bootstrap/file/heartbeat`) can't either. Fails closed: if
- * the core mount ever moves, drain mode blocks rather than admits.
+ * `allowedActions` is the drain-KIND-specific single-segment set. The two
+ * multi-segment shapes below are identical for both kinds.
  */
-const AGENTS_MOUNT_SEGMENT = 'agents';
-
-function isDrainAllowedAgentPath(pathSegments: string[], agentId: string): boolean {
-  const at = (fromEnd: number) => pathSegments[pathSegments.length - fromEnd] ?? '';
-  const last = at(1);
-  // agents/<agentId>/<action>
-  if (at(3) === AGENTS_MOUNT_SEGMENT && at(2) === agentId && DRAIN_ALLOWED_ACTIONS.has(last)) {
-    return true;
-  }
-  // agents/<agentId>/rotate-token/confirm
+function isDrainAllowedAgentPath(
+  pathSegments: string[],
+  agentId: string,
+  allowedActions: ReadonlySet<string>,
+): boolean {
+  // /api/v1/agents/<agentId>/<action>
   if (
-    last === 'confirm'
-    && at(2) === 'rotate-token'
-    && at(3) === agentId
-    && at(4) === AGENTS_MOUNT_SEGMENT
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
+    && allowedActions.has(pathSegments[CORE_AGENT_ACTION_INDEX] ?? '')
   ) {
     return true;
   }
-  // agents/<agentId>/commands/<commandId>/result
+  // /api/v1/agents/<agentId>/rotate-token/confirm
   if (
-    last === 'result'
-    && at(3) === 'commands'
-    && at(4) === agentId
-    && at(5) === AGENTS_MOUNT_SEGMENT
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 2)
+    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'rotate-token'
+    && pathSegments[CORE_AGENT_ACTION_INDEX + 1] === 'confirm'
+  ) {
+    return true;
+  }
+  // /api/v1/agents/<agentId>/commands/<commandId>/result
+  if (
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 3)
+    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'commands'
+    && pathSegments[CORE_AGENT_ACTION_INDEX + 2] === 'result'
   ) {
     return true;
   }
@@ -694,8 +777,20 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // Distinct error codes so the agent (and an operator reading logs) can tell
   // "my tenant is leaving" from "this machine was removed"; tenant drain keeps
   // its established `tenant_offboarding` code when both apply.
+  //
+  // The two drain kinds do NOT share one action set. A tenant drain keeps
+  // #2774's original surface; a DEVICE drain additionally drops `rotate-token`,
+  // because the credentials that route mints outlive the drain window and
+  // would become live again on restore (see
+  // DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS). When BOTH apply, the tenant set is
+  // the one in force — the device drain is the narrower, more urgent state, but
+  // its own gate has already admitted only a `role==='agent'` credential, and a
+  // tenant mid-offboarding still needs its fleet's rotations to complete.
   const drainNarrowed = tenantState === 'draining' || deviceUninstallDraining;
-  if (drainNarrowed && !isDrainAllowedAgentPath(pathSegments, agentId)) {
+  const drainAllowedActions = tenantState === 'draining'
+    ? TENANT_DRAIN_ALLOWED_ACTIONS
+    : DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS;
+  if (drainNarrowed && !isDrainAllowedAgentPath(pathSegments, agentId, drainAllowedActions)) {
     return c.json(
       { error: tenantState === 'draining' ? 'tenant_offboarding' : 'device_uninstall_draining' },
       403,
@@ -757,8 +852,22 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // self-deadlocks the pool under a mass agent reconnect). These routes MUST
   // open withDbAccessContext themselves around their DB work. Everything else
   // keeps the convenient request-long wrap below.
-  const action = pathSegments[pathSegments.length - 1] ?? '';
-  if (SELF_MANAGED_DB_CONTEXT_ACTIONS.has(action)) {
+  //
+  // ABSOLUTELY anchored, for the same reason as isDrainAllowedAgentPath above:
+  // this used to match on the trailing segment alone, so ANY path ending in
+  // `heartbeat` / `reliability` / `commands` — including an extension gateway
+  // route at `<prefix>/agent/<id>/…` — silently opted out of the request-long
+  // org context. Benign today (no shipped extension route does DB work that
+  // depends on the ambient context), but it is the same shape as the real hole
+  // fixed above, and the failure mode is the worse direction: a handler that
+  // ASSUMED the ambient context would run contextless, which under RLS means a
+  // silent zero-row read rather than an error. Now only the three core routes
+  // that genuinely self-manage their context opt out; everything else,
+  // extension routes included, keeps the wrap.
+  if (
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
+    && SELF_MANAGED_DB_CONTEXT_ACTIONS.has(pathSegments[CORE_AGENT_ACTION_INDEX] ?? '')
+  ) {
     await next();
     return;
   }

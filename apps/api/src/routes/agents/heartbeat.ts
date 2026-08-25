@@ -212,6 +212,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // presenting the MAIN agent token would be told to re-enrol instead of being
   // handed the uninstall — turning a cosmetic version skew into an undeliverable
   // uninstall. Only agent-role credentials reach this branch anyway (Layer 1b).
+  //
+  // KNOWN, ACCEPTED SIDE EFFECT of omitting the payload — do not "fix" it by
+  // re-adding the fields this branch exists to withhold. Two response fields
+  // are plain `bool` on the Go side (not pointers), so their ABSENCE decodes as
+  // `false` rather than "unchanged":
+  //   - `helperEnabled`          -> handleHelperEnabled(false) turns the helper flag off
+  //   - `manageRemoteManagement` -> SetManagedByPolicy(false) clears the tunnel policy flag
+  // Both therefore flip off on every beat for the whole drain window.
+  // (`uacInterceptionEnabled` is a `*bool` and handles absence correctly.)
+  // Bounded and self-correcting: these are in-memory flags on a machine that is
+  // being uninstalled, and a restore ends the drain, after which the next
+  // NORMAL heartbeat carries both fields again and restores them.
   if (agent.deviceUninstallDraining) {
     // Own DB context: this route is self-managed-context (agentAuth opens no
     // request-long wrap for `heartbeat`), and the claim must not run
