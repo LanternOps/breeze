@@ -1858,7 +1858,11 @@
     "disabling": "Devre dışı bırakılıyor...",
     "generating": "Oluşturuluyor...",
     "regenerateCodes": "Kodları yeniden oluştur",
-    "showRecoveryCodes": "Kurtarma kodlarını göster"
+    "showRecoveryCodes": "Kurtarma kodlarını göster",
+    "verifyYourIdentity": "Kimliğinizi doğrulayın",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Kimlik doğrulayıcı uygulama kurulumuna başlamak için sağlayıcınızda kimliğinizi yeniden doğrulayın.",
+    "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
+    "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Pax8'den içe aktar",
@@ -1945,7 +1949,21 @@
     "failedToEnableMfaHttp": "MFA etkinleştirilemedi (HTTP {{status}})",
     "failedToDisableMfaHttp": "MFA devre dışı bırakılamadı (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Şifre kurulumu başlatılamadı (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Şifre kaydedilemedi (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Şifre kaydedilemedi (HTTP {{status}})",
+    "ssoReauthNotFresh": "Kimlik sağlayıcınız oturum açmanızı yeniden doğrulamadı. Tekrar deneyin veya yöneticinizden yeniden kimlik doğrulama istemlerine izin vermesini isteyin.",
+    "ssoReauthIdentityMismatch": "Bu kimlik sağlayıcısı hesabı bu profile bağlı olan hesap değil. Kendi hesabınızla oturum açıp tekrar deneyin.",
+    "ssoReauthSessionInvalid": "Doğrulama sırasında oturumunuz değişti. Yeniden oturum açıp tekrar deneyin.",
+    "ssoReauthPasswordSet": "Bu hesabın artık bir parolası var. Çok faktörlü kimlik doğrulamayı kurmak için onu kullanın.",
+    "ssoReauthUnavailable": "Kimlik sağlayıcısı doğrulaması geçici olarak kullanılamıyor. Lütfen kısa süre sonra tekrar deneyin.",
+    "ssoReauthProviderInactive": "Çoklu oturum açma bu hesap için artık kullanılamıyor. Yöneticinize danışın, sonra tekrar deneyin.",
+    "ssoReauthConfigChanged": "Doğrulama sırasında çoklu oturum açma ayarlarınız değişti. Doğrulamayı yeniden başlatın.",
+    "ssoReauthEmailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulanmadığını bildiriyor. Adresi orada doğrulayıp tekrar deneyin.",
+    "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Çok faktörlü kimlik doğrulama kurulumunu tamamlamak için yeniden doğrulayın.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Bu hesap bir kimlik sağlayıcı üzerinden oturum açıyor ve parolası yok. Geçiş anahtarı eklemeden önce sağlayıcınızda yeniden doğrulayın.",
+    "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
+    "passkeyIdpVerificationRequired": "Geçiş anahtarı eklemeden önce kimlik sağlayıcınızla doğrulayın.",
+    "ssoReauthFailed": "Kimlik sağlayıcınızla doğrulanamadı. Lütfen tekrar deneyin.",
+    "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı."
   },
   "roleManager": {
     "roles": "Roller",
@@ -2110,6 +2128,8 @@
     "securitySettings": "Güvenlik Ayarları",
     "enforceSSOOnlyLogin": "Yalnızca SSO oturum açmayı zorunlu kıl",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Kullanıcılar oturum açmak için SSO'yu kullanmalıdır. Şifreyle oturum açma devre dışı bırakılacaktır.",
+    "trustThisProvidersMFA": "Bu sağlayıcının MFA'sına güven",
+    "trustThisProvidersMFAHelperText": "Kimlik sağlayıcınız çok faktörlü kimlik doğrulamanın kullanıldığını bildirdiğinde (`amr: mfa`), Breeze'de MFA karşılanmış sayılır. IdP'niz, kimlik belirtecinde `amr` talebini içermelidir — çoğu bunun açıkça etkinleştirilmesini gerektirir. Varsayılan olarak kapalıdır.",
     "warningSSOEnforcementEnabled": "Uyarı: SSO uygulaması etkinleştirildi",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Kullanıcılar şifrelerle oturum açamayacaktır. Bu seçeneği etkinleştirmeden önce SSO yapılandırmanızın doğru çalıştığından emin olun. Acil durum erişimi için SSO'yu atlayabilecek en az bir yönetici hesabına sahip olmayı düşünün.",
     "testing": "Test ediliyor...",

@@ -46,9 +46,32 @@ import {
 
 const { db } = dbModule;
 
+/**
+ * Run `fn` inside the SYSTEM DB access context.
+ *
+ * FAILS CLOSED when the wrapper is unavailable. This used to degrade silently
+ * to a bare `fn()`, which is not a graceful fallback — it is a CONTEXTLESS
+ * query, the exact bug class the callers below exist to avoid. Under forced
+ * RLS as `breeze_app` a contextless read matches ZERO rows rather than
+ * erroring, so the caller sees "no such user / no factors" and hands back the
+ * PERMISSIVE answer. {@link userIsMfaProtected} answering `false` that way
+ * would open the first-factor-enrollment gate for an account that actually
+ * holds factors.
+ *
+ * The `typeof` check only ever fired under a test mock of `../../db` that
+ * omitted the wrapper; production always exports it. Nested inside an existing
+ * request context the real `withSystemDbAccessContext` short-circuits on its
+ * own — that legitimate case is unchanged, it never reached this branch.
+ */
 export const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof withSystem !== 'function') {
+    const message =
+      '[auth] runWithSystemDbAccess: withSystemDbAccessContext is unavailable; refusing to run a security probe with no DB access context';
+    console.error(message);
+    throw new Error(message);
+  }
+  return withSystem(fn);
 };
 
 // Shared floor-the-clock timing equalizer for pre-auth endpoints whose latency
@@ -253,6 +276,16 @@ export async function requireFreshMfaStepUp(
  * `/passkeys/register/*`) call this from within their own request-scoped
  * (user-id-scoped) RLS context, where it would still resolve correctly, but
  * system context keeps this probe uniform regardless of caller context.
+ *
+ * THROWS when the row is missing rather than reporting `false`. Every caller
+ * is authenticated, so the row must exist; a zero-row read means the probe did
+ * not run as intended (lost DB access context, a row vanishing mid-request),
+ * and `false` is the PERMISSIVE answer on every gate that consumes this — it
+ * says "no factor yet, initial enrollment, password-only is enough" for an
+ * account that may hold factors. Failing loud pushes those gates onto their
+ * error path (a 500) instead of silently waving the caller through. Today the
+ * `!user -> 401` probe in {@link resolveEnrollmentStepUp} happens to fire
+ * first, but that is call ordering, not a designed control.
  */
 export async function userIsMfaProtected(userId: string): Promise<boolean> {
   const [row] = await runWithSystemDbAccess(() =>
@@ -265,7 +298,12 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
       .where(eq(users.id, userId))
       .limit(1)
   );
-  return row?.mfaEnabled === true || Number(row?.passkeyCount ?? 0) > 0;
+  if (!row) {
+    const message = `[auth] userIsMfaProtected: no users row for ${userId}; refusing to report the account unprotected`;
+    console.error(message);
+    throw new Error(message);
+  }
+  return row.mfaEnabled === true || Number(row.passkeyCount ?? 0) > 0;
 }
 
 /**
@@ -318,6 +356,144 @@ export async function enforceExistingFactorStepUp(
   if (!ok) {
     return c.json({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }, 403);
   }
+  return null;
+}
+
+// ============================================
+// First-factor enrollment step-up (#4018)
+// ============================================
+
+/**
+ * The single decision point for "may this caller install a FIRST MFA factor?".
+ *
+ * Two roads, never both:
+ *   - password — the historical path, unchanged, and evaluated FIRST.
+ *   - SSO re-auth grant — for accounts with `password_hash IS NULL`, which have
+ *     no password to prove and previously could not enroll at all (#4018). The
+ *     grant is minted only by the SSO re-auth callback (`GET /sso/callback`,
+ *     reauth mode) after a forced, fresh IdP authentication.
+ *
+ * The SSO road is refused outright for an account that HAS a password: two
+ * roads of differing strength to the same door is how a step-up gets bypassed.
+ *
+ * It is ALSO refused for a passwordless account that already holds any factor.
+ * The grant's operation is `enroll_first_factor` and that is all it may ever
+ * do: without this check a passwordless account with a TOTP secret or a
+ * registered passkey could re-auth at its IdP and use the resulting grant to
+ * install a SECOND factor, side-stepping {@link enforceExistingFactorStepUp}
+ * (SR2-20), which exists precisely to require proving an EXISTING factor
+ * before adding a new one. The predicate is {@link userIsMfaProtected} — the
+ * same one SR2-20 uses — so the two gates can never drift apart. A protected
+ * passwordless account is REFUSED this road outright (401); it does not fall
+ * through to any other step-up here. Its route back in is the SR2-20 path,
+ * proving the factor it already holds.
+ *
+ * Every rejection is the same opaque `Invalid credentials` 401 the password
+ * path already returns, so the response never reveals whether the account has
+ * a password, has a factor, or exists at all — with ONE deliberate exception:
+ * a passwordless account that offered NO proof at all gets
+ * `enrollment_proof_required`. That case is not a failed authentication
+ * attempt, it is a client that has lost its single-use grant (a reload while
+ * the QR was on screen, a restored session, a second tab), and a generic
+ * `Invalid credentials` renders on a screen with no password field and no way
+ * to retry. It discloses nothing: the caller is already authenticated AS this
+ * account and `/users/me` already tells them `hasPassword`.
+ *
+ * `opts.consume` mirrors the {@link validateStepUpGrant}/{@link consumeStepUpGrant}
+ * split the SR2-20 grant already uses: `false` at the gate of a two-step flow
+ * (`/mfa/setup`, `/passkeys/register/options`), `true` at the terminal factor
+ * write (`/mfa/enable`, `/passkeys/register/verify`), so one SSO round-trip
+ * yields exactly one enrollment and a fat-fingered TOTP code does not burn the
+ * grant.
+ *
+ * `opts.passwordAlreadyProven` is for the TERMINAL call of such a two-step
+ * flow, whose GATE already ran this function and satisfied the password road
+ * (re-verifying there would double-charge the per-user step-up rate limit, and
+ * `/passkeys/register/verify` carries no password field at all). It ONLY
+ * short-circuits the password road; the SSO road still consumes the grant.
+ * Never set it on an endpoint that is not downstream of such a gate.
+ */
+export async function resolveEnrollmentStepUp(
+  c: Context,
+  auth: AuthContext,
+  input: { currentPassword?: string; ssoReauthGrantId?: string },
+  opts: { keyPrefix: string; consume: boolean; passwordAlreadyProven?: boolean },
+): Promise<Response | null> {
+  // Road 1, FIRST and byte-for-byte the historical path: a password was
+  // offered, so a password is what must check out. requireCurrentPasswordStepUp
+  // already returns the same opaque 401 when the account has no hash at all, so
+  // a passwordless account that offers a password is rejected here rather than
+  // sliding onto the SSO road — one request, one road, chosen by what it sent.
+  if (input.currentPassword) {
+    return requireCurrentPasswordStepUp(c, auth.user.id, input.currentPassword, opts.keyPrefix);
+  }
+
+  // No password offered. Decide whether this account is even eligible for the
+  // SSO road before looking at the grant.
+  //
+  // System DB access, same idiom and same reason as {@link userIsMfaProtected}:
+  // the `/mfa/verify` Case-2 caller runs with NO ambient access context (its
+  // `await authMiddleware(c, async () => {})` tears the context down when that
+  // empty `next` returns — see the I3 note there). A contextless read under
+  // forced RLS as `breeze_app` matches ZERO rows rather than erroring, so an
+  // unwrapped probe would land on `!user` and 401 EVERY caller of that path,
+  // password accounts included. Nested inside a request context this is a
+  // no-op, so the other callers are unaffected.
+  const [user] = await runWithSystemDbAccess(() =>
+    db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1)
+  );
+  if (!user) return c.json({ error: 'Invalid credentials' }, 401);
+
+  if (user.passwordHash != null) {
+    // The gate of this flow already verified the password; nothing is left for
+    // the terminal call to do. Deliberately still a live DB read rather than an
+    // assumption that the gate ran — this must fail CLOSED for a passwordless
+    // account that reaches a terminal write with no grant.
+    if (opts.passwordAlreadyProven) return null;
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  if (!input.ssoReauthGrantId) {
+    // Distinguishable ON PURPOSE — see the doc comment. `reauthUrl` mirrors the
+    // `stepUpUrl` affordance enforceExistingFactorStepUp already returns, so a
+    // client can offer the one action that resolves this.
+    return c.json({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' }, 401);
+  }
+
+  // FIRST factor only — see the doc comment above. Checked BEFORE the grant is
+  // consumed so a refused enrollment never burns the caller's grant.
+  if (await userIsMfaProtected(auth.user.id)) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const epochs = await getUserEpochs(auth.user.id);
+  const sid = auth.token?.sid;
+  if (!epochs || !sid) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  // Must reconstruct the mint-site tuple in `routes/sso.ts` (reauth branch)
+  // MEMBER FOR MEMBER: bindsMatch fails closed on any difference, so a
+  // divergence here would silently reject every legitimate grant.
+  const bind = {
+    userId: auth.user.id,
+    operation: 'enroll_first_factor' as const,
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    sid,
+  };
+
+  const ok = opts.consume
+    ? await consumeStepUpGrant(input.ssoReauthGrantId, bind)
+    : await validateStepUpGrant(input.ssoReauthGrantId, bind);
+  if (!ok) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
   return null;
 }
 

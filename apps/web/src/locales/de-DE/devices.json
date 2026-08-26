@@ -111,7 +111,10 @@
     "expiryMinutes_one": "in etwa {{count}} Minute",
     "expiryMinutes_other": "in etwa {{count}} Minuten",
     "expiryHours_one": "in etwa {{count}} Stunde",
-    "expiryHours_other": "in etwa {{count}} Stunden"
+    "expiryHours_other": "in etwa {{count}} Stunden",
+    "mfaRequiredSsoLinks": "Zum Generieren von Links ist eine Multi-Faktor-Authentifizierung erforderlich. Ihre Organisation meldet Sie über einen Identitätsanbieter an – bitten Sie Ihren Administrator, MFA-Vertrauen dafür zu aktivieren, oder registrieren Sie einen Faktor in Ihren Profileinstellungen.",
+    "mfaRequiredSsoInstallers": "Zum Generieren von Installationsprogrammen ist eine Multi-Faktor-Authentifizierung erforderlich. Ihre Organisation meldet Sie über einen Identitätsanbieter an – bitten Sie Ihren Administrator, MFA-Vertrauen dafür zu aktivieren, oder registrieren Sie einen Faktor in Ihren Profileinstellungen.",
+    "mfaRequiredSsoTokens": "Zum Generieren von Installationstoken ist eine Multi-Faktor-Authentifizierung erforderlich. Ihre Organisation meldet Sie über einen Identitätsanbieter an – bitten Sie Ihren Administrator, MFA-Vertrauen dafür zu aktivieren, oder registrieren Sie einen Faktor in Ihren Profileinstellungen."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Standorte konnten nicht geladen werden",

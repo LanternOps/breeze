@@ -111,7 +111,10 @@
     "expiryMinutes_one": "Dans environ {{count}} minute",
     "expiryMinutes_other": "Dans environ {{count}} minutes",
     "expiryHours_one": "Dans environ {{count}} heure",
-    "expiryHours_other": "Dans environ {{count}} heures"
+    "expiryHours_other": "Dans environ {{count}} heures",
+    "mfaRequiredSsoLinks": "L'authentification multifacteur est requise pour générer des liens. Votre organisation vous ouvre une session par l'entremise d'un fournisseur d'identité — demandez à votre administrateur d'activer la confiance MFA pour celui-ci, ou inscrivez un facteur dans les paramètres de votre profil.",
+    "mfaRequiredSsoInstallers": "L'authentification multifacteur est requise pour générer des programmes d'installation. Votre organisation vous ouvre une session par l'entremise d'un fournisseur d'identité — demandez à votre administrateur d'activer la confiance MFA pour celui-ci, ou inscrivez un facteur dans les paramètres de votre profil.",
+    "mfaRequiredSsoTokens": "L'authentification multifacteur est requise pour générer des jetons d'installation. Votre organisation vous ouvre une session par l'entremise d'un fournisseur d'identité — demandez à votre administrateur d'activer la confiance MFA pour celui-ci, ou inscrivez un facteur dans les paramètres de votre profil."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Impossible de charger les sites",

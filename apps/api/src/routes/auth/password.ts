@@ -377,7 +377,12 @@ passwordRoutes.get('/me', authMiddleware, async (c) => {
       phoneVerified: users.phoneVerified,
       status: users.status,
       lastLoginAt: users.lastLoginAt,
-      createdAt: users.createdAt
+      createdAt: users.createdAt,
+      // #4018: selected ONLY to derive the `hasPassword` boolean below. It is
+      // destructured out of the response object in the same statement that
+      // computes the flag, exactly as `phoneNumber` is, so the hash itself is
+      // never serialized. Asserted by password.test.ts.
+      passwordHash: users.passwordHash
     })
     .from(users)
     .where(eq(users.id, auth.user.id))
@@ -387,11 +392,15 @@ passwordRoutes.get('/me', authMiddleware, async (c) => {
     return c.json({ error: 'User not found' }, 404);
   }
 
-  const { phoneNumber: rawPhone, ...userWithoutPhone } = user;
+  const { phoneNumber: rawPhone, passwordHash, ...userWithoutPhone } = user;
   const effectiveMfaEnabled = ENABLE_2FA ? user.mfaEnabled : false;
   return c.json({
     user: {
       ...userWithoutPhone,
+      // Whether a password step-up is even possible for this account. An
+      // SSO-provisioned (JIT) user has no password, so the profile UI must
+      // offer the IdP re-authentication road instead of a password prompt.
+      hasPassword: passwordHash != null,
       mfaEnabled: effectiveMfaEnabled,
       mfaMethod: effectiveMfaEnabled ? (user.mfaMethod || 'totp') : null,
       phoneLast4: ENABLE_2FA ? (rawPhone?.slice(-4) || null) : null

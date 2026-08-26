@@ -459,6 +459,12 @@ describe('passkey MFA auth routes', () => {
   it('returns registration options only after the current password is verified', async () => {
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+    // enforceExistingFactorStepUp's userIsMfaProtected probe. Previously
+    // omitted: the empty queue fell through to `[]` and the helper's
+    // `row?.mfaEnabled` reported the account unprotected, so this test passed
+    // through a branch it never modelled. userIsMfaProtected now raises on a
+    // missing row (that answer is the permissive one), so the row is explicit.
+    dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
 
     const res = await app.request('/auth/passkeys/register/options', {
       method: 'POST',
@@ -532,6 +538,97 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(validateStepUpGrant).not.toHaveBeenCalled();
+    });
+  });
+
+  // #4018 review finding 2: nothing at the route level proved the SSO
+  // re-auth road actually works end to end (only sso.reauth.test.ts and
+  // schemas.test.ts referenced ssoReauthGrantId, and neither calls these
+  // routes). A passwordless account (no `currentPassword` field sent, no
+  // password on the account) with zero existing factors and a fresh
+  // `enroll_first_factor` grant from GET /sso/callback (reauth mode) must be
+  // able to register a passkey as its first MFA factor; an invalid/expired
+  // grant must be rejected with the same opaque 401 the password road uses.
+  describe('#4018 SSO re-auth road on passkey registration', () => {
+    it('register/options SUCCEEDS for a passwordless, zero-factor account with a valid enrollment grant (validates, does not consume)', async () => {
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's own userIsMfaProtected
+      dbState.selectQueue.push([]); // listActivePasskeys
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(true);
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(validateStepUpGrant).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111',
+        expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
+      );
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalled();
+    });
+
+    it('register/options returns the opaque 401 for a passwordless account with an invalid/expired grant', async () => {
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+    });
+
+    it('register/verify SUCCEEDS for a passwordless, zero-factor account with a valid enrollment grant (consumes it)', async () => {
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]); // tx hasExistingFactor check — no factor yet
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
+
+      const res = await app.request('/auth/passkeys/register/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({
+          credential: { id: 'credential-1' },
+          ssoReauthGrantId: '11111111-1111-4111-8111-111111111111',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111',
+        expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
+      );
+    });
+
+    it('register/verify returns the opaque 401 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(false);
+
+      const res = await app.request('/auth/passkeys/register/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({
+          credential: { id: 'credential-1' },
+          ssoReauthGrantId: '11111111-1111-4111-8111-111111111111',
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
     });
   });
 
@@ -1099,9 +1196,12 @@ describe('passkey MFA auth routes', () => {
   it('does not overwrite an existing TOTP factor method when registering a passkey', async () => {
     // SR2-20: this account is already MFA-protected (has TOTP), so
     // register/verify requires a fresh existing-factor step-up grant.
-    // Query order: userIsMfaProtected (gate) first, then the transaction's
-    // own "current MFA" read (hasExistingFactor check) second.
+    // Query order: userIsMfaProtected (gate) first, then #4018's
+    // resolveEnrollmentStepUp terminal read (passwordHash — this is a password
+    // account, so it is a no-op), then the transaction's own "current MFA" read
+    // (hasExistingFactor check).
     dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 0 }]);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
     dbState.selectQueue.push([{ mfaSecret: 'enc-secret', mfaMethod: 'totp' }]);
     vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
 
@@ -1140,8 +1240,10 @@ describe('passkey MFA auth routes', () => {
 
   it('makes passkey the primary MFA method when the user has no existing factor', async () => {
     // SR2-20: no-factor account — initial enrollment stays password-only, no
-    // step-up grant required.
+    // step-up grant required. #4018 adds the passwordHash read between the
+    // gate and the transaction's own "current MFA" read.
     dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
     dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]);
 
     const res = await app.request('/auth/passkeys/register/verify', {

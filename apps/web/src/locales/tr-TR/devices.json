@@ -111,7 +111,10 @@
     "expiryMinutes_one": "yaklaşık {{count}} dakika içinde",
     "expiryMinutes_other": "yaklaşık {{count}} dakika içinde",
     "expiryHours_one": "yaklaşık {{count}} saat içinde",
-    "expiryHours_other": "yaklaşık {{count}} saat içinde"
+    "expiryHours_other": "yaklaşık {{count}} saat içinde",
+    "mfaRequiredSsoLinks": "Bağlantı oluşturmak için çok faktörlü kimlik doğrulama gereklidir. Kuruluşunuz sizi bir kimlik sağlayıcısı üzerinden oturuma alıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin ya da profil ayarlarınızdan bir faktör kaydedin.",
+    "mfaRequiredSsoInstallers": "Yükleyici oluşturmak için çok faktörlü kimlik doğrulama gereklidir. Kuruluşunuz sizi bir kimlik sağlayıcısı üzerinden oturuma alıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin ya da profil ayarlarınızdan bir faktör kaydedin.",
+    "mfaRequiredSsoTokens": "Kurulum belirteci oluşturmak için çok faktörlü kimlik doğrulama gereklidir. Kuruluşunuz sizi bir kimlik sağlayıcısı üzerinden oturuma alıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin ya da profil ayarlarınızdan bir faktör kaydedin."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Siteler yüklenemedi",

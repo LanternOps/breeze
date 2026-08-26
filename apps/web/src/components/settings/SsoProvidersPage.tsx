@@ -394,7 +394,8 @@ export default function SsoProvidersPage() {
                       autoProvision: selectedProviderDetails.autoProvision ?? true,
                       defaultRoleId: selectedProviderDetails.defaultRoleId || '',
                       allowedDomains: selectedProviderDetails.allowedDomains || '',
-                      enforceSSO: selectedProviderDetails.enforceSSO ?? false
+                      enforceSSO: selectedProviderDetails.enforceSSO ?? false,
+                      trustsIdpMfa: selectedProviderDetails.trustsIdpMfa ?? false
                     }
                   : undefined
               }
