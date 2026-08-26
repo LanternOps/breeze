@@ -8,17 +8,19 @@ import (
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 )
 
-// TestHeartbeatPayloadWireByteIdentity pins the omitempty contract on the
+// TestHeartbeatPayloadWireSelfHostSignal pins the wire contract on the
 // build-edition telemetry fields at the JSON layer, which is the only layer
 // where it actually matters.
 //
-// TestMigrationSignal asserts migrationSignal() returns ("", false) for a
-// self-host build, but that is a Go-level claim: dropping `omitempty` from
-// either struct tag would leave it green while every self-hosted agent in
-// the field silently starts sending two new keys. The whole point of the
-// zero values is that the wire payload stays byte-identical to pre-edition
-// agents, so assert on the marshalled bytes.
-func TestHeartbeatPayloadWireByteIdentity(t *testing.T) {
+// Since #4072 a self-host build MUST put agentEdition:"self-host" on the
+// wire: the server treats a reported edition (either value) as "this build
+// can accept hosted-edition artifacts" and withholds hosted update offers
+// from agents that stay silent (a silent self-host build ≥0.105.0 would
+// hard-refuse them and wedge in a permanent retry loop). A regression back
+// to the empty string would silently re-strand every future self-host agent
+// that later migrates to a hosted control plane. migrationRequired keeps the
+// old omitempty contract — false must stay off the wire.
+func TestHeartbeatPayloadWireSelfHostSignal(t *testing.T) {
 	var payload HeartbeatPayload
 	payload.AgentEdition, payload.MigrationRequired = migrationSignal("https://selfhosted.example", "")
 
@@ -26,11 +28,17 @@ func TestHeartbeatPayloadWireByteIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal self-host payload: %v", err)
 	}
-	for _, key := range []string{`"agentEdition"`, `"migrationRequired"`} {
-		if strings.Contains(string(body), key) {
-			t.Errorf("self-host heartbeat payload must not carry %s on the wire "+
-				"(omitempty dropped from the struct tag?)", key)
-		}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal self-host payload: %v", err)
+	}
+	if decoded["agentEdition"] != "self-host" {
+		t.Errorf("self-host build: agentEdition = %v, want %q (#4072 transition-capability signal)",
+			decoded["agentEdition"], "self-host")
+	}
+	if strings.Contains(string(body), `"migrationRequired"`) {
+		t.Errorf("self-host heartbeat payload must not carry \"migrationRequired\" on the wire " +
+			"(omitempty dropped from the struct tag?)")
 	}
 }
 

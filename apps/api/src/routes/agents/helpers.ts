@@ -58,6 +58,7 @@ import { resolvePatchConfigForDevice } from '../../services/featureConfigResolve
 import { policyOwnershipCondition, withPartnerWideVisibility } from '../../services/configPolicyOwnership';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
+import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
@@ -333,6 +334,67 @@ export function compareAgentVersions(leftRaw: string, rightRaw: string): number 
   if (!left.prerelease) return 1;
   if (!right.prerelease) return -1;
   return left.prerelease.localeCompare(right.prerelease);
+}
+
+/**
+ * The agent release that introduced the client-side artifact-edition check
+ * (updater.editionAllowed, #3349). Builds older than this never consult the
+ * manifest's edition field and can apply artifacts of either edition; builds
+ * from this version on refuse a mismatched edition AFTER download, so the
+ * server must not offer them one (#4072).
+ */
+export const AGENT_EDITION_CHECK_INTRODUCED = '0.105.0';
+
+/**
+ * Can the binary that would perform a download apply an artifact of THIS
+ * server's edition (#4072)?
+ *
+ * The updater's edition check runs agent-side after the download, so offering
+ * a version the build will refuse does not fail once — it wedges the device in
+ * a permanent ~60s retry loop (`status='updating'`, never converges, no
+ * server-side escape hatch). This predicate is the server-side gate: withhold
+ * the offer instead, and the device idles quietly on its current version.
+ *
+ * Inference, in order:
+ *  - A REPORTED agentEdition (either value) means the build both knows its
+ *    edition and — because the heartbeat reporting and the one-way
+ *    self-host → hosted allowance in updater.editionAllowed shipped in the
+ *    same agent release — can apply a hosted artifact. So when serving hosted,
+ *    any reporter is accepted; when serving self-host, a 'hosted' reporter is
+ *    refused (hosted builds hard-refuse self-host artifacts by design — that
+ *    direction would strip the host-policy allowlist and is never relaxed).
+ *  - A SILENT agent (no reported edition) is either a pre-0.105.0 build (no
+ *    edition check at all → accepts anything) or a self-host build without
+ *    the transition allowance (the stranded 0.105.0–0.106.x band, plus any
+ *    unfixed self-host build pointed at a hosted control plane → refuses
+ *    hosted). Split on the version that introduced the check. A missing or
+ *    unparseable version fails closed — the offer resumes on the next beat
+ *    once the agent reports something usable.
+ *
+ * `reportedEdition`/`agentVersion` must describe the binary that DOWNLOADS
+ * (this beat's payload values): the main agent for agent/helper/watchdog
+ * offers on the main branch, the watchdog itself on the failover branch.
+ */
+export function agentAcceptsServedEdition(args: {
+  reportedEdition: string | null | undefined;
+  agentVersion: string | null | undefined;
+}): boolean {
+  const served = getBinaryEdition();
+  if (served === 'self-host') {
+    return args.reportedEdition !== 'hosted';
+  }
+  if (args.reportedEdition === 'hosted' || args.reportedEdition === 'self-host') {
+    return true;
+  }
+  const version = args.agentVersion?.trim();
+  if (!version) return false;
+  // Compare the CORE version only: semver orders `0.105.0-rc.1` BELOW
+  // `0.105.0`, but a prerelease of the introducing version already carries
+  // the check. A prerelease of an older core (0.104.x-rc) predates it.
+  // (`dev-*` builds strip to an unparseable core and fail closed, same as
+  // any other unparseable version — compareAgentVersions returns 0.)
+  const core = version.split('-')[0] ?? version;
+  return compareAgentVersions(core, AGENT_EDITION_CHECK_INTRODUCED) < 0;
 }
 
 // ============================================
@@ -2347,6 +2409,11 @@ export async function resolvePinnedUpgradeTarget(args: {
           eq(agentVersions.architecture, architecture),
           eq(agentVersions.component, component),
           eq(agentVersions.isLatest, true),
+          // Each server only serves its own build edition (#4072) — same
+          // scoping as the download/register/promote paths. Without this, a
+          // row registered for the OTHER edition could be resolved and
+          // offered, and the agent would hard-refuse it after download.
+          eq(agentVersions.edition, getBinaryEdition()),
         ),
       )
       .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
@@ -2363,6 +2430,8 @@ export async function resolvePinnedUpgradeTarget(args: {
         eq(agentVersions.architecture, architecture),
         eq(agentVersions.component, component),
         eq(agentVersions.version, pin),
+        // Edition-scoped like the latest-promoted lookup above (#4072).
+        eq(agentVersions.edition, getBinaryEdition()),
       ),
     )
     .limit(1);

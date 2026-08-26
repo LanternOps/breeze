@@ -28,6 +28,7 @@ import {
   buildPatchSourceConfigUpdate,
   getOrgAgentUpdateConfig,
   resolvePinnedUpgradeTarget,
+  agentAcceptsServedEdition,
   type AgentVersionPins,
   type OnedriveConfigUpdate,
   type HelperSettings,
@@ -50,6 +51,7 @@ import { decryptClaimedCommandsForDelivery } from '../../services/commandDeliver
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
+import { getBinaryEdition } from '../../services/binaryEdition';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -71,6 +73,33 @@ export function detectWatchdogStateCollapse(
       ? rawState.slice(0, 100)
       : JSON.stringify(rawState)?.slice(0, 100);
   return { field: 'watchdogState', rawValue };
+}
+
+// #4072 — one withhold warn per device per process. The edition gate fires on
+// every heartbeat of an affected device (~60s apart) for as long as it stays
+// on an incompatible build, so an undeduped warn is log spam at fleet scale;
+// bounded by fleet size, same shape as the pin-miss/malformed-window caches.
+const warnedEditionWithheldDevices = new Set<string>();
+
+export function __resetEditionWithheldWarnCacheForTests(): void {
+  warnedEditionWithheldDevices.clear();
+}
+
+function warnEditionOfferWithheld(args: {
+  deviceId: string;
+  reportedEdition: string | null | undefined;
+  agentVersion: string | null | undefined;
+}): void {
+  if (warnedEditionWithheldDevices.has(args.deviceId)) return;
+  warnedEditionWithheldDevices.add(args.deviceId);
+  console.warn(
+    `[agents] update offers withheld for device ${args.deviceId} (#4072): this deployment serves ` +
+      `artifacts the device's build would refuse after download (reported edition=` +
+      `${args.reportedEdition ?? 'none'}, version=${args.agentVersion ?? 'unknown'}). ` +
+      `The device idles on its current version instead of wedging in an update-retry loop; ` +
+      `recover it with an installer of the served edition, or an agent release that can ` +
+      `accept the transition.`,
+  );
 }
 
 const WATCHDOG_RESTART_LOG_INTERVAL_MS = 60 * 60 * 1000;
@@ -487,6 +516,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       agent?.claimTypeAllowlist
     );
 
+    // #4072 — in FAILOVER the WATCHDOG is the binary that downloads (its own
+    // self-update and the doUpdateAgent recovery path both run its updater),
+    // so the edition gate keys on the watchdog's payload: data.agentVersion
+    // is the watchdog's version here, and new watchdog builds report their
+    // edition. A watchdog build that would refuse the served artifact edition
+    // after download must not be offered it — the refusal just re-arms every
+    // failover beat.
+    const watchdogAcceptsServedEdition = agentAcceptsServedEdition({
+      reportedEdition: data.agentEdition,
+      agentVersion: data.agentVersion,
+    });
+
     // Check for watchdog upgrade. Honors the tenant's watchdog pin (issue
     // #2124) via the same resolver as the main path; fail-closed to no upgrade
     // when the pinned version has no build for this platform/arch.
@@ -505,13 +546,19 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           agentId,
         });
 
-        if (targetWatchdog) {
+        if (targetWatchdog && watchdogAcceptsServedEdition) {
           if (!data.agentVersion.startsWith('dev-')) {
             const cmp = compareAgentVersions(targetWatchdog, data.agentVersion);
             if (cmp > 0) {
               watchdogUpgradeTo = targetWatchdog;
             }
           }
+        } else if (targetWatchdog) {
+          warnEditionOfferWithheld({
+            deviceId: device.id,
+            reportedEdition: data.agentEdition,
+            agentVersion: data.agentVersion,
+          });
         }
       } catch (err) {
         console.error(`[agents] failed to evaluate watchdog upgrade target for ${agentId}:`, err);
@@ -532,6 +579,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       mainAgentSilent &&
       normalizedArch &&
       pinsResolved &&
+      // #4072 — the watchdog downloads the recovery binary, so ITS edition
+      // capability gates this offer (not the wedged main agent's).
+      watchdogAcceptsServedEdition &&
       device.agentVersion &&
       !device.agentVersion.startsWith('dev-')
     ) {
@@ -1007,7 +1057,27 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // component bootstrap branches never do, so a first install is never gated.
   let upgradeTo: string | null = null;
   const normalizedArch = normalizeAgentArchitecture(device.architecture);
-  if (normalizedArch) {
+  // #4072 — the main agent's updater performs EVERY download on this branch
+  // (its own binary, the helper, the watchdog), and since v0.105.0 it refuses
+  // an artifact whose signed-manifest edition mismatches its build — AFTER
+  // download, retrying every heartbeat forever. Offer nothing this build
+  // would refuse; the device then idles quietly on its current version.
+  // Keyed on THIS beat's payload (not stored columns): the stored edition is
+  // one beat stale, exactly wrong on the first beat after a swap.
+  const acceptsServedEdition = agentAcceptsServedEdition({
+    reportedEdition: data.agentEdition,
+    agentVersion: data.agentVersion,
+  });
+
+  if (normalizedArch && !acceptsServedEdition) {
+    warnEditionOfferWithheld({
+      deviceId: device.id,
+      reportedEdition: data.agentEdition,
+      agentVersion: data.agentVersion,
+    });
+  }
+
+  if (normalizedArch && acceptsServedEdition) {
     try {
       // Resolve the effective target: the tenant's agent pin (issue #2124) when
       // set, else the globally promoted latest. Fails closed if the pinned
@@ -1043,8 +1113,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   let helperUpgradeTo: string | null = null;
   // Check for helper upgrade even if agent doesn't report a version yet
-  // (bootstraps the first install or recovers from a broken helper that never wrote status)
-  if (normalizedArch) {
+  // (bootstraps the first install or recovers from a broken helper that never
+  // wrote status). Gated on acceptsServedEdition like the agent offer above —
+  // the MAIN AGENT downloads the helper artifact, so its edition capability is
+  // what matters, and bootstrap is not exempt (the download refusal doesn't
+  // care why the download started) (#4072).
+  if (normalizedArch && acceptsServedEdition) {
     try {
       const [latestHelper] = await db
         .select({ version: agentVersions.version })
@@ -1054,7 +1128,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
             eq(agentVersions.platform, device.osType),
             eq(agentVersions.architecture, normalizedArch),
             eq(agentVersions.component, 'helper'),
-            eq(agentVersions.isLatest, true)
+            eq(agentVersions.isLatest, true),
+            // Each server only serves its own build edition (#4072).
+            eq(agentVersions.edition, getBinaryEdition())
           )
         )
         .orderBy(desc(agentVersions.createdAt))
@@ -1076,7 +1152,9 @@ if (latestHelper) {
   }
 
   let watchdogUpgradeTo: string | null = null;
-  if (normalizedArch) {
+  // acceptsServedEdition: the main agent downloads the watchdog artifact too,
+  // bootstrap included — same gate rationale as the helper block above (#4072).
+  if (normalizedArch && acceptsServedEdition) {
     try {
       // Effective watchdog target: the tenant's watchdog pin (issue #2124) when
       // set, else the globally promoted latest. Independent of the agent pin.
