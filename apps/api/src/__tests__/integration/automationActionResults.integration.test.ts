@@ -170,6 +170,52 @@ describe('automation action results', () => {
     expect(await applyAutomationActionTerminal({ source: 'command', commandId, terminalStatus: 'failed', completedAt: new Date() })).toBe(false);
   });
 
+  runDb('repairs the terminal parent from a provisional reaper timeout when late real evidence succeeds', async () => {
+    publishEventMock.mockClear();
+    const f = await fixture(1);
+    const commandId = randomUUID();
+    const scriptExecutionId = randomUUID();
+    await seedAutomationActionResults({ runId: f.run.id, device: f.deviceA, actions: f.actions });
+    await recordAutomationActionDispatch({
+      runId: f.run.id,
+      deviceId: f.deviceA.id,
+      actionIndex: 0,
+      status: 'running',
+      commandId,
+      scriptExecutionId,
+    });
+    await applyAutomationActionTerminal({
+      source: 'reaper',
+      commandId,
+      terminalStatus: 'timed_out',
+      completedAt: new Date(),
+    });
+    expect(await getTestDb().select().from(automationRuns).where(eq(automationRuns.id, f.run.id)))
+      .toEqual([expect.objectContaining({ status: 'failed', devicesSucceeded: 0, devicesFailed: 1 })]);
+    expect(await getTestDb().select().from(automationRunDeviceResults).where(eq(automationRunDeviceResults.runId, f.run.id)))
+      .toEqual([expect.objectContaining({ status: 'failed' })]);
+
+    publishEventMock.mockClear();
+    expect(await applyAutomationActionTerminal({
+      source: 'script_execution',
+      scriptExecutionId,
+      terminalStatus: 'succeeded',
+      completedAt: new Date(),
+    })).toBe(true);
+    expect(await getTestDb().select().from(automationRuns).where(eq(automationRuns.id, f.run.id)))
+      .toEqual([expect.objectContaining({ status: 'completed', devicesSucceeded: 1, devicesFailed: 0 })]);
+    expect(await getTestDb().select().from(automationRunDeviceResults).where(eq(automationRunDeviceResults.runId, f.run.id)))
+      .toEqual([expect.objectContaining({ status: 'success' })]);
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(await applyAutomationActionTerminal({
+      source: 'script_execution',
+      scriptExecutionId,
+      terminalStatus: 'succeeded',
+      completedAt: new Date(),
+    })).toBe(false);
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+  });
+
   runDb('serializes concurrent last-action reconciliation and publishes one terminal event', async () => {
     publishEventMock.mockClear();
     const f = await fixture(2);

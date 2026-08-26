@@ -215,6 +215,10 @@ type Publication = {
   payload: Record<string, unknown>;
 };
 
+type ProvisionalTimeoutRepair = {
+  actionResultId: string;
+};
+
 async function publishAll(publications: Publication[]): Promise<void> {
   for (const publication of publications) {
     await runOutsideDbContext(() => publishEvent(
@@ -226,7 +230,10 @@ async function publishAll(publications: Publication[]): Promise<void> {
   }
 }
 
-async function reconcileInCurrentContext(runId: string): Promise<Publication[]> {
+async function reconcileInCurrentContext(
+  runId: string,
+  provisionalTimeoutRepair?: ProvisionalTimeoutRepair,
+): Promise<Publication[]> {
   const [run] = await db.select({
     id: automationRuns.id,
     automationId: automationRuns.automationId,
@@ -238,6 +245,7 @@ async function reconcileInCurrentContext(runId: string): Promise<Publication[]> 
   if (!run) return [];
 
   const actionRows = await db.select({
+    id: automationActionResults.id,
     deviceId: automationActionResults.deviceId,
     orgId: automationActionResults.orgId,
     actionIndex: automationActionResults.actionIndex,
@@ -280,10 +288,26 @@ async function reconcileInCurrentContext(runId: string): Promise<Publication[]> 
     }
   }
 
-  const deviceRows = await db.select({ status: automationRunDeviceResults.status })
+  const deviceRows = await db.select({
+    deviceId: automationRunDeviceResults.deviceId,
+    status: automationRunDeviceResults.status,
+  })
     .from(automationRunDeviceResults)
     .where(eq(automationRunDeviceResults.runId, runId));
   const aggregate = aggregateDeviceStatuses(deviceRows.map((row) => row.status));
+  const repairedAction = provisionalTimeoutRepair
+    ? actionRows.find((row) => row.id === provisionalTimeoutRepair.actionResultId)
+    : undefined;
+  const priorDeviceAggregate = repairedAction
+    ? aggregateActionStatuses((byDevice.get(repairedAction.deviceId) ?? []).map((action) => (
+      action.id === repairedAction.id ? 'timed_out' : action.status
+    )))
+    : undefined;
+  const priorAggregate = repairedAction && priorDeviceAggregate
+    ? aggregateDeviceStatuses(deviceRows.map((row) => (
+      row.deviceId === repairedAction.deviceId ? priorDeviceAggregate.status : row.status
+    )))
+    : undefined;
   const common = {
     devicesTargeted: deviceRows.length,
     devicesSucceeded: aggregate.devicesSucceeded,
@@ -295,13 +319,16 @@ async function reconcileInCurrentContext(runId: string): Promise<Publication[]> 
     return [];
   }
 
+  const isRepairingPriorTerminal = priorAggregate?.status === run.status;
+  if (run.status !== 'running' && !isRepairingPriorTerminal) return [];
+  const statusChanged = run.status !== aggregate.status;
+
   const transitioned = await db.update(automationRuns).set({
     ...common,
-    status: aggregate.status,
-    completedAt: new Date(),
-  }).where(and(eq(automationRuns.id, runId), eq(automationRuns.status, 'running')))
+    ...(statusChanged ? { status: aggregate.status, completedAt: new Date() } : {}),
+  }).where(and(eq(automationRuns.id, runId), eq(automationRuns.status, run.status)))
     .returning({ id: automationRuns.id });
-  if (transitioned.length === 0) return [];
+  if (transitioned.length === 0 || !statusChanged) return [];
 
   const orgIds = [...new Set(actionRows.map((row) => row.orgId))];
   return orgIds.map((orgId) => ({
@@ -423,7 +450,15 @@ export async function applyAutomationActionTerminal(input: {
     const changed = await db.update(automationActionResults).set({ ...patch, updatedAt: new Date() })
       .where(and(...stateCas(row))).returning({ id: automationActionResults.id });
     if (changed.length === 0) return { changed: false, publications: [] as Publication[] };
-    return { changed: true, publications: await reconcileInCurrentContext(row.runId) };
+    const provisionalTimeoutRepair = row.status === 'timed_out'
+      && row.terminalSource === 'reaper'
+      && REAL_TERMINAL_SOURCES.has(input.source)
+      ? { actionResultId: row.id }
+      : undefined;
+    return {
+      changed: true,
+      publications: await reconcileInCurrentContext(row.runId, provisionalTimeoutRepair),
+    };
   });
   await publishAll(result.publications);
   return result.changed;

@@ -89,6 +89,15 @@ describe('software inventory observation storage', () => {
     }
   });
 
+  runDb('keeps retained observation evidence immutable to the application role', async () => {
+    const privileges = await getTestDb().execute(sql`
+      SELECT
+        has_table_privilege('breeze_app', 'public.software_inventory_observations', 'UPDATE') AS can_update,
+        has_table_privilege('breeze_app', 'public.software_inventory_observations', 'TRUNCATE') AS can_truncate
+    `) as unknown as Array<{ can_update: boolean; can_truncate: boolean }>;
+    expect(privileges[0]).toEqual({ can_update: false, can_truncate: false });
+  });
+
   runDb('is exact-retry idempotent, rejects collisions, and retains rejected evidence byte-identically', async () => {
     const { deviceA, deviceB } = await seedFixture();
     const racingReport = report([{ name: 'Race' }]);
@@ -183,7 +192,7 @@ describe('software inventory observation storage', () => {
     const { orgB, siteB, deviceA } = await seedFixture();
     const accepted = await ingestSoftwareInventoryReport({ device: deviceA, report: report([{ name: 'A' }]), receivedAt: new Date('2026-08-24T14:00:00Z') });
     const mutation = await causeOf(() => withSystemDbAccessContext(() => db.execute(sql`UPDATE software_inventory_observations SET reason_code = 'tampered' WHERE id = ${accepted.observationId}::uuid`)));
-    expect(mutation?.code).toBe('55000');
+    expect(mutation?.code).toBe('42501');
 
     await withSystemDbAccessContext(() => db.execute(sql`UPDATE devices SET org_id = ${orgB.id}::uuid, site_id = ${siteB.id}::uuid WHERE id = ${deviceA.id}::uuid`));
     const moved = await getTestDb().execute(sql`

@@ -158,7 +158,11 @@ CREATE POLICY breeze_org_isolation_insert ON device_software_inventory_state FOR
 CREATE POLICY breeze_org_isolation_update ON device_software_inventory_state FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
 CREATE POLICY breeze_org_isolation_delete ON device_software_inventory_state FOR DELETE USING (public.breeze_has_org_access(org_id));
 
-GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON software_inventory_observations TO breeze_app;
+GRANT SELECT, INSERT, DELETE, REFERENCES ON software_inventory_observations TO breeze_app;
 GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON device_software_inventory_state TO breeze_app;
-REVOKE TRUNCATE ON software_inventory_observations, device_software_inventory_state FROM breeze_app;
+-- Evidence rows are immutable apart from trusted tenant restamping. The RLS
+-- UPDATE policy and trigger remain structural defenses, while this privilege
+-- boundary keeps the app role from issuing direct evidence updates or truncates.
+REVOKE UPDATE, TRUNCATE ON software_inventory_observations FROM breeze_app;
+REVOKE TRUNCATE ON device_software_inventory_state FROM breeze_app;
 REVOKE TRUNCATE ON software_inventory_observations, device_software_inventory_state FROM PUBLIC;
