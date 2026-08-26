@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { eq, and, gt, ne, isNull, inArray, sql } from 'drizzle-orm';
+import { eq, and, gt, ne, isNull, inArray, exists, notExists, sql } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
@@ -14,7 +14,8 @@ import {
   organizations,
   organizationUsers,
   partnerUsers,
-  roles
+  roles,
+  userPasskeys
 } from '../db/schema';
 import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../services/ssoDomainVerification';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
@@ -191,7 +192,11 @@ const createProviderSchema = z.object({
 // anyway — omit it. (Same class as the ownerScope omit above.)
 const updateProviderSchema = createProviderSchema
   .omit({ orgId: true, ownerScope: true, preset: true })
-  .partial();
+  .partial()
+  // #4068: confirm-through for the lockout guard. NOT a column — must be
+  // stripped before the `...body` spread into db.update().set() (same class
+  // as the `preset` omit above).
+  .extend({ acknowledgeLockout: z.boolean().optional() });
 const tokenExchangeSchema = z.object({
   code: z.string().min(1)
 });
@@ -1127,7 +1132,9 @@ ssoRoutes.patch(
   async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { id: providerId } = c.req.valid('param');
-  const body = c.req.valid('json');
+  // acknowledgeLockout is a request-level confirmation, not a column — keep it
+  // out of `body`, which is spread straight into db.update().set().
+  const { acknowledgeLockout, ...body } = c.req.valid('json');
 
   const existing = await withAuthDbAccessContext(auth, async () => {
     const [row] = await db
@@ -1136,7 +1143,9 @@ ssoRoutes.patch(
         orgId: ssoProviders.orgId,
         partnerId: ssoProviders.partnerId,
         issuer: ssoProviders.issuer,
-        type: ssoProviders.type
+        type: ssoProviders.type,
+        status: ssoProviders.status,
+        enforceSSO: ssoProviders.enforceSSO
       })
       .from(ssoProviders)
       .where(eq(ssoProviders.id, providerId))
@@ -1150,6 +1159,39 @@ ssoRoutes.patch(
 
   if (!canWriteProviderRow(auth, existing)) {
     return c.json({ error: 'Access denied' }, 403);
+  }
+
+  // #4068: this PATCH is one of the two transitions that make enforcement live
+  // (the other is activating an already-enforcing provider — see the status
+  // route). Enabling enforceSSO on an ACTIVE provider immediately blocks
+  // password login axis-wide, so if that would lock out users with no usable
+  // SSO link, require the caller to explicitly confirm through with
+  // acknowledgeLockout: true. The 409 carries the preflight payload so raw API
+  // callers see exactly who is affected — the same data the web UI shows.
+  if (body.enforceSSO === true && !existing.enforceSSO && existing.status === 'active') {
+    const lockoutScope = providerScopeContext(existing);
+    if (lockoutScope && !acknowledgeLockout) {
+      const preflight = await computeEnforcementLockoutPreflight(lockoutScope, existing.id, auth.user.id);
+      if (preflight.unlinkedCount > 0) {
+        writeRouteAudit(c, {
+          orgId: existing.orgId,
+          action: 'sso.provider.update.rejected',
+          resourceType: 'sso_provider',
+          resourceId: existing.id,
+          details: {
+            reason: 'enforcement_lockout_unacknowledged',
+            unlinkedCount: preflight.unlinkedCount,
+            partnerId: existing.partnerId
+          }
+        });
+        return c.json({
+          error: `Enabling Enforce SSO would lock out ${preflight.unlinkedCount} active user(s) who have no usable SSO link. `
+            + 'Review the preflight payload and resend with acknowledgeLockout: true to proceed.',
+          code: 'sso_enforcement_lockout_confirmation_required',
+          preflight
+        }, 409);
+      }
+    }
   }
 
   // SR2-10: axis-aware. This was partner-only (`existing.partnerId && ...`), so
@@ -1373,14 +1415,24 @@ ssoRoutes.post(
   requirePermission(PERMISSIONS.SSO_ADMIN.resource, PERMISSIONS.SSO_ADMIN.action),
   requireMfa(),
   zValidator('param', providerIdParamSchema),
-  zValidator('json', z.object({ status: z.enum(['active', 'inactive', 'testing']) })),
+  zValidator('json', z.object({
+    status: z.enum(['active', 'inactive', 'testing']),
+    // #4068: confirm-through for the lockout guard below.
+    acknowledgeLockout: z.boolean().optional()
+  })),
   async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { id: providerId } = c.req.valid('param');
-  const { status } = c.req.valid('json');
+  const { status, acknowledgeLockout } = c.req.valid('json');
 
   const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
+    .select({
+      id: ssoProviders.id,
+      orgId: ssoProviders.orgId,
+      partnerId: ssoProviders.partnerId,
+      status: ssoProviders.status,
+      enforceSSO: ssoProviders.enforceSSO
+    })
     .from(ssoProviders)
     .where(eq(ssoProviders.id, providerId))
     .limit(1);
@@ -1391,6 +1443,36 @@ ssoRoutes.post(
 
   if (!canWriteProviderRow(auth, existing)) {
     return c.json({ error: 'Access denied' }, 403);
+  }
+
+  // #4068: activating a provider that already has enforceSSO set is the second
+  // transition that makes enforcement live (the first is PATCHing enforceSSO
+  // onto an active provider). Same confirm-through contract: a lockout-causing
+  // activation without acknowledgeLockout gets a 409 carrying the preflight.
+  if (status === 'active' && existing.status !== 'active' && existing.enforceSSO && !acknowledgeLockout) {
+    const lockoutScope = providerScopeContext(existing);
+    if (lockoutScope) {
+      const preflight = await computeEnforcementLockoutPreflight(lockoutScope, existing.id, auth.user.id);
+      if (preflight.unlinkedCount > 0) {
+        writeRouteAudit(c, {
+          orgId: existing.orgId,
+          action: 'sso.provider.status.update.rejected',
+          resourceType: 'sso_provider',
+          resourceId: existing.id,
+          details: {
+            reason: 'enforcement_lockout_unacknowledged',
+            unlinkedCount: preflight.unlinkedCount,
+            partnerId: existing.partnerId
+          }
+        });
+        return c.json({
+          error: `Activating this provider enforces SSO and would lock out ${preflight.unlinkedCount} active user(s) who have no usable SSO link. `
+            + 'Review the preflight payload and resend with acknowledgeLockout: true to proceed.',
+          code: 'sso_enforcement_lockout_confirmation_required',
+          preflight
+        }, 409);
+      }
+    }
   }
 
   const [updated] = await db
@@ -1420,6 +1502,236 @@ ssoRoutes.post(
   });
 
     return c.json({ data: updated });
+  }
+);
+
+// ============================================
+// Enforce-SSO lockout preflight (#4068)
+// ============================================
+//
+// Enabling Enforce SSO blocks password login for EVERY user on the provider's
+// axis (routes/auth/ssoPolicy.ts), and unlinked users are bounced by SSO too
+// (`sso_link_required` — password-holding accounts are never auto-linked, the
+// #2183 guard). So the moment enforcement goes live, any active user without a
+// linked identity is locked out with no self-recovery. This preflight computes
+// that population BEFORE the admin commits, so the UI can demand an explicit
+// confirmation naming the users who will lose access.
+//
+// Population semantics: the pre-auth login entries (GET /sso/login/:orgId and
+// GET /sso/login/partner/:partnerId below) always route through the OLDEST
+// active provider on the axis (`orderBy(createdAt, id).limit(1)`, #2195) — a
+// user's only pre-auth SSO path is a link to THAT provider. So "locked out" =
+// no identity link to the provider the login entry will select once the
+// preflighted change is live: the oldest of (currently-active providers ∪ the
+// target provider). The target joins the candidate set whatever its current
+// status, because enforcement only bites once it's active and the admin's
+// intent is exactly that end state. Counting links to any active provider
+// would UNDER-report — a link to a newer active provider is unusable at login.
+// Membership mirrors resolveCurrentUserTokenContext (routes/auth/helpers.ts):
+// partner_users wins over organization_users, so an org-axis preflight
+// excludes users who also hold a partner membership — they resolve to the
+// partner axis and an org provider never gates them.
+const enforcementPreflightSchema = z.object({
+  // Present for the edit/activate flows; omitted for the create flow (the
+  // provider doesn't exist yet — the axis comes from ownerScope/orgId exactly
+  // like POST /providers derives it).
+  providerId: z.string().guid().optional(),
+  ownerScope: z.enum(['organization', 'partner']).default('organization'),
+  orgId: z.string().guid().optional()
+});
+
+// Response list cap. Counts stay exact; only the listed emails truncate. Self
+// sorts first so the guaranteed-total-lockout case (the admin locking THEMSELF
+// out) is always visible even when truncated.
+const ENFORCEMENT_PREFLIGHT_LIST_CAP = 200;
+
+type EnforcementPreflightResult = {
+  totalActiveUsers: number;
+  unlinkedCount: number;
+  selfLockedOut: boolean;
+  truncated: boolean;
+  // The provider the pre-auth login entry will select once the change is live
+  // (see population semantics above). null: no login-capable provider at all.
+  loginProvider: { id: string; name: string; type: 'oidc' | 'saml' } | null;
+  unlinked: Array<{ id: string; email: string; name: string; isSelf: boolean; hasPasskey: boolean }>;
+};
+
+// Exported for ssoEnforcementPreflight.integration.test.ts — the population
+// SQL (axis membership, partner-wins exclusion, effective-provider linkage)
+// only proves out against real Postgres.
+export async function computeEnforcementLockoutPreflight(
+  axis: ScopeContext,
+  targetProviderId: string | null,
+  selfUserId: string
+): Promise<EnforcementPreflightResult> {
+  // user_sso_identities is user-id-scoped and user_passkeys self-scoped under
+  // RLS — an admin's tenant context reads 0 rows from both, which would make
+  // every user look unlinked. Callers prove the caller's authority over the
+  // axis under RLS BEFORE invoking this; the population read is then a
+  // legitimate system operation (same justification as the provider-delete
+  // cleanup above).
+  const { population, loginProvider } = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const axisProviderCondition = axis.scope === 'partner'
+        ? eq(ssoProviders.partnerId, axis.partnerId)
+        : eq(ssoProviders.orgId, axis.orgId);
+      const axisProviders = await db
+        .select({ id: ssoProviders.id, name: ssoProviders.name, type: ssoProviders.type, status: ssoProviders.status })
+        .from(ssoProviders)
+        .where(axisProviderCondition)
+        .orderBy(ssoProviders.createdAt, ssoProviders.id);
+      // Same pick the login entries make: oldest by (createdAt, id) among the
+      // providers that will be usable once the change is live.
+      const picked = axisProviders
+        .find((p) => p.status === 'active' || p.id === targetProviderId) ?? null;
+
+      // The login entry 400s on a SAML pick ("Only OIDC login is currently
+      // supported") — it does NOT fall through to the next provider. A SAML
+      // effective provider therefore gives nobody a pre-auth SSO path, same as
+      // no provider at all (create flow with no active siblings). `false`
+      // keeps the query well-formed in both cases.
+      const loginCapableProviderId = picked && picked.type === 'oidc' ? picked.id : null;
+      const linkedColumn = loginCapableProviderId
+        ? exists(db
+            .select({ one: sql`1` })
+            .from(userSsoIdentities)
+            .where(and(
+              eq(userSsoIdentities.userId, users.id),
+              eq(userSsoIdentities.providerId, loginCapableProviderId)
+            )))
+        : sql<boolean>`false`;
+      // Passkey login never consults the SSO enforcement gate, so a passkey
+      // holder keeps a sign-in path — surfaced as an annotation, not an
+      // exclusion (the passkey may live on a lost device).
+      const passkeyColumn = exists(db
+        .select({ one: sql`1` })
+        .from(userPasskeys)
+        .where(and(
+          eq(userPasskeys.userId, users.id),
+          isNull(userPasskeys.disabledAt)
+        )));
+
+      const memberColumns = {
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        linked: linkedColumn,
+        hasPasskey: passkeyColumn
+      };
+      const members = axis.scope === 'partner'
+        ? await db
+            .select(memberColumns)
+            .from(partnerUsers)
+            .innerJoin(users, eq(partnerUsers.userId, users.id))
+            .where(and(
+              eq(partnerUsers.partnerId, axis.partnerId),
+              eq(users.status, 'active')
+            ))
+        : await db
+            .select(memberColumns)
+            .from(organizationUsers)
+            .innerJoin(users, eq(organizationUsers.userId, users.id))
+            .where(and(
+              eq(organizationUsers.orgId, axis.orgId),
+              eq(users.status, 'active'),
+              notExists(db
+                .select({ one: sql`1` })
+                .from(partnerUsers)
+                .where(eq(partnerUsers.userId, users.id)))
+            ));
+      return { population: members, loginProvider: picked };
+    })
+  );
+
+  const unlinked = population
+    .filter((m) => !m.linked)
+    .map((m) => ({
+      id: m.id,
+      email: m.email,
+      name: m.name,
+      isSelf: m.id === selfUserId,
+      hasPasskey: Boolean(m.hasPasskey)
+    }))
+    .sort((a, b) => Number(b.isSelf) - Number(a.isSelf) || a.email.localeCompare(b.email));
+
+  return {
+    totalActiveUsers: population.length,
+    unlinkedCount: unlinked.length,
+    selfLockedOut: unlinked.some((u) => u.isSelf),
+    truncated: unlinked.length > ENFORCEMENT_PREFLIGHT_LIST_CAP,
+    loginProvider: loginProvider
+      ? { id: loginProvider.id, name: loginProvider.name, type: loginProvider.type }
+      : null,
+    unlinked: unlinked.slice(0, ENFORCEMENT_PREFLIGHT_LIST_CAP)
+  };
+}
+
+ssoRoutes.post(
+  '/providers/enforcement-preflight',
+  authMiddleware,
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SSO_ADMIN.resource, PERMISSIONS.SSO_ADMIN.action),
+  requireMfa(),
+  zValidator('json', enforcementPreflightSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const body = c.req.valid('json');
+
+    // Resolve the axis under the caller's own RLS context, with the same
+    // authority checks as the corresponding write route — the preflight
+    // discloses user emails, so it must be exactly as hard to reach as the
+    // write it fronts.
+    let axis: ScopeContext;
+    let targetProviderId: string | null = null;
+    if (body.providerId) {
+      const [existing] = await db
+        .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
+        .from(ssoProviders)
+        .where(eq(ssoProviders.id, body.providerId))
+        .limit(1);
+      if (!existing) {
+        return c.json({ error: 'Provider not found' }, 404);
+      }
+      if (!canWriteProviderRow(auth, existing)) {
+        return c.json({ error: 'Access denied' }, 403);
+      }
+      const scopeContext = providerScopeContext(existing);
+      if (!scopeContext) {
+        return c.json({ error: 'Provider has no owning organization or partner' }, 400);
+      }
+      axis = scopeContext;
+      targetProviderId = existing.id;
+    } else if (body.ownerScope === 'partner') {
+      if (auth.scope !== 'partner' || !auth.partnerId) {
+        return c.json({ error: 'Partner scope required for a partner-axis SSO provider' }, 400);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      axis = { scope: 'partner', partnerId: auth.partnerId };
+    } else {
+      const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+      if ('error' in orgResult) {
+        return c.json({ error: orgResult.error }, orgResult.status);
+      }
+      axis = { scope: 'organization', orgId: orgResult.orgId };
+    }
+
+    const preflight = await computeEnforcementLockoutPreflight(axis, targetProviderId, auth.user.id);
+
+    writeRouteAudit(c, {
+      orgId: axis.scope === 'organization' ? axis.orgId : null,
+      action: 'sso.provider.enforcement_preflight',
+      resourceType: 'sso_provider',
+      resourceId: targetProviderId ?? undefined,
+      details: {
+        partnerId: axis.scope === 'partner' ? axis.partnerId : null,
+        totalActiveUsers: preflight.totalActiveUsers,
+        unlinkedCount: preflight.unlinkedCount
+      }
+    });
+
+    return c.json({ data: preflight });
   }
 );
 

@@ -11,6 +11,21 @@ import { runAction, handleActionError } from '../../lib/runAction';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
 
+// #4068: lockout preflight for enabling Enforce SSO. Mirrors the API's
+// POST /sso/providers/enforcement-preflight response.
+type EnforcementPreflight = {
+  totalActiveUsers: number;
+  unlinkedCount: number;
+  selfLockedOut: boolean;
+  truncated: boolean;
+  loginProvider: { id: string; name: string; type: 'oidc' | 'saml' } | null;
+  unlinked: Array<{ id: string; email: string; name: string; isSelf: boolean; hasPasskey: boolean }>;
+};
+
+type PendingEnforceAction =
+  | { kind: 'save'; values: SsoProviderFormValues }
+  | { kind: 'activate'; provider: SsoProvider };
+
 type TestResult = {
   success: boolean;
   message?: string;
@@ -36,6 +51,12 @@ export default function SsoProvidersPage() {
   const [submitting, setSubmitting] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  // #4068: the lockout confirm renders as an OVERLAY on top of whatever is
+  // open (the add/edit form keeps its state underneath; the activate toggle
+  // has no modal at all), so it's independent of modalMode.
+  const [enforcePreflight, setEnforcePreflight] = useState<EnforcementPreflight | null>(null);
+  const [pendingEnforceAction, setPendingEnforceAction] = useState<PendingEnforceAction | null>(null);
+  const [lockoutAcknowledged, setLockoutAcknowledged] = useState(false);
 
   // Partner-scope viewers additionally own partner-wide (technician-login)
   // providers. Gate on the JWT scope, never partners.length (known-broken).
@@ -189,11 +210,46 @@ export default function SsoProvidersPage() {
     }
   };
 
-  const handleToggleStatus = async (provider: SsoProvider, newStatus: 'active' | 'inactive') => {
+  // #4068: who loses sign-in if enforcement goes live for this change. A
+  // failed preflight read returns null and the caller falls through to the
+  // save — the API's own confirm-through guard (409) is the backstop, so a
+  // broken preflight can never silently skip the protection OR wedge saving.
+  const fetchEnforcementPreflight = useCallback(async (body: Record<string, unknown>): Promise<EnforcementPreflight | null> => {
+    try {
+      const response = await fetchWithAuth('/sso/providers/enforcement-preflight', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      });
+      if (response.status === 401) {
+        void navigateTo('/login', { replace: true });
+        return null;
+      }
+      if (response.ok) {
+        return (await response.json()).data ?? null;
+      }
+    } catch {
+      // fall through — server guard still applies
+    }
+    return null;
+  }, []);
+
+  const openLockoutConfirm = (preflight: EnforcementPreflight, action: PendingEnforceAction) => {
+    setEnforcePreflight(preflight);
+    setPendingEnforceAction(action);
+    setLockoutAcknowledged(false);
+  };
+
+  const closeLockoutConfirm = () => {
+    setEnforcePreflight(null);
+    setPendingEnforceAction(null);
+    setLockoutAcknowledged(false);
+  };
+
+  const performToggleStatus = async (provider: SsoProvider, newStatus: 'active' | 'inactive', acknowledgeLockout: boolean) => {
     try {
       const response = await fetchWithAuth(`/sso/providers/${provider.id}/status`, {
         method: 'POST',
-        body: JSON.stringify({ status: newStatus })
+        body: JSON.stringify({ status: newStatus, ...(acknowledgeLockout ? { acknowledgeLockout: true } : {}) })
       });
 
       if (!response.ok) {
@@ -204,6 +260,18 @@ export default function SsoProvidersPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : t('ssoProvidersPage.anErrorOccurred'));
     }
+  };
+
+  const handleToggleStatus = async (provider: SsoProvider, newStatus: 'active' | 'inactive') => {
+    // Activating an enforcing provider is a lockout moment — preflight it.
+    if (newStatus === 'active' && provider.enforceSSO) {
+      const preflight = await fetchEnforcementPreflight({ providerId: provider.id });
+      if (preflight && preflight.unlinkedCount > 0) {
+        openLockoutConfirm(preflight, { kind: 'activate', provider });
+        return;
+      }
+    }
+    await performToggleStatus(provider, newStatus, false);
   };
 
   const handleDelete = (provider: SsoProvider) => {
@@ -241,6 +309,26 @@ export default function SsoProvidersPage() {
   };
 
   const handleSubmit = async (values: SsoProviderFormValues) => {
+    // #4068: enabling Enforce SSO (newly — an edit that keeps it on isn't a
+    // transition) can lock out every unlinked user on the axis. Preflight and
+    // demand explicit confirmation naming them before the save goes out.
+    const newlyEnforcing = values.enforceSSO
+      && !(modalMode === 'edit' && selectedProviderDetails?.enforceSSO);
+    if (newlyEnforcing) {
+      const preflight = await fetchEnforcementPreflight(
+        modalMode === 'edit' && selectedProvider
+          ? { providerId: selectedProvider.id }
+          : { ownerScope: values.ownerScope ?? 'organization' }
+      );
+      if (preflight && preflight.unlinkedCount > 0) {
+        openLockoutConfirm(preflight, { kind: 'save', values });
+        return;
+      }
+    }
+    await submitProvider(values, false);
+  };
+
+  const submitProvider = async (values: SsoProviderFormValues, acknowledgeLockout: boolean) => {
     setSubmitting(true);
     try {
       const url = modalMode === 'edit' && selectedProvider
@@ -249,11 +337,15 @@ export default function SsoProvidersPage() {
       const method = modalMode === 'edit' ? 'PATCH' : 'POST';
 
       // Don't send empty client secret on edit
-      const payload = { ...values };
+      const payload: Record<string, unknown> = { ...values };
       if (modalMode === 'edit') {
         if (!payload.clientSecret) delete payload.clientSecret;
         // ownerScope is create-only (the update schema omits it); never PATCH it.
         delete payload.ownerScope;
+        // #4068: confirm-through for the API's lockout guard. Only PATCH (and
+        // the status route) accept it — a create can't lock anyone out because
+        // providers are born inactive.
+        if (acknowledgeLockout) payload.acknowledgeLockout = true;
       }
 
       // A blank optional field (e.g. defaultRoleId reset to "Select a role",
@@ -274,6 +366,17 @@ export default function SsoProvidersPage() {
       handleActionError(err, t('ssoProvidersPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleConfirmEnforceLockout = async () => {
+    if (!pendingEnforceAction || !lockoutAcknowledged) return;
+    const action = pendingEnforceAction;
+    closeLockoutConfirm();
+    if (action.kind === 'save') {
+      await submitProvider(action.values, true);
+    } else {
+      await performToggleStatus(action.provider, 'active', true);
     }
   };
 
@@ -529,6 +632,79 @@ export default function SsoProvidersPage() {
                 className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
               >
                 {t('ssoProvidersPage.close')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* #4068: Enforce-SSO lockout confirmation. Rendered ABOVE any open
+          modal (z-60 > z-50) so the add/edit form keeps its state when the
+          admin cancels. */}
+      {enforcePreflight && pendingEnforceAction && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-background/80 px-4 py-8">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs" data-testid="enforce-lockout-modal">
+            <h2 className="text-lg font-semibold text-destructive">
+              {t('ssoProvidersPage.enforceLockoutTitle')}</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {t('ssoProvidersPage.enforceLockoutSummary', {
+                unlinked: enforcePreflight.unlinkedCount,
+                total: enforcePreflight.totalActiveUsers
+              })}
+            </p>
+
+            <ul className="mt-4 max-h-56 space-y-1 overflow-y-auto rounded-md border bg-muted/40 p-3 text-sm">
+              {enforcePreflight.unlinked.map(user => (
+                <li key={user.id} data-testid="enforce-lockout-user" className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{user.email}</span>
+                  {user.isSelf && (
+                    <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-xs font-medium text-destructive">
+                      {t('ssoProvidersPage.enforceLockoutSelfBadge')}</span>
+                  )}
+                  {user.hasPasskey && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                      {t('ssoProvidersPage.enforceLockoutHasPasskey')}</span>
+                  )}
+                </li>
+              ))}
+              {enforcePreflight.truncated && (
+                <li className="text-xs text-muted-foreground">{t('ssoProvidersPage.enforceLockoutTruncated')}</li>
+              )}
+            </ul>
+
+            {enforcePreflight.selfLockedOut && (
+              <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-3">
+                <p className="text-sm font-medium text-destructive">
+                  {t('ssoProvidersPage.enforceLockoutSelfWarning')}</p>
+              </div>
+            )}
+
+            <label className="mt-4 flex items-start gap-3">
+              <input
+                type="checkbox"
+                data-testid="enforce-lockout-ack"
+                checked={lockoutAcknowledged}
+                onChange={e => setLockoutAcknowledged(e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-primary"
+              />
+              <span className="text-sm">{t('ssoProvidersPage.enforceLockoutAcknowledge')}</span>
+            </label>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                data-testid="enforce-lockout-cancel"
+                onClick={closeLockoutConfirm}
+                className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+              >
+                {t('ssoProvidersPage.cancel')}</button>
+              <button
+                type="button"
+                data-testid="enforce-lockout-confirm"
+                onClick={handleConfirmEnforceLockout}
+                disabled={!lockoutAcknowledged || submitting}
+                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t('ssoProvidersPage.enforceLockoutConfirm')}</button>
             </div>
           </div>
         </div>

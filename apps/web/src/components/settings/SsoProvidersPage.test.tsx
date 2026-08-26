@@ -258,6 +258,180 @@ describe('SsoProvidersPage partner-axis behavior', () => {
     expect((toggle as HTMLInputElement).checked).toBe(true);
   });
 
+  // #4068: enabling Enforce SSO preflights the lockout population and demands
+  // an explicit acknowledged confirmation naming the users who lose access.
+  describe('enforce-SSO lockout confirm-through', () => {
+    const PREFLIGHT_URL = '/sso/providers/enforcement-preflight';
+
+    const preflightPayload = (unlinked: Array<{ id: string; email: string; name: string; isSelf?: boolean; hasPasskey?: boolean }>) => ({
+      data: {
+        totalActiveUsers: 5,
+        unlinkedCount: unlinked.length,
+        selfLockedOut: unlinked.some(u => u.isSelf),
+        truncated: false,
+        loginProvider: { id: 'pp-1', name: 'Team Login', type: 'oidc' },
+        unlinked: unlinked.map(u => ({ isSelf: false, hasPasskey: false, ...u }))
+      }
+    });
+
+    function routeWithPreflight(opts: {
+      provider?: Partial<Provider> & { enforceSSO: boolean };
+      preflight: ReturnType<typeof preflightPayload>;
+    }) {
+      const provider = { ...PARTNER_PROVIDER, ...opts.provider };
+      fetchWithAuth.mockImplementation((url: string, reqOpts?: { method?: string }) => {
+        if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [provider] }));
+        if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === PREFLIGHT_URL) return Promise.resolve(jsonRes(opts.preflight));
+        if (url === '/sso/providers/pp-1' && (!reqOpts || !reqOpts.method)) {
+          return Promise.resolve(
+            jsonRes({
+              data: {
+                name: 'Team Login',
+                type: 'oidc',
+                preset: '',
+                issuer: 'https://idp.example.com',
+                clientId: 'client-1',
+                scopes: 'openid profile email',
+                attributeMapping: { email: 'email', name: 'name' },
+                autoProvision: true,
+                defaultRoleId: '',
+                allowedDomains: '',
+                enforceSSO: provider.enforceSSO,
+                hasClientSecret: true,
+              },
+            })
+          );
+        }
+        if (url === '/sso/providers/pp-1' && reqOpts?.method === 'PATCH') {
+          return Promise.resolve(jsonRes({ data: provider }));
+        }
+        if (url === '/sso/providers/pp-1/status' && reqOpts?.method === 'POST') {
+          return Promise.resolve(jsonRes({ data: provider }));
+        }
+        return Promise.resolve(jsonRes({ data: [] }));
+      });
+    }
+
+    const enforceToggle = () => {
+      // The enforce checkbox is the first checkbox in the Security section —
+      // find it via its label text association.
+      const label = screen.getByText('Enforce SSO-only login');
+      return label.closest('label')!.querySelector('input') as HTMLInputElement;
+    };
+
+    it('shows the lockout confirm with the unlinked users, gates on the checkbox, then PATCHes with acknowledgeLockout', async () => {
+      routeWithPreflight({
+        provider: { enforceSSO: false },
+        preflight: preflightPayload([
+          { id: 'u-1', email: 'a@example.com', name: 'A', isSelf: true },
+          { id: 'u-2', email: 'b@example.com', name: 'B', hasPasskey: true }
+        ])
+      });
+      render(<SsoProvidersPage />);
+
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const toggle = await waitFor(() => enforceToggle());
+      fireEvent.click(toggle);
+      fireEvent.click(screen.getByTestId('provider-save'));
+
+      // The confirm overlay names both users; no PATCH yet.
+      const modal = await screen.findByTestId('enforce-lockout-modal');
+      expect(modal.textContent).toContain('a@example.com');
+      expect(modal.textContent).toContain('b@example.com');
+      const patchBefore = fetchWithAuth.mock.calls.find(
+        (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+      );
+      expect(patchBefore).toBeUndefined();
+
+      // Confirm is disabled until acknowledged.
+      const confirm = screen.getByTestId('enforce-lockout-confirm') as HTMLButtonElement;
+      expect(confirm.disabled).toBe(true);
+      fireEvent.click(screen.getByTestId('enforce-lockout-ack'));
+      expect(confirm.disabled).toBe(false);
+      fireEvent.click(confirm);
+
+      await waitFor(() => {
+        const patchCall = fetchWithAuth.mock.calls.find(
+          (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+        );
+        expect(patchCall).toBeTruthy();
+        const body = JSON.parse((patchCall![1] as { body: string }).body);
+        expect(body.enforceSSO).toBe(true);
+        expect(body.acknowledgeLockout).toBe(true);
+      });
+    });
+
+    it('saves straight through (no modal, no acknowledgeLockout) when nobody would be locked out', async () => {
+      routeWithPreflight({ provider: { enforceSSO: false }, preflight: preflightPayload([]) });
+      render(<SsoProvidersPage />);
+
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const toggle = await waitFor(() => enforceToggle());
+      fireEvent.click(toggle);
+      fireEvent.click(screen.getByTestId('provider-save'));
+
+      await waitFor(() => {
+        const patchCall = fetchWithAuth.mock.calls.find(
+          (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+        );
+        expect(patchCall).toBeTruthy();
+        const body = JSON.parse((patchCall![1] as { body: string }).body);
+        expect(body).not.toHaveProperty('acknowledgeLockout');
+      });
+      expect(screen.queryByTestId('enforce-lockout-modal')).toBeNull();
+    });
+
+    it('does not preflight an edit that keeps enforcement already on', async () => {
+      routeWithPreflight({
+        provider: { enforceSSO: true },
+        preflight: preflightPayload([{ id: 'u-1', email: 'a@example.com', name: 'A' }])
+      });
+      render(<SsoProvidersPage />);
+
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      await screen.findByRole('button', { name: /save changes/i });
+      fireEvent.click(screen.getByTestId('provider-save'));
+
+      await waitFor(() => {
+        const patchCall = fetchWithAuth.mock.calls.find(
+          (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+        );
+        expect(patchCall).toBeTruthy();
+      });
+      expect(fetchWithAuth.mock.calls.find((c) => c[0] === PREFLIGHT_URL)).toBeUndefined();
+    });
+
+    it('activating an enforcing provider preflights and sends acknowledgeLockout on confirm', async () => {
+      routeWithPreflight({
+        provider: { enforceSSO: true, status: 'inactive' },
+        preflight: preflightPayload([{ id: 'u-1', email: 'a@example.com', name: 'A' }])
+      });
+      render(<SsoProvidersPage />);
+
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Activate' }));
+
+      await screen.findByTestId('enforce-lockout-modal');
+      fireEvent.click(screen.getByTestId('enforce-lockout-ack'));
+      fireEvent.click(screen.getByTestId('enforce-lockout-confirm'));
+
+      await waitFor(() => {
+        const statusCall = fetchWithAuth.mock.calls.find(
+          (c) => c[0] === '/sso/providers/pp-1/status' && (c[1] as { method?: string })?.method === 'POST'
+        );
+        expect(statusCall).toBeTruthy();
+        const body = JSON.parse((statusCall![1] as { body: string }).body);
+        expect(body).toMatchObject({ status: 'active', acknowledgeLockout: true });
+      });
+    });
+  });
+
   it('PATCHes trustsIdpMfa=false when an already-trusting provider is turned OFF', async () => {
     routeEditableProvider(true);
     render(<SsoProvidersPage />);

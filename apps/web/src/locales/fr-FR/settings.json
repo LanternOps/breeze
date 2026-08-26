@@ -2202,7 +2202,15 @@
     "unableToConnectToTheIdentityProvider": "Impossible de se connecter au fournisseur d’identité.",
     "testFailed": "Test échoué",
     "createProvider": "Créer un fournisseur",
-    "saveChanges": "Enregistrer les modifications"
+    "saveChanges": "Enregistrer les modifications",
+    "enforceLockoutTitle": "Des utilisateurs seront bloqués",
+    "enforceLockoutSummary": "{{unlinked}} des {{total}} utilisateurs actifs n'ont pas connecté l'authentification unique et ne pourront plus se connecter une fois l'application obligatoire de l'authentification unique activée :",
+    "enforceLockoutSelfBadge": "votre compte",
+    "enforceLockoutHasPasskey": "possède une clé d'accès",
+    "enforceLockoutTruncated": "…et d'autres non affichés.",
+    "enforceLockoutSelfWarning": "Votre propre compte n'est pas connecté — vous vous bloqueriez vous-même.",
+    "enforceLockoutAcknowledge": "Je comprends que ces utilisateurs ne pourront pas se connecter tant qu'ils n'auront pas connecté l'authentification unique",
+    "enforceLockoutConfirm": "Activer l'application obligatoire"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",

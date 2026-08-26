@@ -2202,7 +2202,15 @@
     "unableToConnectToTheIdentityProvider": "Kimlik sağlayıcıya bağlanılamıyor.",
     "testFailed": "Test başarısız oldu",
     "createProvider": "Sağlayıcı oluştur",
-    "saveChanges": "Değişiklikleri kaydet"
+    "saveChanges": "Değişiklikleri kaydet",
+    "enforceLockoutTitle": "Kullanıcıların erişimi engellenecek",
+    "enforceLockoutSummary": "{{total}} etkin kullanıcıdan {{unlinked}} tanesi SSO bağlantısı yapmadı ve SSO zorunluluğu etkinleştiğinde oturum açamayacak:",
+    "enforceLockoutSelfBadge": "sizin hesabınız",
+    "enforceLockoutHasPasskey": "geçiş anahtarı var",
+    "enforceLockoutTruncated": "…ve gösterilmeyen diğerleri.",
+    "enforceLockoutSelfWarning": "Kendi hesabınız bağlı değil — kendinizi kilitlemiş olursunuz.",
+    "enforceLockoutAcknowledge": "Bu kullanıcıların SSO bağlantısı yapana kadar oturum açamayacağını anlıyorum",
+    "enforceLockoutConfirm": "Zorunluluğu etkinleştir"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
