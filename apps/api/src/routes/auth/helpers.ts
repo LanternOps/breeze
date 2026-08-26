@@ -46,9 +46,32 @@ import {
 
 const { db } = dbModule;
 
+/**
+ * Run `fn` inside the SYSTEM DB access context.
+ *
+ * FAILS CLOSED when the wrapper is unavailable. This used to degrade silently
+ * to a bare `fn()`, which is not a graceful fallback — it is a CONTEXTLESS
+ * query, the exact bug class the callers below exist to avoid. Under forced
+ * RLS as `breeze_app` a contextless read matches ZERO rows rather than
+ * erroring, so the caller sees "no such user / no factors" and hands back the
+ * PERMISSIVE answer. {@link userIsMfaProtected} answering `false` that way
+ * would open the first-factor-enrollment gate for an account that actually
+ * holds factors.
+ *
+ * The `typeof` check only ever fired under a test mock of `../../db` that
+ * omitted the wrapper; production always exports it. Nested inside an existing
+ * request context the real `withSystemDbAccessContext` short-circuits on its
+ * own — that legitimate case is unchanged, it never reached this branch.
+ */
 export const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof withSystem !== 'function') {
+    const message =
+      '[auth] runWithSystemDbAccess: withSystemDbAccessContext is unavailable; refusing to run a security probe with no DB access context';
+    console.error(message);
+    throw new Error(message);
+  }
+  return withSystem(fn);
 };
 
 // Shared floor-the-clock timing equalizer for pre-auth endpoints whose latency
@@ -253,6 +276,16 @@ export async function requireFreshMfaStepUp(
  * `/passkeys/register/*`) call this from within their own request-scoped
  * (user-id-scoped) RLS context, where it would still resolve correctly, but
  * system context keeps this probe uniform regardless of caller context.
+ *
+ * THROWS when the row is missing rather than reporting `false`. Every caller
+ * is authenticated, so the row must exist; a zero-row read means the probe did
+ * not run as intended (lost DB access context, a row vanishing mid-request),
+ * and `false` is the PERMISSIVE answer on every gate that consumes this — it
+ * says "no factor yet, initial enrollment, password-only is enough" for an
+ * account that may hold factors. Failing loud pushes those gates onto their
+ * error path (a 500) instead of silently waving the caller through. Today the
+ * `!user -> 401` probe in {@link resolveEnrollmentStepUp} happens to fire
+ * first, but that is call ordering, not a designed control.
  */
 export async function userIsMfaProtected(userId: string): Promise<boolean> {
   const [row] = await runWithSystemDbAccess(() =>
@@ -265,7 +298,12 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
       .where(eq(users.id, userId))
       .limit(1)
   );
-  return row?.mfaEnabled === true || Number(row?.passkeyCount ?? 0) > 0;
+  if (!row) {
+    const message = `[auth] userIsMfaProtected: no users row for ${userId}; refusing to report the account unprotected`;
+    console.error(message);
+    throw new Error(message);
+  }
+  return row.mfaEnabled === true || Number(row.passkeyCount ?? 0) > 0;
 }
 
 /**
