@@ -137,12 +137,18 @@ export const ssoSessions = pgTable('sso_sessions', {
   // rows written before this column existed — the callback REJECTS those.
   providerVersion: integer('provider_version'),
 
-  // The three initiating_* columns are LINK-MODE ONLY (set by
-  // POST /sso/link/start alongside linkUserId). A login session has no
+  // The three initiating_* columns are set by BOTH user-initiated modes — link
+  // (POST /sso/link/start, alongside linkUserId) and reauth (POST
+  // /sso/reauth/start, alongside reauthUserId). A login session has no
   // initiating user, so they stay NULL there — which is why they are nullable.
-  // The link callback requires all three to be present AND to still match live
-  // state, which is what makes logout / password reset / MFA reset / suspension
-  // / global revocation invalidate a pending link.
+  // Both callbacks require all three to be present AND to still match live
+  // state (validateSessionBinding), which is what makes logout / password reset
+  // / MFA reset / suspension / global revocation invalidate a pending
+  // transaction in either mode.
+  //
+  // Reauth leans on them twice: once for that binding check, and again to stamp
+  // the minted step-up grant with the epochs and sid the transaction STARTED
+  // under, so a grant cannot outlive the session that authorized it.
   initiatingAuthEpoch: integer('initiating_auth_epoch'),
   initiatingMfaEpoch: integer('initiating_mfa_epoch'),
   // = refresh_token_families.family_id == the initiating access token's `sid`.

@@ -346,7 +346,9 @@ export async function enforceExistingFactorStepUp(
  * (SR2-20), which exists precisely to require proving an EXISTING factor
  * before adding a new one. The predicate is {@link userIsMfaProtected} — the
  * same one SR2-20 uses — so the two gates can never drift apart. A protected
- * account simply falls through to the unchanged step-up requirements.
+ * passwordless account is REFUSED this road outright (401); it does not fall
+ * through to any other step-up here. Its route back in is the SR2-20 path,
+ * proving the factor it already holds.
  *
  * Every rejection is the same opaque `Invalid credentials` 401 the password
  * path already returns, so the response never reveals whether the account has
