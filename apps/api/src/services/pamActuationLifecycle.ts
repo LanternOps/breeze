@@ -111,7 +111,7 @@ export async function createPamDecisionIntent(tx: PamLifecycleTx, input: {
       ${input.request.orgId}, ${input.request.deviceId}, ${input.request.id},
       ${input.requestRevision}, 1, ${desiredState}, ${observedState},
       ${input.request.targetExecutablePath}, ${input.request.targetExecutableHash},
-      ${input.request.subjectUsername}, ${input.expiresAt},
+      ${input.request.subjectUsername}, ${input.expiresAt?.toISOString() ?? null}::timestamptz,
       CASE WHEN ${desiredState} = 'cleanup' THEN now() ELSE NULL END
     )
     RETURNING id, elevation_request_id, request_revision, generation, desired_state
@@ -146,7 +146,7 @@ export async function requestPamCleanup(tx: PamLifecycleTx, input: {
         cleanup_requested_at = now(),
         current_command_id = NULL,
         failure_code = NULL,
-        latest_evidence = latest_evidence || jsonb_build_object('cleanupCause', ${input.cause}),
+        latest_evidence = latest_evidence || jsonb_build_object('cleanupCause', ${input.cause}::text),
         updated_at = now()
     WHERE id = ${current.id} AND generation = ${current.generation}
     RETURNING id, elevation_request_id, request_revision, generation, desired_state

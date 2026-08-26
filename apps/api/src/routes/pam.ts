@@ -57,6 +57,11 @@ import {
   elevationRiskTierToName,
 } from '@breeze/shared';
 import { resolveOrgIdForWrite } from './softwarePolicies';
+import {
+  createPamDecisionIntent,
+  requestPamCleanup,
+  type PamActuationRef,
+} from '../services/pamActuationLifecycle';
 
 /**
  * Thrown inside the respond transaction when an ai_tool_action elevation is
@@ -108,6 +113,32 @@ const PREVIEW_SCAN_CAP = 5000; // rows pulled into JS — totalScanned/truncated
 const PREVIEW_SAMPLE_CAP = 10;
 
 const ACTIVE_STATUSES = ['approved', 'auto_approved', 'actuating'] as const;
+
+type PamRouteTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function cleanupPamRuleActuations(
+  tx: PamRouteTx,
+  input: { ruleId: string; orgId: string },
+): Promise<number> {
+  const result = await tx.execute<Record<string, unknown> & { id: string }>(sql`
+    SELECT id
+    FROM elevation_requests
+    WHERE org_id = ${input.orgId}
+      AND status IN ('approved', 'auto_approved', 'actuating')
+      AND metadata ->> 'pam_rule_id' = ${input.ruleId}
+    ORDER BY id
+    FOR UPDATE
+  `);
+  const rows = ((result as { rows?: Array<{ id: string }> }).rows ?? result) as Array<{ id: string }>;
+  for (const row of rows) {
+    await tx
+      .update(elevationRequests)
+      .set({ status: 'revoked', revokedAt: new Date(), revokedReason: 'PAM rule removed', updatedAt: new Date() })
+      .where(and(eq(elevationRequests.id, row.id), inArray(elevationRequests.status, [...ACTIVE_STATUSES])));
+    await requestPamCleanup(tx, { elevationRequestId: row.id, cause: 'policy_removed' });
+  }
+  return rows.length;
+}
 
 // Aliased user joins for the three decider columns (left joins — all three
 // ids are nullable). Reads run under the request's RLS context: a decider the
@@ -448,6 +479,7 @@ pamRoutes.post(
           kind: 'ok';
           row: { id: string; orgId: string; deviceId: string; flowType: string };
           newStatus: string;
+          actuation: PamActuationRef;
         };
     try {
       result = await db.transaction(async (tx) => {
@@ -462,6 +494,10 @@ pamRoutes.post(
             executionId: elevationRequests.executionId,
             riskTier: elevationRequests.riskTier,
             subjectUserId: elevationRequests.subjectUserId,
+            subjectUsername: elevationRequests.subjectUsername,
+            targetExecutablePath: elevationRequests.targetExecutablePath,
+            targetExecutableHash: elevationRequests.targetExecutableHash,
+            revision: elevationRequests.revision,
           })
           .from(elevationRequests)
           .where(eq(elevationRequests.id, id))
@@ -558,6 +594,23 @@ pamRoutes.post(
           occurredAt: now,
         });
 
+        const expiresAt = approve
+          ? new Date(now.getTime() + durationMinutes * 60_000)
+          : null;
+        const actuation = await createPamDecisionIntent(tx, {
+          request: {
+            id: row.id,
+            orgId: row.orgId,
+            deviceId: row.deviceId,
+            targetExecutablePath: row.targetExecutablePath ?? '',
+            targetExecutableHash: row.targetExecutableHash,
+            subjectUsername: row.subjectUsername,
+          },
+          requestRevision: row.revision,
+          decision: approve ? 'approved' : 'denied',
+          expiresAt,
+        });
+
         // ai_tool_action rows: mirror the decision onto the linked
         // ai_tool_executions row the SDK gate is polling — in the SAME
         // transaction (Phase 1, security finding A). If the execution is no
@@ -574,7 +627,7 @@ pamRoutes.post(
           }
         }
 
-        return { kind: 'ok' as const, row, newStatus: updated[0]!.status };
+        return { kind: 'ok' as const, row, newStatus: updated[0]!.status, actuation };
       });
     } catch (err) {
       if (err instanceof StepUpRequiredError) {
@@ -679,7 +732,14 @@ pamRoutes.post(
     // NOTE: actuation of approved uac_intercept rows stays on the existing
     // admin actuate route (#960) until #1150 makes the agent the credential
     // authority — approving here does not enqueue an agent command.
-    return c.json({ success: true, id: result.row.id, status: result.newStatus });
+    return c.json({
+      success: true,
+      id: result.row.id,
+      status: result.newStatus,
+      enforcementStatus: result.actuation.desiredState === 'active'
+        ? 'pending_dispatch'
+        : 'cleanup_pending',
+    });
   },
 );
 
@@ -757,7 +817,12 @@ pamRoutes.post(
         occurredAt: now,
       });
 
-      return { kind: 'ok' as const, row };
+      const actuation = await requestPamCleanup(tx, {
+        elevationRequestId: row.id,
+        cause: 'revoked',
+      });
+
+      return { kind: 'ok' as const, row, actuation };
     });
 
     if (result.kind === 'not_found') {
@@ -797,7 +862,12 @@ pamRoutes.post(
     // NOTE: for tech_jit_admin the agent-side group-flip undo command is
     // #1150 scope; until it lands, revoke is a server-side state change
     // (the expiry enforcer provides the time-bound safety net).
-    return c.json({ success: true, id: result.row.id, status: 'revoked' });
+    return c.json({
+      success: true,
+      id: result.row.id,
+      status: 'revoked',
+      enforcementStatus: 'cleanup_pending',
+    });
   },
 );
 
@@ -1240,9 +1310,8 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
     return c.json({ error: shapeError }, 400);
   }
 
-  const [updated] = await db
-    .update(pamRules)
-    .set({
+  const [updated] = await db.transaction(async (tx) => {
+    const result = await tx.update(pamRules).set({
       ...(payload.siteId !== undefined ? { siteId: payload.siteId } : {}),
       ...(payload.name !== undefined ? { name: payload.name } : {}),
       ...(payload.description !== undefined ? { description: payload.description } : {}),
@@ -1281,8 +1350,13 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
         : {}),
       updatedAt: new Date(),
     })
-    .where(eq(pamRules.id, id!))
-    .returning();
+      .where(eq(pamRules.id, id!))
+      .returning();
+    if (payload.enabled === false && existing.enabled) {
+      await cleanupPamRuleActuations(tx, { ruleId: id!, orgId: existing.orgId });
+    }
+    return result;
+  });
 
   writeAuditEvent(c, {
     orgId: existing.orgId,
@@ -1317,7 +1391,10 @@ pamRoutes.delete('/rules/:id', requirePamWrite, requireMfa(), async (c) => {
     return c.json({ error: 'Site access denied' }, 403);
   }
 
-  await db.delete(pamRules).where(eq(pamRules.id, id!));
+  await db.transaction(async (tx) => {
+    await cleanupPamRuleActuations(tx, { ruleId: id!, orgId: existing.orgId });
+    await tx.delete(pamRules).where(eq(pamRules.id, id!));
+  });
 
   writeAuditEvent(c, {
     orgId: existing.orgId,
