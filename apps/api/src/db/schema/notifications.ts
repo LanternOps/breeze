@@ -58,8 +58,9 @@ export const userNotifications = pgTable('user_notifications', {
   // Declared here to match what the database actually has. The index shipped in
   // 2026-09-04-ai-agent-notifications.sql but was never mirrored into this
   // definition, and db:check-drift does not compare the model against a live
-  // database — so the omission stayed invisible. It is what makes `dedupeKey`
-  // an idempotency key rather than a comment.
+  // database — so the omission stayed invisible. This declaration DOCUMENTS the
+  // database object; it does not create it (drizzle-kit generate/push are not
+  // used here). The migration's index is what makes `dedupeKey` enforceable.
   userDedupeKeyUq: uniqueIndex('user_notifications_user_dedupe_key_uq')
     .on(table.userId, table.dedupeKey)
     .where(sql`${table.dedupeKey} IS NOT NULL`)

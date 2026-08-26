@@ -162,6 +162,13 @@ async function runIncidentSlaMonitorPass(): Promise<void> {
       .where(
         and(
           ne(incidents.status, 'closed'),
+          // Exclude rows already escalated. Without this the LIMIT 100 window
+          // fills with incidents that lose the CAS on every pass — they are
+          // never re-paged (the CAS sees to that), but they permanently occupy
+          // the scan budget, so a NEW breach beyond the hundredth stale row is
+          // never looked at. This is also what makes incidents_unescalated_idx
+          // (2026-09-11-b) an index the query planner can actually use.
+          isNull(incidents.escalatedAt),
           or(
             and(eq(incidents.severity, 'p1'), lt(incidents.detectedAt, staleP1At)),
             and(eq(incidents.severity, 'p2'), lt(incidents.detectedAt, staleP2At))
@@ -225,7 +232,34 @@ async function runIncidentSlaMonitorPass(): Promise<void> {
           'incident-sla-monitor'
         );
       } catch (error) {
-        console.error('[IncidentJobs] Failed to publish incident.escalated event:', error);
+        // Un-claim, or this breach is NEVER paged. `escalated_at` is now the
+        // sole gate (line ~183), so a swallowed publish would leave the row
+        // claimed forever while no incident.escalated ever reached anyone —
+        // the timeline would read "exceeded SLA threshold" and on-call would
+        // hear nothing. Releasing the marker lets the next pass (60s) retry.
+        //
+        // Scoped to `escalationAt` so we only release the claim THIS iteration
+        // took: if a concurrent pass has since re-claimed the row, its marker
+        // differs and we leave it alone.
+        try {
+          await db
+            .update(incidents)
+            .set({ escalatedAt: null })
+            .where(and(eq(incidents.id, row.id), eq(incidents.escalatedAt, escalationAt)));
+        } catch (releaseError) {
+          captureException(releaseError instanceof Error ? releaseError : new Error(String(releaseError)));
+        }
+        // captureException as well as the log: a dropped page is the failure
+        // this codebase treats as worse than a duplicate one, and pass-level
+        // failures already reach Sentry while this one never did.
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        console.error('[IncidentJobs] incident-escalation-publish-failed', JSON.stringify({
+          errorId: 'INCIDENT_ESCALATION_PUBLISH_FAILED',
+          incidentId: row.id,
+          orgId: row.orgId,
+          severity: row.severity,
+          error: error instanceof Error ? error.message : String(error),
+        }));
       }
     }
 

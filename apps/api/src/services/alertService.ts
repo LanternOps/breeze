@@ -287,8 +287,10 @@ export async function resolveAlert(
   // auto-resolve sweep and monitorWorker can all reach the same alert, and
   // wave 3.5c makes event delivery at-least-once.
   //
-  // RETURNING replaces the previous SELECT — the returned row carries every
-  // column the rest of this function needs.
+  // RETURNING replaces the previous SELECT. Note it returns the POST-update
+  // row: safe only because nothing below reads a column this SET writes
+  // (status / resolvedAt / resolvedBy / resolutionNote). Adding such a read
+  // later would silently observe the new value.
   const [alert] = await db
     .update(alerts)
     .set({

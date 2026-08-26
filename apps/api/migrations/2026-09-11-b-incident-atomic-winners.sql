@@ -1,18 +1,20 @@
 -- AI agents wave 3.5a (#3825): give the incident background passes something
 -- atomic to compare-and-swap on.
 --
--- Both unsafe passes record their own completion INSIDE the `timeline` jsonb
--- array and gate on reading it back:
+-- BEFORE this migration, both unsafe passes recorded their own completion
+-- INSIDE the `timeline` jsonb array and gated on reading it back:
 --
---   * the enricher (jobs/incidentJobs.ts) selects with
+--   * the enricher (jobs/incidentJobs.ts) selected with
 --     NOT (timeline::jsonb @> '[{"type":"timeline_enriched"}]'::jsonb)
---     and then appends a timeline_enriched entry;
---   * the SLA monitor computes alreadyEscalated from
+--     and then appended a timeline_enriched entry;
+--   * the SLA monitor computed alreadyEscalated from
 --     timeline.some(e => e.type === 'incident_escalated')
---     and then appends an incident_escalated entry.
+--     and then appended an incident_escalated entry.
 --
 -- Read-array-then-append is check-then-act: two processes read the same
--- un-marked array and both append. Today one process runs, so it is latent.
+-- un-marked array and both append. Latent only while exactly ONE API process
+-- schedules these timers -- there is no leader election, and setInterval runs
+-- in every process, so two replicas is all it takes.
 -- The wave-3.5d role split makes it real, and a duplicate escalation publishes
 -- incident.escalated twice — i.e. pages on-call twice.
 --
@@ -48,7 +50,7 @@ BEGIN
   END IF;
 END $$;
 
--- Both passes scan for the NULL side only, so index that side.
+-- Both scans filter on the NULL side of their marker, so index that side.
 CREATE INDEX IF NOT EXISTS incidents_timeline_unenriched_idx
   ON incidents (id) WHERE timeline_enriched_at IS NULL;
 CREATE INDEX IF NOT EXISTS incidents_unescalated_idx

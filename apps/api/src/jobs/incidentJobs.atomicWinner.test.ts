@@ -120,6 +120,20 @@ describe('incident background passes pick a winner in the database', () => {
     expect(publishEventMock).toHaveBeenCalledTimes(1);
   });
 
+  it('releases the claim when the page fails, so the next pass retries it', async () => {
+    selectResults.push([STALE]);
+    updateReturnResults.push([{ id: 'inc-1' }]);   // won the CAS
+    updateReturnResults.push([]);                  // timeline append
+    publishEventMock.mockRejectedValueOnce(new Error('redis down'));
+
+    await __testOnly.runIncidentSlaMonitorPass();
+
+    // Without the release, escalated_at stays set and NOBODY is ever paged for
+    // this breach — the failure mode this codebase rates worse than a duplicate.
+    const release = updateSets.at(-1) as { escalatedAt?: unknown } | undefined;
+    expect(release).toHaveProperty('escalatedAt', null);
+  });
+
   it('scopes the escalation swap to incidents not already escalated', async () => {
     selectResults.push([STALE]);
     updateReturnResults.push([{ id: 'inc-1' }]);
