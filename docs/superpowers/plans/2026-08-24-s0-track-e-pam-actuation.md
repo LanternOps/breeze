@@ -56,7 +56,7 @@ tracking_issue: https://github.com/LanternOps/breeze/issues/4060
 - Modify: `apps/api/src/db/schema/actionIntents.ts`
 - Modify: `apps/api/src/db/schema/devices.ts`
 - Modify: `apps/api/src/db/schema/index.ts`
-- Create: `apps/api/migrations/2026-09-07-pam-actuation-lifecycle.sql`
+- Create: `apps/api/migrations/2026-09-16-pam-actuation-lifecycle.sql`
 - Modify: `apps/api/src/services/tenantCascade.ts`
 - Modify: `apps/api/src/routes/devices/core.ts`
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts`
@@ -140,7 +140,7 @@ Expected: every named file executes and passes; drift and migration naming are c
 - [x] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/db/schema/elevations.ts apps/api/src/db/schema/actionIntents.ts apps/api/src/db/schema/devices.ts apps/api/src/db/schema/index.ts apps/api/migrations/2026-09-07-pam-actuation-lifecycle.sql apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/pamActuationLifecycle.integration.test.ts
+git add apps/api/src/db/schema/elevations.ts apps/api/src/db/schema/actionIntents.ts apps/api/src/db/schema/devices.ts apps/api/src/db/schema/index.ts apps/api/migrations/2026-09-16-pam-actuation-lifecycle.sql apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/pamActuationLifecycle.integration.test.ts
 git commit -m "fix(db): persist PAM actuation lifecycle"
 ```
 
