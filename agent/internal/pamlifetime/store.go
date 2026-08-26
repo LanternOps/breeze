@@ -39,6 +39,15 @@ type LedgerEntry struct {
 	BoundCommandDigest  string       `json:"boundCommandDigest,omitempty"`
 }
 
+type ProcessIdentity struct {
+	PID                 int
+	ProcessCreationTime time.Time
+	WindowsSessionID    uint32
+	TargetHash          string
+	JobName             string
+	BootID              string
+}
+
 type ledgerFile struct {
 	Entries map[string]LedgerEntry `json:"entries"`
 }
@@ -137,11 +146,34 @@ func (s *Store) PrepareCleanup(cmd CleanupCommand) (Decision, error) {
 	}
 	if exists {
 		entry.CreatedAt = previous.CreatedAt
+		entry.PID = previous.PID
+		entry.ProcessCreationTime = previous.ProcessCreationTime
+		entry.JobName = previous.JobName
+		entry.BootID = previous.BootID
 	}
 	if err := s.replaceLocked(cmd.ActuationID, entry); err != nil {
 		return "", err
 	}
 	return DecisionCleanup, nil
+}
+
+func (s *Store) BindProcess(actuationID string, generation uint64, process ProcessIdentity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return s.loadErr
+	}
+	entry, ok := s.entries[actuationID]
+	if !ok || entry.DesiredState != DesiredActive || entry.Generation != generation {
+		return errors.New("cannot bind process to non-current active generation")
+	}
+	entry.PID = process.PID
+	creationTime := process.ProcessCreationTime.UTC()
+	entry.ProcessCreationTime = &creationTime
+	entry.JobName = process.JobName
+	entry.BootID = process.BootID
+	entry.UpdatedAt = time.Now().UTC()
+	return s.replaceLocked(actuationID, entry)
 }
 
 func (s *Store) Entry(actuationID string) (LedgerEntry, bool) {

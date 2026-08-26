@@ -15,9 +15,10 @@ const (
 type ResultState string
 
 const (
-	ResultApplied ResultState = "applied"
-	ResultCleaned ResultState = "cleaned"
-	ResultFailed  ResultState = "failed"
+	ResultReceived       ResultState = "received"
+	ResultVerifiedActive ResultState = "verified_active"
+	ResultCleaned        ResultState = "cleaned"
+	ResultFailed         ResultState = "failed"
 )
 
 const FailureUnsupportedPlatform = "unsupported_platform"
@@ -47,10 +48,16 @@ type CleanupCommand struct {
 }
 
 type ResultEvidence struct {
-	PID                 int        `json:"pid,omitempty"`
-	ProcessCreationTime *time.Time `json:"processCreationTime,omitempty"`
-	JobName             string     `json:"jobName,omitempty"`
-	BootID              string     `json:"bootId,omitempty"`
+	PID                     int        `json:"pid,omitempty"`
+	ProcessCreationTime     *time.Time `json:"processCreationTime,omitempty"`
+	WindowsSessionID        uint32     `json:"windowsSessionId,omitempty"`
+	JobName                 string     `json:"jobName,omitempty"`
+	JobMemberCount          *int       `json:"jobMemberCount,omitempty"`
+	AccountEnabled          *bool      `json:"accountEnabled,omitempty"`
+	AccountInAdministrators *bool      `json:"accountInAdministrators,omitempty"`
+	PrivilegedTokenPresent  *bool      `json:"privilegedTokenPresent,omitempty"`
+	TargetHash              string     `json:"targetHash,omitempty"`
+	BootID                  string     `json:"bootId,omitempty"`
 }
 
 type Result struct {

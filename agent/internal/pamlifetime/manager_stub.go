@@ -1,11 +1,10 @@
+//go:build !windows
+
 package pamlifetime
 
 import (
 	"context"
 	"sync"
-	"time"
-
-	"github.com/google/uuid"
 )
 
 type stubManager struct {
@@ -41,17 +40,4 @@ func (m *stubManager) SetEnabled(_ context.Context, enabled bool) error {
 	m.enabled = enabled
 	m.mu.Unlock()
 	return nil
-}
-
-func failedResult(actuationID string, generation uint64, code string) Result {
-	return Result{
-		ProtocolVersion: 2,
-		ObservationID:   uuid.NewString(),
-		ActuationID:     actuationID,
-		Generation:      generation,
-		State:           ResultFailed,
-		ObservedAt:      time.Now().UTC(),
-		FailureCode:     code,
-		Evidence:        ResultEvidence{},
-	}
 }

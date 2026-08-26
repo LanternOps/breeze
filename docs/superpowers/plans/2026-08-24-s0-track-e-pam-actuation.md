@@ -490,7 +490,7 @@ git commit -m "feat(agent): add PAM lifetime protocol v2"
 - Produces suspended token-launch ownership containing PID, process creation time, process handle, primary-thread handle, and target hash; the caller, not the old session helper, owns lifecycle closure.
 - Extends the elevation-account boundary with `VerifyClean(context.Context) (AccountEvidence, error)` and `Deprovision(context.Context) (AccountEvidence, error)`.
 
-- [ ] **Step 1: Write the Windows contract RED tests against a fake Win32 seam**
+- [x] **Step 1: Write the Windows contract RED tests against a fake Win32 seam**
 
 Assert this exact order for apply:
 
@@ -510,7 +510,7 @@ Assert the Job Object handle is non-inheritable and remains owned by the long-li
 
 For cleanup, assert tombstone persistence precedes OS action; `TerminateJobObject`/kill-on-close covers the whole tree; zero members are observed; PID creation-time prevents reuse confusion; account password is rotated, Administrators membership removed, account disabled, and all are verified; privileged-token absence is verified before `cleaned`. Helper loss or any unverifiable step returns `failed`.
 
-- [ ] **Step 2: Run RED and Windows compile gate**
+- [x] **Step 2: Run RED and Windows compile gate**
 
 ```bash
 cd agent && go test ./internal/pamlifetime ./internal/pamactuator ./internal/elevaccount
@@ -519,15 +519,15 @@ cd agent && GOOS=windows GOARCH=amd64 go test -c ./internal/pamlifetime -o /tmp/
 
 Expected: fake-seam contract tests fail and/or Windows cross-compile fails because Job Object ownership is absent.
 
-- [ ] **Step 3: Refactor token launch to transfer suspended-process ownership**
+- [x] **Step 3: Refactor token launch to transfer suspended-process ownership**
 
 Split the current launch path so v1 compatibility may continue to wait/demote, while v2 receives a suspended-process handle bundle. Do not share v1's SendInput path with v2. Validate canonical target path and optional SHA-256 hash before resume. Close every handle exactly once on failure and preserve the manager-owned Job Object handle on success.
 
-- [ ] **Step 4: Implement exact Job Object and cleanup semantics**
+- [x] **Step 4: Implement exact Job Object and cleanup semantics**
 
 Create the deterministic name, call `SetInformationJobObject` with `JOBOBJECT_EXTENDED_LIMIT_INFORMATION.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, assign before resume, and persist identity before resume. Cleanup must reopen/own the named job when possible, call `TerminateJobObject`, wait for `JobObjectBasicProcessIdList.NumberOfAssignedProcesses == 0`, close the owning handle, then perform and verify account cleanup and privileged-token absence. Any ambiguity remains failed/pending and retains the tombstone.
 
-- [ ] **Step 5: Run GREEN, race, and cross-compile gates**
+- [x] **Step 5: Run GREEN, race, and cross-compile gates**
 
 ```bash
 cd agent && go test ./internal/pamlifetime ./internal/pamactuator ./internal/elevaccount ./internal/heartbeat
@@ -539,7 +539,7 @@ cd agent && GOOS=windows GOARCH=amd64 go test -c ./internal/elevaccount -o /tmp/
 
 Expected: native seam/race tests pass and all Windows test binaries compile. Native Windows execution remains required in Task 8.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add agent/internal/pamlifetime agent/internal/pamactuator/tokenlaunch_windows.go agent/internal/pamactuator/tokenlaunch_test.go agent/internal/elevaccount/elevaccount_windows.go agent/internal/elevaccount/elevaccount_windows_test.go
