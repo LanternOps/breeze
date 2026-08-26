@@ -140,6 +140,7 @@ import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
+import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -2024,6 +2025,19 @@ async function bootstrap(): Promise<void> {
     } else {
       console.error('[startup] Failed to seed built-in playbooks:', err);
     }
+  }
+
+  try {
+    await runWithSystemDbAccess(async () => {
+      const ensured = await ensureSystemLibraryScripts();
+      if (ensured.created > 0 || ensured.updated > 0) {
+        console.log(
+          `[startup] System script library ensured: ${ensured.created} created, ${ensured.updated} updated`
+        );
+      }
+    });
+  } catch (err) {
+    console.error('[startup] Failed to ensure system script library:', err);
   }
 
   try {
