@@ -1,3 +1,7 @@
+---
+tracking_issue: https://github.com/LanternOps/breeze/issues/4060
+---
+
 # S0 Track A Authorization Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -34,7 +38,7 @@
 - Produces: `AutomationReferenceOwner`, `ResolvedAutomationReferences`, `AutomationReferenceAuthorizationError`, and `resolveOwnedAutomationReferences(tx, owner, targetOrgIds, actions, notificationTargets)`.
 - `ResolvedAutomationReferences` contains maps for scripts, software catalogs/versions and notification channels. Callers consume those rows and do not reload by ID.
 
-- [ ] **Step 1: Write failing ownership tests**
+- [x] **Step 1: Write failing ownership tests**
 
 Add table-driven cases using complete Drizzle fixtures. At minimum:
 
@@ -53,7 +57,7 @@ it.each([
 
 Add equivalent catalog/version/channel cases, including deleted and unknown IDs, and assert the resolver error contains a stable reason code without foreign metadata.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -63,7 +67,7 @@ pnpm --filter @breeze/api exec vitest run src/services/automationReferenceAuthor
 
 Expected: FAIL because `automationReferenceAuthorization.ts` and its exported resolver do not exist.
 
-- [ ] **Step 3: Implement the minimal resolver**
+- [x] **Step 3: Implement the minimal resolver**
 
 Use per-table predicates:
 
@@ -83,7 +87,7 @@ export async function resolveOwnedAutomationReferences(
 
 For scripts, partner ownership is `is_system OR (org_id IS NULL AND partner_id = owner.partnerId)`. For an organization owner it is `is_system OR org_id = owner.orgId` plus any existing explicitly shareable partner-owned rule. Catalog/version ownership resolves through the catalog row. Notification channels use their XOR owner axes. Query by both ID and owner; compare requested IDs with returned IDs and throw stable `unknown_or_unauthorized_reference` on any difference.
 
-- [ ] **Step 4: Run GREEN and existing runtime tests**
+- [x] **Step 4: Run GREEN and existing runtime tests**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/automationReferenceAuthorization.test.ts src/services/automationRuntime.runScript.test.ts src/services/automationRuntime.deploySoftware.test.ts
@@ -91,7 +95,7 @@ pnpm --filter @breeze/api exec vitest run src/services/automationReferenceAuthor
 
 Expected: all selected tests pass with no warnings.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/automationReferenceAuthorization.ts apps/api/src/services/automationReferenceAuthorization.test.ts apps/api/src/services/automationRuntime.ts
@@ -113,11 +117,11 @@ git commit -m "fix(api): authorize automation resource ownership"
 - A database constraint trigger rejects any binding whose `orgId`/`partnerId` owner axes differ from its parent automation. Partner-wide bindings use `orgId = null` and the automation's `partnerId`; organization bindings use the automation's `orgId` and `partnerId = null`.
 - Binding states are `active | quarantined`; only active bindings admit execution.
 
-- [ ] **Step 1: Write the real-Postgres RED suite**
+- [x] **Step 1: Write the real-Postgres RED suite**
 
 Create two partners and two orgs each. Assert organization A cannot forge a binding to organization B, partner A cannot bind partner B resources, the XOR/expected-owner constraints reject malformed rows, and deleting an automation cascades its bindings. Add a bounded backfill fixture containing one valid and one foreign reference; assert the valid row becomes active and the foreign row quarantined with no execution rows.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/automationResourceBindings.integration.test.ts
@@ -125,11 +129,11 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: FAIL because the table/migration does not exist.
 
-- [ ] **Step 3: Add schema and idempotent migration**
+- [x] **Step 3: Add schema and idempotent migration**
 
 Create dual-axis RLS with `ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY`, and system-or-org-or-partner access policies. Add the XOR owner check and the parent-owner constraint trigger in the same migration. Register the table in `DUAL_AXIS_TENANT_TABLES`, alphabetically in organization cascade order, and in tenant-export policy; classify ordinary columns as included and any open JSON as `excludedOpen`. The migration backfill copies the parent automation owner axes and reports active and quarantined row counts with `GET DIAGNOSTICS`/`RAISE WARNING`.
 
-- [ ] **Step 4: Run GREEN plus migration contracts**
+- [x] **Step 4: Run GREEN plus migration contracts**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/automationResourceBindings.integration.test.ts src/__tests__/integration/rls-coverage.integration.test.ts
@@ -139,7 +143,7 @@ pnpm db:check-drift
 
 Expected: the named integration files execute and pass; migration naming/drift passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/db/schema/automations.ts apps/api/migrations/2026-09-11-a-automation-resource-bindings.sql apps/api/src/services/tenantCascade.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/automationResourceBindings.integration.test.ts
@@ -161,11 +165,11 @@ git commit -m "fix(db): bind automation resources to tenant ownership"
 - Storage writes normalized active bindings in the same transaction as automation/link changes.
 - Admission re-resolves current ownership before creating `automation_runs`; dispatch consumes resolved rows.
 
-- [ ] **Step 1: Write failing boundary tests**
+- [x] **Step 1: Write failing boundary tests**
 
 Cover standalone create/update and configuration-policy link with valid foreign script/catalog/version/channel IDs. Cover manual, scheduled, event, webhook and forged queued retry after ownership move/delete. Each denial asserts literal zero counts for automations/links where storage fails, and for runs, executions, deployments and commands where admission fails.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/automations.test.ts src/services/configurationPolicy.test.ts src/services/automationRuntime.runScript.test.ts src/services/automationRuntime.deploySoftware.test.ts
@@ -174,15 +178,15 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: foreign references are currently stored or create downstream run state, so the new assertions fail.
 
-- [ ] **Step 3: Integrate resolver and bindings**
+- [x] **Step 3: Integrate resolver and bindings**
 
 Normalize once, resolve within the write transaction, replace bindings atomically on update, and reject the whole write on any bad reference. At admission, resolve before inserting the run. At dispatch, use the returned maps; remove bare script and software catalog/version ID lookups. A quarantined binding returns the same stable unauthorized/unavailable error without metadata.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run the RED commands again. Expected: all named files execute and pass, including explicit zero-side-effect assertions.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/routes/automations.ts apps/api/src/services/configurationPolicy.ts apps/api/src/routes/configurationPolicies/featureLinks.ts apps/api/src/services/automationRuntime.ts apps/api/src/services/softwareCurrency.ts apps/api/src/routes/automations.test.ts apps/api/src/services/configurationPolicy.test.ts apps/api/src/services/automationRuntime.runScript.test.ts apps/api/src/services/automationRuntime.deploySoftware.test.ts apps/api/src/__tests__/integration/automationReferenceAuthorization.integration.test.ts
@@ -202,11 +206,11 @@ git commit -m "fix(api): fail closed on automation reference changes"
 - Produces permission string `backup:cross_site_restore`.
 - Default system-role grants follow the spec: only roles that deliberately administer cross-site recovery receive it; all other roles remain denied.
 
-- [ ] **Step 1: Write failing permission parity tests**
+- [x] **Step 1: Write failing permission parity tests**
 
 Add literal assertions that the grant exists in `PERMISSION_GRANTS`, the catalog has an action label, seeded permission and role grants match constants, and a normal site-scoped backup writer lacks it unless explicitly granted.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/db/seed.test.ts src/routes/permissionsCatalog.test.ts
@@ -214,11 +218,11 @@ pnpm --filter @breeze/api exec vitest run src/db/seed.test.ts src/routes/permiss
 
 Expected: FAIL because `backup:cross_site_restore` is absent.
 
-- [ ] **Step 3: Implement all six registrations**
+- [x] **Step 3: Implement all six registrations**
 
 Update `PERMISSION_GRANTS`, `DEFAULT_PERMISSIONS`, intended `SYSTEM_ROLES`, `ACTION_LABELS`, an idempotent insert migration for permissions/role_permissions, and seed parity expectations. Do not broaden `backup:write` semantics.
 
-- [ ] **Step 4: Run GREEN and migration naming test**
+- [x] **Step 4: Run GREEN and migration naming test**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/db/seed.test.ts src/routes/permissionsCatalog.test.ts src/db/autoMigrate.test.ts
@@ -226,7 +230,7 @@ pnpm --filter @breeze/api exec vitest run src/db/seed.test.ts src/routes/permiss
 
 Expected: all selected tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/shared/src/constants/permissions.ts apps/api/src/db/seed.ts apps/api/src/routes/permissionsCatalog.ts apps/api/migrations/2026-09-11-b-cross-site-restore-permission.sql apps/api/src/db/seed.test.ts
@@ -244,11 +248,11 @@ git commit -m "fix(authz): add explicit cross-site restore grant"
 - Produces `ResilienceResourceRef`, `AuthorizedResilienceResources`, and `authorizeResilienceResources({orgId, principal, refs, operation})` from the approved spec.
 - Stable denial is `403 site_access_denied` for an authenticated known resource; not-found/foreign-org remains indistinguishable 404 according to existing route policy.
 
-- [ ] **Step 1: Write failing unit and integration matrices**
+- [x] **Step 1: Write failing unit and integration matrices**
 
 Use known valid source/target IDs for two sites. Assert same-site allowed, source denied, target denied, null lineage denied, cross-site without explicit permission denied, and cross-site with both site grants plus explicit permission allowed. Include the confirmed wrong-argument cancel regression.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/resilienceSiteAuthorization.test.ts
@@ -257,15 +261,15 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: FAIL because the shared service does not exist and target-only authorization permits the source-denied fixture.
 
-- [ ] **Step 3: Implement minimal-lineage resolution**
+- [x] **Step 3: Implement minimal-lineage resolution**
 
 Resolve each resource chain to `{orgId, deviceId, siteId}` only. Define site-restricted principal kinds explicitly rather than inferring from `allowedSiteIds` presence. Require all referenced sites, then require `backup:cross_site_restore` when source and target sites differ. Return authorized lineage for downstream loaders.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run the RED commands again. Expected: both named files execute and pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/resilienceSiteAuthorization.ts apps/api/src/services/resilienceSiteAuthorization.test.ts apps/api/src/__tests__/integration/resilienceSiteAuthorization.integration.test.ts
@@ -290,11 +294,11 @@ git commit -m "fix(api): authorize resilience source and target lineage"
 - Consumes Task 5 authorization and loads metadata only through returned authorized lineage.
 - Covers list, by-ID, create, restore, verify, legal hold, immutability, token, revoke, media download/signature and cancel paths.
 
-- [ ] **Step 1: Write the failing mounted-route coverage matrix**
+- [x] **Step 1: Write the failing mounted-route coverage matrix**
 
 Enumerate every protected route/method as literal cases. For each, submit a known valid denied-site ID and assert the stable denial plus zero token, artifact, restore job, backup job, device command and queue rows. Add positive same-site and explicit cross-site controls.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/backup/restore.test.ts src/routes/backup/vmrestore.test.ts src/routes/backup/hyperv.test.ts src/routes/backup/mssql.test.ts src/routes/backup/bmr.test.ts
@@ -303,15 +307,15 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: source-denied restore/media/token paths fail the new assertions; cancel demonstrates the device-ID/site-ID mismatch.
 
-- [ ] **Step 3: Replace duplicated route checks**
+- [x] **Step 3: Replace duplicated route checks**
 
 Call the shared service before resource metadata/secret/provider reads. Fix cancel to authorize resolved lineage rather than passing a device ID to a site helper. List routes filter through authorized device/site lineage without leaking denied counts.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run the RED commands again. Expected: all enumerated routes execute and pass with zero denied side effects.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/routes/backup apps/api/src/services/recoveryMediaService.ts apps/api/src/services/recoveryBootMediaService.ts apps/api/src/__tests__/integration/resilienceRouteCoverage.integration.test.ts
@@ -338,11 +342,11 @@ git commit -m "fix(api): enforce site scope across recovery routes"
 - Matching revisions are audit evidence only and never skip live authorization. Known denial is non-retriable; transient dependency failure remains retriable.
 - Legacy nonterminal work with no safely recoverable subject becomes `quarantined_authorization_unknown`; terminal history becomes `not_required` without rewriting operational status.
 
-- [ ] **Step 1: Write RED schema, migration, and subject-resolution tests**
+- [x] **Step 1: Write RED schema, migration, and subject-resolution tests**
 
 Cover active and disabled users; human and service-principal API keys; revoked/expired OAuth grants and blocked clients; disabled AI runs/effective policy changes; allowlisted system reasons; rejected unknown/system strings; revision drift; and transient lookup failure. Assert no subject can be reconstructed from `createdBy`/`initiatedBy` alone.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/recoveryAuthorizationSubject.test.ts src/db/autoMigrate.test.ts
@@ -351,11 +355,11 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: the subject tuple/service/migration do not exist and the new export/migration assertions fail.
 
-- [ ] **Step 3: Implement additive storage and live rehydration**
+- [x] **Step 3: Implement additive storage and live rehydration**
 
 Use idempotent `ADD COLUMN IF NOT EXISTS`, checked kind/state allowlists, and claim indexes. Add `operationKind` to C2C jobs so sync and restore are not conflated. Register ordinary subject fields in tenant export policy. Do not create a polymorphic subject table and do not grant service API keys through their creators. Base permission/delegated scope and current site lineage are both required.
 
-- [ ] **Step 4: Run GREEN plus migration contracts**
+- [x] **Step 4: Run GREEN plus migration contracts**
 
 Run the RED commands plus:
 
@@ -365,7 +369,7 @@ pnpm --filter @breeze/api check:migrations
 pnpm db:check-drift
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/db apps/api/src/services/recoveryAuthorizationSubject.ts apps/api/src/services/recoveryAuthorizationSubject.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration apps/api/migrations/2026-09-11-c-recovery-authorization-subject.sql
@@ -388,21 +392,21 @@ git commit -m "fix(db): persist recovery authorization subjects"
 - Workers reload the durable subject and authorize current source/target lineage immediately before atomically claiming `building`; queue payload permissions are never authority.
 - Denied and legacy-unknown work records a durable denial/quarantine and performs zero builder, storage, signing, provider, queue, or command effects.
 
-- [ ] **Step 1: Write failing producer/retry/worker tests**
+- [x] **Step 1: Write failing producer/retry/worker tests**
 
 Cover revocation after enqueue, source device moved sites, delayed retry, a previously authorized retry, each supported principal kind, and a legacy unknown row. Assert literal zero builder/storage/signing calls and that observing an existing job does not replace its subject.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/backup/bmr.test.ts src/services/recoveryMediaService.test.ts src/jobs/recoveryMediaWorker.test.ts src/jobs/recoveryBootMediaWorker.test.ts
 ```
 
-- [ ] **Step 3: Capture, rehydrate, authorize, and claim**
+- [x] **Step 3: Capture, rehydrate, authorize, and claim**
 
 Wire Task 7 at every producer and worker attempt. A retry requested by a different currently authorized caller replaces the prior subject atomically; passive reads do not. Use BullMQ `UnrecoverableError` for known authorization denial and preserve retries for transient failures.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/backup/bmr.test.ts src/services/recoveryMediaService.test.ts src/jobs/recoveryMediaWorker.test.ts src/jobs/recoveryBootMediaWorker.test.ts src/services/recoveryAuthorizationSubject.test.ts src/services/resilienceSiteAuthorization.test.ts
@@ -430,21 +434,21 @@ git commit -m "fix(workers): reauthorize recovery media builds"
 - Resolve provider-facing snapshot IDs to exactly one organization-scoped internal snapshot row before Task 5 authorization; ambiguous external IDs fail closed.
 - Reuse the stable BullMQ job by moving the active job to delayed after the database commit and throwing `DelayedError`; do not suppress the successor by treating the active job as an already-scheduled reusable job.
 
-- [ ] **Step 1: Write RED for all four re-entry paths**
+- [x] **Step 1: Write RED for all four re-entry paths**
 
 Cover site/base permission revoked between groups, source moved after first dispatch, ambiguous provider snapshot IDs, delayed self-reconcile, HTTP and WebSocket result re-entry, `drResultHandler`, stale reaper, and legacy unknown work. Assert no command insertion, running transition, or next queue after denial. Prove the active stable job moves to delayed after commit and wakes correctly on result events without replacing its subject.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/jobs/drExecutionWorker.test.ts src/services/drExecutionService.test.ts src/routes/backup/drResultHandler.test.ts src/routes/dr.test.ts src/services/aiToolsDR.siteScope.test.ts src/jobs/staleCommandReaper.test.ts
 ```
 
-- [ ] **Step 3: Persist and enforce the initiating subject**
+- [x] **Step 3: Persist and enforce the initiating subject**
 
 Capture for route and AI producers, rehydrate on every re-entry, and authorize live lineage at the command boundary. Keep snapshot fields only as audit context, never authority.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run the RED command, then:
 
@@ -474,21 +478,21 @@ git commit -m "fix(workers): reauthorize DR reconciliation"
 - Scheduled backup verification uses a private fixed `backup-verification-scheduler` wrapper and revalidates current snapshot/device lineage before command insertion. It resolves the internal snapshot row by `backup_jobs.id`; the provider-facing `backup_jobs.snapshot_id` string is never treated as the internal snapshot UUID.
 - System classification is narrow and cannot be supplied by an ordinary request principal.
 
-- [ ] **Step 1: Write failing C2C/system-boundary tests**
+- [x] **Step 1: Write failing C2C/system-boundary tests**
 
 Cover every request/AI/scheduler C2C producer; user/API key/OAuth/AI revocation before claim; config/source connection/storage config/item/target connection owner changes; queue/stored kind mismatch; duplicate item IDs; sync versus restore; legacy unknown kind/subject; forged system reasons; and scheduled verification whose current job/snapshot/device lineage no longer matches. Assert zero running claims, provider/secret/storage calls, and commands on denial. Prove passive active-sync deduplication never rebinds authority and authorized stub restore never enters `running`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/jobs/c2cEnqueue.test.ts src/jobs/c2cBackupWorker.test.ts src/services/c2cJobCreation.test.ts src/routes/c2c/items.test.ts src/routes/c2c/jobs.test.ts src/services/aiToolsC2C.test.ts src/routes/backup/verificationScheduled.test.ts src/routes/backup/verificationService.test.ts src/services/recoveryAuthorizationSubject.test.ts src/services/resilienceSiteAuthorization.test.ts
 ```
 
-- [ ] **Step 3: Add explicit operation/system contracts**
+- [x] **Step 3: Add explicit operation/system contracts**
 
 Wire all five C2C producers to Task 7. Before a C2C claim, re-resolve the durable job, operation kind, config, source connection, optional storage config, unique items, and optional target connection by current organization ownership. Preserve direct pending-to-failed hard-disable behavior for the unimplemented restore provider path. Gate scheduled verification with a private allowlisted system wrapper plus live internal snapshot/device lineage; caller-controlled `source` strings cannot select system authority.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run the RED command, then:
 
@@ -508,11 +512,11 @@ git commit -m "fix(workers): classify queued recovery authority"
 - The matrix contains eight tests: one authorized five-family wiring smoke plus seven post-capture live-mutation denials covering user session, human API key, service-principal API key, OAuth grant, AI run, system, and unknown provenance.
 - Every denial proves both zero mocked boundary calls and unchanged literal durable effect counts/state. Clear permission caches after raw grant/membership mutation.
 
-- [ ] **Step 1: Write the real-PostgreSQL RED matrix before Tasks 8–10 GREEN**
+- [x] **Step 1: Write the real-PostgreSQL RED matrix before Tasks 8–10 GREEN**
 
 Use two partners, two organizations, and two sites. Capture each known subject while live, persist durable work, then mutate its actual grant/site/source before invoking the real processor. Cover: user source-site move on media; revoked human key on boot media; disabled service principal and disabled/tool-revoked AI on DR; revoked OAuth grant on C2C restore; system snapshot/device mismatch on scheduled verification; and legacy unknown media work. Assert durable denial/quarantine plus zero provider/builder/command/BullMQ follow-on effects. The positive wiring smoke proves each mocked boundary is genuinely reachable, including DR `DelayedError`, C2C direct stub failure, and scheduled verification persistence.
 
-- [ ] **Step 2: Run the complete worker authorization matrix**
+- [x] **Step 2: Run the complete worker authorization matrix**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/resilienceWorkerAuthorization.integration.test.ts src/__tests__/integration/resilienceSiteAuthorization.integration.test.ts src/__tests__/integration/lateCommandResultRecovery.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts
@@ -521,7 +525,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.config.rls-coverage.ts
 
 Expected: the new matrix reports exactly eight passing, non-skipped tests; every named integration file reports executed and passes. RLS coverage runs separately because the general integration config excludes that file.
 
-- [ ] **Step 3: Run all Track A targeted regressions and commit proof**
+- [x] **Step 3: Run all Track A targeted regressions and commit proof**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/automationReferenceAuthorization.test.ts src/services/resilienceSiteAuthorization.test.ts src/services/recoveryAuthorizationSubject.test.ts src/routes/automations.test.ts src/routes/backup/restore.test.ts src/routes/backup/vmrestore.test.ts src/routes/backup/hyperv.test.ts src/routes/backup/mssql.test.ts src/routes/backup/bmr.test.ts src/jobs/recoveryMediaWorker.test.ts src/jobs/recoveryBootMediaWorker.test.ts src/jobs/drExecutionWorker.test.ts src/jobs/c2cBackupWorker.test.ts src/routes/backup/verificationScheduled.test.ts

@@ -128,9 +128,10 @@ CREATE INDEX IF NOT EXISTS automation_resource_bindings_state_idx
 CREATE UNIQUE INDEX IF NOT EXISTS automation_resource_bindings_identity_uniq
   ON automation_resource_bindings(automation_id, resource_kind, resource_id);
 
-CREATE OR REPLACE FUNCTION automation_resource_binding_owner_guard()
+CREATE OR REPLACE FUNCTION public.automation_resource_binding_owner_guard()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
   parent_org_id uuid;
@@ -139,11 +140,13 @@ DECLARE
 BEGIN
   SELECT a.org_id, a.partner_id
   INTO parent_org_id, parent_partner_id
-  FROM automations a
+  FROM public.automations AS a
   WHERE a.id = NEW.automation_id;
 
   IF NOT FOUND THEN
-    RETURN NEW; -- the FK reports the missing parent with its canonical 23503
+    RAISE EXCEPTION 'insert or update on table "automation_resource_bindings" violates foreign key constraint "automation_resource_bindings_automation_id_fkey"'
+      USING ERRCODE = '23503',
+            CONSTRAINT = 'automation_resource_bindings_automation_id_fkey';
   END IF;
 
   IF NEW.org_id IS DISTINCT FROM parent_org_id
@@ -159,7 +162,7 @@ BEGIN
 
   IF NEW.org_id IS NOT NULL THEN
     SELECT o.partner_id INTO organization_partner_id
-    FROM organizations o
+    FROM public.organizations AS o
     WHERE o.id = NEW.org_id;
 
     IF (NEW.expected_resource_org_id IS NOT NULL
@@ -195,7 +198,7 @@ AFTER INSERT OR UPDATE OF
 ON automation_resource_bindings
 DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
-EXECUTE FUNCTION automation_resource_binding_owner_guard();
+EXECUTE FUNCTION public.automation_resource_binding_owner_guard();
 
 -- The child-side trigger protects binding writes. This reverse guard prevents
 -- an owner-axis UPDATE on the parent from invalidating already-persisted rows.

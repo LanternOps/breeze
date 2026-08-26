@@ -3,6 +3,8 @@
  *
  * Breaks caught here:
  * - weakening dual-axis RLS permits an org/partner to forge another tenant's binding;
+ * - a hidden parent automation is never treated as missing by the invoker-rights
+ *   child trigger, because FK checks bypass RLS while the trigger does not;
  * - removing the owner/expected-owner checks permits a binding to disagree with
  *   its parent automation or to pin a foreign resource owner;
  * - removing the parent FK cascade strands bindings after automation deletion;
@@ -211,6 +213,30 @@ describe.runIf(RUN)('automation_resource_bindings tenancy and quarantine', () =>
     );
     expect(cause?.code).toBe('42501');
     expect(cause?.message).toMatch(/row-level security/i);
+  });
+
+  it('fails closed instead of binding to an automation hidden by organization RLS', async () => {
+    const f = await seedFixture();
+
+    const cause = await causeOf(() =>
+      withDbAccessContext(orgContext(f.orgA1.id), () => insertBinding({
+        automationId: f.orgAutomationB.id,
+        orgId: f.orgA1.id,
+        partnerId: null,
+        resourceId: f.orgScriptA.id,
+        expectedOrgId: f.orgA1.id,
+        expectedPartnerId: f.partnerA.id,
+      })),
+    );
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT id FROM automation_resource_bindings
+      WHERE automation_id = ${f.orgAutomationB.id}::uuid
+        AND resource_id = ${f.orgScriptA.id}::text
+    `));
+
+    expect(cause?.code).toBe('23503');
+    expect(cause?.message).toMatch(/automation_resource_bindings_automation_id_fkey/i);
+    expect(rows).toHaveLength(0);
   });
 
   it('prevents partner A from binding a partner B resource owner', async () => {
