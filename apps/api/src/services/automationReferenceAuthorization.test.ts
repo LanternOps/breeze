@@ -122,6 +122,7 @@ const baseVersion: VersionRow = {
   postInstallScript: null,
   detectionRules: null,
   isLatest: true,
+  lastTestError: null,
 };
 
 const baseChannel: ChannelRow = {
