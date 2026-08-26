@@ -459,6 +459,12 @@ describe('passkey MFA auth routes', () => {
   it('returns registration options only after the current password is verified', async () => {
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+    // enforceExistingFactorStepUp's userIsMfaProtected probe. Previously
+    // omitted: the empty queue fell through to `[]` and the helper's
+    // `row?.mfaEnabled` reported the account unprotected, so this test passed
+    // through a branch it never modelled. userIsMfaProtected now raises on a
+    // missing row (that answer is the permissive one), so the row is explicit.
+    dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
 
     const res = await app.request('/auth/passkeys/register/options', {
       method: 'POST',

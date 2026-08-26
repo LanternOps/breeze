@@ -390,7 +390,14 @@ export async function enforceExistingFactorStepUp(
  *
  * Every rejection is the same opaque `Invalid credentials` 401 the password
  * path already returns, so the response never reveals whether the account has
- * a password, has a factor, or exists at all.
+ * a password, has a factor, or exists at all — with ONE deliberate exception:
+ * a passwordless account that offered NO proof at all gets
+ * `enrollment_proof_required`. That case is not a failed authentication
+ * attempt, it is a client that has lost its single-use grant (a reload while
+ * the QR was on screen, a restored session, a second tab), and a generic
+ * `Invalid credentials` renders on a screen with no password field and no way
+ * to retry. It discloses nothing: the caller is already authenticated AS this
+ * account and `/users/me` already tells them `hasPassword`.
  *
  * `opts.consume` mirrors the {@link validateStepUpGrant}/{@link consumeStepUpGrant}
  * split the SR2-20 grant already uses: `false` at the gate of a two-step flow
@@ -451,7 +458,10 @@ export async function resolveEnrollmentStepUp(
   }
 
   if (!input.ssoReauthGrantId) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    // Distinguishable ON PURPOSE — see the doc comment. `reauthUrl` mirrors the
+    // `stepUpUrl` affordance enforceExistingFactorStepUp already returns, so a
+    // client can offer the one action that resolves this.
+    return c.json({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' }, 401);
   }
 
   // FIRST factor only — see the doc comment above. Checked BEFORE the grant is
