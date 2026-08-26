@@ -1858,7 +1858,10 @@
     "disabling": "Disabling...",
     "generating": "Generating...",
     "regenerateCodes": "Regenerate codes",
-    "showRecoveryCodes": "Show recovery codes"
+    "showRecoveryCodes": "Show recovery codes",
+    "verifyYourIdentity": "Verify your identity",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "This account signs in through an identity provider and has no password. Re-verify with your provider to start setting up an authenticator app.",
+    "verifyWithYourIdentityProvider": "Verify with your identity provider"
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -1945,7 +1948,14 @@
     "failedToEnableMfaHttp": "Failed to enable MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "Failed to disable MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Failed to start passkey setup (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Failed to save passkey (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Failed to save passkey (HTTP {{status}})",
+    "ssoReauthNotFresh": "Your identity provider did not re-verify your sign-in. Try again, or ask your administrator to allow re-authentication prompts.",
+    "ssoReauthIdentityMismatch": "That identity provider account is not the one linked to this profile. Sign in with your own account and try again.",
+    "ssoReauthSessionInvalid": "Your session changed while you were verifying. Sign in again, then retry.",
+    "ssoReauthPasswordSet": "This account now has a password. Use it to set up multi-factor authentication.",
+    "ssoReauthUnavailable": "Identity provider verification is temporarily unavailable. Please try again shortly.",
+    "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
+    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification."
   },
   "roleManager": {
     "roles": "Roles",

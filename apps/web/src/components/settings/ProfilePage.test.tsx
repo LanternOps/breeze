@@ -14,6 +14,13 @@ vi.mock('../../stores/auth', () => ({
   )
 }));
 
+// #4018: the SSO re-auth callback's `?error=` codes surface as toasts, and
+// runAction toasts its own failures. Mocked here (this component and runAction
+// resolve to the SAME Toast module) so the assertions are on the call rather
+// than on a container these tests never mount.
+const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
+
 // The avatar blob hook fetches /api/v1/users/<id>/avatar through fetchWithAuth
 // when an avatarUrl is present. The tests below are about the upload/delete
 // flow on /users/me/avatar; mocking the hook keeps the fetch mock consumption
@@ -447,5 +454,211 @@ describe('ProfilePage MFA setup', () => {
     const [, init] = setupCall!;
     expect(init?.method).toBe('POST');
     expect(JSON.parse(String(init?.body))).toEqual({ currentPassword: 'hunter2-pw' });
+  });
+});
+
+// ── #4018: MFA enrollment for a PASSWORDLESS, SSO-provisioned account ────────
+// Such an account cannot satisfy the password step-up the enrollment endpoints
+// normally demand, so it proves identity with a fresh, forced IdP round-trip
+// and hands the resulting grant to /auth/mfa/setup and /auth/mfa/enable.
+describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
+  const BASE_USER = {
+    id: 'user-1',
+    name: 'Casey Admin',
+    email: 'casey@example.com',
+    mfaEnabled: false,
+  };
+
+  const realLocation = window.location;
+
+  function restoreLocation() {
+    Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    restoreLocation();
+    // Real jsdom location + history so the hash-consumption assertions below
+    // exercise the actual replaceState behaviour rather than a stub's.
+    window.history.replaceState(null, '', '/settings/profile');
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      if (String(url) === '/auth/mfa/setup') {
+        return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
+      }
+      return undefined as unknown as Response;
+    });
+  });
+
+  it('offers the IdP verification button instead of the password prompt for a passwordless account', async () => {
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+    fireEvent.click(screen.getByTestId('mfa-setup-start'));
+
+    expect(await screen.findByTestId('mfa-sso-reauth')).toBeTruthy();
+    expect(screen.getByTestId('mfa-sso-reauth').textContent)
+      .toContain('Verify with your identity provider');
+    expect(screen.queryByTestId('mfa-current-password')).toBeNull();
+  });
+
+  it('keeps the password prompt for an account that has a password', async () => {
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: true }} />);
+
+    fireEvent.click(screen.getByTestId('mfa-setup-start'));
+
+    expect(await screen.findByTestId('mfa-current-password')).toBeTruthy();
+    expect(screen.queryByTestId('mfa-sso-reauth')).toBeNull();
+  });
+
+  // Absent is UNKNOWN, not "passwordless": a session persisted before
+  // /users/me carried the field must keep the road the server will accept.
+  it('keeps the password prompt when hasPassword is absent', async () => {
+    render(<ProfilePage initialUser={{ ...BASE_USER }} />);
+
+    fireEvent.click(screen.getByTestId('mfa-setup-start'));
+
+    expect(await screen.findByTestId('mfa-current-password')).toBeTruthy();
+    expect(screen.queryByTestId('mfa-sso-reauth')).toBeNull();
+  });
+
+  it('POSTs /sso/reauth/start and navigates to the returned authUrl', async () => {
+    const assignMock = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        assign: assignMock,
+        hash: '',
+        search: '',
+        pathname: '/settings/profile',
+        href: 'http://localhost/settings/profile',
+      },
+    });
+
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/sso/reauth/start') {
+        return makeJsonResponse({ authUrl: 'https://idp.example.com/authorize?prompt=login' });
+      }
+      return undefined as unknown as Response;
+    });
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+    fireEvent.click(screen.getByTestId('mfa-setup-start'));
+    fireEvent.click(await screen.findByTestId('mfa-sso-reauth'));
+
+    await waitFor(() => {
+      expect(assignMock).toHaveBeenCalledWith('https://idp.example.com/authorize?prompt=login');
+    });
+
+    const startCall = fetchWithAuthMock.mock.calls.find(
+      ([url]) => String(url) === '/sso/reauth/start'
+    );
+    expect(startCall).toBeDefined();
+    expect(startCall![1]?.method).toBe('POST');
+
+    restoreLocation();
+  });
+
+  it('consumes the #ssoReauthGrant fragment, calls /auth/mfa/setup with it, and clears the hash', async () => {
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    expect(window.location.hash).toBe('#ssoReauthGrant=grant-abc');
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+    await waitFor(() => {
+      const setupCall = fetchWithAuthMock.mock.calls.find(
+        ([url]) => String(url) === '/auth/mfa/setup'
+      );
+      expect(setupCall).toBeDefined();
+      expect(JSON.parse(String(setupCall![1]?.body))).toEqual({ ssoReauthGrantId: 'grant-abc' });
+    });
+
+    // The grant is single-use — leaving it in the address bar invites a
+    // confusing second attempt after it has already been consumed.
+    expect(window.location.hash).toBe('');
+    // And the user lands straight on the QR screen; re-prompting for a proof
+    // already spent on this page load would be a dead end.
+    await screen.findByText(/Set up authenticator/i);
+  });
+
+  it('sends the grant, not a password, on the terminal /auth/mfa/enable write', async () => {
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/auth/mfa/setup') {
+        return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
+      }
+      if (String(url) === '/auth/mfa/enable') {
+        return makeJsonResponse({ recoveryCodes: ['AAAA-BBBB'] });
+      }
+      return undefined as unknown as Response;
+    });
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+    await screen.findByText(/Set up authenticator/i);
+
+    const digitInputs = document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"]');
+    expect(digitInputs.length).toBe(6);
+    digitInputs.forEach((input, index) => {
+      fireEvent.change(input, { target: { value: String(index + 1) } });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Verify and enable/i }));
+
+    await waitFor(() => {
+      const enableCall = fetchWithAuthMock.mock.calls.find(
+        ([url]) => String(url) === '/auth/mfa/enable'
+      );
+      expect(enableCall).toBeDefined();
+      expect(JSON.parse(String(enableCall![1]?.body)))
+        .toEqual({ code: '123456', ssoReauthGrantId: 'grant-abc' });
+    });
+  });
+
+  it('toasts actionable copy for the reauth_not_fresh callback error', async () => {
+    window.history.replaceState(null, '', '/settings/profile?error=reauth_not_fresh');
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    expect(showToastMock).toHaveBeenCalledWith({
+      type: 'error',
+      message: 'Your identity provider did not re-verify your sign-in. Try again, or ask your administrator to allow re-authentication prompts.',
+    });
+  });
+
+  it.each([
+    ['identity_mismatch', 'not the one linked to this profile'],
+    ['session_invalid', 'Your session changed while you were verifying'],
+    ['password_set', 'This account now has a password'],
+    ['reauth_unavailable', 'temporarily unavailable'],
+  ])('toasts a specific message for the %s callback error', async (code, fragment) => {
+    window.history.replaceState(null, '', `/settings/profile?error=${code}`);
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    expect(showToastMock.mock.calls[0][0].type).toBe('error');
+    expect(showToastMock.mock.calls[0][0].message).toContain(fragment);
+  });
+
+  // A code this build doesn't know must still say something — silence here
+  // leaves the user staring at an unchanged page after a failed IdP trip.
+  it('toasts a generic message for an unrecognized callback error code', async () => {
+    window.history.replaceState(null, '', '/settings/profile?error=some_new_code');
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    expect(showToastMock.mock.calls[0][0].message)
+      .toBe('Could not verify with your identity provider. Please try again.');
+  });
+
+  it('stays silent when there is no callback error', async () => {
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+    await screen.findByTestId('mfa-setup-start');
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 });

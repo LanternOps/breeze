@@ -1858,7 +1858,10 @@
     "disabling": "Desactivando...",
     "generating": "Generando...",
     "regenerateCodes": "Regenerar códigos",
-    "showRecoveryCodes": "Mostrar códigos de recuperación"
+    "showRecoveryCodes": "Mostrar códigos de recuperación",
+    "verifyYourIdentity": "Verifica tu identidad",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Vuelve a verificarte con tu proveedor para comenzar a configurar una aplicación de autenticación.",
+    "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad"
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar desde Pax8",
@@ -1945,7 +1948,14 @@
     "failedToEnableMfaHttp": "No se pudo habilitar MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "No se pudo desactivar MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "No se pudo iniciar la configuración de la clave de acceso (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "No se pudo guardar la clave de acceso (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "No se pudo guardar la clave de acceso (HTTP {{status}})",
+    "ssoReauthNotFresh": "Tu proveedor de identidad no volvió a verificar tu inicio de sesión. Inténtalo de nuevo o pide a tu administrador que permita las solicitudes de reautenticación.",
+    "ssoReauthIdentityMismatch": "Esa cuenta del proveedor de identidad no es la vinculada a este perfil. Inicia sesión con tu propia cuenta e inténtalo de nuevo.",
+    "ssoReauthSessionInvalid": "Tu sesión cambió mientras te verificabas. Inicia sesión de nuevo y vuelve a intentarlo.",
+    "ssoReauthPasswordSet": "Esta cuenta ahora tiene una contraseña. Úsala para configurar la autenticación multifactor.",
+    "ssoReauthUnavailable": "La verificación con el proveedor de identidad no está disponible temporalmente. Inténtalo de nuevo en unos momentos.",
+    "ssoReauthFailed": "No se pudo verificar con tu proveedor de identidad. Inténtalo de nuevo.",
+    "couldNotStartIdentityProviderVerification": "No se pudo iniciar la verificación con el proveedor de identidad."
   },
   "roleManager": {
     "roles": "Roles",

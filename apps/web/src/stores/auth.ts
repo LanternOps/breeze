@@ -66,6 +66,18 @@ export interface User {
   // sessions persisted before this field (treat absent as capable; the server
   // enforces regardless).
   canManagePartnerWide?: boolean;
+  // #4018: whether the account has a password set. False for an SSO-provisioned
+  // (JIT) account, which therefore cannot satisfy any password step-up — UI that
+  // would otherwise tell such a user to "set up MFA and sign in again" has to
+  // point them at their identity provider instead.
+  //
+  // Populated by `GET /users/me` (routes/users.ts), which is what
+  // completeBootstrapLogin stores wholesale and what fetchAndApplyPreferences
+  // merges below. Still OPTIONAL because a session persisted before the field
+  // existed has no value until its next /users/me refresh: treat absent as
+  // UNKNOWN, never as "has a password" — always compare with `=== false`, never
+  // `!user?.hasPassword`.
+  hasPassword?: boolean;
   preferences?: UserPreferences;
 }
 
@@ -1416,6 +1428,14 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     // the field existed still pick up their grants without a re-login.
     if (Array.isArray(data.permissions)) {
       useAuthStore.getState().updateUser({ permissions: data.permissions });
+    }
+    // #4018: same rationale — the password-login path stores `data.user` from
+    // /auth/login, which carries no hasPassword, and sessions persisted before
+    // the field existed carry none either. This refresh (run on every login and
+    // on the SSO bootstrap) is what makes `user.hasPassword === false` a real
+    // runtime signal rather than a permanently-absent field.
+    if (typeof data.hasPassword === 'boolean') {
+      useAuthStore.getState().updateUser({ hasPassword: data.hasPassword });
     }
     if (typeof data.canManagePartnerWide === 'boolean') {
       useAuthStore.getState().updateUser({ canManagePartnerWide: data.canManagePartnerWide });

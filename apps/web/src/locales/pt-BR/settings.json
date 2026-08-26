@@ -1858,7 +1858,10 @@
     "disabling": "Desativando...",
     "generating": "Gerando...",
     "regenerateCodes": "Regenerar códigos",
-    "showRecoveryCodes": "Mostrar códigos de recuperação"
+    "showRecoveryCodes": "Mostrar códigos de recuperação",
+    "verifyYourIdentity": "Verifique sua identidade",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta conta faz login por meio de um provedor de identidade e não tem senha. Verifique-se novamente com seu provedor para começar a configurar um aplicativo autenticador.",
+    "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade"
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar do Pax8",
@@ -1945,7 +1948,14 @@
     "failedToEnableMfaHttp": "Falha ao ativar MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "Falha ao desativar MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Falha ao iniciar a configuração da chave de acesso (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Falha ao salvar a chave de acesso (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Falha ao salvar a chave de acesso (HTTP {{status}})",
+    "ssoReauthNotFresh": "Seu provedor de identidade não verificou seu login novamente. Tente de novo ou peça ao administrador para permitir solicitações de reautenticação.",
+    "ssoReauthIdentityMismatch": "Essa conta do provedor de identidade não é a vinculada a este perfil. Faça login com sua própria conta e tente de novo.",
+    "ssoReauthSessionInvalid": "Sua sessão mudou durante a verificação. Faça login novamente e tente de novo.",
+    "ssoReauthPasswordSet": "Esta conta agora tem uma senha. Use-a para configurar a autenticação multifator.",
+    "ssoReauthUnavailable": "A verificação pelo provedor de identidade está temporariamente indisponível. Tente novamente em instantes.",
+    "ssoReauthFailed": "Não foi possível verificar com seu provedor de identidade. Tente novamente.",
+    "couldNotStartIdentityProviderVerification": "Não foi possível iniciar a verificação pelo provedor de identidade."
   },
   "roleManager": {
     "roles": "Funções",

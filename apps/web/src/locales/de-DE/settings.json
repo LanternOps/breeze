@@ -1858,7 +1858,10 @@
     "disabling": "Deaktivieren...",
     "generating": "Generieren...",
     "regenerateCodes": "Codes neu generieren",
-    "showRecoveryCodes": "Wiederherstellungscodes anzeigen"
+    "showRecoveryCodes": "Wiederherstellungscodes anzeigen",
+    "verifyYourIdentity": "Bestätigen Sie Ihre Identität",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, um die Einrichtung einer Authenticator-App zu starten.",
+    "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen"
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import aus Pax8",
@@ -1945,7 +1948,14 @@
     "failedToEnableMfaHttp": "Fehler beim Aktivieren von MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "MFA konnte nicht deaktiviert werden (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Das Einrichten des Passkeys konnte nicht gestartet werden (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Passkey konnte nicht gespeichert werden (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Passkey konnte nicht gespeichert werden (HTTP {{status}})",
+    "ssoReauthNotFresh": "Ihr Identitätsanbieter hat Ihre Anmeldung nicht erneut überprüft. Versuchen Sie es erneut oder bitten Sie Ihren Administrator, Aufforderungen zur erneuten Authentifizierung zuzulassen.",
+    "ssoReauthIdentityMismatch": "Dieses Konto beim Identitätsanbieter ist nicht mit diesem Profil verknüpft. Melden Sie sich mit Ihrem eigenen Konto an und versuchen Sie es erneut.",
+    "ssoReauthSessionInvalid": "Ihre Sitzung hat sich während der Überprüfung geändert. Melden Sie sich erneut an und versuchen Sie es dann noch einmal.",
+    "ssoReauthPasswordSet": "Dieses Konto hat jetzt ein Passwort. Verwenden Sie es, um die Multi-Faktor-Authentifizierung einzurichten.",
+    "ssoReauthUnavailable": "Die Überprüfung durch den Identitätsanbieter ist vorübergehend nicht verfügbar. Bitte versuchen Sie es in Kürze erneut.",
+    "ssoReauthFailed": "Die Bestätigung bei Ihrem Identitätsanbieter ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "couldNotStartIdentityProviderVerification": "Die Überprüfung durch den Identitätsanbieter konnte nicht gestartet werden."
   },
   "roleManager": {
     "roles": "Rollen",

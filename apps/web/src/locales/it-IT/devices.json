@@ -111,7 +111,10 @@
     "expiryMinutes_one": "tra circa {{count}} minuto",
     "expiryMinutes_other": "tra circa {{count}} minuti",
     "expiryHours_one": "tra circa {{count}} ora",
-    "expiryHours_other": "tra circa {{count}} ore"
+    "expiryHours_other": "tra circa {{count}} ore",
+    "mfaRequiredSsoLinks": "Per generare i collegamenti è richiesta l'autenticazione a più fattori. La tua organizzazione ti fa accedere tramite un provider di identità: chiedi all'amministratore di abilitare l'attendibilità MFA per quel provider oppure registra un fattore nelle impostazioni del profilo.",
+    "mfaRequiredSsoInstallers": "Per generare i programmi di installazione è richiesta l'autenticazione a più fattori. La tua organizzazione ti fa accedere tramite un provider di identità: chiedi all'amministratore di abilitare l'attendibilità MFA per quel provider oppure registra un fattore nelle impostazioni del profilo.",
+    "mfaRequiredSsoTokens": "Per generare i token di installazione è richiesta l'autenticazione a più fattori. La tua organizzazione ti fa accedere tramite un provider di identità: chiedi all'amministratore di abilitare l'attendibilità MFA per quel provider oppure registra un fattore nelle impostazioni del profilo."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Impossibile caricare i siti",

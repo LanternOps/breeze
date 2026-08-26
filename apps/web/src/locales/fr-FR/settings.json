@@ -1858,7 +1858,10 @@
     "disabling": "Désactivant...",
     "generating": "Générer...",
     "regenerateCodes": "Régénération des codes",
-    "showRecoveryCodes": "Afficher les codes de récupération"
+    "showRecoveryCodes": "Afficher les codes de récupération",
+    "verifyYourIdentity": "Vérifiez votre identité",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez-vous à nouveau auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
+    "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité"
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
@@ -1945,7 +1948,14 @@
     "failedToEnableMfaHttp": "Impossible d’activer MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "Impossible de désactiver MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Impossible de démarrer la configuration de la clé d’accès (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Impossible d’enregistrer la clé d’accès (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Impossible d’enregistrer la clé d’accès (HTTP {{status}})",
+    "ssoReauthNotFresh": "Votre fournisseur d'identité n'a pas revérifié votre connexion. Réessayez ou demandez à votre administrateur d'autoriser les invites de réauthentification.",
+    "ssoReauthIdentityMismatch": "Ce compte du fournisseur d'identité n'est pas celui associé à ce profil. Connectez-vous avec votre propre compte et réessayez.",
+    "ssoReauthSessionInvalid": "Votre session a changé pendant la vérification. Reconnectez-vous, puis réessayez.",
+    "ssoReauthPasswordSet": "Ce compte possède désormais un mot de passe. Utilisez-le pour configurer l'authentification multifacteur.",
+    "ssoReauthUnavailable": "La vérification par le fournisseur d'identité est temporairement indisponible. Veuillez réessayer sous peu.",
+    "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",
+    "couldNotStartIdentityProviderVerification": "Impossible de démarrer la vérification par le fournisseur d'identité."
   },
   "roleManager": {
     "roles": "Rôles",

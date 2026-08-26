@@ -1853,7 +1853,10 @@
     "disabling": "Disabilitazione...",
     "generating": "Generazione...",
     "regenerateCodes": "Rigenera codici",
-    "showRecoveryCodes": "Mostra codici di recupero"
+    "showRecoveryCodes": "Mostra codici di recupero",
+    "verifyYourIdentity": "Verifica la tua identità",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Questo account accede tramite un provider di identità e non ha una password. Verificati nuovamente presso il tuo provider per iniziare a configurare un'app di autenticazione.",
+    "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità"
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importa da Pax8",
@@ -1940,7 +1943,14 @@
     "failedToEnableMfaHttp": "Abilitazione MFA non riuscita (HTTP {{status}})",
     "failedToDisableMfaHttp": "Disabilitazione MFA non riuscita (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Avvio configurazione passkey non riuscito (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Salvataggio passkey non riuscito (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Salvataggio passkey non riuscito (HTTP {{status}})",
+    "ssoReauthNotFresh": "Il tuo provider di identità non ha verificato nuovamente il tuo accesso. Riprova oppure chiedi all'amministratore di consentire le richieste di riautenticazione.",
+    "ssoReauthIdentityMismatch": "Quell'account del provider di identità non è quello collegato a questo profilo. Accedi con il tuo account e riprova.",
+    "ssoReauthSessionInvalid": "La tua sessione è cambiata durante la verifica. Accedi di nuovo, quindi riprova.",
+    "ssoReauthPasswordSet": "Questo account ora ha una password. Usala per configurare l'autenticazione a più fattori.",
+    "ssoReauthUnavailable": "La verifica tramite il provider di identità non è temporaneamente disponibile. Riprova tra poco.",
+    "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
+    "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità."
   },
   "roleManager": {
     "roles": "Ruoli",
