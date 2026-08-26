@@ -79,6 +79,8 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'snmp_poll',
   'script',
   'peripheral_policy_sync_v2',
+  'pam_apply_v2',
+  'pam_cleanup_v2',
 ]);
 
 function commandResultToStdout(data: z.infer<typeof commandResultSchema>): string | undefined {

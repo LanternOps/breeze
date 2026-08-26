@@ -336,6 +336,11 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
     approvedByName: 'Jane Admin',
     deniedByName: null,
     revokedByName: null,
+    enforcementStatus: 'legacy_untracked',
+    enforcementGeneration: 1,
+    enforcementReason: null,
+    endpointObservedAt: null,
+    cleanupReceivedAt: null,
   };
 
   it('list rows carry approvedByName/deniedByName/revokedByName from the user joins', async () => {
@@ -351,6 +356,11 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
     // Existing joins are untouched.
     expect(body.requests[0].deviceHostname).toBe('WS-ALPHA');
     expect(body.requests[0].siteName).toBe('HQ');
+    expect(body.requests[0]).toMatchObject({
+      enforcementStatus: 'legacy_untracked',
+      enforcementGeneration: 1,
+      manualRemediationDisposition: 'blocked_manual_remediation',
+    });
     expect(body.pagination).toEqual({ page: 1, limit: 50, total: 1 });
 
     // The select projection asks for all three aliased user names.
@@ -358,6 +368,8 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
     expect(projection).toHaveProperty('approvedByName');
     expect(projection).toHaveProperty('deniedByName');
     expect(projection).toHaveProperty('revokedByName');
+    expect(projection).toHaveProperty('enforcementStatus');
+    expect(projection).toHaveProperty('cleanupReceivedAt');
   });
 
   it('active rows carry the decider name fields', async () => {

@@ -127,11 +127,14 @@ vi.mock('../../services/auditBaselineService', () => ({
 // because the handler happened to be missing.
 const scriptRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 const peripheralV2RegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const pamRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 const cisRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../services/commandResultHandlers', () => ({
   commandResultHandlers: {
     script: (...args: unknown[]) => scriptRegistryHandlerMock(...(args as [])),
     peripheral_policy_sync_v2: (...args: unknown[]) => peripheralV2RegistryHandlerMock(...(args as [])),
+    pam_apply_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
+    pam_cleanup_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
     cis_benchmark: (...args: unknown[]) => cisRegistryHandlerMock(...(args as [])),
   },
 }));
@@ -296,6 +299,34 @@ describe('agent commands routes', () => {
       result: expect.objectContaining({ result: protocolResult }),
     }));
   });
+
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'dispatches %s results to the shared handler over the HTTP path',
+    async (commandType) => {
+      const command = { id: commandId, deviceId: 'device-1', type: commandType, status: 'sent', payload: {} };
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '11111111-1111-4111-8111-111111111111',
+        actuationId: '22222222-2222-4222-8222-222222222222',
+        generation: 2,
+        state: 'received',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+      });
+      expect(res.status).toBe(200);
+      expect(pamRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+        command, commandId, resolvedDeviceId: 'device-1',
+        result: expect.objectContaining({ result: protocolResult }),
+      }));
+    },
+  );
 
   // The other half of the contract: types this route already post-processes
   // inline must NOT also go through the registry, or every one of them would

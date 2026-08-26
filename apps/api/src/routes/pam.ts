@@ -148,6 +148,58 @@ const approvedByUser = alias(users, 'approved_by_user');
 const deniedByUser = alias(users, 'denied_by_user');
 const revokedByUser = alias(users, 'revoked_by_user');
 
+const pamEnforcementProjection = {
+  enforcementStatus: sql<string | null>`(
+    SELECT a.observed_state FROM pam_actuations a
+    WHERE a.elevation_request_id = ${elevationRequests.id}
+    ORDER BY a.request_revision DESC LIMIT 1
+  )`,
+  enforcementGeneration: sql<number | null>`(
+    SELECT a.generation FROM pam_actuations a
+    WHERE a.elevation_request_id = ${elevationRequests.id}
+    ORDER BY a.request_revision DESC LIMIT 1
+  )`,
+  enforcementReason: sql<string | null>`(
+    SELECT a.failure_code FROM pam_actuations a
+    WHERE a.elevation_request_id = ${elevationRequests.id}
+    ORDER BY a.request_revision DESC LIMIT 1
+  )`,
+  endpointObservedAt: sql<Date | null>`(
+    SELECT r.observed_at
+    FROM pam_actuation_results r
+    JOIN pam_actuations a ON a.id = r.actuation_id AND a.generation = r.generation
+    WHERE a.elevation_request_id = ${elevationRequests.id}
+    ORDER BY r.received_at DESC, r.id DESC LIMIT 1
+  )`,
+  cleanupReceivedAt: sql<Date | null>`(
+    SELECT r.received_at
+    FROM pam_actuation_results r
+    JOIN pam_actuations a ON a.id = r.actuation_id AND a.generation = r.generation
+    WHERE a.elevation_request_id = ${elevationRequests.id}
+      AND a.desired_state = 'cleanup' AND r.result_kind = 'received'
+    ORDER BY r.received_at DESC, r.id DESC LIMIT 1
+  )`,
+};
+
+function enforcementResponse(row: {
+  enforcementStatus?: string | null;
+  enforcementGeneration?: number | null;
+  enforcementReason?: string | null;
+  endpointObservedAt?: Date | null;
+  cleanupReceivedAt?: Date | null;
+}) {
+  return {
+    enforcementStatus: row.enforcementStatus ?? null,
+    enforcementGeneration: row.enforcementGeneration ?? null,
+    enforcementReason: row.enforcementReason ?? null,
+    endpointObservedAt: row.endpointObservedAt ?? null,
+    cleanupReceivedAt: row.cleanupReceivedAt ?? null,
+    manualRemediationDisposition: row.enforcementStatus === 'legacy_untracked'
+      ? 'blocked_manual_remediation'
+      : null,
+  };
+}
+
 export const pamRoutes = new Hono();
 pamRoutes.use('*', authMiddleware);
 pamRoutes.use('*', requireScope('organization', 'partner', 'system'));
@@ -232,6 +284,7 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
         deniedByName: deniedByUser.name,
         revokedByName: revokedByUser.name,
         matchedPolicyName: softwarePolicies.name,
+        ...pamEnforcementProjection,
       })
       .from(elevationRequests)
       .leftJoin(devices, eq(elevationRequests.deviceId, devices.id))
@@ -277,6 +330,7 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
         pamRuleId,
         pamRuleName,
         decisionSource,
+        ...enforcementResponse(r),
         // Surfaced from metadata so "Create rule from this request" can seed a
         // command-line / parent-image criterion (uac_intercept captures both).
         commandLine: typeof meta.command_line === 'string' ? meta.command_line : null,
@@ -312,6 +366,7 @@ pamRoutes.get('/active', requirePamRead, async (c) => {
       approvedByName: approvedByUser.name,
       deniedByName: deniedByUser.name,
       revokedByName: revokedByUser.name,
+      ...pamEnforcementProjection,
     })
     .from(elevationRequests)
     .leftJoin(devices, eq(elevationRequests.deviceId, devices.id))
@@ -332,6 +387,7 @@ pamRoutes.get('/active', requirePamRead, async (c) => {
       approvedByName: r.approvedByName,
       deniedByName: r.deniedByName,
       revokedByName: r.revokedByName,
+      ...enforcementResponse(r),
     })),
   });
 });
