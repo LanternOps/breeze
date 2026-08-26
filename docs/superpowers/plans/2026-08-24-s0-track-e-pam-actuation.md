@@ -1,3 +1,7 @@
+---
+tracking_issue: https://github.com/LanternOps/breeze/issues/4060
+---
+
 # S0 Track E PAM Actuation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -70,7 +74,7 @@
 - Generalizes `intentOutbox` to nullable `intentId` plus nullable `pamActuationId` with SQL CHECK `((intent_id IS NULL) <> (pam_actuation_id IS NULL))`.
 - Adds `devices.pamLifetimeProtocolVersion`, persisted as integer default `0`, and `elevation_requests.revision`, persisted as integer default `1` and incremented only by a new request revision transition.
 
-- [ ] **Step 1: Write the real-Postgres RED contract**
+- [x] **Step 1: Write the real-Postgres RED contract**
 
 Create two partners and two organizations with one device each. The test must assert literal PostgreSQL outcomes and row counts:
 
@@ -86,7 +90,7 @@ expect(await deletePamResultAsApp()).toMatchObject({ code: '42501' });
 
 Also prove organization erasure, device erasure, FK ordering, and export classification. Seed legacy `active` and `actuating` requests and assert migration output creates `legacy_untracked` actuation rows with `desired_state='cleanup'`, `cleaned_at IS NULL`, no fabricated result, and no endpoint terminal audit.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamActuationLifecycle.integration.test.ts
@@ -94,7 +98,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: FAIL because the tables, capability column, outbox PAM parent, and quarantine state do not exist.
 
-- [ ] **Step 3: Add schema and the idempotent migration**
+- [x] **Step 3: Add schema and the idempotent migration**
 
 Implement the schema with these minimum columns and constraints:
 
@@ -117,11 +121,11 @@ Use composite tenant FKs `(elevation_request_id, org_id) -> elevation_requests(i
 
 Generalize the existing `intent_outbox` in place; retain its name, publisher cursor, retry columns, and intent behavior. Add an idempotent bounded legacy backfill/quarantine loop and use `GET DIAGNOSTICS` plus `RAISE WARNING` for all affected-row counts. Do not infer cleanup from old request status.
 
-- [ ] **Step 4: Register every tenancy and migration contract**
+- [x] **Step 4: Register every tenancy and migration contract**
 
 Add both tables alphabetically to `CORE_ORG_CASCADE_DELETE_ORDER`; add both to device cascade lists because both carry `device_id`; add their denormalized-org registration; add `pam_actuation_results` to `AUDIT_ADMIN_REQUIRED_TABLES`. Register all columns in `CORE_TENANT_EXPORT_POLICY`, classifying `latest_evidence` and `evidence` as `excludedOpen`. Register both direct-org tables in RLS coverage and export them from the schema index.
 
-- [ ] **Step 5: Run GREEN and database contracts**
+- [x] **Step 5: Run GREEN and database contracts**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamActuationLifecycle.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts
@@ -133,7 +137,7 @@ bash scripts/check-migration-naming.sh
 
 Expected: every named file executes and passes; drift and migration naming are clean.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/api/src/db/schema/elevations.ts apps/api/src/db/schema/actionIntents.ts apps/api/src/db/schema/devices.ts apps/api/src/db/schema/index.ts apps/api/migrations/2026-09-07-pam-actuation-lifecycle.sql apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/pamActuationLifecycle.integration.test.ts
@@ -170,7 +174,7 @@ type PamActuationRef = {
 };
 ```
 
-- [ ] **Step 1: Write lifecycle and worker RED tests**
+- [x] **Step 1: Write lifecycle and worker RED tests**
 
 Use the exact service contract:
 
@@ -193,7 +197,7 @@ export async function requestPamCleanup(tx: PamLifecycleTx, input: {
 
 Assert approval creates exactly one generation-1 `active` actuation/outbox row, denial creates exactly one generation-1 cleanup-only row, concurrent cleanup requests increment once, duplicate outbox delivery inserts one `device_commands` row, lower generation never dispatches, cleanup never regresses to apply, and missing/zero capability inserts no command. Assert queue methods run only after the SQL transaction/context has ended.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamActuationLifecycle.test.ts src/jobs/pamActuationWorker.test.ts src/jobs/intentOutboxPublisher.test.ts
@@ -201,7 +205,7 @@ pnpm --filter @breeze/api exec vitest run src/services/pamActuationLifecycle.tes
 
 Expected: FAIL because the lifecycle service, PAM queue route, and worker do not exist.
 
-- [ ] **Step 3: Implement atomic desired-state changes**
+- [x] **Step 3: Implement atomic desired-state changes**
 
 Inside the caller's transaction, lock the request/actuation row, compare request revision and desired generation, mutate the actuation, and insert the PAM-parent outbox row. Use a uniqueness key derived from `actuationId:generation`; retries return the existing `PamActuationRef`. The cleanup branch must behave as:
 
@@ -220,11 +224,11 @@ await insertPamOutbox(tx, actuation.id, nextGeneration);
 Never publish to Redis from this service.
 An approved/auto-approved apply requires non-null `expiresAt`; reject a missing or elapsed expiry before creating active desired state. Denial may create cleanup-only generation 1 with null expiry.
 
-- [ ] **Step 4: Implement physical-outbox routing and capability-gated dispatch**
+- [x] **Step 4: Implement physical-outbox routing and capability-gated dispatch**
 
 Extend `intentOutboxPublisher.ts` to discriminate the XOR parent and enqueue either the existing intent event or `{ actuationId, generation }` on `pam-actuation`. In the PAM worker, use a short system-context transaction, lock the actuation, require exact current generation, verify request/device/org identity, and require `pamLifetimeProtocolVersion >= 2` before apply or cleanup dispatch. Insert at most one `pam_apply_v2` or `pam_cleanup_v2` command and bind `currentCommandId`; mark capability failures as blocked/failed without fabricating endpoint evidence. Initialize queue/worker/readiness lifecycle in `index.ts` with shutdown symmetry.
 
-- [ ] **Step 5: Run GREEN and typecheck**
+- [x] **Step 5: Run GREEN and typecheck**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamActuationLifecycle.test.ts src/jobs/pamActuationWorker.test.ts src/jobs/intentOutboxPublisher.test.ts
@@ -233,7 +237,7 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api typecheck
 
 Expected: all focused tests pass, including duplicate delivery and queue-outside-context assertions.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/api/src/services/pamActuationLifecycle.ts apps/api/src/services/pamActuationLifecycle.test.ts apps/api/src/jobs/pamActuationWorker.ts apps/api/src/jobs/pamActuationWorker.test.ts apps/api/src/jobs/intentOutboxPublisher.ts apps/api/src/jobs/intentOutboxPublisher.test.ts apps/api/src/index.ts
@@ -261,7 +265,7 @@ git commit -m "fix(api): dispatch durable PAM generations"
 - Produces `removePamEntitlement(tx, { orgId, deviceId, subjectId, source }): Promise<readonly PamActuationRef[]>`, where `source` is `{ kind: 'license' | 'subscription' | 'policy'; id: string }`; it is the only allowed shipping boundary for entitlement-triggered cleanup.
 - Route responses keep compatibility `status` and add nonterminal enforcement state; they do not claim endpoint cleanup.
 
-- [ ] **Step 1: Discover and record every transition producer before editing**
+- [x] **Step 1: Discover and record every transition producer before editing**
 
 Use the codebase graph to trace all writes of `elevation_requests.status`, all callers that remove/disable PAM policies, and every shipping entitlement/license removal path. Save the exact path/function inventory in the task report. The implementation gate is:
 
@@ -273,11 +277,11 @@ type EntitlementOwnerDisposition =
 
 Do not invent a caller. If a shipping producer exists, it must call `removePamEntitlement` in its winning transaction and have an integration test. If none exists, the service and tests still ship, but Track E closure remains blocked until Product supplies the named `not_applicable` disposition; absence from search is not a disposition.
 
-- [ ] **Step 2: Write transition RED tests**
+- [x] **Step 2: Write transition RED tests**
 
 Cover web approve, mobile approve, auto-approve, deny, revoke, expiry, policy removal, approval failure, and the discovered entitlement disposition. For each transition assert request mutation, actuation mutation, and outbox insertion all commit or all roll back. Inject audit/outbox failure and assert zero privileged transition. Assert cross-org/site rejection leaves request, actuation, outbox, and commands unchanged. Revoke/expiry must return or project `enforcementStatus: 'cleanup_pending'`, not terminal endpoint success.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/pam.test.ts src/routes/approvals.test.ts src/routes/agents/elevationRequests.test.ts src/jobs/pamJobs.test.ts src/services/pamEntitlementCleanup.test.ts
@@ -286,7 +290,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: at least approval/revoke/expiry transitions commit without atomic actuation/outbox state and the new entitlement boundary is absent.
 
-- [ ] **Step 4: Integrate every server transition**
+- [x] **Step 4: Integrate every server transition**
 
 Call `createPamDecisionIntent` or `requestPamCleanup` inside the same transaction as the winning request decision. Remove the best-effort PAM mobile mirror. Change expiry from status-only CTE behavior to a bounded lock/return loop that creates cleanup intent before commit. Preserve legacy request statuses for compatibility, but return accepted/pending cleanup unless endpoint evidence is already cleaned. Wire policy deletion/disable to cause `policy_removed`. Wire the discovered shipping entitlement caller to `removePamEntitlement` with cause `entitlement_removed`; if no caller exists, expose and test the service without claiming transition coverage.
 
@@ -294,7 +298,7 @@ Call `createPamDecisionIntent` or `requestPamCleanup` inside the same transactio
 
 Run the RED commands again. Then inspect the task report/coverage assertion: it must name the wired shipping caller and test, or name the Product-owned non-applicability decision. Otherwise mark this task code-complete but closure-blocked; do not silently check off entitlement-removal coverage.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/api/src/routes/pam.ts apps/api/src/routes/pam.test.ts apps/api/src/routes/approvals.ts apps/api/src/routes/approvals.test.ts apps/api/src/routes/agents/elevationRequests.ts apps/api/src/routes/agents/elevationRequests.test.ts apps/api/src/jobs/pamJobs.ts apps/api/src/jobs/pamJobs.test.ts apps/api/src/services/pamEntitlementCleanup.ts apps/api/src/services/pamEntitlementCleanup.test.ts apps/api/src/__tests__/integration/pamActuationTransitions.integration.test.ts
@@ -348,11 +352,11 @@ type PamAgentResultV2 = {
 
 - Produces PAM response fields `enforcementStatus`, `enforcementGeneration`, `enforcementReason`, `endpointObservedAt`, `cleanupReceivedAt`, and `manualRemediationDisposition`.
 
-- [ ] **Step 1: Write result-ordering and transport-parity RED tests**
+- [x] **Step 1: Write result-ordering and transport-parity RED tests**
 
 Test REST/WS twins for accepted current-device/current-generation results and assert the same DB rows and return classification. Test duplicate observation, foreign org/device, wrong command, stale/lower generation, reordered states, malformed evidence, and verified-active arriving after a cleanup tombstone. Assert only `verified_active` sets `session_started_at`; only a valid `cleaned` result with zero job members, disabled/non-admin account, and no privileged token sets `session_ended_at`, `cleaned_at`, and terminal cleanup audit. A cleanup failure stays failed/pending, and v1 success cannot update v2 state.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamActuationResult.test.ts src/services/commandResultHandlers.test.ts src/routes/agents/commands.test.ts src/routes/agentWs.test.ts src/routes/pam.test.ts src/routes/devices/actuateElevation.test.ts
@@ -361,19 +365,19 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: FAIL because PAM is absent from the shared result registry and endpoint state is not persisted.
 
-- [ ] **Step 3: Implement one result transaction**
+- [x] **Step 3: Implement one result transaction**
 
 Authenticate command/device/organization identity, validate protocol and evidence, lock current actuation, compare exact generation and command ownership, insert the immutable result idempotently, and advance only legal observed-state transitions. Treat an already-present unique observation as `duplicate`. Treat older generations as `stale` without state mutation. Never accept `verified_active` after desired cleanup. Derive server receipt time separately from agent `observedAt`.
 
-- [ ] **Step 4: Register both transports and truthful API projection**
+- [x] **Step 4: Register both transports and truthful API projection**
 
 Register `pam_apply_v2` and `pam_cleanup_v2` in `commandResultHandlers.ts`. Keep REST and WS transport code limited to envelope authentication and invoking that handler. Update PAM reads/revoke responses to expose compatibility status separately from enforcement. Map `legacy_untracked` to `manualRemediationDisposition: 'blocked_manual_remediation'` and reject new admission on that endpoint. Keep the env-gated v1 route as legacy only and remove any ability for it to claim v2 cleaned/active evidence.
 
-- [ ] **Step 5: Run GREEN**
+- [x] **Step 5: Run GREEN**
 
 Run the RED commands again. Expected: all transport twins and the real-Postgres ordering matrix execute and pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/api/src/services/pamActuationResult.ts apps/api/src/services/pamActuationResult.test.ts apps/api/src/services/commandResultHandlers.ts apps/api/src/services/commandResultHandlers.test.ts apps/api/src/routes/agents/commands.ts apps/api/src/routes/agents/commands.test.ts apps/api/src/routes/agentWs.ts apps/api/src/routes/agentWs.test.ts apps/api/src/routes/pam.ts apps/api/src/routes/pam.test.ts apps/api/src/routes/devices/actuateElevation.ts apps/api/src/routes/devices/actuateElevation.test.ts apps/api/src/__tests__/integration/pamActuationResults.integration.test.ts
@@ -429,11 +433,11 @@ type PamCleanupV2 = {
 
 - The local ledger contains only actuation/request/device/org identity, generation, desired state, PID, process creation time, Job Object name, boot ID, and timestamps; it never stores credentials, password material, tokens, or command secrets.
 
-- [ ] **Step 1: Write protocol/store/capability RED tests**
+- [x] **Step 1: Write protocol/store/capability RED tests**
 
 Add table-driven cases for malformed identity, wrong device/org, expired/max-lifetime input, lower/equal generation, duplicate apply/cleanup, cleanup tombstone, and crash points between durable write, OS action, and result emission. Add concurrent duplicate/reordered race tests. Assert old-agent heartbeat omission persists protocol `0`; non-Windows and missing primitives do not advertise version 2.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd agent && go test -race ./internal/pamlifetime ./internal/heartbeat/...
@@ -442,15 +446,15 @@ pnpm --filter @breeze/api exec vitest run src/routes/agents/heartbeat.test.ts
 
 Expected: FAIL because `pamlifetime`, v2 commands, and heartbeat capability do not exist. If the API heartbeat test has a different adjacent filename after Track D, run the exact discovered file and record it in the task report.
 
-- [ ] **Step 3: Implement durable protocol parsing and tombstone rules**
+- [x] **Step 3: Implement durable protocol parsing and tombstone rules**
 
 Write ledger updates to a same-directory temporary file, flush, atomically replace, and enforce owner-only access. Persist desired state before invoking OS operations. Reject any apply whose generation is at or below the highest cleanup generation. Equal apply is idempotent only if identity and bound command content match; equal generation with a different digest is failure. Return structured v2 results with stable failure codes and a random UUID observation ID.
 
-- [ ] **Step 4: Wire handlers and heartbeat fail-closed capability**
+- [x] **Step 4: Wire handlers and heartbeat fail-closed capability**
 
 Register `pam_apply_v2` and `pam_cleanup_v2` handlers that delegate to the manager and return the shared structured result body. Add `pamLifetimeProtocolVersion` to heartbeat JSON and the server validator/persistence path established by Track D. Advertise `2` only on Windows when token launch, named Job Object management, durable ledger, and account verification are all available; otherwise omit or send `0`. Server admission continues to require persisted value `>= 2`.
 
-- [ ] **Step 5: Run GREEN and race tests**
+- [x] **Step 5: Run GREEN and race tests**
 
 ```bash
 cd agent && go test -race ./internal/pamlifetime ./internal/heartbeat/...
@@ -460,7 +464,7 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api typecheck
 
 Expected: all table/race tests pass and old-agent omission remains compatible.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add agent/internal/pamlifetime agent/internal/remote/tools/types.go agent/internal/heartbeat/handlers.go agent/internal/heartbeat/handlers_actuate.go agent/internal/heartbeat/handlers_actuate_test.go agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/heartbeat_test.go apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/heartbeat.ts apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts apps/api/src/routes/agents/schemas.test.ts apps/api/src/routes/agents/heartbeat.test.ts
@@ -689,18 +693,18 @@ Track D complete
 
 ## Completion Evidence Checklist
 
-- [ ] RMM-QA-445 is the only finding claimed by this track.
-- [ ] One physical `intent_outbox` handles both intent and PAM parents with an XOR constraint.
-- [ ] `pam_actuations` is mutable desired/latest state; `pam_actuation_results` is append-only evidence.
-- [ ] Legacy active/actuating v1 rows surface `legacy_untracked` / `blocked_manual_remediation` and are never marked cleaned.
-- [ ] Missing or unsupported heartbeat capability prevents v2 apply admission.
-- [ ] REST and WebSocket results use the same registered service.
+- [x] RMM-QA-445 is the only finding claimed by this track.
+- [x] One physical `intent_outbox` handles both intent and PAM parents with an XOR constraint.
+- [x] `pam_actuations` is mutable desired/latest state; `pam_actuation_results` is append-only evidence.
+- [x] Legacy active/actuating v1 rows surface `legacy_untracked` / `blocked_manual_remediation` and are never marked cleaned.
+- [x] Missing or unsupported heartbeat capability prevents v2 apply admission.
+- [x] REST and WebSocket results use the same registered service.
 - [ ] Only token-launch v2 uses the named kill-on-close Job Object contract; SendInput remains v1 only.
 - [ ] Cleanup tombstones reject delayed older apply commands across restart/reboot.
-- [ ] Only verified current-generation endpoint evidence advances session/terminal cleanup truth.
+- [x] Only verified current-generation endpoint evidence advances session/terminal cleanup truth.
 - [ ] Entitlement removal names a wired shipping caller or a Product-owned shipping-SKU non-applicability disposition.
-- [ ] Real-Postgres suites execute rather than skip and prove two-org isolation and zero side effects.
+- [x] Real-Postgres suites execute rather than skip and prove two-org isolation and zero side effects.
 - [ ] Go race/state-machine tests pass and Windows binaries cross-compile.
 - [ ] Disposable signed-Windows evidence covers at least 20 cases and proves zero surviving privileged token/process tree.
 - [ ] The 2-second p95/5-second maximum remains labeled a candidate target until explicitly adopted.
-- [ ] No production deployment, customer rollout, or destructive production migration occurred from this branch.
+- [x] No production deployment, customer rollout, or destructive production migration occurred from this branch.
