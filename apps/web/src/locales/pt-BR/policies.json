@@ -143,6 +143,7 @@
       "archived2": "Arquivada",
       "features": "Recursos",
       "noPoliciesFoundTryAdjustingYourSearch": "Nenhuma política encontrada. Tente ajustar sua pesquisa.",
+      "noPoliciesYet": "Ainda não há políticas de configuração. Crie uma e depois atribua-a a organizações, locais ou dispositivos.",
       "partnerWidePolicyAppliesToEveryOrganization": "Política de todo o parceiro — aplica-se a todas as organizações",
       "allOrgs": "Todo o parceiro",
       "page": "Página",
@@ -252,7 +253,9 @@
         "thisRuleUsesUnsupportedMetrics": "Esta regra usa uma métrica que o mecanismo de alertas não consegue avaliar ({{metrics}}). Escolha uma métrica compatível — ou remova a condição — antes de salvar; o servidor rejeita regras que a contenham.",
         "thisConditionUsesAnUnsupportedMetric": "A métrica \"{{metric}}\" não é avaliada pelo mecanismo de alertas, portanto esta condição é exibida somente para leitura.",
         "valueCount": "Valor (contagem)",
-        "metricNotSet": "não definida"
+        "metricNotSet": "não definida",
+        "testRule": "Testar regra",
+        "testRuleHint": "Avalie estas condições em um dispositivo agora, incluindo alterações não salvas."
       },
       "automationTab": {
         "schedule": "Agendamento",

@@ -58,7 +58,7 @@ function bulkCommandFailureLabel(code: BulkCommandFailureCode): string {
     case 'SITE_ACCESS_DENIED':
       return 'in a site you cannot access';
     case 'DECOMMISSIONED':
-      return 'decommissioned';
+      return 'removed';
     case 'INSERT_FAILED':
       return 'could not be queued (server error)';
     default:
@@ -320,7 +320,7 @@ function bulkWakeFailureLabel(code: string): string {
     case 'TARGET_NOT_FOUND':
       return 'not found or access denied';
     case 'DECOMMISSIONED':
-      return 'decommissioned';
+      return 'removed';
     case 'RELAY_OVERRIDE_INVALID':
       // Bulk path never uses override; surface generically if it ever
       // does appear so we notice in telemetry.
@@ -389,7 +389,7 @@ export async function decommissionDevice(deviceId: string): Promise<{ success: b
   });
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to decommission device'));
+    throw new Error(await getErrorMessage(response, 'Failed to remove device'));
   }
 
   const data = await response.json();
@@ -470,18 +470,35 @@ export async function permanentDeleteDevice(deviceId: string): Promise<{ success
   return data.data ?? data;
 }
 
-export async function bulkDecommissionDevices(
-  deviceIds: string[]
-): Promise<{ succeeded: number; failed: number }> {
-  let succeeded = 0;
-  let failed = 0;
+export interface BulkDecommissionFailed {
+  id: string;
+  hostname: string;
+}
 
-  for (const id of deviceIds) {
+export interface BulkDecommissionResult {
+  succeeded: number;
+  failed: BulkDecommissionFailed[];
+}
+
+/**
+ * Fires one `DELETE /devices/:id` per device. Per-device try/catch: one
+ * device 404'ing/erroring must NOT abort the batch and silently skip every
+ * device after it (mirrors the maintenance-toggle loop in DevicesPage.tsx).
+ * Collects id + hostname for every failure so the caller can render a
+ * summary naming which devices failed, not just a count.
+ */
+export async function bulkDecommissionDevices(
+  devices: Array<{ id: string; hostname: string }>
+): Promise<BulkDecommissionResult> {
+  let succeeded = 0;
+  const failed: BulkDecommissionFailed[] = [];
+
+  for (const device of devices) {
     try {
-      await decommissionDevice(id);
+      await decommissionDevice(device.id);
       succeeded++;
     } catch {
-      failed++;
+      failed.push({ id: device.id, hostname: device.hostname || device.id });
     }
   }
 

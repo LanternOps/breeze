@@ -193,7 +193,9 @@ scheduledTasksRoutes.get(
       });
     } catch (error) {
       console.error('Failed to parse agent response for task listing:', error);
-      return c.json({ error: 'Failed to parse agent response for task listing' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for task listing', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -229,12 +231,16 @@ scheduledTasksRoutes.get(
       const payload = JSON.parse(result.stdout || '{}');
       const task = normalizeScheduledTask(payload);
       if (!task) {
-        return c.json({ error: 'Invalid task payload from agent' }, 502);
+        // 500, not 502: Cloudflare replaces an origin 502 body with its own
+        // branded page, blanking this message on hosted deployments.
+        return c.json({ error: 'Invalid task payload from agent', code: 'invalid_agent_response' }, 500);
       }
       return c.json({ data: task });
     } catch (error) {
       console.error('Failed to parse agent response for task details:', error);
-      return c.json({ error: 'Failed to parse agent response for task details' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for task details', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -288,7 +294,9 @@ scheduledTasksRoutes.get(
       });
     } catch (error) {
       console.error('Failed to parse agent response for task history:', error);
-      return c.json({ error: 'Failed to parse agent response for task history' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for task history', code: 'invalid_agent_response' }, 500);
     }
   }
 );

@@ -48,6 +48,7 @@ import FileActivityPanel from './FileActivityPanel';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import type { FileActivity } from './FileActivityPanel';
 import { useTranslation } from 'react-i18next';
+import { AGENT_MAX_FILE_READ_BYTES } from '@breeze/shared';
 import '@/lib/i18n';
 
 export type FileEntry = {
@@ -426,6 +427,32 @@ export default function FileManager({
   // Initiate file download
   const initiateDownload = useCallback(async (entry: FileEntry) => {
     const transferId = crypto.randomUUID();
+
+    // Pre-flight the agent's 1MB read cap. The directory listing already carries
+    // every entry's size, so an over-cap file can be refused here — with the
+    // actual numbers — instead of spending a round trip to have the device
+    // answer "file too large" in bytes.
+    //
+    // Fail OPEN on anything we cannot measure: an absent size, or a macOS alias
+    // whose `size` describes the alias file and not the target the agent
+    // resolves and reads. The agent enforces the real cap regardless; this guard
+    // exists to save a doomed round trip, not to be the enforcement point.
+    if (!entry.isAlias && typeof entry.size === 'number' && entry.size > AGENT_MAX_FILE_READ_BYTES) {
+      setTransfers(prev => [...prev, {
+        id: transferId,
+        filename: entry.name,
+        direction: 'download',
+        status: 'failed',
+        progress: 0,
+        size: entry.size ?? 0,
+        error: t('fileManager.errors.downloadTooLarge', {
+          size: formatSize(entry.size),
+          max: formatSize(AGENT_MAX_FILE_READ_BYTES),
+        }),
+      }]);
+      return;
+    }
+
     const controller = new AbortController();
     transferControllersRef.current.set(transferId, controller);
 

@@ -196,6 +196,21 @@ const MIN_SCRUBBABLE_SECRET_LENGTH = 8;
 // shows a reason, not a payload dump.
 export const MAX_CHANNEL_TEST_ERROR_LENGTH = 500;
 
+/**
+ * The channel's own credential strings, longest first.
+ *
+ * Exported because the senders need it BEFORE they compose an operator-facing
+ * message. `scrubChannelTestError` runs at the route, on text the sender has
+ * already stripped of markup, decoded entities in, and collapsed whitespace in
+ * — and it matches by literal substring, so any of those transforms can rewrite
+ * a configured secret into something that no longer matches itself. Redaction
+ * therefore has to happen on the RAW body, before the first lossy step; the
+ * route scrub stays as the second half of the bracket (#3992).
+ */
+export function collectChannelSecretStrings(type: string, config: unknown): string[] {
+  return collectSecretStrings(type, config);
+}
+
 function collectSecretStrings(type: string, config: unknown): string[] {
   if (!isRecord(config)) return [];
   const found: string[] = [];

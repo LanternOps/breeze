@@ -427,7 +427,7 @@
     "conditionNotMet": "Nicht erfüllt: {{condition}}",
     "noConditionsEvaluated": "Für diese Regel wurden keine Bedingungen ausgewertet.",
     "evaluatedAgainst": "Gegen {{hostname}} ausgewertet",
-    "fireSuppressionNote": "Cooldown, eine bereits offene Warnung oder eine Flapping-Unterdrückung können weiterhin verhindern, dass beim Ausführen der Regel eine Warnung ausgelöst wird."
+    "fireSuppressionNote": "Ein aktives Wartungsfenster, Cooldown, eine bereits offene Warnung oder eine Flapping-Unterdrückung können weiterhin verhindern, dass beim Ausführen der Regel eine Warnung ausgelöst wird."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Benachrichtigungsvorlage wird geladen...",
@@ -835,6 +835,7 @@
     "sms": "SMS",
     "pushover": "Pushover",
     "noNotificationChannelsFoundTryAdjustingYour": "Keine Benachrichtigungskanäle gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
+    "noChannelsYet": "Noch keine Benachrichtigungskanäle. Erstellen Sie einen, um Benachrichtigungen per E-Mail, Slack, Teams oder Webhook zu senden.",
     "partnerWideChannelReceivesAlertsFromEvery": "Partnerweiter Kanal – empfängt Benachrichtigungen von jeder Organisation",
     "allOrgs": "Partnerweit",
     "testing": "Testen...",

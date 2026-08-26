@@ -205,6 +205,11 @@ vi.mock('../../services/agentRollbackResult', () => ({
 
 vi.mock('../../middleware/agentAuth', () => ({
   isAgentTokenRotationDue: vi.fn(() => false),
+  // #3986 — the ONE definition of the drain claim allowlist. heartbeat.ts reads
+  // it as the fail-closed fallback for `agent.claimTypeAllowlist`, so the mock
+  // must carry the real value or the fallback would silently mean
+  // "unrestricted" in every test.
+  DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
 }));
 
 vi.mock('../../services/sentry', () => ({
@@ -320,6 +325,33 @@ function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
       siteId: 'site-1',
       role,
       tenantDraining: true,
+      // #3986 — the real middleware derives this ONCE and every claim site
+      // reads it; the harness must mirror that or it would be testing a
+      // context shape production never produces.
+      claimTypeAllowlist: ['self_uninstall'] as const,
+    });
+    await next();
+  });
+  app.route('/agents', heartbeatRoutes);
+  return app;
+}
+
+// #3986 — a REMOVED device inside the device-remove uninstall drain window.
+// Distinct from buildDrainingApp (a healthy device on an OFFBOARDING TENANT):
+// this one is the machine itself being uninstalled, and it gets the minimal
+// drain beat rather than a full heartbeat.
+function buildDeviceDrainApp(): Hono {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('agent', {
+      deviceId: 'device-1',
+      agentId: 'agent-1',
+      orgId: 'org-1',
+      siteId: 'site-1',
+      role: 'agent',
+      tenantDraining: false,
+      deviceUninstallDraining: true,
+      claimTypeAllowlist: ['self_uninstall'] as const,
     });
     await next();
   });
@@ -4078,5 +4110,217 @@ describe('PUT /:id/monitoring-results — secret redaction (#2434)', () => {
     const serialized = JSON.stringify(inserted);
     expect(serialized).not.toContain('BEGIN RSA PRIVATE KEY');
     expect(serialized).not.toContain('MIIBOgIBAAJBAKe0m0h');
+  });
+});
+
+// #3986 Layer 4 — the MINIMAL DRAIN BEAT. Being on the drain ROUTE allowlist is
+// not the same as being harmless: the normal heartbeat both INGESTS (metrics,
+// IP history, OneDrive state, threshold-scan command creation, audit events)
+// and CONFIGURES (configUpdate, three upgrade targets, manifest trust keys +
+// delegations, renewCert, rotateToken). A removed machine must get none of it.
+describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)', () => {
+  const claimedAt = new Date('2026-08-25T00:00:00.000Z');
+  const uninstallCommand = {
+    id: 'cmd-uninstall',
+    type: 'self_uninstall',
+    deviceId: 'device-1',
+    payload: { removeConfig: true },
+    executedAt: claimedAt,
+  };
+
+  // A heartbeat body that would exercise EVERY ingest branch of the normal
+  // path, so "nothing was written" is a real assertion rather than a
+  // consequence of an empty payload.
+  const richHeartbeatBody = {
+    agentVersion: '0.65.10',
+    hostname: 'renamed-host',
+    osVersion: 'Ubuntu 24.04',
+    metrics: {
+      cpuPercent: 99,
+      ramPercent: 99,
+      ramUsedMb: 4096,
+      diskPercent: 99,
+      diskUsedGb: 500,
+    },
+    ipHistoryUpdate: { deviceId: 'device-1', currentIPs: ['10.0.0.9'] },
+    onedriveDeviceState: {
+      signedIn: true,
+      filesOnDemandOn: true,
+      kfmFolderStates: {},
+      mountedLibraries: [],
+      entitledLibraries: [],
+      signedInUpns: ['user@example.com'],
+      driftEntries: [],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveManifestKeyDelegationsMock.mockReset();
+    // Deliberately armed with values the normal path WOULD return, so a
+    // regression that falls through to it produces a loudly non-empty body.
+    getActiveTrustKeysetMock.mockResolvedValue([
+      { keyId: 'k-1', publicKeyB64: 'AAA=', validFrom: '2026-01-01T00:00:00.000Z' },
+    ]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([{ keyId: 'k-1' }]);
+    // A VALID device row for every select, so a regression that falls through
+    // to the normal path actually runs it end-to-end (ingest writes, upgrade
+    // resolution, config build) instead of bailing out at a 404 and passing
+    // the "wrote nothing" assertions by accident.
+    selectMock.mockReturnValue(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    claimPendingCommandsForDeviceMock.mockResolvedValue([]);
+  });
+
+  async function drainBeat(body: unknown = richHeartbeatBody) {
+    return buildDeviceDrainApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('returns only self_uninstall — no config, upgrades, trust keys or rotation — in a drain heartbeat', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([uninstallCommand]);
+
+    const resp = await drainBeat();
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+
+    // The uninstall IS delivered — that is the entire point of the window.
+    expect((body.commands as Array<{ id: string; type: string }>).map((cmd) => cmd.type)).toEqual([
+      'self_uninstall',
+    ]);
+
+    // ...and the response carries NOTHING the Go agent would act on. Asserted
+    // as an exact key set, not key-by-key: a future field added to the normal
+    // response must not be able to leak in unnoticed.
+    expect(Object.keys(body)).toEqual(['commands']);
+  });
+
+  it('claims with the derived self_uninstall allowlist and nothing wider', async () => {
+    await drainBeat();
+
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+      'self_uninstall',
+    ]);
+  });
+
+  it('writes NOTHING: no device update, no metrics/OneDrive insert, no audit event', async () => {
+    await drainBeat();
+
+    // No devices UPDATE — which is what keeps the machine reading as "Removed"
+    // in the UI (no status flip back to online, no lastSeenAt bump).
+    expect(updateMock).not.toHaveBeenCalled();
+    // No device_metrics row, no onedrive_device_state upsert, no agent_logs.
+    expect(insertMock).not.toHaveBeenCalled();
+
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+
+    const { processDeviceIPHistoryUpdate } = await import('../../services/deviceIpHistory');
+    expect(processDeviceIPHistoryUpdate).not.toHaveBeenCalled();
+  });
+
+  it('creates no threshold filesystem-analysis command from a 99%-full disk', async () => {
+    await drainBeat();
+
+    const { maybeQueueThresholdFilesystemAnalysis } = await import('./helpers');
+    expect(maybeQueueThresholdFilesystemAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('resolves no upgrade target, no update policy and no manifest trust material', async () => {
+    await drainBeat();
+
+    const { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget } = await import('./helpers');
+    expect(getOrgAgentUpdateConfig).not.toHaveBeenCalled();
+    expect(resolvePinnedUpgradeTarget).not.toHaveBeenCalled();
+    expect(getActiveTrustKeysetMock).not.toHaveBeenCalled();
+    expect(getActiveManifestKeyDelegationsMock).not.toHaveBeenCalled();
+  });
+
+  it('builds no policy config (event log, monitoring, PAM, patch source, OneDrive, policy probe, helper)', async () => {
+    await drainBeat();
+
+    const helpers = await import('./helpers');
+    expect(helpers.buildEventLogConfigUpdate).not.toHaveBeenCalled();
+    expect(helpers.buildMonitoringConfigUpdate).not.toHaveBeenCalled();
+    expect(helpers.buildPamConfigUpdate).not.toHaveBeenCalled();
+    expect(helpers.buildPatchSourceConfigUpdate).not.toHaveBeenCalled();
+    expect(helpers.buildOnedriveHelperConfigUpdate).not.toHaveBeenCalled();
+    expect(helpers.buildPolicyProbeConfigUpdate).not.toHaveBeenCalled();
+    expect(helpers.buildHelperConfigUpdate).not.toHaveBeenCalled();
+  });
+
+  it('never reads the devices row at all during a drain beat', async () => {
+    await drainBeat();
+
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('still returns 200 with an empty command list when nothing is queued yet', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([]);
+
+    const resp = await drainBeat();
+
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toEqual({ commands: [] });
+  });
+
+  it('a TENANT drain still gets the full heartbeat (the minimal branch is device-scoped only)', async () => {
+    // Guards the branch condition: keying the minimal beat on `tenantDraining`
+    // would silently strip config/upgrades from every machine of a customer
+    // that is merely offboarding and still paying.
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildDrainingApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(Object.keys(body)).toContain('configUpdate');
+    expect(Object.keys(body)).toContain('manifestTrustKeys');
   });
 });

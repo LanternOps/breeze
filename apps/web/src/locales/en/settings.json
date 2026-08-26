@@ -2472,7 +2472,8 @@
     "categories": "Categories",
     "export": "Export",
     "inboundEmail": "Inbound Email",
-    "cannedResponses": "Canned responses"
+    "cannedResponses": "Canned responses",
+    "checkingAccess": "Checking your access..."
   },
   "ticketFormsCard": {
     "heading": "Intake forms",

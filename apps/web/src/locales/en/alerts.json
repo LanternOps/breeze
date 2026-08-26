@@ -427,7 +427,7 @@
     "conditionNotMet": "Not met: {{condition}}",
     "noConditionsEvaluated": "No conditions were evaluated for this rule.",
     "evaluatedAgainst": "Evaluated against {{hostname}}",
-    "fireSuppressionNote": "Cooldown, an alert that is already open, or flapping suppression may still stop an alert being created when the rule runs."
+    "fireSuppressionNote": "An active maintenance window, cooldown, an alert that is already open, or flapping suppression may still stop an alert being created when the rule runs."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Loading alert template...",
@@ -835,6 +835,7 @@
     "sms": "SMS",
     "pushover": "Pushover",
     "noNotificationChannelsFoundTryAdjustingYour": "No notification channels found. Try adjusting your search or filters.",
+    "noChannelsYet": "No notification channels yet. Create one to start sending alerts to email, Slack, Teams or a webhook.",
     "partnerWideChannelReceivesAlertsFromEvery": "Partner-wide channel — receives alerts from every organization",
     "allOrgs": "Partner-wide",
     "testing": "Testing...",

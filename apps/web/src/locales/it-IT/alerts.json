@@ -427,7 +427,7 @@
     "conditionNotMet": "Non soddisfatta: {{condition}}",
     "noConditionsEvaluated": "Per questa regola non è stata valutata alcuna condizione.",
     "evaluatedAgainst": "Valutato rispetto a {{hostname}}",
-    "fireSuppressionNote": "Il cooldown, un avviso già aperto o la soppressione per flapping potrebbero comunque impedire che venga creato un avviso quando la regola viene eseguita."
+    "fireSuppressionNote": "Una finestra di manutenzione attiva, il cooldown, un avviso già aperto o la soppressione per flapping potrebbero comunque impedire che venga creato un avviso quando la regola viene eseguita."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Caricamento modello avviso...",
@@ -835,6 +835,7 @@
     "sms": "SMS",
     "pushover": "Pushover",
     "noNotificationChannelsFoundTryAdjustingYour": "Nessun canale di notifica trovato. Prova a modificare ricerca o filtri.",
+    "noChannelsYet": "Nessun canale di notifica. Creane uno per inviare avvisi a email, Slack, Teams o un webhook.",
     "partnerWideChannelReceivesAlertsFromEvery": "Canale a livello di partner - riceve avvisi da ogni organizzazione",
     "allOrgs": "A livello di partner",
     "testing": "Test in corso...",

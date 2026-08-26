@@ -4,8 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import OrganizationsPage from './OrganizationsPage';
 import { fetchWithAuth } from '../../stores/auth';
 
+// handleSessionExpired is the `onUnauthorized` callback for every mutation on
+// this page. Mocking the module replaces ALL of its exports, so omitting it
+// makes the mere ACT of building the runAction options throw
+// ("No export is defined on the mock") before any request is made — which
+// reads as the create flow silently doing nothing.
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  handleSessionExpired: vi.fn()
 }));
 
 const navigateTo = vi.fn();

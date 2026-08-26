@@ -35,7 +35,7 @@ import {
   SITE_ACCESS_DENIED,
   stripSensitiveDeviceFields,
 } from './helpers';
-import { listDevicesSchema, updateDeviceSchema } from './schemas';
+import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema } from './schemas';
 import {
   DEVICES_LIST_DEFAULT_LIMIT,
   DEVICES_LIST_HARD_MAX,
@@ -63,6 +63,7 @@ import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/s
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
@@ -1431,9 +1432,14 @@ coreRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
   requireMfa(),
+  // Body is OPTIONAL — every existing caller (including bulk Remove) sends
+  // none today and must keep working. `uninstallAgent` defaults to `false`
+  // via the schema itself; see decommissionDeviceSchema's doc comment.
+  optionalJsonValidator(decommissionDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
+    const { uninstallAgent } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -1447,14 +1453,31 @@ coreRoutes.delete(
       return c.json({ error: 'Device is already decommissioned' }, 400);
     }
 
-    const [updated] = await db
-      .update(devices)
-      .set({
-        status: 'decommissioned',
-        updatedAt: new Date()
-      })
-      .where(eq(devices.id, deviceId))
-      .returning();
+    // The status flip and the uninstall queue must commit or roll back
+    // together (#3986 task 7) — a rolled-back Remove must never leave an
+    // orphaned self_uninstall command behind. `queueDeviceUninstall` takes
+    // the transaction handle directly and does its own row locking; it must
+    // NOT be wrapped in runOutsideDbContext (device_commands has no RLS, so
+    // it doesn't need a system context, and exiting the context here would
+    // let the command commit independently of the decommission write).
+    let updated: typeof devices.$inferSelect | undefined;
+    let uninstallQueued = false;
+    await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(devices)
+        .set({
+          status: 'decommissioned',
+          updatedAt: new Date()
+        })
+        .where(eq(devices.id, deviceId))
+        .returning();
+      updated = row;
+
+      if (uninstallAgent) {
+        const queueResult = await queueDeviceUninstall(tx, deviceId, auth.user.id);
+        uninstallQueued = queueResult.queued || queueResult.mergedIntoExisting;
+      }
+    });
 
     // Resolve any "possible replacement of THIS device" linkage now that the
     // old device is decommissioned (#2764). The banner/badge on the newer
@@ -1504,10 +1527,15 @@ coreRoutes.delete(
       details: {
         remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok',
         agentWsDisconnect,
+        uninstallQueued,
       },
     });
 
-    return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
+    return c.json({
+      success: true,
+      device: updated ? stripSensitiveDeviceFields(updated) : updated,
+      uninstallQueued,
+    });
   }
 );
 
@@ -1533,24 +1561,81 @@ coreRoutes.post(
       return c.json({ error: 'Only decommissioned devices can be restored' }, 400);
     }
 
-    const [updated] = await db
-      .update(devices)
-      .set({
-        status: 'offline',
-        updatedAt: new Date()
-      })
-      .where(eq(devices.id, deviceId))
-      .returning();
+    // Release-THEN-flip, atomically, inside ONE `db.transaction` (#3986
+    // task 8 fix round 1; mirrors `queueDeviceUninstall`'s composition in
+    // DELETE /devices/:id). THE SAFETY PROPERTY IS THE TRANSACTION, not the
+    // statement order: under READ COMMITTED (the default here, and what
+    // `db.transaction` gives you — a real BEGIN/COMMIT on one connection),
+    // no other session can observe either write until both commit together.
+    // So no concurrent heartbeat can ever see "status flipped, uninstall
+    // still pending" — that combined state never exists as a committed fact
+    // regardless of which statement runs first inside the transaction.
+    //
+    // The race this guards against: `isDeviceUninstallDraining` requires
+    // `devices.status = 'decommissioned'`; once status is anything else the
+    // device is an ordinary agent again, and a heartbeat landing in that
+    // window would claim a still-`pending` self_uninstall as an ordinary
+    // command — no type allowlist gates that path — and uninstall the
+    // machine the user just restored. The transaction is what prevents any
+    // session from ever observing that window.
+    //
+    // Release-before-flip is kept anyway as DELIBERATE SECONDARY DEFENSE:
+    // if a future refactor splits these two writes back into separate
+    // transactions (exactly how this bug was introduced), this order still
+    // leaves the safe failure mode — a failure after the release leaves the
+    // device `decommissioned` with the uninstall already cancelled, so a
+    // retry is harmless — instead of the device-wiping one that flip-first
+    // would leave behind.
+    //
+    // `releaseDeviceRemoveReason` strips only the `device_remove` reason —
+    // a row a tenant-offboarding drain also owns stays alive for that owner
+    // — and cancels the underlying command only while it is still `pending`.
+    //
+    // A row already `sent` CANNOT be recalled here regardless of ordering:
+    // `claimPendingCommandsForDevice` (commandDispatch.ts) commits `pending
+    // → sent` before the HTTP response reaches the agent, and the agent's
+    // self-uninstall handler hands teardown to a detached helper and acks
+    // immediately (handlers_uninstall.go). Once a row is `sent` there is no
+    // safe claimed-state transition today — the real fix is an agent-side
+    // pre-teardown fence (a `begin` endpoint that CASes `sent → executing`,
+    // serialized against restore), which needs a Go agent change out of
+    // scope for this plan. Tracked as a follow-up:
+    // https://github.com/LanternOps/breeze/issues/3995. Restore deliberately
+    // still SUCCEEDS in that case — it is a user-facing recovery action and
+    // must not be wedged by a race that lasts seconds — but reports
+    // `uninstallAlreadyDispatched: true` so the caller can tell the user
+    // plainly the machine may already be gone and will need a reinstall.
+    let updated: typeof devices.$inferSelect | undefined;
+    let uninstallAlreadyDispatched = false;
+    await db.transaction(async (tx) => {
+      const releaseResult = await releaseDeviceRemoveReason(tx, deviceId, 'device_restored');
+      uninstallAlreadyDispatched = releaseResult.alreadyDispatched > 0;
+
+      const [row] = await tx
+        .update(devices)
+        .set({
+          status: 'offline',
+          updatedAt: new Date()
+        })
+        .where(eq(devices.id, deviceId))
+        .returning();
+      updated = row;
+    });
 
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.restore',
       resourceType: 'device',
       resourceId: updated?.id ?? deviceId,
-      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
+      details: { uninstallAlreadyDispatched },
     });
 
-    return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
+    return c.json({
+      success: true,
+      device: updated ? stripSensitiveDeviceFields(updated) : updated,
+      uninstallAlreadyDispatched,
+    });
   }
 );
 

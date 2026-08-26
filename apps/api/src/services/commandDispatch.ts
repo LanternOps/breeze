@@ -77,7 +77,13 @@ export async function claimPendingCommandsForDevice(
   // connect-time/heartbeat_ack claims — no agent version ever consumed them),
   // so the per-frame payload budget that #2399 added here is gone with it.
   return db.transaction(async (tx) => {
-    if (targetRole === 'agent' && capabilities?.peripheralPolicyProtocolVersion !== 2) {
+    const peripheralV2IsClaimable =
+      typeAllowlist === undefined || typeAllowlist.includes('peripheral_policy_sync_v2');
+    if (
+      targetRole === 'agent'
+      && peripheralV2IsClaimable
+      && capabilities?.peripheralPolicyProtocolVersion !== 2
+    ) {
       await tx
         .update(deviceCommands)
         .set({

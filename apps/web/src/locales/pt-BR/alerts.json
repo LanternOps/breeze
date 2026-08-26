@@ -427,7 +427,7 @@
     "conditionNotMet": "Não atendida: {{condition}}",
     "noConditionsEvaluated": "Nenhuma condição foi avaliada para esta regra.",
     "evaluatedAgainst": "Avaliado em relação a {{hostname}}",
-    "fireSuppressionNote": "O período de espera (cooldown), um alerta que já está aberto ou a supressão de oscilação (flapping) ainda podem impedir a criação de um alerta quando a regra for executada."
+    "fireSuppressionNote": "Uma janela de manutenção ativa, o período de espera (cooldown), um alerta que já está aberto ou a supressão de oscilação (flapping) ainda podem impedir a criação de um alerta quando a regra for executada."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Carregando modelo de alerta...",
@@ -835,6 +835,7 @@
     "sms": "SMS",
     "pushover": "Pushover",
     "noNotificationChannelsFoundTryAdjustingYour": "Nenhum canal de notificação encontrado. Tente ajustar a pesquisa ou os filtros.",
+    "noChannelsYet": "Ainda não há canais de notificação. Crie um para enviar alertas por e-mail, Slack, Teams ou webhook.",
     "partnerWideChannelReceivesAlertsFromEvery": "Canal de todo o parceiro — recebe alertas de todas as organizações",
     "allOrgs": "Todo o parceiro",
     "testing": "Testando...",

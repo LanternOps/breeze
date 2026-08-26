@@ -688,6 +688,22 @@ channelsRoutes.post(
       ? null
       : scrubChannelTestError(channel.type, channelConfig, testResult.message);
 
+    // The reason reaches the operator TWICE: the persisted card, and the toast
+    // fired at test time — and the toast renders `testResult.message`, which
+    // until now was the raw provider text. So the card was scrubbed while the
+    // toast still showed the destination URL that, for slack/teams/webhook, IS
+    // the credential (#3992). Both surfaces render the same scrubbed string
+    // from here on. `scrubChannelTestError` returns null only for a non-string
+    // or an empty/whitespace-only message — never as a RESULT of scrubbing,
+    // since every redaction pass substitutes a non-empty placeholder — but the
+    // fallback keeps the toast from going blank when a sender hands us one.
+    if (!testResult.success) {
+      testResult = {
+        ...testResult,
+        message: lastTestError ?? 'Test failed — check the channel configuration.',
+      };
+    }
+
     try {
       const persistResult = await withAuthDbAccessContext(auth, () =>
         db.update(notificationChannels)

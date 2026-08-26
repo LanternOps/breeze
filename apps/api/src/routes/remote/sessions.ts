@@ -886,7 +886,9 @@ sessionRoutes.post(
     // The agent will create a pion PeerConnection and return the answer
     if (!device.agentId) {
       console.error(`[Remote] Device ${device.id} has no agentId, cannot send start_desktop for session ${sessionId}`);
-      return c.json({ error: 'Device has no agent connection identifier' }, 502);
+      // 500, not 502: this is our own state defect (a device row with no
+      // agentId), and a 502 body is replaced by Cloudflare's branded page.
+      return c.json({ error: 'Device has no agent connection identifier', code: 'agent_execution_failed' }, 500);
     }
 
     // Look up GPU vendor from device hardware inventory
@@ -941,7 +943,9 @@ sessionRoutes.post(
 
     if (!agentReachable) {
       console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
-      return c.json({ error: 'Agent is not currently connected. Please verify the device is online and try again.' }, 502);
+      // 503, not 502: the device is temporarily unreachable, which is exactly
+      // what 503 means — and unlike 502 the body survives Cloudflare.
+      return c.json({ error: 'Agent is not currently connected. Please verify the device is online and try again.', code: 'device_unreachable' }, 503);
     }
 
     return c.json({

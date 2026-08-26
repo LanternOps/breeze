@@ -143,6 +143,7 @@
       "archived2": "Archiviata",
       "features": "Funzionalità",
       "noPoliciesFoundTryAdjustingYourSearch": "Nessun criterio trovato. Prova a modificare la ricerca.",
+      "noPoliciesYet": "Nessun criterio di configurazione. Creane uno, poi assegnalo a organizzazioni, siti o dispositivi.",
       "partnerWidePolicyAppliesToEveryOrganization": "Criterio a livello di partner — si applica a ogni organizzazione",
       "allOrgs": "A livello di partner",
       "page": "Pagina",
@@ -252,7 +253,9 @@
         "thisRuleUsesUnsupportedMetrics": "Questa regola usa una metrica che il motore degli avvisi non può valutare ({{metrics}}). Scegli una metrica supportata — o rimuovi la condizione — prima di salvare; il server rifiuta le regole che la contengono.",
         "thisConditionUsesAnUnsupportedMetric": "La metrica «{{metric}}» non viene valutata dal motore degli avvisi, quindi questa condizione è mostrata in sola lettura.",
         "valueCount": "Valore (conteggio)",
-        "metricNotSet": "non impostata"
+        "metricNotSet": "non impostata",
+        "testRule": "Prova regola",
+        "testRuleHint": "Valuta queste condizioni su un dispositivo adesso, incluse le modifiche non salvate."
       },
       "automationTab": {
         "schedule": "Pianificazione",

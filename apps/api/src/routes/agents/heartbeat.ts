@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, notInArray } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   devices,
   deviceMetrics,
@@ -36,7 +36,7 @@ import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
-import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
+import { DRAIN_CLAIM_TYPE_ALLOWLIST, isAgentTokenRotationDue } from '../../middleware/agentAuth';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
@@ -193,6 +193,69 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   if (!agent?.deviceId) {
     return c.json({ error: 'Agent context not found' }, 401);
+  }
+
+  // #3986 Layer 4 — MINIMAL DRAIN BEAT.
+  //
+  // The device has been REMOVED and is only still authenticated so it can
+  // collect its own `self_uninstall` (middleware/agentAuth.ts). Being on the
+  // drain route allowlist is not the same as being harmless: the normal
+  // heartbeat path below still ingests metrics into device_metrics, updates IP
+  // history, CREATES threshold filesystem-analysis commands, upserts OneDrive
+  // state and writes audit events — and its RESPONSE still carries configUpdate
+  // (event-log/monitoring/PAM/patch-source/OneDrive/policy-probe settings),
+  // agent + helper + watchdog upgrade targets, manifest trust keys and key
+  // delegations, renewCert, and rotateToken/confirmTokenRotation. The Go agent
+  // ACTS on every one of those (agent/internal/heartbeat), so a removed machine
+  // would keep being configured, upgraded and re-keyed for the whole drain
+  // window while the operator sees it as gone.
+  //
+  // So: claim and return the uninstall, nothing else. No device write either —
+  // which is what keeps the device correctly showing as Removed (no lastSeenAt
+  // bump, no status flip back to 'online', no state-change audit).
+  //
+  // Keyed on `deviceUninstallDraining`, NOT on `tenantDraining`: an offboarding
+  // tenant's machines are still live, still owned by a paying customer until
+  // the window closes, and #2774 deliberately keeps serving them a normal beat.
+  //
+  // `data.role` mismatch is intentionally NOT re-checked here (the normal path
+  // 401s `re_enrollment_required` on it). A stale pre-#568 watchdog binary
+  // presenting the MAIN agent token would be told to re-enrol instead of being
+  // handed the uninstall — turning a cosmetic version skew into an undeliverable
+  // uninstall. Only agent-role credentials reach this branch anyway (Layer 1b).
+  //
+  // KNOWN, ACCEPTED SIDE EFFECT of omitting the payload — do not "fix" it by
+  // re-adding the fields this branch exists to withhold. Two response fields
+  // are plain `bool` on the Go side (not pointers), so their ABSENCE decodes as
+  // `false` rather than "unchanged":
+  //   - `helperEnabled`          -> handleHelperEnabled(false) turns the helper flag off
+  //   - `manageRemoteManagement` -> SetManagedByPolicy(false) clears the tunnel policy flag
+  // Both therefore flip off on every beat for the whole drain window.
+  // (`uacInterceptionEnabled` is a `*bool` and handles absence correctly.)
+  // Bounded and self-correcting: these are in-memory flags on a machine that is
+  // being uninstalled, and a restore ends the drain, after which the next
+  // NORMAL heartbeat carries both fields again and restores them.
+  if (agent.deviceUninstallDraining) {
+    // Own DB context: this route is self-managed-context (agentAuth opens no
+    // request-long wrap for `heartbeat`), and the claim must not run
+    // contextless. System scope, matching the command-poll route — the claim
+    // writes `device_commands`, which is intentionally RLS-free.
+    const drainCommands = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const claimed = await claimPendingCommandsForDevice(
+          agent.deviceId,
+          10,
+          'agent',
+          // Fail closed: the middleware always populates this while draining,
+          // but an `undefined` reaching claimPendingCommandsForDevice means
+          // UNRESTRICTED. Fall back to the shared constant, never to undefined.
+          agent.claimTypeAllowlist ?? DRAIN_CLAIM_TYPE_ALLOWLIST,
+        );
+        return decryptClaimedCommandsForDelivery(claimed);
+      }),
+    );
+
+    return c.json({ commands: drainCommands });
   }
 
   // #1121 — observability for the #1065 tolerance trade-off. watchdogState is
@@ -423,11 +486,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery).
     // #2774 — during an offboarding drain the claim narrows to self_uninstall
     // (targetRole 'agent' only carries it, so the watchdog claims nothing).
+    // #3986 — the narrowing is now derived once on the agent context; passing
+    // `undefined` here means unrestricted, so read the context value rather
+    // than restating the ternary. A watchdog credential can only ever reach
+    // this line via a TENANT drain: a device-remove drain admits `role==='agent'`
+    // only (middleware/agentAuth.ts Layer 1b).
     const watchdogCommands = await claimPendingCommandsForDevice(
       device.id,
       10,
       'watchdog',
-      agent?.tenantDraining ? ['self_uninstall'] : undefined
+      agent?.claimTypeAllowlist
     );
 
     // Check for watchdog upgrade. Honors the tenant's watchdog pin (issue
@@ -688,10 +756,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.batteryStatus = battery;
   }
 
-  // agentAuthMiddleware already 403s decommissioned/quarantined devices, but
-  // a decommission landing mid-request (between the auth fetch and this
-  // write) would be silently flipped back to 'online' (#2230). Mirrors
+  // agentAuthMiddleware 403s quarantined devices and every decommissioned
+  // device EXCEPT one inside the #3986 device-remove uninstall drain, but a
+  // decommission landing mid-request (between the auth fetch and this write)
+  // would be silently flipped back to 'online' (#2230). Mirrors
   // TERMINAL_DEVICE_STATUSES in routes/agentWs.ts.
+  //
+  // #3986 — this guard is now load-bearing for the drain, not just a mid-request
+  // race backstop: it is what keeps a draining removed device reading as
+  // "Removed" (0 rows matched -> no status flip, no lastSeenAt bump, no
+  // state-change audit) if it ever reaches this write. Never relax it to admit
+  // draining devices.
   //
   // `.returning` reports whether the guarded write actually took effect: a
   // terminal-status device matches 0 rows, so `updatedRows` is empty and the
@@ -920,13 +995,29 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  // #2774 — during an offboarding drain, the heartbeat (the primary command
-  // carrier) only delivers self_uninstall; everything else stays unclaimed.
+  // #2774 / #3986 — during a drain the heartbeat (the primary command carrier)
+  // only delivers self_uninstall; everything else stays unclaimed. The
+  // allowlist is derived ONCE in agentAuthMiddleware — `undefined` means
+  // unrestricted, so read the context value, never restate the literal.
+  //
+  // DELIVERY CONTRACT — do not move this claim inside the `updatedRows.length`
+  // guard above. That guard's UPDATE excludes terminal-status rows, so for a
+  // device in the #3986 device-remove drain (status='decommissioned') it
+  // matches ZERO rows by design: the device must keep reading as Removed in
+  // the UI, with no lastSeenAt bump and no state-change audit, while it drains.
+  // The claim is deliberately independent of that result — gating it on
+  // `updatedRows` would make the very command the drain exists to deliver
+  // permanently unclaimable, and would do so silently (a 200 with an empty
+  // `commands` array, indistinguishable from "nothing queued").
+  //
+  // Today a device-remove drain returns from the minimal branch at the top of
+  // this handler and never reaches this line; the invariant is stated here
+  // because that branch is what a future refactor is most likely to remove.
   const commands = await claimPendingCommandsForDevice(
     device.id,
     10,
     'agent',
-    agent?.tenantDraining ? ['self_uninstall'] : undefined,
+    agent?.claimTypeAllowlist,
     {
       peripheralPolicyProtocolVersion: normalizePeripheralPolicyProtocolVersion(
         data.securityCapabilities?.peripheralPolicyProtocolVersion,

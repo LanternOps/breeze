@@ -7,6 +7,7 @@ import { devices, deviceConnections } from '../../db/schema';
 import { captureException } from '../../services/sentry';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { submitConnectionsSchema } from './schemas';
+import { pgErrorNode } from '../../utils/pgErrors';
 
 // Hard caps that match the device_connections column widths. Agent
 // collectors emit kernel-bound values (TCP states, /proc comm names) that
@@ -98,7 +99,15 @@ connectionsRoutes.put(
     // Global onError returns a generic 500; re-log with pg error fields
     // (code/constraint/column) so server logs retain diagnostic context,
     // and capture to Sentry for durability.
-    const pg = err as { code?: string; detail?: string; table_name?: string; column_name?: string; constraint_name?: string; message?: string };
+    // `pgErrorNode` returns the error that actually CARRIES the SQLSTATE, so
+    // code/detail/table_name all come from the same object. Reading them off
+    // the top-level error left every POSTGRES DIAGNOSTIC field below
+    // permanently `undefined` under drizzle-orm/postgres-js — code, detail,
+    // table_name, column_name, constraint_name. (`message` was never missing:
+    // the outer DrizzleQueryError has its own. Note it now reports the inner
+    // Postgres message rather than the outer query-and-params text, which is
+    // the more useful half for these diagnostics.)
+    const pg = (pgErrorNode(err) ?? {}) as { code?: string; detail?: string; table_name?: string; column_name?: string; constraint_name?: string; message?: string };
     console.error('connections-inventory insert failed', {
       agentId,
       deviceId: device.id,

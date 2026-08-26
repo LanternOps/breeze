@@ -469,7 +469,13 @@ export const deviceCommands = pgTable('device_commands', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   executedAt: timestamp('executed_at'),
   completedAt: timestamp('completed_at'),
-  result: jsonb('result')
+  result: jsonb('result'),
+  // Provenance for self_uninstall commands: WHY this uninstall was queued.
+  // NULL on existing rows and on commands queued by callers that don't set
+  // it -- NULL means "no exemption, no widened auth", fail-closed by
+  // construction. See 2026-09-10-device-command-uninstall-provenance.sql.
+  uninstallReasons: text('uninstall_reasons').array(),
+  deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true })
 });
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);

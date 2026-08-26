@@ -8,6 +8,10 @@ export * from './configFeatureTypes';
 // Canonical in-app notification types shared by API filters and web UI.
 export * from './notificationTypes';
 
+// Agent file-transfer caps mirrored from the Go agent, so the web layer can
+// pre-flight a transfer instead of learning the limit from a failed round trip.
+export * from './agentFileTransfer';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 

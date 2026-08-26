@@ -362,6 +362,14 @@ function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts
   );
 }
 
+// This chip bar is uniformly hard-coded English (see filterFields.ts) rather
+// than i18n-driven, so enum display overrides here are literal strings, not
+// locale keys — mirrors ValueInput's ENUM_VALUE_OVERRIDE_KEYS in spirit
+// (raw value -> product-preferred display text) without pulling in i18n.
+const CHIP_VALUE_DISPLAY_OVERRIDES: Record<string, string> = {
+  decommissioned: 'Removed'
+};
+
 export function summarizeCondition(field: FilterFieldDefinition, c: FilterCondition, lookups?: {
   orgs?: NamedRef[]; sites?: NamedRef[];
 }): string {
@@ -379,12 +387,14 @@ export function summarizeCondition(field: FilterFieldDefinition, c: FilterCondit
         display = display.map(id => byId.get(id) ?? id.slice(0, 8));
       }
     }
+    display = display.map(val => CHIP_VALUE_DISPLAY_OVERRIDES[val] ?? val);
     v = display.length <= 2 ? display.join(', ') : `${display.length} values`;
   } else if (typeof c.value === 'object' && c.value && 'amount' in c.value) {
     const rd = c.value as { amount: number; unit: string };
     v = `${rd.amount} ${rd.unit}`;
   } else {
-    v = String(c.value ?? '');
+    const raw = String(c.value ?? '');
+    v = CHIP_VALUE_DISPLAY_OVERRIDES[raw] ?? raw;
   }
   return `${field.label} ${op} ${v}`;
 }

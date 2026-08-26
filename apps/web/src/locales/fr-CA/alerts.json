@@ -427,7 +427,7 @@
     "conditionNotMet": "Non remplie : {{condition}}",
     "noConditionsEvaluated": "Aucune condition n’a été évaluée pour cette règle.",
     "evaluatedAgainst": "Évalué par rapport à {{hostname}}",
-    "fireSuppressionNote": "Le cooldown, une alerte déjà ouverte ou la suppression du flapping peuvent quand même empêcher la création d’une alerte lorsque la règle s’exécute."
+    "fireSuppressionNote": "Une fenêtre de maintenance active, le cooldown, une alerte déjà ouverte ou la suppression du flapping peuvent quand même empêcher la création d’une alerte lorsque la règle s’exécute."
   },
   "alertTemplateEditor": {
     "loadingAlertTemplate": "Chargement du modèle d’alerte...",
@@ -835,6 +835,7 @@
     "sms": "SMS",
     "pushover": "Pushover",
     "noNotificationChannelsFoundTryAdjustingYour": "Aucun canal de notification trouvé. Essayez d’ajuster votre recherche ou vos filtres.",
+    "noChannelsYet": "Aucun canal de notification pour l’instant. Créez-en un pour envoyer des alertes par courriel, Slack, Teams ou un webhook.",
     "partnerWideChannelReceivesAlertsFromEvery": "Canal à l’échelle des partenaires — reçoit des alertes de chaque organisation",
     "allOrgs": "À l’échelle du partenaire",
     "testing": "Test...",
@@ -879,7 +880,7 @@
     "notificationChannels": "Canaux de notification",
     "configureWhereAlertNotificationsAreSent": "Configurez où les notifications d’alerte sont envoyées.",
     "configurationPolicies": "Politiques de configuration",
-    "newChannel": "Nouvelle chaîne",
+    "newChannel": "Nouveau canal",
     "notificationRoutingRules": "Règles de routage des notifications",
     "routeAlertsToSpecificChannelsBasedOn": "Orientez les alertes vers des canaux spécifiques en fonction de la gravité. La première règle de correspondance l’emporte.",
     "rule": "Règle",

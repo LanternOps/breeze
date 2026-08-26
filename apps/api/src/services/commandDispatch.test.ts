@@ -137,6 +137,34 @@ describe('command dispatch helpers', () => {
     expect(vi.mocked(inArray)).toHaveBeenCalledWith('deviceCommands.type', ['self_uninstall']);
   });
 
+  it('does not mutate unrelated protocol work during a self-uninstall-only claim', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                for: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn(),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const claimed = await claimPendingCommandsForDevice(
+      'dev-1',
+      10,
+      'agent',
+      ['self_uninstall'],
+    );
+
+    expect(claimed).toEqual([]);
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
   it('cancels queued peripheral v2 work when the claiming heartbeat omits capability 2', async () => {
     const cancelWhere = vi.fn().mockResolvedValue(undefined);
     const rejectWhere = vi.fn().mockResolvedValue(undefined);
