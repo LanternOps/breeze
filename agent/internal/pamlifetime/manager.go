@@ -25,6 +25,7 @@ type lifetimeStore interface {
 	PrepareCleanup(CleanupCommand) (Decision, error)
 	BindProcess(string, uint64, ProcessIdentity) error
 	Entry(string) (LedgerEntry, bool)
+	Entries() []LedgerEntry
 }
 
 type suspendedLaunchSpec struct {
@@ -60,6 +61,7 @@ type windowsPrimitives interface {
 	AssignProcess(context.Context, jobOwnership, suspendedProcessOwnership) error
 	Resume(context.Context, suspendedProcessOwnership) error
 	VerifyActive(context.Context, suspendedProcessOwnership, jobOwnership) (int, error)
+	ReopenAndVerifyActive(context.Context, string, ProcessIdentity) (jobOwnership, int, error)
 	TerminateAndVerifyEmpty(context.Context, string, jobOwnership, ProcessIdentity) (int, error)
 	VerifyNoPrivilegedToken(context.Context, string) (bool, error)
 	CloseProcess(suspendedProcessOwnership)
@@ -74,23 +76,31 @@ type accountLifecycle interface {
 }
 
 type lifecycleManager struct {
-	store       lifetimeStore
-	windows     windowsPrimitives
-	account     accountLifecycle
-	observe     func(Result)
-	operationMu sync.Mutex
-	mu          sync.Mutex
-	jobs        map[string]jobOwnership
-	processes   map[string]suspendedProcessOwnership
-	enabled     bool
+	store         lifetimeStore
+	windows       windowsPrimitives
+	account       accountLifecycle
+	observe       func(Result)
+	operationMu   sync.Mutex
+	mu            sync.Mutex
+	jobs          map[string]jobOwnership
+	processes     map[string]suspendedProcessOwnership
+	enabled       bool
+	admissionOpen bool
+	available     bool
 }
 
 func newLifecycleManager(store lifetimeStore, windows windowsPrimitives, account accountLifecycle, observe func(Result)) *lifecycleManager {
 	return &lifecycleManager{store: store, windows: windows, account: account, observe: observe,
-		jobs: make(map[string]jobOwnership), processes: make(map[string]suspendedProcessOwnership), enabled: true}
+		jobs: make(map[string]jobOwnership), processes: make(map[string]suspendedProcessOwnership), enabled: true, admissionOpen: true, available: true}
 }
 
 func (m *lifecycleManager) ProtocolVersion() int { return 2 }
+
+func (m *lifecycleManager) Available() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.available
+}
 
 func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 	m.operationMu.Lock()
@@ -98,6 +108,16 @@ func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 	bootID, err := m.currentBootID(ctx)
 	if err != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "boot_id_unavailable")
+	}
+	m.mu.Lock()
+	admissionOpen := m.admissionOpen
+	available := m.available
+	m.mu.Unlock()
+	if !admissionOpen {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "pam_disabled")
+	}
+	if !available {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "pam_unavailable")
 	}
 	if err := validateApply(cmd); err != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "invalid_command")
@@ -195,6 +215,10 @@ func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 func (m *lifecycleManager) Cleanup(ctx context.Context, cmd CleanupCommand) Result {
 	m.operationMu.Lock()
 	defer m.operationMu.Unlock()
+	return m.cleanupLocked(ctx, cmd)
+}
+
+func (m *lifecycleManager) cleanupLocked(ctx context.Context, cmd CleanupCommand) Result {
 	bootID, bootErr := m.currentBootID(ctx)
 	if bootErr != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "boot_id_unavailable")
@@ -260,13 +284,158 @@ func (m *lifecycleManager) Cleanup(ctx context.Context, cmd CleanupCommand) Resu
 	return result
 }
 
-func (m *lifecycleManager) Reconcile(context.Context) []Result { return nil }
+func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	m.setAvailable(false)
+	entries := m.store.Entries()
+	results := make([]Result, 0, len(entries))
+	verificationAvailable := true
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			result := m.failed(entry.ActuationID, entry.Generation, "windows-boot-unavailable", "reconcile_cancelled")
+			m.emit(result)
+			results = append(results, result)
+			verificationAvailable = false
+			continue
+		}
+		if entry.DesiredState == DesiredCleanup {
+			result := m.cleanupLocked(ctx, cleanupCommandFromEntry(entry, entry.Generation))
+			if result.State == ResultFailed {
+				m.emit(result)
+				verificationAvailable = false
+			}
+			results = append(results, result)
+			continue
+		}
+		result, verified := m.reconcileActiveLocked(ctx, entry)
+		m.emit(result)
+		results = append(results, result)
+		verificationAvailable = verificationAvailable && verified
+	}
+	m.setAvailable(verificationAvailable)
+	return results
+}
 
-func (m *lifecycleManager) SetEnabled(_ context.Context, enabled bool) error {
+func (m *lifecycleManager) reconcileActiveLocked(ctx context.Context, entry LedgerEntry) (Result, bool) {
+	bootID, err := m.currentBootID(ctx)
+	if err != nil {
+		return m.failed(entry.ActuationID, entry.Generation, bootID, "boot_id_unavailable"), false
+	}
+	evidence := evidenceFromEntry(entry)
+	evidence.BootID = bootID
+	if entry.PID <= 0 || entry.JobName == "" || entry.ProcessCreationTime == nil || entry.BootID == "" {
+		result := m.result(entry.ActuationID, entry.Generation, ResultFailed, evidence)
+		result.FailureCode = "reconcile_identity_unavailable"
+		return result, false
+	}
+	process := ProcessIdentity{PID: entry.PID, ProcessCreationTime: *entry.ProcessCreationTime, JobName: entry.JobName, BootID: entry.BootID}
+	if entry.BootID == bootID {
+		job, members, reopenErr := m.windows.ReopenAndVerifyActive(ctx, entry.JobName, process)
+		if reopenErr == nil && members > 0 {
+			evidence.JobMemberCount = intPtr(members)
+			m.mu.Lock()
+			m.jobs[entry.ActuationID] = job
+			m.mu.Unlock()
+			return m.result(entry.ActuationID, entry.Generation, ResultVerifiedActive, evidence), true
+		}
+	}
+	verifiedEvidence, code, verified := m.verifyAccountClean(ctx, evidence)
+	result := m.result(entry.ActuationID, entry.Generation, ResultFailed, verifiedEvidence)
+	if code != "" {
+		result.FailureCode = code
+	} else if entry.BootID != bootID {
+		result.FailureCode = "reboot_process_vanished"
+	} else {
+		result.FailureCode = "active_job_unavailable"
+	}
+	return result, verified
+}
+
+func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence ResultEvidence) (ResultEvidence, string, bool) {
+	deprovisioned, err := m.account.Deprovision(ctx)
+	if err != nil {
+		return evidence, "account_cleanup_failed", false
+	}
+	verified, err := m.account.VerifyClean(ctx)
+	if err != nil || verified.Enabled || verified.InAdministrators || deprovisioned.Enabled || deprovisioned.InAdministrators {
+		return evidence, "account_verification_failed", false
+	}
+	privileged, err := m.windows.VerifyNoPrivilegedToken(ctx, elevaccount.AccountName)
+	if err != nil || privileged {
+		return evidence, "privileged_token_verification_failed", false
+	}
+	evidence.AccountEnabled = boolPtr(false)
+	evidence.AccountInAdministrators = boolPtr(false)
+	evidence.PrivilegedTokenPresent = boolPtr(false)
+	return evidence, "", true
+}
+
+func (m *lifecycleManager) SetEnabled(ctx context.Context, enabled bool) error {
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
 	m.mu.Lock()
-	m.enabled = enabled
+	current := m.enabled
+	admissionOpen := m.admissionOpen
+	m.mu.Unlock()
+	if current == enabled {
+		if enabled && !admissionOpen {
+			return errors.New("PAM cleanup remains unresolved")
+		}
+		return nil
+	}
+	if enabled {
+		m.mu.Lock()
+		m.enabled = true
+		m.admissionOpen = true
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Lock()
+	m.admissionOpen = false
+	m.mu.Unlock()
+	entries := m.store.Entries()
+	var failures []string
+	if len(entries) == 0 {
+		bootID, bootErr := m.currentBootID(ctx)
+		if bootErr != nil {
+			failures = append(failures, "account:boot_id_unavailable")
+		} else if _, code, verified := m.verifyAccountClean(ctx, ResultEvidence{BootID: bootID}); !verified {
+			failures = append(failures, "account:"+code)
+		}
+	}
+	for _, entry := range entries {
+		generation := entry.Generation
+		if entry.DesiredState == DesiredActive {
+			generation++
+		}
+		result := m.cleanupLocked(ctx, cleanupCommandFromEntry(entry, generation))
+		if result.State == ResultFailed {
+			m.emit(result)
+			failures = append(failures, fmt.Sprintf("%s:%s", entry.ActuationID, result.FailureCode))
+		}
+	}
+	if len(failures) > 0 {
+		m.setAvailable(false)
+		return fmt.Errorf("PAM disable cleanup unverified: %s", strings.Join(failures, ", "))
+	}
+	m.mu.Lock()
+	m.enabled = false
+	m.admissionOpen = false
+	m.available = true
 	m.mu.Unlock()
 	return nil
+}
+
+func cleanupCommandFromEntry(entry LedgerEntry, generation uint64) CleanupCommand {
+	return CleanupCommand{ProtocolVersion: 2, ActuationID: entry.ActuationID, Generation: generation,
+		RequestID: entry.RequestID, DeviceID: entry.DeviceID, OrgID: entry.OrgID}
+}
+
+func (m *lifecycleManager) setAvailable(available bool) {
+	m.mu.Lock()
+	m.available = available
+	m.mu.Unlock()
 }
 
 func (m *lifecycleManager) emit(result Result) {

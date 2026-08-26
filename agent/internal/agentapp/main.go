@@ -32,6 +32,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/state"
@@ -89,6 +90,16 @@ var (
 	helperRole       string
 	desktopContext   string
 )
+
+type pamStartupController interface {
+	SetStatePath(string)
+	ReconcilePAMLifetime(context.Context) []pamlifetime.Result
+}
+
+func preparePAMLifetimeStartup(ctx context.Context, controller pamStartupController, statePath string) []pamlifetime.Result {
+	controller.SetStatePath(statePath)
+	return controller.ReconcilePAMLifetime(ctx)
+}
 
 var log = logging.L("main")
 
@@ -887,6 +898,16 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 	hb.SetAuthMonitor(authMon)
+	if !cfg.SupportMode {
+		for _, result := range preparePAMLifetimeStartup(context.Background(), hb, startupStatePath) {
+			log.Info("PAM lifetime startup reconciliation evidence",
+				"actuationId", result.ActuationID,
+				"generation", result.Generation,
+				"state", result.State,
+				"failureCode", result.FailureCode,
+				"bootId", result.Evidence.BootID)
+		}
+	}
 
 	// Point the log shipper at the heartbeat's promoted-URL getter (#2463).
 	// This MUST happen before hb.Start(): the heartbeat is the only thing that
@@ -1012,8 +1033,6 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			log.Warn("failed to write agent state file", "error", err.Error())
 		}
 
-		// Tell the heartbeat where the state file is so it can update after each heartbeat.
-		hb.SetStatePath(statePath)
 	}
 
 	// Mutual supervision: on Windows, when running as the SCM service this

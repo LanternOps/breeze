@@ -556,8 +556,10 @@ type Heartbeat struct {
 	untrustedReleaseAt  time.Time
 
 	// Path to the agent state file, set by main after startup.
-	statePath          string
-	pamLifetimeManager pamlifetime.Manager
+	statePath                string
+	pamLifetimeManager       pamlifetime.Manager
+	pamReconciled            atomic.Bool
+	pamVerificationAvailable atomic.Bool
 
 	// sendHeartbeatFn is an optional override used by tests to replace the
 	// real sendHeartbeat call inside sendHeartbeatWithWatchdog. nil in
@@ -1038,9 +1040,37 @@ func (h *Heartbeat) SetAuthMonitor(m *authstate.Monitor) {
 // SetStatePath sets the path to the agent state file for heartbeat updates.
 func (h *Heartbeat) SetStatePath(path string) {
 	h.statePath = path
+	h.pamReconciled.Store(false)
+	h.pamVerificationAvailable.Store(false)
 	if path != "" && h.pamLifetimeManager == nil {
 		h.pamLifetimeManager = pamlifetime.NewManager(pamlifetime.NewStore(filepath.Join(filepath.Dir(path), "pam-lifetime-ledger.json")))
 	}
+}
+
+func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
+	h.pamReconciled.Store(false)
+	h.pamVerificationAvailable.Store(false)
+	if h.pamLifetimeManager == nil {
+		return nil
+	}
+	results := h.pamLifetimeManager.Reconcile(ctx)
+	available := true
+	if state, ok := h.pamLifetimeManager.(interface{ Available() bool }); ok {
+		available = state.Available()
+	}
+	h.pamVerificationAvailable.Store(available)
+	h.pamReconciled.Store(true)
+	return results
+}
+
+func (h *Heartbeat) pamLifetimeProtocolVersion() int {
+	if !h.pamReconciled.Load() || !h.pamVerificationAvailable.Load() {
+		return 0
+	}
+	if capability, ok := h.pamLifetimeManager.(interface{ ProtocolVersion() int }); ok {
+		return capability.ProtocolVersion()
+	}
+	return 0
 }
 
 func (h *Heartbeat) httpClient() *http.Client {
@@ -3934,9 +3964,7 @@ func (h *Heartbeat) sendHeartbeat() {
 			RollbackProtocolVersion:         1,
 		},
 	}
-	if capability, ok := h.pamLifetimeManager.(interface{ ProtocolVersion() int }); ok {
-		payload.SecurityCapabilities.PamLifetimeProtocolVersion = capability.ProtocolVersion()
-	}
+	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	if componentVersions, complete := h.rollbackComponentVersions(); complete {
 		payload.RollbackComponentVersions = componentVersions
 	}
@@ -4341,6 +4369,11 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
 	}
+	// PAM policy must close capture/admission and finish verified cleanup before
+	// any commands from this same response are submitted to the worker pool.
+	// Enabling also precedes command admission so the first v2 apply is not
+	// falsely rejected merely because the policy and command arrived together.
+	h.handleUACInterception(response.UacInterceptionEnabled)
 
 	// Pin per-deployment manifest trust keys delivered by the server (#625).
 	// TOFU: PinManifestKeys rejects a *changed* pubkey for an already-pinned
@@ -4509,7 +4542,6 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 
 	// Update helper enabled state and apply full settings
 	h.handleHelperEnabled(response.HelperEnabled)
-	h.handleUACInterception(response.UacInterceptionEnabled)
 	if response.HelperSettings != nil {
 		h.helperMgr.Apply(&helper.Settings{
 			Enabled:            response.HelperSettings.Enabled,
@@ -4561,13 +4593,37 @@ func (h *Heartbeat) IsUACInterceptionEnabled() bool {
 // true.
 func (h *Heartbeat) handleUACInterception(enabled *bool) {
 	on := enabled != nil && *enabled
-	prev := h.uacInterceptionEnabled.Swap(on)
-	if prev != on {
-		if on {
-			log.Info("UAC interception enabled by configuration policy")
-		} else {
+	if !on {
+		prev := h.uacInterceptionEnabled.Swap(false)
+		if h.pamLifetimeManager != nil {
+			if err := h.pamLifetimeManager.SetEnabled(context.Background(), false); err != nil {
+				h.pamVerificationAvailable.Store(false)
+				log.Error("PAM disable cleanup could not be verified", "error", err.Error())
+				return
+			}
+			available := true
+			if state, ok := h.pamLifetimeManager.(interface{ Available() bool }); ok {
+				available = state.Available()
+			}
+			h.pamVerificationAvailable.Store(available)
+		}
+		if prev {
 			log.Info("UAC interception disabled by configuration policy")
 		}
+		return
+	}
+	if !h.pamReconciled.Load() || !h.pamVerificationAvailable.Load() || h.pamLifetimeManager == nil {
+		log.Error("refusing to enable UAC interception before PAM reconciliation is verified")
+		return
+	}
+	if err := h.pamLifetimeManager.SetEnabled(context.Background(), true); err != nil {
+		h.pamVerificationAvailable.Store(false)
+		log.Error("PAM enable rejected", "error", err.Error())
+		return
+	}
+	prev := h.uacInterceptionEnabled.Swap(true)
+	if prev != on {
+		log.Info("UAC interception enabled by configuration policy")
 	}
 }
 

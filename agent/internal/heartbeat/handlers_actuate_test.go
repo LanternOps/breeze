@@ -16,10 +16,16 @@ import (
 )
 
 type fakePamLifetimeManager struct {
-	applyResult   pamlifetime.Result
-	cleanupResult pamlifetime.Result
-	applyCalls    int
-	cleanupCalls  int
+	applyResult      pamlifetime.Result
+	cleanupResult    pamlifetime.Result
+	applyCalls       int
+	cleanupCalls     int
+	reconcileStarted chan<- struct{}
+	reconcileRelease <-chan struct{}
+	setEnabledErr    error
+	setEnabledCalls  []bool
+	protocolVersion  int
+	available        bool
 }
 
 func (m *fakePamLifetimeManager) Apply(context.Context, pamlifetime.ApplyCommand) pamlifetime.Result {
@@ -30,14 +36,34 @@ func (m *fakePamLifetimeManager) Cleanup(context.Context, pamlifetime.CleanupCom
 	m.cleanupCalls++
 	return m.cleanupResult
 }
-func (*fakePamLifetimeManager) Reconcile(context.Context) []pamlifetime.Result { return nil }
-func (*fakePamLifetimeManager) SetEnabled(context.Context, bool) error         { return nil }
+func (m *fakePamLifetimeManager) Reconcile(context.Context) []pamlifetime.Result {
+	if m.reconcileStarted != nil {
+		close(m.reconcileStarted)
+	}
+	if m.reconcileRelease != nil {
+		<-m.reconcileRelease
+	}
+	return nil
+}
+func (m *fakePamLifetimeManager) SetEnabled(_ context.Context, enabled bool) error {
+	m.setEnabledCalls = append(m.setEnabledCalls, enabled)
+	return m.setEnabledErr
+}
+func (m *fakePamLifetimeManager) ProtocolVersion() int {
+	if m.protocolVersion == 0 {
+		return 2
+	}
+	return m.protocolVersion
+}
+func (m *fakePamLifetimeManager) Available() bool { return m.available }
 
 func TestPamLifetimeV2HandlersReturnSharedStructuredResult(t *testing.T) {
 	apply := pamlifetime.Result{ProtocolVersion: 2, ObservationID: "10000000-0000-4000-8000-000000000009", ActuationID: "10000000-0000-4000-8000-000000000001", Generation: 1, State: pamlifetime.ResultFailed, ObservedAt: time.Now(), FailureCode: pamlifetime.FailureUnsupportedPlatform}
 	cleanup := apply
 	cleanup.Generation = 2
 	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: &fakePamLifetimeManager{applyResult: apply, cleanupResult: cleanup}}
+	h.pamReconciled.Store(true)
+	h.uacInterceptionEnabled.Store(true)
 
 	applyResult := handlePamApplyV2(h, Command{Payload: map[string]any{
 		"protocolVersion": 2, "actuationId": apply.ActuationID, "generation": 1,
@@ -66,6 +92,60 @@ func TestPamLifetimeV2HandlersRejectCrossTenantIdentityBeforeManager(t *testing.
 	}})
 	if result.Status != "failed" || manager.cleanupCalls != 0 {
 		t.Fatalf("result=%+v cleanupCalls=%d", result, manager.cleanupCalls)
+	}
+}
+
+func TestPamApplyAdmissionRequiresVerifiedEnabledPolicy(t *testing.T) {
+	manager := &fakePamLifetimeManager{}
+	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: manager}
+	h.pamReconciled.Store(true)
+	h.pamVerificationAvailable.Store(true)
+
+	result := handlePamApplyV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2, "actuationId": "10000000-0000-4000-8000-000000000001", "generation": 1,
+		"requestId": "10000000-0000-4000-8000-000000000002", "deviceId": "10000000-0000-4000-8000-000000000003", "orgId": "10000000-0000-4000-8000-000000000004",
+		"targetPath": `C:\\Windows\\System32\\mmc.exe`, "targetHash": nil, "subjectUsername": `CORP\\alice`,
+		"expiresAt": time.Now().Add(time.Minute).Format(time.RFC3339Nano), "serverTime": time.Now().Format(time.RFC3339Nano), "maxRemainingLifetimeMs": 120000,
+	}})
+
+	if result.Status != "failed" || manager.applyCalls != 0 {
+		t.Fatalf("disabled policy apply result=%+v applyCalls=%d", result, manager.applyCalls)
+	}
+}
+
+func TestPamCommandAdmissionStaysClosedUntilReconcileFinishes(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manager := &fakePamLifetimeManager{reconcileStarted: started, reconcileRelease: release, available: true}
+	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: manager}
+	done := make(chan struct{})
+	go func() {
+		h.ReconcilePAMLifetime(context.Background())
+		close(done)
+	}()
+	<-started
+	if got := h.pamLifetimeProtocolVersion(); got != 0 {
+		t.Fatalf("protocol during reconciliation = %d, want 0", got)
+	}
+
+	blocked := handlePamCleanupV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2, "actuationId": "10000000-0000-4000-8000-000000000001", "generation": 2,
+		"requestId": "10000000-0000-4000-8000-000000000002", "deviceId": "10000000-0000-4000-8000-000000000003", "orgId": "10000000-0000-4000-8000-000000000004",
+	}})
+	if blocked.Status != "failed" || manager.cleanupCalls != 0 {
+		t.Fatalf("command admitted during reconcile: result=%+v calls=%d", blocked, manager.cleanupCalls)
+	}
+	close(release)
+	<-done
+	if got := h.pamLifetimeProtocolVersion(); got != 2 {
+		t.Fatalf("protocol after verified reconciliation = %d, want 2", got)
+	}
+	_ = handlePamCleanupV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2, "actuationId": "10000000-0000-4000-8000-000000000001", "generation": 2,
+		"requestId": "10000000-0000-4000-8000-000000000002", "deviceId": "10000000-0000-4000-8000-000000000003", "orgId": "10000000-0000-4000-8000-000000000004",
+	}})
+	if manager.cleanupCalls != 1 {
+		t.Fatalf("command not admitted after reconcile: calls=%d", manager.cleanupCalls)
 	}
 }
 

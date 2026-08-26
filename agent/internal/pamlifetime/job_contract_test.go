@@ -60,6 +60,10 @@ type fakeWindowsPrimitives struct {
 	assignErr           error
 	resumeErr           error
 	verifyActiveErr     error
+	reopenJob           jobOwnership
+	reopenMembers       int
+	reopenErr           error
+	reopenCalls         int
 	createStarted       chan<- struct{}
 	blockCreate         <-chan struct{}
 	closeProcessCount   int
@@ -168,6 +172,25 @@ func (f *fakeWindowsPrimitives) Resume(_ context.Context, _ suspendedProcessOwne
 func (f *fakeWindowsPrimitives) VerifyActive(_ context.Context, _ suspendedProcessOwnership, _ jobOwnership) (int, error) {
 	*f.order = append(*f.order, "verify active process and job")
 	return 1, f.verifyActiveErr
+}
+
+func (f *fakeWindowsPrimitives) ReopenAndVerifyActive(_ context.Context, name string, process ProcessIdentity) (jobOwnership, int, error) {
+	f.reopenCalls++
+	*f.order = append(*f.order, "reopen and verify active job")
+	f.cleanupJobName = name
+	f.cleanupProcess = process
+	if f.reopenErr != nil {
+		return jobOwnership{}, 0, f.reopenErr
+	}
+	job := f.reopenJob
+	if job.handle == 0 {
+		job = jobOwnership{name: name, handle: 31, inheritable: false, limitFlags: jobObjectLimitKillOnJobClose}
+	}
+	members := f.reopenMembers
+	if members == 0 {
+		members = 1
+	}
+	return job, members, nil
 }
 
 func (f *fakeWindowsPrimitives) TerminateAndVerifyEmpty(_ context.Context, name string, _ jobOwnership, process ProcessIdentity) (int, error) {
@@ -538,5 +561,217 @@ func TestTargetHashPinRemainsHeldThroughSuspendedCreation(t *testing.T) {
 	}
 	if win.targetHeld || win.targetReleaseCount != 1 {
 		t.Fatalf("target pin release held/count = %v/%d, want false/1", win.targetHeld, win.targetReleaseCount)
+	}
+}
+
+func durableActiveEntry(t *testing.T, store *Store, cmd ApplyCommand, process ProcessIdentity) {
+	t.Helper()
+	if _, err := store.PrepareApply(cmd); err != nil {
+		t.Fatalf("prepare active entry: %v", err)
+	}
+	if err := store.BindProcess(cmd.ActuationID, cmd.Generation, process); err != nil {
+		t.Fatalf("bind active process: %v", err)
+	}
+}
+
+func TestReconcileRestartAdoptsReopenableDesiredActiveJob(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	process := ProcessIdentity{PID: 4242, ProcessCreationTime: time.Unix(1234, 0).UTC(), JobName: JobName(testActuationID, 1), BootID: "windows-boot-42"}
+	durableActiveEntry(t, store, validApply(1), process)
+	win := &fakeWindowsPrimitives{order: &order, bootID: "windows-boot-42", reopenMembers: 2}
+	manager := newLifecycleManager(store, win, &fakeAccountLifecycle{order: &order}, nil)
+
+	results := manager.Reconcile(context.Background())
+
+	if len(results) != 1 || results[0].State != ResultVerifiedActive || results[0].Evidence.JobMemberCount == nil || *results[0].Evidence.JobMemberCount != 2 {
+		t.Fatalf("reconcile results = %+v, want verified active with two job members", results)
+	}
+	if _, ok := manager.jobs[testActuationID]; !ok {
+		t.Fatal("reconciled Job Object ownership was not retained")
+	}
+}
+
+func TestReconcileCrashClosedJobFailsWithoutClaimingCleaned(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	process := ProcessIdentity{PID: 4242, ProcessCreationTime: time.Unix(1234, 0).UTC(), JobName: JobName(testActuationID, 1), BootID: "windows-boot-42"}
+	durableActiveEntry(t, store, validApply(1), process)
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	win := &fakeWindowsPrimitives{order: &order, bootID: "windows-boot-42", reopenErr: errors.New("job closed with prior owner")}
+	manager := newLifecycleManager(store, win, &fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+
+	results := manager.Reconcile(context.Background())
+
+	if len(results) != 1 || results[0].State != ResultFailed || results[0].State == ResultCleaned {
+		t.Fatalf("reconcile results = %+v, want failed evidence without cleaned claim", results)
+	}
+	entry, _ := store.Entry(testActuationID)
+	if entry.DesiredState != DesiredActive {
+		t.Fatalf("crash reconciliation rewrote server desired state: %+v", entry)
+	}
+}
+
+func TestReconcileFinishesDurableCleanupTombstone(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	if _, err := store.PrepareCleanup(validCleanup(1)); err != nil {
+		t.Fatal(err)
+	}
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	manager := newLifecycleManager(store, &fakeWindowsPrimitives{order: &order}, &fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+
+	results := manager.Reconcile(context.Background())
+
+	if len(results) != 1 || results[0].State != ResultCleaned {
+		t.Fatalf("reconcile results = %+v, want cleaned tombstone", results)
+	}
+}
+
+func TestReconcileRebootedVanishedProcessRequiresEvidenceNotAutomaticCleaned(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	process := ProcessIdentity{PID: 4242, ProcessCreationTime: time.Unix(1234, 0).UTC(), JobName: JobName(testActuationID, 1), BootID: "windows-boot-old"}
+	durableActiveEntry(t, store, validApply(1), process)
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	win := &fakeWindowsPrimitives{order: &order, bootID: "windows-boot-new"}
+	manager := newLifecycleManager(store, win, &fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+
+	results := manager.Reconcile(context.Background())
+
+	if len(results) != 1 || results[0].State != ResultFailed || results[0].Evidence.BootID != "windows-boot-new" {
+		t.Fatalf("reboot reconcile = %+v, want failed current-boot evidence", results)
+	}
+	if win.reopenCalls != 0 {
+		t.Fatalf("reboot reconciliation reopened a prior-boot job %d times", win.reopenCalls)
+	}
+}
+
+func TestDisableCleansActiveWorkBeforeReportingDisabled(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	win := &fakeWindowsPrimitives{order: &order}
+	manager := newLifecycleManager(store, win, &fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+	if result := manager.Apply(context.Background(), validApply(1)); result.State != ResultVerifiedActive {
+		t.Fatalf("apply setup = %+v", result)
+	}
+
+	if err := manager.SetEnabled(context.Background(), false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	entry, _ := store.Entry(testActuationID)
+	if manager.enabled || entry.DesiredState != DesiredCleanup || entry.Generation != 2 {
+		t.Fatalf("disable state enabled=%v entry=%+v", manager.enabled, entry)
+	}
+}
+
+func TestDisableHelperLossRetainsEnabledFailureAndCleanupTombstone(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	win := &fakeWindowsPrimitives{order: &order, cleanupErr: errors.New("helper/job ownership unavailable")}
+	manager := newLifecycleManager(store, win, &fakeAccountLifecycle{order: &order}, nil)
+	if result := manager.Apply(context.Background(), validApply(1)); result.State != ResultVerifiedActive {
+		t.Fatalf("apply setup = %+v", result)
+	}
+
+	if err := manager.SetEnabled(context.Background(), false); err == nil {
+		t.Fatal("disable succeeded without verified tree cleanup")
+	}
+	entry, _ := store.Entry(testActuationID)
+	if !manager.enabled || entry.DesiredState != DesiredCleanup {
+		t.Fatalf("failed disable state enabled=%v entry=%+v", manager.enabled, entry)
+	}
+}
+
+func TestDisableClosesApplyAdmissionBeforeCleanupProof(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	manager := newLifecycleManager(store, &fakeWindowsPrimitives{order: &order}, &fakeAccountLifecycle{order: &order}, nil)
+	if err := manager.SetEnabled(context.Background(), false); err != nil {
+		t.Fatalf("disable empty manager: %v", err)
+	}
+	cmd := validApply(1)
+	cmd.ActuationID = "20000000-0000-4000-8000-000000000001"
+
+	result := manager.Apply(context.Background(), cmd)
+
+	if result.State != ResultFailed || result.FailureCode != "pam_disabled" {
+		t.Fatalf("apply while disabled = %+v, want pam_disabled", result)
+	}
+	if _, ok := store.Entry(cmd.ActuationID); ok {
+		t.Fatal("disabled apply wrote a durable active row")
+	}
+}
+
+func TestDisableWithoutLedgerRowsStillRequiresVerifiedAccountCleanup(t *testing.T) {
+	var order []string
+	manager := newLifecycleManager(NewStore(filepath.Join(t.TempDir(), "ledger.json")),
+		&fakeWindowsPrimitives{order: &order},
+		&fakeAccountLifecycle{order: &order, verified: elevaccount.AccountEvidence{Enabled: true}}, nil)
+
+	err := manager.SetEnabled(context.Background(), false)
+
+	if err == nil {
+		t.Fatal("disable reported success without proving the dormant account clean")
+	}
+	if !manager.enabled || manager.admissionOpen {
+		t.Fatalf("failed disable enabled/admission = %v/%v, want retained enabled with closed admission", manager.enabled, manager.admissionOpen)
+	}
+}
+
+func TestUnverifiableReconcileClosesNewApplyAdmission(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	process := ProcessIdentity{PID: 4242, ProcessCreationTime: time.Unix(1234, 0).UTC(), JobName: JobName(testActuationID, 1), BootID: "windows-boot-42"}
+	durableActiveEntry(t, store, validApply(1), process)
+	win := &fakeWindowsPrimitives{order: &order, reopenErr: errors.New("job unavailable")}
+	manager := newLifecycleManager(store, win,
+		&fakeAccountLifecycle{order: &order, verified: elevaccount.AccountEvidence{Enabled: true}}, nil)
+	if results := manager.Reconcile(context.Background()); len(results) != 1 || results[0].State != ResultFailed || manager.Available() {
+		t.Fatalf("unverifiable reconcile = %+v available=%v", results, manager.Available())
+	}
+	cmd := validApply(1)
+	cmd.ActuationID = "20000000-0000-4000-8000-000000000001"
+
+	result := manager.Apply(context.Background(), cmd)
+
+	if result.State != ResultFailed || result.FailureCode != "pam_unavailable" {
+		t.Fatalf("apply after unverifiable reconcile = %+v, want pam_unavailable", result)
+	}
+	if _, ok := store.Entry(cmd.ActuationID); ok {
+		t.Fatal("unavailable apply wrote a durable active row")
+	}
+}
+
+func TestDisableCleansEveryDurableLedgerRow(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	first := validCleanup(1)
+	second := CleanupCommand{ProtocolVersion: 2,
+		ActuationID: "20000000-0000-4000-8000-000000000001",
+		Generation:  1,
+		RequestID:   "20000000-0000-4000-8000-000000000002",
+		DeviceID:    "20000000-0000-4000-8000-000000000003",
+		OrgID:       "20000000-0000-4000-8000-000000000004"}
+	for _, cmd := range []CleanupCommand{first, second} {
+		if _, err := store.PrepareCleanup(cmd); err != nil {
+			t.Fatalf("prepare cleanup row %s: %v", cmd.ActuationID, err)
+		}
+	}
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	var cleaned []string
+	manager := newLifecycleManager(store, &fakeWindowsPrimitives{order: &order},
+		&fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, func(result Result) {
+			if result.State == ResultCleaned {
+				cleaned = append(cleaned, result.ActuationID)
+			}
+		})
+
+	if err := manager.SetEnabled(context.Background(), false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if len(cleaned) != 2 {
+		t.Fatalf("cleaned rows = %v, want both ledger rows", cleaned)
 	}
 }

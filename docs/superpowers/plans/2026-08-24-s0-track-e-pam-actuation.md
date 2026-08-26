@@ -563,11 +563,11 @@ git commit -m "fix(agent): revoke PAM process trees"
 - Agent startup calls `Manager.Reconcile` before PAM command admission.
 - `handleUACInterception(false)` calls `Manager.SetEnabled(ctx, false)` and returns/report failure until cleanup and account deprovision are verified.
 
-- [ ] **Step 1: Write restart/reboot/disable RED tests**
+- [x] **Step 1: Write restart/reboot/disable RED tests**
 
 Cover restart with desired active and a reopenable job, restart after crash-triggered kill-on-close, startup with a cleanup tombstone, reboot with vanished process, disable during active work, disable with helper loss, and concurrent command arrival during reconciliation. Assert command admission stays closed until reconciliation finishes. A rebooted/vanished process is evidence to investigate, not automatic `cleaned`. Disabling stops capture first, requests cleanup for every ledger entry, deprovisions/verifies the account, and only then reports disabled.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd agent && go test -race ./internal/agentapp ./internal/pamlifetime ./internal/heartbeat/...
@@ -575,15 +575,15 @@ cd agent && go test -race ./internal/agentapp ./internal/pamlifetime ./internal/
 
 Expected: FAIL because startup does not own the manager and `handleUACInterception(false)` only toggles interception state.
 
-- [ ] **Step 3: Start and reconcile the manager before command admission**
+- [x] **Step 3: Start and reconcile the manager before command admission**
 
 Construct the manager during agent startup, load the durable ledger, and block PAM v2 handler readiness until `Reconcile` completes. For desired active, verify/reopen the named job if it exists; if crash closure already killed it, verify process/account/token state and emit evidence without claiming cleaned unless every cleanup predicate passes. For cleanup tombstones, finish cleanup before any lower/equal apply can run.
 
-- [ ] **Step 4: Bind PAM disable to cleanup and account lifecycle**
+- [x] **Step 4: Bind PAM disable to cleanup and account lifecycle**
 
 Change `handleUACInterception(false)` to stop new UAC capture, invoke manager disable/cleanup for all active rows, deprovision and verify the local account, persist/report failures, then clear the enabled state only after proof. Re-enable does not resurrect old desired-active generations. Capability advertisement drops to zero while reconciliation or verification is unavailable.
 
-- [ ] **Step 5: Run GREEN and Windows compile**
+- [x] **Step 5: Run GREEN and Windows compile**
 
 ```bash
 cd agent && go test -race ./internal/agentapp ./internal/pamlifetime ./internal/heartbeat/...
@@ -592,7 +592,7 @@ cd agent && GOOS=windows GOARCH=amd64 go test -c ./internal/agentapp -o /tmp/bre
 
 Expected: restart/reboot/disable state-machine tests pass and Windows startup wiring compiles.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add agent/internal/agentapp agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/uac_interception_test.go agent/internal/pamlifetime

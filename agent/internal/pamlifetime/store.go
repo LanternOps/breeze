@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -182,6 +183,17 @@ func (s *Store) Entry(actuationID string) (LedgerEntry, bool) {
 	defer s.mu.Unlock()
 	entry, ok := s.entries[actuationID]
 	return entry, ok
+}
+
+func (s *Store) Entries() []LedgerEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := make([]LedgerEntry, 0, len(s.entries))
+	for _, entry := range s.entries {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ActuationID < entries[j].ActuationID })
+	return entries
 }
 
 func (s *Store) load() error {

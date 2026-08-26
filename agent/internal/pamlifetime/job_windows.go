@@ -187,6 +187,50 @@ func (*nativeWindowsPrimitives) VerifyActive(_ context.Context, process suspende
 	return len(pids), nil
 }
 
+func (*nativeWindowsPrimitives) ReopenAndVerifyActive(ctx context.Context, name string, process ProcessIdentity) (jobOwnership, int, error) {
+	if err := ctx.Err(); err != nil {
+		return jobOwnership{}, 0, err
+	}
+	handle, _, err := openOwnedJob(name, jobOwnership{})
+	if err != nil {
+		return jobOwnership{}, 0, err
+	}
+	closeOnFailure := true
+	defer func() {
+		if closeOnFailure {
+			windows.CloseHandle(handle)
+		}
+	}()
+	pids, err := jobProcessIDs(handle)
+	if err != nil {
+		return jobOwnership{}, 0, err
+	}
+	found := false
+	for _, pid := range pids {
+		if int(pid) == process.PID {
+			if err := verifyPIDCreationTime(pid, process.ProcessCreationTime); err != nil {
+				return jobOwnership{}, len(pids), err
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		return jobOwnership{}, len(pids), errors.New("durable PAM PID is not owned by reopened Job Object")
+	}
+	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	if err := windows.QueryInformationJobObject(handle, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
+		return jobOwnership{}, len(pids), err
+	}
+	flags := info.BasicLimitInformation.LimitFlags
+	if flags&jobObjectLimitKillOnJobClose == 0 || flags&(jobObjectLimitBreakawayOK|jobObjectLimitSilentBreakawayOK) != 0 {
+		return jobOwnership{}, len(pids), errors.New("reopened PAM Job Object has unsafe limits")
+	}
+	closeOnFailure = false
+	return jobOwnership{name: name, handle: uintptr(handle), inheritable: false, limitFlags: flags, native: handle}, len(pids), nil
+}
+
 func (*nativeWindowsPrimitives) TerminateAndVerifyEmpty(ctx context.Context, name string, job jobOwnership, process ProcessIdentity) (int, error) {
 	handle, owned, err := openOwnedJob(name, job)
 	if err != nil {

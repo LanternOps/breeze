@@ -18,6 +18,7 @@ func NewManager(store *Store) *stubManager {
 }
 
 func (m *stubManager) ProtocolVersion() int { return 0 }
+func (m *stubManager) Available() bool      { return false }
 
 func (m *stubManager) Apply(_ context.Context, cmd ApplyCommand) Result {
 	if _, err := m.store.PrepareApply(cmd); err != nil {

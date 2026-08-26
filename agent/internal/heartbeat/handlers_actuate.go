@@ -59,6 +59,12 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	if h == nil || h.pamLifetimeManager == nil {
 		return tools.NewErrorResult(errors.New("PAM lifetime manager unavailable"), time.Since(start).Milliseconds())
 	}
+	if !h.pamReconciled.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
+	}
+	if !h.IsUACInterceptionEnabled() {
+		return tools.NewErrorResult(errors.New("PAM lifetime apply is disabled by policy"), time.Since(start).Milliseconds())
+	}
 	result := h.pamLifetimeManager.Apply(context.Background(), payload)
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 	commandResult.Result = result
@@ -76,6 +82,9 @@ func handlePamCleanupV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 	if h == nil || h.pamLifetimeManager == nil {
 		return tools.NewErrorResult(errors.New("PAM lifetime manager unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.pamReconciled.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
 	}
 	result := h.pamLifetimeManager.Cleanup(context.Background(), payload)
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
