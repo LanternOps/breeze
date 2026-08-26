@@ -52,7 +52,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
       .mockResolvedValueOnce(null);          // redelivery: unique index rejected it
 
     await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
-    handler = subscribeMock.mock.calls[0][1];
+    handler = subscribeMock.mock.calls[0]![1];
 
     await handler(EVENT);
     await handler(EVENT);
@@ -65,7 +65,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
 
   it('still queues blind when no delivery-record creator is configured', async () => {
     await initializeWebhookDelivery(async () => [WEBHOOK] as never);
-    handler = subscribeMock.mock.calls[0][1];
+    handler = subscribeMock.mock.calls[0]![1];
 
     await handler(EVENT);
 
