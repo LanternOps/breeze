@@ -12,12 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 const (
@@ -30,37 +32,77 @@ var (
 	procOpenJobObject = kernel32Job.NewProc("OpenJobObjectW")
 )
 
-type nativeWindowsPrimitives struct{}
+type nativeWindowsPrimitives struct {
+	bootOnce sync.Once
+	bootID   string
+	bootErr  error
+}
 
-func (*nativeWindowsPrimitives) ValidateTarget(ctx context.Context, path string, expectedHash *string) (string, string, error) {
+func (p *nativeWindowsPrimitives) CurrentBootID(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
-		return "", "", err
+		return "", err
+	}
+	p.bootOnce.Do(func() {
+		key, err := registry.OpenKey(registry.LOCAL_MACHINE,
+			`SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters`, registry.QUERY_VALUE)
+		if err != nil {
+			p.bootErr = fmt.Errorf("open Windows boot identity registry key: %w", err)
+			return
+		}
+		defer key.Close()
+		bootID, _, err := key.GetIntegerValue("BootId")
+		if err != nil {
+			p.bootErr = fmt.Errorf("read Windows BootId: %w", err)
+			return
+		}
+		p.bootID = fmt.Sprintf("windows-%d", bootID)
+	})
+	return p.bootID, p.bootErr
+}
+
+func (*nativeWindowsPrimitives) PinTarget(ctx context.Context, path string, expectedHash *string) (string, string, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", nil, err
 	}
 	if !filepath.IsAbs(path) {
-		return "", "", errors.New("PAM target path must be absolute")
+		return "", "", nil, errors.New("PAM target path must be absolute")
 	}
 	canonical, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
-		return "", "", fmt.Errorf("resolve PAM target: %w", err)
+		return "", "", nil, fmt.Errorf("resolve PAM target: %w", err)
 	}
-	file, err := os.Open(canonical)
+	canonicalPtr, err := windows.UTF16PtrFromString(canonical)
 	if err != nil {
-		return "", "", fmt.Errorf("open PAM target: %w", err)
+		return "", "", nil, fmt.Errorf("encode PAM target path: %w", err)
 	}
-	defer file.Close()
+	handle, err := windows.CreateFile(canonicalPtr, windows.GENERIC_READ, windows.FILE_SHARE_READ,
+		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("pin PAM target: %w", err)
+	}
+	file := os.NewFile(uintptr(handle), canonical)
+	if file == nil {
+		windows.CloseHandle(handle)
+		return "", "", nil, errors.New("pin PAM target: create file owner")
+	}
+	var closeOnce sync.Once
+	release := func() { closeOnce.Do(func() { _ = file.Close() }) }
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		return "", "", errors.New("PAM target must be a regular executable file")
+		release()
+		return "", "", nil, errors.New("PAM target must be a regular executable file")
 	}
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
-		return "", "", fmt.Errorf("hash PAM target: %w", err)
+		release()
+		return "", "", nil, fmt.Errorf("hash PAM target: %w", err)
 	}
 	hash := hex.EncodeToString(hasher.Sum(nil))
 	if expectedHash != nil && !strings.EqualFold(strings.TrimSpace(*expectedHash), hash) {
-		return "", "", errors.New("PAM target SHA-256 does not match command")
+		release()
+		return "", "", nil, errors.New("PAM target SHA-256 does not match command")
 	}
-	return canonical, hash, nil
+	return canonical, hash, release, nil
 }
 
 func (*nativeWindowsPrimitives) CreateSuspended(ctx context.Context, spec suspendedLaunchSpec) (suspendedProcessOwnership, error) {
@@ -222,9 +264,7 @@ func (*nativeWindowsPrimitives) VerifyNoPrivilegedToken(ctx context.Context, use
 				}
 			} else {
 				windows.CloseHandle(process)
-				if !errors.Is(tokenErr, windows.ERROR_ACCESS_DENIED) {
-					return false, tokenErr
-				}
+				return false, tokenInspectionFailure(entry.ProcessID, tokenErr)
 			}
 		} else if entry.ProcessID != 0 {
 			return false, fmt.Errorf("open process %d while verifying PAM token absence: %w", entry.ProcessID, openErr)

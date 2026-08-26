@@ -2,6 +2,7 @@ package pamlifetime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -51,7 +52,8 @@ type jobOwnership struct {
 }
 
 type windowsPrimitives interface {
-	ValidateTarget(context.Context, string, *string) (string, string, error)
+	CurrentBootID(context.Context) (string, error)
+	PinTarget(context.Context, string, *string) (string, string, func(), error)
 	CreateSuspended(context.Context, suspendedLaunchSpec) (suspendedProcessOwnership, error)
 	CreateJob(context.Context, string) (jobOwnership, error)
 	SetJobLimits(context.Context, jobOwnership, uint32) error
@@ -72,14 +74,15 @@ type accountLifecycle interface {
 }
 
 type lifecycleManager struct {
-	store     lifetimeStore
-	windows   windowsPrimitives
-	account   accountLifecycle
-	observe   func(Result)
-	mu        sync.Mutex
-	jobs      map[string]jobOwnership
-	processes map[string]suspendedProcessOwnership
-	enabled   bool
+	store       lifetimeStore
+	windows     windowsPrimitives
+	account     accountLifecycle
+	observe     func(Result)
+	operationMu sync.Mutex
+	mu          sync.Mutex
+	jobs        map[string]jobOwnership
+	processes   map[string]suspendedProcessOwnership
+	enabled     bool
 }
 
 func newLifecycleManager(store lifetimeStore, windows windowsPrimitives, account accountLifecycle, observe func(Result)) *lifecycleManager {
@@ -90,25 +93,35 @@ func newLifecycleManager(store lifetimeStore, windows windowsPrimitives, account
 func (m *lifecycleManager) ProtocolVersion() int { return 2 }
 
 func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
-	if err := validateApply(cmd); err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "invalid_command")
-	}
-	canonicalPath, targetHash, err := m.windows.ValidateTarget(ctx, cmd.TargetPath, cmd.TargetHash)
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	bootID, err := m.currentBootID(ctx)
 	if err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "target_verification_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "boot_id_unavailable")
 	}
+	if err := validateApply(cmd); err != nil {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "invalid_command")
+	}
+	canonicalPath, targetHash, releaseTarget, err := m.windows.PinTarget(ctx, cmd.TargetPath, cmd.TargetHash)
+	if err != nil || releaseTarget == nil {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "target_verification_failed")
+	}
+	defer releaseTarget()
 	decision, err := m.store.PrepareApply(cmd)
 	if err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "invalid_command")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "invalid_command")
 	}
 	if decision == DecisionDuplicate {
 		entry, _ := m.store.Entry(cmd.ActuationID)
+		if entry.BootID == "" {
+			entry.BootID = bootID
+		}
 		return m.result(cmd.ActuationID, cmd.Generation, ResultReceived, evidenceFromEntry(entry))
 	}
 
 	credential, err := m.account.Promote(ctx)
 	if err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "account_promotion_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "account_promotion_failed")
 	}
 	deprovisionOnFailure := true
 	defer func() {
@@ -126,14 +139,15 @@ func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 		creationFlags: createSuspended,
 	})
 	if err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "create_process_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "create_process_failed")
 	}
 	process.Identity.TargetHash = targetHash
+	process.Identity.BootID = bootID
 	jobName := JobName(cmd.ActuationID, cmd.Generation)
 	job, err := m.windows.CreateJob(ctx, jobName)
 	if err != nil {
 		m.windows.CloseProcess(process)
-		return failedResult(cmd.ActuationID, cmd.Generation, "create_job_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "create_job_failed")
 	}
 	closeOwnership := true
 	defer func() {
@@ -143,28 +157,28 @@ func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 		}
 	}()
 	if job.inheritable {
-		return failedResult(cmd.ActuationID, cmd.Generation, "inheritable_job_handle")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "inheritable_job_handle")
 	}
 	if err := m.windows.SetJobLimits(ctx, job, jobObjectLimitKillOnJobClose); err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "configure_job_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "configure_job_failed")
 	}
 	job.limitFlags = jobObjectLimitKillOnJobClose
 	if err := m.windows.AssignProcess(ctx, job, process); err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "assign_job_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "assign_job_failed")
 	}
 	process.Identity.JobName = jobName
 	if err := m.store.BindProcess(cmd.ActuationID, cmd.Generation, process.Identity); err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "persist_process_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "persist_process_failed")
 	}
 	if err := m.windows.Resume(ctx, process); err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "resume_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "resume_failed")
 	}
 	m.windows.ClosePrimaryThread(process)
 	received := m.result(cmd.ActuationID, cmd.Generation, ResultReceived, evidenceFromProcess(process.Identity, nil))
 	m.emit(received)
 	members, err := m.windows.VerifyActive(ctx, process, job)
 	if err != nil || members < 1 {
-		return failedResult(cmd.ActuationID, cmd.Generation, "active_verification_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "active_verification_failed")
 	}
 	evidence := evidenceFromProcess(process.Identity, &members)
 	verified := m.result(cmd.ActuationID, cmd.Generation, ResultVerifiedActive, evidence)
@@ -179,42 +193,54 @@ func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 }
 
 func (m *lifecycleManager) Cleanup(ctx context.Context, cmd CleanupCommand) Result {
-	decision, err := m.store.PrepareCleanup(cmd)
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	bootID, bootErr := m.currentBootID(ctx)
+	if bootErr != nil {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "boot_id_unavailable")
+	}
+	_, err := m.store.PrepareCleanup(cmd)
 	if err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "invalid_command")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "invalid_command")
 	}
 	entry, ok := m.store.Entry(cmd.ActuationID)
 	if !ok {
-		return failedResult(cmd.ActuationID, cmd.Generation, "missing_tombstone")
-	}
-	if decision == DecisionDuplicate && entry.PID == 0 {
-		return failedResult(cmd.ActuationID, cmd.Generation, "cleanup_unverifiable")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "missing_tombstone")
 	}
 	process := ProcessIdentity{PID: entry.PID, JobName: entry.JobName, BootID: entry.BootID}
 	if entry.ProcessCreationTime != nil {
 		process.ProcessCreationTime = *entry.ProcessCreationTime
 	}
 	m.mu.Lock()
-	job := m.jobs[cmd.ActuationID]
-	ownedProcess := m.processes[cmd.ActuationID]
+	job, ownsJob := m.jobs[cmd.ActuationID]
+	ownedProcess, ownsProcess := m.processes[cmd.ActuationID]
 	m.mu.Unlock()
-	members, err := m.windows.TerminateAndVerifyEmpty(ctx, entry.JobName, job, process)
-	if err != nil || members != 0 {
-		return failedResult(cmd.ActuationID, cmd.Generation, "job_cleanup_failed")
+	members := 0
+	hasAnyProcessIdentity := entry.PID != 0 || entry.JobName != "" || entry.ProcessCreationTime != nil
+	hasCompleteProcessIdentity := entry.PID > 0 && entry.JobName != "" && entry.ProcessCreationTime != nil && entry.BootID != ""
+	if hasAnyProcessIdentity && !hasCompleteProcessIdentity {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "job_cleanup_failed")
+	}
+	if hasCompleteProcessIdentity && entry.BootID == bootID {
+		members, err = m.windows.TerminateAndVerifyEmpty(ctx, entry.JobName, job, process)
+		if err != nil || members != 0 {
+			return m.failed(cmd.ActuationID, cmd.Generation, bootID, "job_cleanup_failed")
+		}
 	}
 	deprovisioned, err := m.account.Deprovision(ctx)
 	if err != nil {
-		return failedResult(cmd.ActuationID, cmd.Generation, "account_cleanup_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "account_cleanup_failed")
 	}
 	verified, err := m.account.VerifyClean(ctx)
 	if err != nil || verified.Enabled || verified.InAdministrators || deprovisioned.Enabled || deprovisioned.InAdministrators {
-		return failedResult(cmd.ActuationID, cmd.Generation, "account_verification_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "account_verification_failed")
 	}
 	privileged, err := m.windows.VerifyNoPrivilegedToken(ctx, elevaccount.AccountName)
 	if err != nil || privileged {
-		return failedResult(cmd.ActuationID, cmd.Generation, "privileged_token_verification_failed")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "privileged_token_verification_failed")
 	}
 	evidence := evidenceFromEntry(entry)
+	evidence.BootID = bootID
 	evidence.JobMemberCount = intPtr(0)
 	evidence.AccountEnabled = boolPtr(verified.Enabled)
 	evidence.AccountInAdministrators = boolPtr(verified.InAdministrators)
@@ -225,8 +251,12 @@ func (m *lifecycleManager) Cleanup(ctx context.Context, cmd CleanupCommand) Resu
 	delete(m.jobs, cmd.ActuationID)
 	delete(m.processes, cmd.ActuationID)
 	m.mu.Unlock()
-	m.windows.CloseProcess(ownedProcess)
-	m.windows.CloseJob(job)
+	if ownsProcess {
+		m.windows.CloseProcess(ownedProcess)
+	}
+	if ownsJob {
+		m.windows.CloseJob(job)
+	}
 	return result
 }
 
@@ -248,6 +278,21 @@ func (m *lifecycleManager) emit(result Result) {
 func (m *lifecycleManager) result(actuationID string, generation uint64, state ResultState, evidence ResultEvidence) Result {
 	return Result{ProtocolVersion: 2, ObservationID: uuid.NewString(), ActuationID: actuationID,
 		Generation: generation, State: state, ObservedAt: time.Now().UTC(), Evidence: evidence}
+}
+
+func (m *lifecycleManager) currentBootID(ctx context.Context) (string, error) {
+	bootID, err := m.windows.CurrentBootID(ctx)
+	bootID = strings.TrimSpace(bootID)
+	if err != nil || bootID == "" {
+		return "windows-boot-unavailable", errors.New("current Windows boot identity unavailable")
+	}
+	return bootID, nil
+}
+
+func (m *lifecycleManager) failed(actuationID string, generation uint64, bootID, code string) Result {
+	result := m.result(actuationID, generation, ResultFailed, ResultEvidence{BootID: bootID})
+	result.FailureCode = code
+	return result
 }
 
 func JobName(actuationID string, generation uint64) string {

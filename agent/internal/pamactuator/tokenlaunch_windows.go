@@ -160,7 +160,7 @@ func LaunchSuspendedV2(ctx context.Context, request SuspendedLaunchRequest) (*Su
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sessionID, err := resolveSubjectSession(Request{
+	sessionID, err := resolveSubjectSessionStrict(Request{
 		ElevationRequestID: request.ActuationID,
 		SubjectUsername:    request.SubjectUsername,
 	})
@@ -272,6 +272,20 @@ func resolveSubjectSession(req Request) (uint32, error) {
 		return 0, err
 	}
 	slog.Info("pamactuator: resolved target session",
+		"elevationRequestId", req.ElevationRequestID, "session", id, "source", source,
+		"subjectUsername", bareUsername(req.SubjectUsername))
+	return id, nil
+}
+
+func resolveSubjectSessionStrict(req Request) (uint32, error) {
+	id, source, err := resolveSubjectSessionStrictWith(req, sessionIDForUsername)
+	if err != nil {
+		slog.Warn("pamactuator: strict subject session resolution failed",
+			"elevationRequestId", req.ElevationRequestID, "source", source, "error", err.Error(),
+			"subjectUsername", bareUsername(req.SubjectUsername))
+		return 0, err
+	}
+	slog.Info("pamactuator: resolved strict subject session",
 		"elevationRequestId", req.ElevationRequestID, "session", id, "source", source,
 		"subjectUsername", bareUsername(req.SubjectUsername))
 	return id, nil
@@ -390,10 +404,11 @@ type winTokenLauncher struct{}
 // instead of its normal startup. It is passed by spawnSessionHelper.
 const sessionLaunchHelperFlag = "--pam-session-launch-helper"
 
-// sessionLaunchParams / sessionLaunchResult are the stdin/stdout JSON contract
+// sessionLaunchParams / sessionLaunchResult / sessionLaunchAcknowledgement are the JSON contract
 // between the session-0 stage (spawnSessionHelper) and the in-session helper
-// (MaybeRunSessionLaunchHelper). Params (incl. the credential) travel on the
-// helper's stdin pipe — never on its command line — and the result on stdout.
+// (MaybeRunSessionLaunchHelper). Params and the ownership acknowledgement
+// travel on stdin; the credential is never on the command line. The result
+// travels on stdout.
 type sessionLaunchParams struct {
 	Username    string `json:"username"`
 	Password    string `json:"password"`
@@ -411,6 +426,10 @@ type sessionLaunchResult struct {
 	ProcessHandle       uint64 `json:"processHandle,omitempty"`
 	PrimaryThreadHandle uint64 `json:"primaryThreadHandle,omitempty"`
 	ProcessCreationTime string `json:"processCreationTime,omitempty"`
+}
+
+type sessionLaunchAcknowledgement struct {
+	Accepted bool `json:"accepted"`
 }
 
 // Launch performs the Path B elevation launch. It runs as SYSTEM in session 0
@@ -539,6 +558,7 @@ func spawnSessionHelper(p launchParams) launchOutcome {
 	// Send the params, then read the single result object the helper writes.
 	inFile := os.NewFile(uintptr(inW), "pam-helper-stdin")
 	outFile := os.NewFile(uintptr(outR), "pam-helper-stdout")
+	defer inFile.Close()
 	defer outFile.Close()
 	if err := json.NewEncoder(inFile).Encode(sessionLaunchParams{
 		Username:    p.Username,
@@ -549,13 +569,11 @@ func spawnSessionHelper(p launchParams) launchOutcome {
 		Suspended:   p.Suspended,
 		ParentPID:   uint32(os.Getpid()),
 	}); err != nil {
-		inFile.Close()
 		if helperProcess != 0 {
 			windows.CloseHandle(helperProcess)
 		}
 		return launchOutcome{Reason: "session_helper_failed", Err: err}
 	}
-	inFile.Close() // EOF for the helper's stdin decode
 
 	var res sessionLaunchResult
 	if err := json.NewDecoder(outFile).Decode(&res); err != nil {
@@ -596,6 +614,20 @@ func spawnSessionHelper(p launchParams) launchOutcome {
 			windows.CloseHandle(helperProcess)
 		}
 		return launchOutcome{Reason: "session_helper_failed", Err: errors.New("helper did not transfer suspended process ownership")}
+	}
+	if p.Suspended {
+		if err := json.NewEncoder(inFile).Encode(sessionLaunchAcknowledgement{Accepted: true}); err != nil {
+			if out.PrimaryThread != 0 {
+				windows.CloseHandle(out.PrimaryThread)
+			}
+			if out.Process != 0 {
+				windows.CloseHandle(out.Process)
+			}
+			if helperProcess != 0 {
+				windows.CloseHandle(helperProcess)
+			}
+			return launchOutcome{Reason: "session_helper_failed", Err: fmt.Errorf("acknowledge suspended ownership: %w", err)}
+		}
 	}
 	return out
 }
@@ -665,7 +697,41 @@ func MaybeRunSessionLaunchHelper() {
 			out.thread = 0
 		}
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(res)
+	if res.Reason == "" && p.Suspended {
+		err := completeSuspendedHandoff(
+			func() error { return json.NewEncoder(os.Stdout).Encode(res) },
+			func() error {
+				var acknowledgement sessionLaunchAcknowledgement
+				if err := json.NewDecoder(os.Stdin).Decode(&acknowledgement); err != nil {
+					return fmt.Errorf("decode suspended ownership acknowledgement: %w", err)
+				}
+				if !acknowledgement.Accepted {
+					return errors.New("suspended ownership was not accepted")
+				}
+				return nil
+			},
+			func() {
+				_ = closeSuspendedHandlesInParent(p.ParentPID, windows.Handle(res.ProcessHandle), windows.Handle(res.PrimaryThreadHandle))
+				_ = windows.TerminateProcess(out.proc, 1)
+				out.cleanup()
+				windows.CloseHandle(out.thread)
+				windows.CloseHandle(out.proc)
+			},
+		)
+		if err != nil {
+			os.Exit(1)
+		}
+	} else if err := json.NewEncoder(os.Stdout).Encode(res); err != nil {
+		if out.reason == "" {
+			_ = windows.TerminateProcess(out.proc, 1)
+			out.cleanup()
+			if out.thread != 0 {
+				windows.CloseHandle(out.thread)
+			}
+			windows.CloseHandle(out.proc)
+		}
+		os.Exit(1)
+	}
 	if res.Reason != "" {
 		os.Exit(1)
 	}
@@ -704,6 +770,36 @@ func duplicateSuspendedHandlesToParent(parentPID uint32, process, thread windows
 		return 0, 0, err
 	}
 	return parentProcess, parentThread, nil
+}
+
+func closeSuspendedHandlesInParent(parentPID uint32, process, thread windows.Handle) error {
+	if parentPID == 0 {
+		return errors.New("parent PID is required")
+	}
+	parent, err := windows.OpenProcess(windows.PROCESS_DUP_HANDLE, false, parentPID)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(parent)
+	var firstErr error
+	for _, remote := range []windows.Handle{thread, process} {
+		if remote == 0 {
+			continue
+		}
+		var local windows.Handle
+		err := windows.DuplicateHandle(parent, remote, windows.CurrentProcess(), &local, 0, false,
+			windows.DUPLICATE_SAME_ACCESS|windows.DUPLICATE_CLOSE_SOURCE)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if local != 0 {
+			windows.CloseHandle(local)
+		}
+	}
+	return firstErr
 }
 
 // inSessionOutcome carries the raw launch result plus a cleanup func the helper

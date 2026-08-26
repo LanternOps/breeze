@@ -96,6 +96,7 @@ func (s *Store) PrepareApply(cmd ApplyCommand) (Decision, error) {
 			}
 			return DecisionDuplicate, nil
 		}
+		return "", errors.New("active generation must be cleaned before replacement")
 	}
 
 	now := time.Now().UTC()
