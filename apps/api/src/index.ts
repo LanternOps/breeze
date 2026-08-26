@@ -200,6 +200,15 @@ import { initializeContractWorkers, shutdownContractWorkers } from './jobs/contr
 import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offlineDetector';
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
+import {
+  initializeWebhookDeliveryRecovery,
+  shutdownWebhookDeliveryRecovery
+} from './jobs/webhookDeliveryRecovery';
+import {
+  claimDeliveryForExecution,
+  recordDeliveryOutcome,
+  recordWebhookDelivery
+} from './services/webhookDeliveryRecord';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
 import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
 import { initializeAlertCorrelationWorker, shutdownAlertCorrelationWorker } from './jobs/alertCorrelation';
@@ -351,8 +360,7 @@ import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs
 import { initializeTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
-import { decryptForColumn } from './services/secretCrypto';
-import { decryptWebhookHeaders } from './services/notificationChannelSecrets';
+import { toWebhookConfig } from './services/webhookConfig';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { getEventBus } from './services/eventBus';
@@ -373,7 +381,7 @@ import {
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
 import {
   computeWorkersHealthy,
@@ -1257,76 +1265,21 @@ let server: ReturnType<typeof serve> | null = null;
 let shutdownInProgress = false;
 let auditRetryInterval: NodeJS.Timeout | null = null;
 
-function headersToRecord(headers: unknown): Record<string, string> {
-  if (!headers) return {};
-
-  if (Array.isArray(headers)) {
-    return headers.reduce<Record<string, string>>((acc, header) => {
-      if (
-        header
-        && typeof header === 'object'
-        && typeof (header as { key?: unknown }).key === 'string'
-        && typeof (header as { value?: unknown }).value === 'string'
-      ) {
-        acc[(header as { key: string }).key] = (header as { value: string }).value;
-      }
-      return acc;
-    }, {});
-  }
-
-  if (typeof headers === 'object') {
-    return Object.entries(headers as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, value]) => {
-      if (typeof value === 'string') {
-        acc[key] = value;
-      }
-      return acc;
-    }, {});
-  }
-
-  return {};
-}
-
 async function initializeWebhookDeliveryWorker(): Promise<void> {
   const webhookWorker = getWebhookWorker();
 
-  webhookWorker.setDeliveryCallback(async (result) => {
-    await runWithSystemDbAccess(async () => {
-      const deliveryStatus = result.success ? 'delivered' : 'failed';
-      const deliveredAt = result.success ? new Date(result.deliveredAt ?? new Date().toISOString()) : null;
-      const responseTimeMs = typeof result.responseTimeMs === 'number'
-        ? Math.max(0, Math.round(result.responseTimeMs))
-        : null;
+  // EXECUTION CLAIM (#4095). The delivery queue is a plain Redis list with no
+  // job identity, so the same delivery can legitimately appear on it twice —
+  // the recovery sweep re-queues any row that still looks unresolved, and a job
+  // that was only backlogged is indistinguishable from one that was lost. This
+  // CAS is what makes that safe: exactly one popped copy flips `pending` ->
+  // `retrying` and POSTs; every other copy loses and is dropped by the worker.
+  //
+  // It is also what bounds the sweep, since a claimed row leaves `pending` the
+  // instant a worker takes it.
+  webhookWorker.setDeliveryClaimCallback(claimDeliveryForExecution);
 
-      await db
-        .update(webhookDeliveries)
-        .set({
-          status: deliveryStatus,
-          attempts: result.attempts,
-          responseStatus: result.responseStatus ?? null,
-          responseBody: result.responseBody ?? null,
-          responseTimeMs,
-          errorMessage: result.errorMessage ?? null,
-          deliveredAt
-        })
-        .where(eq(webhookDeliveries.id, result.deliveryId));
-
-      const aggregateUpdate = result.success
-        ? {
-          successCount: sql`${webhooksTable.successCount} + 1`,
-          lastSuccessAt: new Date(),
-          lastDeliveryAt: new Date()
-        }
-        : {
-          failureCount: sql`${webhooksTable.failureCount} + 1`,
-          lastDeliveryAt: new Date()
-        };
-
-      await db
-        .update(webhooksTable)
-        .set(aggregateUpdate)
-        .where(eq(webhooksTable.id, result.webhookId));
-    });
-  });
+  webhookWorker.setDeliveryCallback(recordDeliveryOutcome);
 
   await initializeWebhookDelivery(
     async (orgId, eventType) => {
@@ -1356,23 +1309,10 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
           // plaintext rows pass through decryptForColumn unchanged.
           .flatMap((webhook) => {
             try {
-              return [{
-                id: webhook.id,
-                orgId: webhook.orgId,
-                name: webhook.name,
-                url: decryptForColumn('webhooks', 'url', webhook.url) ?? webhook.url,
-                secret: webhook.secret
-                  ? decryptForColumn('webhooks', 'secret', webhook.secret) ?? undefined
-                  : undefined,
-                events: webhook.events ?? [],
-                headers: headersToRecord(decryptWebhookHeaders(webhook.headers)),
-                retryPolicy: (webhook.retryPolicy ?? undefined) as {
-                  maxRetries: number;
-                  backoffMultiplier: number;
-                  initialDelayMs: number;
-                  maxDelayMs: number;
-                } | undefined
-              }];
+              // Shared with the recovery sweep (services/webhookConfig): one
+              // decrypt/normalise path, so the two cannot drift the next time an
+              // encrypted column is added to `webhooks`.
+              return [toWebhookConfig(webhook)];
             } catch (err) {
               console.error(
                 `[webhookDelivery] failed to decrypt webhook ${webhook.id} (org ${webhook.orgId}); skipping delivery for this webhook only`,
@@ -1384,33 +1324,7 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
           });
       });
     },
-    async (webhook, event) => {
-      return runWithSystemDbAccess(async () => {
-        const [delivery] = await db
-          .insert(webhookDeliveries)
-          .values({
-            webhookId: webhook.id,
-            eventType: event.type,
-            eventId: event.id,
-            payload: event.payload,
-            status: 'pending',
-            attempts: 0
-          })
-          // The insert IS the dedupe. An empty `returning()` means this
-          // (webhook, event) pair is already recorded, and the caller reads
-          // that NULL as "already handled" and skips the outbound POST.
-          // DO NOTHING rather than catching 23505: a unique violation caught
-          // inside the transaction that raised it is a documented trap in this
-          // repo — postgres.js latches the failed statement and rethrows after
-          // the callback returns.
-          .onConflictDoNothing({
-            target: [webhookDeliveries.webhookId, webhookDeliveries.eventId]
-          })
-          .returning({ id: webhookDeliveries.id });
-
-        return delivery?.id ?? null;
-      });
-    }
+    recordWebhookDelivery
   );
 }
 
@@ -1434,6 +1348,9 @@ async function initializeWorkers(): Promise<void> {
     ['offlineDetector', initializeOfflineDetector],
     ['notificationDispatcher', initializeNotificationDispatcher],
     ['webhookDelivery', initializeWebhookDeliveryWorker],
+    // Must follow webhookDelivery: the sweep re-queues onto that worker's queue
+    // and relies on the execution claim it installs (#4095).
+    ['webhookDeliveryRecovery', initializeWebhookDeliveryRecovery],
     ['policyEvaluationWorker', initializePolicyEvaluationWorker],
     ['softwareComplianceWorker', initializeSoftwareComplianceWorker],
     ['softwareRemediationWorker', initializeSoftwareRemediationWorker],
@@ -1690,6 +1607,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownNetworkBaselineWorker,
     shutdownDiscoveryWorker,
     shutdownEventLogRetention,
+    shutdownWebhookDeliveryRecovery,
     shutdownLogCorrelationWorker,
     shutdownAgentLogRetention,
     shutdownIPHistoryRetention,
