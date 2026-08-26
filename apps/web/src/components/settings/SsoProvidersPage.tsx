@@ -7,7 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
 import { getOrgScope, useOrgScope } from '@/hooks/useOrgScope';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
 
@@ -210,11 +210,15 @@ export default function SsoProvidersPage() {
     }
   };
 
-  // #4068: who loses sign-in if enforcement goes live for this change. A
-  // failed preflight read returns null and the caller falls through to the
-  // save — the API's own confirm-through guard (409) is the backstop, so a
-  // broken preflight can never silently skip the protection OR wedge saving.
-  const fetchEnforcementPreflight = useCallback(async (body: Record<string, unknown>): Promise<EnforcementPreflight | null> => {
+  // #4068: who loses sign-in if enforcement goes live for this change.
+  // Three-valued: 'aborted' (session dead — the caller must NOT fire the
+  // mutation, the redirect is the feedback), 'unavailable' (preflight read
+  // failed — the caller falls through to the save, because the API's own
+  // confirm-through 409 is the backstop and both mutation paths route that
+  // 409 back into this same confirm dialog), or the population itself.
+  const fetchEnforcementPreflight = useCallback(async (
+    body: Record<string, unknown>
+  ): Promise<EnforcementPreflight | 'unavailable' | 'aborted'> => {
     try {
       const response = await fetchWithAuth('/sso/providers/enforcement-preflight', {
         method: 'POST',
@@ -222,15 +226,19 @@ export default function SsoProvidersPage() {
       });
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
-        return null;
+        return 'aborted';
       }
       if (response.ok) {
-        return (await response.json()).data ?? null;
+        const data = (await response.json()).data;
+        if (data) return data as EnforcementPreflight;
       }
-    } catch {
-      // fall through — server guard still applies
+      // A persistently broken preflight silently degrades the UX to
+      // raw-409-driven confirms — leave a trace of why.
+      console.error('[sso] enforcement preflight unavailable', response.status);
+    } catch (err) {
+      console.error('[sso] enforcement preflight failed', err);
     }
-    return null;
+    return 'unavailable';
   }, []);
 
   const openLockoutConfirm = (preflight: EnforcementPreflight, action: PendingEnforceAction) => {
@@ -253,7 +261,17 @@ export default function SsoProvidersPage() {
       });
 
       if (!response.ok) {
-        throw new Error(t('ssoProvidersPage.failedToUpdateProviderStatus'));
+        const body = await response.json().catch(() => null) as { error?: unknown; code?: unknown; preflight?: EnforcementPreflight } | null;
+        // The server backstop refused an unconfirmed lockout (the preflight
+        // read failed, or someone became unlinked between preflight and save):
+        // converge on the same confirm dialog, fed by the 409's own payload.
+        if (response.status === 409 && body?.code === 'sso_enforcement_lockout_confirmation_required' && body.preflight) {
+          openLockoutConfirm(body.preflight, { kind: 'activate', provider });
+          return;
+        }
+        // Surface the server's reason, not a generic label — a 403/400 must be
+        // distinguishable from "it would lock people out".
+        throw new Error(typeof body?.error === 'string' ? body.error : t('ssoProvidersPage.failedToUpdateProviderStatus'));
       }
 
       await fetchProviders();
@@ -266,7 +284,8 @@ export default function SsoProvidersPage() {
     // Activating an enforcing provider is a lockout moment — preflight it.
     if (newStatus === 'active' && provider.enforceSSO) {
       const preflight = await fetchEnforcementPreflight({ providerId: provider.id });
-      if (preflight && preflight.unlinkedCount > 0) {
+      if (preflight === 'aborted') return;
+      if (preflight !== 'unavailable' && preflight.unlinkedCount > 0) {
         openLockoutConfirm(preflight, { kind: 'activate', provider });
         return;
       }
@@ -309,18 +328,22 @@ export default function SsoProvidersPage() {
   };
 
   const handleSubmit = async (values: SsoProviderFormValues) => {
-    // #4068: enabling Enforce SSO (newly — an edit that keeps it on isn't a
+    // #4068: enabling Enforce SSO on an EDIT (newly — keeping it on isn't a
     // transition) can lock out every unlinked user on the axis. Preflight and
     // demand explicit confirmation naming them before the save goes out.
+    // Deliberately NOT on create: providers are born inactive, so a create
+    // cannot lock anyone out — the warning fires at the activation toggle,
+    // where it's true. Warning on create would cry lockout (including a false
+    // self-lockout) on 100% of first-time setups.
     const newlyEnforcing = values.enforceSSO
-      && !(modalMode === 'edit' && selectedProviderDetails?.enforceSSO);
-    if (newlyEnforcing) {
-      const preflight = await fetchEnforcementPreflight(
-        modalMode === 'edit' && selectedProvider
-          ? { providerId: selectedProvider.id }
-          : { ownerScope: values.ownerScope ?? 'organization' }
-      );
-      if (preflight && preflight.unlinkedCount > 0) {
+      && modalMode === 'edit'
+      && !selectedProviderDetails?.enforceSSO;
+    if (newlyEnforcing && selectedProvider) {
+      setSubmitting(true);
+      const preflight = await fetchEnforcementPreflight({ providerId: selectedProvider.id });
+      setSubmitting(false);
+      if (preflight === 'aborted') return;
+      if (preflight !== 'unavailable' && preflight.unlinkedCount > 0) {
         openLockoutConfirm(preflight, { kind: 'save', values });
         return;
       }
@@ -357,12 +380,29 @@ export default function SsoProvidersPage() {
       await runAction({
         request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
         errorFallback: t('ssoProvidersPage.failedToSaveProvider'),
+        // The raw 409 message is written for API callers ("resend with
+        // acknowledgeLockout: true") — the web user gets the confirm dialog
+        // instead (below), so soften the toast to match.
+        friendly: (code) => code === 'sso_enforcement_lockout_confirmation_required'
+          ? t('ssoProvidersPage.enforceLockoutConfirmationNeeded')
+          : undefined,
         onUnauthorized: () => navigateTo('/login', { replace: true })
       });
 
       await fetchProviders();
       handleCloseModal();
     } catch (err) {
+      // Server backstop refused an unconfirmed lockout (preflight was
+      // unavailable, or the population changed between preflight and save):
+      // open the same confirm dialog from the 409's own payload so the admin
+      // can actually proceed — never leave them looping on a toast.
+      if (err instanceof ActionError && err.code === 'sso_enforcement_lockout_confirmation_required') {
+        const preflight = (err.body as { preflight?: EnforcementPreflight } | undefined)?.preflight;
+        if (preflight) {
+          openLockoutConfirm(preflight, { kind: 'save', values });
+          return;
+        }
+      }
       handleActionError(err, t('ssoProvidersPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);

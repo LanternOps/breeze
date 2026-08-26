@@ -77,12 +77,30 @@ async function linkIdentity(userId: string, providerId: string) {
 }
 
 describe('enforce-SSO lockout preflight population (#4068)', () => {
-  it('org axis: effective-provider linkage, partner-membership exclusion, status filtering', async () => {
+  it('org axis: effective-provider linkage, partner-membership exclusion, status filtering, tenant isolation', async () => {
     const db = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const orgRole = await createRole({ scope: 'organization', orgId: org.id, partnerId: partner.id });
     const partnerRole = await createRole({ scope: 'partner', partnerId: partner.id });
+
+    // Tenant-isolation discriminator: a SIBLING org under the same partner
+    // with its own active unlinked member and its own provider. If any of the
+    // org_id filters were dropped, this user/provider would leak into the
+    // result — this is a system-context read that returns email addresses.
+    const otherOrg = await createOrganization({ partnerId: partner.id });
+    const otherOrgRole = await createRole({ scope: 'organization', orgId: otherOrg.id, partnerId: partner.id });
+    const outsider = await createUser({
+      partnerId: partner.id,
+      orgId: otherOrg.id,
+      email: `outsider-${uniq()}@example.com`,
+      name: 'outsider',
+      status: 'active'
+    });
+    await assignUserToOrganization(outsider.id, otherOrg.id, otherOrgRole.id);
+    // Older than every provider in the org under test: if the provider-axis
+    // filter leaked, THIS would be picked as the effective login provider.
+    await seedProvider({ orgId: otherOrg.id, status: 'active', createdAt: new Date(Date.now() - 120_000) });
 
     // Two ACTIVE providers: pOld is the one the login entry actually uses.
     const pOld = await seedProvider({ orgId: org.id, status: 'active', createdAt: new Date(Date.now() - 60_000) });
@@ -136,27 +154,33 @@ describe('enforce-SSO lockout preflight population (#4068)', () => {
       disabledAt: new Date()
     });
 
+    // Self = CAROL, whose email sorts AFTER alice's: the self-first assertion
+    // below only discriminates the isSelf sort term if the email tiebreak
+    // alone would order self last.
     const result = await computeEnforcementLockoutPreflight(
       { scope: 'organization', orgId: org.id },
       pNew.id,
-      alice.id
+      carol.id
     );
 
     // Active org-axis members: alice, bob, carol (dave partner-wins out,
-    // eve/frank not active).
+    // eve/frank not active, outsider belongs to the sibling org).
     expect(result.totalActiveUsers).toBe(3);
     expect(result.loginProvider?.id).toBe(pOld.id);
     const emails = result.unlinked.map((u) => u.email).sort();
     expect(emails).toEqual([alice.email, carol.email].sort());
     expect(result.unlinkedCount).toBe(2);
-    expect(result.selfLockedOut).toBe(true); // self = alice
+    expect(result.unlinked.some((u) => u.email === outsider.email)).toBe(false);
+    expect(result.selfLockedOut).toBe(true); // self = carol
 
     const aliceRow = result.unlinked.find((u) => u.id === alice.id)!;
-    expect(aliceRow.isSelf).toBe(true);
+    expect(aliceRow.isSelf).toBe(false);
     expect(aliceRow.hasPasskey).toBe(true);
-    // Self sorts first so truncation can never hide the self-lockout.
-    expect(result.unlinked[0]!.id).toBe(alice.id);
+    // Self sorts first (beating the email order) so truncation can never hide
+    // the self-lockout.
+    expect(result.unlinked[0]!.id).toBe(carol.id);
     const carolRow = result.unlinked.find((u) => u.id === carol.id)!;
+    expect(carolRow.isSelf).toBe(true);
     expect(carolRow.hasPasskey).toBe(false);
   });
 
@@ -180,12 +204,20 @@ describe('enforce-SSO lockout preflight population (#4068)', () => {
     const orgUser = await createUser({ partnerId: partner.id, orgId: org.id, email: `orguser-${uniq()}@example.com`, name: 'orguser', status: 'active' });
     await assignUserToOrganization(orgUser.id, org.id, orgRole.id);
 
+    // Tenant-isolation discriminator: a SECOND partner with its own unlinked
+    // staff — must not appear in this partner's population.
+    const otherPartner = await createPartner();
+    const otherPartnerRole = await createRole({ scope: 'partner', partnerId: otherPartner.id });
+    const otherTech = await createUser({ partnerId: otherPartner.id, email: `othertech-${uniq()}@example.com`, name: 'othertech', status: 'active' });
+    await assignUserToPartner(otherTech.id, otherPartner.id, otherPartnerRole.id, 'all');
+
     const result = await computeEnforcementLockoutPreflight(
       { scope: 'partner', partnerId: partner.id },
       target.id,
       tech2.id
     );
 
+    expect(result.unlinked.some((u) => u.email === otherTech.email)).toBe(false);
     expect(result.totalActiveUsers).toBe(2);
     expect(result.loginProvider?.id).toBe(target.id);
     expect(result.unlinkedCount).toBe(1);

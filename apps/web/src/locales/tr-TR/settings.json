@@ -2210,7 +2210,8 @@
     "enforceLockoutTruncated": "…ve gösterilmeyen diğerleri.",
     "enforceLockoutSelfWarning": "Kendi hesabınız bağlı değil — kendinizi kilitlemiş olursunuz.",
     "enforceLockoutAcknowledge": "Bu kullanıcıların SSO bağlantısı yapana kadar oturum açamayacağını anlıyorum",
-    "enforceLockoutConfirm": "Zorunluluğu etkinleştir"
+    "enforceLockoutConfirm": "Zorunluluğu etkinleştir",
+    "enforceLockoutConfirmationNeeded": "SSO zorunluluğunu etkinleştirmek için kilitleme uyarısını onaylayın."
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",

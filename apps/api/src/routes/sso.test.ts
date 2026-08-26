@@ -4282,10 +4282,17 @@ describe('sso routes', () => {
       orgAxis?: boolean;
       hasLoginProvider?: boolean;
       first?: any[] | null; // provider-row lookup for the providerId flow
+      // The create flow's org branch runs an RLS-visibility probe on
+      // organizations BEFORE the population read (no provider row proves
+      // authority there).
+      orgProbe?: boolean;
     }) => {
       const sel = vi.mocked(db.select).mockReset();
       if (opts.first !== undefined && opts.first !== null) {
         sel.mockReturnValueOnce(providerLookupChain(opts.first) as any);
+      }
+      if (opts.orgProbe) {
+        sel.mockReturnValueOnce(providerLookupChain([{ id: ORG_UUID }]) as any);
       }
       sel.mockReturnValueOnce(providersChain(opts.providers) as any);
       if (opts.hasLoginProvider) sel.mockReturnValueOnce(subqueryChain() as any);
@@ -4301,7 +4308,7 @@ describe('sso routes', () => {
 
     describe('POST /providers/enforcement-preflight', () => {
       it('create flow (org axis, no providers yet): every active member is unlinked, loginProvider null', async () => {
-        queuePreflightSelects({ providers: [], members: [UNLINKED_SELF, UNLINKED_OTHER], orgAxis: true });
+        queuePreflightSelects({ providers: [], members: [UNLINKED_SELF, UNLINKED_OTHER], orgAxis: true, orgProbe: true });
 
         const res = await app.request('/sso/providers/enforcement-preflight', {
           method: 'POST',
@@ -4397,6 +4404,62 @@ describe('sso routes', () => {
         expect(data.selfLockedOut).toBe(false);
       });
 
+      // The preflight discloses active-user emails axis-wide — its auth chain
+      // must be exactly as hard as the writes it fronts. The global
+      // recordedPermissionGuards assertion can't tell which route carries
+      // which guard, so pin authMiddleware and requireMfa here directly.
+      it('401s without authentication (no population read)', async () => {
+        vi.mocked(authMiddleware).mockImplementation((c: any) => c.json({ error: 'Unauthorized' }, 401));
+        const res = await app.request('/sso/providers/enforcement-preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        expect(res.status).toBe(401);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+
+      it('403s without MFA (no population read)', async () => {
+        mfaGate.deny = true;
+        const res = await app.request('/sso/providers/enforcement-preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+
+      it('caps the unlinked list at 200 with exact counts, self surviving the cut', async () => {
+        // 201 unlinked users; self's email sorts LAST alphabetically, so a
+        // slice-before-sort regression would drop the guaranteed-self-lockout
+        // row — the one the cap must never hide.
+        const many = Array.from({ length: 200 }, (_, i) => ({
+          id: `00000000-0000-4000-8000-${String(100000 + i).padStart(12, '0')}`,
+          email: `user-${String(i).padStart(3, '0')}@example.com`,
+          name: `User ${i}`,
+          linked: false,
+          hasPasskey: false
+        }));
+        const self = { id: USER_UUID, email: 'zzz-self@example.com', name: 'Self', linked: false, hasPasskey: false };
+        queuePreflightSelects({ providers: [], members: [...many, self], orgAxis: true, orgProbe: true });
+
+        const res = await app.request('/sso/providers/enforcement-preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+
+        expect(res.status).toBe(200);
+        const { data } = await res.json();
+        expect(data.unlinkedCount).toBe(201);
+        expect(data.totalActiveUsers).toBe(201);
+        expect(data.truncated).toBe(true);
+        expect(data.unlinked).toHaveLength(200);
+        expect(data.unlinked[0]).toMatchObject({ id: USER_UUID, isSelf: true });
+        expect(data.selfLockedOut).toBe(true);
+      });
+
       it('a SAML effective login provider gives nobody a pre-auth path', async () => {
         queuePreflightSelects({
           first: [{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }],
@@ -4450,8 +4513,16 @@ describe('sso routes', () => {
         expect(db.update).not.toHaveBeenCalled();
       });
 
-      it('proceeds with acknowledgeLockout: true — and never writes it as a column', async () => {
-        vi.mocked(db.select).mockReset().mockReturnValueOnce(providerLookupChain([ACTIVE_UNENFORCED]) as any);
+      it('proceeds with acknowledgeLockout: true, never writes it as a column, and audits the accepted lockout', async () => {
+        // The preflight runs on the acknowledged path too — the accepted
+        // lockout must be as auditable as the rejected one.
+        queuePreflightSelects({
+          first: [ACTIVE_UNENFORCED],
+          providers: [{ id: PROVIDER_UUID, name: 'Okta', type: 'oidc', status: 'active' }],
+          members: [UNLINKED_OTHER],
+          orgAxis: true,
+          hasLoginProvider: true
+        });
         const setMock = vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue([{ ...ACTIVE_UNENFORCED, enforceSSO: true, clientSecret: null }])
@@ -4464,6 +4535,37 @@ describe('sso routes', () => {
         expect(res.status).toBe(200);
         expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ enforceSSO: true }));
         expect(setMock).not.toHaveBeenCalledWith(expect.objectContaining({ acknowledgeLockout: expect.anything() }));
+        // The executed lockout is distinguishable from an ordinary enforce flip.
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'sso.provider.update',
+          details: expect.objectContaining({
+            acknowledgedLockout: true,
+            lockedOutCount: 1,
+            selfLockedOut: false
+          })
+        }));
+      });
+
+      it('409s a PARTNER-axis provider the same way (technician-login axis)', async () => {
+        setAuthContext({ scope: 'partner', orgId: null, partnerId: PARTNER_UUID, accessibleOrgIds: [], partnerOrgAccess: 'all' });
+        queuePreflightSelects({
+          first: [{ ...ACTIVE_UNENFORCED, orgId: null, partnerId: PARTNER_UUID }],
+          providers: [{ id: PROVIDER_UUID, name: 'Team IdP', type: 'oidc', status: 'active' }],
+          // partner axis: no org-side notExists slot
+          members: [UNLINKED_OTHER],
+          hasLoginProvider: true
+        });
+
+        const res = await patchProvider({ enforceSSO: true });
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).code).toBe('sso_enforcement_lockout_confirmation_required');
+        expect(db.update).not.toHaveBeenCalled();
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'sso.provider.update.rejected',
+          orgId: null,
+          details: expect.objectContaining({ partnerId: PARTNER_UUID })
+        }));
       });
 
       it('proceeds without acknowledgement when nobody would be locked out', async () => {
@@ -4531,8 +4633,14 @@ describe('sso routes', () => {
         expect(db.update).not.toHaveBeenCalled();
       });
 
-      it('activates with acknowledgeLockout: true', async () => {
-        vi.mocked(db.select).mockReset().mockReturnValueOnce(providerLookupChain([INACTIVE_ENFORCING]) as any);
+      it('activates with acknowledgeLockout: true and audits the accepted lockout', async () => {
+        queuePreflightSelects({
+          first: [INACTIVE_ENFORCING],
+          providers: [{ id: PROVIDER_UUID, name: 'Okta', type: 'oidc', status: 'inactive' }],
+          members: [UNLINKED_OTHER],
+          orgAxis: true,
+          hasLoginProvider: true
+        });
         const setMock = vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue([{ ...INACTIVE_ENFORCING, status: 'active' }])
@@ -4544,6 +4652,10 @@ describe('sso routes', () => {
         expect(res.status).toBe(200);
         expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'active' }));
         expect(setMock).not.toHaveBeenCalledWith(expect.objectContaining({ acknowledgeLockout: expect.anything() }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'sso.provider.status.update',
+          details: expect.objectContaining({ acknowledgedLockout: true, lockedOutCount: 1 })
+        }));
       });
 
       it('does not gate activating a NON-enforcing provider', async () => {

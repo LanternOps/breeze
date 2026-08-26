@@ -315,12 +315,7 @@ describe('SsoProvidersPage partner-axis behavior', () => {
       });
     }
 
-    const enforceToggle = () => {
-      // The enforce checkbox is the first checkbox in the Security section —
-      // find it via its label text association.
-      const label = screen.getByText('Enforce SSO-only login');
-      return label.closest('label')!.querySelector('input') as HTMLInputElement;
-    };
+    const enforceToggle = () => screen.getByTestId('provider-enforce-sso') as HTMLInputElement;
 
     it('shows the lockout confirm with the unlinked users, gates on the checkbox, then PATCHes with acknowledgeLockout', async () => {
       routeWithPreflight({
@@ -383,6 +378,166 @@ describe('SsoProvidersPage partner-axis behavior', () => {
         const body = JSON.parse((patchCall![1] as { body: string }).body);
         expect(body).not.toHaveProperty('acknowledgeLockout');
       });
+      expect(screen.queryByTestId('enforce-lockout-modal')).toBeNull();
+    });
+
+    it('cancel closes the overlay, fires no mutation, and keeps the edit form (with its state) open', async () => {
+      routeWithPreflight({
+        provider: { enforceSSO: false },
+        preflight: preflightPayload([{ id: 'u-1', email: 'a@example.com', name: 'A' }])
+      });
+      render(<SsoProvidersPage />);
+
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const toggle = await waitFor(() => enforceToggle());
+      fireEvent.click(toggle);
+      fireEvent.click(screen.getByTestId('provider-save'));
+
+      await screen.findByTestId('enforce-lockout-modal');
+      fireEvent.click(screen.getByTestId('enforce-lockout-cancel'));
+
+      // Overlay gone; NO PATCH fired; the edit form is still mounted and the
+      // toggle still reflects the admin's in-progress change.
+      expect(screen.queryByTestId('enforce-lockout-modal')).toBeNull();
+      expect(fetchWithAuth.mock.calls.find(
+        (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+      )).toBeUndefined();
+      expect(enforceToggle().checked).toBe(true);
+    });
+
+    it('opens the confirm from the SERVER 409 payload when the preflight read fails (backstop path)', async () => {
+      const provider = { ...PARTNER_PROVIDER, enforceSSO: false };
+      const serverPreflight = preflightPayload([{ id: 'u-9', email: 'server@example.com', name: 'S' }]);
+      let patchCount = 0;
+      fetchWithAuth.mockImplementation((url: string, reqOpts?: { method?: string }) => {
+        if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [provider] }));
+        if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+        // Preflight endpoint is down.
+        if (url === '/sso/providers/enforcement-preflight') return Promise.resolve(jsonRes({ error: 'boom' }, false, 500));
+        if (url === '/sso/providers/pp-1' && (!reqOpts || !reqOpts.method)) {
+          return Promise.resolve(jsonRes({
+            data: {
+              name: 'Team Login', type: 'oidc', preset: '', issuer: 'https://idp.example.com',
+              clientId: 'client-1', scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: true, defaultRoleId: '', allowedDomains: '',
+              enforceSSO: false, hasClientSecret: true
+            }
+          }));
+        }
+        if (url === '/sso/providers/pp-1' && reqOpts?.method === 'PATCH') {
+          patchCount += 1;
+          if (patchCount === 1) {
+            // Server backstop refuses the unacknowledged lockout.
+            return Promise.resolve(jsonRes({
+              error: 'would lock out 1 user(s)',
+              code: 'sso_enforcement_lockout_confirmation_required',
+              preflight: serverPreflight.data
+            }, false, 409));
+          }
+          return Promise.resolve(jsonRes({ data: provider }));
+        }
+        return Promise.resolve(jsonRes({ data: [] }));
+      });
+
+      render(<SsoProvidersPage />);
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const toggle = await waitFor(() => enforceToggle());
+      fireEvent.click(toggle);
+      fireEvent.click(screen.getByTestId('provider-save'));
+
+      // The 409's own payload feeds the confirm dialog.
+      const modal = await screen.findByTestId('enforce-lockout-modal');
+      expect(modal.textContent).toContain('server@example.com');
+
+      fireEvent.click(screen.getByTestId('enforce-lockout-ack'));
+      fireEvent.click(screen.getByTestId('enforce-lockout-confirm'));
+
+      await waitFor(() => {
+        expect(patchCount).toBe(2);
+        const secondPatch = fetchWithAuth.mock.calls.filter(
+          (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+        )[1];
+        const body = JSON.parse((secondPatch![1] as { body: string }).body);
+        expect(body.acknowledgeLockout).toBe(true);
+      });
+    });
+
+    it('opens the confirm from the status route 409 when activating with the preflight down', async () => {
+      const provider = { ...PARTNER_PROVIDER, enforceSSO: true, status: 'inactive' as const };
+      const serverPreflight = preflightPayload([{ id: 'u-9', email: 'server@example.com', name: 'S' }]);
+      let statusCount = 0;
+      fetchWithAuth.mockImplementation((url: string, reqOpts?: { method?: string }) => {
+        if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [provider] }));
+        if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/providers/enforcement-preflight') return Promise.resolve(jsonRes({ error: 'boom' }, false, 500));
+        if (url === '/sso/providers/pp-1/status' && reqOpts?.method === 'POST') {
+          statusCount += 1;
+          if (statusCount === 1) {
+            return Promise.resolve(jsonRes({
+              error: 'would lock out 1 user(s)',
+              code: 'sso_enforcement_lockout_confirmation_required',
+              preflight: serverPreflight.data
+            }, false, 409));
+          }
+          return Promise.resolve(jsonRes({ data: provider }));
+        }
+        return Promise.resolve(jsonRes({ data: [] }));
+      });
+
+      render(<SsoProvidersPage />);
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Activate' }));
+
+      const modal = await screen.findByTestId('enforce-lockout-modal');
+      expect(modal.textContent).toContain('server@example.com');
+
+      fireEvent.click(screen.getByTestId('enforce-lockout-ack'));
+      fireEvent.click(screen.getByTestId('enforce-lockout-confirm'));
+
+      await waitFor(() => {
+        expect(statusCount).toBe(2);
+        const second = fetchWithAuth.mock.calls.filter(
+          (c) => c[0] === '/sso/providers/pp-1/status' && (c[1] as { method?: string })?.method === 'POST'
+        )[1];
+        const body = JSON.parse((second![1] as { body: string }).body);
+        expect(body).toMatchObject({ status: 'active', acknowledgeLockout: true });
+      });
+    });
+
+    it('does not preflight or warn on CREATE (providers are born inactive — activation is the guarded moment)', async () => {
+      routes({ org: jsonRes({ data: [] }), partner: jsonRes({ data: [] }) });
+      fetchWithAuth.mockImplementation((url: string, reqOpts?: { method?: string }) => {
+        if (url === '/sso/providers' && reqOpts?.method === 'POST') return Promise.resolve(jsonRes({ data: { id: 'new-1' } }));
+        if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+        return Promise.resolve(jsonRes({ data: [] }));
+      });
+      render(<SsoProvidersPage />);
+
+      await waitFor(() => expect(screen.getByText('Add provider')).toBeTruthy());
+      fireEvent.click(screen.getByText('Add provider'));
+
+      const nameInput = await screen.findByLabelText(/provider name/i);
+      fireEvent.change(nameInput, { target: { value: 'New IdP' } });
+      fireEvent.click(enforceToggle());
+      fireEvent.click(screen.getByTestId('provider-save'));
+
+      await waitFor(() => {
+        const createCall = fetchWithAuth.mock.calls.find(
+          (c) => c[0] === '/sso/providers' && (c[1] as { method?: string })?.method === 'POST'
+        );
+        expect(createCall).toBeTruthy();
+      });
+      expect(fetchWithAuth.mock.calls.find((c) => c[0] === PREFLIGHT_URL)).toBeUndefined();
       expect(screen.queryByTestId('enforce-lockout-modal')).toBeNull();
     });
 

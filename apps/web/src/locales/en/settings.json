@@ -2210,7 +2210,8 @@
     "enforceLockoutTruncated": "…and more not shown.",
     "enforceLockoutSelfWarning": "Your own account is not connected — you would lock yourself out.",
     "enforceLockoutAcknowledge": "I understand these users will be unable to sign in until they connect SSO",
-    "enforceLockoutConfirm": "Enable enforcement"
+    "enforceLockoutConfirm": "Enable enforcement",
+    "enforceLockoutConfirmationNeeded": "Confirm the lockout warning to enable SSO enforcement."
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",

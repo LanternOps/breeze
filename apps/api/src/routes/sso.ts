@@ -1168,11 +1168,21 @@ ssoRoutes.patch(
   // SSO link, require the caller to explicitly confirm through with
   // acknowledgeLockout: true. The 409 carries the preflight payload so raw API
   // callers see exactly who is affected — the same data the web UI shows.
+  // The confirmed-through lockout must be as auditable as the rejected one, so
+  // the preflight runs on the acknowledged path too and its outcome is stamped
+  // into the success audit below — an acknowledged first-request lockout must
+  // not be indistinguishable from an ordinary enforceSSO flip.
+  let lockoutAudit: { acknowledgedLockout: true; lockedOutCount: number; selfLockedOut: boolean } | null = null;
   if (body.enforceSSO === true && !existing.enforceSSO && existing.status === 'active') {
     const lockoutScope = providerScopeContext(existing);
-    if (lockoutScope && !acknowledgeLockout) {
-      const preflight = await computeEnforcementLockoutPreflight(lockoutScope, existing.id, auth.user.id);
-      if (preflight.unlinkedCount > 0) {
+    if (!lockoutScope) {
+      // Impossible under sso_providers_one_owner_chk — but a malformed row must
+      // fail the safety check loudly (like the preflight route), never waive it.
+      return c.json({ error: 'Provider has no owning organization or partner' }, 400);
+    }
+    const preflight = await computeEnforcementLockoutPreflight(lockoutScope, existing.id, auth.user.id);
+    if (preflight.unlinkedCount > 0) {
+      if (!acknowledgeLockout) {
         writeRouteAudit(c, {
           orgId: existing.orgId,
           action: 'sso.provider.update.rejected',
@@ -1191,6 +1201,11 @@ ssoRoutes.patch(
           preflight
         }, 409);
       }
+      lockoutAudit = {
+        acknowledgedLockout: true,
+        lockedOutCount: preflight.unlinkedCount,
+        selfLockedOut: preflight.selfLockedOut
+      };
     }
   }
 
@@ -1323,7 +1338,7 @@ ssoRoutes.patch(
     resourceType: 'sso_provider',
     resourceId: updated.id,
     resourceName: updated.name,
-    details: { changedFields: Object.keys(body), partnerId: updated.partnerId }
+    details: { changedFields: Object.keys(body), partnerId: updated.partnerId, ...(lockoutAudit ?? {}) }
   });
 
     const { clientSecret, ...safeProvider } = updated;
@@ -1448,12 +1463,20 @@ ssoRoutes.post(
   // #4068: activating a provider that already has enforceSSO set is the second
   // transition that makes enforcement live (the first is PATCHing enforceSSO
   // onto an active provider). Same confirm-through contract: a lockout-causing
-  // activation without acknowledgeLockout gets a 409 carrying the preflight.
-  if (status === 'active' && existing.status !== 'active' && existing.enforceSSO && !acknowledgeLockout) {
+  // activation without acknowledgeLockout gets a 409 carrying the preflight,
+  // and an ACKNOWLEDGED lockout is stamped into the success audit so it is
+  // never indistinguishable from an ordinary activation.
+  let lockoutAudit: { acknowledgedLockout: true; lockedOutCount: number; selfLockedOut: boolean } | null = null;
+  if (status === 'active' && existing.status !== 'active' && existing.enforceSSO) {
     const lockoutScope = providerScopeContext(existing);
-    if (lockoutScope) {
-      const preflight = await computeEnforcementLockoutPreflight(lockoutScope, existing.id, auth.user.id);
-      if (preflight.unlinkedCount > 0) {
+    if (!lockoutScope) {
+      // Impossible under sso_providers_one_owner_chk — but a malformed row must
+      // fail the safety check loudly, never waive it.
+      return c.json({ error: 'Provider has no owning organization or partner' }, 400);
+    }
+    const preflight = await computeEnforcementLockoutPreflight(lockoutScope, existing.id, auth.user.id);
+    if (preflight.unlinkedCount > 0) {
+      if (!acknowledgeLockout) {
         writeRouteAudit(c, {
           orgId: existing.orgId,
           action: 'sso.provider.status.update.rejected',
@@ -1472,6 +1495,11 @@ ssoRoutes.post(
           preflight
         }, 409);
       }
+      lockoutAudit = {
+        acknowledgedLockout: true,
+        lockedOutCount: preflight.unlinkedCount,
+        selfLockedOut: preflight.selfLockedOut
+      };
     }
   }
 
@@ -1498,7 +1526,7 @@ ssoRoutes.post(
     resourceType: 'sso_provider',
     resourceId: updated.id,
     resourceName: updated.name,
-    details: { status, partnerId: updated.partnerId }
+    details: { status, partnerId: updated.partnerId, ...(lockoutAudit ?? {}) }
   });
 
     return c.json({ data: updated });
@@ -1643,7 +1671,11 @@ export async function computeEnforcementLockoutPreflight(
     })
   );
 
-  const unlinked = population
+  // Neither membership table carries a unique (tenant, user) constraint, so a
+  // duplicated membership row must not double-count a user.
+  const uniquePopulation = Array.from(new Map(population.map((m) => [m.id, m])).values());
+
+  const unlinked = uniquePopulation
     .filter((m) => !m.linked)
     .map((m) => ({
       id: m.id,
@@ -1655,7 +1687,7 @@ export async function computeEnforcementLockoutPreflight(
     .sort((a, b) => Number(b.isSelf) - Number(a.isSelf) || a.email.localeCompare(b.email));
 
   return {
-    totalActiveUsers: population.length,
+    totalActiveUsers: uniquePopulation.length,
     unlinkedCount: unlinked.length,
     selfLockedOut: unlinked.some((u) => u.isSelf),
     truncated: unlinked.length > ENFORCEMENT_PREFLIGHT_LIST_CAP,
@@ -1713,6 +1745,18 @@ ssoRoutes.post(
       const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
       if ('error' in orgResult) {
         return c.json({ error: orgResult.error }, orgResult.status);
+      }
+      // Every other branch proves authority against an RLS-visible row before
+      // the system-context PII read below. This branch's checks are app-layer
+      // only (canAccessOrg), so add the DB-enforced equivalent: the org must
+      // be visible under the caller's own RLS context.
+      const [visibleOrg] = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.id, orgResult.orgId))
+        .limit(1);
+      if (!visibleOrg) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
       }
       axis = { scope: 'organization', orgId: orgResult.orgId };
     }

@@ -2210,7 +2210,8 @@
     "enforceLockoutTruncated": "…et d'autres non affichés.",
     "enforceLockoutSelfWarning": "Votre propre compte n'est pas connecté — vous vous bloqueriez vous-même.",
     "enforceLockoutAcknowledge": "Je comprends que ces utilisateurs ne pourront pas se connecter tant qu'ils n'auront pas connecté l'authentification unique",
-    "enforceLockoutConfirm": "Activer l'application obligatoire"
+    "enforceLockoutConfirm": "Activer l'application obligatoire",
+    "enforceLockoutConfirmationNeeded": "Confirmez l'avertissement de blocage pour activer l'application obligatoire de l'authentification unique."
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
