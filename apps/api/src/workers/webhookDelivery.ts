@@ -461,6 +461,15 @@ export async function initializeWebhookDelivery(
         const deliveryId = createDeliveryRecord
           ? await runWithSystemDbAccess(() => createDeliveryRecord(webhook, event))
           : null;
+        // A NULL id from a CONFIGURED creator means the (webhook, event) pair is
+        // already recorded — this is a redelivery, and the original POST either
+        // went out or is still pending. Queueing again would POST to the
+        // customer's endpoint twice for one event.
+        //
+        // Only the configured branch may skip: with no creator there is no
+        // dedupe surface at all, so a skip there would drop the delivery
+        // outright rather than de-duplicate it.
+        if (createDeliveryRecord && deliveryId === null) continue;
         await worker.queueDelivery(webhook, event, deliveryId ?? undefined);
       }
     } catch (err) {
