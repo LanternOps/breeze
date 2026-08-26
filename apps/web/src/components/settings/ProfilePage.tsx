@@ -528,8 +528,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       message: key ? t(/* i18n-dynamic */ key) : t('profilePage.ssoReauthFailed'),
     });
     // Empty deps ON PURPOSE — see above. `t` is read at first render, which is
-    // the correct language for a toast fired at mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // the correct language for a toast fired at mount. No eslint-disable here:
+    // this repo's web eslint config carries no react-hooks plugin, so a
+    // directive for `exhaustive-deps` is itself an error ("Definition for rule
+    // ... was not found") and fails the Lint job.
   }, []);
 
   const handleSsoReauthStart = async () => {
