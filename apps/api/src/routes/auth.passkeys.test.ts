@@ -535,6 +535,97 @@ describe('passkey MFA auth routes', () => {
     });
   });
 
+  // #4018 review finding 2: nothing at the route level proved the SSO
+  // re-auth road actually works end to end (only sso.reauth.test.ts and
+  // schemas.test.ts referenced ssoReauthGrantId, and neither calls these
+  // routes). A passwordless account (no `currentPassword` field sent, no
+  // password on the account) with zero existing factors and a fresh
+  // `enroll_first_factor` grant from GET /sso/callback (reauth mode) must be
+  // able to register a passkey as its first MFA factor; an invalid/expired
+  // grant must be rejected with the same opaque 401 the password road uses.
+  describe('#4018 SSO re-auth road on passkey registration', () => {
+    it('register/options SUCCEEDS for a passwordless, zero-factor account with a valid enrollment grant (validates, does not consume)', async () => {
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's own userIsMfaProtected
+      dbState.selectQueue.push([]); // listActivePasskeys
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(true);
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(validateStepUpGrant).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111',
+        expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
+      );
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalled();
+    });
+
+    it('register/options returns the opaque 401 for a passwordless account with an invalid/expired grant', async () => {
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+    });
+
+    it('register/verify SUCCEEDS for a passwordless, zero-factor account with a valid enrollment grant (consumes it)', async () => {
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]); // tx hasExistingFactor check — no factor yet
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
+
+      const res = await app.request('/auth/passkeys/register/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({
+          credential: { id: 'credential-1' },
+          ssoReauthGrantId: '11111111-1111-4111-8111-111111111111',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111',
+        expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
+      );
+    });
+
+    it('register/verify returns the opaque 401 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(false);
+
+      const res = await app.request('/auth/passkeys/register/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({
+          credential: { id: 'credential-1' },
+          ssoReauthGrantId: '11111111-1111-4111-8111-111111111111',
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+    });
+  });
+
   it('rejects invalid or expired passkey registration challenges', async () => {
     passkeyMocks.verifyPasskeyRegistration.mockRejectedValueOnce(
       new PasskeyChallengeError('Passkey challenge is missing or expired'),

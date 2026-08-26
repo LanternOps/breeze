@@ -2828,6 +2828,184 @@ describe('auth routes', () => {
       expect(res.status).toBe(401);
     });
 
+    // #4018 review finding 2: no route-level test proved the SSO re-auth road
+    // actually works end to end for /mfa/setup or /mfa/enable — only
+    // sso.reauth.test.ts and schemas.test.ts referenced ssoReauthGrantId, and
+    // neither calls these routes. A passwordless account (no `currentPassword`
+    // sent, `passwordHash: null` on the account) with zero existing factors
+    // and a fresh `enroll_first_factor` grant from GET /sso/callback (reauth
+    // mode) must be able to complete the whole setup -> enable flow; an
+    // invalid/expired grant must be rejected with the same opaque 401 the
+    // password road uses.
+    describe('#4018 SSO re-auth road on /mfa/setup and /mfa/enable', () => {
+      it('POST /auth/mfa/setup SUCCEEDS for a passwordless, zero-factor account with a valid enrollment grant (validates, does not consume)', async () => {
+        const mockRedis = { get: vi.fn(), setex: vi.fn(), del: vi.fn() };
+        vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+        vi.mocked(validateStepUpGrant).mockResolvedValueOnce(true);
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ passwordHash: null }]) // resolveEnrollmentStepUp probe
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ mfaEnabled: false, passkeyCount: 0 }]) // resolveEnrollmentStepUp's userIsMfaProtected
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ mfaEnabled: false }]) // handler's own "already enabled?" check
+              })
+            })
+          } as any);
+
+        const res = await app.request('/auth/mfa/setup', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer valid-token',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' })
+        });
+
+        expect(res.status).toBe(200);
+        expect(verifyPassword).not.toHaveBeenCalled();
+        expect(validateStepUpGrant).toHaveBeenCalledWith(
+          '11111111-1111-4111-8111-111111111111',
+          expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' })
+        );
+        expect(consumeStepUpGrant).not.toHaveBeenCalled();
+        expect(mockRedis.setex).toHaveBeenCalled();
+      });
+
+      it('POST /auth/mfa/setup returns the opaque 401 for a passwordless account with an invalid/expired grant', async () => {
+        vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ passwordHash: null }]) // resolveEnrollmentStepUp probe
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ mfaEnabled: false, passkeyCount: 0 }]) // resolveEnrollmentStepUp's userIsMfaProtected
+              })
+            })
+          } as any);
+
+        const res = await app.request('/auth/mfa/setup', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer valid-token',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' })
+        });
+
+        expect(res.status).toBe(401);
+        expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      });
+
+      it('POST /auth/mfa/enable SUCCEEDS for a passwordless, zero-factor account with a valid enrollment grant (consumes it at the terminal write)', async () => {
+        const setupRecoveryCodes = ['CODE-0001', 'CODE-0002'];
+        const mockRedis = {
+          get: vi.fn().mockResolvedValue(JSON.stringify({
+            secret: 'MFASECRET123',
+            recoveryCodes: setupRecoveryCodes
+          })),
+          setex: vi.fn(),
+          del: vi.fn().mockResolvedValue(1)
+        };
+        vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+        vi.mocked(consumeMFAToken).mockResolvedValue(true);
+        stubTx();
+        useGrantStore(['11111111-1111-4111-8111-111111111111']);
+        // Zero-factor account: every userIsMfaProtected read (both from
+        // enforceExistingFactorStepUp and from resolveEnrollmentStepUp) sees
+        // no factor yet, and every passwordHash probe sees a passwordless
+        // account, so the same two row shapes repeat across all six reads on
+        // this path (gate: probe + protected; enforceExistingFactorStepUp
+        // non-consuming + consuming: protected x2; terminal gate: probe +
+        // protected).
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ passwordHash: null }])
+              })
+            })
+          } as any)
+          .mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ mfaEnabled: false, passkeyCount: 0 }])
+              })
+            })
+          } as any);
+
+        const res = await app.request('/auth/mfa/enable', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: '123456', ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' })
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.success).toBe(true);
+        expect(consumeStepUpGrant).toHaveBeenCalledWith(
+          '11111111-1111-4111-8111-111111111111',
+          expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' })
+        );
+      });
+
+      it('POST /auth/mfa/enable returns the opaque 401 for a passwordless account with an invalid/expired grant (no factor written)', async () => {
+        const mockRedis = {
+          get: vi.fn().mockResolvedValue(JSON.stringify({
+            secret: 'MFASECRET123',
+            recoveryCodes: ['CODE-0001', 'CODE-0002']
+          })),
+          setex: vi.fn(),
+          del: vi.fn().mockResolvedValue(1)
+        };
+        vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+        vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ passwordHash: null }]) // resolveEnrollmentStepUp probe
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ mfaEnabled: false, passkeyCount: 0 }]) // resolveEnrollmentStepUp's userIsMfaProtected
+              })
+            })
+          } as any);
+
+        const res = await app.request('/auth/mfa/enable', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: '123456', ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' })
+        });
+
+        expect(res.status).toBe(401);
+        expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+        expect(consumeMFAToken).not.toHaveBeenCalled();
+      });
+    });
+
     it('POST /auth/mfa/disable should reject missing currentPassword (G1)', async () => {
       const res = await app.request('/auth/mfa/disable', {
         method: 'POST',
