@@ -1386,7 +1386,7 @@ describe('sso routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'identity-1' }])
+            limit: vi.fn().mockResolvedValue([{ id: 'identity-1', userId: USER_UUID }])
           })
         })
       } as any);
@@ -1517,7 +1517,7 @@ describe('sso routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'identity-2' }])
+            limit: vi.fn().mockResolvedValue([{ id: 'identity-2', userId: USER_UUID }])
           })
         })
       } as any);
@@ -1649,7 +1649,7 @@ describe('sso routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'identity-x' }])
+              limit: vi.fn().mockResolvedValue([{ id: 'identity-x', userId: USER_UUID }])
             })
           })
         } as any);
@@ -1819,7 +1819,7 @@ describe('sso routes', () => {
         .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link by (provider, sub)
         .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'someone-else@corp.com', name: 'Linked' }])) // user by id — email DIFFERS from asserted
         .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
-        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+        .mockReturnValueOnce(sel([{ id: 'identity-1', userId: USER_UUID }]));
 
       const res = await doCallback();
       expect(res.status).toBe(302);
@@ -1912,7 +1912,7 @@ describe('sso routes', () => {
           mfaEnabled: opts.userMfaEnabled === true,
         }]))
         .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
-        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+        .mockReturnValueOnce(sel([{ id: 'identity-1', userId: USER_UUID }]));
     };
 
     it('mints mfa:true when the provider trusts IdP MFA and amr attests it', async () => {
@@ -1987,7 +1987,7 @@ describe('sso routes', () => {
         .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link found → user resolved
         .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Linked' }]))
         .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
-        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+        .mockReturnValueOnce(sel([{ id: 'identity-1', userId: USER_UUID }]));
 
       const res = await doCallback();
 
@@ -2138,7 +2138,7 @@ describe('sso routes', () => {
         .mockReturnValueOnce(sel([{ userId: USER_UUID }]))        // (provider, sub) link → user resolved
         .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@corp.example', name: 'Linked' }]))
         .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
-        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+        .mockReturnValueOnce(sel([{ id: 'identity-1', userId: USER_UUID }]));
 
       const res = await doCallback();
       expect(res.status).toBe(302);
@@ -2938,7 +2938,7 @@ describe('sso routes', () => {
         .mockReturnValueOnce(sel([{ userId: USER_UUID }]))           // (provider, sub) identity link
         .mockReturnValueOnce(sel([STAFF]))                           // linked user by id
         .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }])) // partner_users membership
-        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));           // existingIdentity → update
+        .mockReturnValueOnce(sel([{ id: 'identity-1', userId: USER_UUID }]));           // existingIdentity → update
 
       const res = await doCallback();
       expect(res.status).toBe(302);
@@ -3120,7 +3120,7 @@ describe('sso routes', () => {
         .mockReturnValueOnce(sel([{ userId: USER_UUID }]))
         .mockReturnValueOnce(sel([{ ...STAFF, mfaEnabled: opts.userMfaEnabled === true }]))
         .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
-        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+        .mockReturnValueOnce(sel([{ id: 'identity-1', userId: USER_UUID }]));
     };
 
     it('sets mfa true only with trustsIdpMfa AND amr mfa', async () => {
