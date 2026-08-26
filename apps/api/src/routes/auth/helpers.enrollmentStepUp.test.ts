@@ -16,6 +16,7 @@ const {
   getUserEpochs,
   validateStepUpGrant,
   consumeStepUpGrant,
+  withSystemDbAccessContext,
 } = vi.hoisted(() => {
   const selectLimit = vi.fn();
   const db = {
@@ -37,12 +38,22 @@ const {
     getUserEpochs: vi.fn(),
     validateStepUpGrant: vi.fn(),
     consumeStepUpGrant: vi.fn(),
+    // #4018 review finding 3: this MUST be a real, observable spy — not
+    // `undefined`. `runWithSystemDbAccess` in helpers.ts falls back to
+    // calling `fn()` directly whenever `withSystemDbAccessContext` is not a
+    // function, so `undefined` here made the wrapper's presence or absence
+    // invisible to every test in this file: removing it from the
+    // implementation would not fail a single assertion. A `vi.fn` that
+    // passes through to `fn()` preserves the exact same runtime behaviour
+    // (still a no-op passthrough) while making "was the read wrapped"
+    // observable via `toHaveBeenCalled()`.
+    withSystemDbAccessContext: vi.fn(),
   };
 });
 
 vi.mock('../../db', () => ({
   db,
-  withSystemDbAccessContext: undefined,
+  withSystemDbAccessContext,
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -151,6 +162,10 @@ describe('resolveEnrollmentStepUp', () => {
     getRedis.mockReturnValue({} as any);
     rateLimiter.mockResolvedValue({ allowed: true, resetAt: new Date(Date.now() + 60_000) });
     getUserEpochs.mockResolvedValue({ authEpoch: 3, mfaEpoch: 1 });
+    // Passthrough, matching production's real withSystemDbAccessContext: runs
+    // the callback and returns its result. Runtime behaviour is unchanged from
+    // the old `undefined` stub — only the call is now observable.
+    withSystemDbAccessContext.mockImplementation((fn: () => Promise<unknown>) => fn());
   });
 
   describe('password road (unchanged, and always evaluated first)', () => {
@@ -259,6 +274,26 @@ describe('resolveEnrollmentStepUp', () => {
 
       expect(rateLimiter).not.toHaveBeenCalled();
       expect(verifyPassword).not.toHaveBeenCalled();
+    });
+
+    // #4018 review finding 3: production bug this wrapper fixes — GET
+    // /auth/mfa/verify Case 2 runs with NO ambient DB access context (its own
+    // `authMiddleware(c, async () => {})` tears the context down when the
+    // empty `next` returns), and a contextless read under forced RLS as
+    // `breeze_app` matches ZERO rows rather than erroring. An unwrapped probe
+    // would therefore read `!user` and opaque-401 EVERY caller of that path,
+    // password accounts included — not just the passwordless SSO road this
+    // describe block is about. Both system-context reads on this road (the
+    // passwordHash road-decision probe, then userIsMfaProtected's factor
+    // check) must go through the wrapper.
+    it('runs both SSO-road reads under a system DB access context (I3: no ambient context on /mfa/verify Case 2)', async () => {
+      queuePasswordlessNoFactor();
+      consumeStepUpGrant.mockResolvedValue(true);
+
+      const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
+
+      expect(res).toBeNull();
+      expect(withSystemDbAccessContext).toHaveBeenCalledTimes(2);
     });
 
     it('401s a grant that fails to validate (wrong session, bumped epoch, replay)', async () => {
