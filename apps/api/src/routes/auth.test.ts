@@ -212,6 +212,13 @@ vi.mock('../services/tenantStatus', () => ({
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined)
 }));
 
+// #4067: the /mfa/verify link-ceremony continuation delegates to
+// finalizeSsoPendingLink; stub it so the branch is assertable without the
+// whole SSO completion graph.
+vi.mock('./auth/ssoLinkCompletion', () => ({
+  finalizeSsoPendingLink: vi.fn(),
+}));
+
 vi.mock('./auth/ssoPolicy', () => ({
   SsoPasswordAuthRequiredError: class SsoPasswordAuthRequiredError extends Error {},
   assertPasswordAuthAllowedBySso: vi.fn().mockResolvedValue(undefined)
@@ -281,6 +288,7 @@ import { db } from '../db';
 import { runPostCommitCleanup } from '../services/authLifecycle';
 import { createAuditLogAsync } from '../services/auditService';
 import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
+import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
@@ -1332,6 +1340,55 @@ describe('auth routes', () => {
         expect.anything(),
       );
       expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
+    });
+
+    // #4067: pending records carrying ssoLinkTokenHash are the MFA
+    // continuation of the link-on-first-SSO-login ceremony — the verified
+    // factor finalizes the SSO link + SSO-style mint instead of the
+    // password-login mint.
+    it('finalizes the SSO link ceremony instead of the password-login mint when the pending record carries ssoLinkTokenHash', async () => {
+      getMock.mockResolvedValue(pendingRecord({ ssoLinkTokenHash: 'link-hash-1' }));
+      vi.mocked(finalizeSsoPendingLink).mockResolvedValue({
+        ok: true,
+        accessToken: 'sso-access',
+        refreshToken: 'sso-refresh',
+        expiresInSeconds: 900,
+        mfa: true,
+        redirectPath: '/dashboard',
+      } as any);
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body).toMatchObject({
+        mfaRequired: false,
+        tokens: { accessToken: 'sso-access', expiresInSeconds: 900 },
+        redirectPath: '/dashboard',
+      });
+      expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
+        expect.anything(),
+        'link-hash-1',
+        { breezeMfaVerified: true, expectedUserId: 'user-1' },
+      );
+      // The factor was verified and the temp token consumed, but the
+      // password-login mint must NOT run.
+      expect(consumeMFAToken).toHaveBeenCalled();
+      expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).toContain('breeze_refresh_token=');
+    });
+
+    it('rejects with a generic 401 when the link-ceremony finalizer refuses', async () => {
+      getMock.mockResolvedValue(pendingRecord({ ssoLinkTokenHash: 'link-hash-1' }));
+      vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'link_expired' } as any);
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+
+      expect(res.status).toBe(401);
+      expect((await res.json() as Record<string, unknown>).error).toBe('Invalid or expired MFA session');
+      expect(createTokenPair).not.toHaveBeenCalled();
     });
   });
 

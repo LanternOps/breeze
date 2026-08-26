@@ -39,7 +39,7 @@ type ProviderRow = {
 type UserRow = {
   id: string;
   email: string;
-  name: string | null;
+  name: string;
   orgId: string | null;
   mfaEnabled: boolean | null;
 };
@@ -237,7 +237,8 @@ export async function completeSsoLogin(
   // the row instead of recording the new subject. Now: the exact (provider,
   // sub) row is updated when it is the user's own; a foreign owner is refused
   // (identity_in_use); no row means a fresh INSERT for this subject.
-  const identityOutcome = await withSystemDbAccessContext(async () => {
+  const identityOutcome = await withSystemDbAccessContext(
+    async (): Promise<{ error: 'identity_in_use' } | { ok: true }> => {
     const [existingIdentity] = await db
       .select({ id: userSsoIdentities.id, userId: userSsoIdentities.userId })
       .from(userSsoIdentities)

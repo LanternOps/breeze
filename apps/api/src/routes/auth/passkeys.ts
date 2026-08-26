@@ -4,6 +4,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import * as dbModule from '../../db';
 import { userPasskeys, users } from '../../db/schema';
+import { finalizeSsoPendingLink } from './ssoLinkCompletion';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import {
   bindRefreshJtiToFamily,
@@ -498,6 +499,36 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   // Single-use: consume the pending token. `redis` is guarded non-null above,
   // so this can't silently no-op the way `getRedis()?.del(...)` would.
   await redis.del(`mfa:pending:${tempToken}`);
+
+  // #4067: passkey continuation of a link-on-first-SSO-login ceremony —
+  // finalize the SSO link + SSO-style mint instead of the password-login
+  // mint below (see the same branch in mfa.ts /mfa/verify).
+  if (pending.ssoLinkTokenHash) {
+    const outcome = await finalizeSsoPendingLink(c, pending.ssoLinkTokenHash, {
+      breezeMfaVerified: true,
+      expectedUserId: user.id,
+    });
+    if (!outcome.ok) {
+      if (outcome.error === 'identity_in_use') {
+        return c.json({ error: 'identity_in_use' }, 409);
+      }
+      return c.json({ error: 'Invalid or expired MFA session' }, 401);
+    }
+    setRefreshTokenCookie(c, outcome.refreshToken);
+    c.header('Cache-Control', 'no-store');
+    return c.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        mfaEnabled: true
+      },
+      tokens: { accessToken: outcome.accessToken, expiresInSeconds: outcome.expiresInSeconds },
+      mfaRequired: false,
+      requiresSetup: userRequiresSetup(user),
+      redirectPath: outcome.redirectPath
+    });
+  }
 
   const context = await resolveCurrentUserTokenContext(user.id);
   const familyId = await mintRefreshTokenFamily(user.id);

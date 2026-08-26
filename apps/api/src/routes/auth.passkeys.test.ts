@@ -129,6 +129,11 @@ vi.mock('../services/tenantStatus', () => ({
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #4067: passkey continuation of the link-on-first-SSO-login ceremony.
+vi.mock('./auth/ssoLinkCompletion', () => ({
+  finalizeSsoPendingLink: vi.fn(),
+}));
+
 vi.mock('./auth/ssoPolicy', () => ({
   SsoPasswordAuthRequiredError: class SsoPasswordAuthRequiredError extends Error {},
   assertPasswordAuthAllowedBySso: vi.fn().mockResolvedValue(undefined),
@@ -319,6 +324,7 @@ import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
+import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 
 const user = {
   id: 'user-123',
@@ -1160,6 +1166,86 @@ describe('passkey MFA auth routes', () => {
     // Single-use: a rejected (invalidated) session must still be consumed so
     // it can't be retried.
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+  });
+
+  // #4067: pending records carrying ssoLinkTokenHash finalize the SSO link
+  // ceremony (SSO-style mint) instead of the password-login mint.
+  it('finalizes the SSO link ceremony on a verified passkey when the pending record carries ssoLinkTokenHash', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey', ssoLinkTokenHash: 'link-hash-1' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+    );
+    vi.mocked(finalizeSsoPendingLink).mockResolvedValue({
+      ok: true,
+      accessToken: 'sso-access',
+      refreshToken: 'sso-refresh',
+      expiresInSeconds: 900,
+      mfa: true,
+      redirectPath: '/dashboard',
+    } as any);
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaRequired: false,
+      tokens: { accessToken: 'sso-access', expiresInSeconds: 900 },
+      redirectPath: '/dashboard',
+    });
+    expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
+      expect.anything(),
+      'link-hash-1',
+      { breezeMfaVerified: true, expectedUserId: 'user-123' },
+    );
+    // The temp token was consumed; the password-login mint must NOT run.
+    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('rejects the passkey link continuation with a generic 401 when the finalizer refuses', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey', ssoLinkTokenHash: 'link-hash-1' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+    );
+    vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'link_expired' } as any);
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) });
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 
   // (e) /mfa/passkey/options guards.
