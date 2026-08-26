@@ -331,13 +331,16 @@ export default function SsoProvidersPage() {
     // #4068: enabling Enforce SSO on an EDIT (newly — keeping it on isn't a
     // transition) can lock out every unlinked user on the axis. Preflight and
     // demand explicit confirmation naming them before the save goes out.
-    // Deliberately NOT on create: providers are born inactive, so a create
-    // cannot lock anyone out — the warning fires at the activation toggle,
-    // where it's true. Warning on create would cry lockout (including a false
+    // Deliberately NOT on create, and NOT on an INACTIVE provider: providers
+    // are born inactive and enforcement only bites while status is 'active'
+    // (the server guard has the same status term), so neither transition can
+    // lock anyone out — the warning fires at the activation toggle, where
+    // it's true. Warning earlier would cry lockout (including a false
     // self-lockout) on 100% of first-time setups.
     const newlyEnforcing = values.enforceSSO
       && modalMode === 'edit'
-      && !selectedProviderDetails?.enforceSSO;
+      && !selectedProviderDetails?.enforceSSO
+      && (selectedProviderDetails?.status ?? selectedProvider?.status) === 'active';
     if (newlyEnforcing && selectedProvider) {
       setSubmitting(true);
       const preflight = await fetchEnforcementPreflight({ providerId: selectedProvider.id });

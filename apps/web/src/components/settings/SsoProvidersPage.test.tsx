@@ -300,6 +300,7 @@ describe('SsoProvidersPage partner-axis behavior', () => {
                 defaultRoleId: '',
                 allowedDomains: '',
                 enforceSSO: provider.enforceSSO,
+                status: provider.status,
                 hasClientSecret: true,
               },
             })
@@ -536,6 +537,31 @@ describe('SsoProvidersPage partner-axis behavior', () => {
           (c) => c[0] === '/sso/providers' && (c[1] as { method?: string })?.method === 'POST'
         );
         expect(createCall).toBeTruthy();
+      });
+      expect(fetchWithAuth.mock.calls.find((c) => c[0] === PREFLIGHT_URL)).toBeUndefined();
+      expect(screen.queryByTestId('enforce-lockout-modal')).toBeNull();
+    });
+
+    it('does not preflight or warn when enabling enforcement on an INACTIVE provider (activation is the guarded moment)', async () => {
+      routeWithPreflight({
+        provider: { enforceSSO: false, status: 'inactive' },
+        preflight: preflightPayload([{ id: 'u-1', email: 'a@example.com', name: 'A' }])
+      });
+      render(<SsoProvidersPage />);
+
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const toggle = await waitFor(() => enforceToggle());
+      fireEvent.click(toggle);
+      fireEvent.click(screen.getByTestId('provider-save'));
+
+      await waitFor(() => {
+        const patchCall = fetchWithAuth.mock.calls.find(
+          (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+        );
+        expect(patchCall).toBeTruthy();
+        const body = JSON.parse((patchCall![1] as { body: string }).body);
+        expect(body).not.toHaveProperty('acknowledgeLockout');
       });
       expect(fetchWithAuth.mock.calls.find((c) => c[0] === PREFLIGHT_URL)).toBeUndefined();
       expect(screen.queryByTestId('enforce-lockout-modal')).toBeNull();
