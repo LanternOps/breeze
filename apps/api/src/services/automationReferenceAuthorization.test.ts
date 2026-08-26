@@ -122,7 +122,6 @@ const baseVersion: VersionRow = {
   postInstallScript: null,
   detectionRules: null,
   isLatest: true,
-  lastTestError: null,
 };
 
 const baseChannel: ChannelRow = {
@@ -136,6 +135,7 @@ const baseChannel: ChannelRow = {
   enabled: true,
   lastTestedAt: null,
   lastTestStatus: null,
+  lastTestError: null,
   throttleMaxPerWindow: null,
   throttleWindowSeconds: 3600,
   createdAt: new Date('2026-08-24T00:00:00.000Z'),
