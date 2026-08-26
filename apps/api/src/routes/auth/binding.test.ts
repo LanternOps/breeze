@@ -23,9 +23,13 @@ vi.mock('../../services/authBrowserTransition', () => {
       super('binding unavailable');
     }
   }
+  class AuthIssuanceCapabilityError extends Error {
+    readonly status = 409;
+  }
   return {
     AuthBindingRotationRequiredError,
     AuthBindingUnavailableError,
+    AuthIssuanceCapabilityError,
     NATIVE_AUTH_BINDING_HEADER: 'x-breeze-native-auth-binding',
     resolveAuthBinding: transition.resolve,
     rotateExpiredBinding: transition.rotate,
