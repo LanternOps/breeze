@@ -267,7 +267,7 @@ function canonicalize(value: unknown): unknown {
 function revision(material: unknown): string {
   // Grant revisions are deterministic audit checksums over non-secret IDs,
   // epochs, statuses, and scopes; they are not password verifiers.
-  // lgtm[js/insufficient-password-hash]
+  // codeql[js/insufficient-password-hash]
   return `sha256:${createHash('sha256').update(JSON.stringify(canonicalize(material))).digest('hex')}`;
 }
 
