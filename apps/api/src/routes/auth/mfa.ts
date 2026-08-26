@@ -351,6 +351,11 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         if (outcome.error === 'identity_in_use') {
           return c.json({ error: 'identity_in_use' }, 409);
         }
+        if (outcome.error === 'completion_failed') {
+          // Proofs were fine; the account can't complete (membership/mint).
+          // NOT the expired view — a restart loops the user forever.
+          return c.json({ error: 'completion_failed' }, 403);
+        }
         // Distinct code: the FACTOR was correct — it's the link ceremony that
         // is dead (TTL, provider re-config, state drift). The connect page
         // maps this to its expired view; 'Invalid or expired MFA session'

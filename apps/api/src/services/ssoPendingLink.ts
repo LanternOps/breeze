@@ -13,15 +13,17 @@ import { getRedis } from './redis';
  *
  * Storage contract (mirrors services/pendingRegistration.ts):
  *  - key = sha256 of a fresh 256-bit token; the raw token travels ONLY in an
- *    HttpOnly cookie scoped to /api/v1/sso/link (browser binding — the ceremony
- *    can only be completed by the browser that finished the OIDC round-trip,
- *    so a forwarded URL is useless to a phisher). The raw token is never
- *    stored inside the record value and never logged.
+ *    HttpOnly cookie (see the pending-link cookie section in routes/sso.ts,
+ *    which owns the path/attributes). Browser binding: a forwarded URL is
+ *    useless to a phisher — only the browser that finished the OIDC
+ *    round-trip holds the cookie, and the MFA continuation inherits the
+ *    binding via the tempToken issued to that same browser. The raw token is
+ *    never stored inside the record value and never logged.
  *  - 5-minute TTL, matching the mfa:pending login window.
  *  - completion consumes via atomic GETDEL — exactly one winner under
  *    concurrency.
- *  - fails CLOSED: no Redis ⇒ createSsoPendingLink throws and the callback
- *    falls back to the legacy sso_link_required bounce.
+ *  - fails CLOSED: no Redis ⇒ createSsoPendingLink throws; the caller decides
+ *    the fallback (the callback bounces to the legacy error).
  *
  * The record carries everything needed to finish the login after the id_token
  * is gone (IdP tokens already encrypted with encryptSecret), plus the bindings
@@ -38,8 +40,6 @@ export interface SsoPendingLink {
   userId: string;
   /** The account email at match time; must still match at completion. */
   userEmail: string;
-  /** users.status snapshot; a suspend during the window invalidates the record. */
-  userStatus: string;
   /** Epoch snapshots (SR2-06 idiom): a password reset / factor change / global
    * logout during the window invalidates the record. */
   authEpoch: number;
@@ -68,10 +68,13 @@ export interface SsoPendingLink {
    * gone by completion time). Combined with a LIVE re-read of
    * provider.trustsIdpMfa at completion. */
   idpMfaAsserted: boolean;
-  /** email_verified provenance: 'true' | 'absent'. When 'absent', the callback
-   * only accepted the assertion because the email domain was DNS-verified at
-   * the time — completion must re-check that domain proof. */
-  emailVerifiedClaim: string;
+  /** email_verified provenance. When 'absent', the callback only accepted the
+   * assertion because the email domain was DNS-verified at the time —
+   * completion must re-check that domain proof. ('false' never reaches this
+   * record: the callback rejects it outright.) parseRecord normalizes any
+   * drifted value to 'absent' so unknown shapes land on the CONSERVATIVE
+   * side (re-prove the domain), never the trusting one. */
+  emailVerifiedClaim: 'true' | 'absent';
   /** sso_sessions.redirect_url relay target (normalized again at completion). */
   redirectUrl: string | null;
   createdAt: number;
@@ -132,19 +135,43 @@ export async function createSsoPendingLink(
 
 function parseRecord(raw: string | null): SsoPendingLink | null {
   if (!raw) return null;
+  let parsed: Record<string, unknown>;
   try {
-    return JSON.parse(raw) as SsoPendingLink;
+    parsed = JSON.parse(raw) as Record<string, unknown>;
   } catch (err) {
-    // A corrupt/truncated record (or shape drift during a rolling deploy)
-    // must fail closed — but never silently, or serialization bugs hide
-    // behind "your link expired" indefinitely.
+    // A corrupt/truncated record must fail closed — but never silently, or
+    // serialization bugs hide behind "your link expired" indefinitely.
     console.error('[sso-pending-link] unparseable pending record; treating as absent:', err);
     return null;
   }
+  // Strict shape validation (same philosophy as parsePendingMfa): a record
+  // whose security bindings are missing/mistyped — rolling-deploy shape
+  // drift, a renamed field — must NOT limp through the finalizer with
+  // undefined comparisons. Fail closed to 'link_expired'.
+  if (
+    typeof parsed.userId !== 'string' ||
+    typeof parsed.userEmail !== 'string' ||
+    typeof parsed.authEpoch !== 'number' ||
+    typeof parsed.mfaEpoch !== 'number' ||
+    typeof parsed.providerId !== 'string' ||
+    typeof parsed.providerConfigVersion !== 'number' ||
+    typeof parsed.externalSub !== 'string' ||
+    typeof parsed.email !== 'string'
+  ) {
+    console.error('[sso-pending-link] pending record failed shape validation; treating as absent');
+    return null;
+  }
+  return {
+    ...(parsed as unknown as SsoPendingLink),
+    // The ONE field whose drift would otherwise fail OPEN: anything but the
+    // exact literal 'true' means the domain proof must be re-run.
+    emailVerifiedClaim: parsed.emailVerifiedClaim === 'true' ? 'true' : 'absent',
+  };
 }
 
 /** Non-consuming read: the password step and the page's describe call must not
- * burn the record — only successful completion (or exhaustion) does. */
+ * burn the record — only finalize (which consumes first, win or lose) or a
+ * hard invalidation (attempt exhaustion, stale-state guards) does. */
 export async function peekSsoPendingLink(tokenHash: string): Promise<SsoPendingLink | null> {
   const redis = getRedis();
   if (!redis) {
@@ -170,11 +197,12 @@ export async function consumeSsoPendingLink(tokenHash: string): Promise<SsoPendi
 
 /**
  * Re-arm the record's TTL to the full window. Called when the password step
- * succeeds and hands off to the MFA continuation: the factor step gets its own
- * 5-minute window (matching the fresh mfa:pending record), instead of racing
- * whatever remained of the callback-time TTL — without this, a user who takes
- * a few minutes on the password step enters a CORRECT MFA code and is told
- * their session is invalid. Best-effort: a miss just leaves the original TTL.
+ * succeeds and hands off to the MFA continuation, so the factor step gets its
+ * own 5-minute window (matching the fresh mfa:pending record) instead of
+ * racing whatever remained of the callback-time TTL — without this, a user
+ * who takes a few minutes on the password step enters a CORRECT MFA code and
+ * is told their session is invalid. Best-effort: a miss leaves the original
+ * TTL. (Call sites reference this doc rather than restating it.)
  */
 export async function touchSsoPendingLink(tokenHash: string): Promise<void> {
   const redis = getRedis();

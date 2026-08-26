@@ -66,6 +66,13 @@ export default function ConnectSsoLoginPage() {
     void describeCeremony();
   }, []);
 
+  const identityInUseCopy = () => t('connectSso.identityInUse', {
+    defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
+  });
+  const completionFailedCopy = () => t('connectSso.completionFailed', {
+    defaultValue: 'Your password was correct, but the sign-in could not be completed. Contact your administrator.',
+  });
+
   const completeLogin = async (result: {
     user?: unknown;
     tokens?: unknown;
@@ -78,11 +85,9 @@ export default function ConnectSsoLoginPage() {
       await navigateTo(result.requiresSetup ? '/setup' : (result.redirectPath || '/'));
       return true;
     }
-    // Defensive: a 200 without user/tokens (API drift) must not strand the
-    // user on a silently re-enabled button.
-    setError(t('connectSso.completionFailed', {
-      defaultValue: 'Your password was correct, but the sign-in could not be completed. Contact your administrator.',
-    }));
+    // Defensive: a success without user/tokens (API drift) must not strand
+    // the user on a silently re-enabled button.
+    setError(completionFailedCopy());
     return false;
   };
 
@@ -94,38 +99,33 @@ export default function ConnectSsoLoginPage() {
 
     const result = await apiSsoLinkConfirm(password);
 
-    if (!result.success) {
-      if (result.expired) {
-        setExpired(true);
-      } else if (result.identityInUse) {
-        setError(t('connectSso.identityInUse', {
-          defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
-        }));
-      } else if (result.error && /^(no_org_access|no_partner_access|invalid_role_scope|epoch_unavailable)$/.test(result.error)) {
-        // Raw membership/mint gate codes are not user language.
-        setError(t('connectSso.completionFailed', {
-          defaultValue: 'Your password was correct, but the sign-in could not be completed. Contact your administrator.',
-        }));
-      } else {
-        setError(result.error);
-      }
-      setLoading(false);
-      return;
+    switch (result.state) {
+      case 'failed':
+        if (result.reason === 'expired') {
+          setExpired(true);
+        } else if (result.reason === 'identity_in_use') {
+          setError(identityInUseCopy());
+        } else if (result.reason === 'completion_failed') {
+          setError(completionFailedCopy());
+        } else {
+          setError(result.error);
+        }
+        setLoading(false);
+        return;
+      case 'mfa':
+        setMfaRequired(true);
+        setTempToken(result.tempToken);
+        setMfaMethod(result.mfaMethod);
+        setPasskeyAvailable(result.passkeyAvailable);
+        setPhoneLast4(result.phoneLast4 ?? undefined);
+        setSmsSent(false);
+        setLoading(false);
+        return;
+      case 'complete':
+        if (await completeLogin(result)) return;
+        setLoading(false);
+        return;
     }
-
-    if (result.mfaRequired) {
-      setMfaRequired(true);
-      setTempToken(result.tempToken);
-      setMfaMethod(result.mfaMethod || 'totp');
-      setPasskeyAvailable(result.passkeyAvailable === true);
-      setPhoneLast4(result.phoneLast4);
-      setSmsSent(false);
-      setLoading(false);
-      return;
-    }
-
-    if (await completeLogin(result)) return;
-    setLoading(false);
   };
 
   const handleMfaVerify = async (code: string) => {
@@ -140,9 +140,9 @@ export default function ConnectSsoLoginPage() {
         // code can never work; route to the expired view's restart CTA.
         setExpired(true);
       } else if (result.error === 'identity_in_use') {
-        setError(t('connectSso.identityInUse', {
-          defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
-        }));
+        setError(identityInUseCopy());
+      } else if (result.error === 'completion_failed') {
+        setError(completionFailedCopy());
       } else {
         setError(result.error);
       }
@@ -163,9 +163,9 @@ export default function ConnectSsoLoginPage() {
       if (result.error === 'sso_link_expired') {
         setExpired(true);
       } else if (result.error === 'identity_in_use') {
-        setError(t('connectSso.identityInUse', {
-          defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
-        }));
+        setError(identityInUseCopy());
+      } else if (result.error === 'completion_failed') {
+        setError(completionFailedCopy());
       } else {
         setError(result.error);
       }

@@ -1921,7 +1921,6 @@ describe('sso routes', () => {
       expect(record).toMatchObject({
         userId: USER_UUID,
         userEmail: 'test@example.com',
-        userStatus: 'active',
         authEpoch: 3,
         mfaEpoch: 2,
         providerId: PROVIDER_UUID,
@@ -1929,7 +1928,18 @@ describe('sso routes', () => {
         externalSub: 'external-user-1',
         email: 'test@example.com',
         redirectUrl: '/dashboard',
+        // Provenance fidelity (#4067 review): the finalizer's domain-proof
+        // re-check keys on this exact value. primeCallback's id_token carries
+        // no email (userinfo path, no email_verified) → 'absent'; and no amr
+        // → idpMfaAsserted false. A regression stamping 'true' here would
+        // silently neuter the completion-time domain gate.
+        emailVerifiedClaim: 'absent',
+        idpMfaAsserted: false,
       });
+      // IdP tokens are parked encryptSecret()-wrapped, never plaintext.
+      expect(typeof record.encryptedAccessToken).toBe('string');
+      expect(record.encryptedAccessToken).not.toBe('a');
+      expect(record.encryptedRefreshToken).not.toBe('r');
 
       // Browser binding: the raw token rides ONLY an HttpOnly cookie scoped to
       // the link endpoints — never the redirect URL.
@@ -1939,6 +1949,29 @@ describe('sso routes', () => {
       expect(linkCookie).toContain('HttpOnly');
       expect(linkCookie).toContain('Path=/api/v1/sso/link');
       expect(linkCookie).toContain('Max-Age=300');
+    });
+
+    it('parks TRUE email_verified provenance and amr-asserted MFA when the id_token attests them (#4067)', async () => {
+      primeCallback();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({
+        sub: 'external-user-1', nonce: 'nonce', email: 'test@example.com', email_verified: true, amr: ['pwd', 'mfa'],
+      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))
+        .mockReturnValueOnce(sel([{
+          id: USER_UUID, email: 'test@example.com', name: 'Pw', passwordHash: '$argon2id$hash',
+          status: 'active', authEpoch: 1, mfaEpoch: 1,
+        }]))
+        .mockReturnValueOnce(sel([]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/auth/connect-sso');
+      const record = JSON.parse(String(pendingLinkRedis.setex.mock.calls[0]![2]));
+      expect(record.emailVerifiedClaim).toBe('true');
+      expect(record.idpMfaAsserted).toBe(true);
     });
 
     it('starts the link ceremony for a PASSWORD account even when another provider is already linked (#4067)', async () => {
@@ -4856,6 +4889,7 @@ describe('sso routes', () => {
       phoneNumber: null,
       avatarUrl: null,
       isPlatformAdmin: false,
+      setupCompletedAt: new Date('2026-01-01T00:00:00Z'),
     };
 
     const PROVIDER_ROW = {
@@ -4934,6 +4968,9 @@ describe('sso routes', () => {
         const body = await res.json();
         expect(body.tokens).toEqual({ accessToken: 'access-token', expiresInSeconds: 900 });
         expect(body.mfaRequired).toBe(false);
+        // Same field the MFA continuation returns — omitting it made a
+        // requires-setup user bypass the /setup wizard on this path.
+        expect(body.requiresSetup).toBe(false);
         expect(body.redirectPath).toBe('/dashboard');
         expect(body.user).toMatchObject({ id: USER_UUID, email: 'pw@example.com' });
 
@@ -5051,6 +5088,21 @@ describe('sso routes', () => {
         expect(createTokenPair).not.toHaveBeenCalled();
       });
 
+      it('maps membership failures to the public completion_failed code (403), never raw codes', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(sel([USER_ROW]))
+          .mockReturnValueOnce(sel([USER_ROW]))
+          .mockReturnValueOnce(sel([PROVIDER_ROW]))
+          .mockReturnValueOnce(selJoin([])); // no org membership
+
+        const res = await confirm();
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toBe('completion_failed');
+        expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
       it('voids the ceremony when the provider config changed since the callback', async () => {
         wireRecord();
         vi.mocked(verifyPassword).mockResolvedValue(true);
@@ -5061,6 +5113,42 @@ describe('sso routes', () => {
 
         const res = await confirm();
         expect(res.status).toBe(401);
+        expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['empty password', { password: '' }],
+        ['missing password', {}],
+        ['oversized password', { password: 'x'.repeat(1025) }],
+      ])('rejects a malformed body with 400 before any password work: %s', async (_label, body) => {
+        wireRecord();
+        const res = await confirm(body as Record<string, unknown>);
+        expect(res.status).toBe(400);
+        // The 1024-char schema cap bounds argon2 work on an unauthenticated
+        // oracle — a malformed body must never reach verification.
+        expect(vi.mocked(verifyPassword)).not.toHaveBeenCalled();
+      });
+
+      it('burns the ceremony (dummy-verify for timing) when the record names a vanished or passwordless account', async () => {
+        wireRecord();
+        vi.mocked(db.select).mockReturnValueOnce(sel([])); // live user read → gone
+
+        const res = await confirm();
+        expect(res.status).toBe(401);
+        // Timing equalization: a real argon2 verify still ran (dummy hash).
+        expect(vi.mocked(verifyPassword)).toHaveBeenCalledTimes(1);
+        expect(pendingLinkRedis.del).toHaveBeenCalledWith(`sso:pendinglink:${TOKEN_HASH}`);
+        expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
+      it('burns the ceremony after a CORRECT password when the live account no longer matches the record binding', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select).mockReturnValueOnce(sel([{ ...USER_ROW, email: 'renamed@example.com' }]));
+
+        const res = await confirm();
+        expect(res.status).toBe(401);
+        expect(pendingLinkRedis.del).toHaveBeenCalledWith(`sso:pendinglink:${TOKEN_HASH}`);
         expect(createTokenPair).not.toHaveBeenCalled();
       });
 

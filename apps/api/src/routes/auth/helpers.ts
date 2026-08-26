@@ -1101,6 +1101,14 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
   ) {
     return null;
   }
+  // #4067: a PRESENT-but-malformed link pointer must reject the whole record,
+  // never be silently dropped — dropping it would downgrade an SSO-link
+  // continuation into a plain password-login mint, on the one path whose
+  // password check deliberately bypasses assertPasswordAuthAllowedBySso.
+  if ('ssoLinkTokenHash' in parsed
+      && (typeof parsed.ssoLinkTokenHash !== 'string' || parsed.ssoLinkTokenHash.length === 0)) {
+    return null;
+  }
   return {
     userId: parsed.userId,
     mfaMethod: method,

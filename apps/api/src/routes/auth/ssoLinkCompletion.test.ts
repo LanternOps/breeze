@@ -101,7 +101,6 @@ const ORG_ID = '00000000-0000-4000-8000-0000000000cc';
 const RECORD = {
   userId: USER_ID,
   userEmail: 'v@example.com',
-  userStatus: 'active',
   authEpoch: 1,
   mfaEpoch: 1,
   providerId: PROVIDER_ID,
@@ -271,6 +270,15 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'link_expired' });
     expect(lastRejectionReason()).toBe('domain_blocked');
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('collapses membership/mint failures to the public completion_failed code (never raw codes on the wire)', async () => {
+    wire({ membership: null });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome).toEqual({ ok: false, error: 'completion_failed' });
+    // The precise reason still lands in the audit trail.
+    expect(lastRejectionReason()).toBe('no_org_access');
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 

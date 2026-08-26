@@ -71,6 +71,7 @@ import {
   genericAuthError,
   auditUserLoginFailure,
   userHasUsablePasskey,
+  userRequiresSetup,
   type PendingMfaRecord,
 } from './auth/helpers';
 import { recordAccountFailureAndMaybeNotify } from './auth/login';
@@ -3300,7 +3301,6 @@ ssoRoutes.get('/callback', async (c) => {
             const { rawToken } = await createSsoPendingLink({
               userId: byEmail.id,
               userEmail: byEmail.email,
-              userStatus: byEmail.status,
               authEpoch: byEmail.authEpoch,
               mfaEpoch: byEmail.mfaEpoch,
               providerId: provider.id,
@@ -3768,10 +3768,8 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
       ssoLinkTokenHash: tokenHash,
     };
     await redis.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
-    // Re-arm the link record's TTL — and the cookie's Max-Age — to match the
-    // fresh MFA window; otherwise a user who spent a few minutes on the
-    // password step enters a CORRECT factor code only to find the ceremony
-    // expired underneath it.
+    // Re-arm the link record's TTL and the cookie's Max-Age to the fresh MFA
+    // window (rationale on touchSsoPendingLink's doc).
     await touchSsoPendingLink(tokenHash);
     c.header('Set-Cookie', buildSsoPendingLinkCookie(rawToken), { append: true });
 
@@ -3797,7 +3795,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
     if (outcome.error === 'link_expired') {
       return c.json({ error: 'sso_link_expired' }, 401);
     }
-    return c.json({ error: outcome.error }, 403);
+    return c.json({ error: 'completion_failed' }, 403);
   }
 
   setRefreshTokenCookie(c, outcome.refreshToken);
@@ -3813,6 +3811,9 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
     },
     tokens: { accessToken: outcome.accessToken, expiresInSeconds: outcome.expiresInSeconds },
     mfaRequired: false,
+    // Same field the MFA continuation returns — without it a requires-setup
+    // user completing on the password-only path skipped the /setup wizard.
+    requiresSetup: userRequiresSetup(user),
     redirectPath: outcome.redirectPath,
   });
 });

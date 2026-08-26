@@ -413,9 +413,20 @@ function emailDomainOf(email: string): string | null {
   return email.slice(at + 1).toLowerCase();
 }
 
+/**
+ * The finalizer's PUBLIC error vocabulary — deliberately narrower than
+ * SsoCompletionErrorCode. Clients only ever need to distinguish three
+ * outcomes: restart the ceremony (link_expired), a terminal ownership
+ * conflict (identity_in_use), or "your proofs were fine but this account
+ * cannot complete the sign-in" (completion_failed — membership/mint
+ * failures, precise reason in the audit trail). Keeping the raw membership
+ * codes out of the union keeps the three call sites' wire contracts
+ * identical by construction and off the unauthenticated wire.
+ */
 export type SsoLinkFinalizeErrorCode =
   | 'link_expired'
-  | SsoCompletionErrorCode;
+  | 'identity_in_use'
+  | 'completion_failed';
 
 export type SsoLinkFinalizeResult =
   | {
@@ -579,7 +590,10 @@ export async function finalizeSsoPendingLink(
         ...(completion.error === 'epoch_unavailable' ? { linkMayPersist: true } : {}),
       },
     });
-    return { ok: false, error: completion.error };
+    return {
+      ok: false,
+      error: completion.error === 'identity_in_use' ? 'identity_in_use' : 'completion_failed',
+    };
   }
 
   writeRouteAudit(c, {

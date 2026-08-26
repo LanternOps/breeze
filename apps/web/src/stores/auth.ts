@@ -1309,8 +1309,9 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
 
 // ── #4067: link-on-first-SSO-login ceremony ─────────────────────────────────
 // The SSO callback parked the verified IdP identity server-side and bound the
-// ceremony to this browser via an HttpOnly cookie (path-scoped to
-// /api/v1/sso/link), so both calls just need credentials: 'include'.
+// ceremony to this browser via an HttpOnly cookie scoped to the API's
+// /sso/link endpoints (the API owns the exact path), so both calls just need
+// credentials: 'include'.
 
 export async function apiSsoLinkPending(): Promise<
   | { success: true; email: string; providerName: string | null }
@@ -1331,20 +1332,12 @@ export async function apiSsoLinkPending(): Promise<
   }
 }
 
-export async function apiSsoLinkConfirm(password: string): Promise<{
-  success: boolean;
-  mfaRequired?: boolean;
-  tempToken?: string;
-  mfaMethod?: MfaMethod;
-  passkeyAvailable?: boolean;
-  phoneLast4?: string;
-  user?: User;
-  tokens?: Tokens;
-  redirectPath?: string;
-  expired?: boolean;
-  identityInUse?: boolean;
-  error?: string;
-}> {
+export type SsoLinkConfirmResult =
+  | { state: 'mfa'; tempToken: string; mfaMethod: MfaMethod; passkeyAvailable: boolean; phoneLast4: string | null }
+  | { state: 'complete'; user: User; tokens: Tokens; requiresSetup: boolean; redirectPath?: string }
+  | { state: 'failed'; reason: 'expired' | 'identity_in_use' | 'completion_failed' | 'other'; error?: string };
+
+export async function apiSsoLinkConfirm(password: string): Promise<SsoLinkConfirmResult> {
   try {
     const response = await fetch(buildApiUrl('/sso/link/confirm'), {
       method: 'POST',
@@ -1355,33 +1348,39 @@ export async function apiSsoLinkConfirm(password: string): Promise<{
     const data = await response.json();
 
     if (!response.ok) {
-      return {
-        success: false,
-        expired: data?.error === 'sso_link_expired',
-        identityInUse: response.status === 409,
-        error: extractApiError(data, 'Confirmation failed')
-      };
+      if (response.status === 409) return { state: 'failed', reason: 'identity_in_use' };
+      if (data?.error === 'sso_link_expired') return { state: 'failed', reason: 'expired' };
+      if (data?.error === 'completion_failed') return { state: 'failed', reason: 'completion_failed' };
+      return { state: 'failed', reason: 'other', error: extractApiError(data, 'Confirmation failed') };
     }
 
     if (data.mfaRequired) {
+      if (typeof data.tempToken !== 'string' || data.tempToken.length === 0) {
+        return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
+      }
       return {
-        success: true,
-        mfaRequired: true,
+        state: 'mfa',
         tempToken: data.tempToken,
-        mfaMethod: data.mfaMethod,
+        mfaMethod: (data.mfaMethod as MfaMethod) || 'totp',
         passkeyAvailable: data.passkeyAvailable === true,
-        phoneLast4: data.phoneLast4 ?? undefined
+        phoneLast4: typeof data.phoneLast4 === 'string' ? data.phoneLast4 : null
       };
     }
 
-    return {
-      success: true,
-      user: data.user,
-      tokens: data.tokens,
-      ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
-    };
+    if (data.user && data.tokens) {
+      return {
+        state: 'complete',
+        user: data.user,
+        tokens: data.tokens,
+        requiresSetup: !!data.requiresSetup,
+        ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
+      };
+    }
+
+    // 200 without a recognizable shape — API drift; surface, don't strand.
+    return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
   } catch {
-    return { success: false, error: 'Network error' };
+    return { state: 'failed', reason: 'other', error: 'Network error' };
   }
 }
 

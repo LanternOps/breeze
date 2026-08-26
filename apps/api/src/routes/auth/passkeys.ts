@@ -512,6 +512,9 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       if (outcome.error === 'identity_in_use') {
         return c.json({ error: 'identity_in_use' }, 409);
       }
+      if (outcome.error === 'completion_failed') {
+        return c.json({ error: 'completion_failed' }, 403);
+      }
       // Distinct code: the factor was correct — the link ceremony is dead.
       // The connect page maps this to its expired view (see mfa.ts sibling).
       return c.json({ error: 'sso_link_expired' }, 401);

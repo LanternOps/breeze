@@ -26,7 +26,6 @@ import {
 const RECORD: Omit<SsoPendingLink, 'createdAt'> = {
   userId: 'user-1',
   userEmail: 'v@example.com',
-  userStatus: 'active',
   authEpoch: 3,
   mfaEpoch: 2,
   providerId: 'provider-1',
@@ -104,6 +103,24 @@ describe('peekSsoPendingLink', () => {
     expect(await peekSsoPendingLink('bad')).toBeNull();
     vi.mocked(getRedis).mockReturnValue(null as any);
     expect(await peekSsoPendingLink('nored')).toBeNull();
+  });
+
+  it('fails closed on shape drift: a record missing a security binding parses as absent', async () => {
+    const { userId: _dropped, ...rest } = { ...RECORD, createdAt: 1 } as Record<string, unknown> & { userId?: string };
+    redisMock.get.mockResolvedValue(JSON.stringify(rest));
+    expect(await peekSsoPendingLink('drifted')).toBeNull();
+  });
+
+  it('normalizes any drifted emailVerifiedClaim to the CONSERVATIVE side (absent → domain re-proof)', async () => {
+    // The one field whose drift would otherwise fail OPEN: only the exact
+    // literal 'true' may skip the completion-time domain-ownership re-check.
+    for (const drifted of [true, 'TRUE', 'false', undefined, 1]) {
+      redisMock.get.mockResolvedValue(JSON.stringify({ ...RECORD, createdAt: 1, emailVerifiedClaim: drifted }));
+      const rec = await peekSsoPendingLink('h');
+      expect(rec?.emailVerifiedClaim).toBe('absent');
+    }
+    redisMock.get.mockResolvedValue(JSON.stringify({ ...RECORD, createdAt: 1, emailVerifiedClaim: 'true' }));
+    expect((await peekSsoPendingLink('h'))?.emailVerifiedClaim).toBe('true');
   });
 });
 

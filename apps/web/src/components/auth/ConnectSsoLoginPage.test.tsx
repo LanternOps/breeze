@@ -40,9 +40,10 @@ async function submitPassword(password = 'hunter2!') {
 describe('ConnectSsoLoginPage (#4067)', () => {
   it('describes the ceremony (account email) and completes login on password confirm', async () => {
     vi.mocked(apiSsoLinkConfirm).mockResolvedValue({
-      success: true,
+      state: 'complete',
       user: { id: 'u1', email: 'v@example.com', name: 'V' } as never,
-      tokens: { accessToken: 'a', refreshToken: 'r', expiresInSeconds: 900 } as never,
+      tokens: { accessToken: 'a', expiresInSeconds: 900 } as never,
+      requiresSetup: false,
       redirectPath: '/dashboard',
     });
 
@@ -65,7 +66,7 @@ describe('ConnectSsoLoginPage (#4067)', () => {
   });
 
   it('surfaces the generic error on a wrong password without navigating', async () => {
-    vi.mocked(apiSsoLinkConfirm).mockResolvedValue({ success: false, error: 'Invalid email or password' });
+    vi.mocked(apiSsoLinkConfirm).mockResolvedValue({ state: 'failed', reason: 'other', error: 'Invalid email or password' });
 
     render(<ConnectSsoLoginPage />);
     await submitPassword('wrong');
@@ -77,11 +78,11 @@ describe('ConnectSsoLoginPage (#4067)', () => {
 
   it('hands off to the MFA step when confirm returns mfaRequired, then completes via mfa verify', async () => {
     vi.mocked(apiSsoLinkConfirm).mockResolvedValue({
-      success: true,
-      mfaRequired: true,
+      state: 'mfa',
       tempToken: 'temp-1',
       mfaMethod: 'totp',
       passkeyAvailable: false,
+      phoneLast4: null,
     });
     vi.mocked(apiVerifyMFA).mockResolvedValue({
       success: true,
@@ -108,8 +109,35 @@ describe('ConnectSsoLoginPage (#4067)', () => {
     expect(navigateTo).toHaveBeenCalledWith('/dashboard');
   });
 
+  it('renders the retryable unavailable state (NOT expired) on a transient describe failure, and recovers on retry', async () => {
+    vi.mocked(apiSsoLinkPending)
+      .mockResolvedValueOnce({ success: false, expired: false, error: 'Network error' })
+      .mockResolvedValueOnce(PENDING);
+
+    render(<ConnectSsoLoginPage />);
+
+    // A 503/429/network blip must NOT read as "expired" — that would send the
+    // user on a needless full IdP round-trip while the record is still valid.
+    await waitFor(() => screen.getByTestId('connect-sso-unavailable'));
+    expect(screen.queryByTestId('connect-sso-expired')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('connect-sso-retry'));
+    await waitFor(() => screen.getByTestId('connect-sso-form'));
+    expect(apiSsoLinkPending).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows translated copy for a completion failure instead of stranding the user on the MFA form', async () => {
+    vi.mocked(apiSsoLinkConfirm).mockResolvedValue({ state: 'failed', reason: 'completion_failed' });
+
+    render(<ConnectSsoLoginPage />);
+    await submitPassword();
+
+    await waitFor(() => screen.getByTestId('connect-sso-error'));
+    expect(screen.getByTestId('connect-sso-error').textContent).toMatch(/could not be completed/i);
+  });
+
   it('flips to the expired state when confirm reports the ceremony expired', async () => {
-    vi.mocked(apiSsoLinkConfirm).mockResolvedValue({ success: false, expired: true, error: 'sso_link_expired' });
+    vi.mocked(apiSsoLinkConfirm).mockResolvedValue({ state: 'failed', reason: 'expired' });
 
     render(<ConnectSsoLoginPage />);
     await submitPassword();

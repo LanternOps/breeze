@@ -1380,6 +1380,28 @@ describe('auth routes', () => {
       expect(setCookie).toContain('breeze_refresh_token=');
     });
 
+    it('maps a finalizer identity conflict to 409 identity_in_use (terminal, not retryable)', async () => {
+      getMock.mockResolvedValue(pendingRecord({ ssoLinkTokenHash: 'link-hash-1' }));
+      vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'identity_in_use' } as any);
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+
+      expect(res.status).toBe(409);
+      expect((await res.json() as Record<string, unknown>).error).toBe('identity_in_use');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('maps a finalizer completion failure to 403 completion_failed (never the expired/restart view)', async () => {
+      getMock.mockResolvedValue(pendingRecord({ ssoLinkTokenHash: 'link-hash-1' }));
+      vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'completion_failed' } as any);
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+
+      expect(res.status).toBe(403);
+      expect((await res.json() as Record<string, unknown>).error).toBe('completion_failed');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
     it('rejects with the distinct sso_link_expired code when the link-ceremony finalizer refuses', async () => {
       getMock.mockResolvedValue(pendingRecord({ ssoLinkTokenHash: 'link-hash-1' }));
       vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'link_expired' } as any);
