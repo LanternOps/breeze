@@ -1576,9 +1576,10 @@ async function executeAiTriageAction(
 ): Promise<ActionExecutionResult> {
   const agentId = context.automation.managedByAgentId;
   if (!agentId) {
+    const message = 'ai_triage action on an unmanaged automation — refusing';
     return {
-      success: false,
-      log: logEntry('ai_triage action on an unmanaged automation — refusing', 'error', {
+      outcome: { status: 'failed', message },
+      log: logEntry(message, 'error', {
         actionType: 'ai_triage',
         actionIndex,
         deviceId: context.device.id,
@@ -1643,9 +1644,10 @@ async function executeAiTriageAction(
     // the alert is never triaged. The manual trigger route answers 503 on this
     // exact signal; the automation's equivalent is a failed action.
     if (result.run.status === 'failed' || result.run.errorCode === 'enqueue_failed') {
+      const message = 'ai_triage agent run was created but could not be enqueued';
       return {
-        success: false,
-        log: logEntry('ai_triage agent run was created but could not be enqueued', 'error', {
+        outcome: { status: 'failed', message },
+        log: logEntry(message, 'error', {
           actionType: 'ai_triage',
           actionIndex,
           deviceId: context.device.id,
@@ -1673,13 +1675,12 @@ async function executeAiTriageAction(
   }
 
   const hardFailure = AI_TRIAGE_SKIP_IS_FAILURE[result.skipped] ?? true;
+  const message = `ai_triage skipped: ${result.skipped}`;
   return {
-    success: !hardFailure,
-    log: logEntry(
-      `ai_triage skipped: ${result.skipped}`,
-      hardFailure ? 'error' : 'info',
-      { actionType: 'ai_triage', actionIndex, deviceId: context.device.id },
-    ),
+    outcome: hardFailure ? { status: 'failed', message } : { status: 'succeeded' },
+    log: logEntry(message, hardFailure ? 'error' : 'info', {
+      actionType: 'ai_triage', actionIndex, deviceId: context.device.id,
+    }),
   };
 }
 
