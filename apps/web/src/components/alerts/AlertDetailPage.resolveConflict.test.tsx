@@ -71,6 +71,32 @@ function mockRaceLostThenRefetch() {
   });
 }
 
+/**
+ * The POST answers a plain 500 — the resolve genuinely failed server-side, the
+ * alert is still open, and there is nothing fresher to fetch.
+ */
+function mockPlainServerError() {
+  fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
+    if (url.endsWith('/tickets')) {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
+    }
+    if (init?.method === 'POST' && url.endsWith('/resolve')) {
+      return Promise.resolve({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: 'resolve blew up server-side' }),
+      });
+    }
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(openAlert) });
+  });
+}
+
+const countAlertReads = () =>
+  fetchWithAuth.mock.calls.filter(
+    ([url, init]) => typeof url === 'string' && url.includes(ALERT_ID)
+      && !url.endsWith('/tickets') && (init as { method?: string } | undefined)?.method !== 'POST'
+  ).length;
+
 beforeEach(() => {
   fetchWithAuth.mockReset();
   showToast.mockReset();
@@ -87,11 +113,7 @@ describe('AlertDetailPage — losing the resolve race', () => {
     await waitFor(() => {
       // Two reads: the mount read plus the post-409 refresh. Only one would mean
       // the page kept rendering a status the server no longer agrees with.
-      const alertReads = fetchWithAuth.mock.calls.filter(
-        ([url, init]) => typeof url === 'string' && url.includes(ALERT_ID)
-          && !url.endsWith('/tickets') && (init as { method?: string } | undefined)?.method !== 'POST'
-      );
-      expect(alertReads.length).toBeGreaterThanOrEqual(2);
+      expect(countAlertReads()).toBeGreaterThanOrEqual(2);
     });
 
     // The banner text is the raw thrown message; asserting on the server sentence
@@ -114,5 +136,20 @@ describe('AlertDetailPage — losing the resolve race', () => {
         expect.objectContaining({ type: 'error' })
       );
     });
+  });
+
+  it('a plain 500 does NOT take the refetch/suppress path — the branch keys on the 409 status, not "any error"', async () => {
+    mockPlainServerError();
+    render(<AlertDetailPage alertId={ALERT_ID} />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /resolve/i }));
+
+    // A 500 means the alert was NOT resolved, so the persistent banner is the
+    // CORRECT outcome here — widening the `err.status === 409` guard to any
+    // ActionError would silently refetch instead and this banner would vanish.
+    expect(await screen.findByText(/resolve blew up server-side/i)).toBeInTheDocument();
+
+    // ...and there is nothing fresher to fetch: exactly the mount-time read.
+    expect(countAlertReads()).toBe(1);
   });
 });

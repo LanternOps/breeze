@@ -235,35 +235,100 @@ describe('checkAutoResolveFromConfigPolicy takes the branch the fixture selects'
   });
 });
 
-describe('checkAutoResolve reports the compare-and-swap outcome', () => {
-  const legacyAlert = {
-    id: 'a-legacy',
-    orgId: 'org-1',
-    deviceId: 'device-1',
-    ruleId: 'rule-1',
-    configPolicyId: null,
-    status: 'active',
-  };
-  const rule = { id: 'rule-1', templateId: 'tpl-1', overrideSettings: null };
-  const template = { id: 'tpl-1', autoResolve: true, autoResolveConditions: null, conditions: { all: [] }, cooldownMinutes: 15 };
+/**
+ * `checkAutoResolve` forks on `autoResolveConditions` exactly like the config-policy
+ * sweep above, and the CAS-outcome gate is likewise duplicated in BOTH arms
+ * (alertService.ts ~231-250). Pinning the template to one shape would leave the
+ * other arm free to revert to `await resolveAlert(...); return true;` with this
+ * suite still green — the same uniform-fixture blind spot (#3975) — so both suites
+ * below run against both template shapes.
+ */
+const legacyAlert = {
+  id: 'a-legacy',
+  orgId: 'org-1',
+  deviceId: 'device-1',
+  ruleId: 'rule-1',
+  configPolicyId: null,
+  status: 'active',
+};
+const legacyRule = { id: 'rule-1', templateId: 'tpl-1', overrideSettings: null };
 
-  it('returns false when another resolver won the race', async () => {
+type LegacyTemplate = {
+  id: string;
+  autoResolve: boolean;
+  autoResolveConditions: unknown;
+  conditions: unknown;
+  cooldownMinutes: number;
+};
+
+const legacyTemplateInverseTrigger: LegacyTemplate = {
+  id: 'tpl-1',
+  autoResolve: true,
+  autoResolveConditions: null,
+  conditions: { all: [] },
+  cooldownMinutes: 15,
+};
+
+const legacyTemplateExplicitConditions: LegacyTemplate = {
+  ...legacyTemplateInverseTrigger,
+  autoResolveConditions: { all: [{ metric: 'cpu', op: 'lt', value: 50 }] },
+};
+
+const bothTemplateShapes: Array<[string, LegacyTemplate]> = [
+  ['inverse-trigger branch (autoResolveConditions null)', legacyTemplateInverseTrigger],
+  ['explicit-conditions branch (autoResolveConditions set)', legacyTemplateExplicitConditions],
+];
+
+describe.each(bothTemplateShapes)(
+  'checkAutoResolve reports the compare-and-swap outcome — %s',
+  (_label, template) => {
+    it('returns false when another resolver won the race', async () => {
+      seed('alerts', [legacyAlert]);
+      seed('alert_rules', [legacyRule]);
+      seed('alert_templates', [template]);
+      updateReturns.push([]); // CAS matched nothing
+
+      await expect(checkAutoResolve('a-legacy')).resolves.toBe(false);
+      expect(publishEvent).not.toHaveBeenCalled();
+    });
+
+    it('returns true when this caller performed the transition', async () => {
+      seed('alerts', [legacyAlert]);
+      seed('alert_rules', [legacyRule], [legacyRule]);
+      seed('alert_templates', [template], [template]);
+      updateReturns.push([legacyAlert]);
+
+      await expect(checkAutoResolve('a-legacy')).resolves.toBe(true);
+      expect(publishEvent).toHaveBeenCalledTimes(1);
+    });
+  }
+);
+
+describe('checkAutoResolve takes the branch the fixture selects', () => {
+  // Guards the parameterisation above: if both template fixtures silently routed
+  // through the same arm, every branch-sensitive assertion would be testing one
+  // arm twice.
+  it('evaluates the trigger conditions when autoResolveConditions is null', async () => {
     seed('alerts', [legacyAlert]);
-    seed('alert_rules', [rule]);
-    seed('alert_templates', [template]);
-    updateReturns.push([]); // CAS matched nothing
-
-    await expect(checkAutoResolve('a-legacy')).resolves.toBe(false);
-    expect(publishEvent).not.toHaveBeenCalled();
-  });
-
-  it('returns true when this caller performed the transition', async () => {
-    seed('alerts', [legacyAlert]);
-    seed('alert_rules', [rule], [rule]);
-    seed('alert_templates', [template], [template]);
+    seed('alert_rules', [legacyRule], [legacyRule]);
+    seed('alert_templates', [legacyTemplateInverseTrigger], [legacyTemplateInverseTrigger]);
     updateReturns.push([legacyAlert]);
 
-    await expect(checkAutoResolve('a-legacy')).resolves.toBe(true);
-    expect(publishEvent).toHaveBeenCalledTimes(1);
+    await checkAutoResolve('a-legacy');
+
+    expect(evaluateConditions).toHaveBeenCalledTimes(1);
+    expect(evaluateAutoResolveConditions).not.toHaveBeenCalled();
+  });
+
+  it('evaluates the explicit auto-resolve conditions when they are set', async () => {
+    seed('alerts', [legacyAlert]);
+    seed('alert_rules', [legacyRule], [legacyRule]);
+    seed('alert_templates', [legacyTemplateExplicitConditions], [legacyTemplateExplicitConditions]);
+    updateReturns.push([legacyAlert]);
+
+    await checkAutoResolve('a-legacy');
+
+    expect(evaluateAutoResolveConditions).toHaveBeenCalledTimes(1);
+    expect(evaluateConditions).not.toHaveBeenCalled();
   });
 });

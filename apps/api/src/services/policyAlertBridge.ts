@@ -1,7 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { alerts, alertRules, alertTemplates, automationPolicies, organizations } from '../db/schema';
-import { createAlert, resolveAlert } from './alertService';
+import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
 import { getEventBus } from './eventBus';
 
 const { db } = dbModule;
@@ -132,7 +132,7 @@ async function resolvePolicyAlertsForDevice(ruleId: string, deviceId: string): P
       and(
         eq(alerts.ruleId, ruleId),
         eq(alerts.deviceId, deviceId),
-        inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
+        inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES])
       )
     );
 
