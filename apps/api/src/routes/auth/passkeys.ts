@@ -52,7 +52,6 @@ import {
   requireCurrentPasswordStepUp,
   resolveCurrentUserTokenContext,
   resolveEnrollmentStepUp,
-  setRefreshTokenCookie,
   installAuthorizedUserSessionCookies,
   installLegacyUserSessionCookiesDuringTransition,
   toPublicTokens,
