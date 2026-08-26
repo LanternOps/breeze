@@ -172,4 +172,111 @@ describe('SsoProvidersPage partner-axis behavior', () => {
       expect(body).not.toHaveProperty('ownerScope');
     });
   });
+
+  // #4018: sso_providers.trustsIdpMfa lets an org opt into treating the IdP's
+  // own MFA assertion as satisfying Breeze's MFA-gated routes. Off by default.
+  function routeEditableProvider(trustsIdpMfa: boolean) {
+    fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
+      if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [PARTNER_PROVIDER] }));
+      if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/sso/providers/pp-1' && (!opts || !opts.method)) {
+        return Promise.resolve(
+          jsonRes({
+            data: {
+              name: 'Team Login',
+              type: 'oidc',
+              preset: '',
+              issuer: 'https://idp.example.com',
+              clientId: 'client-1',
+              scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: true,
+              defaultRoleId: '',
+              allowedDomains: '',
+              enforceSSO: false,
+              trustsIdpMfa,
+              hasClientSecret: true,
+            },
+          })
+        );
+      }
+      if (url === '/sso/providers/pp-1' && opts?.method === 'PATCH') {
+        return Promise.resolve(jsonRes({ data: PARTNER_PROVIDER }));
+      }
+      return Promise.resolve(jsonRes({ data: [] }));
+    });
+  }
+
+  it('renders the trust-IdP-MFA toggle reflecting the provider value', async () => {
+    routeEditableProvider(false);
+    render(<SsoProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const toggle = await screen.findByTestId('provider-trusts-idp-mfa');
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('PATCHes trustsIdpMfa when the toggle is turned on', async () => {
+    routeEditableProvider(false);
+    render(<SsoProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const toggle = await screen.findByTestId('provider-trusts-idp-mfa');
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('provider-save'));
+
+    await waitFor(() => {
+      const patchCall = fetchWithAuth.mock.calls.find(
+        (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+      );
+      expect(patchCall).toBeTruthy();
+      const body = JSON.parse((patchCall![1] as { body: string }).body);
+      expect(body.trustsIdpMfa).toBe(true);
+    });
+  });
+
+  // The `false` cases above are indistinguishable from the form's own fallback
+  // (`selectedProviderDetails.trustsIdpMfa ?? false`), so deleting the mapping
+  // at SsoProvidersPage.tsx failed nothing. Only a `true` provider proves the
+  // stored value is actually threaded into the form — and getting this wrong is
+  // a SECURITY regression in the quiet direction: the toggle would read "off"
+  // for an org whose IdP MFA assertion is in fact being trusted.
+  it('reflects a provider that ALREADY trusts IdP MFA', async () => {
+    routeEditableProvider(true);
+    render(<SsoProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const toggle = await screen.findByTestId('provider-trusts-idp-mfa');
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('PATCHes trustsIdpMfa=false when an already-trusting provider is turned OFF', async () => {
+    routeEditableProvider(true);
+    render(<SsoProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const toggle = await screen.findByTestId('provider-trusts-idp-mfa');
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('provider-save'));
+
+    await waitFor(() => {
+      const patchCall = fetchWithAuth.mock.calls.find(
+        (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+      );
+      expect(patchCall).toBeTruthy();
+      const body = JSON.parse((patchCall![1] as { body: string }).body);
+      expect(body.trustsIdpMfa).toBe(false);
+    });
+  });
 });

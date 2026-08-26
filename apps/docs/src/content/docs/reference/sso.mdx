@@ -310,6 +310,7 @@ When Breeze auto-discovers a provider's endpoints from its issuer URL, it refuse
 | `defaultRoleId` | `uuid` | No | -- | Role assigned to auto-provisioned users. Must be an org-scoped role in the target org (or, for partner providers, a partner-scoped role belonging to your partner). |
 | `allowedDomains` | `string` | No | -- | Comma-separated email domains. Empty means all domains are allowed. |
 | `enforceSSO` | `boolean` | No | `false` | Disable password login for the organization. |
+| `trustsIdpMfa` | `boolean` | No | `false` | Treat the IdP's own MFA assertion (`amr: mfa` in the id_token) as satisfying Breeze's MFA-gated routes. See [Satisfying Breeze MFA with your IdP](#satisfying-breeze-mfa-with-your-idp). |
 
 <Aside type="caution">
   The `clientSecret` is encrypted before storage using the server's encryption key. It is never returned in API responses. The `hasClientSecret` boolean field indicates whether a secret is configured.
@@ -417,6 +418,15 @@ When a partner provider has `enforceSSO: true`, the login page **collapses** the
 ### Password Reset and SSO Enforcement
 
 The forgot-password and reset-password flows honor SSO enforcement. A partner-scoped technician whose partner provider has `enforceSSO: true` cannot reset a password: the request still returns the generic success response (so account existence is never revealed), but **no reset email is sent**. The same rule applies to organization users under an enforcing organization provider.
+
+### Satisfying Breeze MFA with your IdP
+
+By default, Breeze never accepts an IdP's own multi-factor authentication as satisfying its own MFA-gated routes (mutating SSO provider config, PAM checkouts, and similar sensitive actions) — every account, SSO-provisioned or not, must separately satisfy Breeze's own MFA requirement on those routes. Set `trustsIdpMfa: true` on a provider (organization or partner-owned) to change that: when the id_token from that provider's login includes `amr: mfa` — an [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176) Authentication Method Reference claim meaning the user completed multi-factor authentication at the IdP — Breeze treats MFA as satisfied for that sign-in.
+
+Two things to know before turning this on:
+
+- **Your IdP must actually send the claim.** Most identity providers only include `amr` in the id_token when explicitly configured to (an app-registration or claims-mapping setting on the IdP side, not a Breeze setting). Consult your IdP's documentation. If the claim is absent, `trustsIdpMfa` has no effect and Breeze continues to require its own MFA step.
+- **This is fail-safe, not fail-open.** `trustsIdpMfa` defaults to `false` on every provider, and a missing or unrecognized `amr` value is treated as "MFA not satisfied" rather than being assumed. Enabling it is always an explicit, reviewable opt-in per provider.
 
 ---
 

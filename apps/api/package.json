@@ -33,6 +33,7 @@
     "test:rls-coverage": "vitest run --config vitest.config.rls-coverage.ts",
     "test:request-db-role": "vitest run --config vitest.config.request-db-role.ts",
     "test:site-scope-coverage": "vitest run --config vitest.config.site-scope-coverage.ts",
+    "test:tz": "vitest run --config vitest.config.tz.ts",
     "test:run": "vitest run"
   },
   "dependencies": {

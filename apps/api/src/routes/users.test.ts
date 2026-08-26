@@ -602,6 +602,61 @@ describe('user routes', () => {
       expect(body.isPlatformAdmin).toBe(true);
     });
 
+    // #4018: this endpoint is what populates the WEB AUTH STORE's user object
+    // (stores/auth.ts completeBootstrapLogin + fetchAndApplyPreferences), so
+    // `hasPassword` here is the ONLY thing that makes
+    // `useAuthStore(s => s.user?.hasPassword) === false` reachable in
+    // production. Without it the SSO branches in the UI are dead code that
+    // still passes a unit test which injects the store value directly.
+    const meRow = (overrides: Record<string, unknown> = {}) => ({
+      id: 'user-123',
+      email: 'admin@example.com',
+      name: 'Admin',
+      avatarUrl: null,
+      status: 'active',
+      mfaEnabled: false,
+      isPlatformAdmin: false,
+      createdAt: new Date(),
+      lastLoginAt: new Date(),
+      setupCompletedAt: new Date(),
+      passwordChangedAt: new Date(),
+      preferences: {},
+      ...overrides,
+    });
+
+    const mockMeRow = (row: Record<string, unknown>) => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([row])
+          })
+        })
+      } as any);
+    };
+
+    it('reports hasPassword false for an SSO-provisioned (passwordless) user', async () => {
+      mockMeRow(meRow({ passwordHash: null }));
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ hasPassword: false });
+    });
+
+    it('reports hasPassword true for a password user and never leaks the hash', async () => {
+      mockMeRow(meRow({ passwordHash: '$argon2id$v=19$m=65536$abc' }));
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.hasPassword).toBe(true);
+      expect(body).not.toHaveProperty('passwordHash');
+      expect(JSON.stringify(body)).not.toContain('argon2id');
+    });
+
     // The web app hides billing nav and action buttons off this list. If /me
     // stops surfacing the user's grants, gated controls would render for users
     // who lack the permission (server still 403s, but it's a UX regression).

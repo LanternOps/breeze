@@ -1392,6 +1392,85 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     const [message] = warnSpy.mock.calls[0] as [string];
     expect(message).toContain('locale resolution skipped');
   });
+
+  // #4018: this is the proof that `useAuthStore(s => s.user?.hasPassword)`
+  // is a REAL runtime signal and not a branch only a test can enter. A prior
+  // attempt at the AddDeviceModal SSO copy was correctly reverted precisely
+  // because nothing populated this field: /users/me did not return it, so the
+  // branch was unreachable in production while a unit test that set the store
+  // value directly still went green. These two cases drive the actual
+  // hydration path (GET /users/me -> updateUser) end to end.
+  it('hydrates hasPassword=false from /users/me for a passwordless SSO account', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        hasPassword: false,
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(useAuthStore.getState().user?.hasPassword).toBeUndefined();
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.hasPassword).toBe(false);
+  });
+
+  it('hydrates hasPassword=true from /users/me for a password account', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        hasPassword: true,
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.hasPassword).toBe(true);
+  });
+
+  // A server that has not shipped the field yet must leave the store value
+  // ABSENT (unknown), never coerce it to false — false is what flips the UI
+  // onto the identity-provider road.
+  it('leaves hasPassword absent when /users/me omits it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.hasPassword).toBeUndefined();
+  });
 });
 
 describe('apiRegisterPartner recovery action', () => {
