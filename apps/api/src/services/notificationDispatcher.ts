@@ -1101,7 +1101,10 @@ export async function cancelAlertEscalations(alertId: string): Promise<number> {
  * Dispatch notifications for a new alert
  * Call this when an alert is created
  */
-export async function dispatchAlertNotifications(alertId: string): Promise<void> {
+export async function dispatchAlertNotifications(
+  alertId: string,
+  dedupeToken: string = alertId
+): Promise<void> {
   const queue = getNotificationQueue();
 
   await queue.add(
@@ -1111,6 +1114,17 @@ export async function dispatchAlertNotifications(alertId: string): Promise<void>
       alertId
     },
     {
+      // A redelivered alert.triggered must not fan out a second notification
+      // set — email, SMS, Slack, Teams, PagerDuty and Pushover all hang off
+      // this one job. BullMQ rejects a duplicate jobId outright, so the token
+      // has to be STABLE for one (alert, event) pair: never randomised, never
+      // timestamped. Callers with an event pass `event.id`; the default keeps
+      // every pre-existing caller working unchanged.
+      //
+      // This is retention-bounded, not durable: `removeOnComplete: true` frees
+      // the id as soon as the job finishes. The durable backstop is the
+      // per-user dedupe key on the in-app row (inAppSender).
+      jobId: `process-alert-${alertId}-${dedupeToken}`,
       removeOnComplete: true,
       removeOnFail: false
     }
@@ -1127,7 +1141,9 @@ export function subscribeToAlertEvents(): void {
     try {
       const payload = event.payload as { alertId?: string };
       if (payload.alertId) {
-        await dispatchAlertNotifications(payload.alertId);
+        // Pass the event id so a redelivered alert.triggered collapses onto the
+        // same job rather than notifying every on-call tech twice.
+        await dispatchAlertNotifications(payload.alertId, event.id);
       }
     } catch (error) {
       console.error('Failed to dispatch alert notifications:', error);
