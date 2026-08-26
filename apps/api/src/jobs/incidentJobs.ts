@@ -1,4 +1,4 @@
-import { and, eq, lt, ne, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { incidents, type IncidentTimelineEntry } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
@@ -67,20 +67,38 @@ async function runIncidentCorrelationPass(): Promise<void> {
 
 async function runIncidentTimelineEnrichmentPass(): Promise<void> {
   await runWithSystemDbAccess(async () => {
+    // Claim-then-work. Selecting un-enriched incidents and updating them by id
+    // lets a second process select the SAME rows before either marks them —
+    // check-then-act, and both would append a timeline_enriched entry.
+    //
+    // The claim is the marker column, not the timeline array: appending to a
+    // jsonb array cannot be made atomic with a predicate, and `timeline` is the
+    // rendering surface. `FOR UPDATE SKIP LOCKED` is the established idiom here
+    // (jobs/oauthRevocationRetryWorker.ts).
     const rows = await db
-      .select({
+      .update(incidents)
+      .set({ timelineEnrichedAt: new Date() })
+      .where(
+        inArray(
+          incidents.id,
+          db
+            .select({ id: incidents.id })
+            .from(incidents)
+            .where(
+              and(
+                ne(incidents.status, 'closed'),
+                isNull(incidents.timelineEnrichedAt)
+              )
+            )
+            .limit(100)
+            .for('update', { skipLocked: true })
+        )
+      )
+      .returning({
         id: incidents.id,
         status: incidents.status,
         timeline: incidents.timeline,
-      })
-      .from(incidents)
-      .where(
-        and(
-          ne(incidents.status, 'closed'),
-          sql`NOT (${incidents.timeline}::jsonb @> '[{"type":"timeline_enriched"}]'::jsonb)`
-        )
-      )
-      .limit(100);
+      });
 
     if (rows.length === 0) {
       return;
@@ -141,13 +159,23 @@ async function runIncidentSlaMonitorPass(): Promise<void> {
       .limit(100);
 
     for (const row of staleIncidents) {
-      const timeline = toTimeline(row.timeline);
-      const alreadyEscalated = timeline.some((entry) => entry.type === 'incident_escalated');
-      if (alreadyEscalated) {
+      const escalationAt = new Date();
+
+      // The UPDATE is the lock. `alreadyEscalated` computed from the array this
+      // process just read is per-process belief, not a fact: two processes both
+      // read an un-escalated timeline and both publish incident.escalated,
+      // paging on-call twice for one breach.
+      const [won] = await db
+        .update(incidents)
+        .set({ escalatedAt: escalationAt })
+        .where(and(eq(incidents.id, row.id), isNull(incidents.escalatedAt)))
+        .returning({ id: incidents.id });
+
+      if (!won) {
         continue;
       }
 
-      const escalationAt = new Date();
+      const timeline = toTimeline(row.timeline);
       const nextTimeline = [
         ...timeline,
         {
@@ -269,3 +297,12 @@ export async function shutdownIncidentSlaMonitor(): Promise<void> {
   }
   slaPassState.running = false;
 }
+
+/**
+ * The two passes that carry cross-process winner logic. Exported for tests
+ * only — production drives them through the initialize/shutdown pairs above.
+ */
+export const __testOnly = {
+  runIncidentTimelineEnrichmentPass,
+  runIncidentSlaMonitorPass,
+};
