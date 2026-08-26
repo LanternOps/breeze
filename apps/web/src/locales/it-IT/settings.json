@@ -1856,7 +1856,8 @@
     "showRecoveryCodes": "Mostra codici di recupero",
     "verifyYourIdentity": "Verifica la tua identità",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Questo account accede tramite un provider di identità e non ha una password. Verificati nuovamente presso il tuo provider per iniziare a configurare un'app di autenticazione.",
-    "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità"
+    "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
+    "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'app di autenticazione."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importa da Pax8",
@@ -1949,6 +1950,10 @@
     "ssoReauthSessionInvalid": "La tua sessione è cambiata durante la verifica. Accedi di nuovo, quindi riprova.",
     "ssoReauthPasswordSet": "Questo account ora ha una password. Usala per configurare l'autenticazione a più fattori.",
     "ssoReauthUnavailable": "La verifica tramite il provider di identità non è temporaneamente disponibile. Riprova tra poco.",
+    "ssoReauthProviderInactive": "L'accesso Single Sign-On non è più disponibile per questo account. Rivolgiti all'amministratore e riprova.",
+    "ssoReauthConfigChanged": "Le impostazioni di Single Sign-On sono cambiate durante la verifica. Avvia di nuovo la verifica.",
+    "ssoReauthEmailUnverified": "Il tuo provider di identità segnala che il tuo indirizzo e-mail non è verificato. Verificalo lì, quindi riprova.",
+    "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'autenticazione a più fattori.",
     "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
     "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità."
   },

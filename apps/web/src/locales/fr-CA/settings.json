@@ -1856,7 +1856,8 @@
     "showRecoveryCodes": "Afficher les codes de récupération",
     "verifyYourIdentity": "Vérifiez votre identité",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte ouvre une session par l'entremise d'un fournisseur d'identité et n'a pas de mot de passe. Vérifiez de nouveau votre identité auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
-    "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité"
+    "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
+    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité est expirée. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
@@ -1949,6 +1950,10 @@
     "ssoReauthSessionInvalid": "Votre session a changé pendant la vérification. Ouvrez une session de nouveau, puis réessayez.",
     "ssoReauthPasswordSet": "Ce compte possède maintenant un mot de passe. Utilisez-le pour configurer l'authentification multifacteur.",
     "ssoReauthUnavailable": "La vérification par le fournisseur d'identité est temporairement indisponible. Veuillez réessayer sous peu.",
+    "ssoReauthProviderInactive": "L'authentification unique n'est plus offerte pour ce compte. Communiquez avec votre administrateur, puis réessayez.",
+    "ssoReauthConfigChanged": "Vos paramètres d'authentification unique ont changé pendant la vérification. Recommencez la vérification.",
+    "ssoReauthEmailUnverified": "Votre fournisseur d'identité indique que votre adresse courriel n'est pas vérifiée. Vérifiez-la auprès de lui, puis réessayez.",
+    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité est expirée. Vérifiez de nouveau pour terminer la configuration de l'authentification multifacteur.",
     "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",
     "couldNotStartIdentityProviderVerification": "Impossible de lancer la vérification par le fournisseur d'identité."
   },

@@ -40,8 +40,14 @@ type User = {
 };
 
 // Typed reason codes the SSO re-auth callback redirects back with
-// (`/settings/profile?error=<code>`). Anything not listed falls back to the
-// generic copy — the server is free to add codes without this going silent.
+// (`/settings/profile?ssoReauthError=<code>`). Anything not listed falls back
+// to the generic copy — the server is free to add codes without this going
+// silent.
+//
+// NAMESPACED, matching ConnectSsoCard's `ssoLinkError`. A bare `error` param is
+// a name every other feature on this page could reasonably claim, and this
+// handler would toast SSO copy for any of them.
+const SSO_REAUTH_ERROR_PARAM = 'ssoReauthError';
 const SSO_REAUTH_ERROR_KEYS: Record<string, string> = {
   // The IdP answered without honouring prompt=login / max_age=0, so nothing was
   // actually re-verified. This is the one an admin can fix, so it says so.
@@ -50,7 +56,36 @@ const SSO_REAUTH_ERROR_KEYS: Record<string, string> = {
   session_invalid: 'profilePage.ssoReauthSessionInvalid',
   password_set: 'profilePage.ssoReauthPasswordSet',
   reauth_unavailable: 'profilePage.ssoReauthUnavailable',
+  // Reached when the provider is disabled, or its config_version is bumped by
+  // an admin edit mid-flight — both now land here instead of on /login.
+  provider_inactive: 'profilePage.ssoReauthProviderInactive',
+  config_changed: 'profilePage.ssoReauthConfigChanged',
+  email_unverified: 'profilePage.ssoReauthEmailUnverified',
 };
+
+/** Reads and CONSUMES `?ssoReauthError=<code>` from the query string.
+ *
+ *  Stripping is not cosmetic: `showToast` has no dedupe by design, so a handler
+ *  that leaves the param in place re-toasts on every reload and on every shared
+ *  link — and, because react-i18next swaps `t`'s identity once its resources
+ *  finish loading, fires TWICE on a single page load. Consuming the param makes
+ *  the effect idempotent regardless of how often it runs. Same pattern as
+ *  M365MailboxCard's `ticketMailbox`. The fragment and every other query param
+ *  are preserved — only ours is removed. */
+function takeSsoReauthErrorFromQuery(): string | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get(SSO_REAUTH_ERROR_PARAM);
+  if (!code) return null;
+  params.delete(SSO_REAUTH_ERROR_PARAM);
+  const qs = params.toString();
+  window.history.replaceState(
+    null,
+    '',
+    `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`,
+  );
+  return code;
+}
 
 /** Reads and CONSUMES the `#ssoReauthGrant=<id>` fragment the SSO callback
  *  redirects back with. The grant is single-use, so the fragment is stripped in
@@ -462,10 +497,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     // a second /mfa/setup call for nothing.
   }, []);
 
-  // Surface the callback's failure codes (`/settings/profile?error=<code>`).
+  // Surface the callback's failure codes
+  // (`/settings/profile?ssoReauthError=<code>`), exactly once.
+  //
+  // Mount-only, and the param is consumed as it is read. Both matter: this used
+  // to depend on `[t]`, and react-i18next hands back a NEW `t` identity once its
+  // resources finish loading async, so the effect re-ran and — showToast having
+  // no dedupe — the user saw the same error toast twice. Leaving the param in
+  // the URL also re-toasted on every reload, forever.
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const code = new URLSearchParams(window.location.search).get('error');
+    const code = takeSsoReauthErrorFromQuery();
     if (!code) return;
     const key = SSO_REAUTH_ERROR_KEYS[code];
     // An unrecognized code must still say SOMETHING — a silent no-op here would
@@ -474,7 +515,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       type: 'error',
       message: key ? t(/* i18n-dynamic */ key) : t('profilePage.ssoReauthFailed'),
     });
-  }, [t]);
+    // Empty deps ON PURPOSE — see above. `t` is read at first render, which is
+    // the correct language for a toast fired at mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSsoReauthStart = async () => {
     setMfaError(undefined);
@@ -507,6 +551,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     try {
       setMfaLoading(true);
       // Mirror the setup call: send whichever proof this account actually has.
+      // A passwordless account with no grant left has NOTHING to send, and the
+      // server answers `enrollment_proof_required`. MFASettings withholds the
+      // submit in that state (it shows the IdP re-verify CTA instead), so this
+      // is the belt-and-braces half of the same rule.
+      if (!currentPassword && !ssoReauthGrantId && user?.hasPassword === false) {
+        setMfaError(t('profilePage.ssoReauthProofExpired'));
+        return;
+      }
       const proof = currentPassword
         ? { currentPassword }
         : ssoReauthGrantId
@@ -877,6 +929,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         hasPassword={user?.hasPassword}
         onSsoReauth={handleSsoReauthStart}
         ssoSetupReady={ssoSetupReady}
+        ssoReauthGrantAvailable={ssoReauthGrantId !== null}
         qrCodeDataUrl={qrCodeDataUrl}
         recoveryCodes={recoveryCodes}
         onRequestSetup={handleMfaRequestSetup}

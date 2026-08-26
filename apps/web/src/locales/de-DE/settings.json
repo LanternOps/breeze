@@ -1861,7 +1861,8 @@
     "showRecoveryCodes": "Wiederherstellungscodes anzeigen",
     "verifyYourIdentity": "Bestätigen Sie Ihre Identität",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, um die Einrichtung einer Authenticator-App zu starten.",
-    "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen"
+    "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
+    "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung Ihrer Authenticator-App abzuschließen."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import aus Pax8",
@@ -1954,6 +1955,10 @@
     "ssoReauthSessionInvalid": "Ihre Sitzung hat sich während der Überprüfung geändert. Melden Sie sich erneut an und versuchen Sie es dann noch einmal.",
     "ssoReauthPasswordSet": "Dieses Konto hat jetzt ein Passwort. Verwenden Sie es, um die Multi-Faktor-Authentifizierung einzurichten.",
     "ssoReauthUnavailable": "Die Überprüfung durch den Identitätsanbieter ist vorübergehend nicht verfügbar. Bitte versuchen Sie es in Kürze erneut.",
+    "ssoReauthProviderInactive": "Single Sign-on ist für dieses Konto nicht mehr verfügbar. Wenden Sie sich an Ihren Administrator und versuchen Sie es erneut.",
+    "ssoReauthConfigChanged": "Ihre Single-Sign-on-Einstellungen haben sich während der Überprüfung geändert. Starten Sie die Überprüfung erneut.",
+    "ssoReauthEmailUnverified": "Ihr Identitätsanbieter meldet, dass Ihre E-Mail-Adresse nicht bestätigt ist. Bestätigen Sie sie dort und versuchen Sie es erneut.",
+    "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung der Multi-Faktor-Authentifizierung abzuschließen.",
     "ssoReauthFailed": "Die Bestätigung bei Ihrem Identitätsanbieter ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
     "couldNotStartIdentityProviderVerification": "Die Überprüfung durch den Identitätsanbieter konnte nicht gestartet werden."
   },

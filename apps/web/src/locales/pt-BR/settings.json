@@ -1861,7 +1861,8 @@
     "showRecoveryCodes": "Mostrar códigos de recuperação",
     "verifyYourIdentity": "Verifique sua identidade",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta conta faz login por meio de um provedor de identidade e não tem senha. Verifique-se novamente com seu provedor para começar a configurar um aplicativo autenticador.",
-    "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade"
+    "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
+    "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração do seu aplicativo autenticador."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar do Pax8",
@@ -1954,6 +1955,10 @@
     "ssoReauthSessionInvalid": "Sua sessão mudou durante a verificação. Faça login novamente e tente de novo.",
     "ssoReauthPasswordSet": "Esta conta agora tem uma senha. Use-a para configurar a autenticação multifator.",
     "ssoReauthUnavailable": "A verificação pelo provedor de identidade está temporariamente indisponível. Tente novamente em instantes.",
+    "ssoReauthProviderInactive": "O logon único não está mais disponível para esta conta. Fale com o administrador e tente de novo.",
+    "ssoReauthConfigChanged": "Suas configurações de logon único mudaram durante a verificação. Inicie a verificação novamente.",
+    "ssoReauthEmailUnverified": "Seu provedor de identidade informa que seu endereço de e-mail não foi verificado. Verifique-o lá e tente de novo.",
+    "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração da autenticação multifator.",
     "ssoReauthFailed": "Não foi possível verificar com seu provedor de identidade. Tente novamente.",
     "couldNotStartIdentityProviderVerification": "Não foi possível iniciar a verificação pelo provedor de identidade."
   },

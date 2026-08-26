@@ -1861,7 +1861,8 @@
     "showRecoveryCodes": "Afficher les codes de récupération",
     "verifyYourIdentity": "Vérifiez votre identité",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez-vous à nouveau auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
-    "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité"
+    "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
+    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
@@ -1954,6 +1955,10 @@
     "ssoReauthSessionInvalid": "Votre session a changé pendant la vérification. Reconnectez-vous, puis réessayez.",
     "ssoReauthPasswordSet": "Ce compte possède désormais un mot de passe. Utilisez-le pour configurer l'authentification multifacteur.",
     "ssoReauthUnavailable": "La vérification par le fournisseur d'identité est temporairement indisponible. Veuillez réessayer sous peu.",
+    "ssoReauthProviderInactive": "L'authentification unique n'est plus disponible pour ce compte. Contactez votre administrateur, puis réessayez.",
+    "ssoReauthConfigChanged": "Vos paramètres d'authentification unique ont changé pendant la vérification. Relancez la vérification.",
+    "ssoReauthEmailUnverified": "Votre fournisseur d'identité indique que votre adresse e-mail n'est pas vérifiée. Vérifiez-la chez lui, puis réessayez.",
+    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de l'authentification multifacteur.",
     "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",
     "couldNotStartIdentityProviderVerification": "Impossible de démarrer la vérification par le fournisseur d'identité."
   },

@@ -1861,7 +1861,8 @@
     "showRecoveryCodes": "Mostrar códigos de recuperación",
     "verifyYourIdentity": "Verifica tu identidad",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Vuelve a verificarte con tu proveedor para comenzar a configurar una aplicación de autenticación.",
-    "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad"
+    "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad",
+    "ssoReauthProofExpired": "Tu verificación con el proveedor de identidad venció. Verifícate de nuevo para terminar de configurar tu aplicación de autenticación."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar desde Pax8",
@@ -1954,6 +1955,10 @@
     "ssoReauthSessionInvalid": "Tu sesión cambió mientras te verificabas. Inicia sesión de nuevo y vuelve a intentarlo.",
     "ssoReauthPasswordSet": "Esta cuenta ahora tiene una contraseña. Úsala para configurar la autenticación multifactor.",
     "ssoReauthUnavailable": "La verificación con el proveedor de identidad no está disponible temporalmente. Inténtalo de nuevo en unos momentos.",
+    "ssoReauthProviderInactive": "El inicio de sesión único ya no está disponible para esta cuenta. Consulta a tu administrador e inténtalo de nuevo.",
+    "ssoReauthConfigChanged": "Tu configuración de inicio de sesión único cambió mientras te verificabas. Comienza la verificación otra vez.",
+    "ssoReauthEmailUnverified": "Tu proveedor de identidad indica que tu dirección de correo no está verificada. Verifícala allí y vuelve a intentarlo.",
+    "ssoReauthProofExpired": "Tu verificación con el proveedor de identidad venció. Verifícate de nuevo para terminar de configurar la autenticación multifactor.",
     "ssoReauthFailed": "No se pudo verificar con tu proveedor de identidad. Inténtalo de nuevo.",
     "couldNotStartIdentityProviderVerification": "No se pudo iniciar la verificación con el proveedor de identidad."
   },

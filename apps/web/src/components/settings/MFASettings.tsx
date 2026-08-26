@@ -28,6 +28,19 @@ type MFASettingsProps = {
    * spent on this page load.
    */
   ssoSetupReady?: boolean;
+  /**
+   * #4018: is the parent still holding the single-use SSO re-auth grant that
+   * the terminal `/mfa/enable` call has to present?
+   *
+   * It lives only in the parent's React state and the `#ssoReauthGrant=`
+   * fragment is stripped at mount, so a reload while the QR is on screen — or
+   * a session restore, or opening the page in a second tab — loses it. Without
+   * this the Verify button would post no proof at all, the server would 401,
+   * and the user would be staring at that error on a screen with no password
+   * field and no way to re-verify. Defaults to `true` so the password road and
+   * any caller that does not pass it are unaffected.
+   */
+  ssoReauthGrantAvailable?: boolean;
   phoneVerified?: boolean;
   phoneLast4?: string;
   smsAllowed?: boolean;
@@ -60,6 +73,7 @@ export default function MFASettings({
   hasPassword,
   onSsoReauth,
   ssoSetupReady = false,
+  ssoReauthGrantAvailable = true,
   phoneVerified = false,
   phoneLast4,
   smsAllowed = false,
@@ -107,6 +121,11 @@ export default function MFASettings({
   // wrong password, whereas wrongly hiding the prompt would strand a password
   // user with a button their account cannot use.
   const isPasswordless = hasPassword === false;
+  // #4018: a passwordless account whose grant has been lost cannot complete the
+  // terminal write. It is not an error state to report AFTER the fact — there
+  // is nothing the user can type that would fix it — so the enable action is
+  // withheld and replaced by a fresh IdP round-trip.
+  const needsSsoReVerify = isPasswordless && !ssoReauthGrantAvailable;
 
   // The parent consumed an `#ssoReauthGrant=` fragment and already ran
   // /mfa/setup with it. Open the QR view directly. Deliberately keyed on the
@@ -225,7 +244,11 @@ export default function MFASettings({
     // A passwordless account has no password to carry from the gate above —
     // the parent supplies the SSO re-auth grant instead, so requiring a
     // non-empty password here would make the Verify button permanently inert.
+    // But a passwordless account with NO grant left has no proof at all, and
+    // firing the request anyway just buys a 401 on a screen with nothing to
+    // retry with. Refuse to issue it; the view offers re-verification instead.
     if (isLoading || isSubmitting || code.length !== DIGIT_COUNT
+      || needsSsoReVerify
       || (!isPasswordless && !currentPassword)) {
       return;
     }
@@ -804,6 +827,15 @@ export default function MFASettings({
             {t('mFASettings.enterThe6DigitCodeGeneratedByYourAuthenticatorApp')}</p>
         </div>
 
+        {/* #4018: the single-use grant is gone (reload, restored session, or a
+            second tab), so there is no proof left to send. Say so and offer the
+            only thing that fixes it rather than letting the submit 401. */}
+        {needsSsoReVerify && (
+          <p data-testid="mfa-sso-grant-lost" className="text-sm text-muted-foreground">
+            {t('mFASettings.ssoReauthProofExpired')}
+          </p>
+        )}
+
         {renderError()}
 
         <div className="flex flex-wrap items-center justify-end gap-3">
@@ -816,14 +848,26 @@ export default function MFASettings({
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
             {t('mFASettings.cancel')}</button>
-          <button
-            type="button"
-            onClick={handleEnableSubmit}
-            disabled={isLoading || code.length !== DIGIT_COUNT}
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isLoading ? t('mFASettings.verifying') : t('mFASettings.verifyAndEnable')}
-          </button>
+          {needsSsoReVerify ? (
+            <button
+              type="button"
+              data-testid="mfa-sso-reauth-retry"
+              onClick={() => { void onSsoReauth?.(); }}
+              disabled={isLoading || isSubmitting}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('mFASettings.verifyWithYourIdentityProvider')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleEnableSubmit}
+              disabled={isLoading || code.length !== DIGIT_COUNT}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoading ? t('mFASettings.verifying') : t('mFASettings.verifyAndEnable')}
+            </button>
+          )}
         </div>
       </div>
     );

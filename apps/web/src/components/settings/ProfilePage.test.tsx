@@ -14,7 +14,7 @@ vi.mock('../../stores/auth', () => ({
   )
 }));
 
-// #4018: the SSO re-auth callback's `?error=` codes surface as toasts, and
+// #4018: the SSO re-auth callback's `?ssoReauthError=` codes surface as toasts, and
 // runAction toasts its own failures. Mocked here (this component and runAction
 // resolve to the SAME Toast module) so the assertions are on the call rather
 // than on a container these tests never mount.
@@ -618,7 +618,7 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
   });
 
   it('toasts actionable copy for the reauth_not_fresh callback error', async () => {
-    window.history.replaceState(null, '', '/settings/profile?error=reauth_not_fresh');
+    window.history.replaceState(null, '', '/settings/profile?ssoReauthError=reauth_not_fresh');
 
     render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
 
@@ -634,8 +634,14 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
     ['session_invalid', 'Your session changed while you were verifying'],
     ['password_set', 'This account now has a password'],
     ['reauth_unavailable', 'temporarily unavailable'],
+    // Reachable only since the callback stopped bouncing reauth to /login: a
+    // provider disabled, or its config_version bumped by an admin edit,
+    // mid-flight.
+    ['provider_inactive', 'no longer available for this account'],
+    ['config_changed', 'settings changed while you were verifying'],
+    ['email_unverified', 'email address is not verified'],
   ])('toasts a specific message for the %s callback error', async (code, fragment) => {
-    window.history.replaceState(null, '', `/settings/profile?error=${code}`);
+    window.history.replaceState(null, '', `/settings/profile?ssoReauthError=${code}`);
 
     render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
 
@@ -647,7 +653,7 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
   // A code this build doesn't know must still say something — silence here
   // leaves the user staring at an unchanged page after a failed IdP trip.
   it('toasts a generic message for an unrecognized callback error code', async () => {
-    window.history.replaceState(null, '', '/settings/profile?error=some_new_code');
+    window.history.replaceState(null, '', '/settings/profile?ssoReauthError=some_new_code');
 
     render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
 
@@ -661,4 +667,85 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
     await screen.findByTestId('mfa-setup-start');
     expect(showToastMock).not.toHaveBeenCalled();
   });
+
+  // The param was previously a bare `error`, read but never removed, on an
+  // effect that depended on `[t]`. showToast has no dedupe by design, so when
+  // react-i18next swapped `t`'s identity after its async resource load the user
+  // saw the SAME toast twice; and because the param stayed in the URL, every
+  // reload (or a shared link) re-toasted forever.
+  it('strips ssoReauthError from the URL so a reload cannot re-toast', async () => {
+    window.history.replaceState(null, '', '/settings/profile?ssoReauthError=reauth_not_fresh');
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    expect(window.location.search).toBe('');
+  });
+
+  it('preserves other query params and the fragment when stripping its own', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/settings/profile?tab=security&ssoReauthError=session_invalid&ref=email#passkeys',
+    );
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get('ssoReauthError')).toBeNull();
+    expect(params.get('tab')).toBe('security');
+    expect(params.get('ref')).toBe('email');
+    expect(window.location.hash).toBe('#passkeys');
+  });
+
+  // The param is namespaced for the same reason ConnectSsoCard's is: a bare
+  // `error` is a name any feature on this page could reasonably claim, and this
+  // handler would then toast SSO copy for something else entirely.
+  it('ignores a bare ?error= param that is not ours', async () => {
+    window.history.replaceState(null, '', '/settings/profile?error=reauth_not_fresh');
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+    await screen.findByTestId('mfa-setup-start');
+
+    expect(showToastMock).not.toHaveBeenCalled();
+    // And it is left alone — it belongs to whoever put it there.
+    expect(window.location.search).toBe('?error=reauth_not_fresh');
+  });
+
+  // ProfilePage's `if (ok)` guard on the mount-time /mfa/setup call. Without it
+  // an unconditional setSsoSetupReady(true) still passed every other test in
+  // this file, and production would open a QR view with no QR in it.
+  it('stays on the status card when the grant-backed /auth/mfa/setup fails', async () => {
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/auth/mfa/setup') {
+        return makeJsonResponse({ error: 'Invalid credentials' }, false, 401);
+      }
+      return undefined as unknown as Response;
+    });
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
+
+    // Wait on the error banner, which the SAME .then chain sets. Anything that
+    // flipped the view would have flipped it by now, so the assertion below is
+    // not a race: dropping the `if (ok)` makes this test fail rather than pass
+    // on ordering luck.
+    await screen.findByText('Invalid credentials');
+
+    // The retry affordance lives on the status card, so that is where the user
+    // must stay — and the QR view must NOT open with an empty frame in it.
+    expect(screen.getByTestId('mfa-setup-start')).toBeTruthy();
+    expect(screen.queryByText(/Set up authenticator/i)).toBeNull();
+    expect(screen.queryByText(/QR code unavailable/i)).toBeNull();
+  });
+
+  // NOTE: the "grant lost" dead end (review finding 7) is NOT reachable from
+  // this component today, so it is pinned in MFASettings.test.tsx instead where
+  // the state combination is directly expressible. ProfilePage sets
+  // `ssoSetupReady` and `ssoReauthGrantId` in the SAME mount effect and clears
+  // them together, and the passwordless confirm view's only action is a
+  // full-page navigation to the IdP — so a reload drops the user on the status
+  // card rather than on a QR screen with a dead Verify button. See the report.
 });
