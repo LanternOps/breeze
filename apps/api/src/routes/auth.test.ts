@@ -2524,6 +2524,13 @@ describe('auth routes', () => {
       // SR2-24: /mfa/enable must use the consuming verifier so the accepted
       // step is recorded and cannot be replayed at login.
       expect(consumeMFAToken).toHaveBeenCalledWith('MFASECRET123', '123456', 'user-123');
+      // Regression for the mfa.ts:746 bug: the terminal resolveEnrollmentStepUp
+      // call must NOT re-pass currentPassword (only the gate call above
+      // should). If it did, resolveEnrollmentStepUp's road-1 short-circuit
+      // would re-run requireCurrentPasswordStepUp — a second verifyPassword
+      // call that double-charges the per-user step-up rate limit and runs
+      // argon2 twice for every successful enable.
+      expect(verifyPassword).toHaveBeenCalledTimes(1);
     });
 
     // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally

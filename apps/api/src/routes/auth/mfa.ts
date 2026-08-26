@@ -737,13 +737,20 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
 
   // #4018: same terminal burn for the passwordless SSO road — one
   // enroll_first_factor grant installs exactly one factor. `passwordAlreadyProven`
-  // because the password road was already satisfied at the gate above; without
-  // it this second call would re-verify the password and double-charge the
-  // per-user step-up rate limit.
+  // because the password road was already satisfied at the gate above.
+  //
+  // Deliberately omit `currentPassword` here (unlike the gate call above,
+  // which needs it to pick a road). resolveEnrollmentStepUp's road-1
+  // short-circuit (`if (input.currentPassword)`) runs BEFORE the
+  // `passwordAlreadyProven` check, so passing it again would re-run
+  // requireCurrentPasswordStepUp — a second argon2 verify and a second charge
+  // against the 5-per-5-minutes step-up rate limit for every successful
+  // enable, and a user on their 4th attempt would take a 429 here AFTER
+  // consumeMFAToken already burned their TOTP time-step above.
   const enrollmentConsumeError = await resolveEnrollmentStepUp(
     c,
     auth,
-    { currentPassword, ssoReauthGrantId },
+    { ssoReauthGrantId },
     { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true }
   );
   if (enrollmentConsumeError) return enrollmentConsumeError;
