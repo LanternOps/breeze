@@ -485,6 +485,9 @@ async function rehydrateKnownSubject(
       const run = await dependencyRead(() => deps.loadAiRun(row.authorizationPrincipalId, orgId));
       if (!run) throw new RecoveryAuthorizationDeniedError('principal_inactive');
       if (run.orgId !== orgId) throw new RecoveryAuthorizationDeniedError('principal_tenant_mismatch');
+      if (run.runStatus !== 'running') {
+        throw new RecoveryAuthorizationDeniedError('principal_inactive');
+      }
       if (
         !run.agentEnabled
         || run.agentDisabledAt
@@ -508,6 +511,7 @@ async function rehydrateKnownSubject(
           kind: 'ai_agent',
           runId: run.id,
           agentId: run.agentId,
+          runStatus: run.runStatus,
           effectivePolicyRevision: run.effectivePolicyRevision,
           effectiveEnabled: run.effectiveEnabled,
           effectiveMode: run.effectiveMode,

@@ -636,6 +636,52 @@ describe('authorizeQueuedRecoveryWork', () => {
     }));
   });
 
+  it.each([
+    'queued',
+    'awaiting_approval',
+    'completed',
+    'failed',
+    'cancelled',
+    'expired',
+    'skipped',
+  ] as const)('denies queued recovery effects when the captured AI run becomes non-executing: %s', async (runStatus) => {
+    let liveRunStatus = 'running';
+    const authorizeResilienceResources = vi.fn(async () => ({ resources: [] }));
+    const deps = dependencies({
+      loadAiRun: vi.fn(async (id, orgId) => ({
+        id,
+        orgId,
+        agentId: PRINCIPAL_ID,
+        runStatus: liveRunStatus,
+        agentEnabled: true,
+        agentDisabledAt: null,
+        effectiveEnabled: true,
+        effectiveMode: 'supervised',
+        effectiveToolAllowlist: ['execute_dr_plan'],
+        effectivePolicyRevision: 'policy-v4',
+        allowedSiteIds: ['11111111-1111-4111-8111-111111111111'],
+      })),
+      authorizeResilienceResources,
+    });
+    const captured = await captureRecoveryAuthorizationSubject(
+      auth({ kind: 'ai_agent', agentId: PRINCIPAL_ID, runId: RUN_ID }),
+      ORG_ID,
+      { operation: 'restore', requiredAiTool: 'execute_dr_plan' },
+      deps,
+    );
+    liveRunStatus = runStatus;
+    authorizeResilienceResources.mockClear();
+
+    await expect(authorizeQueuedRecoveryWork(
+      captured,
+      ORG_ID,
+      [{ kind: 'snapshot', id: '22222222-2222-4222-8222-222222222222', role: 'source' }],
+      { operation: 'restore', requiredAiTool: 'execute_dr_plan' },
+      deps,
+    )).rejects.toMatchObject({ code: 'principal_inactive', retriable: false });
+    expect(authorizeResilienceResources).not.toHaveBeenCalled();
+  });
+
   it('always performs live base-permission and lineage authorization even when the revision matches', async () => {
     const deps = dependencies();
     const captured = await captureRecoveryAuthorizationSubject(
