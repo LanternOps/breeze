@@ -171,6 +171,10 @@ vi.mock('./helpers', () => ({
   // upgrade tests: the resolver returns the candidate target version, and the
   // gate + compareAgentVersions (default 0 = no newer) decide whether to send it.
   resolvePinnedUpgradeTarget: vi.fn(async () => '0.66.0'),
+  // #4072 — permissive default so the edition gate is transparent to tests
+  // that don't exercise it. The edition-gate describe overrides per-test and
+  // restores this implementation in afterEach (clearAllMocks does not).
+  agentAcceptsServedEdition: vi.fn(() => true),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -1559,6 +1563,357 @@ describe('POST /agents/:id/heartbeat — controlled fleet rollout (promotion gat
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as { upgradeTo?: string | null };
     expect(body.upgradeTo).toBeFalsy();
+  });
+});
+
+// ---------------------------------------------------------------------
+// #4072 — artifact-edition offer gate. An agent build that would refuse the
+// served artifact edition (updater-side check, post-download) must not be
+// OFFERED the version at all: the refusal loop retries every ~60s forever
+// with the device stuck in 'updating'. These tests pin the wiring — every
+// offer path consults agentAcceptsServedEdition with THIS beat's payload
+// values and withholds on false. The predicate's own logic is unit-tested in
+// helpers.agentUpdatePolicy.test.ts.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', () => {
+  const agentDeviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'windows',
+    osVersion: 'Windows 11',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.105.1',
+    deviceRole: 'workstation',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const { agentAcceptsServedEdition, compareAgentVersions } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => true);
+    vi.mocked(compareAgentVersions).mockReturnValue(1); // target > reported everywhere
+  });
+
+  afterEach(async () => {
+    // Restore the permissive default for the rest of the file — clearAllMocks
+    // clears calls, not implementations, so a leaked `false` would silently
+    // withhold offers in every later upgrade test.
+    const { agentAcceptsServedEdition, compareAgentVersions } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => true);
+    vi.mocked(compareAgentVersions).mockReturnValue(0);
+  });
+
+  function prime(versionRows: unknown[]) {
+    selectMock.mockReturnValueOnce(selectChainResolving([agentDeviceRow]));
+    selectMock.mockReturnValue(selectChainResolving(versionRows));
+  }
+
+  async function beat(extra: Record<string, unknown> = {}) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, agentVersion: '0.105.1', ...extra }),
+    });
+  }
+
+  type OfferBody = { upgradeTo?: string; helperUpgradeTo?: string; watchdogUpgradeTo?: string };
+
+  it('withholds the agent upgrade offer when the build cannot accept the served edition', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    // Main-branch "no offer" serializes as null (matching the un-promoted
+    // rollout contract above), which agents treat the same as absent.
+    const body = (await resp.json()) as OfferBody;
+    expect(body.upgradeTo).toBeFalsy();
+  });
+
+  it('withholds the helper offer — including the ungated bootstrap install (no helperVersion reported)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat(); // no helperVersion → would bootstrap-offer latest
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as OfferBody;
+    expect(body.helperUpgradeTo).toBeUndefined();
+  });
+
+  it('withholds the watchdog offer — including the ungated bootstrap install', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    prime([{ version: '0.66.0' }]); // watchdogVersion absent on row + beat → bootstrap path
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as OfferBody;
+    expect(body.watchdogUpgradeTo).toBeUndefined();
+  });
+
+  it('offers normally when the build accepts the served edition (gate true)', async () => {
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as OfferBody;
+    expect(body.upgradeTo).toBe('0.66.0');
+  });
+
+  it('consults the gate with THIS beat’s payload values (reported edition + version), not stored columns', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat({ agentEdition: 'self-host' });
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(agentAcceptsServedEdition)).toHaveBeenCalledWith({
+      reportedEdition: 'self-host',
+      agentVersion: '0.105.1',
+    });
+  });
+
+  it('logs the withhold once per device per process, not per heartbeat', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+    __resetEditionWithheldWarnCacheForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      const withheldWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('#4072'));
+      expect(withheldWarns).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('routes the withhold to Sentry once per process (fleet-freeze observability parity with the pin-miss path)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+    __resetEditionWithheldWarnCacheForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      const withheldCaptures = vi
+        .mocked(captureException)
+        .mock.calls.filter((c) => String((c[0] as Error)?.message ?? c[0]).includes('#4072'));
+      expect(withheldCaptures).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('re-arms the per-device warn once the device accepts again (a later regression must re-log)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+    __resetEditionWithheldWarnCacheForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      prime([{ version: '0.66.0' }]);
+      await beat(); // withheld → warns
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => true);
+      prime([{ version: '0.66.0' }]);
+      await beat(); // accepting → clears the dedupe entry
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      prime([{ version: '0.66.0' }]);
+      await beat(); // regressed → must warn AGAIN
+      const withheldWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('#4072'));
+      expect(withheldWarns).toHaveLength(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  describe('watchdog failover branch', () => {
+    const sixteenMinutesAgo = new Date(Date.now() - 16 * 60 * 1000);
+
+    function primeWatchdog() {
+      selectMock.mockReturnValueOnce(
+        selectChainResolving([
+          {
+            id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+            architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: '0.65.20',
+            lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+          },
+        ]),
+      );
+      selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    }
+
+    async function watchdogBeat() {
+      return buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          role: 'watchdog', agentVersion: '0.65.20', agentEdition: 'hosted', watchdogState: 'FAILOVER',
+        }),
+      });
+    }
+
+    it('withholds BOTH the watchdog self-update and the agent recovery offer when the watchdog build cannot accept the served edition', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      primeWatchdog();
+
+      const resp = await watchdogBeat();
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as OfferBody;
+      expect(body.watchdogUpgradeTo).toBeUndefined();
+      expect(body.upgradeTo).toBeUndefined();
+    });
+
+    it('consults the gate with the WATCHDOG’s own payload (it is the binary that downloads in failover)', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      primeWatchdog();
+
+      const resp = await watchdogBeat();
+      expect(resp.status).toBe(200);
+      expect(vi.mocked(agentAcceptsServedEdition)).toHaveBeenCalledWith({
+        reportedEdition: 'hosted',
+        agentVersion: '0.65.20',
+      });
+      const body = (await resp.json()) as OfferBody;
+      expect(body.watchdogUpgradeTo).toBe('0.66.0');
+      expect(body.upgradeTo).toBe('0.66.0');
+    });
+
+    it('a SILENT watchdog falls back to the device row’s stored agentEdition — deployed watchdogs predate edition reporting, and withholding recovery from the whole hosted fleet would be the regression', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      selectMock.mockReturnValueOnce(
+        selectChainResolving([
+          {
+            id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+            architecture: 'amd64', agentVersion: '0.107.1', watchdogVersion: '0.107.1',
+            agentEdition: 'hosted',
+            lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+          },
+        ]),
+      );
+      selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+      // Watchdog beat WITHOUT agentEdition — every watchdog in the field today.
+      const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'watchdog', agentVersion: '0.107.1', watchdogState: 'FAILOVER' }),
+      });
+      expect(resp.status).toBe(200);
+      expect(vi.mocked(agentAcceptsServedEdition)).toHaveBeenCalledWith({
+        reportedEdition: 'hosted',
+        agentVersion: '0.107.1',
+      });
+    });
+
+    it('a withheld RECOVERY (main agent silent) logs at error level and captures to Sentry — a device stuck offline must never be silent', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      const { captureException } = await import('../../services/sentry');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+      __resetEditionWithheldWarnCacheForTests();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        primeWatchdog();
+        await watchdogBeat();
+        primeWatchdog();
+        await watchdogBeat();
+        const recoveryErrors = errorSpy.mock.calls.filter(
+          (c) => String(c[0]).includes('#4072') && String(c[0]).toLowerCase().includes('recovery'),
+        );
+        // Deduped per device per process — once, not per failover beat.
+        expect(recoveryErrors).toHaveLength(1);
+        const recoveryCaptures = vi
+          .mocked(captureException)
+          .mock.calls.filter((c) => String((c[0] as Error)?.message ?? c[0]).includes('recovery withheld'));
+        expect(recoveryCaptures).toHaveLength(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('a MAIN-agent beat re-arms the recovery error — a second wedge weeks later must alert again', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+      __resetEditionWithheldWarnCacheForTests();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        primeWatchdog();
+        await watchdogBeat(); // wedge #1 → recovery error
+        // Main agent comes back and beats (proof of recovery) — clears the entry.
+        prime([{ version: '0.66.0' }]);
+        await beat();
+        primeWatchdog();
+        await watchdogBeat(); // wedge #2 → must error AGAIN
+        const recoveryErrors = errorSpy.mock.calls.filter(
+          (c) => String(c[0]).includes('#4072') && String(c[0]).toLowerCase().includes('recovery'),
+        );
+        expect(recoveryErrors).toHaveLength(2);
+      } finally {
+        errorSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('a silent watchdog whose withhold came from the STORED edition reports that stored value in the log, not "none"', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+      __resetEditionWithheldWarnCacheForTests();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        selectMock.mockReturnValueOnce(
+          selectChainResolving([
+            {
+              id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+              architecture: 'amd64', agentVersion: '0.107.1', watchdogVersion: '0.107.1',
+              agentEdition: 'hosted',
+              lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+            },
+          ]),
+        );
+        selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+        const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ role: 'watchdog', agentVersion: '0.107.1', watchdogState: 'FAILOVER' }),
+        });
+        expect(resp.status).toBe(200);
+        const recoveryErrors = errorSpy.mock.calls.filter((c) => String(c[0]).includes('#4072'));
+        expect(recoveryErrors.length).toBeGreaterThan(0);
+        // The decision used the stored 'hosted' fallback — the log must print
+        // the value that decided, not the silent payload.
+        expect(String(recoveryErrors[0]?.[0])).toContain('reported edition=hosted');
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
   });
 });
 

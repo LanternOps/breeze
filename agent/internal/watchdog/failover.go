@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/netcache"
 )
 
@@ -122,11 +123,21 @@ func (c *FailoverClient) setHeaders(req *http.Request) {
 // and silently strips it, so shipping it was dead wire data. Diagnostic
 // journal entries reach the server via ShipLogs / the /logs endpoint instead.
 func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, restartStats RestartStats) (*HeartbeatResponse, error) {
+	// Build-edition capability signal (#4072): a reported edition tells the
+	// server this binary carries the one-way self-host → hosted allowance in
+	// updater.editionAllowed (both ship in the same build), so it may be
+	// offered this deployment's artifact edition. Silent (older) watchdogs
+	// fall back to server-side version-band inference.
+	edition := "self-host"
+	if hostpolicy.Enforced() {
+		edition = "hosted"
+	}
 	body := map[string]any{
 		"role":                     "watchdog",
 		"watchdogState":            currentState,
 		"status":                   "ok",
 		"agentVersion":             watchdogVersion,
+		"agentEdition":             edition,
 		"timestamp":                time.Now().UTC().Format(time.RFC3339),
 		"mainAgentRestartCount24h": restartStats.Count24h,
 		"flapDetected":             restartStats.FlapDetected,

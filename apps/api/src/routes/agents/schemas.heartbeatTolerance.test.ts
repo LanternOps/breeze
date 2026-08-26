@@ -526,3 +526,29 @@ describe('desktopAccess Linux reasons', () => {
     expect(parsed.desktopAccess?.reason).toBeUndefined();
   });
 });
+
+// #4072 — agentEdition is offer-load-bearing: a reported edition is the
+// capability signal agentAcceptsServedEdition keys on, and a value swallowed
+// at this layer makes the agent look silent (offers withheld from ≥0.105.0
+// builds on a hosted server). Pin both directions of the wire contract here,
+// where the REAL schema runs (heartbeat.test.ts stubs the validator).
+describe('heartbeatSchema — agentEdition passthrough (#4072)', () => {
+  const minimal = {
+    status: 'ok' as const,
+    agentVersion: '0.109.0',
+  };
+
+  it.each(['self-host', 'hosted'] as const)('passes agentEdition %s through parse', (edition) => {
+    const result = heartbeatSchema.safeParse({ ...minimal, agentEdition: edition });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentEdition).toBe(edition);
+  });
+
+  it('coerces an unknown edition to undefined WITHOUT rejecting the heartbeat (future edition must degrade to silent)', () => {
+    const result = heartbeatSchema.safeParse({ ...minimal, agentEdition: 'enterprise' });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentEdition).toBeUndefined();
+  });
+});
