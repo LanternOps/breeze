@@ -131,11 +131,11 @@ export type SoftwareInventoryObservationV2 = {
 - Cursor payloads are opaque, versioned, and bound to the active search/filter/auth-scope fingerprint. A malformed or mismatched cursor returns 400.
 - Option order is the normalized visible label followed by UUID; the cursor uses the same tuple.
 
-- [ ] **Step 1: Write unit and mount-order RED tests**
+- [x] **Step 1: Write unit and mount-order RED tests**
 
 Add literal cases for zero rows, exactly 50 rows, 51 rows with a cursor, case-insensitive hostname/display-name search, each filter and combinations, malformed/mismatched cursors, off-page `includeIds`, inaccessible IDs, tied labels, the 100/500 caps, and an unauthorized explicit `orgId`. Add an assembled-router test proving `/devices/options` reaches the options handler instead of `GET /:id`.
 
-- [ ] **Step 2: Write the real-PostgreSQL RED matrix**
+- [x] **Step 2: Write the real-PostgreSQL RED matrix**
 
 Create two partners, two organizations, and two sites with known-valid foreign IDs. Assert search and `includeIds` never expose foreign labels, a forbidden `siteId` returns 403, and every denied request creates zero side effects. Generate 10,000 devices and assert early, middle, and final matches are reachable and cursor traversal neither omits nor duplicates IDs.
 
@@ -148,7 +148,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: the route/module does not exist and the assembled router currently routes `/options` as a device ID.
 
-- [ ] **Step 4: Implement the selector and cursor**
+- [x] **Step 4: Implement the selector and cursor**
 
 Query `devices` joined to `sites`. Apply `auth.orgCondition`, allowed-site restrictions, optional authorized `orgId`, non-ephemeral/terminal-device rules, search and filters before ordering/paging. Hydrate only authorized `includeIds`, union them outside paging, and compute `page.returned` from the final union. Mount `optionsRoutes` after `customFieldValuesRoutes` and before `coreRoutes`.
 
@@ -201,11 +201,11 @@ type UseDeviceOptionsResult = {
 };
 ```
 
-- [ ] **Step 1: Write hook RED tests**
+- [x] **Step 1: Write hook RED tests**
 
 Test all six states and `canSubmit`. With deferred fetches, request scope A, switch to B, resolve B then A, and assert A never overwrites B. Old labels may remain visible only as `stale`, with submission blocked. Test `includeIds`, pagination de-duplication, abort/retry, empty search, and the resolved truncation rule.
 
-- [ ] **Step 2: Write picker and selector RED tests**
+- [x] **Step 2: Write picker and selector RED tests**
 
 Assert explicit loading/error/stale/truncated UI, no false empty state during a request, and disabled submit when any selected ID is unresolved. Assert `DeviceTargetSelector` never calls general `/devices`, searches server-side, and exposes select-all only after `requireCompleteSet` pagination completes.
 
@@ -217,11 +217,11 @@ pnpm --filter @breeze/web exec vitest run src/hooks/useDeviceOptions.test.tsx sr
 
 Expected: the hook/picker do not exist and the selector still fetches the general list.
 
-- [ ] **Step 4: Implement generation/abort semantics**
+- [x] **Step 4: Implement generation/abort semantics**
 
 Give each logical query a monotonically increasing generation and its own `AbortController`. Normalize options by ID, ignore late generations, preserve old labels as stale only, union page results without duplicates, and set `truncated` only for unresolved `includeIds` or incomplete explicitly exhaustive requests.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```bash
 pnpm --filter @breeze/web exec vitest run src/hooks/useDeviceOptions.test.tsx src/components/filters/DeviceOptionPicker.test.tsx src/components/filters/DeviceTargetSelector.test.tsx
@@ -258,11 +258,11 @@ pnpm --filter @breeze/web exec vitest run src/components/scripts/ScriptsPage.tes
 
 Expected: at least the beyond-prefix and blocked-submit assertions fail against local list fetching.
 
-- [ ] **Step 3: Migrate Wave A and run GREEN**
+- [x] **Step 3: Migrate Wave A and run GREEN**
 
 Use Task 2 directly; delete per-page high-limit fetches and local substring filters. Preserve domain filters and callback contracts.
 
-- [ ] **Step 4: Repeat strict RED/GREEN for Waves B and C**
+- [x] **Step 4: Repeat strict RED/GREEN for Waves B and C**
 
 Run adjacent targeted suites after each wave. In every organization-specific surface, assert the request includes authorized `orgId`. Do not add a silent fallback to `/devices`.
 
@@ -291,11 +291,11 @@ git commit -m "fix(web): migrate device selectors to server options"
 - Re-enrollment rotates credentials/metadata, sets or preserves `pending`, and leaves the exact previous `lastSeenAt` untouched.
 - Only an authenticated main-agent heartbeat advances `lastSeenAt` and makes a nonterminal device online; watchdog heartbeat never does.
 
-- [ ] **Step 1: Write RED unit tests**
+- [x] **Step 1: Write RED unit tests**
 
 Assert shared constant/validator parity; fresh and re-enrollment behavior; pending/offline to online on main heartbeat; watchdog reachability non-mutation; and existing watchdog field updates.
 
-- [ ] **Step 2: Write concurrent real-PostgreSQL RED**
+- [x] **Step 2: Write concurrent real-PostgreSQL RED**
 
 Race re-enrollment with a valid main heartbeat and assert no `40P01`. Control commit ordering and prove final reachability reflects the last committed real heartbeat, never enrollment time.
 
@@ -309,7 +309,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: enrollment currently writes `online` and advances `lastSeenAt`; the new assertions fail.
 
-- [ ] **Step 4: Implement minimal reachability changes**
+- [x] **Step 4: Implement minimal reachability changes**
 
 Set both enrollment branches to `pending`; omit `lastSeenAt` on insert and from the re-enrollment update. Preserve the existing main/watchdog split and terminal-device guard.
 
@@ -356,11 +356,11 @@ export async function recordAgentHealthObservation(input: {
 }): Promise<{ observationId: string; becameLatest: boolean }>;
 ```
 
-- [ ] **Step 1: Reverify the migration filename, then write parser RED tests**
+- [x] **Step 1: Reverify the migration filename, then write parser RED tests**
 
 Run `bash scripts/check-migration-naming.sh`; the verified replacement-branch chronology reserves `2026-09-12-a-agent-health-observations.sql` after shipped main migrations through `2026-09-10`. Test old omission, current unversioned `healthStatus`, valid v1, mismatched optional wire device ID, unknown version, and malformed components. Every unsupported health case must leave the otherwise valid heartbeat accepted.
 
-- [ ] **Step 2: Write service and real-PostgreSQL RED tests**
+- [x] **Step 2: Write service and real-PostgreSQL RED tests**
 
 Assert the service locks the authenticated device `FOR KEY SHARE` before child insert. In real PostgreSQL prove cross-org isolation, forced RLS, denied observation UPDATE, allowed cascade deletion, complete cascade/restamp/export registration, exact-retry idempotency, equivocation rejection, and deterministic latest projection for duplicate/out-of-order receipts. Generic RLS coverage still expects structural policies for all four DML operations; prove immutability through revoked app-role UPDATE privilege plus a database trigger, not by omitting the UPDATE policy.
 
@@ -373,7 +373,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: schema/table/service are absent and the new contracts fail.
 
-- [ ] **Step 4: Add the additive schema, migration, parser, and service**
+- [x] **Step 4: Add the additive schema, migration, parser, and service**
 
 Enable and force RLS in the creation migration. Register both tables in all applicable contracts; classify `components` as `excludedOpen`. In a short system transaction, lock the authenticated device, verify its organization, insert immutable evidence, then compare-and-set latest using `(receivedAt, observationId)`. Persist authoritative `deviceId` from authenticated context and reject only an explicit unequal wire value from persistence, without rejecting reachability. Because startup blanket grants would otherwise restore UPDATE, modify `ensureAppRole.ts` to re-revoke observation UPDATE on every boot; retain a structural UPDATE RLS policy for coverage and use the trigger/privilege boundary as immutability enforcement.
 
@@ -408,11 +408,11 @@ git commit -m "fix(db): persist versioned agent health observations"
 - The Go snapshot maps `health.Healthy -> healthy`, `health.Degraded -> warning`, `health.Unhealthy -> error`, and `health.Unknown -> unknown`; `Check.Message` becomes optional component `reason`; `metricsAvailable` is `boolean | null`.
 - Only the main agent sends `healthStatus`. Health persistence never writes `devices.status`.
 
-- [ ] **Step 1: Write API RED tests**
+- [x] **Step 1: Write API RED tests**
 
 Prove valid v1 health is recorded after main heartbeat, omission writes no observation, health insert failure is captured/logged without failing reachability, and only the existing main branch changes reachability. For the read route, prove site/tenant denial, no foreign metadata leak, and explicit `unknown` with no observation.
 
-- [ ] **Step 2: Write Go RED and race tests**
+- [x] **Step 2: Write Go RED and race tests**
 
 Assert every status/reason mapping, schema version, timestamp, metrics availability, optional device identity, and a self-consistent immutable snapshot while component updates happen concurrently.
 
@@ -425,11 +425,11 @@ pnpm --filter @breeze/api exec vitest run src/routes/agents/heartbeat.test.ts sr
 
 Expected: no observation call/read route exists and Go still emits an untyped map.
 
-- [ ] **Step 4: Implement post-transaction ingest and typed producer**
+- [x] **Step 4: Implement post-transaction ingest and typed producer**
 
 Call `recordAgentHealthObservation` immediately after `withDbAccessContext(...)` returns and after `if (scoped instanceof Response) return scoped;`, where the request-long transaction has released. The service itself uses `runOutsideDbContext`, a short system transaction, and `FOR KEY SHARE`. Treat persistence failure as health-observability failure, not heartbeat failure. Replace `Summary() map[string]any` upload use with a locked typed immutable snapshot, retain the `healthStatus` JSON key, and remove the dead/unconsumed `userHelpers` health-map mutation rather than carrying it into the typed payload.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/agents/heartbeat.test.ts src/routes/devices/health.test.ts src/services/agentHealthObservations.test.ts
@@ -480,11 +480,11 @@ type ExecuteScriptOnDevicesSuccess = {
 
 - Authentication, malformed input, missing script, and internal failure remain HTTP errors. Per-target conditions become entries. `queued` means all distinct targets admitted, `partially_queued` means a mix, and `rejected` means none admitted.
 
-- [ ] **Step 1: Write service/route RED matrix**
+- [x] **Step 1: Write service/route RED matrix**
 
 Cover admitted, not found/inaccessible, site denied, script-org mismatch, OS mismatch, decommissioned, maintenance suppressed, dispatch refused, and dispatched. Assert stable codes, first-occurrence de-duplication, no double dispatch, no vanished IDs, exact per-org batch IDs, and the exact route body.
 
-- [ ] **Step 2: Write real-PostgreSQL and caller RED tests**
+- [x] **Step 2: Write real-PostgreSQL and caller RED tests**
 
 Use two partners, two orgs, and two sites with known foreign IDs; assert no commands, executions, or batches for denied targets and no metadata leak. Assert mobile and remediation callers handle zero admission without indexing an empty result or recording false execution.
 
@@ -497,7 +497,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: targets are currently dropped or globally rejected and callers consume the legacy split result.
 
-- [ ] **Step 4: Implement one admission map and migrate every caller**
+- [x] **Step 4: Implement one admission map and migrate every caller**
 
 Deduplicate before querying while preserving order. Initialize one entry per distinct request, fill it through authorization, compatibility, maintenance, and dispatch, and dispatch admitted targets only. Keep request/script/internal errors all-or-nothing. Preserve existing execution/batch ownership and failed-dispatch rows; admission wraps those writes rather than duplicating them.
 
@@ -524,7 +524,7 @@ git commit -m "fix(api): return explicit script admission results"
 - The modal callback is `(input) => Promise<ScriptAdmissionResult>`.
 - Presentation states are `admitted | partially_admitted | rejected`; none means completed/succeeded.
 
-- [ ] **Step 1: Write RED UI tests**
+- [x] **Step 1: Write RED UI tests**
 
 Require the typed callback; assert all-admitted says queued/admitted, partial keeps the modal open with every target/reason, rejected remains open past 1.5 seconds, and transport failure remains distinct from admission rejection.
 
@@ -536,11 +536,11 @@ pnpm --filter @breeze/web exec vitest run src/components/scripts/ScriptExecution
 
 Expected: the callback is `Promise<void>` and a successful request renders terminal success.
 
-- [ ] **Step 3: Render the shared result directly**
+- [x] **Step 3: Render the shared result directly**
 
 Return parsed admission from both page callbacks. Render every admitted/excluded/suppressed/denied target and reason. Refresh execution history only when at least one target is admitted; never infer completion from HTTP 201.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 pnpm --filter @breeze/web exec vitest run src/components/scripts/ScriptExecutionModal.test.tsx src/components/scripts/ScriptsPage.test.tsx src/components/scripts/ScriptExecutionsPage.test.tsx
@@ -604,11 +604,11 @@ reconcileAutomationRun(runId: string): Promise<void>;
 - Table constraints: unique `(run_id, device_id, action_index)`; partial unique indexes for non-null `command_id`, `script_execution_id`, and `deployment_result_id`; indexes on `run_id`, `device_id`, `org_id`, and `(status, updated_at)`. Correlation IDs are not FKs; table FKs only to runs, devices, and organizations.
 - Terminal states are `succeeded`, `failed`, `skipped`, `timed_out`, and `cancelled`. Terminal rows never regress; duplicates are no-ops; a late real result replaces only a provisional reaper timeout under existing script late-result rules. `reconcileAutomationRun` is the sole parent terminal aggregate writer once action rows exist.
 
-- [ ] **Step 1: Reverify migration ordering and write state-machine RED**
+- [x] **Step 1: Reverify migration ordering and write state-machine RED**
 
 Test every allowed transition, forbidden terminal regression, duplicates, reordered terminal events, provisional timeout replacement, action-index uniqueness, and aggregate behavior while any action is nonterminal.
 
-- [ ] **Step 2: Write real-PostgreSQL tenant/locking RED**
+- [x] **Step 2: Write real-PostgreSQL tenant/locking RED**
 
 Prove forced RLS, cross-org denial, all unique constraints, device/org cascade and restamp, export classification, and `FOR KEY SHARE` before seeding a device child row.
 
@@ -621,7 +621,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: enum/table/service do not exist.
 
-- [ ] **Step 4: Implement schema and single state service**
+- [x] **Step 4: Implement schema and single state service**
 
 Create the table with direct `org_id`, forced RLS, constraints/indexes, and all registries. Use guarded compare-and-set updates and recompute parent aggregates from child rows rather than incrementing counters. Store output only after existing redaction chokepoints.
 
@@ -651,7 +651,7 @@ git commit -m "fix(db): persist automation action terminal state"
 - `run_script`, raw command, and software deployment remain nonterminal after accepted dispatch. Synchronous actions may terminalize immediately.
 - Original normalized `actionIndex` survives filtering/deployment batching.
 
-- [ ] **Step 1: Write runtime RED tests**
+- [x] **Step 1: Write runtime RED tests**
 
 Assert script dispatch records execution and command IDs and leaves action/device/run nonterminal; raw command records command ID; software records the exact per-device `deployment_results.id`; mixed actions preserve original indexes; synchronous actions terminalize; unexecuted actions after `onFailure: stop|notify` become `skipped`; and refusal fails only the affected action under current on-failure semantics.
 
@@ -663,11 +663,11 @@ pnpm --filter @breeze/api exec vitest run src/services/automationRuntime.runScri
 
 Expected: runtime currently reports dispatch as success, reindexes deployment actions, and finalizes parents immediately.
 
-- [ ] **Step 3: Seed and link action rows at runtime**
+- [x] **Step 3: Seed and link action rows at runtime**
 
 Seed rows before each device action list. Return exact correlation IDs from dispatch handlers and call `recordAutomationActionDispatch`. Retain original indexes instead of using filtered-array `.entries()`. Replace direct success finalization in `finally` with `reconcileAutomationRun`; keep `completedAt` null while any admitted child is nonterminal.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/automationActionResults.test.ts src/services/automationRuntime.runScript.test.ts src/services/automationRuntime.deploySoftware.test.ts src/services/automationRuntime.test.ts
@@ -695,11 +695,11 @@ git commit -m "fix(api): keep automation dispatch nonterminal"
 - HTTP and WebSocket command-result transports both call the same terminal service only after their guarded `device_commands` compare-and-set succeeds, including validation-failure terminal paths.
 - `handleScriptResult` reconciles by `script_execution_id`; `applySoftwareInstallResult` returns the effective transitioned `deployment_results.id`; explicit cancellation and reapers reconcile only after their source row transition succeeds.
 
-- [ ] **Step 1: Write transport/result RED matrix**
+- [x] **Step 1: Write transport/result RED matrix**
 
 Cover script result, raw command result, deployment result, explicit script cancellation, command timeout, script-execution reaper, deployment reaper, duplicate, reversed arrival, and allowed late result after provisional timeout. Run command cases through both HTTP and WebSocket seams and assert identical child/parent state.
 
-- [ ] **Step 2: Write concurrency and real-PostgreSQL RED**
+- [x] **Step 2: Write concurrency and real-PostgreSQL RED**
 
 Race duplicate results and assert exactly one effective terminal transition, stable aggregates, and no counter drift. Prove delivered remains running and the last action alone terminalizes the parent.
 
@@ -712,7 +712,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: source results currently do not update durable action rows and parents can already be terminal.
 
-- [ ] **Step 4: Wire every guarded terminal seam**
+- [x] **Step 4: Wire every guarded terminal seam**
 
 Resolve command action rows by `command_id` after transport CAS, script rows by `script_execution_id` after guarded script update, and deployments by the transitioned `deployment_result_id`. Invoke the same service after effective cancellation/reaper transitions. Recompute device/run aggregates after each effective child change; do not add independent increment counters.
 
@@ -766,11 +766,11 @@ ingestSoftwareInventoryReport(input: {
 
 - The service owns existing ordered vulnerability-row locking/relink behavior. Rejected evidence is retained but never deletes/reinserts visible inventory. Duplicate observation IDs are idempotent and cannot bind to another device/org.
 
-- [ ] **Step 1: Reverify migration ordering and write parser/acceptance RED**
+- [x] **Step 1: Reverify migration ordering and write parser/acceptance RED**
 
 Cover legacy non-empty before v2, legacy empty retention, legacy after first v2, accepted complete v2, partial/failed/truncated retention, duplicate ID, cross-device collision, out-of-order evidence, source-set change, and the exact collapse threshold: prior count >=50, new count <10%, unchanged sources -> `rejected_count_collapse`.
 
-- [ ] **Step 2: Write locking/link and real-PostgreSQL RED**
+- [x] **Step 2: Write locking/link and real-PostgreSQL RED**
 
 Prove an accepted replacement preserves ordered vulnerability lock/relink behavior; rejected evidence leaves visible inventory and links byte-identical. Prove forced RLS, denied observation UPDATE, cascade/restamp/export registration, evidence FKs, and device `FOR KEY SHARE` before hot child insert.
 
@@ -783,7 +783,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: legacy empty currently wipes inventory and no observation contract exists.
 
-- [ ] **Step 4: Add additive evidence/projection storage and acceptance**
+- [x] **Step 4: Add additive evidence/projection storage and acceptance**
 
 Enable/force RLS and register all tables/columns. Classify source arrays/raw items as `excludedOpen`; keep acceptance/reason fields included. Move wipe/reinsert plus vulnerability locking/relink behind acceptance. Legacy non-empty updates visible inventory only before an accepted v2 projection; legacy empty never deletes. A short transaction locks the device before observation insert and does not update `devices`.
 
@@ -817,11 +817,11 @@ git commit -m "fix(db): retain versioned software inventory evidence"
 - Source identities and failure codes are stable constants. Every platform has a 5,000-item bound and reports `truncated = true` when hit.
 - Completeness is `failed` when all applicable sources fail, `partial` when some fail or truncation occurs, and `complete` only when all applicable sources succeed without truncation.
 
-- [ ] **Step 1: Write per-platform RED tests**
+- [x] **Step 1: Write per-platform RED tests**
 
 Assert expected/succeeded/failed source identities/codes, all/some/no failure completeness, 5,000 cap including Windows, `itemCount === len(items)`, UUID observation identity unique per collection, and timestamp/collector version.
 
-- [ ] **Step 2: Write compatibility-caller RED tests**
+- [x] **Step 2: Write compatibility-caller RED tests**
 
 Prove existing uninstall verification, change tracking, and test-feature callers retain the slice/error API and cannot treat partial evidence as proof of absence. Prove only `sendSoftwareInventory` uploads v2.
 
@@ -833,11 +833,11 @@ Prove existing uninstall verification, change tracking, and test-feature callers
 
 Expected: collectors return only items/error and cap/source evidence is not on the wire.
 
-- [ ] **Step 4: Implement typed collection without breaking callers**
+- [x] **Step 4: Implement typed collection without breaking callers**
 
 Refactor each build-tag collector to return items plus source evidence using constants, then adapt `Collect()` as a compatibility wrapper. Stamp `observedAt` after collection and set `collectorVersion` from the running agent version. Emit v2 only from `sendSoftwareInventory`.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```bash
 (cd agent && go test -race ./internal/collectors ./internal/heartbeat)
@@ -857,7 +857,7 @@ git commit -m "fix(agent): report software inventory completeness"
 - A finding can resolve by absence only from the device's current latest accepted, complete, nontruncated, noncollapsed v2 observation whose server `receivedAt` is later than `detectedAt`.
 - Resolution writes that exact observation ID to `resolvedObservationId` in the same guarded update. Positive detection from visible inventory remains independent of absence eligibility.
 
-- [ ] **Step 1: Write evidence-gating RED**
+- [x] **Step 1: Write evidence-gating RED**
 
 Assert partial, failed, truncated, collapsed, legacy, and stale observations cannot resolve by absence. Assert a current complete accepted observation received after detection resolves the absent finding and records its exact ID; one device cannot resolve another; a newer rejected observation authorizes nothing; reruns are idempotent and preserve the original resolving ID.
 
@@ -869,7 +869,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: correlation currently resolves unmatched open software findings without accepted observation evidence.
 
-- [ ] **Step 3: Gate the absence update**
+- [x] **Step 3: Gate the absence update**
 
 Join each candidate to `device_software_inventory_state`, require its latest accepted observation and `absenceResolutionEligible`, compare server `receivedAt > detectedAt`, and set `resolvedObservationId` atomically with resolved status/time. Leave positive correlation against visible inventory unchanged.
 
