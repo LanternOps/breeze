@@ -673,7 +673,19 @@ type LinkRejectReason =
  * MUST be called inside withSystemDbAccessContext (/sso/callback is
  * unauthenticated; getRefreshFamily establishes its own system context).
  */
-async function validateSessionBinding(
+/**
+ * Exported for `ssoReauthBinding.integration.test.ts` (#4049). Every DB read in
+ * here was previously asserted only through `mockReturnValueOnce` chains, which
+ * verify the ORDER of calls rather than that the queries return the right rows
+ * under real RLS policies and real column types. The re-check exists to catch a
+ * security posture that changed between `/reauth/start` and the callback — a
+ * property a mock-ordering test structurally cannot demonstrate.
+ *
+ * Driving it through the HTTP callback instead would need an IdP, the state
+ * cookie and its HMAC; the binding logic is the part with the gap, so it is
+ * what the suite pins.
+ */
+export async function validateSessionBinding(
   session: typeof ssoSessions.$inferSelect,
   provider: typeof ssoProviders.$inferSelect,
   boundUserId: string,
