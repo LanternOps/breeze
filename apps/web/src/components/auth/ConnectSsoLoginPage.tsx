@@ -1,0 +1,276 @@
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import MFAVerifyForm from './MFAVerifyForm';
+import {
+  useAuthStore,
+  apiSsoLinkPending,
+  apiSsoLinkConfirm,
+  apiVerifyMFA,
+  apiVerifyPasskeyMFA,
+  apiSendSmsMfaCode,
+  fetchAndApplyPreferences
+} from '../../stores/auth';
+import type { MfaMethod } from '../../stores/auth';
+import { navigateTo } from '../../lib/navigation';
+// Initializes the shared i18next singleton (this page's layout has no Sidebar).
+import '../../lib/i18n';
+
+/**
+ * #4067 — "Connect your sign-in" (link-on-first-SSO-login).
+ *
+ * The SSO callback verified the IdP assertion, matched a password-holding
+ * account, parked the identity server-side, and bound the ceremony to this
+ * browser with an HttpOnly cookie. This page collects the second proof — the
+ * account password (plus the account's Breeze-held MFA factor when enrolled) —
+ * then completes the login with the normal SSO session.
+ */
+export default function ConnectSsoLoginPage() {
+  const { t } = useTranslation('auth');
+  const login = useAuthStore((state) => state.login);
+
+  const [pending, setPending] = useState<{ email: string; providerName: string | null } | null>(null);
+  const [expired, setExpired] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(false);
+
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [tempToken, setTempToken] = useState<string>();
+  const [mfaMethod, setMfaMethod] = useState<MfaMethod>('totp');
+  const [passkeyAvailable, setPasskeyAvailable] = useState(false);
+  const [phoneLast4, setPhoneLast4] = useState<string>();
+  const [smsSending, setSmsSending] = useState(false);
+  const [smsSent, setSmsSent] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiSsoLinkPending().then((result) => {
+      if (cancelled) return;
+      if (result.success) {
+        setPending({ email: result.email, providerName: result.providerName });
+      } else {
+        setExpired(true);
+      }
+      setChecking(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const completeLogin = async (result: {
+    user?: unknown;
+    tokens?: unknown;
+    redirectPath?: string;
+    requiresSetup?: boolean;
+  }) => {
+    if (result.user && result.tokens) {
+      login(result.user as never, result.tokens as never);
+      fetchAndApplyPreferences();
+      await navigateTo(result.requiresSetup ? '/setup' : (result.redirectPath || '/'));
+      return true;
+    }
+    return false;
+  };
+
+  const handleConfirm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password || loading) return;
+    setLoading(true);
+    setError(undefined);
+
+    const result = await apiSsoLinkConfirm(password);
+
+    if (!result.success) {
+      if (result.expired) {
+        setExpired(true);
+      } else if (result.identityInUse) {
+        setError(t('connectSso.identityInUse', {
+          defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
+        }));
+      } else {
+        setError(result.error);
+      }
+      setLoading(false);
+      return;
+    }
+
+    if (result.mfaRequired) {
+      setMfaRequired(true);
+      setTempToken(result.tempToken);
+      setMfaMethod(result.mfaMethod || 'totp');
+      setPasskeyAvailable(result.passkeyAvailable === true);
+      setPhoneLast4(result.phoneLast4);
+      setSmsSent(false);
+      setLoading(false);
+      return;
+    }
+
+    if (await completeLogin(result)) return;
+    setLoading(false);
+  };
+
+  const handleMfaVerify = async (code: string) => {
+    if (!tempToken) return;
+    setLoading(true);
+    setError(undefined);
+
+    const result = await apiVerifyMFA(code, tempToken, mfaMethod);
+    if (!result.success) {
+      setError(result.error);
+      setLoading(false);
+      return;
+    }
+    if (await completeLogin(result)) return;
+    setLoading(false);
+  };
+
+  const handlePasskeyMfaVerify = async () => {
+    if (!tempToken) return;
+    setLoading(true);
+    setError(undefined);
+
+    const result = await apiVerifyPasskeyMFA(tempToken);
+    if (!result.success) {
+      setError(result.error);
+      setLoading(false);
+      return;
+    }
+    if (await completeLogin(result)) return;
+    setLoading(false);
+  };
+
+  const handleSendSmsCode = async () => {
+    if (!tempToken) return;
+    setSmsSending(true);
+    setError(undefined);
+    const result = await apiSendSmsMfaCode(tempToken);
+    if (!result.success) {
+      setError(result.error);
+    } else {
+      setSmsSent(true);
+    }
+    setSmsSending(false);
+  };
+
+  if (checking) {
+    return <div data-testid="connect-sso-checking" className="u-min-h-px-160" />;
+  }
+
+  if (expired) {
+    return (
+      <div data-testid="connect-sso-expired">
+        <div className="mb-8">
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">
+            {t('connectSso.expiredTitle', { defaultValue: 'This sign-in link has expired' })}
+          </h1>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t('connectSso.expiredBody', {
+            defaultValue: 'For your security, the connection window is short. Start single sign-on again to get a new one.',
+          })}
+        </p>
+        <a
+          href="/login"
+          data-testid="connect-sso-back-to-login"
+          className="mt-6 flex w-full items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+        >
+          {t('connectSso.backToLogin', { defaultValue: 'Back to sign in' })}
+        </a>
+      </div>
+    );
+  }
+
+  if (mfaRequired) {
+    return (
+      <div>
+        <div className="mb-8">
+          <p className="text-sm font-medium text-muted-foreground">{t('login.mfa.eyebrow', { defaultValue: 'Almost there' })}</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">{t('login.mfa.title', { defaultValue: 'Verify your identity' })}</h1>
+        </div>
+        <MFAVerifyForm
+          onSubmit={handleMfaVerify}
+          onPasskeyVerify={handlePasskeyMfaVerify}
+          errorMessage={error}
+          loading={loading}
+          mfaMethod={mfaMethod}
+          passkeyAvailable={passkeyAvailable}
+          phoneLast4={phoneLast4}
+          onSendSmsCode={handleSendSmsCode}
+          smsSending={smsSending}
+          smsSent={smsSent}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="connect-sso-page">
+      <div className="mb-8">
+        <p className="text-sm font-medium text-muted-foreground">
+          {t('connectSso.eyebrow', { defaultValue: 'One more step' })}
+        </p>
+        <h1 className="mt-1 text-2xl font-bold tracking-tight">
+          {t('connectSso.title', { defaultValue: 'Connect your sign-in' })}
+        </h1>
+      </div>
+
+      <p className="mb-6 text-sm text-muted-foreground">
+        {t('connectSso.explainer', {
+          defaultValue:
+            'Your single sign-on succeeded, and it matches an existing account. Enter that account’s password once to connect {{provider}} to it — future sign-ins will be one click.',
+          provider: pending?.providerName || t('connectSso.genericProvider', { defaultValue: 'single sign-on' }),
+        })}
+      </p>
+
+      <form onSubmit={handleConfirm} data-testid="connect-sso-form">
+        <div className="mb-4">
+          <label className="mb-1 block text-sm font-medium" htmlFor="connect-sso-email">
+            {t('connectSso.emailLabel', { defaultValue: 'Account' })}
+          </label>
+          <input
+            id="connect-sso-email"
+            type="email"
+            value={pending?.email ?? ''}
+            disabled
+            data-testid="connect-sso-email"
+            className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground"
+          />
+        </div>
+        <div className="mb-4">
+          <label className="mb-1 block text-sm font-medium" htmlFor="connect-sso-password">
+            {t('connectSso.passwordLabel', { defaultValue: 'Password' })}
+          </label>
+          <input
+            id="connect-sso-password"
+            type="password"
+            autoComplete="current-password"
+            autoFocus
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            data-testid="connect-sso-password"
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          />
+        </div>
+        {error && (
+          <div
+            role="alert"
+            data-testid="connect-sso-error"
+            className="mb-4 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200"
+          >
+            {error}
+          </div>
+        )}
+        <button
+          type="submit"
+          disabled={loading || !password}
+          data-testid="connect-sso-submit"
+          className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        >
+          {loading
+            ? t('connectSso.connecting', { defaultValue: 'Connecting…' })
+            : t('connectSso.submit', { defaultValue: 'Connect and sign in' })}
+        </button>
+      </form>
+    </div>
+  );
+}
