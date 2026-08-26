@@ -551,7 +551,33 @@ export async function autoMigrate(): Promise<void> {
     //        role isn't created first. Idempotent — safe on every run. We
     //        still call ensureAppRole again at step 7b so any tables created
     //        in this loop receive the privilege grants.
-    await ensureAppRole();
+    //
+    //        If ensureAppRole was skipped (no password env var reached this
+    //        process — e.g. turbo stripped it) AND breeze_app doesn't already
+    //        exist (e.g. a fresh/scratch DB that compose didn't pre-provision),
+    //        fail fast here with a pointed error instead of letting the
+    //        migration loop run ~135 files deep and die on the opaque
+    //        Postgres 42704 `role "breeze_app" does not exist` (#4048).
+    const roleEnsured = await ensureAppRole();
+    if (!roleEnsured) {
+      const roleRow = await client`
+        SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'breeze_app') AS exists
+      `;
+      const breezeAppRoleExists = Boolean(roleRow[0]?.exists);
+      if (!breezeAppRoleExists) {
+        throw new Error(
+          '[auto-migrate] Refusing to proceed: the `breeze_app` role does not exist and ' +
+            'ensureAppRole() could not create it because neither BREEZE_APP_DB_PASSWORD nor ' +
+            'POSTGRES_PASSWORD is set in this process\'s environment. Set one of those two ' +
+            'variables. If you invoked this via `pnpm db:migrate` (which runs through turbo), ' +
+            'confirm the variable is listed in turbo.json\'s `globalPassThroughEnv` — turbo ' +
+            'silently strips any env var not declared there or in a task-level `env`/' +
+            '`passThroughEnv`, and a plain DATABASE_URL connection will otherwise proceed as ' +
+            'the admin/superuser and fail confusingly, many migration files later, with ' +
+            'Postgres error 42704.',
+        );
+      }
+    }
 
     // ── 7. Apply pending migrations ──────────────────────────────────────
     let appliedCount = 0;
