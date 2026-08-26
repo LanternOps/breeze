@@ -486,7 +486,7 @@ git commit -m "docs(pam): expose reconciliation recovery state"
 - Modify: `docs/superpowers/plans/2026-08-24-s0-track-e-pam-actuation.md`
 - Modify: `docs/superpowers/plans/2026-08-26-s0-track-e-pam-reconciliation-binding.md`
 
-- [ ] **Step 1: Run focused API and real-Postgres gates**
+- [x] **Step 1: Run focused API and real-Postgres gates**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamReconciliationBinding.test.ts src/routes/agents/pamReconciliation.test.ts src/services/commandResultHandlers.test.ts src/routes/agents/commands.test.ts src/routes/agentWs.test.ts src/routes/agents/schemas.test.ts src/routes/agents/schemas.heartbeatTolerance.test.ts src/routes/agents/heartbeat.test.ts
@@ -496,7 +496,7 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api
 
 Expected: all named files execute and pass; typecheck passes.
 
-- [ ] **Step 2: Run the full Task 7 agent race gate**
+- [x] **Step 2: Run the full Task 7 agent race gate**
 
 ```bash
 cd agent && go test -count=1 -race ./internal/agentapp ./internal/pamlifetime ./internal/heartbeat/...
@@ -504,7 +504,7 @@ cd agent && go test -count=1 -race ./internal/agentapp ./internal/pamlifetime ./
 
 Expected: PASS.
 
-- [ ] **Step 3: Run the Windows amd64 compile gate**
+- [x] **Step 3: Run the Windows amd64 compile gate**
 
 ```bash
 cd agent && GOOS=windows GOARCH=amd64 go test -c ./internal/agentapp -o /tmp/breeze-agentapp.test.exe
@@ -512,7 +512,7 @@ cd agent && GOOS=windows GOARCH=amd64 go test -c ./internal/agentapp -o /tmp/bre
 
 Expected: compile succeeds. This is not native Windows execution evidence.
 
-- [ ] **Step 4: Verify governance and scope**
+- [x] **Step 4: Verify governance and scope**
 
 ```bash
 git diff --check
@@ -522,7 +522,7 @@ git status --short
 
 Confirm no migration, ledger field, WebSocket supplemental route, Task 8 file, production deployment, hosted mutation, or customer mutation was added. Confirm the pre-existing dispatch wire mismatch and Task 6 `received` transport gap remain explicit non-claims.
 
-- [ ] **Step 5: Check only Task 7 Step 3 and commit**
+- [x] **Step 5: Check only Task 7 Step 3 and commit**
 
 Check the parent plan's Task 7 Step 3 only after every gate above passes. Keep Task 8, entitlement disposition, native Windows evidence, deployment, hosted reachability, and rollout boxes unchecked.
 
