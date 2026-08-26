@@ -56,6 +56,10 @@ import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { setRefreshTokenCookie, getCookieValue } from './auth/helpers';
 import { completeSsoLogin } from './auth/ssoLinkCompletion';
+import {
+  createSsoPendingLink,
+  SSO_PENDING_LINK_TTL_SECONDS,
+} from '../services/ssoPendingLink';
 
 export const ssoRoutes = new Hono();
 
@@ -113,6 +117,28 @@ function buildSsoStateCookie(state: string): string | null {
 
 function buildClearSsoStateCookie(): string {
   return `${SSO_STATE_COOKIE_NAME}=; Path=${SSO_STATE_COOKIE_PATH}; HttpOnly${buildSsoCookieSecuritySuffix()}; Max-Age=0`;
+}
+
+// ============================================
+// #4067 link-on-first-SSO-login pending cookie
+// ============================================
+//
+// The raw pending-link token travels ONLY in this HttpOnly cookie, scoped to
+// the /sso/link/* completion endpoints — never in the redirect URL. This is
+// the browser binding: the ceremony can only be completed by the browser that
+// finished the OIDC round-trip, so forwarding the "connect your sign-in" URL
+// to a victim is useless (their browser has no cookie → the ceremony reads as
+// expired). Same idiom as the login-CSRF state cookie above.
+
+const SSO_PENDING_LINK_COOKIE_NAME = 'breeze_sso_pending_link';
+const SSO_PENDING_LINK_COOKIE_PATH = '/api/v1/sso/link';
+
+function buildSsoPendingLinkCookie(rawToken: string): string {
+  return `${SSO_PENDING_LINK_COOKIE_NAME}=${encodeURIComponent(rawToken)}; Path=${SSO_PENDING_LINK_COOKIE_PATH}; HttpOnly${buildSsoCookieSecuritySuffix()}; Max-Age=${SSO_PENDING_LINK_TTL_SECONDS}`;
+}
+
+function buildClearSsoPendingLinkCookie(): string {
+  return `${SSO_PENDING_LINK_COOKIE_NAME}=; Path=${SSO_PENDING_LINK_COOKIE_PATH}; HttpOnly${buildSsoCookieSecuritySuffix()}; Max-Age=0`;
 }
 
 /**
@@ -3244,7 +3270,70 @@ ssoRoutes.get('/callback', async (c) => {
             ))
             .limit(1)
         );
-        if (hasPassword || otherProviderLink) {
+        if (hasPassword) {
+          // #4067 link-on-first-SSO-login. The refusal to AUTO-link stays —
+          // that's the account-takeover guard above — but it is no longer a
+          // dead end: park the VERIFIED IdP identity in a short-lived pending
+          // record and send the user to a "connect your sign-in" page that
+          // demands the account password (and, for MFA-enrolled users, a
+          // Breeze-held second factor) before the link is created. Under
+          // enforce_sso the old sso_link_required bounce was a hard lockout:
+          // the banner told the user to password-login, which
+          // assertPasswordAuthAllowedBySso forbids tenant-wide.
+          //
+          // Entered for EVERY password-holding match — including one already
+          // linked to a different provider: multiple provider links are
+          // legitimate (the Connect SSO flow supports them), and the other
+          // link's existence doesn't prove the user can sign in through it.
+          // The passwordless other-provider case below keeps the legacy
+          // refusal (no password exists to prove ownership with).
+          try {
+            const { rawToken } = await createSsoPendingLink({
+              userId: byEmail.id,
+              userEmail: byEmail.email,
+              userStatus: byEmail.status,
+              authEpoch: byEmail.authEpoch,
+              mfaEpoch: byEmail.mfaEpoch,
+              providerId: provider.id,
+              providerConfigVersion: provider.configVersion ?? 0,
+              externalSub,
+              email: attrs.email,
+              name: attrs.name ?? null,
+              profile: userInfo,
+              encryptedAccessToken: encryptSecret(tokens.access_token),
+              encryptedRefreshToken: encryptSecret(tokens.refresh_token),
+              tokenExpiresAt: tokens.expires_in
+                ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+                : null,
+              idpMfaAsserted: idpAssertedMfa(idClaims),
+              emailVerifiedClaim,
+              redirectUrl: session.redirectUrl ?? null,
+            });
+            writeRouteAudit(c, {
+              orgId: provider.orgId,
+              action: 'sso.link.ceremony_started',
+              resourceType: 'sso_provider',
+              resourceId: provider.id,
+              resourceName: provider.name,
+              result: 'success',
+              details: {
+                mode: callbackMode,
+                userId: byEmail.id,
+                partnerId: provider.partnerId,
+              },
+            });
+            clearStateCookie();
+            c.header('Set-Cookie', buildSsoPendingLinkCookie(rawToken), { append: true });
+            return c.redirect('/auth/connect-sso');
+          } catch (err) {
+            // Fail closed to the legacy bounce — never auto-link, never mint.
+            console.error('[sso/callback] failed to park pending link; falling back to sso_link_required:', err);
+            captureException(err, c);
+            clearStateCookie();
+            return c.redirect('/login?error=sso_link_required');
+          }
+        }
+        if (otherProviderLink) {
           clearStateCookie();
           return c.redirect('/login?error=sso_link_required');
         }

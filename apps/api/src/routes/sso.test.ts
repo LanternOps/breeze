@@ -13,10 +13,23 @@ function ssoStateCookieHeader(state: string): string {
   return `breeze_sso_state=${encodeURIComponent(value)}`;
 }
 
-const { permissionGate, mfaGate, recordedPermissionGuards } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, recordedPermissionGuards, pendingLinkRedis } = vi.hoisted(() => ({
   permissionGate: { deny: false },
   mfaGate: { deny: false },
-  recordedPermissionGuards: [] as Array<[string, string]>
+  recordedPermissionGuards: [] as Array<[string, string]>,
+  // Backs services/ssoPendingLink.ts (which imports ../services/redis
+  // directly, not the barrel). Default: a working Redis so the #4067 link
+  // ceremony can park pending records; individual tests override.
+  pendingLinkRedis: {
+    setex: vi.fn(),
+    get: vi.fn(),
+    getdel: vi.fn(),
+    del: vi.fn(),
+  },
+}));
+
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => pendingLinkRedis),
 }));
 
 vi.mock('../services/sso', () => ({
@@ -414,6 +427,12 @@ describe('sso routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // #4067 pending-link Redis (services/redis mock): default to a working
+    // client; clearAllMocks wipes implementations set via mock*Once.
+    pendingLinkRedis.setex.mockResolvedValue('OK');
+    pendingLinkRedis.get.mockResolvedValue(null);
+    pendingLinkRedis.getdel.mockResolvedValue(null);
+    pendingLinkRedis.del.mockResolvedValue(1);
     // clearAllMocks clears call history but NOT the mockReturnValueOnce queue.
     // Reset the db mocks to their default chain so a prior test's unconsumed
     // `*Once` entries can't bleed into the next test (e.g. a leftover
@@ -1845,14 +1864,87 @@ describe('sso routes', () => {
       expect(exchangeCodeForTokens).not.toHaveBeenCalled();
     });
 
-    it('refuses to JIT-link an SSO assertion to an existing PASSWORD account (1B)', async () => {
+    it('starts the link ceremony (#4067) instead of auto-linking an existing PASSWORD account (1B)', async () => {
       primeCallback();
       vi.mocked(db.select)
         .mockReturnValueOnce(sel(PROVIDER_ROW))
         .mockReturnValueOnce(sel([])) // no (provider, sub) link yet
         .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // SR2-12: org-members subquery for emailCondition clamp (constructed before byEmail)
-        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Pw', passwordHash: '$argon2id$hash' }]))
-        .mockReturnValueOnce(sel([])); // no other-provider link (still denied — has a password)
+        .mockReturnValueOnce(sel([{
+          id: USER_UUID, email: 'test@example.com', name: 'Pw', passwordHash: '$argon2id$hash',
+          status: 'active', authEpoch: 3, mfaEpoch: 2,
+        }]))
+        .mockReturnValueOnce(sel([])); // no other-provider link
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      // Never auto-linked, never minted — but no dead end either: the verified
+      // IdP identity is parked and the user is sent to the password-confirm page.
+      expect(res.headers.get('location')).toBe('/auth/connect-sso');
+      expect(createTokenPair).not.toHaveBeenCalled();
+
+      expect(pendingLinkRedis.setex).toHaveBeenCalledTimes(1);
+      const [key, ttl, value] = pendingLinkRedis.setex.mock.calls[0]!;
+      expect(String(key)).toMatch(/^sso:pendinglink:[0-9a-f]{64}$/);
+      expect(ttl).toBe(300);
+      const record = JSON.parse(String(value));
+      expect(record).toMatchObject({
+        userId: USER_UUID,
+        userEmail: 'test@example.com',
+        userStatus: 'active',
+        authEpoch: 3,
+        mfaEpoch: 2,
+        providerId: PROVIDER_UUID,
+        providerConfigVersion: 1,
+        externalSub: 'external-user-1',
+        email: 'test@example.com',
+        redirectUrl: '/dashboard',
+      });
+
+      // Browser binding: the raw token rides ONLY an HttpOnly cookie scoped to
+      // the link endpoints — never the redirect URL.
+      const setCookies = res.headers.getSetCookie?.() ?? [res.headers.get('set-cookie') ?? ''];
+      const linkCookie = setCookies.find((v) => v.startsWith('breeze_sso_pending_link='));
+      expect(linkCookie).toBeTruthy();
+      expect(linkCookie).toContain('HttpOnly');
+      expect(linkCookie).toContain('Path=/api/v1/sso/link');
+      expect(linkCookie).toContain('Max-Age=300');
+    });
+
+    it('starts the link ceremony for a PASSWORD account even when another provider is already linked (#4067)', async () => {
+      primeCallback();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([])) // no link for THIS provider
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // SR2-12 clamp subquery
+        .mockReturnValueOnce(sel([{
+          id: USER_UUID, email: 'test@example.com', name: 'Pw', passwordHash: '$argon2id$hash',
+          status: 'active', authEpoch: 1, mfaEpoch: 1,
+        }]))
+        .mockReturnValueOnce(sel([{ id: 'other-provider-link' }])); // other-provider link exists
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      // A second provider link is legitimate (the Connect SSO flow already
+      // supports it) and the other link's existence does not prove the user
+      // can sign in elsewhere — the password proof is what authorizes.
+      expect(res.headers.get('location')).toBe('/auth/connect-sso');
+      expect(pendingLinkRedis.setex).toHaveBeenCalledTimes(1);
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the legacy sso_link_required bounce when Redis is unavailable (#4067 fail-closed)', async () => {
+      pendingLinkRedis.setex.mockRejectedValueOnce(new Error('redis down'));
+      primeCallback();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel(PROVIDER_ROW))
+        .mockReturnValueOnce(sel([]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))
+        .mockReturnValueOnce(sel([{
+          id: USER_UUID, email: 'test@example.com', name: 'Pw', passwordHash: '$argon2id$hash',
+          status: 'active', authEpoch: 1, mfaEpoch: 1,
+        }]))
+        .mockReturnValueOnce(sel([]));
 
       const res = await doCallback();
       expect(res.status).toBe(302);
@@ -3021,17 +3113,23 @@ describe('sso routes', () => {
       );
     });
 
-    it('redirects sso_link_required for a password-holding email match', async () => {
+    it('starts the link ceremony (#4067) for a password-holding email match', async () => {
       prime();
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
         .mockReturnValueOnce(sel([]))                                // no link
-        .mockReturnValueOnce(sel([{ ...STAFF, passwordHash: '$argon2id$hash' }])) // byEmail w/ password
-        .mockReturnValueOnce(sel([]));                               // otherProviderLink — still denied (has password)
+        .mockReturnValueOnce(sel([{ ...STAFF, passwordHash: '$argon2id$hash', status: 'active', authEpoch: 1, mfaEpoch: 1 }])) // byEmail w/ password
+        .mockReturnValueOnce(sel([]));                               // otherProviderLink
 
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(res.headers.get('location') ?? '').toContain('error=sso_link_required');
+      // Partner axis enters the same password-confirm ceremony — under
+      // enforce_sso the old sso_link_required bounce was a hard lockout.
+      expect(res.headers.get('location')).toBe('/auth/connect-sso');
+      expect(pendingLinkRedis.setex).toHaveBeenCalledTimes(1);
+      const record = JSON.parse(String(pendingLinkRedis.setex.mock.calls[0]![2]));
+      expect(record.userId).toBe(USER_UUID);
+      expect(record.providerId).toBe(PROVIDER_UUID);
       expect(createTokenPair).not.toHaveBeenCalled();
     });
 
