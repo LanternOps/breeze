@@ -754,6 +754,94 @@ func TestUnverifiableReconcileClosesNewApplyAdmission(t *testing.T) {
 	}
 }
 
+func TestUnrelatedCleanupCannotReopenAdmissionPastUnverifiableActiveReconcile(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	process := ProcessIdentity{PID: 4242, ProcessCreationTime: time.Unix(1234, 0).UTC(), JobName: JobName(testActuationID, 1), BootID: "windows-boot-42"}
+	durableActiveEntry(t, store, validApply(1), process)
+	dirty := elevaccount.AccountEvidence{Enabled: true, InAdministrators: true}
+	account := &fakeAccountLifecycle{order: &order, deprovision: dirty, verified: dirty}
+	win := &fakeWindowsPrimitives{order: &order, reopenErr: errors.New("job unavailable")}
+	manager := newLifecycleManager(store, win, account, nil)
+	if results := manager.Reconcile(context.Background()); len(results) != 1 || results[0].State != ResultFailed || manager.Available() {
+		t.Fatalf("unverifiable active reconcile = %+v available=%v", results, manager.Available())
+	}
+
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	account.deprovision = clean
+	account.verified = clean
+	unrelated := CleanupCommand{ProtocolVersion: 2,
+		ActuationID: "20000000-0000-4000-8000-000000000001", Generation: 1,
+		RequestID: "20000000-0000-4000-8000-000000000002", DeviceID: "20000000-0000-4000-8000-000000000003", OrgID: "20000000-0000-4000-8000-000000000004"}
+	if result := manager.Cleanup(context.Background(), unrelated); result.State != ResultCleaned {
+		t.Fatalf("unrelated cleanup = %+v", result)
+	}
+	if manager.Available() {
+		t.Fatal("unrelated cleanup reopened availability past unverifiable active reconciliation")
+	}
+	apply := validApply(1)
+	apply.ActuationID = "30000000-0000-4000-8000-000000000001"
+	if result := manager.Apply(context.Background(), apply); result.State != ResultFailed || result.FailureCode != "pam_unavailable" {
+		t.Fatalf("apply past active reconciliation blocker = %+v", result)
+	}
+
+	win.reopenErr = nil
+	win.reopenMembers = 1
+	if results := manager.Reconcile(context.Background()); len(results) != 2 || results[0].State != ResultVerifiedActive {
+		t.Fatalf("verified-active retry = %+v", results)
+	}
+	if !manager.Available() {
+		t.Fatal("same-actuation verified retry did not clear its reconciliation blocker")
+	}
+}
+
+func TestUnrelatedCleanupCannotClearCancelledReconciliationBlocker(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	process := ProcessIdentity{PID: 4242, ProcessCreationTime: time.Unix(1234, 0).UTC(), JobName: JobName(testActuationID, 1), BootID: "windows-boot-42"}
+	durableActiveEntry(t, store, validApply(1), process)
+	unrelated := CleanupCommand{ProtocolVersion: 2,
+		ActuationID: "20000000-0000-4000-8000-000000000001", Generation: 1,
+		RequestID: "20000000-0000-4000-8000-000000000002", DeviceID: "20000000-0000-4000-8000-000000000003", OrgID: "20000000-0000-4000-8000-000000000004"}
+	if _, err := store.PrepareCleanup(unrelated); err != nil {
+		t.Fatalf("prepare unrelated cleanup: %v", err)
+	}
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	manager := newLifecycleManager(store, &fakeWindowsPrimitives{order: &order},
+		&fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if results := manager.Reconcile(cancelled); len(results) != 2 || manager.Available() {
+		t.Fatalf("cancelled reconcile = %+v available=%v", results, manager.Available())
+	}
+
+	if result := manager.Cleanup(context.Background(), unrelated); result.State != ResultCleaned {
+		t.Fatalf("unrelated cleanup retry = %+v", result)
+	}
+	if manager.Available() {
+		t.Fatal("unrelated cleanup cleared another actuation's cancelled reconciliation blocker")
+	}
+}
+
+func TestVerifiedActiveReconcileCannotClearNewerTimedOutCleanupGeneration(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	process := ProcessIdentity{PID: 4242, ProcessCreationTime: time.Unix(1234, 0).UTC(), JobName: JobName(testActuationID, 1), BootID: "windows-boot-42"}
+	durableActiveEntry(t, store, validApply(1), process)
+	manager := newLifecycleManager(store,
+		&fakeWindowsPrimitives{order: &order, reopenMembers: 1}, &fakeAccountLifecycle{order: &order}, nil)
+	manager.recordCleanupOutcome(testActuationID, manager.failed(testActuationID, 2, "windows-boot-42", "operation_timeout"))
+
+	results := manager.Reconcile(context.Background())
+
+	if len(results) != 1 || results[0].State != ResultVerifiedActive {
+		t.Fatalf("verified-active reconcile = %+v", results)
+	}
+	if manager.Available() || manager.unresolved[testActuationID] != 2 {
+		t.Fatalf("generation-1 proof cleared generation-2 ambiguity: available=%v unresolved=%v", manager.Available(), manager.unresolved)
+	}
+}
+
 func TestDisableCleansEveryDurableLedgerRow(t *testing.T) {
 	var order []string
 	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))

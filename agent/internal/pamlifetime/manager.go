@@ -320,6 +320,7 @@ func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			result := m.failed(entry.ActuationID, entry.Generation, "windows-boot-unavailable", "reconcile_cancelled")
+			m.markUnresolved(entry.ActuationID, entry.Generation)
 			m.emit(result)
 			results = append(results, result)
 			verificationAvailable = false
@@ -336,6 +337,11 @@ func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
 			continue
 		}
 		result, verified := m.reconcileActiveLocked(ctx, entry)
+		if verified {
+			m.clearUnresolvedThrough(entry.ActuationID, entry.Generation)
+		} else {
+			m.markUnresolved(entry.ActuationID, entry.Generation)
+		}
 		m.emit(result)
 		results = append(results, result)
 		verificationAvailable = verificationAvailable && verified
