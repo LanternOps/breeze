@@ -32,13 +32,6 @@ const QUEUE_NAME = 'webhook-delivery-recovery';
 export const STALE_PENDING_MS = 15 * 60 * 1000;
 
 /**
- * Lease a delivery worker holds while executing a claimed delivery. Must
- * comfortably exceed one attempt (`WEBHOOK_TIMEOUT_MS`, 30s) so a live
- * delivery is never declared abandoned underneath itself.
- */
-export const EXECUTION_LEASE_MS = 5 * 60 * 1000;
-
-/**
  * Gap enforced between recovery attempts on one row. Doubles as the sweep's
  * lease: a claimed row is invisible to the next tick, and to every other API
  * instance, until it expires.
@@ -148,6 +141,14 @@ export interface WebhookRecoverySweepSummary {
   undeliverable: number;
   /** Claimed but the enqueue still failed — stays unresolved for the next window. */
   enqueueFailed: number;
+  /**
+   * A terminal write that matched no row: the lease was lost between the claim
+   * and the write (a delivery worker's execution claim only tests `status`, so
+   * it can still take a row this sweep has leased). Counted separately because
+   * folding it into `exhausted`/`undeliverable` would report a resolution that
+   * never happened.
+   */
+  terminalWriteLost: number;
 }
 
 /**
@@ -173,6 +174,40 @@ async function markUnrecoverable(
 }
 
 /**
+ * Apply a terminal write and report whether it actually landed.
+ *
+ * `markUnrecoverable` matches the EXACT lease instant, so it writes nothing if
+ * the row was re-leased in between — which a delivery worker's execution claim
+ * can do, since that CAS only tests `status`. Swallowing the `false` would log
+ * "abandoned" and increment a resolution counter for a row that is still
+ * unresolved: precisely the kind of quiet miscount #4095 is about.
+ */
+async function resolveTerminally(
+  summary: WebhookRecoverySweepSummary,
+  candidate: { id: string; webhookId: string },
+  leaseUntil: Date,
+  errorMessage: string,
+  onLanded: () => void
+): Promise<void> {
+  const landed = await runWithSystemDbAccess(() =>
+    markUnrecoverable(candidate.id, leaseUntil, errorMessage)
+  );
+
+  if (!landed) {
+    summary.terminalWriteLost += 1;
+    console.warn(`[WebhookDeliveryRecovery] terminal-write-lost ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_RECOVERY_TERMINAL_WRITE_LOST',
+      deliveryId: candidate.id,
+      webhookId: candidate.webhookId,
+      intendedMessage: errorMessage
+    })}`);
+    return;
+  }
+
+  onLanded();
+}
+
+/**
  * Reclaim `webhook_deliveries` rows that were committed but never delivered.
  *
  * The row is written to Postgres BEFORE `queueDelivery`, which is a bare
@@ -194,7 +229,8 @@ export async function runWebhookDeliveryRecoverySweep(
     abandonedInFlight: 0,
     raced: 0,
     undeliverable: 0,
-    enqueueFailed: 0
+    enqueueFailed: 0,
+    terminalWriteLost: 0
   };
 
   const candidates = await runWithSystemDbAccess(async () =>
@@ -255,39 +291,45 @@ export async function runWebhookDeliveryRecoverySweep(
       // cannot know whether the customer's endpoint was reached, so it is
       // resolved terminally and never re-sent.
       if (candidate.status === 'retrying') {
-        await runWithSystemDbAccess(() => markUnrecoverable(
-          candidate.id,
+        await resolveTerminally(
+          summary,
+          candidate,
           leaseUntil,
-          'Delivery was claimed by a worker that stopped before reporting a result; outcome unknown'
-        ));
-        summary.abandonedInFlight += 1;
-        console.warn(`[WebhookDeliveryRecovery] in-flight-abandoned ${JSON.stringify({
-          errorId: 'WEBHOOK_DELIVERY_RECOVERY_IN_FLIGHT_ABANDONED',
-          deliveryId: candidate.id,
-          webhookId: candidate.webhookId,
-          orgId: candidate.webhookOrgId,
-          eventId: candidate.eventId,
-          eventType: candidate.eventType
-        })}`);
+          'Delivery was claimed by a worker that stopped before reporting a result; outcome unknown',
+          () => {
+            summary.abandonedInFlight += 1;
+            console.warn(`[WebhookDeliveryRecovery] in-flight-abandoned ${JSON.stringify({
+              errorId: 'WEBHOOK_DELIVERY_RECOVERY_IN_FLIGHT_ABANDONED',
+              deliveryId: candidate.id,
+              webhookId: candidate.webhookId,
+              orgId: candidate.webhookOrgId,
+              eventId: candidate.eventId,
+              eventType: candidate.eventType
+            })}`);
+          }
+        );
         continue;
       }
 
       if (claimed.recoveryAttempts > MAX_RECOVERY_ATTEMPTS) {
-        await runWithSystemDbAccess(() => markUnrecoverable(
-          candidate.id,
+        await resolveTerminally(
+          summary,
+          candidate,
           leaseUntil,
-          `Never claimed by a delivery worker; abandoned after ${MAX_RECOVERY_ATTEMPTS} recovery attempts`
-        ));
-        summary.exhausted += 1;
-        console.warn(`[WebhookDeliveryRecovery] recovery-exhausted ${JSON.stringify({
-          errorId: 'WEBHOOK_DELIVERY_RECOVERY_EXHAUSTED',
-          deliveryId: candidate.id,
-          webhookId: candidate.webhookId,
-          orgId: candidate.webhookOrgId,
-          eventId: candidate.eventId,
-          eventType: candidate.eventType,
-          recoveryAttempts: claimed.recoveryAttempts
-        })}`);
+          `Never claimed by a delivery worker; abandoned after ${MAX_RECOVERY_ATTEMPTS} recovery attempts`,
+          () => {
+            summary.exhausted += 1;
+            console.warn(`[WebhookDeliveryRecovery] recovery-exhausted ${JSON.stringify({
+              errorId: 'WEBHOOK_DELIVERY_RECOVERY_EXHAUSTED',
+              deliveryId: candidate.id,
+              webhookId: candidate.webhookId,
+              orgId: candidate.webhookOrgId,
+              eventId: candidate.eventId,
+              eventType: candidate.eventType,
+              recoveryAttempts: claimed.recoveryAttempts
+            })}`);
+          }
+        );
         continue;
       }
 
@@ -295,19 +337,26 @@ export async function runWebhookDeliveryRecoverySweep(
       // but the row cannot just be dropped either — mark it terminal so it stays
       // visible and hand-retryable rather than unresolved forever.
       if (candidate.webhookStatus !== 'active') {
-        await runWithSystemDbAccess(() => markUnrecoverable(
-          candidate.id,
+        await resolveTerminally(
+          summary,
+          candidate,
           leaseUntil,
-          `Never enqueued for delivery; webhook is ${candidate.webhookStatus}`
-        ));
-        summary.undeliverable += 1;
-        console.warn(`[WebhookDeliveryRecovery] webhook-inactive ${JSON.stringify({
-          errorId: 'WEBHOOK_DELIVERY_RECOVERY_WEBHOOK_INACTIVE',
-          deliveryId: candidate.id,
-          webhookId: candidate.webhookId,
-          orgId: candidate.webhookOrgId,
-          webhookStatus: candidate.webhookStatus
-        })}`);
+          // "Never CLAIMED", not "never enqueued": an unclaimed row proves only
+          // that no worker took it. It may well have been LPUSHed and then sat
+          // in a backlog, or been lost by a Redis restart. Naming the wrong
+          // subsystem sends the on-call engineer to the wrong place.
+          `Never claimed by a delivery worker; webhook is ${candidate.webhookStatus}`,
+          () => {
+            summary.undeliverable += 1;
+            console.warn(`[WebhookDeliveryRecovery] webhook-inactive ${JSON.stringify({
+              errorId: 'WEBHOOK_DELIVERY_RECOVERY_WEBHOOK_INACTIVE',
+              deliveryId: candidate.id,
+              webhookId: candidate.webhookId,
+              orgId: candidate.webhookOrgId,
+              webhookStatus: candidate.webhookStatus
+            })}`);
+          }
+        );
         continue;
       }
 
@@ -325,19 +374,22 @@ export async function runWebhookDeliveryRecoverySweep(
         });
       } catch (decryptError) {
         // Delivering with unusable credentials is worse than not delivering.
-        await runWithSystemDbAccess(() => markUnrecoverable(
-          candidate.id,
-          leaseUntil,
-          'Never enqueued for delivery; webhook credentials could not be decrypted'
-        ));
-        summary.undeliverable += 1;
         captureException(decryptError instanceof Error ? decryptError : new Error(String(decryptError)));
-        console.error(`[WebhookDeliveryRecovery] decrypt-failed ${JSON.stringify({
-          errorId: 'WEBHOOK_DELIVERY_RECOVERY_DECRYPT_FAILED',
-          deliveryId: candidate.id,
-          webhookId: candidate.webhookId,
-          orgId: candidate.webhookOrgId
-        })}`);
+        await resolveTerminally(
+          summary,
+          candidate,
+          leaseUntil,
+          'Never claimed by a delivery worker; webhook credentials could not be decrypted',
+          () => {
+            summary.undeliverable += 1;
+            console.error(`[WebhookDeliveryRecovery] decrypt-failed ${JSON.stringify({
+              errorId: 'WEBHOOK_DELIVERY_RECOVERY_DECRYPT_FAILED',
+              deliveryId: candidate.id,
+              webhookId: candidate.webhookId,
+              orgId: candidate.webhookOrgId
+            })}`);
+          }
+        );
         continue;
       }
 

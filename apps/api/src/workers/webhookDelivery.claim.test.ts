@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const brpopMock = vi.hoisted(() => vi.fn());
 const lpushMock = vi.hoisted(() => vi.fn(async () => 1));
 const safeFetchMock = vi.hoisted(() => vi.fn());
+const captureExceptionMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../services/eventBus', () => ({
   getEventBus: () => ({ subscribe: vi.fn() }),
@@ -36,7 +37,7 @@ vi.mock('../services/urlSafety', () => ({
   SsrfBlockedError: class SsrfBlockedError extends Error {}
 }));
 
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
 import { getWebhookWorker, type WebhookDeliveryJob } from './webhookDelivery';
 
@@ -71,9 +72,12 @@ function processOnce(): Promise<void> {
 
 describe('webhook delivery execution claim', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     brpopMock.mockReset();
+    captureExceptionMock.mockReset();
+    lpushMock.mockClear();
     safeFetchMock.mockReset();
     safeFetchMock.mockResolvedValue({
       status: 200,
@@ -82,7 +86,7 @@ describe('webhook delivery execution claim', () => {
     });
     vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -124,6 +128,82 @@ describe('webhook delivery execution claim', () => {
     await processOnce();
 
     expect(claim).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('pages when the customer was POSTed but the outcome could not be recorded', async () => {
+    // The two sides of the POST are not equally recoverable. A failure BEFORE
+    // it leaves the row untouched for the sweep to reclaim; a failure HERE
+    // means the customer's endpoint was already called and that fact is now
+    // unrecorded — the sweep will later resolve the row as "outcome unknown"
+    // and can never repair it. Scrolling past that in a log is not enough.
+    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
+    getWebhookWorker().setDeliveryClaimCallback(async () => true);
+    getWebhookWorker().setDeliveryCallback(async () => {
+      throw new Error('db write failed');
+    });
+
+    await processOnce();
+
+    expect(safeFetchMock).toHaveBeenCalledTimes(1); // the POST really happened
+    expect(captureExceptionMock).toHaveBeenCalled();
+
+    const line = errorSpy.mock.calls
+      .map((c: unknown[]) => c.map(String).join(' '))
+      .find((l: string) => l.includes('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));
+    expect(line, 'an unrecorded customer POST must be reported').toBeDefined();
+    expect(JSON.parse(line!.slice(line!.indexOf('{')))).toMatchObject({
+      deliveryId: 'delivery-1',
+      delivered: true,
+      responseStatus: 200
+    });
+
+  });
+
+  it('does not run the retry ladder when a FAILED outcome could not be recorded', async () => {
+    // The failing half of the same rule. Here the ladder really would fire —
+    // the POST failed and retries remain — so re-queueing on top of an outcome
+    // we could not record would drive a second attempt whose result we also
+    // cannot reconcile. The row stays `retrying` for the sweep to resolve.
+    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
+    safeFetchMock.mockResolvedValueOnce({
+      status: 500,
+      ok: false,
+      text: async () => 'server error'
+    });
+    getWebhookWorker().setDeliveryClaimCallback(async () => true);
+    getWebhookWorker().setDeliveryCallback(async () => {
+      throw new Error('db write failed');
+    });
+
+    await processOnce();
+
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(lpushMock).not.toHaveBeenCalled();
+
+    const line = errorSpy.mock.calls
+      .map((c: unknown[]) => c.map(String).join(' '))
+      .find((l: string) => l.includes('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line!.slice(line!.indexOf('{')))).toMatchObject({ delivered: false });
+  });
+
+  it('does not claim a DLQ replay, which has no delivery row to claim', async () => {
+    // retryFromDLQ mints a FRESH delivery id with no `webhook_deliveries` row
+    // behind it, so a pending-only CAS can never match. Without the bypass the
+    // operator's replay is dropped and reported as a "duplicate" — eating the
+    // retry and naming the wrong cause.
+    brpopMock.mockResolvedValueOnce([
+      'queue',
+      JSON.stringify({ ...JOB, id: 'brand-new-id', skipExecutionClaim: true })
+    ]);
+    const claim = vi.fn(async () => false);
+    getWebhookWorker().setDeliveryClaimCallback(claim);
+    getWebhookWorker().setDeliveryCallback(async () => {});
+
+    await processOnce();
+
+    expect(claim).not.toHaveBeenCalled();
     expect(safeFetchMock).toHaveBeenCalledTimes(1);
   });
 

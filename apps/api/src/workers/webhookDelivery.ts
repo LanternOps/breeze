@@ -50,6 +50,16 @@ export interface WebhookDeliveryJob {
   attempts: number;
   nextRetryAt?: string;
   createdAt: string;
+  /**
+   * Skip the execution claim for this job.
+   *
+   * Set ONLY by `retryFromDLQ`, which mints a fresh delivery id with no
+   * `webhook_deliveries` row behind it. The claim CAS matches on
+   * `id = ? AND status = 'pending'`, so without this an operator-triggered DLQ
+   * replay would match zero rows, be dropped, and be reported as a "duplicate"
+   * — eating the retry and naming the wrong cause.
+   */
+  skipExecutionClaim?: boolean;
 }
 
 export interface WebhookDeliveryResult {
@@ -356,7 +366,7 @@ class WebhookDeliveryWorker {
       // carries attempts > 0 and its row has already been moved out of
       // `pending` by the previous attempt's callback, so re-claiming it would
       // reject every legitimate retry.
-      if (this.onClaimDelivery && job.attempts === 0) {
+      if (this.onClaimDelivery && job.attempts === 0 && !job.skipExecutionClaim) {
         const claimed = await this.onClaimDelivery(job);
         if (!claimed) {
           // Another copy of this job is already delivering it, or it has
@@ -376,9 +386,34 @@ class WebhookDeliveryWorker {
       // Attempt delivery
       const result2 = await deliverWebhook(job);
 
-      // Notify callback
+      // Persist the outcome. This is split out of the outer catch because the
+      // two sides of the POST are NOT equally recoverable: anything that throws
+      // BEFORE `deliverWebhook` leaves the row untouched for the recovery sweep
+      // to reclaim, whereas a throw HERE means the customer's endpoint was
+      // already called and that fact is now unrecorded. The sweep cannot repair
+      // that — it will later see an abandoned `retrying` row and resolve it as
+      // "outcome unknown" — so it has to page rather than scroll past.
       if (this.onDeliveryComplete) {
-        await this.onDeliveryComplete(result2);
+        try {
+          await this.onDeliveryComplete(result2);
+        } catch (persistError) {
+          captureException(
+            persistError instanceof Error ? persistError : new Error(String(persistError))
+          );
+          console.error(`[WebhookWorker] delivery-outcome-unrecorded ${JSON.stringify({
+            errorId: 'WEBHOOK_DELIVERY_OUTCOME_UNRECORDED',
+            deliveryId: job.id,
+            webhookId: job.webhookId,
+            orgId: job.event.orgId,
+            eventId: job.event.id,
+            delivered: result2.success,
+            responseStatus: result2.responseStatus ?? null,
+            error: persistError instanceof Error ? persistError.message : String(persistError)
+          })}`);
+          // Deliberately rethrown into the outer catch: continuing would run the
+          // retry/DLQ ladder below against an outcome we failed to record.
+          throw persistError;
+        }
       }
 
       if (result2.success) {
@@ -414,6 +449,12 @@ class WebhookDeliveryWorker {
       await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(retryJob));
 
     } catch (err) {
+      // The job was already popped by BRPOP and is gone from Redis. When the
+      // failure happened before the POST the delivery row is untouched and the
+      // recovery sweep reclaims it; that is the designed path, but it is still
+      // worth a Sentry event, because a claim or parse that fails on EVERY job
+      // silently converts the whole worker into a 15-minute-latency system.
+      captureException(err instanceof Error ? err : new Error(String(err)));
       console.error('[WebhookWorker] Error processing job:', err);
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
@@ -444,7 +485,9 @@ class WebhookDeliveryWorker {
       id: randomUUID(), // New delivery ID
       attempts: 0,
       nextRetryAt: undefined,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      // No delivery row exists under the new id, so there is nothing to claim.
+      skipExecutionClaim: true
     };
 
     await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(retryJob));
@@ -504,8 +547,16 @@ export type CreateWebhookDeliveryRecord = (
   event: BreezeEvent
 ) => Promise<WebhookDeliveryRecordOutcome>;
 
-/** Statuses whose skip is routine. Anything else is reported at warn. */
-const BENIGN_DUPLICATE_STATUSES = new Set(['delivered', 'failed', 'retrying']);
+/**
+ * Statuses whose skip is routine. Anything else is reported at warn.
+ *
+ * `retrying` is deliberately NOT here: it is one of the two statuses the
+ * recovery sweep treats as UNRESOLVED (`jobs/webhookDeliveryRecovery.ts`), so a
+ * duplicate deferring to a `retrying` row is deferring to a delivery that may
+ * itself be stuck — exactly the case #4095 exists to surface, and logging it at
+ * info would bury it next to genuinely delivered rows.
+ */
+const BENIGN_DUPLICATE_STATUSES = new Set(['delivered', 'failed']);
 
 /**
  * Report a skipped duplicate. This exists because the skip used to be a bare

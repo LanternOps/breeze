@@ -201,10 +201,13 @@ import { initializeOfflineDetector, shutdownOfflineDetector } from './jobs/offli
 import { initializeNotificationDispatcher, shutdownNotificationDispatcher } from './services/notificationDispatcher';
 import { initializeEventLogRetention, shutdownEventLogRetention } from './jobs/eventLogRetention';
 import {
-  EXECUTION_LEASE_MS,
   initializeWebhookDeliveryRecovery,
   shutdownWebhookDeliveryRecovery
 } from './jobs/webhookDeliveryRecovery';
+import {
+  claimDeliveryForExecution,
+  recordWebhookDelivery
+} from './services/webhookDeliveryRecord';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
 import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
 import { initializeAlertCorrelationWorker, shutdownAlertCorrelationWorker } from './jobs/alertCorrelation';
@@ -377,7 +380,7 @@ import {
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
 import {
   computeWorkersHealthy,
@@ -1273,27 +1276,7 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
   //
   // It is also what bounds the sweep, since a claimed row leaves `pending` the
   // instant a worker takes it.
-  webhookWorker.setDeliveryClaimCallback(async (job) => {
-    return runWithSystemDbAccess(async () => {
-      const claimed = await db
-        .update(webhookDeliveries)
-        .set({
-          status: 'retrying',
-          // Doubles as the abandonment lease: if this worker dies mid-POST the
-          // sweep can only reconsider the row once this has expired.
-          nextRetryAt: new Date(Date.now() + EXECUTION_LEASE_MS)
-        })
-        .where(
-          and(
-            eq(webhookDeliveries.id, job.id),
-            eq(webhookDeliveries.status, 'pending')
-          )
-        )
-        .returning({ id: webhookDeliveries.id });
-
-      return claimed.length > 0;
-    });
-  });
+  webhookWorker.setDeliveryClaimCallback(claimDeliveryForExecution);
 
   webhookWorker.setDeliveryCallback(async (result) => {
     await runWithSystemDbAccess(async () => {
@@ -1318,7 +1301,30 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
           // otherwise surface in the UI as a `nextAttemptAt` that never comes.
           nextRetryAt: null
         })
-        .where(eq(webhookDeliveries.id, result.deliveryId));
+        // Never overwrite a recorded success (#4095). This used to be keyed on
+        // `id` alone, which was safe while this callback was the ONLY writer.
+        // It no longer is: the recovery sweep also writes terminal outcomes, and
+        // `deliverWebhook` clears its abort timeout once response HEADERS
+        // arrive, so a slow response body can keep an attempt in flight past the
+        // execution lease and land here after the sweep has already resolved the
+        // row. `status` is NOT NULL, so `<>` cannot silently drop rows the way a
+        // negation over a nullable column would.
+        .where(and(
+          eq(webhookDeliveries.id, result.deliveryId),
+          ne(webhookDeliveries.status, 'delivered')
+        ))
+        .returning({ id: webhookDeliveries.id })
+        .then((rows) => {
+          if (rows.length === 0) {
+            console.warn(`[WebhookDelivery] outcome-write-skipped ${JSON.stringify({
+              errorId: 'WEBHOOK_DELIVERY_OUTCOME_WRITE_SKIPPED',
+              deliveryId: result.deliveryId,
+              webhookId: result.webhookId,
+              attemptedStatus: deliveryStatus
+            })}`);
+          }
+          return rows;
+        });
 
       const aggregateUpdate = result.success
         ? {
@@ -1381,56 +1387,7 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
           });
       });
     },
-    async (webhook, event) => {
-      return runWithSystemDbAccess(async () => {
-        const [delivery] = await db
-          .insert(webhookDeliveries)
-          .values({
-            webhookId: webhook.id,
-            eventType: event.type,
-            eventId: event.id,
-            payload: event.payload,
-            status: 'pending',
-            attempts: 0
-          })
-          // The insert IS the dedupe. An empty `returning()` means this
-          // (webhook, event) pair is already recorded, and the caller reads
-          // that as "already handled" and skips the outbound POST.
-          // DO NOTHING rather than catching 23505: a unique violation caught
-          // inside the transaction that raised it is a documented trap in this
-          // repo — postgres.js latches the failed statement and rethrows after
-          // the callback returns.
-          .onConflictDoNothing({
-            target: [webhookDeliveries.webhookId, webhookDeliveries.eventId]
-          })
-          .returning({ id: webhookDeliveries.id });
-
-        if (delivery) return { created: true, deliveryId: delivery.id };
-
-        // Read back the row that won, so the skip can be REPORTED rather than
-        // being a bare `continue` (#4095). One extra statement, and only on the
-        // rare dedupe path; it seeks the same unique index the insert conflicted
-        // on. `existing` stays null if the row has since been erased — the
-        // subscriber reports that case too rather than staying silent.
-        const [existing] = await db
-          .select({
-            id: webhookDeliveries.id,
-            status: webhookDeliveries.status,
-            attempts: webhookDeliveries.attempts,
-            createdAt: webhookDeliveries.createdAt
-          })
-          .from(webhookDeliveries)
-          .where(
-            and(
-              eq(webhookDeliveries.webhookId, webhook.id),
-              eq(webhookDeliveries.eventId, event.id)
-            )
-          )
-          .limit(1);
-
-        return { created: false, existing: existing ?? null };
-      });
-    }
+    recordWebhookDelivery
   );
 }
 

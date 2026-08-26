@@ -177,6 +177,27 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
     expect(warnPayload).toMatchObject({ existingStatus: 'pending' });
   });
 
+  it('treats a `retrying` original as unresolved too, not as a benign dedupe', async () => {
+    // `retrying` is one of the two statuses the recovery sweep treats as
+    // UNRESOLVED, so a duplicate deferring to one is deferring to a delivery
+    // that may itself be stuck. Logging it at info would bury it next to
+    // genuinely delivered rows.
+    const createDeliveryRecord = vi.fn().mockResolvedValue(deduped({
+      id: 'delivery-1',
+      status: 'retrying',
+      attempts: 1,
+      createdAt: new Date('2026-09-11T00:00:00.000Z')
+    }));
+
+    await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
+    handler = subscribeMock.mock.calls[0]![1];
+
+    await handler(EVENT);
+
+    const payload = structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_DUPLICATE_SKIPPED');
+    expect(payload).toMatchObject({ existingStatus: 'retrying' });
+  });
+
   it('reports the skip even when the conflicting row cannot be read back', async () => {
     // The insert lost the race but the row is gone by the time we look it up
     // (erasure, or a future retention job). Emitting nothing here would restore

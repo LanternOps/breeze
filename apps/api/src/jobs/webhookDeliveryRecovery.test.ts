@@ -19,8 +19,8 @@ interface UpdateCall {
 const state = vi.hoisted(() => ({
   candidates: [] as Record<string, unknown>[],
   updateCalls: [] as UpdateCall[],
-  /** Queued FIFO of `.returning()` results, one per update. */
-  updateResults: [] as Record<string, unknown>[][],
+  /** Queued FIFO of `.returning()` results, one per update. An Error rejects. */
+  updateResults: [] as Array<Record<string, unknown>[] | Error>,
   queueDelivery: null as ReturnType<typeof vi.fn> | null
 }));
 
@@ -45,7 +45,12 @@ vi.mock('../db', () => ({
         where: (predicate: unknown) => ({
           returning: async () => {
             state.updateCalls.push({ set: values, where: predicate });
-            return state.updateResults.shift() ?? [];
+            // A queued `Error` REJECTS instead of resolving — the only way to
+            // reach the per-candidate catch, since every other failure path is
+            // already caught by an inner block.
+            const next = state.updateResults.shift();
+            if (next instanceof Error) throw next;
+            return next ?? [];
           }
         })
       })
@@ -78,6 +83,8 @@ import {
   MAX_RECOVERY_ATTEMPTS,
   RECOVERY_COOLDOWN_MS,
   STALE_PENDING_MS,
+  buildLeaseHeldCas,
+  buildRecoveryClaimCas,
   runWebhookDeliveryRecoverySweep
 } from './webhookDeliveryRecovery';
 import { toWebhookConfig } from '../services/webhookConfig';
@@ -322,6 +329,80 @@ describe('webhook delivery recovery sweep', () => {
     expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
     expect(String(state.updateCalls[1]!.set.errorMessage)).toContain('outcome unknown');
     structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_RECOVERY_IN_FLIGHT_ABANDONED');
+  });
+
+  it('wires the RIGHT predicate to each call site', async () => {
+    state.candidates = [orphan({ status: 'retrying' })];
+    state.updateResults = [claimWon(1), [{ id: 'delivery-1' }]];
+
+    await runWebhookDeliveryRecoverySweep(NOW);
+
+    const leaseUntil = new Date(NOW.getTime() + RECOVERY_COOLDOWN_MS);
+    // The compiled-SQL suite proves each builder is individually correct, but
+    // nothing there proves the sweep CALLS the right one at the right place.
+    // Swapping these two — claiming with the lease-held predicate, or writing
+    // the terminal row with the claim predicate — reintroduces exactly the
+    // TOCTOU hole the claim exists to close, and every other assertion in this
+    // file would still pass.
+    expect(state.updateCalls[0]!.where)
+      .toEqual(buildRecoveryClaimCas('delivery-1', NOW));
+    expect(state.updateCalls[1]!.where)
+      .toEqual(buildLeaseHeldCas('delivery-1', leaseUntil));
+  });
+
+  it('still requeues at exactly the attempt limit, abandoning only past it', async () => {
+    // Boundary: `> MAX` not `>= MAX`. A `>` -> `>=` slip abandons every row one
+    // recovery cycle early, which looks like the sweep simply not working.
+    state.candidates = [orphan({ recoveryAttempts: MAX_RECOVERY_ATTEMPTS - 1 })];
+    state.updateResults = [claimWon(MAX_RECOVERY_ATTEMPTS)];
+
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+
+    expect(summary).toMatchObject({ requeued: 1, exhausted: 0 });
+    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a terminal write that lost the lease instead of counting it resolved', async () => {
+    // The lease CAS matches the exact instant, so a delivery worker that took
+    // the row in between makes this write match nothing. Counting it as
+    // `abandonedInFlight` and logging "outcome unknown" would report a
+    // resolution that never happened — the quiet miscount #4095 is about.
+    state.candidates = [orphan({ status: 'retrying' })];
+    state.updateResults = [claimWon(1), []]; // claim won, terminal write lost
+
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+
+    expect(summary).toMatchObject({ terminalWriteLost: 1, abandonedInFlight: 0 });
+    const payload = structured(
+      consoleLines(warnSpy),
+      'WEBHOOK_DELIVERY_RECOVERY_TERMINAL_WRITE_LOST'
+    );
+    expect(payload).toMatchObject({ deliveryId: 'delivery-1' });
+    expect(consoleLines(warnSpy).join(' '))
+      .not.toContain('WEBHOOK_DELIVERY_RECOVERY_IN_FLIGHT_ABANDONED');
+  });
+
+  it('a throwing claim does not abort the rest of the batch', async () => {
+    // The per-candidate catch is the sweep's mirror of the fan-out-aborting bug
+    // this PR fixes in the subscriber, and the claim UPDATE is the only way to
+    // reach it — every other failure path has its own inner catch.
+    state.candidates = [
+      orphan({ id: 'delivery-1' }),
+      orphan({ id: 'delivery-2', webhookId: 'webhook-2', eventId: 'event-2' })
+    ];
+    state.updateResults = [new Error('claim blew up'), claimWon(1)];
+
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+
+    expect(summary).toMatchObject({ scanned: 2, requeued: 1 });
+    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
+    expect(queueDeliveryMock.mock.calls[0]![2]).toBe('delivery-2');
+    const payload = structured(
+      consoleLines(errorSpy),
+      'WEBHOOK_DELIVERY_RECOVERY_CANDIDATE_FAILED'
+    );
+    expect(payload).toMatchObject({ deliveryId: 'delivery-1' });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
   it('says nothing and does nothing when there is no orphan', async () => {
