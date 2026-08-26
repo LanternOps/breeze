@@ -332,7 +332,11 @@ userRoutes.get('/me', async (c) => {
       lastLoginAt: users.lastLoginAt,
       setupCompletedAt: users.setupCompletedAt,
       passwordChangedAt: users.passwordChangedAt,
-      preferences: users.preferences
+      preferences: users.preferences,
+      // #4018: selected ONLY to derive the `hasPassword` boolean below. It is
+      // destructured OUT of the spread that builds this response, so the hash
+      // itself is never serialized — asserted by users.test.ts.
+      passwordHash: users.passwordHash
     })
     .from(users)
     .where(eq(users.id, auth.user.id))
@@ -341,6 +345,10 @@ userRoutes.get('/me', async (c) => {
   if (!user) {
     return c.json({ error: 'User not found' }, 404);
   }
+
+  // Never spread `user` directly into the response from here on: it carries the
+  // password hash. `userWithoutSecrets` is the only safe shape.
+  const { passwordHash, ...userWithoutSecrets } = user;
 
   const requiresSetup = userRequiresSetup(user);
 
@@ -389,7 +397,12 @@ userRoutes.get('/me', async (c) => {
   });
 
   return c.json({
-    ...user,
+    ...userWithoutSecrets,
+    // #4018: whether a password step-up is even possible for this account.
+    // False for an SSO-provisioned (JIT) user, which has no password — the web
+    // auth store carries this through so UI that today says "set up MFA and
+    // sign in again" can offer the IdP road instead of a dead end.
+    hasPassword: passwordHash != null,
     partnerId: auth.partnerId,
     orgId: auth.orgId,
     scope: auth.scope,

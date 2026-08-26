@@ -1858,7 +1858,11 @@
     "disabling": "Désactivant...",
     "generating": "Générer...",
     "regenerateCodes": "Régénération des codes",
-    "showRecoveryCodes": "Afficher les codes de récupération"
+    "showRecoveryCodes": "Afficher les codes de récupération",
+    "verifyYourIdentity": "Vérifiez votre identité",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez-vous à nouveau auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
+    "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
+    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
@@ -1945,7 +1949,21 @@
     "failedToEnableMfaHttp": "Impossible d’activer MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "Impossible de désactiver MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Impossible de démarrer la configuration de la clé d’accès (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Impossible d’enregistrer la clé d’accès (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Impossible d’enregistrer la clé d’accès (HTTP {{status}})",
+    "ssoReauthNotFresh": "Votre fournisseur d'identité n'a pas revérifié votre connexion. Réessayez ou demandez à votre administrateur d'autoriser les invites de réauthentification.",
+    "ssoReauthIdentityMismatch": "Ce compte du fournisseur d'identité n'est pas celui associé à ce profil. Connectez-vous avec votre propre compte et réessayez.",
+    "ssoReauthSessionInvalid": "Votre session a changé pendant la vérification. Reconnectez-vous, puis réessayez.",
+    "ssoReauthPasswordSet": "Ce compte possède désormais un mot de passe. Utilisez-le pour configurer l'authentification multifacteur.",
+    "ssoReauthUnavailable": "La vérification par le fournisseur d'identité est temporairement indisponible. Veuillez réessayer sous peu.",
+    "ssoReauthProviderInactive": "L'authentification unique n'est plus disponible pour ce compte. Contactez votre administrateur, puis réessayez.",
+    "ssoReauthConfigChanged": "Vos paramètres d'authentification unique ont changé pendant la vérification. Relancez la vérification.",
+    "ssoReauthEmailUnverified": "Votre fournisseur d'identité indique que votre adresse e-mail n'est pas vérifiée. Vérifiez-la chez lui, puis réessayez.",
+    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de l'authentification multifacteur.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez de nouveau auprès de votre fournisseur avant d'ajouter une clé d'accès.",
+    "verifyWithYourIdentityProvider": "Vérifier auprès de votre fournisseur d'identité",
+    "passkeyIdpVerificationRequired": "Vérifiez auprès de votre fournisseur d'identité avant d'ajouter une clé d'accès.",
+    "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",
+    "couldNotStartIdentityProviderVerification": "Impossible de démarrer la vérification par le fournisseur d'identité."
   },
   "roleManager": {
     "roles": "Rôles",
@@ -2110,6 +2128,8 @@
     "securitySettings": "Paramètres de sécurité",
     "enforceSSOOnlyLogin": "Imposer la connexion SSO uniquement",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Les utilisateurs doivent utiliser SSO pour se connecter. La connexion par mot de passe sera désactivée.",
+    "trustThisProvidersMFA": "Faire confiance au MFA de ce fournisseur",
+    "trustThisProvidersMFAHelperText": "Lorsque votre fournisseur d'identité signale que l'authentification multifactorielle a été utilisée (`amr: mfa`), le MFA est considéré comme satisfait dans Breeze. Votre IdP doit inclure la revendication `amr` dans son jeton d'ID — la plupart nécessitent une activation explicite. Désactivé par défaut.",
     "warningSSOEnforcementEnabled": "Avertissement : application obligatoire du SSO activée",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Les utilisateurs ne pourront pas se connecter avec des mots de passe. Assurez-vous que votre configuration SSO fonctionne correctement avant d’activer cette option. Envisagez d’avoir au moins un compte administrateur capable de contourner SSO pour un accès d’urgence.",
     "testing": "Test...",

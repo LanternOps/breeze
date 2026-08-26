@@ -1853,7 +1853,11 @@
     "disabling": "Disabilitazione...",
     "generating": "Generazione...",
     "regenerateCodes": "Rigenera codici",
-    "showRecoveryCodes": "Mostra codici di recupero"
+    "showRecoveryCodes": "Mostra codici di recupero",
+    "verifyYourIdentity": "Verifica la tua identità",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Questo account accede tramite un provider di identità e non ha una password. Verificati nuovamente presso il tuo provider per iniziare a configurare un'app di autenticazione.",
+    "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
+    "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'app di autenticazione."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importa da Pax8",
@@ -1940,7 +1944,21 @@
     "failedToEnableMfaHttp": "Abilitazione MFA non riuscita (HTTP {{status}})",
     "failedToDisableMfaHttp": "Disabilitazione MFA non riuscita (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Avvio configurazione passkey non riuscito (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Salvataggio passkey non riuscito (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Salvataggio passkey non riuscito (HTTP {{status}})",
+    "ssoReauthNotFresh": "Il tuo provider di identità non ha verificato nuovamente il tuo accesso. Riprova oppure chiedi all'amministratore di consentire le richieste di riautenticazione.",
+    "ssoReauthIdentityMismatch": "Quell'account del provider di identità non è quello collegato a questo profilo. Accedi con il tuo account e riprova.",
+    "ssoReauthSessionInvalid": "La tua sessione è cambiata durante la verifica. Accedi di nuovo, quindi riprova.",
+    "ssoReauthPasswordSet": "Questo account ora ha una password. Usala per configurare l'autenticazione a più fattori.",
+    "ssoReauthUnavailable": "La verifica tramite il provider di identità non è temporaneamente disponibile. Riprova tra poco.",
+    "ssoReauthProviderInactive": "L'accesso Single Sign-On non è più disponibile per questo account. Rivolgiti all'amministratore e riprova.",
+    "ssoReauthConfigChanged": "Le impostazioni di Single Sign-On sono cambiate durante la verifica. Avvia di nuovo la verifica.",
+    "ssoReauthEmailUnverified": "Il tuo provider di identità segnala che il tuo indirizzo e-mail non è verificato. Verificalo lì, quindi riprova.",
+    "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'autenticazione a più fattori.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Questo account accede tramite un provider di identità e non ha una password. Esegui di nuovo la verifica presso il provider prima di aggiungere una passkey.",
+    "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
+    "passkeyIdpVerificationRequired": "Verifica con il tuo provider di identità prima di aggiungere una passkey.",
+    "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
+    "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità."
   },
   "roleManager": {
     "roles": "Ruoli",
@@ -2105,6 +2123,8 @@
     "securitySettings": "Impostazioni sicurezza",
     "enforceSSOOnlyLogin": "Imponi accesso solo SSO",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Gli utenti devono usare SSO per accedere. L'accesso con password verrà disabilitato.",
+    "trustThisProvidersMFA": "Considera attendibile l'MFA di questo provider",
+    "trustThisProvidersMFAHelperText": "Quando il tuo provider di identità segnala che è stata usata l'autenticazione a più fattori (`amr: mfa`), l'MFA viene considerata soddisfatta in Breeze. Il tuo IdP deve includere il claim `amr` nel suo token ID — la maggior parte richiede che questo sia abilitato esplicitamente. Disattivato per impostazione predefinita.",
     "warningSSOEnforcementEnabled": "Avviso: imposizione SSO abilitata",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Gli utenti non potranno accedere con password. Assicurati che la configurazione SSO funzioni correttamente prima di abilitare questa opzione. Valuta di mantenere almeno un account amministratore che possa bypassare SSO per accesso di emergenza.",
     "testing": "Test in corso...",

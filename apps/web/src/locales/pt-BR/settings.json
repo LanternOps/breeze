@@ -1858,7 +1858,11 @@
     "disabling": "Desativando...",
     "generating": "Gerando...",
     "regenerateCodes": "Regenerar códigos",
-    "showRecoveryCodes": "Mostrar códigos de recuperação"
+    "showRecoveryCodes": "Mostrar códigos de recuperação",
+    "verifyYourIdentity": "Verifique sua identidade",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta conta faz login por meio de um provedor de identidade e não tem senha. Verifique-se novamente com seu provedor para começar a configurar um aplicativo autenticador.",
+    "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
+    "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração do seu aplicativo autenticador."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar do Pax8",
@@ -1945,7 +1949,21 @@
     "failedToEnableMfaHttp": "Falha ao ativar MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "Falha ao desativar MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Falha ao iniciar a configuração da chave de acesso (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Falha ao salvar a chave de acesso (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Falha ao salvar a chave de acesso (HTTP {{status}})",
+    "ssoReauthNotFresh": "Seu provedor de identidade não verificou seu login novamente. Tente de novo ou peça ao administrador para permitir solicitações de reautenticação.",
+    "ssoReauthIdentityMismatch": "Essa conta do provedor de identidade não é a vinculada a este perfil. Faça login com sua própria conta e tente de novo.",
+    "ssoReauthSessionInvalid": "Sua sessão mudou durante a verificação. Faça login novamente e tente de novo.",
+    "ssoReauthPasswordSet": "Esta conta agora tem uma senha. Use-a para configurar a autenticação multifator.",
+    "ssoReauthUnavailable": "A verificação pelo provedor de identidade está temporariamente indisponível. Tente novamente em instantes.",
+    "ssoReauthProviderInactive": "O logon único não está mais disponível para esta conta. Fale com o administrador e tente de novo.",
+    "ssoReauthConfigChanged": "Suas configurações de logon único mudaram durante a verificação. Inicie a verificação novamente.",
+    "ssoReauthEmailUnverified": "Seu provedor de identidade informa que seu endereço de e-mail não foi verificado. Verifique-o lá e tente de novo.",
+    "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração da autenticação multifator.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Esta conta faz login por um provedor de identidade e não tem senha. Verifique novamente com o provedor antes de adicionar uma chave de acesso.",
+    "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
+    "passkeyIdpVerificationRequired": "Verifique com seu provedor de identidade antes de adicionar uma chave de acesso.",
+    "ssoReauthFailed": "Não foi possível verificar com seu provedor de identidade. Tente novamente.",
+    "couldNotStartIdentityProviderVerification": "Não foi possível iniciar a verificação pelo provedor de identidade."
   },
   "roleManager": {
     "roles": "Funções",
@@ -2110,6 +2128,8 @@
     "securitySettings": "Configurações de segurança",
     "enforceSSOOnlyLogin": "Aplicar login somente SSO",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Os usuários devem usar o SSO para fazer login. O login com senha será desativado.",
+    "trustThisProvidersMFA": "Confiar na MFA deste provedor",
+    "trustThisProvidersMFAHelperText": "Quando seu provedor de identidade informa que a autenticação multifator foi usada (`amr: mfa`), a MFA é considerada satisfeita no Breeze. Seu IdP deve incluir a declaração `amr` em seu token de ID — a maioria exige que isso seja habilitado explicitamente. Desativado por padrão.",
     "warningSSOEnforcementEnabled": "Aviso: aplicação de SSO ativada",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Os usuários não poderão fazer login com senhas. Certifique-se de que sua configuração de SSO esteja funcionando corretamente antes de ativar esta opção. Considere ter pelo menos uma conta de administrador que possa ignorar o SSO para acesso de emergência.",
     "testing": "Testando...",

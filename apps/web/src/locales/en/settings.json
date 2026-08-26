@@ -1858,7 +1858,11 @@
     "disabling": "Disabling...",
     "generating": "Generating...",
     "regenerateCodes": "Regenerate codes",
-    "showRecoveryCodes": "Show recovery codes"
+    "showRecoveryCodes": "Show recovery codes",
+    "verifyYourIdentity": "Verify your identity",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "This account signs in through an identity provider and has no password. Re-verify with your provider to start setting up an authenticator app.",
+    "verifyWithYourIdentityProvider": "Verify with your identity provider",
+    "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -1945,7 +1949,21 @@
     "failedToEnableMfaHttp": "Failed to enable MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "Failed to disable MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Failed to start passkey setup (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Failed to save passkey (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Failed to save passkey (HTTP {{status}})",
+    "ssoReauthNotFresh": "Your identity provider did not re-verify your sign-in. Try again, or ask your administrator to allow re-authentication prompts.",
+    "ssoReauthIdentityMismatch": "That identity provider account is not the one linked to this profile. Sign in with your own account and try again.",
+    "ssoReauthSessionInvalid": "Your session changed while you were verifying. Sign in again, then retry.",
+    "ssoReauthPasswordSet": "This account now has a password. Use it to set up multi-factor authentication.",
+    "ssoReauthUnavailable": "Identity provider verification is temporarily unavailable. Please try again shortly.",
+    "ssoReauthProviderInactive": "Single sign-on is no longer available for this account. Ask your administrator, then try again.",
+    "ssoReauthConfigChanged": "Your single sign-on settings changed while you were verifying. Start the verification again.",
+    "ssoReauthEmailUnverified": "Your identity provider reports that your email address is not verified. Verify it there, then try again.",
+    "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up multi-factor authentication.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "This account signs in through an identity provider and has no password. Re-verify with your provider before adding a passkey.",
+    "verifyWithYourIdentityProvider": "Verify with your identity provider",
+    "passkeyIdpVerificationRequired": "Verify with your identity provider before adding a passkey.",
+    "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
+    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification."
   },
   "roleManager": {
     "roles": "Roles",
@@ -2110,6 +2128,8 @@
     "securitySettings": "Security Settings",
     "enforceSSOOnlyLogin": "Enforce SSO-only login",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Users must use SSO to sign in. Password login will be disabled.",
+    "trustThisProvidersMFA": "Trust this provider's MFA",
+    "trustThisProvidersMFAHelperText": "When your identity provider reports that multi-factor authentication was used (`amr: mfa`), treat MFA as satisfied in Breeze. Your IdP must include the `amr` claim in its ID token — most require this to be enabled explicitly. Off by default.",
     "warningSSOEnforcementEnabled": "Warning: SSO enforcement enabled",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Users will not be able to sign in with passwords. Make sure your SSO configuration is working correctly before enabling this option. Consider having at least one admin account that can bypass SSO for emergency access.",
     "testing": "Testing...",

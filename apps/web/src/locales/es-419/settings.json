@@ -1858,7 +1858,11 @@
     "disabling": "Desactivando...",
     "generating": "Generando...",
     "regenerateCodes": "Regenerar códigos",
-    "showRecoveryCodes": "Mostrar códigos de recuperación"
+    "showRecoveryCodes": "Mostrar códigos de recuperación",
+    "verifyYourIdentity": "Verifica tu identidad",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Vuelve a verificarte con tu proveedor para comenzar a configurar una aplicación de autenticación.",
+    "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad",
+    "ssoReauthProofExpired": "Tu verificación con el proveedor de identidad venció. Verifícate de nuevo para terminar de configurar tu aplicación de autenticación."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar desde Pax8",
@@ -1945,7 +1949,21 @@
     "failedToEnableMfaHttp": "No se pudo habilitar MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "No se pudo desactivar MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "No se pudo iniciar la configuración de la clave de acceso (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "No se pudo guardar la clave de acceso (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "No se pudo guardar la clave de acceso (HTTP {{status}})",
+    "ssoReauthNotFresh": "Tu proveedor de identidad no volvió a verificar tu inicio de sesión. Inténtalo de nuevo o pide a tu administrador que permita las solicitudes de reautenticación.",
+    "ssoReauthIdentityMismatch": "Esa cuenta del proveedor de identidad no es la vinculada a este perfil. Inicia sesión con tu propia cuenta e inténtalo de nuevo.",
+    "ssoReauthSessionInvalid": "Tu sesión cambió mientras te verificabas. Inicia sesión de nuevo y vuelve a intentarlo.",
+    "ssoReauthPasswordSet": "Esta cuenta ahora tiene una contraseña. Úsala para configurar la autenticación multifactor.",
+    "ssoReauthUnavailable": "La verificación con el proveedor de identidad no está disponible temporalmente. Inténtalo de nuevo en unos momentos.",
+    "ssoReauthProviderInactive": "El inicio de sesión único ya no está disponible para esta cuenta. Consulta a tu administrador e inténtalo de nuevo.",
+    "ssoReauthConfigChanged": "Tu configuración de inicio de sesión único cambió mientras te verificabas. Comienza la verificación otra vez.",
+    "ssoReauthEmailUnverified": "Tu proveedor de identidad indica que tu dirección de correo no está verificada. Verifícala allí y vuelve a intentarlo.",
+    "ssoReauthProofExpired": "Tu verificación con el proveedor de identidad venció. Verifícate de nuevo para terminar de configurar la autenticación multifactor.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Vuelve a verificarte con tu proveedor antes de agregar una clave de acceso.",
+    "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad",
+    "passkeyIdpVerificationRequired": "Verifícate con tu proveedor de identidad antes de agregar una clave de acceso.",
+    "ssoReauthFailed": "No se pudo verificar con tu proveedor de identidad. Inténtalo de nuevo.",
+    "couldNotStartIdentityProviderVerification": "No se pudo iniciar la verificación con el proveedor de identidad."
   },
   "roleManager": {
     "roles": "Roles",
@@ -2110,6 +2128,8 @@
     "securitySettings": "Configuración de seguridad",
     "enforceSSOOnlyLogin": "Aplicar el inicio de sesión SSO-only",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Los usuarios deben usar SSO para iniciar sesión. El inicio de sesión con contraseña estará deshabilitado.",
+    "trustThisProvidersMFA": "Confiar en el MFA de este proveedor",
+    "trustThisProvidersMFAHelperText": "Cuando su proveedor de identidad informa que se usó autenticación multifactor (`amr: mfa`), se considera que el MFA está satisfecho en Breeze. Su IdP debe incluir la reclamación `amr` en su token de ID; la mayoría requiere habilitar esto explícitamente. Desactivado de forma predeterminada.",
     "warningSSOEnforcementEnabled": "Advertencia: aplicación de SSO habilitada",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Los usuarios no podrán iniciar sesión con contraseñas. Asegúrese de que su configuración SSO esté funcionando correctamente antes de habilitar esta opción. Considere tener al menos una cuenta de administrador que pueda omitir SSO para acceso de emergencia.",
     "testing": "Probando...",

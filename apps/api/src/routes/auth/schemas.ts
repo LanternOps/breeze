@@ -58,6 +58,11 @@ export const mfaVerifySchema = z.object({
   // already-protected account's TOTP-add can satisfy the existing-factor
   // step-up gate. Ignored on Case 1 (login completion).
   stepUpGrantId: z.string().optional(),
+  // #4018: presented on setup-confirm (Case 2) by a PASSWORDLESS SSO account,
+  // which has no password to satisfy the enrollment step-up. Consumed there as
+  // the terminal write of the /mfa/setup flow. Ignored on Case 1 (login
+  // completion — that path is pre-auth and mints no factor).
+  ssoReauthGrantId: z.string().uuid().optional(),
 });
 
 export const phoneVerifySchema = z.object({
@@ -123,17 +128,27 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // existing clients are untouched; register_approver_device gates the
 // /authenticator register routes (#2707).
 //
-// `satisfies readonly StepUpOperation[]` compile-time-links this literal
-// array to the service's StepUpOperation union — if the two ever diverge
-// (a new operation added to one but not the other), this fails typecheck
-// instead of silently letting a grant type this schema doesn't know about
-// slip through validation, or letting a value this schema accepts fail to
-// match any real operation.
+// This is the CLIENT-REQUESTABLE allowlist; the service's StepUpOperation union
+// is legitimately wider, so this array is deliberately NOT exhaustive. The
+// `satisfies` target links it to that union so a value here can never be one
+// that matches no grant type.
+//
+// #4018: `enroll_first_factor` is excluded BY THE COMPILER, not by convention.
+// That grant is the sole output of the SSO re-auth callback, which mints it
+// only after a forced IdP round-trip proves identity for a PASSWORDLESS
+// account; letting a client request one here would turn a re-authentication
+// proof into a checkbox for anyone who can already satisfy step-up.
+//
+// A plain `satisfies readonly StepUpOperation[]` would NOT have stopped that —
+// it only constrains membership, so appending 'enroll_first_factor' still
+// typechecks and the exclusion would rest entirely on schemas.test.ts catching
+// it. Narrowing the target with `Exclude<>` makes appending it a compile error.
+// The test stays as the readable statement of intent.
 const STEP_UP_OPERATIONS = [
   'add_factor',
   'register_approver_device',
   'agent_rollback',
-] as const satisfies readonly StepUpOperation[];
+] as const satisfies readonly Exclude<StepUpOperation, 'enroll_first_factor'>[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)
   .default('add_factor');

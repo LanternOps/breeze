@@ -1,3 +1,7 @@
+---
+tracking_issue: 4060
+---
+
 # S0 Track D Device Control Lifecycle Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -227,11 +231,11 @@ Rollback directive canonical bytes are the LF-separated record below, with no CR
 
 **Interfaces:** Produces the two normalizers and `SecurityCapabilities` fields from the shared contracts. Tasks 4 and 11 consume only the normalized same-heartbeat values; they do not infer capability from agent version or stale device columns.
 
-- [ ] **Step 1: Write capability RED tests**
+- [x] **Step 1: Write capability RED tests**
 
 Add table-driven Go JSON cases for exact `peripheralPolicyProtocolVersion:2` and `rollbackProtocolVersion:1`, omission, and zero. Add API cases proving recognized integers persist, malformed/string/fractional/unknown integers normalize to zero without rejecting the heartbeat, omitted capability writes both columns to zero, and prior nonzero values are cleared by omission or downgrade.
 
-- [ ] **Step 2: Run RED and retain the failing assertions**
+- [x] **Step 2: Run RED and retain the failing assertions**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/agents/heartbeat.test.ts
@@ -240,11 +244,11 @@ cd agent && go test -race ./internal/heartbeat
 
 Expected: FAIL because the payload, schema, device columns, normalizers, and unconditional persistence do not yet exist.
 
-- [ ] **Step 3: Implement the minimal tolerant path**
+- [x] **Step 3: Implement the minimal tolerant path**
 
 Add the Go fields, optional tolerant Zod fields, pure normalizers, Drizzle columns, and unconditional heartbeat update. Parsing failure drops only the malformed optional capability; the heartbeat remains accepted. Do not admit either new command type in this task.
 
-- [ ] **Step 4: Run GREEN and static checks**
+- [x] **Step 4: Run GREEN and static checks**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/agents/heartbeat.test.ts
@@ -252,7 +256,7 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api exec tsc --noEm
 cd agent && go test -race ./internal/heartbeat
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/heartbeat_test.go apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/heartbeat.ts apps/api/src/routes/agents/heartbeat.test.ts apps/api/src/db/schema/devices.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/migrations/2026-09-10-agent-control-protocol-capabilities.sql
@@ -280,11 +284,11 @@ git commit -m "fix(protocol): persist explicit device capabilities"
 
 **Interfaces:** Adds `priority integer NOT NULL DEFAULT 100 CHECK (priority BETWEEN 0 AND 1000)`, `peripheral_policy_device_states`, and append-only `peripheral_policy_delivery_events`. Task 4 owns their state transitions; Tasks 3 and 5 only call its service.
 
-- [ ] **Step 1: Write schema/governance RED tests**
+- [x] **Step 1: Write schema/governance RED tests**
 
 Require `priority`, both new tables, org isolation with ENABLE/FORCE RLS, device/org cascade coverage, JSON evidence classified `excludedOpen`, and UPDATE/DELETE denial to `breeze_app` on delivery events while audit-admin plus retention GUC can delete. Assert device-state uniqueness by device and event uniqueness for idempotent result ingestion.
 
-- [ ] **Step 2: Run RED with real PostgreSQL**
+- [x] **Step 2: Run RED with real PostgreSQL**
 
 ```bash
 set -a; source .env.test; set +a
@@ -298,11 +302,11 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: FAIL on missing columns/tables/policies/registrations.
 
-- [ ] **Step 3: Implement the additive migration and registries**
+- [x] **Step 3: Implement the additive migration and registries**
 
 Create idempotent tables/indexes/FKs/checks/RLS/policies/append-only trigger and privileges. Register both tables in every applicable org cascade, device cascade, denormalized-org, and export policy list in correct FK order. Delivery event JSON is `excludedOpen`; the mutable desired envelope JSON is also `excludedOpen`.
 
-- [ ] **Step 4: Run GREEN, drift, and migration checks**
+- [x] **Step 4: Run GREEN, drift, and migration checks**
 
 ```bash
 bash scripts/check-migration-naming.sh
@@ -316,7 +320,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
   src/__tests__/integration/tenant-export-policy.integration.test.ts
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Stage only the migration, schema, registry, and named test changes and commit:
 
@@ -340,11 +344,11 @@ git commit -m "fix(db): persist peripheral policy delivery truth"
 
 **Interfaces:** Produces `policyTargetsDevice`, `comparePeripheralCandidates`, `resolveEffectivePeripheralPolicySet`, `canonicalPeripheralEnvelopeBytes`, and `digestPeripheralEnvelope` exactly as declared above. Task 4 consumes them without reimplementing precedence.
 
-- [ ] **Step 1: Write resolver and API RED tests**
+- [x] **Step 1: Write resolver and API RED tests**
 
 Use table cases for every precedence axis, creation/update order independence, partner versus org, overlapping groups, site/device targets, exact `storage` versus `all_usb`, proof that `all_usb` does not cover Bluetooth/Thunderbolt, priority/action/UUID ties, empty set, two-org isolation, and the golden digest. Route and direct AI validators reject priority outside safe integer `0..1000` and return priority on reads.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -353,11 +357,11 @@ pnpm --filter @breeze/api exec vitest run \
   src/services/aiToolsPeripherals.siteScope.test.ts
 ```
 
-- [ ] **Step 3: Implement pure resolution plus system-context loading**
+- [x] **Step 3: Implement pure resolution plus system-context loading**
 
 Load device/org/site/current UUID-sorted memberships and both ownership axes under a short system context. Apply the frozen target/owner/class/priority/action/UUID ordering. Use one recursive key sorter and no generic object spread for canonical bytes.
 
-- [ ] **Step 4: Run GREEN and real-Postgres integration**
+- [x] **Step 4: Run GREEN and real-Postgres integration**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -369,7 +373,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
   src/services/peripheralEffectivePolicy.integration.test.ts
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/peripheralEffectivePolicy.ts apps/api/src/services/peripheralEffectivePolicy.test.ts apps/api/src/services/peripheralEffectivePolicy.integration.test.ts apps/api/src/testFixtures/peripheral-policy-v2-canonical.json apps/api/src/routes/peripheralControl.ts apps/api/src/routes/peripheralControl.test.ts apps/api/src/services/aiToolsPeripherals.ts apps/api/src/services/aiToolsPeripherals.siteScope.test.ts
@@ -394,11 +398,11 @@ git commit -m "fix(api): resolve effective peripheral policy"
 
 **Interfaces:** Produces `reconcilePeripheralPolicyDevice()` and a shared `handlePeripheralPolicyResultV2(deviceId, commandId, result)` used by both HTTP and WebSocket result transports. Adds command type `PERIPHERAL_POLICY_SYNC_V2`. Task 5 schedules reconciliation; Task 6 implements the agent result contract.
 
-- [ ] **Step 1: Write state-machine RED tests**
+- [x] **Step 1: Write state-machine RED tests**
 
 Prove concurrent revision allocation is monotonic; equal digest coalesces; first v2 admission is an empty `clear_legacy`; no `enforce` command emits before exact applied clear revision/digest; empty desired set converges after clear; wrong device/revision/digest cannot change projection; applied/rejected evidence is append-only; HTTP and WebSocket paths call the same handler; stored-capable but same-heartbeat downgraded devices cannot claim v2 work.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -407,11 +411,11 @@ pnpm --filter @breeze/api exec vitest run \
   src/services/commandDispatch.test.ts
 ```
 
-- [ ] **Step 3: Implement row-locked transitions and claim filtering**
+- [x] **Step 3: Implement row-locked transitions and claim filtering**
 
 In one short transaction, lock/allocate the per-device revision, coalesce identical desired digest, persist envelope/status, insert requested evidence, and create the command. Result insertion takes a device `FOR KEY SHARE` lock and never updates `devices` in the same transaction. An exact applied clear schedules the next enforce revision only after commit. Incompatible queued v2 commands are released/cancelled without delivery.
 
-- [ ] **Step 4: Run GREEN and transaction integration**
+- [x] **Step 4: Run GREEN and transaction integration**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -423,7 +427,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
   src/services/peripheralPolicyState.integration.test.ts
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/peripheralPolicyState.ts apps/api/src/services/peripheralPolicyState.test.ts apps/api/src/services/peripheralPolicyState.integration.test.ts apps/api/src/services/commandQueue.ts apps/api/src/services/commandTimeouts.ts apps/api/src/services/commandResultHandlers.ts apps/api/src/services/commandResultHandlers.test.ts apps/api/src/services/commandDispatch.ts apps/api/src/services/commandDispatch.test.ts apps/api/src/routes/agents/heartbeat.ts
@@ -460,11 +464,11 @@ git commit -m "fix(api): version peripheral policy delivery"
 
 **Interfaces:** Produces `schedulePeripheralPolicyDevice(deviceId, reason)` with one stable BullMQ job ID per device. Every direct policy, AI, group-router, dynamic membership, pin/unpin, site-move, and org-move path calls it after commit. No caller enqueues org-wide raw policy lists.
 
-- [ ] **Step 1: Write mutation-path coverage RED tests**
+- [x] **Step 1: Write mutation-path coverage RED tests**
 
 Require create/update/disable/hard-delete policy changes to enqueue old-union-new device IDs. Require manual group add/remove, pin/unpin, dynamic evaluation, group deletion in both routers, direct AI fleet membership writes, direct AI peripheral policy writes, same-org site move, and org move to enqueue exactly affected devices. Require partner policy fan-out across all non-Quick-Support orgs for that partner, zero unrelated state/queue writes, and stable device-keyed coalescing.
 
-- [ ] **Step 2: Run RED and retain the uncovered direct-path list**
+- [x] **Step 2: Run RED and retain the uncovered direct-path list**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -480,7 +484,7 @@ pnpm --filter @breeze/api exec vitest run \
   src/services/aiToolsFleet.test.ts
 ```
 
-- [ ] **Step 3: Replace org distribution with device reconciliation**
+- [x] **Step 3: Replace org distribution with device reconciliation**
 
 Capture old policy/membership device IDs before each write and current IDs after it; enqueue the union after commit. Centralize helpers while preserving explicit calls in both group routers and direct AI mutation paths that delete/write membership rows without `services/groupMembership.ts`. Reconciliation keyset-pages devices under short system contexts and schedules drift only, with jitter/offset.
 
@@ -494,7 +498,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Run the approved local 10,000-device resolver/distribution benchmark and record latency, queue depth, DB pool headroom, early/middle/final devices, and zero unrelated writes. This is performance evidence only and authorizes no rollout.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Stage only the named job/route/service/test changes and commit:
 
@@ -521,21 +525,21 @@ git commit -m "fix(api): reconcile peripheral policy per device"
 
 **Interfaces:** Consumes `PeripheralPolicyEnvelopeV2`/`PeripheralPolicyResultV2` exactly and persists `peripheral_policy_v2_state.json` atomically with device/org/site, phase, revision, digest, and effective set. The handler does not call legacy `peripheral.Evaluate()`.
 
-- [ ] **Step 1: Write strict agent RED tests**
+- [x] **Step 1: Write strict agent RED tests**
 
 Test wrong device/org/site, malformed digest, lower revision, same-revision/different-digest, invalid policy, corrupted local state, concurrent duplicate commands, and restart. All fail before enforcement. Same revision/digest is idempotent applied; empty enforce clears; `clear_legacy` clears and verifies legacy enforcement plus legacy store before ack; detection/enforcement/save failure rejects and preserves last-known-good state. The Go golden digest equals TypeScript.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd agent && go test -race ./internal/peripheral ./internal/heartbeat
 ```
 
-- [ ] **Step 3: Implement strict validation, enforcement, and atomic persistence**
+- [x] **Step 3: Implement strict validation, enforcement, and atomic persistence**
 
 Compare envelope identity to `config.DeviceID`, `config.OrgID`, and `config.SiteID`; group IDs remain digest-bound server identity. Verify canonical digest before detection/actuation. Plan deterministic effective actions, verify enforcement, then atomically persist; never overwrite known-good disk state after a failed apply.
 
-- [ ] **Step 4: Run GREEN and platform unit tests**
+- [x] **Step 4: Run GREEN and platform unit tests**
 
 ```bash
 cd agent && go test -race ./internal/peripheral ./internal/heartbeat
@@ -543,7 +547,7 @@ cd agent && go test -race ./internal/peripheral ./internal/heartbeat
 
 Run every platform-specific peripheral detector/enforcer unit package selected by the current build tags and record skipped hardware cases explicitly.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add agent/internal/remote/tools agent/internal/heartbeat agent/internal/peripheral
@@ -600,22 +604,22 @@ Until every real-system packet passes against the exact shipping artifact, recor
 
 **Interfaces:** Adds `agent_rollback:create`, `StepUpOperation = ... | 'agent_rollback'`, `resourceDigest` to the single-use grant binding, and `rollbackResourceDigest()` over canonical `{deviceId,currentVersion,targetVersion,reason}`. Task 10 consumes the grant only after validation and immediately before transactional write.
 
-- [ ] **Step 1: Write permission/grant RED tests**
+- [x] **Step 1: Write permission/grant RED tests**
 
 Assert Partner Admin wildcard and explicit Org Admin grant only. Deny technician, site-restricted actor, API key, service principal, and AI actor. Test wrong operation/resource/session/auth epoch, expiry, replay, parallel double-consume, and Redis error fail closed. `/auth/mfa/step-up` defaults existing clients to `add_factor` and mints `agent_rollback` only after proof of an existing factor.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/shared exec vitest run src/constants/permissions.test.ts
 pnpm --filter @breeze/api exec vitest run src/db/seed.test.ts src/routes/permissionsCatalog.test.ts src/services/mfaStepUpGrant.test.ts src/routes/auth.test.ts
 ```
 
-- [ ] **Step 3: Extend the existing grant and registries**
+- [x] **Step 3: Extend the existing grant and registries**
 
 Add the permission to constants/catalog/seed/migration, grant it explicitly only to Org Admin, and preserve Partner Admin wildcard. Bind grant HMAC/storage/validation/consume to the resource digest. Do not add any alternate MFA verifier in the rollback route.
 
-- [ ] **Step 4: Run GREEN and Redis integration**
+- [x] **Step 4: Run GREEN and Redis integration**
 
 ```bash
 pnpm --filter @breeze/shared exec vitest run src/constants/permissions.test.ts
@@ -624,7 +628,7 @@ set -a; source .env.test; set +a
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/services/mfaStepUpGrant.integration.test.ts
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Stage only the named permission, MFA, migration, and tests and commit:
 
@@ -649,11 +653,11 @@ git commit -m "fix(authz): authorize signed agent rollback"
 
 **Interfaces:** Adds mutable `agent_rollback_directives` and append-only `agent_rollback_events`. Directive rows store tenant/device identity, bound versions/components, exact manifest/signatures/artifacts, reason/authorizer/times, command ID, status, latest phase/error. Events store immutable phase observations and idempotency identity.
 
-- [ ] **Step 1: Write governance RED tests**
+- [x] **Step 1: Write governance RED tests**
 
 Require cross-org reads/writes to fail, device/org deletion to clean both tables, application role mutation/deletion of events to fail, audit admin plus retention GUC to delete, and every JSON column to be `excludedOpen`. Assert one active rollback per device and event idempotency constraints.
 
-- [ ] **Step 2: Run RED with real PostgreSQL**
+- [x] **Step 2: Run RED with real PostgreSQL**
 
 ```bash
 set -a; source .env.test; set +a
@@ -664,11 +668,11 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
   src/__tests__/integration/tenant-export-policy.integration.test.ts
 ```
 
-- [ ] **Step 3: Implement additive schema and registrations**
+- [x] **Step 3: Implement additive schema and registrations**
 
 Use idempotent DDL, explicit FKs/indexes/checks, ENABLE/FORCE RLS, append-only triggers/privileges, correct cascade ordering, and export policy classification. No production migration execution occurs here.
 
-- [ ] **Step 4: Run GREEN and migration drift checks**
+- [x] **Step 4: Run GREEN and migration drift checks**
 
 ```bash
 bash scripts/check-migration-naming.sh
@@ -681,7 +685,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
   src/__tests__/integration/tenant-export-policy.integration.test.ts
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/db/schema/agentRollback.ts apps/api/src/db/schema/index.ts apps/api/migrations/2026-08-24-agent-rollback-protocol.sql apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantCascade.test.ts apps/api/src/__tests__/integration
@@ -706,11 +710,11 @@ git commit -m "fix(db): persist agent rollback lifecycle"
 
 **Interfaces:** Produces the rollback signing, predecessor resolution, component builder, resource digest, and atomic creation functions declared above. Component set is agent plus installed owned companions; viewer is impossible in v1.
 
-- [ ] **Step 1: Write resolver/signing/atomicity RED tests**
+- [x] **Step 1: Write resolver/signing/atomicity RED tests**
 
 Reject arbitrary older, equal, newer, prerelease, ambiguous current, platform/arch/edition mismatch, unsigned/missing manifest, unknown signing key, missing installed companion artifact, stale live version, absent capability, wrong step-up bind, and concurrent duplicate creation with zero directive/event/command rows. Golden signature verifies; every one-field tamper fails. Success writes directive, requested event, and `agent_rollback_v1` command atomically.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -718,11 +722,11 @@ pnpm --filter @breeze/api exec vitest run \
   src/services/agentRollback.test.ts
 ```
 
-- [ ] **Step 3: Implement fail-closed target resolution and creation**
+- [x] **Step 3: Implement fail-closed target resolution and creation**
 
 Resolve the greatest lower verified registered stable release for exact platform/architecture/edition. Re-read and lock the device, capability, live version, and installed companion versions inside the transaction. Complete all target/signature checks first, consume the exact resource-bound grant immediately before write, then insert projection/event/command under the unique active-device constraint.
 
-- [ ] **Step 4: Run GREEN and real-Postgres concurrency tests**
+- [x] **Step 4: Run GREEN and real-Postgres concurrency tests**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/rollbackDirectiveSigning.test.ts src/services/agentRollback.test.ts
@@ -730,7 +734,7 @@ set -a; source .env.test; set +a
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/services/agentRollback.integration.test.ts
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/agentRollback.ts apps/api/src/services/agentRollback.test.ts apps/api/src/services/agentRollback.integration.test.ts apps/api/src/services/rollbackDirectiveSigning.ts apps/api/src/services/rollbackDirectiveSigning.test.ts apps/api/src/testFixtures/agent-rollback-directive-v1.json apps/api/src/services/manifestSigning.ts apps/api/src/routes/agentVersions.ts apps/api/src/services/commandQueue.ts apps/api/src/services/commandTimeouts.ts
@@ -753,27 +757,27 @@ git commit -m "fix(api): sign exact agent rollback directives"
 
 **Interfaces:** Adds `POST /devices/:id/agent-rollback` with body `{targetVersion, reason, stepUpGrant}`. It requires `agent_rollback:create`, `requireMfa()`, tenant/device scope, and the exact single-use resource-bound grant. It calls Task 10's atomic service rather than assembling directives in the route.
 
-- [ ] **Step 1: Write actor and claim RED tests**
+- [x] **Step 1: Write actor and claim RED tests**
 
 Prove Org Admin and Partner Admin succeed only in scope with permission, MFA claim, and fresh grant. Prove site-restricted technician, API key, service principal, AI agent, foreign tenant, missing MFA, stale grant, and wrong resource fail with zero directive/event/command writes. An omitted/zero/old capability receives no rollback; a device stored capable but reporting zero on this heartbeat receives no rollback.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/agentRollback.test.ts src/services/commandDispatch.test.ts src/routes/agents/heartbeat.test.ts
 ```
 
-- [ ] **Step 3: Implement explicit auth order and current-heartbeat filtering**
+- [x] **Step 3: Implement explicit auth order and current-heartbeat filtering**
 
 Mount the literal nested route before conflicting parameter routes. Authenticate, resolve known device in tenant scope, authorize permission/site constraints, require MFA, validate request/target/resource binding, then call the atomic service. Claim filtering uses the normalized value from the current payload and never version inference.
 
-- [ ] **Step 4: Run GREEN and mount regression**
+- [x] **Step 4: Run GREEN and mount regression**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/agentRollback.test.ts src/services/commandDispatch.test.ts src/routes/agents/heartbeat.test.ts src/routes/devices/index.test.ts
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/routes/agentRollback.ts apps/api/src/routes/agentRollback.test.ts apps/api/src/routes/devices/index.ts apps/api/src/services/commandDispatch.ts apps/api/src/services/commandDispatch.test.ts apps/api/src/routes/agents/heartbeat.ts apps/api/src/routes/agents/heartbeat.test.ts
@@ -797,21 +801,21 @@ git commit -m "fix(api): gate rollback on fresh device authority"
 
 **Interfaces:** Produces a narrow injected updater primitive that accepts directive-bound signed metadata, returns verified staged artifacts, atomically/journaledly swaps the complete owned component set, and recovers the prior complete set. It is not an authorization layer and never calls local `Rollback()` as proof of authority.
 
-- [ ] **Step 1: Write updater RED tests**
+- [x] **Step 1: Write updater RED tests**
 
 Reject wrong URL origin/policy, redirect abuse, size, checksum, manifest signature/key ID, component/platform/arch/edition/version, and directive/artifact mismatch. Multi-artifact staging failure changes no live binary. Every per-component swap interruption retains a recoverable journal; recovery yields either the complete old or complete target set. Existing normal update, downgrade guard, and local rollback tests stay green.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd agent && go test -race ./internal/updater
 ```
 
-- [ ] **Step 3: Implement narrow verified staging and journaled swap seams**
+- [x] **Step 3: Implement narrow verified staging and journaled swap seams**
 
 Reuse pinned-manifest verification and downloader network policy. Stage all artifacts before any live swap. Write/fsync the journal before each rename/swap and preserve enough old-component metadata to roll back a partially crossed boundary deterministically.
 
-- [ ] **Step 4: Run GREEN for Unix and Windows build tags**
+- [x] **Step 4: Run GREEN for Unix and Windows build tags**
 
 ```bash
 cd agent && go test -race ./internal/updater
@@ -822,7 +826,7 @@ GOOS=darwin GOARCH=arm64 go test -c -o /tmp/breeze-updater-darwin.test ./interna
 
 Cross-compiles prove build compatibility only, not runtime rollback.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add agent/internal/updater
@@ -850,21 +854,21 @@ git commit -m "fix(agent): stage verified rollback artifacts"
 
 **Interfaces:** Owns atomic rollback state and injected executor. Persists `received`, `downloaded`, `verified`, `staged`, `swapped`, `restart_requested`, `healthy`, `failed`, and `recovered`; persists before the next irreversible boundary; retains terminal replay tombstones; emits the latest `RollbackObservationV1` on every heartbeat until acknowledged.
 
-- [ ] **Step 1: Write strict validation/restart RED tests**
+- [x] **Step 1: Write strict validation/restart RED tests**
 
 Table/property tests cover malformed, expired, replayed, wrong device/org/platform/arch/current version, unknown key, wrong directive signature, wrong manifest signature/digest, and same rollback ID with changed content; each fails before download/swap. Inject interruption at download, verify, stage, each component swap, restart, and health. Concurrent duplicates are idempotent under `-race`. Startup after swap reports healthy target or recovers the previous complete set, never mixed silent success.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd agent && go test -race ./internal/rollback ./internal/updater ./internal/heartbeat
 ```
 
-- [ ] **Step 3: Implement canonical verification, atomic state, startup reconciliation, and telemetry**
+- [x] **Step 3: Implement canonical verification, atomic state, startup reconciliation, and telemetry**
 
 Verify identity/current version/expiry/directive signature/replay before download, then verify manifest and artifacts independently. Start reconciliation before normal update handling. Persist and fsync every phase before crossing its boundary. After restart, emit an immediate durable observation and continue resending it until the server acknowledges that observation ID.
 
-- [ ] **Step 4: Run GREEN, race tests, and cross-builds**
+- [x] **Step 4: Run GREEN, race tests, and cross-builds**
 
 ```bash
 cd agent && go test -race ./internal/rollback ./internal/updater ./internal/heartbeat
@@ -873,7 +877,7 @@ GOOS=linux GOARCH=amd64 go build -o /tmp/breeze-agent-linux ./cmd/agent
 GOOS=darwin GOARCH=arm64 go build -o /tmp/breeze-agent-darwin ./cmd/agent
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add agent/internal/rollback agent/internal/remote/tools agent/internal/heartbeat
@@ -893,21 +897,21 @@ git commit -m "fix(agent): execute restart-safe signed rollback"
 
 **Interfaces:** Tolerantly accepts optional `rollbackObservation`; malformed optional observations are dropped without rejecting ordinary heartbeat. Produces `ingestRollbackObservation(deviceId, observation): Promise<{ acknowledgedObservationId: string | null }>` and returns the acknowledgement in heartbeat response so the agent can stop resending.
 
-- [ ] **Step 1: Write ingestion/CAS RED tests**
+- [x] **Step 1: Write ingestion/CAS RED tests**
 
 Prove old-agent omission is accepted; malformed optional observation is dropped; wrong device/rollback, invalid phase order, changed observation content, stale current/component versions, and forged terminal health are rejected durably without advancing projection. Duplicates are idempotent. Only `healthy` accompanied by target-version heartbeat completes. `failed` and `recovered` retain prior events. Simulated server restart between phase observations loses no terminal truth.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/agentRollbackResult.test.ts src/routes/agents/heartbeat.test.ts
 ```
 
-- [ ] **Step 3: Implement child-only ingestion and forward-only projection**
+- [x] **Step 3: Implement child-only ingestion and forward-only projection**
 
 In a short transaction, acquire device `FOR KEY SHARE`, insert the append-only event with unique rollback/phase/observation identity, and compare-and-set the mutable projection forward. Do not update `devices` in this transaction. Derive terminal healthy only from the separately persisted live heartbeat target version and complete owned component set.
 
-- [ ] **Step 4: Run GREEN and real-Postgres restart/idempotency tests**
+- [x] **Step 4: Run GREEN and real-Postgres restart/idempotency tests**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/agentRollbackResult.test.ts src/routes/agents/heartbeat.test.ts
@@ -915,7 +919,7 @@ set -a; source .env.test; set +a
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/services/agentRollbackResult.integration.test.ts
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/heartbeat.ts apps/api/src/routes/agents/heartbeat.test.ts apps/api/src/services/agentRollbackResult.ts apps/api/src/services/agentRollbackResult.test.ts apps/api/src/services/agentRollbackResult.integration.test.ts
@@ -962,7 +966,7 @@ Until exact signed artifacts pass real service restart/health/interruption tests
 
 **Dependencies:** Tasks 1-14 must be committed and clean. Tasks 7 and 15 may remain environment-pending; their missing packets explicitly preserve `fixed_unverified` rather than blocking the code completion gate.
 
-- [ ] **Step 1: Run focused API and governance verification**
+- [x] **Step 1: Run focused API and governance verification**
 
 ```bash
 pnpm --filter @breeze/shared exec vitest run src/constants/permissions.test.ts
@@ -981,7 +985,7 @@ pnpm --filter @breeze/api exec vitest run \
 bash scripts/check-migration-naming.sh
 ```
 
-- [ ] **Step 2: Run real-Postgres integration and prove execution**
+- [x] **Step 2: Run real-Postgres integration and prove execution**
 
 ```bash
 set -a; source .env.test; set +a
@@ -999,7 +1003,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Retain the individual suite names and test counts. A green command with a skipped `runIf` suite is not evidence.
 
-- [ ] **Step 3: Run agent race and cross-build verification**
+- [x] **Step 3: Run agent race and cross-build verification**
 
 ```bash
 cd agent && go test -race ./internal/peripheral ./internal/rollback ./internal/updater ./internal/heartbeat
@@ -1008,7 +1012,7 @@ GOOS=linux GOARCH=amd64 go build -o /tmp/breeze-agent-linux ./cmd/agent
 GOOS=darwin GOARCH=arm64 go build -o /tmp/breeze-agent-darwin ./cmd/agent
 ```
 
-- [ ] **Step 4: Run static and broader regression gates**
+- [x] **Step 4: Run static and broader regression gates**
 
 ```bash
 NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api exec tsc --noEmit -p tsconfig.json
@@ -1020,7 +1024,7 @@ git diff --check
 
 Record unrelated baseline failures exactly; do not weaken or delete a test to manufacture green.
 
-- [ ] **Step 5: Perform the program's one combined review and record verdicts**
+- [x] **Step 5: Perform the program's one combined review and record verdicts**
 
 The repository authorizes one independent review for the complete multi-track branch, not a Track D per-task review. Feed Track D's exact protocol contracts, migration/tenant isolation, concurrency, authorization, and shipped-agent behavior into that combined review. After targeted fixes/tests, record each finding as `fixed_unverified` until its exact-candidate packet passes. Do not claim deployment, hosted reachability closure, or customer rollout.
 
