@@ -1396,6 +1396,16 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
             status: 'pending',
             attempts: 0
           })
+          // The insert IS the dedupe. An empty `returning()` means this
+          // (webhook, event) pair is already recorded, and the caller reads
+          // that NULL as "already handled" and skips the outbound POST.
+          // DO NOTHING rather than catching 23505: a unique violation caught
+          // inside the transaction that raised it is a documented trap in this
+          // repo — postgres.js latches the failed statement and rethrows after
+          // the callback returns.
+          .onConflictDoNothing({
+            target: [webhookDeliveries.webhookId, webhookDeliveries.eventId]
+          })
           .returning({ id: webhookDeliveries.id });
 
         return delivery?.id ?? null;

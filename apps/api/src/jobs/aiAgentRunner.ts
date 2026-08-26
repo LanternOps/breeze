@@ -38,6 +38,7 @@ import { registerAgentRunEnqueuer } from '../services/aiAgents/runService';
 import { executeAgentRun } from '../services/aiAgents/runLoop';
 import { aiAgentQueueJobDataSchema, type AiAgentQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { AI_AGENTS_ENABLED } from '../config/env';
 
 export const AI_AGENT_QUEUE = 'ai-agent';
 export const AI_AGENT_RUN_JOB_NAME = 'execute-agent-run';
@@ -176,6 +177,22 @@ function createAiAgentWorker(): Worker<AiAgentQueueJobData> {
 
 export function initializeAiAgentRunner(): void {
   if (aiAgentWorker) return;
+
+  // The platform kill switch gates the WORKER, not the enqueuer (#3977). A
+  // BullMQ Worker opens a blocking Redis connection and holds it for the life
+  // of the process, so booting one while the feature can never run costs a
+  // permanent connection per process, per region, for nothing — verified in
+  // production 2026-08-26, where both regions logged this line with the flag
+  // unset and unmapped in compose.
+  //
+  // Gated HERE rather than at the index.ts call site so no future caller can
+  // route around it. The module-scope registerAgentRunEnqueuer above is
+  // deliberately outside the gate: the manual-trigger route must still be able
+  // to enqueue in a process that never boots the worker.
+  if (!AI_AGENTS_ENABLED) {
+    console.log('[AiAgentRunner] BREEZE_AI_AGENTS_ENABLED is off — worker not started');
+    return;
+  }
 
   aiAgentWorker = createAiAgentWorker();
   attachWorkerObservability(aiAgentWorker, 'aiAgentRunner');

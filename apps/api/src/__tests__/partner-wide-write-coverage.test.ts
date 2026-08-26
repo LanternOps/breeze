@@ -221,6 +221,17 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     expect(tableNames).toContain('clientAiPromptTemplates');
   });
 
+  // 30s, not the 5s default. Both cases below synchronously read every .ts
+  // under src/routes and src/services (~1,100 files — see collectSourceFiles
+  // above; the scan is deliberately NOT the whole of src). That is ~2s when
+  // this file runs alone, but under a full-suite run it has been observed at
+  // 13.6s — over the default, so the job fails on a TIMEOUT that says nothing
+  // about partner-wide write safety. #3928 (80b498ece) grew the scan ~2.5x by
+  // extending it from routes/** to services/**, which moved this from
+  // comfortable to borderline.
+  //
+  // The timeout is the only thing raised here: the scan and its assertions are
+  // unchanged, so a real violation still fails exactly as before.
   it('every caller-facing partner-axis write site consults the capability helper', () => {
     const violations: string[] = [];
 
@@ -244,8 +255,9 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
         'with a reason.\n' +
         violations.join('\n')
     ).toEqual([]);
-  });
+  }, 30_000);
 
+  // Same full-tree scan, same reasoning as above.
   it('the allowlist has no stale entries', () => {
     // A file that stopped mutating partner-axis tables (or moved) must leave the
     // allowlist, or the exemption silently outlives the code it excused.
@@ -257,7 +269,7 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
 
     const stale = Object.keys(ALLOWED_WITHOUT_CAPABILITY_CHECK).filter((rel) => !stillMutating.has(rel));
     expect(stale, `Remove these from ALLOWED_WITHOUT_CAPABILITY_CHECK: ${stale.join(', ')}`).toEqual([]);
-  });
+  }, 30_000);
 
   it('every allowlist entry documents why it is exempt', () => {
     const undocumented = Object.entries(ALLOWED_WITHOUT_CAPABILITY_CHECK)

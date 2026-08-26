@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, uniqueIndex } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alerts } from './alerts';
@@ -93,7 +93,13 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   deliveredAt: timestamp('delivered_at')
-});
+}, (table) => ({
+  // One delivery per (webhook, event). The '*' subscriber creates a row and
+  // queues an outbound POST per matching webhook, so without this a redelivered
+  // event POSTs to the customer's endpoint twice (2026-09-11-a migration).
+  webhookEventUq: uniqueIndex('webhook_deliveries_webhook_event_uq')
+    .on(table.webhookId, table.eventId)
+}));
 
 export const eventBusEvents = pgTable('event_bus_events', {
   id: uuid('id').primaryKey().defaultRandom(),

@@ -28,6 +28,7 @@ const shared = vi.hoisted(() => {
     registerAgentRunEnqueuer: vi.fn((enqueuer: unknown) => {
       registeredEnqueuers.push(enqueuer);
     }),
+    aiAgentsEnabled: true,
     attachWorkerObservability: vi.fn(),
     isRedisAvailable: vi.fn(() => true),
     executeAgentRun,
@@ -86,6 +87,12 @@ vi.mock('./workerObservability', () => ({
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
   captureMessage: vi.fn(),
+}));
+
+// The platform kill switch. A const evaluated at import time in the real
+// module, so it is mocked here rather than stubbed through the environment.
+vi.mock('../config/env', () => ({
+  get AI_AGENTS_ENABLED() { return shared.aiAgentsEnabled; },
 }));
 
 import { parseQueueJobData } from '../services/bullmqValidation';
@@ -241,6 +248,7 @@ describe('ai-agent runner bootstrap', () => {
     shared.workerCalls.length = 0;
     vi.clearAllMocks();
     shared.isRedisAvailable.mockReturnValue(true);
+    shared.aiAgentsEnabled = true;
     await shutdownAiAgentRunner();
     shared.workerCalls.length = 0;
     shared.closeWorkerMock.mockClear();
@@ -251,6 +259,27 @@ describe('ai-agent runner bootstrap', () => {
     // Must NOT be deferred to initializeAiAgentRunner(): the manual-trigger
     // route has to be able to enqueue in a process that never boots the worker.
     expect(registerAgentRunEnqueuer).toBe(shared.registerAgentRunEnqueuer);
+    expect(shared.registeredEnqueuers).toContain(enqueueAgentRunJob);
+  });
+
+  it('does NOT construct the worker when the platform kill switch is off (#3977)', () => {
+    shared.aiAgentsEnabled = false;
+
+    initializeAiAgentRunner();
+
+    // A BullMQ Worker opens a BLOCKING Redis connection and holds it for the
+    // life of the process. Booting one for a feature that can never run costs
+    // a permanent connection per process, per region, for nothing.
+    expect(shared.workerCalls).toHaveLength(0);
+  });
+
+  it('still registers the enqueuer when the kill switch is off', () => {
+    shared.aiAgentsEnabled = false;
+
+    initializeAiAgentRunner();
+
+    // The enqueuer is module-scope, not part of worker boot: gating the worker
+    // must not also disarm the manual-trigger route's ability to enqueue.
     expect(shared.registeredEnqueuers).toContain(enqueueAgentRunJob);
   });
 

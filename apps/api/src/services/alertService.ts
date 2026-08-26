@@ -254,20 +254,44 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
 /**
  * Resolve an alert
  */
+/**
+ * The two terminal statuses are `resolved` and `dismissed`; everything else is
+ * still resolvable. Exported with the predicate builder below so tests can
+ * assert the COMPILED SQL — a mocked-drizzle assertion that only checks column
+ * names appear cannot tell `and` from `or`, nor catch this list gaining a
+ * terminal status, and both mutations turn the CAS into a no-op or a
+ * fleet-wide overwrite.
+ */
+export const RESOLVABLE_ALERT_STATUSES = ['active', 'acknowledged', 'suppressed'] as const;
+
+/** The compare-and-swap predicate for `resolveAlert`. See the note above. */
+export function buildResolveAlertCas(alertId: string) {
+  return and(
+    eq(alerts.id, alertId),
+    inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES]),
+  );
+}
+
 export async function resolveAlert(
   alertId: string,
   resolutionNote?: string,
   resolvedBy?: string
-): Promise<void> {
+): Promise<boolean> {
+  // Winner-takes-all. The status predicate IS the concurrency control: reading
+  // the row first and then updating by id unconditionally lets two callers
+  // both "resolve" the same alert and both run the fan-out below — the state
+  // transition, the cooldown write, and an `alert.resolved` publish that
+  // cancels escalations and feeds the AI triage loop guard.
+  //
+  // Two callers is not hypothetical: policy.compliant redelivery, the
+  // auto-resolve sweep and monitorWorker can all reach the same alert, and
+  // wave 3.5c makes event delivery at-least-once.
+  //
+  // RETURNING replaces the previous SELECT. Note it returns the POST-update
+  // row: safe only because nothing below reads a column this SET writes
+  // (status / resolvedAt / resolvedBy / resolutionNote). Adding such a read
+  // later would silently observe the new value.
   const [alert] = await db
-    .select()
-    .from(alerts)
-    .where(eq(alerts.id, alertId))
-    .limit(1);
-
-  if (!alert) return;
-
-  await db
     .update(alerts)
     .set({
       status: 'resolved',
@@ -275,7 +299,14 @@ export async function resolveAlert(
       resolvedBy: resolvedBy ?? null,
       resolutionNote: resolutionNote ?? null
     })
-    .where(eq(alerts.id, alertId));
+    .where(and(
+      eq(alerts.id, alertId),
+      inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
+    ))
+    .returning();
+
+  // Already resolved by someone else (or gone). Not an error — just not ours.
+  if (!alert) return false;
 
   // Phase 6a: Record resolution state transition for flapping detection
   try {
@@ -340,6 +371,7 @@ export async function resolveAlert(
   );
 
   console.log(`[AlertService] Resolved alert ${alertId}`);
+  return true;
 }
 
 /**

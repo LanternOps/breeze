@@ -1101,7 +1101,10 @@ export async function cancelAlertEscalations(alertId: string): Promise<number> {
  * Dispatch notifications for a new alert
  * Call this when an alert is created
  */
-export async function dispatchAlertNotifications(alertId: string): Promise<void> {
+export async function dispatchAlertNotifications(
+  alertId: string,
+  dedupeToken: string = alertId
+): Promise<void> {
   const queue = getNotificationQueue();
 
   await queue.add(
@@ -1111,8 +1114,32 @@ export async function dispatchAlertNotifications(alertId: string): Promise<void>
       alertId
     },
     {
+      // A redelivered alert.triggered must not fan out a second notification
+      // set — email, SMS, Slack, Teams, PagerDuty and Pushover all hang off
+      // this one job. BullMQ does NOT reject a duplicate jobId: it returns the
+      // existing job and resolves normally (addStandardJob -> handleDuplicatedJob),
+      // which is the behaviour relied on here. The token must therefore be
+      // STABLE for one (alert, event) pair: never randomised, never timestamped.
+      // The subscriber below supplies `event.id`.
+      //
+      // Retention-bounded on the SUCCESS path only: `removeOnComplete: true`
+      // deletes the job key and frees the id. A FAILED job is the dangerous
+      // case — its hash is retained, so the id stays occupied and any later
+      // add for that (alert, event) is silently swallowed, meaning the
+      // redelivery that exists to recover the failure never notifies anyone.
+      // Hence `attempts` (so a transient blip doesn't burn the id at all) and
+      // an AGE-bounded removeOnFail (so a permanent failure self-clears rather
+      // than suppressing that alert forever).
+      //
+      // None of this is durable dedupe: `alert_notifications` carries no unique
+      // constraint, so there is no per-channel backstop for the six external
+      // channels. That belongs in wave 3.5c (#4085) alongside at-least-once
+      // delivery; the in-app row's dedupe key covers in-app only.
+      jobId: `process-alert-${alertId}-${dedupeToken}`,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5_000 },
       removeOnComplete: true,
-      removeOnFail: false
+      removeOnFail: { age: 3600 }
     }
   );
 }
@@ -1127,7 +1154,9 @@ export function subscribeToAlertEvents(): void {
     try {
       const payload = event.payload as { alertId?: string };
       if (payload.alertId) {
-        await dispatchAlertNotifications(payload.alertId);
+        // Pass the event id so a redelivered alert.triggered collapses onto the
+        // same job rather than notifying every on-call tech twice.
+        await dispatchAlertNotifications(payload.alertId, event.id);
       }
     } catch (error) {
       console.error('Failed to dispatch alert notifications:', error);

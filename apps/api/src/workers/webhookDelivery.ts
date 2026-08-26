@@ -461,6 +461,20 @@ export async function initializeWebhookDelivery(
         const deliveryId = createDeliveryRecord
           ? await runWithSystemDbAccess(() => createDeliveryRecord(webhook, event))
           : null;
+        // A NULL id from a CONFIGURED creator means the (webhook, event) pair
+        // is already recorded, so the ORIGINAL delivery owns this event's
+        // outcome — delivered, pending, or permanently failed. Queueing again
+        // would POST to the customer's endpoint twice for one event.
+        //
+        // Note a `failed` original is NOT re-driven by redelivery; re-driving
+        // is the retry worker's job. A `pending` original that was recorded but
+        // never enqueued (LPUSH failed) has no recovery path today — tracked
+        // for wave 3.5c (#4085), where at-least-once makes it reachable.
+        //
+        // Only the configured branch may skip: with no creator there is no
+        // dedupe surface at all, so a skip there would drop the delivery
+        // outright rather than de-duplicate it.
+        if (createDeliveryRecord && deliveryId === null) continue;
         await worker.queueDelivery(webhook, event, deliveryId ?? undefined);
       }
     } catch (err) {
