@@ -534,19 +534,18 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
     const deviceA = await seedDevice(org.id, 'fail-a');
     const deviceB = await seedDevice(org.id, 'fail-b');
 
-    // A send_notification action pointing at a channel that does not exist:
-    // executeSendNotificationAction returns {success:false} deterministically
-    // (no throw), so every device fails without any external dependency.
-    const bogusChannelId = '00000000-0000-4000-8000-0000000000ff';
+    // A reference-free execute_command against the fixture's offline devices
+    // fails deterministically at dispatch. This reaches execution without
+    // bypassing the automation-reference admission gate.
     const [automation] = await withDbAccessContext(partnerContext(partner.id, []), () =>
       db
         .insert(automations)
         .values({
-          name: 'Failing notification automation',
+          name: 'Failing command automation',
           orgId: null,
           partnerId: partner.id,
           trigger: { type: 'manual' },
-          actions: [{ type: 'send_notification', notificationChannelId: bogusChannelId }],
+          actions: [{ type: 'execute_command', command: 'echo unreachable' }],
           onFailure: 'continue',
           enabled: true,
         })
@@ -582,7 +581,7 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
       expect(row).toBeDefined();
       expect(row!.status).toBe('failed');
       // First failing action's message is captured as the row error.
-      expect(row!.error).toContain('Notification channel not found');
+      expect(row!.error).toContain('cannot execute command');
       expect(row!.completedAt).not.toBeNull();
     }
   });

@@ -1657,11 +1657,12 @@ async function executeAiTriageAction(
       };
     }
 
-    // Like run_script, success means queued, not finished. The agent run
-    // completes out-of-band and reports through ai.agent.run.* events and 3c
-    // recipient notifications.
+    // The child agent run completes out-of-band and reports through
+    // ai.agent.run.* events and 3c recipient notifications. The parent
+    // automation action has no action-result correlation to that child run,
+    // so its terminal contract is successful enqueue (not child completion).
     return {
-      outcome: { status: 'queued' },
+      outcome: { status: 'succeeded' },
       log: logEntry('ai_triage queued agent run', 'info', {
         actionType: 'ai_triage',
         actionIndex,
@@ -1734,9 +1735,9 @@ async function persistActionExecutionOutcome(
     ...('scriptExecutionId' in outcome && outcome.scriptExecutionId
       ? { scriptExecutionId: outcome.scriptExecutionId }
       : {}),
-    ...(outcome.status === 'failed'
-      ? { message: outcome.message ?? result.log.message }
-      : {}),
+    message: outcome.status === 'failed'
+      ? outcome.message ?? result.log.message
+      : result.log.message,
   });
 }
 

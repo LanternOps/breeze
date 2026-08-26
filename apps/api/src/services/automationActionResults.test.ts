@@ -124,4 +124,14 @@ describe('automation action-result state machine', () => {
       devicesFailed: 1,
     });
   });
+
+  it('rolls ordered action messages and the first failure into the device result', () => {
+    expect(__testOnly.aggregateActionDetails([
+      { actionIndex: 1, status: 'failed', message: 'Device is offline', output: null, error: null },
+      { actionIndex: 0, status: 'succeeded', message: 'Alert created', output: null, error: null },
+    ])).toEqual({
+      output: 'Alert created\nDevice is offline',
+      error: 'Device is offline',
+    });
+  });
 });
