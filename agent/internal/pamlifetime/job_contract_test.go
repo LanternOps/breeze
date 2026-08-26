@@ -16,7 +16,8 @@ import (
 
 type recordingLifetimeStore struct {
 	*Store
-	order *[]string
+	order    *[]string
+	clearErr error
 }
 
 func (s *recordingLifetimeStore) PrepareApply(cmd ApplyCommand) (Decision, error) {
@@ -41,6 +42,14 @@ func (s *recordingLifetimeStore) BindProcess(actuationID string, generation uint
 		*s.order = append(*s.order, "persist process identity")
 	}
 	return err
+}
+
+func (s *recordingLifetimeStore) ClearProcessIdentity(actuationID string, generation uint64) error {
+	*s.order = append(*s.order, "clear durable process identity")
+	if s.clearErr != nil {
+		return s.clearErr
+	}
+	return s.Store.ClearProcessIdentity(actuationID, generation)
 }
 
 type fakeWindowsPrimitives struct {
@@ -337,6 +346,7 @@ func TestCleanupPersistsTombstoneBeforeTreeAndVerifiedAccountCleanup(t *testing.
 		"rotate password, remove Administrators, disable account",
 		"verify account disabled and non-admin",
 		"verify privileged-token absence",
+		"clear durable process identity",
 		"emit cleaned",
 	}
 	if !reflect.DeepEqual(order, wantOrder) {
@@ -491,7 +501,7 @@ func TestApplyAndCleanupSerializeWithoutPIDZeroTombstone(t *testing.T) {
 		t.Fatalf("cleanup = %+v", result)
 	}
 	entry, ok := store.Entry(testActuationID)
-	if !ok || entry.PID != 4242 || entry.DesiredState != DesiredCleanup {
+	if !ok || entry.PID != 0 || entry.ProcessCreationTime != nil || entry.JobName != "" || entry.BootID != "" || entry.DesiredState != DesiredCleanup {
 		t.Fatalf("serialized tombstone = %+v, %v", entry, ok)
 	}
 }
@@ -774,4 +784,221 @@ func TestDisableCleansEveryDurableLedgerRow(t *testing.T) {
 	if len(cleaned) != 2 {
 		t.Fatalf("cleaned rows = %v, want both ledger rows", cleaned)
 	}
+}
+
+func TestCleanupDurablyClearsDestroyedJobIdentityBeforeCleaned(t *testing.T) {
+	var order []string
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	store := &recordingLifetimeStore{Store: NewStore(path), order: &order}
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	manager := newLifecycleManager(store, &fakeWindowsPrimitives{order: &order},
+		&fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+	if result := manager.Apply(context.Background(), validApply(1)); result.State != ResultVerifiedActive {
+		t.Fatalf("apply setup = %+v", result)
+	}
+
+	result := manager.Cleanup(context.Background(), validCleanup(2))
+
+	if result.State != ResultCleaned {
+		t.Fatalf("cleanup = %+v", result)
+	}
+	entry, _ := store.Entry(testActuationID)
+	if entry.DesiredState != DesiredCleanup || entry.Generation != 2 || entry.PID != 0 || entry.ProcessCreationTime != nil || entry.JobName != "" || entry.BootID != "" {
+		t.Fatalf("clean tombstone retained destroyed ownership: %+v", entry)
+	}
+}
+
+func TestRestartAfterCleanedTombstoneReverifiesWithoutReopeningDestroyedJob(t *testing.T) {
+	var order []string
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	firstWin := &fakeWindowsPrimitives{order: &order}
+	first := newLifecycleManager(NewStore(path), firstWin,
+		&fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+	if result := first.Apply(context.Background(), validApply(1)); result.State != ResultVerifiedActive {
+		t.Fatalf("apply setup = %+v", result)
+	}
+	if result := first.Cleanup(context.Background(), validCleanup(2)); result.State != ResultCleaned {
+		t.Fatalf("cleanup setup = %+v", result)
+	}
+
+	order = nil
+	restartWin := &fakeWindowsPrimitives{order: &order}
+	restarted := newLifecycleManager(NewStore(path), restartWin,
+		&fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+	results := restarted.Reconcile(context.Background())
+
+	if len(results) != 1 || results[0].State != ResultCleaned {
+		t.Fatalf("restart reconcile = %+v", results)
+	}
+	if restartWin.reopenCalls != 0 || restartWin.cleanupJobName != "" {
+		t.Fatalf("restart reopened destroyed ownership: reopen=%d job=%q", restartWin.reopenCalls, restartWin.cleanupJobName)
+	}
+}
+
+func TestCleanupIdentityPersistenceFailureDoesNotClaimCleaned(t *testing.T) {
+	var order []string
+	store := &recordingLifetimeStore{Store: NewStore(filepath.Join(t.TempDir(), "ledger.json")), order: &order,
+		clearErr: errors.New("disk unavailable")}
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	manager := newLifecycleManager(store, &fakeWindowsPrimitives{order: &order},
+		&fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+	if result := manager.Apply(context.Background(), validApply(1)); result.State != ResultVerifiedActive {
+		t.Fatalf("apply setup = %+v", result)
+	}
+
+	result := manager.Cleanup(context.Background(), validCleanup(2))
+
+	if result.State != ResultFailed || result.FailureCode != "persist_cleanup_evidence_failed" {
+		t.Fatalf("cleanup = %+v, want persistence failure", result)
+	}
+	entry, _ := store.Entry(testActuationID)
+	if entry.PID == 0 || entry.JobName == "" || entry.ProcessCreationTime == nil {
+		t.Fatalf("persistence failure erased ownership in memory: %+v", entry)
+	}
+	if manager.Available() || manager.admissionOpen {
+		t.Fatalf("persistence ambiguity left manager available/admitting: %v/%v", manager.Available(), manager.admissionOpen)
+	}
+}
+
+func TestDirectCleanupFailurePoisonsCrossActuationApplyUntilEveryRetryVerifies(t *testing.T) {
+	var order []string
+	store := NewStore(filepath.Join(t.TempDir(), "ledger.json"))
+	dirty := elevaccount.AccountEvidence{Enabled: true, InAdministrators: true}
+	account := &fakeAccountLifecycle{order: &order, deprovision: dirty, verified: dirty}
+	manager := newLifecycleManager(store, &fakeWindowsPrimitives{order: &order}, account, nil)
+	first := validCleanup(1)
+	second := CleanupCommand{ProtocolVersion: 2,
+		ActuationID: "20000000-0000-4000-8000-000000000001", Generation: 1,
+		RequestID: "20000000-0000-4000-8000-000000000002", DeviceID: "20000000-0000-4000-8000-000000000003", OrgID: "20000000-0000-4000-8000-000000000004"}
+	for _, cmd := range []CleanupCommand{first, second} {
+		if result := manager.Cleanup(context.Background(), cmd); result.State != ResultFailed {
+			t.Fatalf("dirty cleanup %s = %+v", cmd.ActuationID, result)
+		}
+	}
+	if manager.Available() || manager.admissionOpen || len(manager.unresolved) != 2 {
+		t.Fatalf("ambiguity state available/admission/unresolved = %v/%v/%v", manager.Available(), manager.admissionOpen, manager.unresolved)
+	}
+	apply := validApply(1)
+	apply.ActuationID = "30000000-0000-4000-8000-000000000001"
+	if result := manager.Apply(context.Background(), apply); result.FailureCode != "pam_unavailable" {
+		t.Fatalf("cross-actuation apply = %+v", result)
+	}
+	if err := manager.SetEnabled(context.Background(), true); err == nil {
+		t.Fatal("SetEnabled(true) reopened unresolved manager")
+	}
+
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	account.deprovision = clean
+	account.verified = clean
+	if result := manager.Cleanup(context.Background(), first); result.State != ResultCleaned {
+		t.Fatalf("first retry = %+v", result)
+	}
+	if manager.Available() || len(manager.unresolved) != 1 {
+		t.Fatalf("one unresolved row restored availability: available=%v unresolved=%v", manager.Available(), manager.unresolved)
+	}
+	if result := manager.Cleanup(context.Background(), second); result.State != ResultCleaned {
+		t.Fatalf("second retry = %+v", result)
+	}
+	if !manager.Available() || len(manager.unresolved) != 0 {
+		t.Fatalf("all retries did not restore proof: available=%v unresolved=%v", manager.Available(), manager.unresolved)
+	}
+	if err := manager.SetEnabled(context.Background(), true); err != nil {
+		t.Fatalf("SetEnabled(true) after proof: %v", err)
+	}
+}
+
+func TestDisabledPolicyRetryStillResolvesLaterDirectCleanupAmbiguity(t *testing.T) {
+	var order []string
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	account := &fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}
+	manager := newLifecycleManager(NewStore(filepath.Join(t.TempDir(), "ledger.json")),
+		&fakeWindowsPrimitives{order: &order}, account, nil)
+	if err := manager.SetEnabled(context.Background(), false); err != nil {
+		t.Fatalf("initial disable: %v", err)
+	}
+
+	dirty := elevaccount.AccountEvidence{Enabled: true, InAdministrators: true}
+	account.deprovision = dirty
+	account.verified = dirty
+	if result := manager.Cleanup(context.Background(), validCleanup(1)); result.State != ResultFailed {
+		t.Fatalf("direct cleanup ambiguity = %+v", result)
+	}
+	if manager.Available() || len(manager.unresolved) != 1 {
+		t.Fatalf("ambiguity state available/unresolved = %v/%v", manager.Available(), manager.unresolved)
+	}
+
+	account.deprovision = clean
+	account.verified = clean
+	if err := manager.SetEnabled(context.Background(), false); err != nil {
+		t.Fatalf("disabled-policy retry: %v", err)
+	}
+	if !manager.Available() || len(manager.unresolved) != 0 {
+		t.Fatalf("retry did not retain disabled/verified state: available=%v unresolved=%v", manager.Available(), manager.unresolved)
+	}
+	if manager.enabled || manager.admissionOpen {
+		t.Fatalf("retry reopened disabled policy: enabled/admission=%v/%v", manager.enabled, manager.admissionOpen)
+	}
+}
+
+func TestOlderCleanupProofCannotClearNewerUnresolvedGeneration(t *testing.T) {
+	var order []string
+	manager := newLifecycleManager(NewStore(filepath.Join(t.TempDir(), "ledger.json")),
+		&fakeWindowsPrimitives{order: &order}, &fakeAccountLifecycle{order: &order}, nil)
+	newerFailure := manager.failed(testActuationID, 3, "windows-boot-42", "operation_timeout")
+	manager.recordCleanupOutcome(testActuationID, newerFailure)
+	manager.recordCleanupOutcome(testActuationID, manager.result(testActuationID, 2, ResultCleaned, ResultEvidence{}))
+
+	if manager.Available() || manager.unresolved[testActuationID] != 3 {
+		t.Fatalf("older proof cleared newer ambiguity: available=%v unresolved=%v", manager.Available(), manager.unresolved)
+	}
+	manager.recordCleanupOutcome(testActuationID, manager.result(testActuationID, 3, ResultCleaned, ResultEvidence{}))
+	if !manager.Available() || len(manager.unresolved) != 0 {
+		t.Fatalf("matching proof did not clear ambiguity: available=%v unresolved=%v", manager.Available(), manager.unresolved)
+	}
+}
+
+func TestLegacyActuationLeaseSerializesDisableAndHonorsCancellation(t *testing.T) {
+	var order []string
+	clean := elevaccount.AccountEvidence{Enabled: false, InAdministrators: false}
+	manager := newLifecycleManager(NewStore(filepath.Join(t.TempDir(), "ledger.json")),
+		&fakeWindowsPrimitives{order: &order}, &fakeAccountLifecycle{order: &order, deprovision: clean, verified: clean}, nil)
+	release, err := manager.AcquireLegacyActuation(context.Background())
+	if err != nil {
+		t.Fatalf("acquire lease: %v", err)
+	}
+	disableDone := make(chan error, 1)
+	go func() { disableDone <- manager.SetEnabled(context.Background(), false) }()
+	select {
+	case err := <-disableDone:
+		t.Fatalf("disable crossed in-flight legacy actuation: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	release()
+	if err := <-disableDone; err != nil {
+		t.Fatalf("disable after release: %v", err)
+	}
+
+	blockedRelease, err := manager.AcquireLegacyActuation(context.Background())
+	if err == nil {
+		blockedRelease()
+		t.Fatal("disabled manager granted legacy lease")
+	}
+
+	manager.mu.Lock()
+	manager.enabled = true
+	manager.admissionOpen = true
+	manager.available = true
+	manager.mu.Unlock()
+	release, err = manager.AcquireLegacyActuation(context.Background())
+	if err != nil {
+		t.Fatalf("second acquire: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	result := manager.Cleanup(ctx, validCleanup(1))
+	if result.State != ResultFailed || result.FailureCode != "operation_timeout" || ctx.Err() != context.DeadlineExceeded {
+		t.Fatalf("cancelled cleanup = %+v ctx=%v", result, ctx.Err())
+	}
+	release()
 }

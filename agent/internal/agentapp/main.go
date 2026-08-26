@@ -96,9 +96,13 @@ type pamStartupController interface {
 	ReconcilePAMLifetime(context.Context) []pamlifetime.Result
 }
 
+const pamStartupReconcileTimeout = 2 * time.Minute
+
 func preparePAMLifetimeStartup(ctx context.Context, controller pamStartupController, statePath string) []pamlifetime.Result {
 	controller.SetStatePath(statePath)
-	return controller.ReconcilePAMLifetime(ctx)
+	reconcileCtx, cancel := context.WithTimeout(ctx, pamStartupReconcileTimeout)
+	defer cancel()
+	return controller.ReconcilePAMLifetime(reconcileCtx)
 }
 
 var log = logging.L("main")

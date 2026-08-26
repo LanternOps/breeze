@@ -1054,13 +1054,22 @@ func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Resu
 		return nil
 	}
 	results := h.pamLifetimeManager.Reconcile(ctx)
-	available := true
-	if state, ok := h.pamLifetimeManager.(interface{ Available() bool }); ok {
-		available = state.Available()
-	}
-	h.pamVerificationAvailable.Store(available)
+	h.refreshPamLifetimeAvailability()
 	h.pamReconciled.Store(true)
 	return results
+}
+
+func (h *Heartbeat) refreshPamLifetimeAvailability() bool {
+	available := false
+	if h != nil && h.pamLifetimeManager != nil {
+		if state, ok := h.pamLifetimeManager.(interface{ Available() bool }); ok {
+			available = state.Available()
+		}
+	}
+	if h != nil {
+		h.pamVerificationAvailable.Store(available)
+	}
+	return available
 }
 
 func (h *Heartbeat) pamLifetimeProtocolVersion() int {
@@ -4596,16 +4605,15 @@ func (h *Heartbeat) handleUACInterception(enabled *bool) {
 	if !on {
 		prev := h.uacInterceptionEnabled.Swap(false)
 		if h.pamLifetimeManager != nil {
-			if err := h.pamLifetimeManager.SetEnabled(context.Background(), false); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
+			err := h.pamLifetimeManager.SetEnabled(ctx, false)
+			cancel()
+			if err != nil {
 				h.pamVerificationAvailable.Store(false)
 				log.Error("PAM disable cleanup could not be verified", "error", err.Error())
 				return
 			}
-			available := true
-			if state, ok := h.pamLifetimeManager.(interface{ Available() bool }); ok {
-				available = state.Available()
-			}
-			h.pamVerificationAvailable.Store(available)
+			h.refreshPamLifetimeAvailability()
 		}
 		if prev {
 			log.Info("UAC interception disabled by configuration policy")
@@ -4616,9 +4624,16 @@ func (h *Heartbeat) handleUACInterception(enabled *bool) {
 		log.Error("refusing to enable UAC interception before PAM reconciliation is verified")
 		return
 	}
-	if err := h.pamLifetimeManager.SetEnabled(context.Background(), true); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
+	err := h.pamLifetimeManager.SetEnabled(ctx, true)
+	cancel()
+	if err != nil {
 		h.pamVerificationAvailable.Store(false)
 		log.Error("PAM enable rejected", "error", err.Error())
+		return
+	}
+	if !h.refreshPamLifetimeAvailability() {
+		log.Error("PAM enable rejected because lifecycle verification remains unavailable")
 		return
 	}
 	prev := h.uacInterceptionEnabled.Swap(true)

@@ -178,6 +178,24 @@ func (s *Store) BindProcess(actuationID string, generation uint64, process Proce
 	return s.replaceLocked(actuationID, entry)
 }
 
+func (s *Store) ClearProcessIdentity(actuationID string, generation uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return s.loadErr
+	}
+	entry, ok := s.entries[actuationID]
+	if !ok || entry.DesiredState != DesiredCleanup || entry.Generation != generation {
+		return errors.New("cannot clear process identity from non-current cleanup tombstone")
+	}
+	entry.PID = 0
+	entry.ProcessCreationTime = nil
+	entry.JobName = ""
+	entry.BootID = ""
+	entry.UpdatedAt = time.Now().UTC()
+	return s.replaceLocked(actuationID, entry)
+}
+
 func (s *Store) Entry(actuationID string) (LedgerEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

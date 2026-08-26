@@ -47,6 +47,12 @@ func init() {
 	handlerRegistry[tools.CmdPamCleanupV2] = handlePamCleanupV2
 }
 
+const pamLifecycleOperationTimeout = 2 * time.Minute
+
+type legacyPamActuationAdmission interface {
+	AcquireLegacyActuation(context.Context) (func(), error)
+}
+
 func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	var payload pamlifetime.ApplyCommand
@@ -62,10 +68,15 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	if !h.pamReconciled.Load() {
 		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
 	}
+	if !h.pamVerificationAvailable.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime verification unavailable"), time.Since(start).Milliseconds())
+	}
 	if !h.IsUACInterceptionEnabled() {
 		return tools.NewErrorResult(errors.New("PAM lifetime apply is disabled by policy"), time.Since(start).Milliseconds())
 	}
-	result := h.pamLifetimeManager.Apply(context.Background(), payload)
+	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
+	defer cancel()
+	result := h.pamLifetimeManager.Apply(ctx, payload)
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 	commandResult.Result = result
 	return commandResult
@@ -86,7 +97,10 @@ func handlePamCleanupV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	if !h.pamReconciled.Load() {
 		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
 	}
-	result := h.pamLifetimeManager.Cleanup(context.Background(), payload)
+	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
+	defer cancel()
+	result := h.pamLifetimeManager.Cleanup(ctx, payload)
+	h.refreshPamLifetimeAvailability()
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 	commandResult.Result = result
 	return commandResult
@@ -182,6 +196,30 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*timeout)
 	defer cancel()
+	if h == nil || h.pamLifetimeManager == nil {
+		return tools.NewErrorResult(errors.New("PAM lifetime manager unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.pamReconciled.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
+	}
+	if !h.pamVerificationAvailable.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime verification unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.IsUACInterceptionEnabled() {
+		return tools.NewErrorResult(errors.New("PAM lifetime actuation is disabled by policy"), time.Since(start).Milliseconds())
+	}
+	admission, ok := h.pamLifetimeManager.(legacyPamActuationAdmission)
+	if !ok {
+		return tools.NewErrorResult(errors.New("PAM lifetime legacy admission unavailable"), time.Since(start).Milliseconds())
+	}
+	release, err := admission.AcquireLegacyActuation(ctx)
+	if err != nil || release == nil {
+		if err == nil {
+			err = errors.New("PAM lifetime legacy admission unavailable")
+		}
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	defer release()
 
 	res := h.actuateElevation(ctx, payload.ElevationRequestID, payload.TimeoutMs,
 		pamTarget{Path: payload.TargetPath, CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername})

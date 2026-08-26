@@ -24,6 +24,7 @@ type lifetimeStore interface {
 	PrepareApply(ApplyCommand) (Decision, error)
 	PrepareCleanup(CleanupCommand) (Decision, error)
 	BindProcess(string, uint64, ProcessIdentity) error
+	ClearProcessIdentity(string, uint64) error
 	Entry(string) (LedgerEntry, bool)
 	Entries() []LedgerEntry
 }
@@ -80,18 +81,22 @@ type lifecycleManager struct {
 	windows       windowsPrimitives
 	account       accountLifecycle
 	observe       func(Result)
-	operationMu   sync.Mutex
+	operationGate chan struct{}
 	mu            sync.Mutex
 	jobs          map[string]jobOwnership
 	processes     map[string]suspendedProcessOwnership
 	enabled       bool
 	admissionOpen bool
 	available     bool
+	unresolved    map[string]uint64
 }
 
 func newLifecycleManager(store lifetimeStore, windows windowsPrimitives, account accountLifecycle, observe func(Result)) *lifecycleManager {
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
 	return &lifecycleManager{store: store, windows: windows, account: account, observe: observe,
-		jobs: make(map[string]jobOwnership), processes: make(map[string]suspendedProcessOwnership), enabled: true, admissionOpen: true, available: true}
+		operationGate: gate, jobs: make(map[string]jobOwnership), processes: make(map[string]suspendedProcessOwnership),
+		enabled: true, admissionOpen: true, available: true, unresolved: make(map[string]uint64)}
 }
 
 func (m *lifecycleManager) ProtocolVersion() int { return 2 }
@@ -103,8 +108,10 @@ func (m *lifecycleManager) Available() bool {
 }
 
 func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
-	m.operationMu.Lock()
-	defer m.operationMu.Unlock()
+	if err := m.acquireOperation(ctx); err != nil {
+		return m.failed(cmd.ActuationID, cmd.Generation, "windows-boot-unavailable", "operation_timeout")
+	}
+	defer m.releaseOperation()
 	bootID, err := m.currentBootID(ctx)
 	if err != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "boot_id_unavailable")
@@ -113,11 +120,11 @@ func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 	admissionOpen := m.admissionOpen
 	available := m.available
 	m.mu.Unlock()
-	if !admissionOpen {
-		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "pam_disabled")
-	}
 	if !available {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "pam_unavailable")
+	}
+	if !admissionOpen {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "pam_disabled")
 	}
 	if err := validateApply(cmd); err != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "invalid_command")
@@ -213,9 +220,15 @@ func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 }
 
 func (m *lifecycleManager) Cleanup(ctx context.Context, cmd CleanupCommand) Result {
-	m.operationMu.Lock()
-	defer m.operationMu.Unlock()
-	return m.cleanupLocked(ctx, cmd)
+	if err := m.acquireOperation(ctx); err != nil {
+		result := m.failed(cmd.ActuationID, cmd.Generation, "windows-boot-unavailable", "operation_timeout")
+		m.recordCleanupOutcome(cmd.ActuationID, result)
+		return result
+	}
+	defer m.releaseOperation()
+	result := m.cleanupLocked(ctx, cmd)
+	m.recordCleanupOutcome(cmd.ActuationID, result)
+	return result
 }
 
 func (m *lifecycleManager) cleanupLocked(ctx context.Context, cmd CleanupCommand) Result {
@@ -269,6 +282,9 @@ func (m *lifecycleManager) cleanupLocked(ctx context.Context, cmd CleanupCommand
 	evidence.AccountEnabled = boolPtr(verified.Enabled)
 	evidence.AccountInAdministrators = boolPtr(verified.InAdministrators)
 	evidence.PrivilegedTokenPresent = boolPtr(privileged)
+	if err := m.store.ClearProcessIdentity(cmd.ActuationID, cmd.Generation); err != nil {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "persist_cleanup_evidence_failed")
+	}
 	result := m.result(cmd.ActuationID, cmd.Generation, ResultCleaned, evidence)
 	m.emit(result)
 	m.mu.Lock()
@@ -285,8 +301,18 @@ func (m *lifecycleManager) cleanupLocked(ctx context.Context, cmd CleanupCommand
 }
 
 func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
-	m.operationMu.Lock()
-	defer m.operationMu.Unlock()
+	if err := m.acquireOperation(ctx); err != nil {
+		m.setAvailable(false)
+		entries := m.store.Entries()
+		results := make([]Result, 0, len(entries))
+		for _, entry := range entries {
+			result := m.failed(entry.ActuationID, entry.Generation, "windows-boot-unavailable", "operation_timeout")
+			m.recordCleanupOutcome(entry.ActuationID, result)
+			results = append(results, result)
+		}
+		return results
+	}
+	defer m.releaseOperation()
 	m.setAvailable(false)
 	entries := m.store.Entries()
 	results := make([]Result, 0, len(entries))
@@ -301,6 +327,7 @@ func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
 		}
 		if entry.DesiredState == DesiredCleanup {
 			result := m.cleanupLocked(ctx, cleanupCommandFromEntry(entry, entry.Generation))
+			m.recordCleanupOutcome(entry.ActuationID, result)
 			if result.State == ResultFailed {
 				m.emit(result)
 				verificationAvailable = false
@@ -313,7 +340,9 @@ func (m *lifecycleManager) Reconcile(ctx context.Context) []Result {
 		results = append(results, result)
 		verificationAvailable = verificationAvailable && verified
 	}
-	m.setAvailable(verificationAvailable)
+	m.mu.Lock()
+	m.available = verificationAvailable && len(m.unresolved) == 0
+	m.mu.Unlock()
 	return results
 }
 
@@ -372,23 +401,31 @@ func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence Resu
 }
 
 func (m *lifecycleManager) SetEnabled(ctx context.Context, enabled bool) error {
-	m.operationMu.Lock()
-	defer m.operationMu.Unlock()
+	if err := m.acquireOperation(ctx); err != nil {
+		m.markUnresolved("__account__", 0)
+		return fmt.Errorf("PAM lifecycle operation timed out: %w", err)
+	}
+	defer m.releaseOperation()
 	m.mu.Lock()
 	current := m.enabled
 	admissionOpen := m.admissionOpen
+	available := m.available
+	unresolved := len(m.unresolved)
 	m.mu.Unlock()
-	if current == enabled {
-		if enabled && !admissionOpen {
+	if enabled {
+		if !available || unresolved > 0 {
 			return errors.New("PAM cleanup remains unresolved")
 		}
-		return nil
-	}
-	if enabled {
+		if current && admissionOpen {
+			return nil
+		}
 		m.mu.Lock()
 		m.enabled = true
 		m.admissionOpen = true
 		m.mu.Unlock()
+		return nil
+	}
+	if !current && available && unresolved == 0 {
 		return nil
 	}
 	m.mu.Lock()
@@ -400,8 +437,12 @@ func (m *lifecycleManager) SetEnabled(ctx context.Context, enabled bool) error {
 		bootID, bootErr := m.currentBootID(ctx)
 		if bootErr != nil {
 			failures = append(failures, "account:boot_id_unavailable")
+			m.markUnresolved("__account__", 0)
 		} else if _, code, verified := m.verifyAccountClean(ctx, ResultEvidence{BootID: bootID}); !verified {
 			failures = append(failures, "account:"+code)
+			m.markUnresolved("__account__", 0)
+		} else {
+			m.clearUnresolved("__account__")
 		}
 	}
 	for _, entry := range entries {
@@ -410,21 +451,95 @@ func (m *lifecycleManager) SetEnabled(ctx context.Context, enabled bool) error {
 			generation++
 		}
 		result := m.cleanupLocked(ctx, cleanupCommandFromEntry(entry, generation))
+		m.recordCleanupOutcome(entry.ActuationID, result)
 		if result.State == ResultFailed {
 			m.emit(result)
 			failures = append(failures, fmt.Sprintf("%s:%s", entry.ActuationID, result.FailureCode))
 		}
 	}
+	m.mu.Lock()
+	remainingUnresolved := len(m.unresolved)
+	m.mu.Unlock()
+	if remainingUnresolved > 0 && len(failures) == 0 {
+		failures = append(failures, "unresolved_cleanup_evidence")
+	}
 	if len(failures) > 0 {
-		m.setAvailable(false)
 		return fmt.Errorf("PAM disable cleanup unverified: %s", strings.Join(failures, ", "))
 	}
 	m.mu.Lock()
 	m.enabled = false
 	m.admissionOpen = false
-	m.available = true
+	m.available = len(m.unresolved) == 0
 	m.mu.Unlock()
 	return nil
+}
+
+// AcquireLegacyActuation grants a context-bounded lease over the same
+// lifecycle gate used by v2 apply/cleanup/reconcile and policy disable. The
+// frozen Manager interface remains unchanged; legacy callers discover this
+// optional concrete capability and fail closed when it is absent.
+func (m *lifecycleManager) AcquireLegacyActuation(ctx context.Context) (func(), error) {
+	if err := m.acquireOperation(ctx); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	allowed := m.enabled && m.admissionOpen && m.available && len(m.unresolved) == 0
+	m.mu.Unlock()
+	if !allowed {
+		m.releaseOperation()
+		return nil, errors.New("PAM legacy actuation admission unavailable")
+	}
+	var once sync.Once
+	return func() { once.Do(m.releaseOperation) }, nil
+}
+
+func (m *lifecycleManager) acquireOperation(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.operationGate:
+		return nil
+	}
+}
+
+func (m *lifecycleManager) releaseOperation() { m.operationGate <- struct{}{} }
+
+func (m *lifecycleManager) recordCleanupOutcome(actuationID string, result Result) {
+	if result.State == ResultCleaned {
+		m.clearUnresolvedThrough(actuationID, result.Generation)
+		return
+	}
+	m.markUnresolved(actuationID, result.Generation)
+}
+
+func (m *lifecycleManager) markUnresolved(key string, generation uint64) {
+	m.mu.Lock()
+	if current, ok := m.unresolved[key]; !ok || generation > current {
+		m.unresolved[key] = generation
+	}
+	m.available = false
+	m.admissionOpen = false
+	m.mu.Unlock()
+}
+
+func (m *lifecycleManager) clearUnresolvedThrough(key string, generation uint64) {
+	m.mu.Lock()
+	if unresolvedGeneration, ok := m.unresolved[key]; ok && generation >= unresolvedGeneration {
+		delete(m.unresolved, key)
+	}
+	if len(m.unresolved) == 0 {
+		m.available = true
+	}
+	m.mu.Unlock()
+}
+
+func (m *lifecycleManager) clearUnresolved(key string) {
+	m.mu.Lock()
+	delete(m.unresolved, key)
+	if len(m.unresolved) == 0 {
+		m.available = true
+	}
+	m.mu.Unlock()
 }
 
 func cleanupCommandFromEntry(entry LedgerEntry, generation uint64) CleanupCommand {

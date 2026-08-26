@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,14 +27,34 @@ type fakePamLifetimeManager struct {
 	setEnabledCalls  []bool
 	protocolVersion  int
 	available        bool
+	applyDeadline    bool
+	cleanupDeadline  bool
+	setDeadline      bool
+	leaseOnce        sync.Once
+	leaseGate        chan struct{}
+	leaseErr         error
+	leaseCalls       int
 }
 
-func (m *fakePamLifetimeManager) Apply(context.Context, pamlifetime.ApplyCommand) pamlifetime.Result {
+func (m *fakePamLifetimeManager) initLeaseGate() chan struct{} {
+	m.leaseOnce.Do(func() {
+		m.leaseGate = make(chan struct{}, 1)
+		m.leaseGate <- struct{}{}
+	})
+	return m.leaseGate
+}
+
+func (m *fakePamLifetimeManager) Apply(ctx context.Context, _ pamlifetime.ApplyCommand) pamlifetime.Result {
 	m.applyCalls++
+	_, m.applyDeadline = ctx.Deadline()
 	return m.applyResult
 }
-func (m *fakePamLifetimeManager) Cleanup(context.Context, pamlifetime.CleanupCommand) pamlifetime.Result {
+func (m *fakePamLifetimeManager) Cleanup(ctx context.Context, _ pamlifetime.CleanupCommand) pamlifetime.Result {
 	m.cleanupCalls++
+	_, m.cleanupDeadline = ctx.Deadline()
+	if m.cleanupResult.State == pamlifetime.ResultFailed {
+		m.available = false
+	}
 	return m.cleanupResult
 }
 func (m *fakePamLifetimeManager) Reconcile(context.Context) []pamlifetime.Result {
@@ -45,7 +66,15 @@ func (m *fakePamLifetimeManager) Reconcile(context.Context) []pamlifetime.Result
 	}
 	return nil
 }
-func (m *fakePamLifetimeManager) SetEnabled(_ context.Context, enabled bool) error {
+func (m *fakePamLifetimeManager) SetEnabled(ctx context.Context, enabled bool) error {
+	gate := m.initLeaseGate()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-gate:
+	}
+	defer func() { gate <- struct{}{} }()
+	_, m.setDeadline = ctx.Deadline()
 	m.setEnabledCalls = append(m.setEnabledCalls, enabled)
 	return m.setEnabledErr
 }
@@ -56,6 +85,30 @@ func (m *fakePamLifetimeManager) ProtocolVersion() int {
 	return m.protocolVersion
 }
 func (m *fakePamLifetimeManager) Available() bool { return m.available }
+func (m *fakePamLifetimeManager) AcquireLegacyActuation(ctx context.Context) (func(), error) {
+	gate := m.initLeaseGate()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-gate:
+	}
+	if m.leaseErr != nil {
+		gate <- struct{}{}
+		return nil, m.leaseErr
+	}
+	m.leaseCalls++
+	var once sync.Once
+	return func() { once.Do(func() { gate <- struct{}{} }) }, nil
+}
+
+func readyLegacyHeartbeat(manager *fakePamLifetimeManager) *Heartbeat {
+	manager.available = true
+	h := &Heartbeat{pamLifetimeManager: manager}
+	h.pamReconciled.Store(true)
+	h.pamVerificationAvailable.Store(true)
+	h.uacInterceptionEnabled.Store(true)
+	return h
+}
 
 func TestPamLifetimeV2HandlersReturnSharedStructuredResult(t *testing.T) {
 	apply := pamlifetime.Result{ProtocolVersion: 2, ObservationID: "10000000-0000-4000-8000-000000000009", ActuationID: "10000000-0000-4000-8000-000000000001", Generation: 1, State: pamlifetime.ResultFailed, ObservedAt: time.Now(), FailureCode: pamlifetime.FailureUnsupportedPlatform}
@@ -63,6 +116,7 @@ func TestPamLifetimeV2HandlersReturnSharedStructuredResult(t *testing.T) {
 	cleanup.Generation = 2
 	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: &fakePamLifetimeManager{applyResult: apply, cleanupResult: cleanup}}
 	h.pamReconciled.Store(true)
+	h.pamVerificationAvailable.Store(true)
 	h.uacInterceptionEnabled.Store(true)
 
 	applyResult := handlePamApplyV2(h, Command{Payload: map[string]any{
@@ -80,6 +134,10 @@ func TestPamLifetimeV2HandlersReturnSharedStructuredResult(t *testing.T) {
 	}})
 	if cleanupResult.Status != "completed" || cleanupResult.Result != cleanup {
 		t.Fatalf("cleanup result = %#v", cleanupResult)
+	}
+	manager := h.pamLifetimeManager.(*fakePamLifetimeManager)
+	if !manager.applyDeadline || !manager.cleanupDeadline {
+		t.Fatalf("v2 handler contexts missing deadlines: apply=%v cleanup=%v", manager.applyDeadline, manager.cleanupDeadline)
 	}
 }
 
@@ -244,7 +302,7 @@ func TestHandleActuateElevationUsesLocalCredentialAndDemotes(t *testing.T) {
 		}}
 	})
 
-	result := handleActuateElevation(&Heartbeat{}, Command{
+	result := handleActuateElevation(readyLegacyHeartbeat(&fakePamLifetimeManager{}), Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{
@@ -300,7 +358,7 @@ func TestHandleActuateElevationDemotesWhenActuatorPanics(t *testing.T) {
 		}
 	}()
 
-	_ = handleActuateElevation(&Heartbeat{}, Command{
+	_ = handleActuateElevation(readyLegacyHeartbeat(&fakePamLifetimeManager{}), Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{
@@ -320,7 +378,7 @@ func TestHandleActuateElevationPromoteFailureReturnsStructuredResult(t *testing.
 		}}
 	})
 
-	result := handleActuateElevation(&Heartbeat{}, Command{
+	result := handleActuateElevation(readyLegacyHeartbeat(&fakePamLifetimeManager{}), Command{
 		ID:   "cmd-1",
 		Type: tools.CmdActuateElevation,
 		Payload: map[string]any{
@@ -343,6 +401,120 @@ func TestHandleActuateElevationPromoteFailureReturnsStructuredResult(t *testing.
 	}
 	if manager.demoteSeen != 0 {
 		t.Fatalf("Demote called %d times without successful Promote, want 0", manager.demoteSeen)
+	}
+}
+
+func TestLegacyActuationFailsClosedBeforePromoteWhenLifecycleAdmissionUnavailable(t *testing.T) {
+	cases := []struct {
+		name string
+		h    *Heartbeat
+	}{
+		{name: "manager absent", h: &Heartbeat{}},
+		{name: "reconciling", h: func() *Heartbeat {
+			m := &fakePamLifetimeManager{available: true}
+			h := &Heartbeat{pamLifetimeManager: m}
+			h.uacInterceptionEnabled.Store(true)
+			return h
+		}()},
+		{name: "verification unavailable", h: func() *Heartbeat {
+			m := &fakePamLifetimeManager{available: false}
+			h := &Heartbeat{pamLifetimeManager: m}
+			h.pamReconciled.Store(true)
+			h.uacInterceptionEnabled.Store(true)
+			return h
+		}()},
+		{name: "policy disabled", h: func() *Heartbeat {
+			m := &fakePamLifetimeManager{available: true}
+			h := &Heartbeat{pamLifetimeManager: m}
+			h.pamReconciled.Store(true)
+			h.pamVerificationAvailable.Store(true)
+			return h
+		}()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			account := &fakeElevationManager{cred: elevaccount.Credential{Username: elevaccount.AccountName, Password: "secret"}}
+			swapElevationManagerForTest(t, func() elevaccount.AccountManager { return account })
+			result := handleActuateElevation(tc.h, Command{Payload: map[string]any{"elevationRequestId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}})
+			if result.Status != "failed" || account.promoteSeen != 0 {
+				t.Fatalf("result=%+v promote=%d", result, account.promoteSeen)
+			}
+		})
+	}
+}
+
+func TestSameResponsePolicyDisableBlocksLegacyActuation(t *testing.T) {
+	manager := &fakePamLifetimeManager{available: true}
+	h := readyLegacyHeartbeat(manager)
+	account := &fakeElevationManager{cred: elevaccount.Credential{Username: elevaccount.AccountName, Password: "secret"}}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return account })
+
+	h.handleUACInterception(boolPtr(false))
+	result := handleActuateElevation(h, Command{Payload: map[string]any{"elevationRequestId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}})
+
+	if result.Status != "failed" || account.promoteSeen != 0 || !manager.setDeadline {
+		t.Fatalf("result=%+v promote=%d setDeadline=%v", result, account.promoteSeen, manager.setDeadline)
+	}
+}
+
+func TestInFlightLegacyActuationSerializesPolicyDisableThroughDemote(t *testing.T) {
+	manager := &fakePamLifetimeManager{available: true}
+	h := readyLegacyHeartbeat(manager)
+	account := &fakeElevationManager{cred: elevaccount.Credential{Username: elevaccount.AccountName, Password: "secret"}}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return account })
+	actuatorStarted := make(chan struct{})
+	releaseActuator := make(chan struct{})
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
+		return fakeActuator{trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
+			close(actuatorStarted)
+			<-releaseActuator
+			return pamactuator.Result{Success: true, Reason: "ok"}
+		}}
+	})
+	handlerDone := make(chan tools.CommandResult, 1)
+	go func() {
+		handlerDone <- handleActuateElevation(h, Command{Payload: map[string]any{"elevationRequestId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "timeoutMs": float64(1000)}})
+	}()
+	<-actuatorStarted
+	disableDone := make(chan struct{})
+	go func() {
+		h.handleUACInterception(boolPtr(false))
+		close(disableDone)
+	}()
+	select {
+	case <-disableDone:
+		t.Fatal("policy disable crossed in-flight promote/actuate/demote lease")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseActuator)
+	if result := <-handlerDone; result.Status != "completed" {
+		t.Fatalf("handler = %+v", result)
+	}
+	<-disableDone
+	if account.demoteSeen != 1 || manager.leaseCalls != 1 {
+		t.Fatalf("demote/lease = %d/%d", account.demoteSeen, manager.leaseCalls)
+	}
+}
+
+func TestDirectCleanupFailureDropsHeartbeatCapabilityAndBlocksApply(t *testing.T) {
+	manager := &fakePamLifetimeManager{available: true, cleanupResult: pamlifetime.Result{State: pamlifetime.ResultFailed}}
+	h := readyLegacyHeartbeat(manager)
+	h.config = &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}
+	cleanup := handlePamCleanupV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2, "actuationId": "10000000-0000-4000-8000-000000000001", "generation": 2,
+		"requestId": "10000000-0000-4000-8000-000000000002", "deviceId": h.config.DeviceID, "orgId": h.config.OrgID,
+	}})
+	if cleanup.Status != "completed" || h.pamLifetimeProtocolVersion() != 0 {
+		t.Fatalf("cleanup/capability = %+v/%d", cleanup, h.pamLifetimeProtocolVersion())
+	}
+	apply := handlePamApplyV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2, "actuationId": "20000000-0000-4000-8000-000000000001", "generation": 1,
+		"requestId": "20000000-0000-4000-8000-000000000002", "deviceId": h.config.DeviceID, "orgId": h.config.OrgID,
+		"targetPath": `C:\\Windows\\System32\\mmc.exe`, "subjectUsername": `CORP\\alice`,
+		"expiresAt": time.Now().Add(time.Minute).Format(time.RFC3339Nano), "serverTime": time.Now().Format(time.RFC3339Nano), "maxRemainingLifetimeMs": 120000,
+	}})
+	if apply.Status != "failed" || manager.applyCalls != 0 {
+		t.Fatalf("apply=%+v calls=%d", apply, manager.applyCalls)
 	}
 }
 

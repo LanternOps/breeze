@@ -4,6 +4,7 @@ package pamlifetime
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -19,6 +20,10 @@ func NewManager(store *Store) *stubManager {
 
 func (m *stubManager) ProtocolVersion() int { return 0 }
 func (m *stubManager) Available() bool      { return false }
+
+func (*stubManager) AcquireLegacyActuation(context.Context) (func(), error) {
+	return nil, errors.New("PAM legacy actuation unavailable on this platform")
+}
 
 func (m *stubManager) Apply(_ context.Context, cmd ApplyCommand) Result {
 	if _, err := m.store.PrepareApply(cmd); err != nil {

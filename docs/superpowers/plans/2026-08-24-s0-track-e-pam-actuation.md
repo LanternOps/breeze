@@ -575,9 +575,11 @@ cd agent && go test -race ./internal/agentapp ./internal/pamlifetime ./internal/
 
 Expected: FAIL because startup does not own the manager and `handleUACInterception(false)` only toggles interception state.
 
-- [x] **Step 3: Start and reconcile the manager before command admission**
+- [ ] **Step 3: Start and reconcile the manager before command admission**
 
 Construct the manager during agent startup, load the durable ledger, and block PAM v2 handler readiness until `Reconcile` completes. For desired active, verify/reopen the named job if it exists; if crash closure already killed it, verify process/account/token state and emit evidence without claiming cleaned unless every cleanup predicate passes. For cleanup tombstones, finish cleanup before any lower/equal apply can run.
+
+Implementation note (2026-08-26): startup reconciliation and fail-closed command admission are implemented, but this step remains unchecked because startup `Reconcile` evidence is logged locally only. The frozen command-result transport requires the exact current `device_command` ID, while the durable PAM ledger carries actuation/request identity but not that command ownership. No command-ID bypass or alternate wire transaction was added; transport completion remains blocked on an authoritative ownership-preserving design.
 
 - [x] **Step 4: Bind PAM disable to cleanup and account lifecycle**
 
