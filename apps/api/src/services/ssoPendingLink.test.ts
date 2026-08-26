@@ -30,6 +30,8 @@ const RECORD: Omit<SsoPendingLink, 'createdAt'> = {
   authEpoch: 3,
   mfaEpoch: 2,
   providerId: 'provider-1',
+  providerOrgId: 'org-1',
+  providerPartnerId: null,
   providerConfigVersion: 5,
   externalSub: 'external-sub-v',
   email: 'v@example.com',

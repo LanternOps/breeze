@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createHmac } from 'crypto';
+import { createHmac, createHash } from 'crypto';
 import { Hono } from 'hono';
 import { ssoRoutes } from './sso';
 
@@ -108,7 +108,23 @@ vi.mock('../services', () => ({
   // existing tests exercising the route body are unaffected; the dedicated
   // 429 test overrides this per-call.
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date(Date.now() + 60_000) }),
-  getRedis: vi.fn().mockReturnValue({})
+  // #4067: the confirm ceremony writes mfa:pending records through getRedis(),
+  // so hand back the same stub the pending-link service uses.
+  getRedis: vi.fn(() => pendingLinkRedis),
+  // #4067 link-confirm ceremony: password verification + account lockout
+  // plumbing (mirrors /auth/login's controls). Defaults are the safe path;
+  // individual tests override.
+  verifyPassword: vi.fn().mockResolvedValue(false),
+  hashPassword: vi.fn().mockResolvedValue('$argon2id$dummy-hash'),
+  isAccountLocked: vi.fn().mockResolvedValue(false),
+  recordAccountFailure: vi.fn().mockResolvedValue({ newlyLocked: false, count: 1 }),
+  clearAccountFailures: vi.fn().mockResolvedValue(undefined)
+}));
+
+// #4067: the confirm endpoint reuses login's full lockout-notify helper.
+vi.mock('./auth/login', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./auth/login')>()),
+  recordAccountFailureAndMaybeNotify: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -320,7 +336,15 @@ vi.mock('../services/mfaPolicy', () => ({
 // (method: 'sso-partner') without invoking the real async audit-log writer.
 vi.mock('./auth/helpers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./auth/helpers')>();
-  return { ...actual, auditLogin: vi.fn() };
+  return {
+    ...actual,
+    auditLogin: vi.fn(),
+    // #4067: keep unit tests fast (no real wall-clock floor) and keep the
+    // fire-and-forget failure audit's db.insert out of the mock queues.
+    authResponseFloorPromise: vi.fn(() => Promise.resolve()),
+    auditUserLoginFailure: vi.fn(),
+    userHasUsablePasskey: vi.fn().mockResolvedValue(false),
+  };
 });
 
 vi.mock('../middleware/auth', () => ({
@@ -374,7 +398,8 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
-import { createTokenPair, rateLimiter, getUserEpochs, getRefreshFamily } from '../services';
+import { createTokenPair, rateLimiter, getUserEpochs, getRefreshFamily, verifyPassword, isAccountLocked, clearAccountFailures } from '../services';
+import { recordAccountFailureAndMaybeNotify } from './auth/login';
 import { authMiddleware } from '../middleware/auth';
 import {
   discoverOIDCConfig,
@@ -433,6 +458,11 @@ describe('sso routes', () => {
     pendingLinkRedis.get.mockResolvedValue(null);
     pendingLinkRedis.getdel.mockResolvedValue(null);
     pendingLinkRedis.del.mockResolvedValue(1);
+    // #4067 confirm-ceremony defaults (clearAllMocks does NOT restore factory
+    // implementations set via mockResolvedValue in earlier tests).
+    vi.mocked(verifyPassword).mockResolvedValue(false);
+    vi.mocked(isAccountLocked).mockResolvedValue(false);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 } as any);
     // clearAllMocks clears call history but NOT the mockReturnValueOnce queue.
     // Reset the db mocks to their default chain so a prior test's unconsumed
     // `*Once` entries can't bleed into the next test (e.g. a leftover
@@ -4770,6 +4800,265 @@ describe('sso routes', () => {
         const res = await postStatus({ status: 'active' });
         expect(res.status).toBe(200);
         expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  // ── #4067: link-on-first-SSO-login ceremony endpoints ─────────────────────
+  describe('link ceremony endpoints (#4067)', () => {
+    const sel = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+    const selJoin = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }) })
+    } as any);
+
+    const USER_UUID = '00000000-0000-4000-8000-00000000c001';
+    const ORG_UUID = '00000000-0000-4000-8000-00000000c010';
+    const PROVIDER_UUID = '00000000-0000-4000-8000-00000000c0f0';
+    const RAW_TOKEN = 'raw-pending-link-token';
+    const TOKEN_HASH = createHash('sha256').update(RAW_TOKEN).digest('hex');
+    const COOKIE = `breeze_sso_pending_link=${RAW_TOKEN}`;
+
+    const LINK_RECORD = {
+      userId: USER_UUID,
+      userEmail: 'pw@example.com',
+      userStatus: 'active',
+      authEpoch: 1,
+      mfaEpoch: 1,
+      providerId: PROVIDER_UUID,
+      providerOrgId: ORG_UUID,
+      providerPartnerId: null,
+      providerConfigVersion: 1,
+      externalSub: 'external-user-1',
+      email: 'pw@example.com',
+      name: 'Pw User',
+      profile: { sub: 'external-user-1' },
+      encryptedAccessToken: 'enc:a',
+      encryptedRefreshToken: 'enc:r',
+      tokenExpiresAt: null,
+      idpMfaAsserted: false,
+      emailVerifiedClaim: 'true',
+      redirectUrl: '/dashboard',
+      createdAt: Date.now(),
+    };
+
+    const USER_ROW = {
+      id: USER_UUID,
+      email: 'pw@example.com',
+      name: 'Pw User',
+      orgId: null,
+      status: 'active',
+      passwordHash: '$argon2id$real-hash',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+      isPlatformAdmin: false,
+    };
+
+    const PROVIDER_ROW = {
+      id: PROVIDER_UUID,
+      orgId: ORG_UUID,
+      partnerId: null,
+      name: 'Acme IdP',
+      type: 'oidc',
+      status: 'active',
+      configVersion: 1,
+      trustsIdpMfa: false,
+    };
+
+    const app = new Hono();
+    app.route('/sso', ssoRoutes);
+
+    const wireRecord = (record: Record<string, unknown> = LINK_RECORD) => {
+      pendingLinkRedis.get.mockImplementation(async (key: string) =>
+        key === `sso:pendinglink:${TOKEN_HASH}` ? JSON.stringify(record) : null);
+      pendingLinkRedis.getdel.mockImplementation(async (key: string) =>
+        key === `sso:pendinglink:${TOKEN_HASH}` ? JSON.stringify(record) : null);
+    };
+
+    const confirm = (body: Record<string, unknown> = { password: 'correct horse' }, cookie: string | null = COOKIE) =>
+      app.request('/sso/link/confirm', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+        body: JSON.stringify(body),
+      });
+
+    describe('GET /sso/link/pending', () => {
+      it('describes the pending ceremony from the HttpOnly cookie', async () => {
+        wireRecord();
+        vi.mocked(db.select).mockReturnValueOnce(sel([{ name: 'Acme IdP' }]));
+
+        const res = await app.request('/sso/link/pending', { headers: { cookie: COOKIE } });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({
+          email: 'pw@example.com',
+          providerName: 'Acme IdP',
+        });
+        expect(res.headers.get('cache-control')).toBe('no-store');
+      });
+
+      it('404s without the cookie (a forwarded URL has no ceremony)', async () => {
+        wireRecord();
+        const res = await app.request('/sso/link/pending');
+        expect(res.status).toBe(404);
+      });
+
+      it('404s and clears the cookie when the record is gone', async () => {
+        const res = await app.request('/sso/link/pending', { headers: { cookie: COOKIE } });
+        expect(res.status).toBe(404);
+        const setCookies = res.headers.getSetCookie?.() ?? [];
+        expect(setCookies.some((v) => v.startsWith('breeze_sso_pending_link=;'))).toBe(true);
+      });
+    });
+
+    describe('POST /sso/link/confirm', () => {
+      it('links and mints on a correct password (no MFA enrolled)', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(sel([USER_ROW]))            // confirm: live user
+          .mockReturnValueOnce(sel([USER_ROW]))            // finalize: live user re-read
+          .mockReturnValueOnce(sel([PROVIDER_ROW]))        // finalize: live provider re-read
+          .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+          .mockReturnValueOnce(sel([]));                   // identity (provider, sub) → none → insert
+
+        const res = await confirm();
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.tokens).toEqual({ accessToken: 'access-token', expiresInSeconds: 900 });
+        expect(body.mfaRequired).toBe(false);
+        expect(body.redirectPath).toBe('/dashboard');
+        expect(body.user).toMatchObject({ id: USER_UUID, email: 'pw@example.com' });
+
+        // Single-use: the record was consumed atomically.
+        expect(pendingLinkRedis.getdel).toHaveBeenCalledWith(`sso:pendinglink:${TOKEN_HASH}`);
+        // Refresh cookie set; pending-link cookie cleared.
+        const setCookies = res.headers.getSetCookie?.() ?? [];
+        expect(setCookies.some((v) => v.includes('breeze_refresh_token='))).toBe(true);
+        expect(setCookies.some((v) => v.startsWith('breeze_sso_pending_link=;'))).toBe(true);
+        expect(res.headers.get('cache-control')).toBe('no-store');
+        expect(vi.mocked(clearAccountFailures)).toHaveBeenCalled();
+      });
+
+      it('rejects a wrong password with the generic 401, bumps the lockout counter, and keeps the record for a retry', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(false);
+        vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
+
+        const res = await confirm({ password: 'wrong' });
+        expect(res.status).toBe(401);
+        expect(recordAccountFailureAndMaybeNotify).toHaveBeenCalled();
+        expect(pendingLinkRedis.getdel).not.toHaveBeenCalled();
+        expect(pendingLinkRedis.del).not.toHaveBeenCalled();
+        expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
+      it('denies a locked account even with the correct password, without bumping the counter', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(isAccountLocked).mockResolvedValue(true);
+        vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
+
+        const res = await confirm();
+        expect(res.status).toBe(401);
+        expect(recordAccountFailureAndMaybeNotify).not.toHaveBeenCalled();
+        expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
+      it('401s without a ceremony cookie', async () => {
+        wireRecord();
+        const res = await confirm({ password: 'x' }, null);
+        expect(res.status).toBe(401);
+        expect(vi.mocked(verifyPassword)).not.toHaveBeenCalled();
+      });
+
+      it('401s when the pending record has expired', async () => {
+        const res = await confirm();
+        expect(res.status).toBe(401);
+        expect(vi.mocked(verifyPassword)).not.toHaveBeenCalled();
+      });
+
+      it('destroys the record when the per-token attempt cap is exhausted', async () => {
+        wireRecord();
+        vi.mocked(rateLimiter)
+          .mockResolvedValueOnce({ allowed: true, remaining: 9, resetAt: new Date() } as any)   // per-IP
+          .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() } as any); // per-token
+
+        const res = await confirm();
+        expect(res.status).toBe(401);
+        expect(pendingLinkRedis.del).toHaveBeenCalledWith(`sso:pendinglink:${TOKEN_HASH}`);
+        expect(vi.mocked(verifyPassword)).not.toHaveBeenCalled();
+      });
+
+      it('hands off to the MFA continuation for an MFA-enrolled user instead of linking on password alone', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        const mfaUser = { ...USER_ROW, mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'totp' };
+        vi.mocked(db.select).mockReturnValueOnce(sel([mfaUser]));
+
+        const res = await confirm();
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.mfaRequired).toBe(true);
+        expect(body.tempToken).toEqual(expect.any(String));
+        expect(body.mfaMethod).toBe('totp');
+
+        // The identity must NOT be linked yet and no session minted.
+        expect(createTokenPair).not.toHaveBeenCalled();
+        expect(pendingLinkRedis.getdel).not.toHaveBeenCalled();
+
+        // The pending-MFA record carries the link pointer for the completion
+        // endpoints (mfa.ts / passkeys.ts).
+        const setexCalls = pendingLinkRedis.setex.mock.calls.filter(([k]) => String(k).startsWith('mfa:pending:'));
+        expect(setexCalls).toHaveLength(1);
+        const pendingMfa = JSON.parse(String(setexCalls[0]![2]));
+        expect(pendingMfa.ssoLinkTokenHash).toBe(TOKEN_HASH);
+        expect(pendingMfa.userId).toBe(USER_UUID);
+      });
+
+      it('refuses with 409 when the (provider, sub) identity belongs to another account', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(sel([USER_ROW]))
+          .mockReturnValueOnce(sel([USER_ROW]))
+          .mockReturnValueOnce(sel([PROVIDER_ROW]))
+          .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+          .mockReturnValueOnce(sel([{ id: 'identity-9', userId: 'someone-else' }]));
+
+        const res = await confirm();
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('identity_in_use');
+        expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
+      it('voids the ceremony when the provider config changed since the callback', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(sel([USER_ROW]))
+          .mockReturnValueOnce(sel([USER_ROW]))
+          .mockReturnValueOnce(sel([{ ...PROVIDER_ROW, configVersion: 2 }]));
+
+        const res = await confirm();
+        expect(res.status).toBe(401);
+        expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
+      it('voids the ceremony on an auth-epoch change (password reset during the window)', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 2, mfaEpoch: 1 } as any);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(sel([USER_ROW]))
+          .mockReturnValueOnce(sel([USER_ROW]));
+
+        const res = await confirm();
+        expect(res.status).toBe(401);
+        expect(createTokenPair).not.toHaveBeenCalled();
       });
     });
   });

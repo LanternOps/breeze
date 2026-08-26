@@ -39,7 +39,17 @@ import {
   type EmailVerifiedClaim
 } from '../services/sso';
 import { mintStepUpGrant } from '../services/mfaStepUpGrant';
-import { getUserEpochs, getRefreshFamily, rateLimiter, getRedis } from '../services';
+import {
+  getUserEpochs,
+  getRefreshFamily,
+  rateLimiter,
+  getRedis,
+  verifyPassword,
+  hashPassword,
+  isAccountLocked,
+  clearAccountFailures,
+} from '../services';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
@@ -54,10 +64,23 @@ import {
 } from '../services/roleAssignment';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { envFlag } from '../utils/envFlag';
-import { setRefreshTokenCookie, getCookieValue } from './auth/helpers';
-import { completeSsoLogin } from './auth/ssoLinkCompletion';
+import {
+  setRefreshTokenCookie,
+  getCookieValue,
+  authResponseFloorPromise,
+  genericAuthError,
+  auditUserLoginFailure,
+  userHasUsablePasskey,
+  type PendingMfaRecord,
+} from './auth/helpers';
+import { recordAccountFailureAndMaybeNotify } from './auth/login';
+import { ENABLE_2FA } from './auth/schemas';
+import { completeSsoLogin, finalizeSsoPendingLink, normalizeRedirectPath } from './auth/ssoLinkCompletion';
 import {
   createSsoPendingLink,
+  peekSsoPendingLink,
+  deleteSsoPendingLink,
+  hashSsoPendingLinkToken,
   SSO_PENDING_LINK_TTL_SECONDS,
 } from '../services/ssoPendingLink';
 
@@ -378,26 +401,8 @@ function consumeSsoTokenExchangeGrant(code: string): SsoTokenExchangeGrant | nul
   return grant;
 }
 
-function normalizeRedirectPath(redirectParam: string | undefined): string {
-  if (!redirectParam) {
-    return '/';
-  }
-
-  const trimmed = redirectParam.trim();
-  if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.includes('\\')) {
-    return '/';
-  }
-
-  try {
-    const parsed = new URL(trimmed, 'https://local.invalid');
-    if (parsed.origin !== 'https://local.invalid') {
-      return '/';
-    }
-    return `${parsed.pathname}${parsed.search}`;
-  } catch {
-    return '/';
-  }
-}
+// normalizeRedirectPath moved to ./auth/ssoLinkCompletion (shared with the
+// #4067 link ceremony's completion endpoints).
 
 function getCanonicalPublicBaseUrl(): string {
   const configuredBaseUrl = (
@@ -3295,6 +3300,8 @@ ssoRoutes.get('/callback', async (c) => {
               authEpoch: byEmail.authEpoch,
               mfaEpoch: byEmail.mfaEpoch,
               providerId: provider.id,
+              providerOrgId: provider.orgId ?? null,
+              providerPartnerId: provider.partnerId ?? null,
               providerConfigVersion: provider.configVersion ?? 0,
               externalSub,
               email: attrs.email,
@@ -3524,6 +3531,279 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
     accessToken: grant.accessToken,
     expiresInSeconds: grant.expiresInSeconds,
     ...(returnRefreshToken ? { refreshToken: grant.refreshToken } : {}),
+  });
+});
+
+// ============================================
+// #4067 — link-on-first-SSO-login ceremony
+// ============================================
+//
+// Both endpoints are public (the user is mid-login) and bound to the browser
+// that completed the OIDC round-trip via the HttpOnly pending-link cookie set
+// by the callback. The password verification here deliberately does NOT call
+// assertPasswordAuthAllowedBySso: it only ever runs downstream of a verified
+// IdP assertion, so it is a link-authorization proof, not a password login —
+// see routes/auth/ssoPolicy.ts.
+
+const ssoLinkConfirmSchema = z.object({
+  password: z.string().min(1).max(1024),
+});
+
+// Timing-equalizer dummy hash for the "record names a vanished user" branch —
+// same idiom as /auth/login's enumeration resistance.
+let ssoLinkDummyHashPromise: Promise<string> | null = null;
+function getSsoLinkDummyPasswordHash(): Promise<string> {
+  if (!ssoLinkDummyHashPromise) {
+    ssoLinkDummyHashPromise = hashPassword('__sso-link-timing-dummy-never-matches__');
+  }
+  return ssoLinkDummyHashPromise;
+}
+
+// Describe the pending ceremony so the "connect your sign-in" page can render
+// the account email + provider name. Non-consuming; requires the cookie.
+ssoRoutes.get('/link/pending', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const ip = getClientIP(c);
+  const rate = await rateLimiter(redis, `ssolink:describe:${rateLimitIpKey(ip)}`, 30, 5 * 60);
+  if (!rate.allowed) {
+    return c.json({ error: 'Too many requests' }, 429);
+  }
+
+  const rawToken = getCookieValue(c.req.header('cookie'), SSO_PENDING_LINK_COOKIE_NAME);
+  if (!rawToken) {
+    return c.json({ error: 'sso_link_expired' }, 404);
+  }
+  const record = await peekSsoPendingLink(hashSsoPendingLinkToken(rawToken));
+  if (!record) {
+    c.header('Set-Cookie', buildClearSsoPendingLinkCookie(), { append: true });
+    return c.json({ error: 'sso_link_expired' }, 404);
+  }
+
+  const [provider] = await withSystemDbAccessContext(async () =>
+    db
+      .select({ name: ssoProviders.name })
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, record.providerId))
+      .limit(1)
+  );
+
+  return c.json({
+    email: record.userEmail,
+    providerName: provider?.name ?? null,
+  });
+});
+
+// Complete the ceremony: verify the account password; for MFA-enrolled users
+// hand off to the standard pending-MFA continuation (the mfa.ts/passkeys.ts
+// completion endpoints finalize the link); otherwise link + mint immediately.
+ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const { password } = c.req.valid('json');
+
+  // Same wall-clock floor discipline as /auth/login: every response —
+  // including the cheap denials — waits out the shared budget so outcomes
+  // are not distinguishable by latency.
+  const floorPromise = authResponseFloorPromise();
+  const clearLinkCookie = () =>
+    c.header('Set-Cookie', buildClearSsoPendingLinkCookie(), { append: true });
+
+  const redis = getRedis();
+  if (!redis) {
+    await floorPromise;
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  // Per-IP bucket first — this endpoint is an unauthenticated password
+  // oracle of the same class as /login (same 10-per-5-min budget).
+  const ip = getClientIP(c);
+  const ipRate = await rateLimiter(redis, `ssolink:confirm:ip:${rateLimitIpKey(ip)}`, 10, 5 * 60);
+  if (!ipRate.allowed) {
+    await floorPromise;
+    return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
+  }
+
+  const rawToken = getCookieValue(c.req.header('cookie'), SSO_PENDING_LINK_COOKIE_NAME);
+  if (!rawToken) {
+    await floorPromise;
+    return c.json({ error: 'sso_link_expired' }, 401);
+  }
+  const tokenHash = hashSsoPendingLinkToken(rawToken);
+
+  const record = await peekSsoPendingLink(tokenHash);
+  if (!record) {
+    clearLinkCookie();
+    await floorPromise;
+    return c.json({ error: 'sso_link_expired' }, 401);
+  }
+
+  // Per-token attempt cap (atomic bucket, window = record TTL). Exhaustion
+  // destroys the record: a brute-forcer gets 5 password guesses per FULL IdP
+  // round-trip, on top of the per-IP bucket and the account lockout below.
+  const attempt = await rateLimiter(redis, `ssolink:confirm:token:${tokenHash}`, 5, SSO_PENDING_LINK_TTL_SECONDS);
+  if (!attempt.allowed) {
+    await deleteSsoPendingLink(tokenHash);
+    clearLinkCookie();
+    writeRouteAudit(c, {
+      orgId: record.providerOrgId,
+      action: 'sso.link.ceremony_rejected',
+      resourceType: 'sso_provider',
+      resourceId: record.providerId,
+      result: 'denied',
+      details: { reason: 'attempts_exhausted', userId: record.userId, partnerId: record.providerPartnerId },
+    });
+    await floorPromise;
+    return c.json({ error: 'sso_link_expired' }, 401);
+  }
+
+  // Live account read. A vanished/passwordless account still burns a real
+  // argon2 verify (timing) and voids the ceremony.
+  const [user] = await withSystemDbAccessContext(async () =>
+    db.select().from(users).where(eq(users.id, record.userId)).limit(1)
+  );
+  if (!user || !user.passwordHash) {
+    await verifyPassword(await getSsoLinkDummyPasswordHash(), password).catch(() => false);
+    await deleteSsoPendingLink(tokenHash);
+    clearLinkCookie();
+    await floorPromise;
+    return c.json({ error: 'sso_link_expired' }, 401);
+  }
+
+  const normalizedEmail = user.email.toLowerCase();
+
+  // SR2-23 discipline (mirrors /auth/login): the lockout read never
+  // short-circuits the argon2 verify, and a locked account is denied with
+  // the same generic 401 even on a correct password — without re-bumping
+  // the counter (that would let an attacker hold the lockout open).
+  const accountLocked = await isAccountLocked(redis, normalizedEmail);
+  const validPassword = await verifyPassword(user.passwordHash, password);
+
+  if (accountLocked) {
+    void auditUserLoginFailure(c, {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      reason: 'account_locked',
+      result: 'denied',
+      details: { method: 'sso-link-confirm' },
+    });
+    await floorPromise;
+    return c.json(genericAuthError(), 401);
+  }
+
+  if (!validPassword) {
+    void recordAccountFailureAndMaybeNotify(c, user, normalizedEmail);
+    void auditUserLoginFailure(c, {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      reason: 'invalid_password',
+      details: { method: 'sso-link-confirm' },
+    });
+    await floorPromise;
+    return c.json(genericAuthError(), 401);
+  }
+
+  // Cheap stale-state guards before any continuation (the finalizer re-checks
+  // everything again atomically after consuming the record).
+  if (user.status !== 'active' || user.email !== record.userEmail) {
+    await deleteSsoPendingLink(tokenHash);
+    clearLinkCookie();
+    void auditUserLoginFailure(c, {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      reason: user.status !== 'active' ? 'account_inactive' : 'sso_link_binding_changed',
+      result: 'denied',
+      details: { method: 'sso-link-confirm' },
+    });
+    await floorPromise;
+    return c.json({ error: 'sso_link_expired' }, 401);
+  }
+
+  void clearAccountFailures(redis, normalizedEmail).catch((err) => {
+    console.error('[sso/link/confirm] clear failures failed:', err);
+  });
+
+  // MFA-enrolled users must ALSO prove a Breeze-held factor before the link
+  // is created: the existing Connect SSO flow runs behind requireMfa(), and
+  // a stolen password + a malicious/misconfigured IdP must not be able to
+  // attach a durable credential past the victim's MFA. Reuses the standard
+  // mfa:pending continuation so all factor types (TOTP/SMS/recovery/passkey)
+  // work; the completion endpoints see ssoLinkTokenHash and finalize the
+  // link instead of the password-login mint.
+  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
+    const tempToken = nanoid(32);
+    const mfaMethod = user.mfaMethod || 'totp';
+    const passkeyAvailable = await userHasUsablePasskey(user.id);
+
+    const pendingEpochs = await getUserEpochs(user.id);
+    if (!pendingEpochs) {
+      await floorPromise;
+      return c.json(genericAuthError(), 401);
+    }
+    const pendingPolicy = await getEffectiveMfaPolicy({
+      scope: record.providerPartnerId ? 'partner' : 'organization',
+      userId: user.id,
+      orgId: record.providerPartnerId ? null : record.providerOrgId,
+      partnerId: record.providerPartnerId,
+    });
+    const PENDING_TTL_SECONDS = 300;
+    const pendingRecord: PendingMfaRecord = {
+      userId: user.id,
+      mfaMethod,
+      passkeyAvailable,
+      authEpoch: pendingEpochs.authEpoch,
+      mfaEpoch: pendingEpochs.mfaEpoch,
+      statusExpectation: user.status,
+      allowedMethods: pendingPolicy.allowedMethods,
+      expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
+      ssoLinkTokenHash: tokenHash,
+    };
+    await redis.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
+
+    await floorPromise;
+    return c.json({
+      mfaRequired: true,
+      tempToken,
+      mfaMethod,
+      passkeyAvailable,
+      phoneLast4: user.phoneNumber?.slice(-4) || null,
+      user: null,
+      tokens: null,
+    });
+  }
+
+  const outcome = await finalizeSsoPendingLink(c, tokenHash, { breezeMfaVerified: false });
+  clearLinkCookie();
+  if (!outcome.ok) {
+    await floorPromise;
+    if (outcome.error === 'identity_in_use') {
+      return c.json({ error: 'identity_in_use' }, 409);
+    }
+    if (outcome.error === 'link_expired') {
+      return c.json({ error: 'sso_link_expired' }, 401);
+    }
+    return c.json({ error: outcome.error }, 403);
+  }
+
+  setRefreshTokenCookie(c, outcome.refreshToken);
+  await floorPromise;
+  return c.json({
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      mfaEnabled: user.mfaEnabled === true,
+      avatarUrl: user.avatarUrl,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+    },
+    tokens: { accessToken: outcome.accessToken, expiresInSeconds: outcome.expiresInSeconds },
+    mfaRequired: false,
+    redirectPath: outcome.redirectPath,
   });
 });
 

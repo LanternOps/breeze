@@ -111,7 +111,10 @@ const loginResponseFloorPromise = authResponseFloorPromise;
 // notification email + audit event exactly once. Pulled into a helper so
 // the login handler stays readable; called fire-and-forget so the user
 // still gets their 401 promptly.
-async function recordAccountFailureAndMaybeNotify(
+// Exported for the #4067 SSO link-confirm ceremony, which is a password
+// oracle of the same class as /login and must share the same lockout
+// escalation (audit + notify email + reset envelope), not just the counter.
+export async function recordAccountFailureAndMaybeNotify(
   c: Context,
   user: { id: string; email: string; name?: string | null },
   normalizedEmail: string

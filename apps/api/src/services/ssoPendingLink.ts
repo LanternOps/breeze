@@ -45,6 +45,10 @@ export interface SsoPendingLink {
   authEpoch: number;
   mfaEpoch: number;
   providerId: string;
+  /** Provider axis snapshot — drives the MFA-policy scope for the ceremony's
+   * pending-MFA record without re-reading the provider mid-ceremony. */
+  providerOrgId: string | null;
+  providerPartnerId: string | null;
   /** sso_providers.config_version snapshot — same invariant as
    * checkProviderGeneration: a provider re-config voids in-flight ceremonies. */
   providerConfigVersion: number;

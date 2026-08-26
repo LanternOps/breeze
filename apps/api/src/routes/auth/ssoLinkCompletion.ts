@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 import { eq, and } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { userSsoIdentities, users, organizationUsers, partnerUsers, roles } from '../../db/schema';
+import { ssoProviders, userSsoIdentities, users, organizationUsers, partnerUsers, roles } from '../../db/schema';
 import {
   createTokenPair,
   createSession,
@@ -11,6 +11,9 @@ import {
 } from '../../services';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { getTrustedClientIp } from '../../services/clientIp';
+import { isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../../services/ssoDomainVerification';
+import { writeRouteAudit } from '../../services/auditEvents';
+import { consumeSsoPendingLink } from '../../services/ssoPendingLink';
 import { auditLogin } from './helpers';
 
 /**
@@ -373,4 +376,202 @@ export async function completeSsoLogin(
   }
 
   return { ok: true, accessToken, refreshToken, expiresInSeconds, mfa: ssoMfa };
+}
+
+/**
+ * Same-origin path-only redirect sanitizer for post-login relay targets.
+ * (Moved here from routes/sso.ts so the link ceremony's completion endpoints
+ * can share it without a route-module cycle.)
+ */
+export function normalizeRedirectPath(redirectParam: string | undefined): string {
+  if (!redirectParam) {
+    return '/';
+  }
+
+  const trimmed = redirectParam.trim();
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.includes('\\')) {
+    return '/';
+  }
+
+  try {
+    const parsed = new URL(trimmed, 'https://local.invalid');
+    if (parsed.origin !== 'https://local.invalid') {
+      return '/';
+    }
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return '/';
+  }
+}
+
+function emailDomainOf(email: string): string | null {
+  const at = email.lastIndexOf('@');
+  if (at <= 0 || at === email.length - 1) {
+    return null;
+  }
+  return email.slice(at + 1).toLowerCase();
+}
+
+export type SsoLinkFinalizeErrorCode =
+  | 'link_expired'
+  | SsoCompletionErrorCode;
+
+export type SsoLinkFinalizeResult =
+  | {
+      ok: true;
+      accessToken: string;
+      refreshToken: string;
+      expiresInSeconds: number;
+      mfa: boolean;
+      redirectPath: string;
+    }
+  | { ok: false; error: SsoLinkFinalizeErrorCode };
+
+/**
+ * #4067 — terminal step of the link-on-first-SSO-login ceremony. Runs only
+ * AFTER the caller has verified the account password (and, for MFA-enrolled
+ * users, a Breeze-held second factor). Consumes the pending record (atomic
+ * single winner), re-validates every binding against LIVE state, creates the
+ * user_sso_identities link, and completes the login through the shared SSO
+ * mint.
+ *
+ * Every rejection collapses to the generic `link_expired` for the client
+ * (completion-specific codes like identity_in_use excepted) — the audit trail
+ * carries the precise reason.
+ */
+export async function finalizeSsoPendingLink(
+  c: Context,
+  tokenHash: string,
+  opts: {
+    breezeMfaVerified: boolean;
+    /**
+     * MFA continuation binding: the pending-MFA record's userId must be the
+     * SAME account the link record targets — a mismatch means the two records
+     * were stitched together across ceremonies and the finalize must refuse.
+     */
+    expectedUserId?: string;
+  },
+): Promise<SsoLinkFinalizeResult> {
+  // Consume FIRST — exactly one concurrent finalize wins; the loser reads
+  // null and reports the generic expiry.
+  const record = await consumeSsoPendingLink(tokenHash);
+  if (!record) {
+    return { ok: false, error: 'link_expired' };
+  }
+
+  const rejected = (reason: string, extra?: Record<string, unknown>): SsoLinkFinalizeResult => {
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'sso.link.ceremony_rejected',
+      resourceType: 'sso_provider',
+      resourceId: record.providerId,
+      result: 'denied',
+      details: { reason, userId: record.userId, ...extra },
+    });
+    return { ok: false, error: 'link_expired' };
+  };
+
+  if (opts.expectedUserId && record.userId !== opts.expectedUserId) {
+    return rejected('user_binding_mismatch');
+  }
+
+  // Live user re-read: the account must still be the one the callback matched
+  // — active, same email, still password-holding. A password reset, email
+  // change, factor change, suspend, or global logout during the 5-minute
+  // window shows up as an epoch/status/email mismatch and voids the ceremony
+  // (SR2-06 idiom).
+  const [user] = await withSystemDbAccessContext(async () =>
+    db.select().from(users).where(eq(users.id, record.userId)).limit(1)
+  );
+  if (!user) return rejected('user_missing');
+  if (user.status !== 'active') return rejected('status_changed');
+  if (user.email !== record.userEmail) return rejected('email_changed');
+  if (user.passwordHash == null) return rejected('password_removed');
+
+  const liveEpochs = await getUserEpochs(user.id);
+  if (!liveEpochs) return rejected('epoch_unavailable');
+  if (liveEpochs.authEpoch !== record.authEpoch || liveEpochs.mfaEpoch !== record.mfaEpoch) {
+    return rejected('epoch_mismatch');
+  }
+
+  // Live provider re-read: same invariant as the callback's
+  // checkProviderGeneration — a provider re-config (issuer change, rotation,
+  // deactivation) between callback and confirm voids the in-flight ceremony.
+  const [provider] = await withSystemDbAccessContext(async () =>
+    db.select().from(ssoProviders).where(eq(ssoProviders.id, record.providerId)).limit(1)
+  );
+  if (!provider) return rejected('provider_missing');
+  if (provider.status !== 'active') return rejected('provider_inactive');
+  if ((provider.configVersion ?? 0) !== record.providerConfigVersion) {
+    return rejected('provider_config_changed');
+  }
+
+  // Domain-proof re-checks (org axis): the callback may have accepted an
+  // ABSENT email_verified claim only because the domain was DNS-verified at
+  // the time, and domain rows can change without bumping the provider's
+  // configVersion — so re-run both gates against live state.
+  if (provider.orgId) {
+    const assertedEmailDomain = emailDomainOf(record.email);
+    if (record.emailVerifiedClaim === 'absent') {
+      const domainProven = assertedEmailDomain
+        ? await withSystemDbAccessContext(() =>
+            isDomainVerifiedForOrg(provider.orgId!, assertedEmailDomain),
+          )
+        : false;
+      if (!domainProven) return rejected('domain_proof_revoked');
+    }
+    const domainBlocked = await withSystemDbAccessContext(() =>
+      isSsoProvisioningBlocked(provider.orgId!, assertedEmailDomain)
+    );
+    if (domainBlocked) return rejected('domain_blocked');
+  }
+
+  const completion = await completeSsoLogin(c, {
+    provider,
+    user,
+    idpMfaAsserted: record.idpMfaAsserted,
+    breezeMfaVerified: opts.breezeMfaVerified,
+    externalSub: record.externalSub,
+    email: record.email,
+    profile: record.profile,
+    encryptedAccessToken: record.encryptedAccessToken,
+    encryptedRefreshToken: record.encryptedRefreshToken,
+    tokenExpiresAt: record.tokenExpiresAt ? new Date(record.tokenExpiresAt) : null,
+  });
+  if (!completion.ok) {
+    writeRouteAudit(c, {
+      orgId: provider.orgId,
+      action: 'sso.link.ceremony_rejected',
+      resourceType: 'sso_provider',
+      resourceId: provider.id,
+      resourceName: provider.name,
+      result: 'denied',
+      details: { reason: completion.error, userId: user.id, partnerId: provider.partnerId },
+    });
+    return { ok: false, error: completion.error };
+  }
+
+  writeRouteAudit(c, {
+    orgId: provider.orgId,
+    action: 'sso.identity.linked',
+    resourceType: 'sso_provider',
+    resourceId: provider.id,
+    resourceName: provider.name,
+    result: 'success',
+    details: {
+      flow: 'link_on_first_login',
+      userId: user.id,
+      partnerId: provider.partnerId,
+      breezeMfaVerified: opts.breezeMfaVerified,
+    },
+  });
+
+  return {
+    ok: true,
+    accessToken: completion.accessToken,
+    refreshToken: completion.refreshToken,
+    expiresInSeconds: completion.expiresInSeconds,
+    mfa: completion.mfa,
+    redirectPath: normalizeRedirectPath(record.redirectUrl ?? undefined),
+  };
 }
