@@ -2817,10 +2817,11 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           },
           '409': {
             description:
-              'Alert already reached a terminal status — either before this request, ' +
-              'or because a concurrent resolver won the compare-and-swap. The alert is ' +
-              'resolved; this request simply did not perform the transition, so no ' +
-              'alert.resolved event was published for it.',
+              'The alert already reached a terminal status (resolved or dismissed) — ' +
+              'either before this request, or because a concurrent caller won the ' +
+              'compare-and-swap in between. This request did not perform the transition, ' +
+              'so no alert.resolved event was published on its behalf. Re-read the alert ' +
+              'to see which terminal status it landed in.',
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/Error' }

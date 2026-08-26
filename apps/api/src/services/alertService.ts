@@ -266,12 +266,32 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
 export const RESOLVABLE_ALERT_STATUSES = ['active', 'acknowledged', 'suppressed'] as const;
 
 /**
- * The compare-and-swap predicate for resolving one alert. See the note above.
+ * What a resolve path reports when it LOSES the compare-and-swap.
  *
- * This is the SINGLE definition of "this alert is still resolvable", shared by
- * `resolveAlert` and by every route/tool that stamps an alert resolved on its own
- * pipeline (#4094). Building a second copy inline is how the predicate and its
- * compiled-SQL test drifted apart once already.
+ * Deliberately states only what the code can verify — that the row is no longer in
+ * a resolvable status. It does NOT claim "another request resolved it": an empty
+ * `RETURNING` is also what an RLS-invisible write produces, and naming the benign
+ * cause in user-visible text forecloses the one hypothesis worth chasing when the
+ * cause is not benign.
+ */
+export const ALERT_CAS_LOST_MESSAGE =
+  'Alert is no longer resolvable — it already reached a terminal status (resolved or dismissed).';
+
+/**
+ * The compare-and-swap predicate for resolving ONE alert by id. See the note above.
+ *
+ * This is the single definition of "this alert is still resolvable" for every
+ * single-alert resolve path (#4094): `resolveAlert`, both HTTP resolve routes, the
+ * `manage_alerts` AI tool, and the warranty auto-resolve sweep. Building a second
+ * copy inline is how the predicate and its compiled-SQL test drifted apart once
+ * already.
+ *
+ * Two paths deliberately do NOT use this builder because they write many rows at
+ * once and need `inArray(alerts.id, ...)` rather than an id equality — they compose
+ * `RESOLVABLE_ALERT_STATUSES` directly instead:
+ *   - the correlation-group resolve (`routes/alerts/correlations.ts`);
+ *   - the bulk alert action (`routes/alerts/alerts.ts`), which is stricter still —
+ *     it pins each row to the exact status its snapshot saw.
  */
 export function buildResolveAlertCas(alertId: string) {
   return and(

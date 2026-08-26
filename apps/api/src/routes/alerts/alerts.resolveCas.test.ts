@@ -21,11 +21,15 @@ import type { SQL } from 'drizzle-orm';
  *    file for that reason: a mocked-drizzle `where` assertion can only substring-
  *    match column NAMES, which cannot tell `and` from `or` and cannot see the
  *    status list gaining a terminal value. Both of those mutations were verified
- *    to pass green against exactly that style of test (main 8763a3239).
+ *    to pass green against exactly that style of test by the wave-3825 test-
+ *    hardening pass (`8763a3239`) — which is NOT on main, so this file re-proves
+ *    the property for the alert-resolve predicate rather than inheriting it.
  */
-const { dbMock, updateWheres, updateReturns, alertRow } = vi.hoisted(() => {
+const { dbMock, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted(() => {
   const updateWheres: unknown[] = [];
   const updateReturns: unknown[][] = [];
+  // Feeds the post-CAS cooldown lookups (alert rule, then its template).
+  const selectRows: unknown[][] = [];
   const alertRow = {
     id: '11111111-1111-4111-8111-111111111111',
     orgId: 'org-1',
@@ -38,7 +42,7 @@ const { dbMock, updateWheres, updateReturns, alertRow } = vi.hoisted(() => {
   };
   const dbMock = {
     select: () => ({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+      from: () => ({ where: () => ({ limit: () => Promise.resolve(selectRows.shift() ?? []) }) }),
     }),
     update: () => ({
       set: () => ({
@@ -49,7 +53,7 @@ const { dbMock, updateWheres, updateReturns, alertRow } = vi.hoisted(() => {
       }),
     }),
   };
-  return { dbMock, updateWheres, updateReturns, alertRow };
+  return { dbMock, updateWheres, updateReturns, selectRows, alertRow };
 });
 
 const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
@@ -120,6 +124,7 @@ const resolveRequest = () =>
 beforeEach(() => {
   updateWheres.length = 0;
   updateReturns.length = 0;
+  selectRows.length = 0;
   vi.clearAllMocks();
   publishEvent.mockResolvedValue('evt');
   emitAlertStateFeedback.mockResolvedValue(undefined);
@@ -137,7 +142,7 @@ describe('POST /alerts/:id/resolve — the losing caller', () => {
 
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toEqual({
-      error: 'Alert was already resolved or dismissed by another request',
+      error: 'Alert is no longer resolvable — it already reached a terminal status (resolved or dismissed).',
     });
   });
 
@@ -197,6 +202,53 @@ describe('POST /alerts/:id/resolve — the winning caller', () => {
 
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toEqual({ error: 'Cannot resolve a dismissed alert' });
+  });
+});
+
+/**
+ * The winning-caller fixture above carries `ruleId: null, configPolicyId: null`, so
+ * it never reaches the post-CAS cooldown code. Those two branches are the whole
+ * reason the CAS has to gate the fan-out — a loser writing a cooldown suppresses the
+ * next legitimate alert for that rule — so they get their own fixtures rather than
+ * riding on a uniform one (the blind spot that shipped #3975).
+ */
+describe('POST /alerts/:id/resolve — the winner still writes its cooldown', () => {
+  it('sets the legacy rule cooldown from the rule/template override chain', async () => {
+    const legacy = { ...alertRow, ruleId: 'rule-1', status: 'active' };
+    getAlertWithOrgCheck.mockResolvedValue(legacy);
+    selectRows.push([{ id: 'rule-1', templateId: 'tpl-1', overrideSettings: { cooldownMinutes: 42 } }]);
+    selectRows.push([{ id: 'tpl-1', cooldownMinutes: 15 }]);
+    updateReturns.push([{ ...legacy, status: 'resolved' }]);
+
+    const res = await resolveRequest();
+
+    expect(res.status).toBe(200);
+    // 42 (the rule override), not 15 (the template default) — asserting the value
+    // proves the override chain ran, not merely that something was called.
+    expect(setCooldown).toHaveBeenCalledWith('rule-1', 'device-1', 42);
+    expect(markConfigPolicyRuleCooldown).not.toHaveBeenCalled();
+  });
+
+  it('sets the config-policy cooldown from the alert context snapshot', async () => {
+    const cp = { ...alertRow, configPolicyId: 'cp-1', context: { cooldownMinutes: 7 }, status: 'active' };
+    getAlertWithOrgCheck.mockResolvedValue(cp);
+    updateReturns.push([{ ...cp, status: 'resolved' }]);
+
+    const res = await resolveRequest();
+
+    expect(res.status).toBe(200);
+    expect(markConfigPolicyRuleCooldown).toHaveBeenCalledWith('cp-1', 'device-1', 7);
+    expect(setCooldown).not.toHaveBeenCalled();
+  });
+
+  it('writes NEITHER cooldown when the config-policy alert loses the race', async () => {
+    const cp = { ...alertRow, configPolicyId: 'cp-1', context: { cooldownMinutes: 7 }, status: 'active' };
+    getAlertWithOrgCheck.mockResolvedValue(cp);
+    updateReturns.push([]); // CAS matched nothing
+
+    expect((await resolveRequest()).status).toBe(409);
+    expect(markConfigPolicyRuleCooldown).not.toHaveBeenCalled();
+    expect(setCooldown).not.toHaveBeenCalled();
   });
 });
 

@@ -18,7 +18,7 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
-import { buildResolveAlertCas } from '../services/alertService';
+import { ALERT_CAS_LOST_MESSAGE, buildResolveAlertCas } from '../services/alertService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 import { escapeLike } from '../utils/sql';
@@ -1005,10 +1005,7 @@ mobileRoutes.post(
     if (!updated) {
       // Lost the race: another request reached a terminal status first. The
       // cooldown/event/feedback/audit fan-out below belongs to that caller only.
-      return c.json(
-        { error: 'Alert was already resolved or dismissed by another request' },
-        409
-      );
+      return c.json({ error: ALERT_CAS_LOST_MESSAGE }, 409);
     }
 
     try {

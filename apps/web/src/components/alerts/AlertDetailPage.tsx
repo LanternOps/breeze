@@ -190,7 +190,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       // red banner on top of it would frame a benign race as a broken page.
       // Re-fetch instead, so the header shows the resolved state.
       if (err instanceof ActionError && err.status === 409) {
-        await fetchAlert();
+        // `fetchAlert` sets its own error state on failure, but a rejection here
+        // would escape this catch entirely (nothing wraps the recovery path) and
+        // become an unhandled rejection with no feedback for the second failure.
+        await fetchAlert().catch(() => {
+          setError(t('alertDetailPage.failedToFetchAlert'));
+        });
         return;
       }
       if (!(err instanceof ActionError && err.status === 401)) {

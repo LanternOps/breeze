@@ -104,13 +104,41 @@ const cpAlert = (id: string) => ({
   status: 'active',
 });
 
-const cpRule = {
+/**
+ * `checkAutoResolveFromConfigPolicy` forks on `rule.autoResolveConditions`, and the
+ * CAS-outcome gate is duplicated in BOTH arms. A fixture that pins this field to one
+ * value would leave the other arm free to regress with this suite still green — the
+ * uniform-fixture blind spot that shipped #3975 — so the suites below run against
+ * both, and `bothRuleShapes` exists to make forgetting that awkward.
+ */
+type CpRule = {
+  id: string;
+  autoResolve: boolean;
+  autoResolveConditions: unknown;
+  conditions: unknown;
+  cooldownMinutes: number;
+};
+
+const cpRuleInverseTrigger: CpRule = {
   id: 'cp-rule-1',
   autoResolve: true,
   autoResolveConditions: null,
   conditions: { all: [] },
   cooldownMinutes: 30,
 };
+
+const cpRuleExplicitConditions: CpRule = {
+  ...cpRuleInverseTrigger,
+  autoResolveConditions: { all: [{ metric: 'cpu', op: 'lt', value: 50 }] },
+};
+
+const bothRuleShapes: Array<[string, CpRule]> = [
+  ['inverse-trigger branch (autoResolveConditions null)', cpRuleInverseTrigger],
+  ['explicit-conditions branch (autoResolveConditions set)', cpRuleExplicitConditions],
+];
+
+// Kept for the single-shape suites below that are not branch-sensitive.
+const cpRule = cpRuleInverseTrigger;
 
 beforeEach(() => {
   selectQueues.clear();
@@ -124,57 +152,86 @@ beforeEach(() => {
   publishEvent.mockResolvedValue('evt');
 });
 
-describe('checkAutoResolveFromConfigPolicy counts compare-and-swap winners only', () => {
-  it('does not count an alert another resolver already transitioned', async () => {
-    seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
-    // resolveAlert re-reads the policy rule on the winning path only.
-    seed('config_policy_alert_rules', [cpRule], [cpRule]);
-    updateReturns.push([cpAlert('a-win')]); // CAS matched: this sweep won
-    updateReturns.push([]);                 // CAS matched nothing: someone else won
+describe.each(bothRuleShapes)(
+  'checkAutoResolveFromConfigPolicy counts compare-and-swap winners only — %s',
+  (_label, rule) => {
+    it('does not count an alert another resolver already transitioned', async () => {
+      seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
+      // resolveAlert re-reads the policy rule on the winning path only.
+      seed('config_policy_alert_rules', [rule], [rule]);
+      updateReturns.push([cpAlert('a-win')]); // CAS matched: this sweep won
+      updateReturns.push([]);                 // CAS matched nothing: someone else won
 
-    await expect(checkAutoResolveFromConfigPolicy('device-1')).resolves.toBe(1);
+      await expect(checkAutoResolveFromConfigPolicy('device-1')).resolves.toBe(1);
 
-    // Both alerts were attempted — the count is filtered by the CAS outcome, not
-    // by skipping the attempt.
-    expect(updateCount.current).toBe(2);
-  });
+      // Both alerts were attempted — the count is filtered by the CAS outcome, not
+      // by skipping the attempt.
+      expect(updateCount.current).toBe(2);
+    });
 
-  it('publishes alert.resolved once per real transition, not once per attempt', async () => {
-    seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
-    seed('config_policy_alert_rules', [cpRule], [cpRule]);
-    updateReturns.push([cpAlert('a-win')]);
-    updateReturns.push([]);
+    it('publishes alert.resolved once per real transition, not once per attempt', async () => {
+      seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
+      seed('config_policy_alert_rules', [rule], [rule]);
+      updateReturns.push([cpAlert('a-win')]);
+      updateReturns.push([]);
 
-    await checkAutoResolveFromConfigPolicy('device-1');
+      await checkAutoResolveFromConfigPolicy('device-1');
 
-    expect(publishEvent).toHaveBeenCalledTimes(1);
-    expect(publishEvent.mock.calls[0]?.[0]).toBe('alert.resolved');
-  });
+      expect(publishEvent).toHaveBeenCalledTimes(1);
+      expect(publishEvent.mock.calls[0]?.[0]).toBe('alert.resolved');
+    });
 
-  it('writes the config-policy cooldown exactly once for the winner and never for the loser', async () => {
-    seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
-    seed('config_policy_alert_rules', [cpRule], [cpRule]);
-    updateReturns.push([cpAlert('a-win')]);
-    updateReturns.push([]);
+    it('writes the config-policy cooldown exactly once for the winner and never for the loser', async () => {
+      seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
+      seed('config_policy_alert_rules', [rule], [rule]);
+      updateReturns.push([cpAlert('a-win')]);
+      updateReturns.push([]);
 
-    await checkAutoResolveFromConfigPolicy('device-1');
+      await checkAutoResolveFromConfigPolicy('device-1');
 
-    // One write, from inside resolveAlert's winning path. Two would mean the
-    // caller re-added its own duplicate; zero would mean the winner's cooldown
-    // was lost; any write attributable to `a-lose` suppresses a rule that this
-    // sweep never actually resolved.
-    expect(markConfigPolicyRuleCooldown).toHaveBeenCalledTimes(1);
-    expect(markConfigPolicyRuleCooldown).toHaveBeenCalledWith('cp-rule-1', 'device-1', 30);
-  });
+      // One write, from inside resolveAlert's winning path. Two would mean the
+      // caller re-added its own duplicate; zero would mean the winner's cooldown
+      // was lost; any write attributable to `a-lose` suppresses a rule that this
+      // sweep never actually resolved.
+      expect(markConfigPolicyRuleCooldown).toHaveBeenCalledTimes(1);
+      expect(markConfigPolicyRuleCooldown).toHaveBeenCalledWith('cp-rule-1', 'device-1', 30);
+    });
 
-  it('counts every winner when nobody races the sweep', async () => {
-    seed('alerts', [cpAlert('a-1'), cpAlert('a-2')]);
-    seed('config_policy_alert_rules', [cpRule], [cpRule], [cpRule]);
+    it('counts every winner when nobody races the sweep', async () => {
+      seed('alerts', [cpAlert('a-1'), cpAlert('a-2')]);
+      seed('config_policy_alert_rules', [rule], [rule], [rule]);
+      updateReturns.push([cpAlert('a-1')]);
+      updateReturns.push([cpAlert('a-2')]);
+
+      await expect(checkAutoResolveFromConfigPolicy('device-1')).resolves.toBe(2);
+      expect(publishEvent).toHaveBeenCalledTimes(2);
+    });
+  }
+);
+
+describe('checkAutoResolveFromConfigPolicy takes the branch the fixture selects', () => {
+  // Guards the parameterisation above: if both fixtures silently routed through
+  // the same arm, every branch-sensitive assertion would be testing one arm twice.
+  it('evaluates the trigger conditions when autoResolveConditions is null', async () => {
+    seed('alerts', [cpAlert('a-1')]);
+    seed('config_policy_alert_rules', [cpRuleInverseTrigger], [cpRuleInverseTrigger]);
     updateReturns.push([cpAlert('a-1')]);
-    updateReturns.push([cpAlert('a-2')]);
 
-    await expect(checkAutoResolveFromConfigPolicy('device-1')).resolves.toBe(2);
-    expect(publishEvent).toHaveBeenCalledTimes(2);
+    await checkAutoResolveFromConfigPolicy('device-1');
+
+    expect(evaluateConditions).toHaveBeenCalledTimes(1);
+    expect(evaluateAutoResolveConditions).not.toHaveBeenCalled();
+  });
+
+  it('evaluates the explicit auto-resolve conditions when they are set', async () => {
+    seed('alerts', [cpAlert('a-1')]);
+    seed('config_policy_alert_rules', [cpRuleExplicitConditions], [cpRuleExplicitConditions]);
+    updateReturns.push([cpAlert('a-1')]);
+
+    await checkAutoResolveFromConfigPolicy('device-1');
+
+    expect(evaluateAutoResolveConditions).toHaveBeenCalledTimes(1);
+    expect(evaluateConditions).not.toHaveBeenCalled();
   });
 });
 

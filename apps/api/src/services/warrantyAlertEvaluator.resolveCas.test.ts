@@ -20,9 +20,10 @@ import type { SQL } from 'drizzle-orm';
  *  - BEHAVIOUR — of two open warranty alerts on the same device, the second
  *    losing its CAS (empty `RETURNING`) must not add a second `publishEvent`
  *    call — exactly one per real transition, matching the winner.
- *  - COMPILED SQL — same predicate shape as the other three CAS sites; a mocked-
+ *  - COMPILED SQL — same predicate shape as the other four single-alert CAS sites; a mocked-
  *    drizzle substring match on column names cannot distinguish `and` from `or`
- *    or catch a terminal status being admitted into the list (main 8763a3239).
+ *    or catch a terminal status being admitted into the list (the wave-3825
+ *    test-hardening pass, `8763a3239`, which is not on main).
  */
 const { dbMock, selectQueues, updateWheres, updateReturns } = vi.hoisted(() => {
   const selectQueues = new Map<string, unknown[][]>();
@@ -90,12 +91,15 @@ const openAlert = (id: string, status: 'active' | 'acknowledged' | 'suppressed' 
   suppressedUntil: null as Date | null,
 });
 
+const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
 beforeEach(() => {
   selectQueues.clear();
   updateWheres.length = 0;
   updateReturns.length = 0;
   vi.clearAllMocks();
   publishEvent.mockResolvedValue('evt');
+  warnSpy.mockImplementation(() => {});
 });
 
 // Drive autoResolveWarrantyAlerts via evaluateWarrantyAlerts' "warranty now
@@ -130,6 +134,51 @@ describe('autoResolveWarrantyAlerts — mixed CAS outcome across two open alerts
     expect(updateWheres).toHaveLength(2); // both alerts were attempted...
     expect(publishEvent).toHaveBeenCalledTimes(1); // ...but only the winner fanned out
     expect(publishEvent.mock.calls[0]?.[2]).toMatchObject({ alertId: 'alert-win' });
+  });
+
+  it('keeps sweeping after a loss instead of abandoning the rest of the batch', async () => {
+    // The loser is FIRST here on purpose. With it last, `continue` and `return`
+    // are indistinguishable — the sweep is over either way — so a `return` typo
+    // would leave every later alert in the batch silently unresolved with the
+    // suite still green.
+    seed('alerts', [openAlert('alert-lose'), openAlert('alert-win-a'), openAlert('alert-win-b')]);
+    updateReturns.push([]);
+    updateReturns.push([{ id: 'alert-win-a' }]);
+    updateReturns.push([{ id: 'alert-win-b' }]);
+
+    await runAutoResolveSweep();
+
+    expect(updateWheres).toHaveLength(3);
+    expect(publishEvent).toHaveBeenCalledTimes(2);
+    expect(publishEvent.mock.calls.map((call) => (call[2] as { alertId: string }).alertId))
+      .toEqual(['alert-win-a', 'alert-win-b']);
+  });
+
+  it('warns once when the sweep transitions none of its candidates', async () => {
+    // Every CAS missing is the shape an RLS write-policy divergence takes, and
+    // under breeze_app such a write raises no error at all — so a total shortfall
+    // must leave a trace, while ordinary single losses stay silent.
+    seed('alerts', [openAlert('alert-1'), openAlert('alert-2')]);
+    updateReturns.push([]);
+    updateReturns.push([]);
+
+    await runAutoResolveSweep();
+
+    expect(publishEvent).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('transitioned 0 of 2');
+  });
+
+  it('stays silent when at least one candidate really transitioned', async () => {
+    seed('alerts', [openAlert('alert-win'), openAlert('alert-lose')]);
+    updateReturns.push([{ id: 'alert-win' }]);
+    updateReturns.push([]);
+
+    await runAutoResolveSweep();
+
+    // A losing race is expected under load; warning on it would be the noise this
+    // aggregate check exists to avoid.
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
 

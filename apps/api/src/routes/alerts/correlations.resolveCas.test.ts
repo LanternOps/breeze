@@ -22,7 +22,8 @@ import type { SQL } from 'drizzle-orm';
  *    compiled through `PgDialect`, for BOTH the resolve shape (`status IN (...)`)
  *    and the acknowledge shape (`status = 'active'`) — they differ, and a mocked-
  *    drizzle substring match on column names cannot tell either apart from `or`
- *    or from an admitted terminal status (main 8763a3239). drizzle-orm and
+ *    or from an admitted terminal status (the wave-3825 test-hardening pass,
+ *    `8763a3239`, which is not on main). drizzle-orm and
  *    ../../db/schema are REAL in this file for that reason; only the DB
  *    connection module is mocked.
  */
@@ -175,13 +176,23 @@ import { alertCorrelationRoutes } from './correlations';
 const app = new Hono().route('/', alertCorrelationRoutes);
 const dialect = new PgDialect();
 
-const seedGroup = (statusWin: string, statusLose: string) => {
+/**
+ * `reReadRows` is the SECOND `alerts` select — the one `reportUnwrittenAlerts`
+ * issues to work out WHY a member wasn't written. It only runs on a shortfall.
+ * Pass rows carrying a terminal status to model a benign lost race; pass `[]` to
+ * model the row being invisible to this tenant context on re-read, which is the
+ * tenancy bug the exception exists to catch.
+ */
+const seedGroup = (statusWin: string, statusLose: string, reReadRows: unknown[] = []) => {
   selectQueues.clear();
   alertsUpdateWheres.length = 0;
   alertsUpdateReturns.length = 0;
   selectQueues.set('alert_correlation_groups', [[groupRow]]);
   selectQueues.set('alert_correlation_members', [[{ alertId: alertWin.id }, { alertId: alertLose.id }]]);
-  selectQueues.set('alerts', [[{ ...alertWin, status: statusWin }, { ...alertLose, status: statusLose }]]);
+  selectQueues.set('alerts', [
+    [{ ...alertWin, status: statusWin }, { ...alertLose, status: statusLose }],
+    reReadRows,
+  ]);
 };
 
 const resolveGroupRequest = () =>
@@ -216,13 +227,69 @@ describe('POST /correlations/:groupId/resolve — mixed CAS outcome within one g
     expect(emitAlertStateFeedback.mock.calls[0]?.[0]).toMatchObject({ alertId: alertWin.id });
   });
 
-  it('reports the CAS-loser mismatch via captureException rather than pretending it never happened', async () => {
-    seedGroup('active', 'active');
+  it('does NOT page when the re-read shows the member simply lost the race', async () => {
+    // The signal this exception carries is "a tenant-isolation bug may have eaten
+    // a write". Adding the status predicate made an ordinary concurrent resolve
+    // produce the same shortfall, so firing on it would bury the real thing in
+    // routine noise — the detector-fires-for-everything failure mode.
+    seedGroup('active', 'active', [{ id: alertLose.id, status: 'resolved' }]);
+    alertsUpdateReturns.push([{ id: alertWin.id }]);
+
+    await resolveGroupRequest();
+
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('DOES page when the unwritten member is invisible on re-read', async () => {
+    // Selected moments ago, gone now: the row is not terminal, it is unreachable
+    // from this context. That is an RLS scope mismatch, and under breeze_app the
+    // write raised no error to reveal it.
+    seedGroup('active', 'active', []);
     alertsUpdateReturns.push([{ id: alertWin.id }]);
 
     await resolveGroupRequest();
 
     expect(captureException).toHaveBeenCalledTimes(1);
+    expect(String(captureException.mock.calls[0]?.[0])).toContain('does NOT explain');
+  });
+
+  it('DOES page when the unwritten member is still in a mutable status', async () => {
+    // Visible, non-terminal, and yet the CAS skipped it — neither explanation
+    // fits, so the predicate itself is suspect.
+    seedGroup('active', 'active', [{ id: alertLose.id, status: 'active' }]);
+    alertsUpdateReturns.push([{ id: alertWin.id }]);
+
+    await resolveGroupRequest();
+
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent when every member was written', async () => {
+    seedGroup('active', 'active');
+    alertsUpdateReturns.push([{ id: alertWin.id }, { id: alertLose.id }]);
+
+    await resolveGroupRequest();
+
+    expect(captureException).not.toHaveBeenCalled();
+    expect(publishEvent).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('POST /correlations/:groupId/acknowledge — mixed CAS outcome', () => {
+  it('fans out only for the member the UPDATE returned', async () => {
+    // The acknowledge arm has its own status guard (`= 'active'`, not the
+    // three-way resolvable set) and its own event name, so its winner/loser
+    // behaviour is asserted here rather than inferred from the resolve arm.
+    seedGroup('active', 'active', [{ id: alertLose.id, status: 'acknowledged' }]);
+    alertsUpdateReturns.push([{ id: alertWin.id }]);
+
+    const res = await acknowledgeGroupRequest();
+
+    expect(res.status).toBe(200);
+    expect(publishEvent).toHaveBeenCalledTimes(1);
+    expect(publishEvent.mock.calls[0]?.[0]).toBe('alert.acknowledged');
+    expect(publishEvent.mock.calls[0]?.[2]).toMatchObject({ alertId: alertWin.id });
+    expect(captureException).not.toHaveBeenCalled();
   });
 });
 

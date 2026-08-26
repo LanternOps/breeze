@@ -121,7 +121,7 @@ describe('POST /mobile/alerts/:id/resolve — the losing caller', () => {
 
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toEqual({
-      error: 'Alert was already resolved or dismissed by another request',
+      error: 'Alert is no longer resolvable — it already reached a terminal status (resolved or dismissed).',
     });
     expect(publishEvent).not.toHaveBeenCalled();
     expect(setCooldown).not.toHaveBeenCalled();

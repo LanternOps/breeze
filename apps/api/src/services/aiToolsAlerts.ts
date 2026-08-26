@@ -13,7 +13,7 @@ import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
-import { buildResolveAlertCas } from './alertService';
+import { ALERT_CAS_LOST_MESSAGE, buildResolveAlertCas } from './alertService';
 import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { emitAlertStateFeedback } from './mlFeedbackEmitters';
 import {
@@ -224,9 +224,11 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const resolvedAt = new Date();
         const resolutionNote = (input.resolutionNote as string) ?? 'Resolved via AI assistant';
         // Winner-takes-all (#4094), same predicate as `resolveAlert` and the two
-        // HTTP resolve routes. An agent racing a technician (or another agent
-        // step, which wave 3.5c's at-least-once delivery makes likelier) must not
-        // republish `alert.resolved` for a transition it did not perform.
+        // HTTP resolve routes. An agent racing a technician — or racing a retried
+        // or duplicated tool call of its own — must not republish `alert.resolved`
+        // for a transition it did not perform. (At-least-once event delivery,
+        // tracked for wave 3.5c in #4085, is not shipped yet; it will raise the
+        // odds further when it lands, but the race is already reachable today.)
         const resolveWrite = await db
           .update(alerts)
           .set({
@@ -239,9 +241,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           .returning({ id: alerts.id });
 
         if (resolveWrite.length === 0) {
-          return JSON.stringify({
-            error: 'Alert was already resolved or dismissed by another request',
-          });
+          return JSON.stringify({ error: ALERT_CAS_LOST_MESSAGE });
         }
 
         let resolveEventWarning: string | undefined;

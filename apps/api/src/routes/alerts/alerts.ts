@@ -19,7 +19,7 @@ import {
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
-import { buildResolveAlertCas } from '../../services/alertService';
+import { ALERT_CAS_LOST_MESSAGE, buildResolveAlertCas } from '../../services/alertService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
@@ -882,10 +882,7 @@ alertsRoutes.post(
       // event, ML feedback, audit) belongs to the caller that actually performed
       // the transition, so report the conflict instead of a resolution that
       // did not happen.
-      return c.json(
-        { error: 'Alert was already resolved or dismissed by another request' },
-        409
-      );
+      return c.json({ error: ALERT_CAS_LOST_MESSAGE }, 409);
     }
 
     // Set cooldown to prevent immediate re-trigger by the evaluation worker

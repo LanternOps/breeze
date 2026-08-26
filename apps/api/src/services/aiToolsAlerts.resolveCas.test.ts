@@ -7,20 +7,22 @@ import type { SQL } from 'drizzle-orm';
  * predicate as POST /alerts/:id/resolve (`alerts.resolveCas.test.ts`) and
  * `resolveAlert` (`alertService.resolveCasSql.test.ts`). Before this PR the tool
  * did read-status-then-UPDATE-by-id: an AI agent step racing a technician's
- * resolve (or another agent step — wave 3.5c's at-least-once delivery makes this
+ * resolve (or another agent step — at-least-once event delivery, tracked for wave
+ * 3.5c in #4085 and not yet shipped, will make this
  * likelier than a human double-click) both "won" and both published
  * `alert.resolved`.
  *
  * Two kinds of assertion here, deliberately:
  *
  *  - BEHAVIOUR — an empty `RETURNING` (the CAS matched nothing) must produce the
- *    "already resolved or dismissed by another request" error and NO fan-out.
+ *    "no longer resolvable" error and NO fan-out.
  *  - COMPILED SQL — the predicate the handler actually passes to `.where()`,
  *    compiled through `PgDialect`. drizzle-orm and ../db/schema are REAL in this
  *    file for that reason: a mocked-drizzle `where` assertion can only substring-
  *    match column NAMES, which cannot tell `and` from `or` and cannot see the
  *    status list gaining a terminal value. Both mutations were verified to pass
- *    green against exactly that style of test (main 8763a3239).
+ *    green against exactly that style of test (the wave-3825 test-hardening
+ *    pass, `8763a3239`, which is not on main).
  */
 const { dbMock, updateWheres, updateReturns, alertRow } = vi.hoisted(() => {
   const updateWheres: unknown[] = [];
@@ -103,7 +105,7 @@ describe('manage_alerts resolve — the losing caller', () => {
     const result = JSON.parse(await resolve());
 
     expect(result).toEqual({
-      error: 'Alert was already resolved or dismissed by another request',
+      error: 'Alert is no longer resolvable — it already reached a terminal status (resolved or dismissed).',
     });
   });
 
