@@ -233,18 +233,19 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     const triggerConditions = (overrides?.conditions as unknown) ?? template.conditions;
     const result = await evaluateConditions(triggerConditions, alert.deviceId);
 
-    // Auto-resolve if trigger conditions are NO LONGER met
+    // Auto-resolve if trigger conditions are NO LONGER met.
+    // Report what resolveAlert's compare-and-swap actually did: returning a bare
+    // `true` here made every caller that LOST the race look like a resolver, which
+    // is what inflates `checkAllAutoResolve`'s count (#4094).
     if (!result.triggered) {
-      await resolveAlert(alertId, 'Auto-resolved: conditions cleared');
-      return true;
+      return await resolveAlert(alertId, 'Auto-resolved: conditions cleared');
     }
   } else {
     // Evaluate specific auto-resolve conditions
     const result = await evaluateAutoResolveConditions(autoResolveConditions, alert.deviceId);
 
     if (result.shouldResolve) {
-      await resolveAlert(alertId, `Auto-resolved: ${result.reason}`);
-      return true;
+      return await resolveAlert(alertId, `Auto-resolved: ${result.reason}`);
     }
   }
 
@@ -264,7 +265,14 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
  */
 export const RESOLVABLE_ALERT_STATUSES = ['active', 'acknowledged', 'suppressed'] as const;
 
-/** The compare-and-swap predicate for `resolveAlert`. See the note above. */
+/**
+ * The compare-and-swap predicate for resolving one alert. See the note above.
+ *
+ * This is the SINGLE definition of "this alert is still resolvable", shared by
+ * `resolveAlert` and by every route/tool that stamps an alert resolved on its own
+ * pipeline (#4094). Building a second copy inline is how the predicate and its
+ * compiled-SQL test drifted apart once already.
+ */
 export function buildResolveAlertCas(alertId: string) {
   return and(
     eq(alerts.id, alertId),
@@ -299,10 +307,7 @@ export async function resolveAlert(
       resolvedBy: resolvedBy ?? null,
       resolutionNote: resolutionNote ?? null
     })
-    .where(and(
-      eq(alerts.id, alertId),
-      inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
-    ))
+    .where(buildResolveAlertCas(alertId))
     .returning();
 
   // Already resolved by someone else (or gone). Not an error — just not ours.
@@ -808,6 +813,15 @@ export async function checkAutoResolveFromConfigPolicy(deviceId: string): Promis
 
   let resolvedCount = 0;
 
+  // Both branches below count — and previously also wrote the config-policy
+  // cooldown — only on `resolveAlert`'s compare-and-swap WINNER (#4094). Doing it
+  // unconditionally meant a caller that lost the race to the monitor worker or a
+  // policy.compliant redelivery still reported a resolution it did not perform and
+  // still stamped a cooldown, suppressing the next legitimate alert for that rule.
+  // The explicit cooldown write is gone rather than merely gated: on the winning
+  // path `resolveAlert` already calls `markConfigPolicyRuleCooldown` with the same
+  // rule id, device and `cooldownMinutes` (see its config-policy branch), so it was
+  // a duplicate of a write the winner performs anyway.
   for (const alert of activeAlerts) {
     try {
       const rule = ruleMap.get(alert.configPolicyId!);
@@ -827,18 +841,14 @@ export async function checkAutoResolveFromConfigPolicy(deviceId: string): Promis
           alert.deviceId
         );
 
-        if (result.shouldResolve) {
-          await resolveAlert(alert.id, `Auto-resolved: ${result.reason}`);
-          await markConfigPolicyRuleCooldown(rule.id, alert.deviceId, rule.cooldownMinutes);
+        if (result.shouldResolve && await resolveAlert(alert.id, `Auto-resolved: ${result.reason}`)) {
           resolvedCount++;
         }
       } else {
         // No specific auto-resolve conditions; use inverse of trigger conditions
         const result = await evaluateConditions(rule.conditions, alert.deviceId);
 
-        if (!result.triggered) {
-          await resolveAlert(alert.id, 'Auto-resolved: conditions cleared');
-          await markConfigPolicyRuleCooldown(rule.id, alert.deviceId, rule.cooldownMinutes);
+        if (!result.triggered && await resolveAlert(alert.id, 'Auto-resolved: conditions cleared')) {
           resolvedCount++;
         }
       }

@@ -16,6 +16,7 @@ import {
   deviceGroupMemberships,
 } from '../db/schema';
 import { eq, and, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { buildResolveAlertCas } from './alertService';
 import { publishEvent } from './eventBus';
 
 interface WarrantyAlertSettings {
@@ -327,14 +328,21 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
     );
 
   for (const alert of openAlerts) {
-    await db
+    // Winner-takes-all (#4094): the status predicate, not the read above, decides
+    // whether this evaluator performed the transition. Updating by id alone let a
+    // technician's resolve and this sweep both publish `alert.resolved` for one
+    // real transition.
+    const written = await db
       .update(alerts)
       .set({
         status: 'resolved',
         resolvedAt: new Date(),
         resolutionNote: 'Auto-resolved: warranty no longer expiring within threshold',
       })
-      .where(eq(alerts.id, alert.id));
+      .where(buildResolveAlertCas(alert.id))
+      .returning({ id: alerts.id });
+
+    if (written.length === 0) continue;
 
     await publishEvent(
       'alert.resolved',

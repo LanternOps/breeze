@@ -184,6 +184,15 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       await fetchAlert();
     } catch (err) {
       handleActionError(err, t('alertDetailPage.failedToResolveAlert'));
+      // 409 = another technician (or the auto-resolve sweep) won the
+      // compare-and-swap; the alert IS resolved, this request just didn't do it
+      // (#4094). runAction already toasted the server's reason, so a persistent
+      // red banner on top of it would frame a benign race as a broken page.
+      // Re-fetch instead, so the header shows the resolved state.
+      if (err instanceof ActionError && err.status === 409) {
+        await fetchAlert();
+        return;
+      }
       if (!(err instanceof ActionError && err.status === 401)) {
         setError(err instanceof Error ? err.message : t('alertDetailPage.failedToResolveAlert'));
       }

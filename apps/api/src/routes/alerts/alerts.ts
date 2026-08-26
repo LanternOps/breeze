@@ -19,6 +19,7 @@ import {
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
+import { buildResolveAlertCas } from '../../services/alertService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
@@ -849,14 +850,22 @@ alertsRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // Fast path with a specific message. It is NOT the concurrency control — the
+    // compare-and-swap below is. Two techs on the same alert both clear this check.
     if (alert.status === 'resolved') {
-      return c.json({ error: 'Alert is already resolved' }, 400);
+      return c.json({ error: 'Alert is already resolved' }, 409);
     }
     if (alert.status === 'dismissed') {
       return c.json({ error: 'Cannot resolve a dismissed alert' }, 400);
     }
 
     const resolvedAt = new Date();
+    // Winner-takes-all (#4094). `buildResolveAlertCas` is the SAME predicate
+    // `resolveAlert` uses, so this route cannot drift from the service guarantee:
+    // the status predicate, not the read above, decides who transitioned the row.
+    // Updating by id alone let both callers "win" and both run the fan-out below —
+    // duplicate `alert.resolved` publishes cancel escalations twice and hand the
+    // '*' automation subscriber the same event twice.
     const [updated] = await db
       .update(alerts)
       .set({
@@ -865,10 +874,18 @@ alertsRoutes.post(
         resolvedBy: auth.user.id,
         resolutionNote: data.note
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildResolveAlertCas(alertId))
       .returning();
     if (!updated) {
-      return c.json({ error: 'Failed to resolve alert' }, 500);
+      // The CAS matched nothing between the read above and this write: another
+      // request reached a terminal status first. Everything below (cooldown,
+      // event, ML feedback, audit) belongs to the caller that actually performed
+      // the transition, so report the conflict instead of a resolution that
+      // did not happen.
+      return c.json(
+        { error: 'Alert was already resolved or dismissed by another request' },
+        409
+      );
     }
 
     // Set cooldown to prevent immediate re-trigger by the evaluation worker

@@ -2806,6 +2806,26 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                 schema: { $ref: '#/components/schemas/Alert' }
               }
             }
+          },
+          '400': {
+            description: 'Alert is dismissed and cannot be resolved',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
+              }
+            }
+          },
+          '409': {
+            description:
+              'Alert already reached a terminal status — either before this request, ' +
+              'or because a concurrent resolver won the compare-and-swap. The alert is ' +
+              'resolved; this request simply did not perform the transition, so no ' +
+              'alert.resolved event was published for it.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
+              }
+            }
           }
         }
       }

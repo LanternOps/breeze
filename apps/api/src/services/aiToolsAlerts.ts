@@ -13,6 +13,7 @@ import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
+import { buildResolveAlertCas } from './alertService';
 import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { emitAlertStateFeedback } from './mlFeedbackEmitters';
 import {
@@ -210,7 +211,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
         // Mirror POST /alerts/:id/resolve: already-resolved is a no-op error and
         // dismissed is terminal (resolving it would let synthetic evaluators
-        // re-create the alert the user permanently dismissed).
+        // re-create the alert the user permanently dismissed). Like the route's,
+        // this read is a fast path with a specific message, NOT the concurrency
+        // control — the compare-and-swap below is.
         if (alert.status === 'resolved') {
           return JSON.stringify({ error: 'Alert is already resolved' });
         }
@@ -220,7 +223,11 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
         const resolvedAt = new Date();
         const resolutionNote = (input.resolutionNote as string) ?? 'Resolved via AI assistant';
-        await db
+        // Winner-takes-all (#4094), same predicate as `resolveAlert` and the two
+        // HTTP resolve routes. An agent racing a technician (or another agent
+        // step, which wave 3.5c's at-least-once delivery makes likelier) must not
+        // republish `alert.resolved` for a transition it did not perform.
+        const resolveWrite = await db
           .update(alerts)
           .set({
             status: 'resolved',
@@ -228,7 +235,14 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             resolvedBy: auth.user.id,
             resolutionNote
           })
-          .where(eq(alerts.id, input.alertId as string));
+          .where(buildResolveAlertCas(input.alertId as string))
+          .returning({ id: alerts.id });
+
+        if (resolveWrite.length === 0) {
+          return JSON.stringify({
+            error: 'Alert was already resolved or dismissed by another request',
+          });
+        }
 
         let resolveEventWarning: string | undefined;
         try {
