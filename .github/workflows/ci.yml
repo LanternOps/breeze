@@ -174,6 +174,26 @@ jobs:
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
 
+      # Timezone-correctness regression gate (#4046): GitHub-hosted runners
+      # default to UTC, and nothing else in this job or in vitest.config.ts
+      # overrides that. A test asserting timezone-correcting behavior (e.g.
+      # comparing an offsetless-timestamp-derived value against a UTC epoch)
+      # is dormant by construction under UTC — the assertion can collapse to
+      # `0 === 0` and stay green forever while the underlying conversion is
+      # missing or wrong. That is exactly how #4018's TZ bug shipped past
+      # 25,000+ green tests. Re-run just the auth/SSO/MFA/passkey suites
+      # (vitest.config.tz.ts) under a fixed non-UTC zone so a regression of
+      # that shape fails here instead of passing vacuously — not the full
+      # suite a second time, since only timestamp/timezone arithmetic is
+      # offset-sensitive. TZ is set here, at the step level, before the Node
+      # process starts: assigning process.env.TZ from inside a test file has
+      # no effect, because Node/V8 cache the resolved zone at first Date/Intl
+      # use within a process.
+      - name: Run API tests (auth/SSO, pinned non-UTC TZ)
+        env:
+          TZ: America/Denver
+        run: pnpm --filter=@breeze/api test:tz
+
       - name: Run load-test static contract tests
         run: pnpm test:load-static
 
