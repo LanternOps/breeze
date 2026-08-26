@@ -69,7 +69,7 @@ export async function consumePamReconciliationRateLimit(
 ): Promise<RateLimitResult>;
 ```
 
-- [ ] **Step 1: Write resolver service RED tests**
+- [x] **Step 1: Write resolver service RED tests**
 
 Add unit tests that feed a deterministic row seam and prove this precedence for each request-order-preserving candidate:
 
@@ -86,7 +86,7 @@ same generation + exact cleanup/cleanup binding -> bound(commandId)
 
 Assert no result or command identifier is exposed for a foreign organization/device/agent.
 
-- [ ] **Step 2: Run the resolver service test and verify RED**
+- [x] **Step 2: Run the resolver service test and verify RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamReconciliationBinding.test.ts
@@ -94,13 +94,13 @@ pnpm --filter @breeze/api exec vitest run src/services/pamReconciliationBinding.
 
 Expected: FAIL because the service and types do not exist.
 
-- [ ] **Step 3: Implement the single-read resolver**
+- [x] **Step 3: Implement the single-read resolver**
 
 Use one parameterized SQL statement with `jsonb_to_recordset`, carrying an ordinal so output order is stable. Join candidates to `pam_actuations` only through `devices` constrained by all of `agent_id`, `device_id`, and `org_id`; compute lower-generation `stale` before the observation join; inspect `pam_actuation_results` only for owned same-generation rows; and return `bound` only when the exact `current_command_id` joins a same-device `device_commands` row whose `target_role='agent'` and type matches desired state.
 
 Do not lock rows and do not mutate state. Convert every missing join or contradictory value to `unresolved`.
 
-- [ ] **Step 4: Write route RED tests**
+- [x] **Step 4: Write route RED tests**
 
 Define the strict request schema:
 
@@ -117,7 +117,7 @@ const pamReconciliationBindingRequestSchema = z.object({
 
 Test primary-agent success, watchdog refusal, malformed version/UUID/generation, duplicate keys, 101 candidates, `Content-Length > 32768`, per-device rate exhaustion, and a tenant/device drain 403. Assert the rate key derives only from authenticated `deviceId`.
 
-- [ ] **Step 5: Run the route tests and verify RED**
+- [x] **Step 5: Run the route tests and verify RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/agents/pamReconciliation.test.ts src/middleware/agentAuth.test.ts
@@ -125,7 +125,7 @@ pnpm --filter @breeze/api exec vitest run src/routes/agents/pamReconciliation.te
 
 Expected: FAIL because the route is absent.
 
-- [ ] **Step 6: Implement and mount the route**
+- [x] **Step 6: Implement and mount the route**
 
 Create `POST /:id/pam/reconciliation-bindings`, apply `requireAgentRole`, and check the 32 KiB `Content-Length` before Zod parsing. Put the exact `pam:reconciliation:device:<authenticated-device-id>` 120/60-second budget in `pamReconciliationRateLimit.ts`; this route and Task 2's terminal-result seam must both call that one exported function. Return:
 
@@ -138,7 +138,7 @@ Create `POST /:id/pam/reconciliation-bindings`, apply `requireAgentRole`, and ch
 
 Mount `pamReconciliationRoutes` after `commandsRoutes` in `routes/agents/index.ts`. Do not add `pam` to either drain allowlist; add a drain-path test that pins the resulting 403. Leave the route on the fallback audit surface and pin its authenticated route coverage in the route test.
 
-- [ ] **Step 7: Write and run the two-tenant real-Postgres gate**
+- [x] **Step 7: Write and run the two-tenant real-Postgres gate**
 
 Create two orgs, devices, agents, PAM actuations, commands, and observations. Prove exact `bound`, `duplicate`, `stale`, the cleanup generation-bump/null-command window as `unresolved`, watchdog/wrong-role/wrong-type refusal, and foreign actuation guesses returning `unresolved` with no writes.
 
@@ -148,7 +148,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: PASS with the file executed, not skipped.
 
-- [ ] **Step 8: Commit the resolver checkpoint**
+- [x] **Step 8: Commit the resolver checkpoint**
 
 ```bash
 git add apps/api/src/services/pamReconciliationBinding.ts apps/api/src/services/pamReconciliationBinding.test.ts apps/api/src/services/pamReconciliationRateLimit.ts apps/api/src/routes/agents/pamReconciliation.ts apps/api/src/routes/agents/pamReconciliation.test.ts apps/api/src/routes/agents/index.ts apps/api/src/middleware/agentAuth.test.ts apps/api/src/__tests__/integration/pamReconciliationBinding.integration.test.ts
@@ -489,7 +489,7 @@ git commit -m "docs(pam): expose reconciliation recovery state"
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamReconciliationBinding.test.ts src/routes/agents/pamReconciliation.test.ts src/services/commandResultHandlers.test.ts src/routes/agents/commands.test.ts src/routes/agentWs.test.ts src/routes/agents/schemas.test.ts src/routes/agents/schemas.heartbeatTolerance.test.ts src/routes/agents/heartbeat.test.ts
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamReconciliationBinding.integration.test.ts src/__tests__/integration/pamActuationResults.integration.test.ts
-NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api typecheck
+NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 ```
 
 Expected: all named files execute and pass; typecheck passes.

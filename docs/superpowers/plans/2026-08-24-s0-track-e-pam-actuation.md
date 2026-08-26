@@ -232,7 +232,7 @@ Extend `intentOutboxPublisher.ts` to discriminate the XOR parent and enqueue eit
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamActuationLifecycle.test.ts src/jobs/pamActuationWorker.test.ts src/jobs/intentOutboxPublisher.test.ts
-NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api typecheck
+NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 ```
 
 Expected: all focused tests pass, including duplicate delivery and queue-outside-context assertions.
@@ -459,7 +459,7 @@ Register `pam_apply_v2` and `pam_cleanup_v2` handlers that delegate to the manag
 ```bash
 cd agent && go test -race ./internal/pamlifetime ./internal/heartbeat/...
 pnpm --filter @breeze/api exec vitest run src/routes/agents/heartbeat.test.ts
-NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api typecheck
+NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 ```
 
 Expected: all table/race tests pass and old-agent omission remains compatible.
@@ -650,7 +650,7 @@ The harness calculates p95 and maximum from durable cleanup receipt to accepted 
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamActuationLifecycle.integration.test.ts src/__tests__/integration/pamActuationTransitions.integration.test.ts src/__tests__/integration/pamActuationResults.integration.test.ts src/__tests__/integration/pamActuationFailureMatrix.integration.test.ts
 pnpm --filter @breeze/api exec vitest run --config vitest.config.rls.ts src/__tests__/integration/rls-coverage.integration.test.ts
 pnpm --filter @breeze/api test
-NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api typecheck
+NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 cd agent && go test -race ./...
 ```
 
