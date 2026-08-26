@@ -192,8 +192,14 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     const { getRedis } = await import('../../services');
     const redis = getRedis();
     if (redis) {
+      // Also flush the #4067 link-ceremony buckets/records: real Redis
+      // persists across test files, and the per-IP confirm bucket (10/5min)
+      // would start 429ing repeated local runs.
       const keys = await redis.keys('sso:login:*');
-      if (keys.length > 0) await redis.del(...keys);
+      const linkKeys = await redis.keys('ssolink:*');
+      const pendingKeys = await redis.keys('sso:pendinglink:*');
+      const all = [...keys, ...linkKeys, ...pendingKeys];
+      if (all.length > 0) await redis.del(...all);
     }
     app = new Hono();
     app.route('/sso', ssoRoutes);
@@ -388,7 +394,10 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     if (!passwordUser) throw new Error('failed to create password-holding user fixture');
     await assignUserToPartner(passwordUser.id, partner.id, role.id, 'all');
 
-    // (a) Login-path callback asserting V's email → sso_link_required.
+    // (a) Login-path callback asserting V's email → never auto-linked. Since
+    // #4067 this parks a pending link and routes into the connect ceremony
+    // instead of the sso_link_required dead end; this test keeps walking the
+    // ORIGINAL Profile → Security path, which remains fully supported.
     const firstLogin = await initiatePartnerLogin(app, partner.id);
     vi.mocked(verifyIdTokenSignature).mockResolvedValue(idClaimsFor('external-sub-v', passwordUser.email, firstLogin.nonce));
     vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-sub-v', email: passwordUser.email, name: 'V Tech' });
@@ -397,7 +406,14 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       headers: { cookie: firstLogin.cookiePair },
     });
     expect(firstCallback.status).toBe(302);
-    expect(firstCallback.headers.get('location')).toContain('/login?error=sso_link_required');
+    expect(firstCallback.headers.get('location')).toBe('/auth/connect-sso');
+    // No identity row was created by the bounce.
+    const [premature] = await db
+      .select()
+      .from(userSsoIdentities)
+      .where(eq(userSsoIdentities.providerId, provider.id))
+      .limit(1);
+    expect(premature).toBeUndefined();
 
     // (b) Authenticated POST /sso/link/start/:providerId as V (mfa:true in
     // the test token, since requireMfa() gates the link-start route).
@@ -489,6 +505,109 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     expect(secondPayload.sub).toBe(passwordUser.id);
     expect(secondPayload.partnerId).toBe(partner.id);
     expect(secondPayload.orgId).toBeNull();
+  });
+
+  it('link-on-first-SSO-login (#4067): the connect ceremony links inline via password confirm, even under enforce_sso', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const password = 'CeremonyPass123!';
+    const user = await createUser({
+      partnerId: partner.id,
+      email: `w-${Date.now()}@example.com`,
+      name: 'W Tech',
+      password,
+    });
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    // enforce_sso=true is the whole point: pre-#4067 this configuration
+    // hard-locked every unlinked password-holding user (the banner told them
+    // to password-login, which ssoPolicy forbids tenant-wide). The ceremony's
+    // password check is exempt because it runs downstream of the verified
+    // IdP assertion.
+    const provider = await createPartnerAxisProvider(partner.id, { enforceSSO: true });
+
+    // (a) SSO round-trip: the callback matches W's email, refuses to
+    // auto-link (#2183 guard intact), parks the pending link, binds the
+    // ceremony to this browser via the HttpOnly cookie, and redirects to the
+    // connect page — no token minted, no identity row created.
+    const first = await initiatePartnerLogin(app, partner.id);
+    vi.mocked(verifyIdTokenSignature).mockResolvedValue(idClaimsFor('external-sub-w', user.email, first.nonce));
+    vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-sub-w', email: user.email, name: 'W Tech' });
+
+    const cbRes = await app.request(`/sso/callback?code=idp-auth-code&state=${first.state}`, {
+      headers: { cookie: first.cookiePair },
+    });
+    expect(cbRes.status).toBe(302);
+    expect(cbRes.headers.get('location')).toBe('/auth/connect-sso');
+    const linkCookieHeader = cbRes.headers.getSetCookie().find((v) => v.startsWith('breeze_sso_pending_link='));
+    expect(linkCookieHeader).toBeTruthy();
+    expect(linkCookieHeader).toContain('HttpOnly');
+    const linkCookie = extractCookiePair(linkCookieHeader!);
+
+    let identities = await db.select().from(userSsoIdentities).where(eq(userSsoIdentities.providerId, provider.id));
+    expect(identities).toHaveLength(0);
+
+    // (b) The connect page describes the ceremony from the cookie alone.
+    const pendingRes = await app.request('/sso/link/pending', { headers: { cookie: linkCookie } });
+    expect(pendingRes.status).toBe(200);
+    expect(await pendingRes.json()).toMatchObject({ email: user.email, providerName: 'Partner IdP' });
+
+    // ...and refuses without the cookie (a forwarded URL has no ceremony).
+    const noCookieRes = await app.request('/sso/link/pending');
+    expect(noCookieRes.status).toBe(404);
+
+    // (c) Wrong password → generic 401; the ceremony survives for a retry.
+    const wrongRes = await app.request('/sso/link/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: linkCookie },
+      body: JSON.stringify({ password: 'not-the-password' }),
+    });
+    expect(wrongRes.status).toBe(401);
+    identities = await db.select().from(userSsoIdentities).where(eq(userSsoIdentities.providerId, provider.id));
+    expect(identities).toHaveLength(0);
+
+    // (d) Correct password → the link is created and the login completes
+    // with a real SSO-style mint (refresh cookie + access token + relay).
+    const confirmRes = await app.request('/sso/link/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: linkCookie },
+      body: JSON.stringify({ password }),
+    });
+    expect(confirmRes.status).toBe(200);
+    const confirmBody = await confirmRes.json();
+    expect(confirmBody.mfaRequired).toBe(false);
+    expect(confirmBody.tokens?.accessToken).toBeTruthy();
+    expect(confirmBody.redirectPath).toBe('/');
+    const claims = decodeJwt(confirmBody.tokens.accessToken);
+    expect(claims.sub).toBe(user.id);
+    expect(claims.scope).toBe('partner');
+    expect(claims.partnerId).toBe(partner.id);
+    expect(claims.orgId).toBeNull();
+    expect(confirmRes.headers.getSetCookie().some((v) => v.includes('breeze_refresh_token='))).toBe(true);
+
+    identities = await db.select().from(userSsoIdentities).where(eq(userSsoIdentities.providerId, provider.id));
+    expect(identities).toHaveLength(1);
+    expect(identities[0]?.userId).toBe(user.id);
+    expect(identities[0]?.externalId).toBe('external-sub-w');
+
+    // (e) Single-use: replaying the confirm with the same cookie fails.
+    const replayRes = await app.request('/sso/link/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: linkCookie },
+      body: JSON.stringify({ password }),
+    });
+    expect(replayRes.status).toBe(401);
+
+    // (f) The next SSO login resolves through the now-linked identity and
+    // completes without any ceremony.
+    const second = await initiatePartnerLogin(app, partner.id);
+    vi.mocked(verifyIdTokenSignature).mockResolvedValue(idClaimsFor('external-sub-w', user.email, second.nonce));
+    vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-sub-w', email: user.email, name: 'W Tech' });
+    const cb2 = await app.request(`/sso/callback?code=idp-auth-code&state=${second.state}`, {
+      headers: { cookie: second.cookiePair },
+    });
+    expect(cb2.status).toBe(302);
+    expect(cb2.headers.get('location')).toContain('#ssoCode=');
   });
 
   it('org-axis callback: full login succeeds and mints a scope:organization token (regression lock for both axes)', async () => {
