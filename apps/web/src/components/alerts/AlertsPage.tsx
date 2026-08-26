@@ -288,6 +288,16 @@ export default function AlertsPage() {
     } catch (err) {
       if (!(err instanceof ActionError)) {
         showToast({ message: t('alertsPage.failedToResolveAlert'), type: 'error' });
+        return;
+      }
+      // 409 = another technician (or the auto-resolve sweep) won the
+      // compare-and-swap; the alert IS resolved, this request just didn't do it
+      // (#4094). runAction already toasted the server's reason. Refresh so the
+      // row stops showing a stale open status — otherwise the list keeps
+      // offering Resolve on an alert that is already finished.
+      if (err.status === 409) {
+        handleCloseDetail();
+        fetchAlerts();
       }
     } finally {
       setSubmitting(false);
