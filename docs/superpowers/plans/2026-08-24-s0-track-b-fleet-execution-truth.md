@@ -1,3 +1,7 @@
+---
+tracking_issue: https://github.com/LanternOps/breeze/issues/4060
+---
+
 # S0 Track B Fleet and Execution Truth Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -31,7 +35,7 @@
 - An inventory count collapse is rejected as `rejected_count_collapse` only when the prior accepted count is at least 50, the new claimed-complete count is below 10% of that count, and the reported source set has not changed.
 - Absence resolution uses server ordering: an accepted complete observation is eligible only when its `receivedAt` is later than the finding's `detectedAt` and it remains the device's latest accepted observation. Agent `observedAt` is evidence, not ordering authority.
 - Non-empty legacy inventory can refresh the visible projection only until the first accepted v2 observation. Later legacy reports remain evidence but cannot downgrade the v2 last-known-good projection. A legacy empty report always retains visible inventory.
-- The provisional migration names in Tasks 5, 9, and 12 must be reverified at each task's execution against the then-current `apps/api/migrations/` listing and `scripts/check-migration-naming.sh`. If the lexical order has changed, choose a later valid date/name and update every plan-listed path and test fixture in that task before writing RED; never rename or edit a shipped migration.
+- This replacement branch uses the verified unshipped migration names `2026-09-12-a-agent-health-observations.sql`, `2026-09-12-b-automation-action-results.sql`, and `2026-09-12-c-software-inventory-observations.sql`. Reverify them with `scripts/check-migration-naming.sh` before merge; never rename or edit a shipped migration.
 - Every new tenant table enables and forces RLS in its creation migration and is registered in organization/device cascade, device-org restamp, RLS coverage, and tenant export policy as applicable. JSON/JSONB evidence is `excludedOpen`.
 - Immutable observation rows deny UPDATE but continue to allow erasure/cascade DELETE; do not add them to `AUDIT_ADMIN_REQUIRED_TABLES` unless DELETE itself is explicitly prohibited.
 - Hot child inserts lock the authenticated device `FOR KEY SHARE` in a short transaction. Do not interleave a `devices` update in that transaction.
@@ -326,7 +330,7 @@ git commit -m "fix(api): make heartbeat authoritative for reachability"
 - Modify: `packages/shared/src/types/index.ts`
 - Create: `apps/api/src/db/schema/agentHealth.ts`
 - Modify: `apps/api/src/db/schema/index.ts`
-- Create, subject to the execution-time naming gate: `apps/api/migrations/2026-09-07-agent-health-observations.sql`
+- Create: `apps/api/migrations/2026-09-12-a-agent-health-observations.sql`
 - Modify: `apps/api/src/routes/agents/schemas.ts`
 - Modify: `apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts`
 - Create: `apps/api/src/services/agentHealthObservations.ts`
@@ -354,7 +358,7 @@ export async function recordAgentHealthObservation(input: {
 
 - [ ] **Step 1: Reverify the migration filename, then write parser RED tests**
 
-List the current migration tail and run `bash scripts/check-migration-naming.sh`. The verified current tail is `2026-09-06`; keep `2026-09-07-agent-health-observations.sql` only if it still sorts after every dependency. Test old omission, current unversioned `healthStatus`, valid v1, mismatched optional wire device ID, unknown version, and malformed components. Every unsupported health case must leave the otherwise valid heartbeat accepted.
+Run `bash scripts/check-migration-naming.sh`; the verified replacement-branch chronology reserves `2026-09-12-a-agent-health-observations.sql` after shipped main migrations through `2026-09-10`. Test old omission, current unversioned `healthStatus`, valid v1, mismatched optional wire device ID, unknown version, and malformed components. Every unsupported health case must leave the otherwise valid heartbeat accepted.
 
 - [ ] **Step 2: Write service and real-PostgreSQL RED tests**
 
@@ -381,7 +385,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 pnpm --filter @breeze/api exec vitest run --config vitest.config.rls-coverage.ts src/__tests__/integration/rls-coverage.integration.test.ts
 bash scripts/check-migration-naming.sh
 pnpm db:check-drift
-git add packages/shared/src/types/agentHealth.ts packages/shared/src/types/index.ts apps/api/src/db/schema/agentHealth.ts apps/api/src/db/schema/index.ts apps/api/migrations/2026-09-07-agent-health-observations.sql apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts apps/api/src/services/agentHealthObservations.ts apps/api/src/services/agentHealthObservations.test.ts apps/api/src/__tests__/integration/agentHealthObservations.integration.test.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantCascade.test.ts apps/api/src/extensions/tenancyRegistry.test.ts apps/api/src/db/ensureAppRole.ts
+git add packages/shared/src/types/agentHealth.ts packages/shared/src/types/index.ts apps/api/src/db/schema/agentHealth.ts apps/api/src/db/schema/index.ts apps/api/migrations/2026-09-12-a-agent-health-observations.sql apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts apps/api/src/services/agentHealthObservations.ts apps/api/src/services/agentHealthObservations.test.ts apps/api/src/__tests__/integration/agentHealthObservations.integration.test.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantCascade.test.ts apps/api/src/extensions/tenancyRegistry.test.ts apps/api/src/db/ensureAppRole.ts
 git commit -m "fix(db): persist versioned agent health observations"
 ```
 
@@ -440,7 +444,7 @@ The following current-state corrections override narrower file lists or interfac
 
 - Task 7 also changes `scriptExecution.test.ts`, `multi-tenant-isolation.test.ts`, and `openapi.ts`. Normalize duplicate requested IDs by first occurrence and return one ordered target result per distinct ID. Gate in oracle-safe order: missing/inaccessible, site, script-org, OS, decommissioned, maintenance. Zero admission is a valid rejected admission, not a global error. Route audit occurs only when at least one target is admitted; mobile/remediation locate results by requested device ID and mutate nothing on zero admission.
 - Task 8 also migrates `ScriptTestRunner`, `deviceActions`, `DevicesPage`, `DeviceDetailPage`, their tests, and locale parity. All consumers parse `ScriptAdmissionResult`; only `ScriptTestRunner` polls a real admitted execution to terminal state. A rejected 201 is never toasted or rendered as success.
-- Task 9 uses the execution-time-verified migration name `2026-09-08-automation-action-results.sql` after the committed `2026-09-07` health migration. Persist `terminalSource` plus `terminalIsProvisional`; only a reaper timeout is replaceable by later guarded real evidence. Seed derives org ownership under a device `FOR KEY SHARE` lock. Reconciliation locks the run `FOR UPDATE`, recomputes rather than increments, preserves legacy zero-action runs, and publishes a terminal event only on the effective parent CAS.
+- Task 9 uses the verified replacement-branch migration name `2026-09-12-b-automation-action-results.sql` after `2026-09-12-a-agent-health-observations.sql`. Persist `terminalSource` plus `terminalIsProvisional`; only a reaper timeout is replaceable by later guarded real evidence. Seed derives org ownership under a device `FOR KEY SHARE` lock. Reconciliation locks the run `FOR UPDATE`, recomputes rather than increments, preserves legacy zero-action runs, and publishes a terminal event only on the effective parent CAS.
 - Task 10 also changes config-policy runtime tests, `softwareDeployment.ts` and its tests, and `automationWorker.ts`/tests. Software fanout returns an exact per-device `deploymentResultId`; mixed-action batching retains original normalized indexes. Ordinary and config-policy runs seed before dispatch. The worker must not hold a long ambient system transaction around the new short action transactions.
 - Task 11 also changes `agentWs.test.ts`, `software.ts`, and `software.test.ts`. HTTP and WS share a guarded command-to-action mapping and invoke it after an effective command CAS even when result validation later rejects the frame. Script/software handlers return the effective transitioned row ID; cancellation and every reaper reconcile only returned/guarded source changes. Direct WS and queued software paths are both covered.
 
@@ -548,7 +552,7 @@ git commit -m "fix(web): distinguish script admission from completion"
 
 **Files:**
 - Modify: `apps/api/src/db/schema/automations.ts`
-- Create, subject to the execution-time naming gate: `apps/api/migrations/2026-08-24-s0-b2-automation-action-results.sql`
+- Create: `apps/api/migrations/2026-09-12-b-automation-action-results.sql`
 - Create: `apps/api/src/services/automationActionResults.ts`
 - Create: `apps/api/src/services/automationActionResults.test.ts`
 - Create: `apps/api/src/__tests__/integration/automationActionResults.integration.test.ts`
@@ -728,7 +732,7 @@ git commit -m "fix(api): reconcile automation from terminal evidence"
 - Modify: `packages/shared/src/types/index.ts`
 - Modify: `apps/api/src/db/schema/software.ts`
 - Modify: `apps/api/src/db/schema/vulnerabilityManagement.ts`
-- Create, subject to the execution-time naming gate: `apps/api/migrations/2026-08-24-s0-b3-software-inventory-observations.sql`
+- Create: `apps/api/migrations/2026-09-12-c-software-inventory-observations.sql`
 - Modify: `apps/api/src/routes/agents/schemas.ts`
 - Modify: `apps/api/src/routes/agents/inventory.ts`
 - Modify: `apps/api/src/routes/agents/inventory.test.ts`
