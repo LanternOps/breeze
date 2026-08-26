@@ -122,12 +122,18 @@ function editionWithheldDetail(args: EditionWithheldContext): string {
   );
 }
 
-function warnEditionOfferWithheld(args: EditionWithheldContext): void {
-  if (warnedEditionWithheldDevices.has(args.deviceId)) return;
-  warnedEditionWithheldDevices.add(args.deviceId);
+// Dedupe entries are keyed per (device, reporting role): the main-agent and
+// watchdog branches gate on DIFFERENT binaries' capabilities, and a device
+// whose two verdicts persistently disagree (e.g. main agent pre-band, watchdog
+// inside it) must not have the watchdog's warn re-added by every failover beat
+// and deleted by every main beat — that would defeat the dedupe entirely.
+function warnEditionOfferWithheld(args: EditionWithheldContext & { role: 'agent' | 'watchdog' }): void {
+  const key = `${args.deviceId}:${args.role}`;
+  if (warnedEditionWithheldDevices.has(key)) return;
+  warnedEditionWithheldDevices.add(key);
   console.warn(
-    `[agents] update offers withheld for device ${args.deviceId} (#4072): ${editionWithheldDetail(args)} ` +
-      `The device idles on its current version.`,
+    `[agents] update offers withheld for device ${args.deviceId} (${args.role} path, #4072): ` +
+      `${editionWithheldDetail(args)} The device idles on its current version.`,
   );
   if (!editionWithheldCaptured) {
     editionWithheldCaptured = true;
@@ -141,22 +147,27 @@ function warnEditionOfferWithheld(args: EditionWithheldContext): void {
   }
 }
 
-// Failover-branch variant: the watchdog is the ONLY recovery path for a
-// wedged main agent (#1104), so withholding it means the device stays DOWN,
-// not merely un-upgraded. Error level + per-device Sentry, deduped.
+// Failover-branch variant: the binary-replacement recovery (#1104) is the
+// fallback for a wedged main-agent BINARY, so withholding it can leave the
+// device down if the watchdog's restart-based recovery is also failing.
+// Error level + per-device Sentry, deduped; the entry is cleared by any live
+// main-agent beat (proof of recovery), so a later wedge alerts again.
+// Wording stays hedged like editionWithheldDetail: the gate establishes
+// non-confirmation, not a certain refusal.
 function warnEditionRecoveryWithheld(args: EditionWithheldContext): void {
   if (warnedEditionRecoveryWithheldDevices.has(args.deviceId)) return;
   warnedEditionRecoveryWithheldDevices.add(args.deviceId);
   console.error(
     `[agents] agent RECOVERY withheld for device ${args.deviceId} (#4072): the main agent is ` +
-      `silent and the watchdog — the only recovery path — would refuse the recovery artifact: ` +
-      `${editionWithheldDetail(args)} This device stays down until manually recovered.`,
+      `silent and the watchdog's binary-replacement recovery path is being withheld because ` +
+      `${editionWithheldDetail(args)} If the watchdog's restart-based recovery also fails, ` +
+      `this device may stay down until manually recovered.`,
   );
   captureException(
     new Error(
       `Agent recovery withheld by the artifact-edition gate for device ${args.deviceId} ` +
-        `(#4072): main agent silent, watchdog cannot accept the served artifact edition. ` +
-        `Manual recovery required.`,
+        `(#4072): main agent silent, watchdog cannot be confirmed to accept the served ` +
+        `artifact edition. Manual recovery may be required.`,
     ),
   );
 }
@@ -596,8 +607,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // whose watchdog is still an older self-host build gets a hosted offer
     // its watchdog refuses — failover-only, self-heals once the watchdog
     // catches up via the main branch.
+    // Hoisted so the warn calls below print the value that actually DECIDED
+    // (the fallback included) — logging the silent payload as "none" when the
+    // stored edition drove the withhold would steer the operator to the wrong
+    // remediation.
+    const effectiveWatchdogEdition = data.agentEdition ?? device.agentEdition;
     const watchdogAcceptsServedEdition = agentAcceptsServedEdition({
-      reportedEdition: data.agentEdition ?? device.agentEdition,
+      reportedEdition: effectiveWatchdogEdition,
       agentVersion: data.agentVersion,
     });
 
@@ -629,7 +645,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         } else if (targetWatchdog) {
           warnEditionOfferWithheld({
             deviceId: device.id,
-            reportedEdition: data.agentEdition,
+            role: 'watchdog',
+            reportedEdition: effectiveWatchdogEdition,
             agentVersion: data.agentVersion,
           });
         }
@@ -662,10 +679,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // when no watchdog target resolves).
       warnEditionRecoveryWithheld({
         deviceId: device.id,
-        reportedEdition: data.agentEdition,
+        reportedEdition: effectiveWatchdogEdition,
         agentVersion: data.agentVersion,
       });
-    } else if (mainAgentSilent && watchdogAcceptsServedEdition) {
+    } else if (watchdogAcceptsServedEdition) {
+      // Residual re-arm path (manual watchdog reinstall while the main agent
+      // stays silent). The PRIMARY re-arm is any live main-agent beat — see
+      // the main branch — because a main-agent beat both proves recovery and
+      // is what refreshes lastSeenAt, ending mainAgentSilent.
       warnedEditionRecoveryWithheldDevices.delete(device.id);
     }
     if (
@@ -1162,17 +1183,23 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     agentVersion: data.agentVersion,
   });
 
+  // A live main-agent beat is proof the agent is not wedged: re-arm the
+  // failover-recovery error so a LATER wedge (same process, possibly weeks
+  // on) alerts again instead of being consumed by the first episode.
+  warnedEditionRecoveryWithheldDevices.delete(device.id);
+
   if (normalizedArch && !acceptsServedEdition) {
     warnEditionOfferWithheld({
       deviceId: device.id,
+      role: 'agent',
       reportedEdition: data.agentEdition,
       agentVersion: data.agentVersion,
     });
   } else if (acceptsServedEdition) {
-    // Re-arm the per-device withhold warn: if this device later regresses to
-    // an incompatible build (same process), that is a fresh episode and must
-    // log again rather than being consumed by the first one.
-    warnedEditionWithheldDevices.delete(device.id);
+    // Re-arm THIS branch's withhold warn: if the device later regresses to an
+    // incompatible build (same process), that is a fresh episode and must log
+    // again. Only the agent-role key — the watchdog branch owns its own.
+    warnedEditionWithheldDevices.delete(`${device.id}:agent`);
   }
 
   if (normalizedArch && acceptsServedEdition) {
