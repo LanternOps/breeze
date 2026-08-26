@@ -154,6 +154,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
   'onedrive_device_state',
+  'pam_actuations', 'pam_actuation_results',
   'peripheral_events', 'peripheral_policy_delivery_events', 'peripheral_policy_device_states',
   'playbook_executions', 'provision_credential_handles',
   'recovery_key_access_events',
@@ -265,6 +266,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // CASCADE; recovery_key_access_events.key_id → device_recovery_keys.id
   // ON DELETE CASCADE, so delete the access-event ledger before its parent keys.
   'recovery_key_access_events', 'device_recovery_keys',
+  'pam_actuations', 'pam_actuation_results',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',

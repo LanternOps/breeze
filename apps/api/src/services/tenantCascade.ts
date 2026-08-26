@@ -253,6 +253,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'organization_users',
   'agent_rollback_events',
   'agent_rollback_directives',
+  'pam_actuation_results',
+  'pam_actuations',
   'pam_org_config',
   'pam_rules',
   'pam_signer_groups',
@@ -521,6 +523,7 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   'ml_feedback_events',
   'peripheral_policy_delivery_events',
   'agent_rollback_events',
+  'pam_actuation_results',
 ]);
 
 interface FkEdge {
