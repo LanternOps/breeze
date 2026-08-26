@@ -20,6 +20,7 @@ import (
 //     "hosted". Accepting a "self-host" artifact would swap the running binary
 //     for one with no host-policy allowlist — enforcement removal — so that
 //     direction stays a hard refusal.
+//
 //   - A self-host build (the unrestricted repo-default) accepts "self-host"
 //     AND "hosted". Both call sites consult editionAllowed strictly AFTER the
 //     manifest's Ed25519 signature verified against the trust roots, and a
