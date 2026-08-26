@@ -8,6 +8,7 @@ import {
   idpAssertedMfa,
   buildAuthorizationUrl,
   assertFreshIdpAuthentication,
+  utcMsFromOffsetlessTimestamp,
   discoverOIDCConfig,
   isInternalUrl,
   assertSafeOidcEndpoint,
@@ -24,6 +25,7 @@ import {
 import { createRemoteJWKSet, customFetch } from 'jose';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 import { assertOutsideHeldDbContext } from '../db';
+import { pgOffsetlessTimestamp } from '../testUtils/pgOffsetlessTimestamp';
 
 // SR2-13/14: mock the outbound-HTTP + jose transport so the SSRF-safe wiring
 // can be asserted without a network. `safeFetch` DEFAULTS to the real
@@ -668,5 +670,61 @@ describe('assertFreshIdpAuthentication', () => {
   it('never accepts iat as a substitute for auth_time', () => {
     expect(assertFreshIdpAuthentication({ iat: Math.floor(NOW / 1000) } as any, STARTED, NOW))
       .toEqual({ ok: false, reason: 'auth_time_missing' });
+  });
+
+  // The bound above is only meaningful if `startedAtMs` is a TRUE epoch. Every
+  // test in this describe hands one in as a plain number, which is exactly how
+  // the timezone defect below stayed invisible: the route derives that number
+  // from a `timestamp without time zone` column, and these tests never exercise
+  // that derivation.
+  describe('the startedAtMs bound, as the route actually derives it', () => {
+    // sso_sessions.created_at as postgres.js really returns it.
+    const sessionStartedAt = pgOffsetlessTimestamp(STARTED);
+
+    it('accepts an auth_time from during the round trip, in ANY host timezone', () => {
+      const during = Math.floor(STARTED / 1000) + 5;
+      expect(assertFreshIdpAuthentication(
+        { auth_time: during },
+        utcMsFromOffsetlessTimestamp(sessionStartedAt),
+        NOW,
+      )).toEqual({ ok: true });
+    });
+
+    it('still rejects a cached-session auth_time from before the click, in ANY host timezone', () => {
+      const beforeStart = Math.floor(STARTED / 1000) - 121;
+      expect(assertFreshIdpAuthentication(
+        { auth_time: beforeStart },
+        utcMsFromOffsetlessTimestamp(sessionStartedAt),
+        NOW,
+      )).toEqual({ ok: false, reason: 'auth_time_stale' });
+    });
+
+    // Pins the two failure modes a bare `.getTime()` produces, so a revert
+    // cannot pass by loosening one direction. West of UTC the naive bound lands
+    // in the FUTURE and every attempt is stale (feature dead on arrival); east
+    // of UTC it slides into the PAST and a cached IdP session that old is
+    // accepted as fresh — a real weakening of the only control this feature has.
+    it('is not skewed by the host timezone the way a bare .getTime() is', () => {
+      const offsetMs = sessionStartedAt.getTimezoneOffset() * 60_000;
+      expect(utcMsFromOffsetlessTimestamp(sessionStartedAt)).toBe(STARTED);
+      expect(sessionStartedAt.getTime()).toBe(STARTED + offsetMs);
+    });
+  });
+});
+
+describe('utcMsFromOffsetlessTimestamp', () => {
+  it('round-trips an offsetless DB timestamp back to its true epoch', () => {
+    const instant = Date.UTC(2026, 7, 25, 18, 34, 15, 123);
+    expect(utcMsFromOffsetlessTimestamp(pgOffsetlessTimestamp(instant))).toBe(instant);
+  });
+
+  it('is a no-op under UTC, which is why hosted production never saw this', () => {
+    const instant = Date.UTC(2026, 7, 25, 18, 34, 15, 123);
+    const fromDb = pgOffsetlessTimestamp(instant);
+    if (fromDb.getTimezoneOffset() === 0) {
+      expect(utcMsFromOffsetlessTimestamp(fromDb)).toBe(fromDb.getTime());
+    } else {
+      expect(utcMsFromOffsetlessTimestamp(fromDb)).not.toBe(fromDb.getTime());
+    }
   });
 });

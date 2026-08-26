@@ -89,6 +89,12 @@ vi.mock('../services/sso', () => ({
     }
     return { ok: true };
   }),
+  // Real logic (not a stub), same reasoning as above: this is the conversion
+  // that puts the session's created_at on the same clock as the id_token's
+  // auth_time. A stub returning `undefined` would make the freshness bound
+  // NaN-ish and the timezone test below meaningless.
+  utcMsFromOffsetlessTimestamp: (value: Date) =>
+    value.getTime() - value.getTimezoneOffset() * 60_000,
   mapUserAttributes: vi.fn(),
   discoverOIDCConfig: vi.fn(),
   // Real logic (not a stub) — getOIDCConfig (defined in sso.ts, not mocked)
@@ -218,6 +224,7 @@ import {
 import { mintStepUpGrant } from '../services/mfaStepUpGrant';
 import { writeRouteAudit } from '../services/auditEvents';
 import { authMiddleware } from '../middleware/auth';
+import { pgOffsetlessTimestamp } from '../testUtils/pgOffsetlessTimestamp';
 
 const USER_ID = '00000000-0000-4000-8000-000000000020';
 const OTHER_USER_ID = '00000000-0000-4000-8000-0000000000aa';
@@ -495,7 +502,13 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
   //   4. userSsoIdentities      (reauth branch: (provider, sub) ownership)
   // Every test funnels through here so that ordering lives in one place.
   const primeReauthCallback = (opts: {
-    sessionCreatedAt?: Date;
+    // A TRUE epoch. It is deliberately not a Date: the row's created_at is
+    // built from it via pgOffsetlessTimestamp so that every test in this suite
+    // sees the session exactly as postgres.js delivers it from a `timestamp
+    // without time zone` column, rather than the true-instant Date a hand-rolled
+    // `new Date(...)` would produce. Handing in a Date here is what let the
+    // freshness bound be compared on the wrong clock with the suite still green.
+    sessionCreatedAtMs?: number;
     idClaims?: Record<string, unknown>;
     sessionOverrides?: Record<string, unknown>;
     // undefined = healthy user; null = simulate "user gone" (no row).
@@ -507,7 +520,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     provider?: Record<string, unknown>;
   } = {}) => {
     const {
-      sessionCreatedAt = new Date(),
+      sessionCreatedAtMs = Date.now(),
       sessionOverrides = {},
       reauthUser = ACTIVE_REAUTH_USER,
       membership = [{ userId: USER_ID }],
@@ -544,7 +557,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
       initiatingAuthEpoch: 3,
       initiatingMfaEpoch: 1,
       initiatingSessionId: SID,
-      createdAt: sessionCreatedAt,
+      createdAt: pgOffsetlessTimestamp(sessionCreatedAtMs),
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       ...sessionOverrides,
     };
@@ -620,28 +633,30 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
   // (both auth_times below are comfortably "recent", only one post-dates the
   // click), and the call-argument assertion pins the contract exactly.
   it('bounds freshness from the session created_at, not from now (accepts an auth_time after the click)', async () => {
-    const sessionCreatedAt = new Date(Date.now() - 9 * 60 * 1000);
+    const sessionCreatedAtMs = Date.now() - 9 * 60 * 1000;
     const { idClaims } = primeReauthCallback({
-      sessionCreatedAt,
+      sessionCreatedAtMs,
       idClaims: { sub: EXTERNAL_ID, email: 'tech@acme.example', auth_time: secondsAgo(30) }
     });
 
     const res = await doCallback();
 
-    expect(assertFreshIdpAuthentication).toHaveBeenCalledWith(idClaims, sessionCreatedAt.getTime());
+    // The TRUE epoch of the click — not `createdAt.getTime()`, which is that
+    // epoch plus the host's UTC offset (see the timezone test below).
+    expect(assertFreshIdpAuthentication).toHaveBeenCalledWith(idClaims, sessionCreatedAtMs);
     expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
   });
 
   it('bounds freshness from the session created_at, not from now (rejects an auth_time that predates the click)', async () => {
-    const sessionCreatedAt = new Date(Date.now() - 9 * 60 * 1000);
+    const sessionCreatedAtMs = Date.now() - 9 * 60 * 1000;
     primeReauthCallback({
-      sessionCreatedAt,
+      sessionCreatedAtMs,
       idClaims: {
         sub: EXTERNAL_ID,
         email: 'tech@acme.example',
         // ~14 minutes ago: still "recent" by any now-relative window, but it
         // predates the /reauth/start click by 5 minutes.
-        auth_time: Math.floor(sessionCreatedAt.getTime() / 1000) - 300,
+        auth_time: Math.floor(sessionCreatedAtMs / 1000) - 300,
       }
     });
 
@@ -649,6 +664,39 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     expect(res.headers.get('location')).toContain('error=reauth_not_fresh');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  // sso_sessions.created_at is `timestamp without time zone`, and postgres.js
+  // parses an offsetless value as LOCAL time — so `createdAt.getTime()` is the
+  // true epoch plus the HOST's UTC offset, while the id_token's auth_time is a
+  // true UTC epoch. Comparing the two directly is dead on arrival west of UTC
+  // (bound lands in the future, every attempt reads stale) and silently
+  // permissive east of it (window widens by the offset, so a cached IdP session
+  // that old is accepted as fresh).
+  //
+  // This test is the reason the fixture takes an epoch rather than a Date: it
+  // only has teeth when the session row is built the way the driver builds it.
+  // Under TZ=UTC the offset is zero and it passes either way — which is exactly
+  // how this shipped past a green CI run.
+  it('compares auth_time against the click on the SAME clock, whatever the host timezone', async () => {
+    const sessionCreatedAtMs = Date.now() - 60_000;
+    primeReauthCallback({
+      sessionCreatedAtMs,
+      // 30s after the click: unambiguously fresh on a correct clock.
+      idClaims: { sub: EXTERNAL_ID, email: 'tech@acme.example', auth_time: Math.floor(sessionCreatedAtMs / 1000) + 30 }
+    });
+
+    const res = await doCallback();
+
+    const [, boundMs] = vi.mocked(assertFreshIdpAuthentication).mock.calls.at(-1)!;
+    expect(boundMs).toBe(sessionCreatedAtMs);
+    // Pins that the offset was actually neutralised rather than the fixture
+    // having handed over a true-instant Date all along.
+    const naive = pgOffsetlessTimestamp(sessionCreatedAtMs);
+    expect(naive.getTime() - boundMs).toBe(naive.getTimezoneOffset() * 60_000);
+
+    expect(assertFreshIdpAuthentication).toHaveLastReturnedWith({ ok: true });
+    expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
   });
 
   // ── Identity: stricter than link mode's email comparison ─────────────────

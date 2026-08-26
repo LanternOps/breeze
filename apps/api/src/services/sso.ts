@@ -276,6 +276,39 @@ export function idpAssertedMfa(claims: Pick<IDTokenClaims, 'amr'>): boolean {
 const AUTH_TIME_SKEW_SECONDS = 120;
 
 /**
+ * Convert a Date that postgres.js produced from a `timestamp without time
+ * zone` column into a true UTC epoch in milliseconds.
+ *
+ * postgres.js parses OIDs 1082/1114/1184 with a bare `new Date(x)`
+ * (postgres/src/types.js). For an offsetless column (1114) the wire value is
+ * `2026-08-25 18:34:15.123` — no zone marker — and V8 reads an offsetless
+ * date-time as LOCAL time. So on a host running America/Denver the resulting
+ * Date sits SIX HOURS from the instant the row actually records. Drizzle does
+ * have a UTC-correct path for exactly this (`value + '+0000'`), but it only
+ * fires when the driver hands it a string; postgres.js has already produced a
+ * Date by then, so the value passes straight through unconverted.
+ *
+ * Everywhere else in this codebase that is invisible, because DB-derived
+ * timestamps are only ever compared against other DB-derived timestamps and
+ * the offset cancels on both sides. It stops being invisible the moment one is
+ * compared against an epoch that originated OUTSIDE the database — an OIDC
+ * `auth_time`, say — which is what `assertFreshIdpAuthentication` does below.
+ * Under UTC (every container, hence all hosted production) the offset is zero
+ * and the defect is dormant; a US host then fails 100% closed, and an EU host
+ * silently WIDENS the freshness window by its offset.
+ *
+ * PRECONDITION: the column holds a UTC wall clock. That is true here because
+ * the row is written by `now()` against a Postgres whose TimeZone is UTC, and
+ * any Date the API writes is serialized by Drizzle as `toISOString()`.
+ *
+ * Do NOT use this on a `timestamptz` (1184) column: postgres.js resolves those
+ * to the correct instant already, and this would corrupt them.
+ */
+export function utcMsFromOffsetlessTimestamp(value: Date): number {
+  return value.getTime() - value.getTimezoneOffset() * 60_000;
+}
+
+/**
  * Verify the IdP actually re-authenticated the user for THIS transaction.
  *
  * Two independent bounds, both required:

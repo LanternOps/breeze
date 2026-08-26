@@ -32,6 +32,7 @@ import {
   discoverOIDCConfig,
   assertSafeOidcEndpoint,
   assertFreshIdpAuthentication,
+  utcMsFromOffsetlessTimestamp,
   PROVIDER_PRESETS,
   type OIDCConfig,
   type EmailVerifiedClaim
@@ -2463,7 +2464,14 @@ ssoRoutes.get('/callback', async (c) => {
       // Bounded from the session's own created_at, not from now: an auth_time
       // that predates the user's click is a cached session, however recent it
       // looks. Fails closed on a missing auth_time.
-      const freshness = assertFreshIdpAuthentication(idClaims, session.createdAt.getTime());
+      //
+      // created_at is `timestamp without time zone`, so a bare .getTime() is
+      // off by the HOST's UTC offset and cannot be compared to the id_token's
+      // auth_time epoch — see utcMsFromOffsetlessTimestamp.
+      const freshness = assertFreshIdpAuthentication(
+        idClaims,
+        utcMsFromOffsetlessTimestamp(session.createdAt),
+      );
       if (!freshness.ok) {
         writeRouteAudit(c, {
           orgId: provider.orgId,
