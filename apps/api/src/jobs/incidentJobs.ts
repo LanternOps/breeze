@@ -45,6 +45,23 @@ async function runExclusivePass(
   }
 }
 
+/**
+ * The two cross-process winner predicates, extracted so tests can assert the
+ * COMPILED SQL. A mocked-drizzle assertion can only substring-match column
+ * names, which cannot tell `and` from `or`, cannot notice a dropped `id`
+ * predicate, and cannot see the `FOR UPDATE SKIP LOCKED` tail at all — every
+ * one of those mutations passed green before these existed, and each turns a
+ * per-incident claim into a fleet-wide one.
+ */
+export function buildEscalationCas(incidentId: string) {
+  return and(eq(incidents.id, incidentId), isNull(incidents.escalatedAt));
+}
+
+/** Rows the enricher is allowed to claim: open, and not already claimed. */
+export function buildEnrichmentClaimScope() {
+  return and(ne(incidents.status, 'closed'), isNull(incidents.timelineEnrichedAt));
+}
+
 function toTimeline(value: unknown): IncidentTimelineEntry[] {
   if (!Array.isArray(value)) {
     return [];
@@ -84,12 +101,7 @@ async function runIncidentTimelineEnrichmentPass(): Promise<void> {
           db
             .select({ id: incidents.id })
             .from(incidents)
-            .where(
-              and(
-                ne(incidents.status, 'closed'),
-                isNull(incidents.timelineEnrichedAt)
-              )
-            )
+            .where(buildEnrichmentClaimScope())
             .limit(100)
             .for('update', { skipLocked: true })
         )
@@ -168,7 +180,7 @@ async function runIncidentSlaMonitorPass(): Promise<void> {
       const [won] = await db
         .update(incidents)
         .set({ escalatedAt: escalationAt })
-        .where(and(eq(incidents.id, row.id), isNull(incidents.escalatedAt)))
+        .where(buildEscalationCas(row.id))
         .returning({ id: incidents.id });
 
       if (!won) {

@@ -254,6 +254,24 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
 /**
  * Resolve an alert
  */
+/**
+ * The two terminal statuses are `resolved` and `dismissed`; everything else is
+ * still resolvable. Exported with the predicate builder below so tests can
+ * assert the COMPILED SQL — a mocked-drizzle assertion that only checks column
+ * names appear cannot tell `and` from `or`, nor catch this list gaining a
+ * terminal status, and both mutations turn the CAS into a no-op or a
+ * fleet-wide overwrite.
+ */
+export const RESOLVABLE_ALERT_STATUSES = ['active', 'acknowledged', 'suppressed'] as const;
+
+/** The compare-and-swap predicate for `resolveAlert`. See the note above. */
+export function buildResolveAlertCas(alertId: string) {
+  return and(
+    eq(alerts.id, alertId),
+    inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES]),
+  );
+}
+
 export async function resolveAlert(
   alertId: string,
   resolutionNote?: string,

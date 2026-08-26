@@ -20,7 +20,10 @@ vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => true)
 }));
 
-import { dispatchAlertNotifications } from './notificationDispatcher';
+const subscribeMock = vi.hoisted(() => vi.fn());
+vi.mock('./eventBus', () => ({ getEventBus: () => ({ subscribe: subscribeMock }) }));
+
+import { dispatchAlertNotifications, subscribeToAlertEvents } from './notificationDispatcher';
 
 describe('alert.triggered redelivery cannot double-notify', () => {
   beforeEach(() => {
@@ -53,5 +56,38 @@ describe('alert.triggered redelivery cannot double-notify', () => {
     await dispatchAlertNotifications('alert-2');
 
     expect(queueAddMock.mock.calls.at(-1)?.[2]?.jobId).toBe('process-alert-alert-2-alert-2');
+  });
+
+  describe('the alert.triggered subscriber is what makes the token per-event', () => {
+    // Without this, the whole dedupe can be dead and the suite above still
+    // passes: it calls dispatchAlertNotifications directly, so it tests
+    // argument FORMATTING, not the wiring that supplies the argument.
+    function handlerFor(type: string) {
+      subscribeMock.mockReset();
+      subscribeToAlertEvents();
+      const call = subscribeMock.mock.calls.find(([t]) => t === type);
+      return call![1] as (e: unknown) => Promise<void>;
+    }
+
+    it('collapses a redelivered alert.triggered onto one job id', async () => {
+      const handler = handlerFor('alert.triggered');
+      const event = { id: 'event-1', payload: { alertId: 'alert-1' } };
+
+      await handler(event);
+      await handler(event);
+
+      const jobIds = queueAddMock.mock.calls.map(([, , o]) => o?.jobId);
+      expect(jobIds).toEqual(['process-alert-alert-1-event-1', 'process-alert-alert-1-event-1']);
+    });
+
+    it('keeps two distinct events on one alert distinct', async () => {
+      const handler = handlerFor('alert.triggered');
+
+      await handler({ id: 'event-1', payload: { alertId: 'alert-1' } });
+      await handler({ id: 'event-2', payload: { alertId: 'alert-1' } });
+
+      const jobIds = queueAddMock.mock.calls.map(([, , o]) => o?.jobId);
+      expect(new Set(jobIds).size).toBe(2);
+    });
   });
 });

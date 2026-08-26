@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { dbMock, updateWheres, updateSets, updateReturnResults, selectResults, selectWheres, publishEventMock } =
+const { dbMock, updateWheres, updateSets, updateReturnResults, selectResults, selectWheres, selectLocks, publishEventMock } =
   vi.hoisted(() => {
     const updateWheres: unknown[] = [];
     const updateSets: Record<string, unknown>[] = [];
     const updateReturnResults: unknown[][] = [];
     const selectResults: unknown[][] = [];
     const selectWheres: unknown[] = [];
+    const selectLocks: unknown[] = [];
     const dbMock = {
       select: vi.fn(() => {
         const chain: Record<string, unknown> = {};
-        for (const m of ['from', 'limit', 'for']) chain[m] = () => chain;
+        for (const m of ['from', 'limit']) chain[m] = () => chain;
         chain.where = (w: unknown) => { selectWheres.push(w); return chain; };
+        // Record rather than swallow: `for` being an identity passthrough is
+        // what let a deleted FOR UPDATE SKIP LOCKED pass green.
+        chain.for = (mode: unknown, opts: unknown) => { selectLocks.push({ mode, opts }); return chain; };
         (chain as { then: unknown }).then = (res: (v: unknown) => unknown) =>
           res(selectResults.shift() ?? []);
         return chain;
@@ -30,7 +34,7 @@ const { dbMock, updateWheres, updateSets, updateReturnResults, selectResults, se
       }))
     };
     return {
-      dbMock, updateWheres, updateSets, updateReturnResults, selectResults, selectWheres,
+      dbMock, updateWheres, updateSets, updateReturnResults, selectResults, selectWheres, selectLocks,
       publishEventMock: vi.fn(() => Promise.resolve('evt'))
     };
   });
@@ -80,6 +84,7 @@ describe('incident background passes pick a winner in the database', () => {
     updateReturnResults.length = 0;
     selectResults.length = 0;
     selectWheres.length = 0;
+    selectLocks.length = 0;
     publishEventMock.mockClear();
   });
 
@@ -95,6 +100,10 @@ describe('incident background passes pick a winner in the database', () => {
     expect(JSON.stringify(selectWheres[0])).toContain('isNull');
     // Claiming means writing the marker in the same statement.
     expect(updateSets[0]).toHaveProperty('timelineEnrichedAt');
+    // The ENTIRE cross-process safety of this claim is the row lock: the outer
+    // UPDATE's where is only `id IN (subquery)` and does NOT repeat the marker
+    // predicate, so without SKIP LOCKED two processes claim the same batch.
+    expect(selectLocks).toEqual([{ mode: 'update', opts: { skipLocked: true } }]);
   });
 
   it('publishes incident.escalated only for the pass that won the swap', async () => {
