@@ -2202,7 +2202,16 @@
     "unableToConnectToTheIdentityProvider": "No se puede conectar con el proveedor de identidad.",
     "testFailed": "Prueba fallida",
     "createProvider": "Crear proveedor",
-    "saveChanges": "Guardar cambios"
+    "saveChanges": "Guardar cambios",
+    "enforceLockoutTitle": "Se bloqueará el acceso a usuarios",
+    "enforceLockoutSummary": "{{unlinked}} de {{total}} usuarios activos no han conectado SSO y no podrán iniciar sesión cuando la aplicación obligatoria de SSO esté activa:",
+    "enforceLockoutSelfBadge": "tu cuenta",
+    "enforceLockoutHasPasskey": "tiene una llave de acceso",
+    "enforceLockoutTruncated": "…y más que no se muestran.",
+    "enforceLockoutSelfWarning": "Tu propia cuenta no está conectada — te bloquearías a ti mismo.",
+    "enforceLockoutAcknowledge": "Entiendo que estos usuarios no podrán iniciar sesión hasta que conecten SSO",
+    "enforceLockoutConfirm": "Habilitar aplicación obligatoria",
+    "enforceLockoutConfirmationNeeded": "Confirma la advertencia de bloqueo para habilitar la aplicación obligatoria de SSO."
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",

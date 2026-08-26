@@ -2202,7 +2202,16 @@
     "unableToConnectToTheIdentityProvider": "Es kann keine Verbindung zum Identitätsanbieter hergestellt werden.",
     "testFailed": "Test fehlgeschlagen",
     "createProvider": "Anbieter erstellen",
-    "saveChanges": "Änderungen speichern"
+    "saveChanges": "Änderungen speichern",
+    "enforceLockoutTitle": "Benutzer werden ausgesperrt",
+    "enforceLockoutSummary": "{{unlinked}} von {{total}} aktiven Benutzern haben SSO nicht verbunden und können sich nicht mehr anmelden, sobald die SSO-Erzwingung aktiv ist:",
+    "enforceLockoutSelfBadge": "Ihr Konto",
+    "enforceLockoutHasPasskey": "hat einen Passkey",
+    "enforceLockoutTruncated": "…und weitere, die nicht angezeigt werden.",
+    "enforceLockoutSelfWarning": "Ihr eigenes Konto ist nicht verbunden — Sie würden sich selbst aussperren.",
+    "enforceLockoutAcknowledge": "Ich verstehe, dass sich diese Benutzer nicht anmelden können, bis sie SSO verbinden",
+    "enforceLockoutConfirm": "Erzwingung aktivieren",
+    "enforceLockoutConfirmationNeeded": "Bestätigen Sie die Aussperr-Warnung, um die SSO-Erzwingung zu aktivieren."
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",

@@ -2202,7 +2202,16 @@
     "unableToConnectToTheIdentityProvider": "Unable to connect to the identity provider.",
     "testFailed": "Test failed",
     "createProvider": "Create provider",
-    "saveChanges": "Save changes"
+    "saveChanges": "Save changes",
+    "enforceLockoutTitle": "Users will be locked out",
+    "enforceLockoutSummary": "{{unlinked}} of {{total}} active users have not connected SSO and will not be able to sign in once SSO enforcement is active:",
+    "enforceLockoutSelfBadge": "your account",
+    "enforceLockoutHasPasskey": "has a passkey",
+    "enforceLockoutTruncated": "…and more not shown.",
+    "enforceLockoutSelfWarning": "Your own account is not connected — you would lock yourself out.",
+    "enforceLockoutAcknowledge": "I understand these users will be unable to sign in until they connect SSO",
+    "enforceLockoutConfirm": "Enable enforcement",
+    "enforceLockoutConfirmationNeeded": "Confirm the lockout warning to enable SSO enforcement."
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
