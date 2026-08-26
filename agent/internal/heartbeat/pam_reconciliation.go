@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,7 +33,20 @@ const (
 	pamResultClassificationDuplicate = "duplicate"
 	pamResultClassificationStale     = "stale"
 	pamResultClassificationRejected  = "rejected"
+
+	pamReconciliationReasonResolverUnavailable        = "resolver_unavailable"
+	pamReconciliationReasonBindingUnresolved          = "binding_unresolved"
+	pamReconciliationReasonEnqueueFailed              = "enqueue_failed"
+	pamReconciliationReasonAcknowledgementUnavailable = "acknowledgement_unavailable"
+	pamReconciliationReasonQuarantined                = "quarantined"
+	pamReconciliationReasonOutboxUnreadable           = "outbox_unreadable"
 )
+
+type pamReconciliationLogSample struct {
+	ActuationID   string
+	Generation    uint64
+	ObservationID string
+}
 
 type pamBindingCandidate struct {
 	ObservationID string `json:"observationId"`
@@ -286,6 +300,9 @@ func (h *Heartbeat) ensurePamReconciliationMemory() {
 	if h.pamReconciliationStaged == nil {
 		h.pamReconciliationStaged = make(map[string]pamlifetime.Result)
 	}
+	if h.pamReconciliationStagedReasons == nil {
+		h.pamReconciliationStagedReasons = make(map[string]string)
+	}
 	if h.pamReconciliationBlocked == nil {
 		h.pamReconciliationBlocked = make(map[string]struct{})
 	}
@@ -309,6 +326,7 @@ func (h *Heartbeat) stagePamReconciliationResults(results []pamlifetime.Result) 
 		}
 		staged[i].ObservationID = observationID
 		h.pamReconciliationStaged[observationID] = staged[i]
+		h.pamReconciliationStagedReasons[observationID] = pamReconciliationReasonBindingUnresolved
 	}
 	h.pamReconciliationIdentityFailures = identityFailures
 	return staged
@@ -360,6 +378,34 @@ func (h *Heartbeat) stagedPamReconciliationResults() []pamlifetime.Result {
 func (h *Heartbeat) removeStagedPamReconciliationResult(observationID string) {
 	h.pamReconciliationMu.Lock()
 	delete(h.pamReconciliationStaged, observationID)
+	delete(h.pamReconciliationStagedReasons, observationID)
+	h.pamReconciliationMu.Unlock()
+}
+
+func (h *Heartbeat) setPamReconciliationStagedReason(observationID, reason string) {
+	h.pamReconciliationMu.Lock()
+	if _, exists := h.pamReconciliationStaged[observationID]; exists {
+		h.pamReconciliationStagedReasons[observationID] = reason
+	}
+	h.pamReconciliationMu.Unlock()
+}
+
+func (h *Heartbeat) resetPamReconciliationPassFailures() {
+	h.pamReconciliationMu.Lock()
+	h.pamReconciliationResolverUnavailable = false
+	h.pamReconciliationAcknowledgementUnavailable = false
+	h.pamReconciliationMu.Unlock()
+}
+
+func (h *Heartbeat) markPamReconciliationResolverUnavailable() {
+	h.pamReconciliationMu.Lock()
+	h.pamReconciliationResolverUnavailable = true
+	h.pamReconciliationMu.Unlock()
+}
+
+func (h *Heartbeat) markPamReconciliationAcknowledgementUnavailable() {
+	h.pamReconciliationMu.Lock()
+	h.pamReconciliationAcknowledgementUnavailable = true
 	h.pamReconciliationMu.Unlock()
 }
 
@@ -385,6 +431,10 @@ func (h *Heartbeat) resolveStagedPamReconciliation(ctx context.Context) {
 	}
 	dispositions, err := h.pamBindingResolver()(ctx, candidates)
 	if err != nil {
+		h.markPamReconciliationResolverUnavailable()
+		for _, result := range results {
+			h.setPamReconciliationStagedReason(result.ObservationID, pamReconciliationReasonResolverUnavailable)
+		}
 		return
 	}
 	for i, disposition := range dispositions {
@@ -392,14 +442,18 @@ func (h *Heartbeat) resolveStagedPamReconciliation(ctx context.Context) {
 		switch disposition.Status {
 		case pamBindingStatusBound:
 			if h.pamReconciliationOutbox == nil {
+				h.setPamReconciliationStagedReason(result.ObservationID, pamReconciliationReasonEnqueueFailed)
 				continue
 			}
 			if err := h.pamReconciliationOutbox.Enqueue(disposition.CommandID, result); err == nil {
 				h.removeStagedPamReconciliationResult(result.ObservationID)
+			} else {
+				h.setPamReconciliationStagedReason(result.ObservationID, pamReconciliationReasonEnqueueFailed)
 			}
 		case pamBindingStatusDuplicate, pamBindingStatusStale:
 			h.removeStagedPamReconciliationResult(result.ObservationID)
 		case pamBindingStatusUnresolved:
+			h.setPamReconciliationStagedReason(result.ObservationID, pamReconciliationReasonBindingUnresolved)
 		}
 	}
 }
@@ -414,6 +468,7 @@ func (h *Heartbeat) resolveQuarantinedPamReconciliation(ctx context.Context, ent
 	}
 	dispositions, err := h.pamBindingResolver()(ctx, candidates)
 	if err != nil {
+		h.markPamReconciliationResolverUnavailable()
 		return
 	}
 	for i, disposition := range dispositions {
@@ -428,7 +483,11 @@ func (h *Heartbeat) resolveQuarantinedPamReconciliation(ctx context.Context, ent
 func (h *Heartbeat) reresolveRejectedPamEntry(ctx context.Context, entry pamReconciliationOutboxEntry, retryRebound bool) {
 	h.setPamReconciliationBlocked(entry.Observation.ObservationID, true)
 	dispositions, err := h.pamBindingResolver()(ctx, []pamBindingCandidate{pamBindingCandidateForResult(entry.Observation)})
-	if err != nil || len(dispositions) != 1 || h.pamReconciliationOutbox == nil {
+	if err != nil {
+		h.markPamReconciliationResolverUnavailable()
+		return
+	}
+	if len(dispositions) != 1 || h.pamReconciliationOutbox == nil {
 		return
 	}
 	disposition := dispositions[0]
@@ -459,7 +518,11 @@ func (h *Heartbeat) reresolveRejectedPamEntry(ctx context.Context, entry pamReco
 
 func (h *Heartbeat) submitPendingPamReconciliation(ctx context.Context, entry pamReconciliationOutboxEntry, retryRebound bool) {
 	acknowledgement, err := h.pamResultSubmitter()(ctx, entry.CommandID, entry.Observation)
-	if err != nil || h.pamReconciliationOutbox == nil {
+	if err != nil {
+		h.markPamReconciliationAcknowledgementUnavailable()
+		return
+	}
+	if h.pamReconciliationOutbox == nil {
 		return
 	}
 	switch acknowledgement.Classification {
@@ -500,6 +563,8 @@ func (h *Heartbeat) reconcilePamEvidence(ctx context.Context) {
 		return
 	}
 	defer h.pamReconciliationPassRunning.Store(false)
+	defer h.pamReconciliationStatus()
+	h.resetPamReconciliationPassFailures()
 
 	h.resolveStagedPamReconciliation(ctx)
 	if h.pamReconciliationOutbox == nil {
@@ -516,6 +581,113 @@ func (h *Heartbeat) reconcilePamEvidence(ctx context.Context) {
 		h.submitPendingPamReconciliation(ctx, entry, true)
 	}
 	h.recomputePamReconciliationReadiness()
+}
+
+func firstPamReconciliationSample(results []pamlifetime.Result) pamReconciliationLogSample {
+	if len(results) == 0 {
+		return pamReconciliationLogSample{}
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].ObservationID < results[j].ObservationID })
+	result := results[0]
+	return pamReconciliationLogSample{
+		ActuationID:   result.ActuationID,
+		Generation:    result.Generation,
+		ObservationID: result.ObservationID,
+	}
+}
+
+func (h *Heartbeat) pamReconciliationStatus() PamReconciliationStatus {
+	if h == nil {
+		return PamReconciliationStatus{}
+	}
+	h.ensurePamReconciliationMemory()
+	h.pamReconciliationMu.Lock()
+	staged := make([]pamlifetime.Result, 0, len(h.pamReconciliationStaged))
+	reasons := make(map[string]string, len(h.pamReconciliationStagedReasons))
+	for id, result := range h.pamReconciliationStaged {
+		staged = append(staged, result)
+		reasons[id] = h.pamReconciliationStagedReasons[id]
+	}
+	blocked := make(map[string]struct{}, len(h.pamReconciliationBlocked))
+	for id := range h.pamReconciliationBlocked {
+		blocked[id] = struct{}{}
+	}
+	resolverUnavailable := h.pamReconciliationResolverUnavailable
+	acknowledgementUnavailable := h.pamReconciliationAcknowledgementUnavailable
+	h.pamReconciliationMu.Unlock()
+
+	var snapshot pamReconciliationOutboxSnapshot
+	var snapshotErr error
+	outboxPath := ""
+	if h.pamReconciliationOutbox != nil {
+		outboxPath = h.pamReconciliationOutbox.root
+		snapshot, snapshotErr = h.pamReconciliationOutbox.Snapshot()
+	}
+	status := PamReconciliationStatus{
+		UnresolvedCount:              len(staged) + len(blocked),
+		QuarantinedCount:             len(snapshot.Quarantined),
+		AwaitingAcknowledgementCount: len(snapshot.Pending),
+	}
+	hasReason := func(reason string) bool {
+		for _, stagedReason := range reasons {
+			if stagedReason == reason {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case resolverUnavailable || hasReason(pamReconciliationReasonResolverUnavailable):
+		status.BlockingReason = pamReconciliationReasonResolverUnavailable
+	case len(blocked) > 0 || hasReason(pamReconciliationReasonBindingUnresolved):
+		status.BlockingReason = pamReconciliationReasonBindingUnresolved
+	case hasReason(pamReconciliationReasonEnqueueFailed):
+		status.BlockingReason = pamReconciliationReasonEnqueueFailed
+	case acknowledgementUnavailable:
+		status.BlockingReason = pamReconciliationReasonAcknowledgementUnavailable
+	case len(snapshot.Quarantined) > 0:
+		status.BlockingReason = pamReconciliationReasonQuarantined
+	case snapshotErr != nil:
+		status.BlockingReason = pamReconciliationReasonOutboxUnreadable
+	}
+
+	sampleResults := append([]pamlifetime.Result(nil), staged...)
+	for _, entry := range snapshot.Pending {
+		if _, isBlocked := blocked[entry.Observation.ObservationID]; isBlocked || len(sampleResults) == 0 {
+			sampleResults = append(sampleResults, entry.Observation)
+		}
+	}
+	if len(sampleResults) == 0 && len(snapshot.Quarantined) > 0 {
+		sampleResults = append(sampleResults, snapshot.Quarantined[0].Observation)
+	}
+	sample := firstPamReconciliationSample(sampleResults)
+	signature := fmt.Sprintf("%d/%d/%d/%s/%s", status.UnresolvedCount, status.QuarantinedCount,
+		status.AwaitingAcknowledgementCount, status.BlockingReason, sample.ObservationID)
+	h.pamReconciliationMu.Lock()
+	changed := !h.pamReconciliationLogInitialized || h.pamReconciliationLastLogSignature != signature
+	if changed {
+		h.pamReconciliationLogInitialized = true
+		h.pamReconciliationLastLogSignature = signature
+	}
+	logFn := h.pamReconciliationLogFn
+	h.pamReconciliationMu.Unlock()
+	if changed {
+		if logFn != nil {
+			logFn(status, outboxPath, sample)
+		} else {
+			log.Warn("PAM reconciliation state changed",
+				"unresolvedCount", status.UnresolvedCount,
+				"quarantinedCount", status.QuarantinedCount,
+				"awaitingAcknowledgementCount", status.AwaitingAcknowledgementCount,
+				"blockingReason", status.BlockingReason,
+				"outboxPath", outboxPath,
+				"actuationId", sample.ActuationID,
+				"generation", sample.Generation,
+				"observationId", sample.ObservationID,
+			)
+		}
+	}
+	return status
 }
 
 func (h *Heartbeat) pamReconciliationRetryCap() time.Duration {

@@ -78,6 +78,51 @@ describe('CHANGE_INGEST_MAX_ITEMS resolver — env validation', () => {
   });
 });
 
+describe('heartbeatSchema — PAM reconciliation telemetry', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+
+  it('accepts exact bounded reconciliation status', () => {
+    const parsed = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: {
+        pamLifetimeProtocolVersion: 2,
+        pamReconciliation: {
+          unresolvedCount: 2,
+          quarantinedCount: 1,
+          awaitingAcknowledgementCount: 3,
+          blockingReason: 'binding_unresolved',
+        },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.securityCapabilities?.pamReconciliation).toEqual({
+        unresolvedCount: 2,
+        quarantinedCount: 1,
+        awaitingAcknowledgementCount: 3,
+        blockingReason: 'binding_unresolved',
+      });
+    }
+  });
+
+  it.each([
+    { unresolvedCount: -1, quarantinedCount: 0, awaitingAcknowledgementCount: 0 },
+    { unresolvedCount: 0.5, quarantinedCount: 0, awaitingAcknowledgementCount: 0 },
+    { unresolvedCount: 0, quarantinedCount: 0, awaitingAcknowledgementCount: 0, blockingReason: 'unknown_reason' },
+    { unresolvedCount: 0, quarantinedCount: 0, awaitingAcknowledgementCount: 0, blockingReason: 'x'.repeat(65) },
+  ])('drops an invalid reconciliation object without rejecting the heartbeat: %#', (pamReconciliation) => {
+    const parsed = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: { pamLifetimeProtocolVersion: 2, pamReconciliation },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.securityCapabilities?.pamLifetimeProtocolVersion).toBe(2);
+      expect(parsed.data.securityCapabilities?.pamReconciliation).toBeUndefined();
+    }
+  });
+});
+
 describe('submitChangesSchema — array length boundary', () => {
   it('accepts N=CHANGE_INGEST_MAX_ITEMS items', () => {
     const changes = Array.from({ length: CHANGE_INGEST_MAX_ITEMS }, (_, i) => makeChange(i));

@@ -245,10 +245,13 @@ func newPamControllerTestHeartbeat(t *testing.T, manager *fakePamLifetimeManager
 		config: &config.Config{
 			HeartbeatIntervalSeconds: 3600,
 		},
-		pamLifetimeManager:      manager,
-		pamReconciliationOutbox: newPamReconciliationOutbox(filepath.Join(t.TempDir(), "outbox")),
-		pamReconciliationWake:   make(chan struct{}, 1),
-		stopChan:                make(chan struct{}),
+		pamLifetimeManager:             manager,
+		pamReconciliationOutbox:        newPamReconciliationOutbox(filepath.Join(t.TempDir(), "outbox")),
+		pamReconciliationStaged:        make(map[string]pamlifetime.Result),
+		pamReconciliationStagedReasons: make(map[string]string),
+		pamReconciliationBlocked:       make(map[string]struct{}),
+		pamReconciliationWake:          make(chan struct{}, 1),
+		stopChan:                       make(chan struct{}),
 	}
 	h.pamResolveBindingsFn = func(_ context.Context, candidates []pamBindingCandidate) ([]pamBindingDisposition, error) {
 		dispositions := make([]pamBindingDisposition, len(candidates))

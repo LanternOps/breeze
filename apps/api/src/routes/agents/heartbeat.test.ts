@@ -1960,6 +1960,33 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.scriptSecretEnvVersion).toBe(0);
   });
 
+  it('drops malformed PAM reconciliation telemetry without dropping capability versions', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: {
+          peripheralPolicyProtocolVersion: 2,
+          pamLifetimeProtocolVersion: 2,
+          pamReconciliation: {
+            unresolvedCount: -1,
+            quarantinedCount: 0,
+            awaitingAcknowledgementCount: 0,
+          },
+        },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.peripheralPolicyProtocolVersion).toBe(2);
+    expect(updateArg.pamLifetimeProtocolVersion).toBe(2);
+  });
+
   it.each([
     {
       name: 'recognized exact integers',

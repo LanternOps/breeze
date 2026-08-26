@@ -409,6 +409,8 @@ git commit -m "fix(agent): bind PAM startup evidence"
 **Files:**
 - Modify: `agent/internal/heartbeat/heartbeat.go`
 - Modify: `agent/internal/heartbeat/heartbeat_test.go`
+- Modify: `agent/internal/heartbeat/pam_reconciliation.go`
+- Modify: `agent/internal/heartbeat/pam_reconciliation_test.go`
 - Modify: `apps/api/src/routes/agents/schemas.ts`
 - Modify: `apps/api/src/routes/agents/schemas.test.ts`
 - Modify: `apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts`
@@ -427,11 +429,11 @@ type PamReconciliationStatus struct {
 }
 ```
 
-- [ ] **Step 1: Write telemetry RED tests**
+- [x] **Step 1: Write telemetry RED tests**
 
 Assert heartbeat JSON reports exact counts/reason under `securityCapabilities.pamReconciliation`, capability stays zero for unresolved/quarantine/enqueue failure, awaiting acknowledgement is visible while capability may be 2, malformed optional server input collapses independently without rejecting the heartbeat, and state transitions emit one structured local log per changed signature rather than every retry.
 
-- [ ] **Step 2: Run telemetry tests and verify RED**
+- [x] **Step 2: Run telemetry tests and verify RED**
 
 ```bash
 cd agent && go test ./internal/heartbeat -run 'TestPamReconciliationStatus|TestSecurityCapabilitiesControlProtocolJSON' -count=1
@@ -440,15 +442,15 @@ pnpm --filter @breeze/api exec vitest run src/routes/agents/schemas.test.ts src/
 
 Expected: FAIL because the status object is absent.
 
-- [ ] **Step 3: Implement tolerant status telemetry**
+- [x] **Step 3: Implement tolerant status telemetry**
 
 Populate the optional object from staged, pending, and quarantine snapshots. Choose `blockingReason` from the stable enum `resolver_unavailable`, `binding_unresolved`, `enqueue_failed`, `acknowledgement_unavailable`, `quarantined`, or `outbox_unreadable`, in that priority order. Extend the API heartbeat schema with nonnegative integer counts and a bounded 64-character reason enum; do not add device columns or a migration. Diagnostic logs are shipped by the existing log shipper and include the counts, reason, outbox path, actuation ID, generation, and observation ID but never evidence payload or credentials.
 
-- [ ] **Step 4: Write the exact manual reset runbook**
+- [x] **Step 4: Write the exact manual reset runbook**
 
 The runbook must require an incident/change reference, server-first version verification, the server actuation already in current desired `cleanup`, independent endpoint proof of zero Job members/no privileged token/disabled non-admin account, captured hashes and archived copies of the ledger plus PAM pending/quarantine directories, an explicit Breeze agent service stop, an atomic move to the incident archive, restart, resolver/heartbeat verification, and attachment of evidence to the incident. It must forbid reset for desired `active`, missing endpoint proof, foreign/customer scope ambiguity, or as a way to bypass a persistent same-command rejection. State that there is no remote administrative reset API and no production/customer execution is performed by this branch.
 
-- [ ] **Step 5: Write the server-first promote gate**
+- [x] **Step 5: Write the server-first promote gate**
 
 Create `docs/runbooks/pam-reconciliation-rollout.md` with this immutable order:
 
@@ -462,7 +464,7 @@ Create `docs/runbooks/pam-reconciliation-rollout.md` with this immutable order:
 
 State that an older server response, 404 route, or HTTP 200 without a valid acknowledgement is transport failure and intentionally pins PAM capability to zero for devices with ledger evidence. Do not include deployment credentials, hosted addresses, or a claim that this branch performed the rollout.
 
-- [ ] **Step 6: Run GREEN**
+- [x] **Step 6: Run GREEN**
 
 ```bash
 cd agent && go test ./internal/heartbeat -run 'TestPamReconciliationStatus|TestSecurityCapabilitiesControlProtocolJSON' -count=1
@@ -471,10 +473,10 @@ pnpm --filter @breeze/api exec vitest run src/routes/agents/schemas.test.ts src/
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit telemetry and documentation**
+- [x] **Step 7: Commit telemetry and documentation**
 
 ```bash
-git add agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/heartbeat_test.go apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/schemas.test.ts apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts apps/api/src/routes/agents/heartbeat.test.ts docs/runbooks/pam-reconciliation-ledger-reset.md docs/runbooks/pam-reconciliation-rollout.md
+git add agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/heartbeat_test.go agent/internal/heartbeat/pam_reconciliation.go agent/internal/heartbeat/pam_reconciliation_test.go apps/api/src/routes/agents/schemas.ts apps/api/src/routes/agents/schemas.test.ts apps/api/src/routes/agents/schemas.heartbeatTolerance.test.ts apps/api/src/routes/agents/heartbeat.test.ts docs/runbooks/pam-reconciliation-ledger-reset.md docs/runbooks/pam-reconciliation-rollout.md
 git commit -m "docs(pam): expose reconciliation recovery state"
 ```
 

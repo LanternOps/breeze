@@ -17,6 +17,27 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.success).toBe(true);
   });
 
+  it('drops malformed PAM reconciliation telemetry independently', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: {
+        peripheralPolicyProtocolVersion: 2,
+        pamLifetimeProtocolVersion: 2,
+        pamReconciliation: {
+          unresolvedCount: -1,
+          quarantinedCount: 'one',
+          awaitingAcknowledgementCount: 0,
+          blockingReason: 'not_a_protocol_reason',
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.securityCapabilities?.peripheralPolicyProtocolVersion).toBe(2);
+    expect(result.data.securityCapabilities?.pamLifetimeProtocolVersion).toBe(2);
+    expect(result.data.securityCapabilities?.pamReconciliation).toBeUndefined();
+  });
+
   it('accepts a valid rollback observation and drops a malformed optional one', () => {
     const valid = heartbeatSchema.safeParse({
       ...minimal,
