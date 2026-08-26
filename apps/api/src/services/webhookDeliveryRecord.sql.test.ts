@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { buildExecutionClaimCas, buildExistingDeliveryLookup } from './webhookDeliveryRecord';
+import {
+  buildExecutionClaimCas,
+  buildExistingDeliveryLookup,
+  buildOutcomeWriteCas
+} from './webhookDeliveryRecord';
 
 /**
  * COMPILED-SQL assertions for the two predicates that used to be anonymous
@@ -27,6 +31,19 @@ describe('webhook delivery record predicates (compiled SQL)', () => {
       '("webhook_deliveries"."id" = $1 and "webhook_deliveries"."status" = $2)'
     );
     expect(params).toEqual(['delivery-1', 'pending']);
+  });
+
+  it('outcome write refuses to overwrite a recorded success', () => {
+    const { sql, params } = dialect.sqlToQuery(buildOutcomeWriteCas('delivery-1'));
+
+    // The `<> 'delivered'` conjunct is what stops a late-arriving FAILURE from
+    // clobbering a success the customer already received. It lived as an
+    // anonymous closure in coverage-excluded `index.ts`, where deleting it
+    // passed everywhere.
+    expect(sql).toBe(
+      '("webhook_deliveries"."id" = $1 and "webhook_deliveries"."status" <> $2)'
+    );
+    expect(params).toEqual(['delivery-1', 'delivered']);
   });
 
   it('dedupe read-back is keyed on BOTH webhook and event', () => {

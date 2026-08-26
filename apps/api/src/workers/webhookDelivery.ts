@@ -62,8 +62,25 @@ export interface WebhookDeliveryJob {
   skipExecutionClaim?: boolean;
 }
 
+/**
+ * Why a popped job did NOT win its execution claim. The three cases are
+ * operationally different and the log has to name the right one — see
+ * `claimDeliveryForExecution`.
+ */
+export type DeliveryClaimOutcome =
+  | { claimed: true }
+  | { claimed: false; observedStatus: string | null };
+
 export interface WebhookDeliveryResult {
   deliveryId: string;
+  /**
+   * `false` when no `webhook_deliveries` row exists under `deliveryId` — only
+   * ever a DLQ replay, which mints a fresh id (`retryFromDLQ`). The outcome
+   * writer skips the row UPDATE in that case; without this it would match zero
+   * rows and fire the zero-row warning on every routine replay, voiding that
+   * warning for the real race it exists to catch.
+   */
+  hasDeliveryRow?: boolean;
   webhookId: string;
   eventId: string;
   eventType: string;
@@ -245,7 +262,7 @@ function calculateRetryDelay(
 class WebhookDeliveryWorker {
   private isRunning = false;
   private onDeliveryComplete?: (result: WebhookDeliveryResult) => Promise<void>;
-  private onClaimDelivery?: (job: WebhookDeliveryJob) => Promise<boolean>;
+  private onClaimDelivery?: (job: WebhookDeliveryJob) => Promise<DeliveryClaimOutcome>;
   /**
    * Dedicated connection for the `BRPOP` in `processNextJob` — see
    * `createBlockingRedisConnection`. Lazily created (never at import time) and
@@ -278,11 +295,14 @@ class WebhookDeliveryWorker {
    * one job exactly one ever reaches the customer's endpoint and the rest are
    * dropped here.
    *
-   * Return `false` to mean "someone else owns this delivery". With no claim
-   * callback configured the worker delivers unguarded, which is the
+   * Return `{ claimed: false, observedStatus }` to mean "someone else owns this
+   * delivery"; the status is what lets the drop name its real cause. With no
+   * claim callback configured the worker delivers unguarded, which is the
    * pre-existing behaviour.
    */
-  setDeliveryClaimCallback(callback: (job: WebhookDeliveryJob) => Promise<boolean>): void {
+  setDeliveryClaimCallback(
+    callback: (job: WebhookDeliveryJob) => Promise<DeliveryClaimOutcome>
+  ): void {
     this.onClaimDelivery = callback;
   }
 
@@ -367,17 +387,25 @@ class WebhookDeliveryWorker {
       // `pending` by the previous attempt's callback, so re-claiming it would
       // reject every legitimate retry.
       if (this.onClaimDelivery && job.attempts === 0 && !job.skipExecutionClaim) {
-        const claimed = await this.onClaimDelivery(job);
-        if (!claimed) {
+        const outcome = await this.onClaimDelivery(job);
+        if (!outcome.claimed) {
           // Another copy of this job is already delivering it, or it has
-          // already resolved. Dropping the duplicate here is the whole point;
-          // it is logged because a silent drop is what #4095 is about.
+          // already resolved, or there is no row at all. Dropping the duplicate
+          // here is the whole point; it is logged because a silent drop is what
+          // #4095 is about — and `observedStatus` is what stops the log from
+          // calling all three "duplicate".
           console.warn(`[WebhookWorker] duplicate-job-skipped ${JSON.stringify({
             errorId: 'WEBHOOK_DELIVERY_DUPLICATE_JOB_SKIPPED',
             deliveryId: job.id,
             webhookId: job.webhookId,
             orgId: job.event.orgId,
-            eventId: job.event.id
+            eventId: job.event.id,
+            observedStatus: outcome.observedStatus,
+            cause: outcome.observedStatus === null
+              ? 'no-delivery-row'
+              : outcome.observedStatus === 'retrying'
+                ? 'already-claimed'
+                : 'already-resolved'
           })}`);
           return;
         }
@@ -385,6 +413,8 @@ class WebhookDeliveryWorker {
 
       // Attempt delivery
       const result2 = await deliverWebhook(job);
+      // A DLQ replay has no backing row; the outcome writer needs to know.
+      result2.hasDeliveryRow = !job.skipExecutionClaim;
 
       // Persist the outcome. This is split out of the outer catch because the
       // two sides of the POST are NOT equally recoverable: anything that throws
@@ -611,12 +641,29 @@ export async function initializeWebhookDelivery(
       // Get webhooks configured for this event type in this org — short DB context.
       webhooks = await runWithSystemDbAccess(() => getWebhooksForEvent(event.orgId, event.type));
     } catch (err) {
+      // This is the ONE drop in this file with no recovery path anywhere.
+      //
+      // The webhook lookup failed, so NO delivery rows were created for this
+      // event — which means the recovery sweep cannot see it either: the sweep
+      // reclaims recorded-but-unenqueued rows, and here there is nothing
+      // recorded. The event's entire fan-out is simply gone, for every webhook
+      // subscribed to it.
+      //
+      // The old message claimed this would "retry on next event". It does not:
+      // a LATER event may succeed, but THIS one is lost. Saying otherwise is
+      // how a silent drop survives triage, which is the whole subject of #4095.
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('CONNECTION_DESTROYED') || msg.includes('CONNECTION_ENDED')) {
-        console.warn('[WebhookDelivery] Transient DB connection error, will retry on next event');
-      } else {
-        console.error('[WebhookDelivery] Error routing event to webhooks:', err);
-      }
+      const transient = msg.includes('CONNECTION_DESTROYED') || msg.includes('CONNECTION_ENDED');
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      console.error(`[WebhookDelivery] event-routing-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_EVENT_ROUTING_FAILED',
+        eventId: event.id,
+        orgId: event.orgId,
+        eventType: event.type,
+        transient,
+        error: msg,
+        impact: 'no delivery rows were created; this event\'s fan-out is lost for every subscribed webhook and no sweep can recover it'
+      })}`);
       return;
     }
 

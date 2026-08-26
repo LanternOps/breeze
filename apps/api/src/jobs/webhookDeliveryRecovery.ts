@@ -53,6 +53,21 @@ export const MAX_RECOVERY_ATTEMPTS = 5;
 export const RECOVERY_BATCH_SIZE = 200;
 
 /**
+ * Age past which a delivery is too stale to send at all.
+ *
+ * Deliberately NOT expressed as a lower bound on the scan: filtering ancient
+ * rows out of the candidate set would leave them unresolved forever, which is
+ * the bug this file exists to fix. They stay in scope and are resolved
+ * TERMINALLY instead, so they are visible and hand-retryable.
+ *
+ * This matters most on the very first deploy of the sweep, which is the one
+ * moment it can encounter rows that predate it by an unbounded margin: POSTing
+ * a months-old payload to a customer's endpoint is its own incident. Prod holds
+ * 0 rows today, so this is insurance rather than a live concern.
+ */
+export const MAX_RECOVERABLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
  * Five minutes. Deliberately sub-hourly so it needs no `scheduleRegistry` slot:
  * BullMQ anchors `repeat: { every: N }` to the Unix epoch, which is why coarse
  * intervals must go through the cron registry, and `scheduleRegistry.contract.test.ts`
@@ -99,6 +114,19 @@ export function buildUnresolvedScope(now: Date): SQL {
  * statements, and only predicates inside the UPDATE are evaluated atomically.
  * Of the N API instances sweeping concurrently, only the one whose UPDATE
  * returns a row proceeds.
+ *
+ * Note WHICH conjunct defends WHICH race. Against another SWEEPER, the status
+ * test does nothing — it admits both unresolved statuses, and a rival sweeper
+ * leaves the row unresolved too. It is the LEASE predicate that serialises
+ * them: the winner stamps `next_retry_at = now + RECOVERY_COOLDOWN_MS`, which
+ * is in the future relative to every concurrent sweeper's `now`.
+ *
+ * The same lease is what defends the gap against a DELIVERY WORKER: a worker
+ * claiming the row between our SELECT and our CAS writes
+ * `next_retry_at = now + EXECUTION_LEASE_MS`, so our `next_retry_at <= now`
+ * fails and we correctly leave the row to the worker that is about to POST it.
+ * Drop the lease conjunct and both races reopen even though the status test
+ * still reads as if it were guarding them.
  */
 export function buildRecoveryClaimCas(deliveryId: string, now: Date): SQL {
   return and(
@@ -141,6 +169,8 @@ export interface WebhookRecoverySweepSummary {
   undeliverable: number;
   /** Claimed but the enqueue still failed — stays unresolved for the next window. */
   enqueueFailed: number;
+  /** Older than MAX_RECOVERABLE_AGE_MS — resolved terminally, never sent. */
+  tooOld: number;
   /**
    * A terminal write that matched no row: the lease was lost between the claim
    * and the write (a delivery worker's execution claim only tests `status`, so
@@ -230,6 +260,7 @@ export async function runWebhookDeliveryRecoverySweep(
     raced: 0,
     undeliverable: 0,
     enqueueFailed: 0,
+    tooOld: 0,
     terminalWriteLost: 0
   };
 
@@ -305,6 +336,27 @@ export async function runWebhookDeliveryRecoverySweep(
               orgId: candidate.webhookOrgId,
               eventId: candidate.eventId,
               eventType: candidate.eventType
+            })}`);
+          }
+        );
+        continue;
+      }
+
+      if (now.getTime() - candidate.createdAt.getTime() > MAX_RECOVERABLE_AGE_MS) {
+        await resolveTerminally(
+          summary,
+          candidate,
+          leaseUntil,
+          'Never claimed by a delivery worker and now too old to send; abandoned without delivery',
+          () => {
+            summary.tooOld += 1;
+            console.warn(`[WebhookDeliveryRecovery] too-old-to-deliver ${JSON.stringify({
+              errorId: 'WEBHOOK_DELIVERY_RECOVERY_TOO_OLD',
+              deliveryId: candidate.id,
+              webhookId: candidate.webhookId,
+              orgId: candidate.webhookOrgId,
+              eventId: candidate.eventId,
+              ageMs: now.getTime() - candidate.createdAt.getTime()
             })}`);
           }
         );
@@ -414,8 +466,21 @@ export async function runWebhookDeliveryRecoverySweep(
         // Postgres connection across it is the pattern that exhausts the pool.
         await getWebhookWorker().queueDelivery(config, event, candidate.id);
       } catch (enqueueError) {
-        // Still no job. The lease expires on its own, so the next window
-        // reconsiders the row rather than losing it.
+        // Still no job. Hand the attempt BACK: the claim charged one before the
+        // enqueue, but this enqueue never used it. Without the refund a Redis
+        // outage spends the whole budget on itself — six consecutive failures,
+        // about 75 minutes of downtime, would terminally fail a delivery that
+        // was never actually attempted, charging infrastructure downtime
+        // against the customer's delivery. The lease is deliberately LEFT in
+        // place so the next window still waits out the cooldown instead of
+        // hot-looping against a dead Redis.
+        await runWithSystemDbAccess(async () =>
+          db
+            .update(webhookDeliveries)
+            .set({ recoveryAttempts: candidate.recoveryAttempts })
+            .where(buildLeaseHeldCas(candidate.id, leaseUntil))
+            .returning({ id: webhookDeliveries.id })
+        );
         summary.enqueueFailed += 1;
         captureException(enqueueError instanceof Error ? enqueueError : new Error(String(enqueueError)));
         console.error(`[WebhookDeliveryRecovery] requeue-failed ${JSON.stringify({
@@ -502,6 +567,19 @@ export async function initializeWebhookDeliveryRecovery(): Promise<void> {
 
     console.log('[WebhookDeliveryRecovery] Initialized unresolved-delivery sweep');
   } catch (error) {
+    // Close what we already opened. Without this a throw from `queue.add` (or
+    // the repeatable-job cleanup above) leaves a live BullMQ Worker holding a
+    // Redis connection and polling forever, with no handle left to stop it —
+    // `shutdownWebhookDeliveryRecovery` only sees what the module variable
+    // still points at.
+    if (recoveryWorker) {
+      await recoveryWorker.close().catch(() => {});
+      recoveryWorker = null;
+    }
+    if (recoveryQueue) {
+      await recoveryQueue.close().catch(() => {});
+      recoveryQueue = null;
+    }
     console.error('[WebhookDeliveryRecovery] Failed to initialize:', error);
     throw error;
   }

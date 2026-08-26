@@ -206,6 +206,7 @@ import {
 } from './jobs/webhookDeliveryRecovery';
 import {
   claimDeliveryForExecution,
+  recordDeliveryOutcome,
   recordWebhookDelivery
 } from './services/webhookDeliveryRecord';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
@@ -1278,71 +1279,7 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
   // instant a worker takes it.
   webhookWorker.setDeliveryClaimCallback(claimDeliveryForExecution);
 
-  webhookWorker.setDeliveryCallback(async (result) => {
-    await runWithSystemDbAccess(async () => {
-      const deliveryStatus = result.success ? 'delivered' : 'failed';
-      const deliveredAt = result.success ? new Date(result.deliveredAt ?? new Date().toISOString()) : null;
-      const responseTimeMs = typeof result.responseTimeMs === 'number'
-        ? Math.max(0, Math.round(result.responseTimeMs))
-        : null;
-
-      await db
-        .update(webhookDeliveries)
-        .set({
-          status: deliveryStatus,
-          attempts: result.attempts,
-          responseStatus: result.responseStatus ?? null,
-          responseBody: result.responseBody ?? null,
-          responseTimeMs,
-          errorMessage: result.errorMessage ?? null,
-          deliveredAt,
-          // Release the execution lease taken by the claim above. The row is
-          // leaving the unresolved statuses anyway, but a stale lease would
-          // otherwise surface in the UI as a `nextAttemptAt` that never comes.
-          nextRetryAt: null
-        })
-        // Never overwrite a recorded success (#4095). This used to be keyed on
-        // `id` alone, which was safe while this callback was the ONLY writer.
-        // It no longer is: the recovery sweep also writes terminal outcomes, and
-        // `deliverWebhook` clears its abort timeout once response HEADERS
-        // arrive, so a slow response body can keep an attempt in flight past the
-        // execution lease and land here after the sweep has already resolved the
-        // row. `status` is NOT NULL, so `<>` cannot silently drop rows the way a
-        // negation over a nullable column would.
-        .where(and(
-          eq(webhookDeliveries.id, result.deliveryId),
-          ne(webhookDeliveries.status, 'delivered')
-        ))
-        .returning({ id: webhookDeliveries.id })
-        .then((rows) => {
-          if (rows.length === 0) {
-            console.warn(`[WebhookDelivery] outcome-write-skipped ${JSON.stringify({
-              errorId: 'WEBHOOK_DELIVERY_OUTCOME_WRITE_SKIPPED',
-              deliveryId: result.deliveryId,
-              webhookId: result.webhookId,
-              attemptedStatus: deliveryStatus
-            })}`);
-          }
-          return rows;
-        });
-
-      const aggregateUpdate = result.success
-        ? {
-          successCount: sql`${webhooksTable.successCount} + 1`,
-          lastSuccessAt: new Date(),
-          lastDeliveryAt: new Date()
-        }
-        : {
-          failureCount: sql`${webhooksTable.failureCount} + 1`,
-          lastDeliveryAt: new Date()
-        };
-
-      await db
-        .update(webhooksTable)
-        .set(aggregateUpdate)
-        .where(eq(webhooksTable.id, result.webhookId));
-    });
-  });
+  webhookWorker.setDeliveryCallback(recordDeliveryOutcome);
 
   await initializeWebhookDelivery(
     async (orgId, eventType) => {

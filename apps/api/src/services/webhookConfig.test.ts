@@ -10,10 +10,30 @@ vi.mock('./secretCrypto', () => ({
 }));
 
 vi.mock('./notificationChannelSecrets', () => ({
-  decryptWebhookHeaders: vi.fn((headers: unknown) => headers)
+  // NOT identity. An identity mock cannot tell whether `toWebhookConfig`
+  // actually WRAPS the headers in decryptWebhookHeaders — dropping that wrap
+  // (and shipping still-ENCRYPTED header values to the customer's endpoint)
+  // stayed green. This transforms, so the assertion can see the difference.
+  decryptWebhookHeaders: vi.fn((headers: unknown) => {
+    if (Array.isArray(headers)) {
+      return headers.map((h) => (h && typeof h === 'object' && typeof (h as { value?: unknown }).value === 'string'
+        ? { ...h, value: (h as { value: string }).value.replace(/^enc:/, '') }
+        : h));
+    }
+    if (headers && typeof headers === 'object') {
+      return Object.fromEntries(
+        Object.entries(headers as Record<string, unknown>).map(([k, v]) => [
+          k,
+          typeof v === 'string' ? v.replace(/^enc:/, '') : v
+        ])
+      );
+    }
+    return headers;
+  })
 }));
 
 import { headersToRecord, toWebhookConfig } from './webhookConfig';
+import { decryptWebhookHeaders } from './notificationChannelSecrets';
 
 const base = {
   id: 'webhook-1',
@@ -73,11 +93,23 @@ describe('toWebhookConfig', () => {
     expect(config.secret).toBe('shh');
   });
 
-  it('decrypts headers and normalises them in one step', () => {
+  it('DECRYPTS headers, not merely normalises their shape', () => {
     const config = toWebhookConfig({
       ...base,
-      headers: [{ key: 'X-Token', value: 'abc' }]
+      headers: [{ key: 'X-Token', value: 'enc:abc' }]
     });
+
+    // The `enc:` prefix is gone, which is only true if the decrypt wrap ran.
+    // Shipping the raw stored value here would send an encrypted credential to
+    // the customer's endpoint as a live header.
+    expect(config.headers).toEqual({ 'X-Token': 'abc' });
+    expect(vi.mocked(decryptWebhookHeaders)).toHaveBeenCalledWith([
+      { key: 'X-Token', value: 'enc:abc' }
+    ]);
+  });
+
+  it('decrypts headers in the plain-object shape too', () => {
+    const config = toWebhookConfig({ ...base, headers: { 'X-Token': 'enc:abc' } });
 
     expect(config.headers).toEqual({ 'X-Token': 'abc' });
   });

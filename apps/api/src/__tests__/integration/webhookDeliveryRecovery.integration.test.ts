@@ -250,8 +250,19 @@ describe('webhook delivery recovery against real Postgres', () => {
     // so the same event legitimately gets one row per webhook.
     expect(mine.created).toBe(true);
     expect(theirs.created).toBe(true);
-    expect(mine.created === true && theirs.created === true
-      && mine.deliveryId !== theirs.deliveryId).toBe(true);
+    const myId = mine.created === true ? mine.deliveryId : null;
+    const theirId = theirs.created === true ? theirs.deliveryId : null;
+    expect(myId).not.toBe(theirId);
+
+    // Now force the READ-BACK, which the two winning inserts above never reach.
+    // With a sibling row present under the SAME event_id, a lookup keyed only
+    // on event_id could return either row — and Postgres is free to hand back
+    // the sibling's. It must name THIS webhook's delivery.
+    const again = await recordWebhookDelivery({ id: webhookId } as never, event as never);
+
+    expect(again.created).toBe(false);
+    expect(again.created === false && again.existing?.id).toBe(myId);
+    expect(again.created === false && again.existing?.id).not.toBe(theirId);
   });
 
   it('the execution claim lets exactly ONE popped copy of a job deliver', async () => {
@@ -265,7 +276,11 @@ describe('webhook delivery recovery against real Postgres', () => {
       claimDeliveryForExecution(job)
     ]);
 
-    expect([a, b].filter(Boolean)).toHaveLength(1);
+    expect([a, b].filter((r) => r.claimed)).toHaveLength(1);
+    // The loser must be able to say WHY: the winner moved the row to
+    // `retrying`, which is "already claimed", not "no row" or "already done".
+    const loser = [a, b].find((r) => !r.claimed);
+    expect(loser).toMatchObject({ claimed: false, observedStatus: 'retrying' });
 
     const [row] = await withSystemDbAccessContext(() =>
       db
@@ -282,7 +297,16 @@ describe('webhook delivery recovery against real Postgres', () => {
   it('the execution claim refuses a row that has already resolved', async () => {
     const deliveryId = await insertDelivery(webhookId, { status: 'delivered' });
 
-    expect(await claimDeliveryForExecution({ id: deliveryId } as never)).toBe(false);
+    expect(await claimDeliveryForExecution({ id: deliveryId } as never))
+      .toMatchObject({ claimed: false, observedStatus: 'delivered' });
+  });
+
+  it('the execution claim reports a MISSING row distinctly from a lost race', async () => {
+    // A DLQ replay's minted id has no row at all. Collapsing that to the same
+    // "duplicate" verdict as a lost race sends triage after a race that never
+    // happened.
+    expect(await claimDeliveryForExecution({ id: randomUUID() } as never))
+      .toMatchObject({ claimed: false, observedStatus: null });
   });
 
   it('the partial index the sweep depends on exists and is partial', async () => {

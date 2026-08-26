@@ -34,6 +34,13 @@ ALTER TABLE webhook_deliveries
 -- `pending` = never claimed by a worker (safe to re-drive), `retrying` =
 -- claimed but never completed (outcome unknown, resolved terminally rather
 -- than re-POSTed). `delivered` and `failed` are terminal and excluded.
+-- Keyed on created_at ALONE, not (status, created_at). The partial predicate
+-- already restricts the index to the two unresolved statuses, so carrying
+-- `status` as the leading key buys nothing and actively costs: with a 2-value
+-- IN, a (status, created_at) index yields two separately-ordered runs, so the
+-- sweep's `ORDER BY created_at` needs a sort (or a merge) on top. Keyed on
+-- created_at the index IS the order, oldest-first, which is exactly how the
+-- sweep drains its bounded batch. Same number of entries either way.
 CREATE INDEX IF NOT EXISTS webhook_deliveries_unresolved_idx
-  ON webhook_deliveries (status, created_at)
+  ON webhook_deliveries (created_at)
   WHERE status IN ('pending', 'retrying');

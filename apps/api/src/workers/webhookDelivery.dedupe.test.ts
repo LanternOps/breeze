@@ -154,6 +154,30 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
       existingDeliveryId: 'delivery-1',
       existingStatus: 'delivered'
     });
+    // The OTHER half of the severity split. Without this, emptying
+    // BENIGN_DUPLICATE_STATUSES entirely — routing every routine dedupe to warn
+    // and drowning the real signal — stayed green.
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('a `failed` original is a benign dedupe too, not a warn', async () => {
+    // `failed` is terminal: the original owns the event's outcome and the retry
+    // ladder (or a hand retry) drives it. Only the UNRESOLVED statuses warn.
+    const createDeliveryRecord = vi.fn().mockResolvedValue(deduped({
+      id: 'delivery-1',
+      status: 'failed',
+      attempts: 3,
+      createdAt: new Date('2026-09-11T00:00:00.000Z')
+    }));
+
+    await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
+    handler = subscribeMock.mock.calls[0]![1];
+
+    await handler(EVENT);
+
+    const payload = structured(consoleLines(logSpy), 'WEBHOOK_DELIVERY_DUPLICATE_SKIPPED');
+    expect(payload).toMatchObject({ existingStatus: 'failed' });
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('escalates to warn when the row it deferred to is still pending — that is an orphan, not a dedupe', async () => {
@@ -221,6 +245,49 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
   // already got a row while the rest proceed — permanently dropping the
   // failing one.
   // ---------------------------------------------------------------------------
+
+  it('reports the ONE drop with no recovery path: the whole-event fan-out', async () => {
+    // If the webhook LOOKUP fails, no delivery rows are created — so the
+    // recovery sweep cannot see this event either. It is the only drop in this
+    // file that nothing downstream can repair, which makes it the one that most
+    // needs to reach Sentry and to carry the event's identity.
+    await initializeWebhookDelivery(async () => { throw new Error('db exploded'); });
+    handler = subscribeMock.mock.calls[0]![1];
+
+    await handler(EVENT);
+
+    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+
+    const payload = structured(consoleLines(errorSpy), 'WEBHOOK_EVENT_ROUTING_FAILED');
+    expect(payload).toMatchObject({
+      eventId: 'event-1',
+      orgId: 'org-1',
+      eventType: 'alert.triggered',
+      transient: false
+    });
+    expect(String(payload.impact)).toContain('lost');
+  });
+
+  it('does not claim a transient DB error will be retried — this event is gone', async () => {
+    // The old message said "will retry on next event". A LATER event may
+    // succeed; THIS one is lost. Saying otherwise is how a silent drop survives
+    // triage, which is the entire subject of #4095.
+    await initializeWebhookDelivery(async () => {
+      throw new Error('CONNECTION_DESTROYED while querying');
+    });
+    handler = subscribeMock.mock.calls[0]![1];
+
+    await handler(EVENT);
+
+    const payload = structured(consoleLines(errorSpy), 'WEBHOOK_EVENT_ROUTING_FAILED');
+    expect(payload).toMatchObject({ transient: true });
+    // Still reported as a loss, and still surfaced to Sentry, despite being
+    // classified transient.
+    expect(String(payload.impact)).toContain('lost');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(consoleLines(warnSpy).join(' ')).not.toContain('will retry on next event');
+  });
 
   it('keeps delivering to the remaining webhooks after one webhook fails to record', async () => {
     const createDeliveryRecord = vi.fn()

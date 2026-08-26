@@ -80,6 +80,7 @@ vi.mock('../workers/webhookDelivery', () => ({
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 
 import {
+  MAX_RECOVERABLE_AGE_MS,
   MAX_RECOVERY_ATTEMPTS,
   RECOVERY_COOLDOWN_MS,
   STALE_PENDING_MS,
@@ -265,17 +266,70 @@ describe('webhook delivery recovery sweep', () => {
 
   it('leaves the row recoverable when the re-enqueue itself fails', async () => {
     state.candidates = [orphan()];
-    state.updateResults = [claimWon(1)];
+    state.updateResults = [claimWon(1), [{ id: 'delivery-1' }]];
     queueDeliveryMock.mockRejectedValueOnce(new Error('LPUSH failed again'));
 
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
     expect(summary).toMatchObject({ enqueueFailed: 1, requeued: 0, exhausted: 0 });
-    // Only the claim ran — the row is NOT marked failed, so the lease expires
-    // and the next window reconsiders it.
-    expect(state.updateCalls).toHaveLength(1);
+    // The row is NOT marked failed, so the lease expires and the next window
+    // reconsiders it.
+    expect(state.updateCalls.some((c) => c.set.status === 'failed')).toBe(false);
     structured(consoleLines(errorSpy), 'WEBHOOK_DELIVERY_RECOVERY_REQUEUE_FAILED');
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('REFUNDS the attempt when the enqueue never used it', async () => {
+    // The claim charges an attempt before the enqueue. If the enqueue then
+    // fails, that attempt bought nothing — and without a refund a Redis outage
+    // spends the whole budget on itself: six consecutive failures (~75 min of
+    // downtime) would terminally fail a delivery that was never attempted,
+    // charging infrastructure downtime against the customer's delivery.
+    state.candidates = [orphan({ recoveryAttempts: 2 })];
+    state.updateResults = [claimWon(3), [{ id: 'delivery-1' }]];
+    queueDeliveryMock.mockRejectedValueOnce(new Error('Redis down'));
+
+    await runWebhookDeliveryRecoverySweep(NOW);
+
+    const refund = state.updateCalls[1]!;
+    expect(refund.set).toMatchObject({ recoveryAttempts: 2 });
+    // The lease is deliberately NOT cleared — the next window should still wait
+    // out the cooldown rather than hot-loop against a dead Redis.
+    expect(refund.set).not.toHaveProperty('nextRetryAt');
+    expect(refund.where)
+      .toEqual(buildLeaseHeldCas('delivery-1', new Date(NOW.getTime() + RECOVERY_COOLDOWN_MS)));
+  });
+
+  it('refuses to send a delivery that is too old, terminally and loudly', async () => {
+    // First-deploy insurance: POSTing a months-old payload to a customer's
+    // endpoint is its own incident. It must be RESOLVED rather than filtered
+    // out of the scan, or it would sit unresolved forever — the bug this file
+    // exists to fix.
+    state.candidates = [orphan({
+      createdAt: new Date(NOW.getTime() - MAX_RECOVERABLE_AGE_MS - 60_000)
+    })];
+    state.updateResults = [claimWon(1), [{ id: 'delivery-1' }]];
+
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+
+    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ tooOld: 1, requeued: 0 });
+    expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
+    expect(String(state.updateCalls[1]!.set.errorMessage)).toContain('too old');
+    structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_RECOVERY_TOO_OLD');
+  });
+
+  it('still delivers a row just inside the age ceiling', async () => {
+    // Boundary the other way: an off-by-one here silently stops recovering.
+    state.candidates = [orphan({
+      createdAt: new Date(NOW.getTime() - MAX_RECOVERABLE_AGE_MS + 60_000)
+    })];
+    state.updateResults = [claimWon(1)];
+
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+
+    expect(summary).toMatchObject({ requeued: 1, tooOld: 0 });
+    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
   });
 
   it('one poisonous row does not abort the rest of the batch', async () => {
@@ -283,7 +337,8 @@ describe('webhook delivery recovery sweep', () => {
       orphan({ id: 'delivery-1' }),
       orphan({ id: 'delivery-2', webhookId: 'webhook-2', eventId: 'event-2' })
     ];
-    state.updateResults = [claimWon(1), claimWon(1)];
+    // claim(1) -> enqueue throws -> attempt REFUND -> claim(2).
+    state.updateResults = [claimWon(1), [{ id: 'delivery-1' }], claimWon(1)];
     queueDeliveryMock
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce('delivery-2');

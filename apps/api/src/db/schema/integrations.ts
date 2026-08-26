@@ -114,7 +114,7 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   // `pending`/`retrying` are transient, so in a healthy fleet this holds ~0
   // entries however large `webhook_deliveries` becomes.
   unresolvedIdx: index('webhook_deliveries_unresolved_idx')
-    .on(table.status, table.createdAt)
+    .on(table.createdAt)
     .where(sql`${table.status} IN ('pending', 'retrying')`)
 }));
 
