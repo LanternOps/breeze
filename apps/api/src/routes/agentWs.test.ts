@@ -883,11 +883,47 @@ describe('agent websocket command results', () => {
       await handlers.onMessage({ data: JSON.stringify({
         type: 'command_result', commandId, status: 'completed', result: protocolResult,
       }) } as any, ws as any);
+      expect(recordPamActuationResultMock).toHaveBeenCalledTimes(1);
       expect(recordPamActuationResultMock).toHaveBeenCalledWith({
         agentId: 'agent-123', deviceId: 'device-123', commandId, result: protocolResult,
       });
     },
   );
+
+  it('keeps terminal PAM WebSocket results on orphan handling without supplemental dispatch', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const commandId = '11111111-1111-4111-8111-111111111111';
+
+    // The production lookup includes commandAcceptsAgentResultCondition, so a
+    // terminal command is absent here and follows the existing orphan branch.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+
+    await handlers.onMessage({ data: JSON.stringify({
+      type: 'command_result',
+      commandId,
+      status: 'completed',
+      result: {
+        protocolVersion: 2,
+        observationId: '22222222-2222-4222-8222-222222222222',
+        actuationId: '33333333-3333-4333-8333-333333333333',
+        generation: 2,
+        state: 'verified_active',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      },
+    }) } as any, ws as any);
+
+    expect(db.select).toHaveBeenCalledTimes(4);
+    expect(recordPamActuationResultMock).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
 
   it('stores capture_pprof stdout byte-for-byte on the WS leg (secret redaction would corrupt the base64 profiles, #2401)', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };

@@ -178,11 +178,11 @@ export type PamResultAcknowledgement = {
 };
 ```
 
-- [ ] **Step 1: Write handler/REST acknowledgement RED tests**
+- [x] **Step 1: Write handler/REST acknowledgement RED tests**
 
 Assert the PAM handler returns the exact `recordPamActuationResult` classification. For a nonterminal PAM command, assert the existing command-row update occurs once and the REST response is the acknowledgement. For an already-terminal PAM command, assert a valid structured result reaches the shared handler, returns the acknowledgement, and changes none of `status`, `result`, `payload`, `completed_at`, or other command columns. Assert malformed terminal PAM and all non-PAM terminal results preserve the existing `{ success: true }` short circuit.
 
-- [ ] **Step 2: Run focused API tests and verify RED**
+- [x] **Step 2: Run focused API tests and verify RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/commandResultHandlers.test.ts src/routes/agents/commands.test.ts
@@ -190,11 +190,11 @@ pnpm --filter @breeze/api exec vitest run src/services/commandResultHandlers.tes
 
 Expected: FAIL because handlers return `void` and terminal rows short-circuit before PAM dispatch.
 
-- [ ] **Step 3: Widen the handler result without changing non-PAM handlers**
+- [x] **Step 3: Widen the handler result without changing non-PAM handlers**
 
 Change `CommandResultHandler` to `Promise<CommandResultHandlerOutcome>`. Return `{ kind: 'pam', classification }` only from `handlePamActuationV2Result`; every existing handler continues returning `void`. The WebSocket caller awaits and discards the outcome.
 
-- [ ] **Step 4: Add the narrow terminal-PAM REST seam**
+- [x] **Step 4: Add the narrow terminal-PAM REST seam**
 
 After command/device/role/drain authorization and before `commandAcceptsAgentResult` short-circuits, parse only `data.result` with `pamAgentResultV2Schema` for `pam_apply_v2`/`pam_cleanup_v2`. If the row is terminal and parsing succeeds, consume the same authenticated per-device 120/60 reconciliation budget, invoke the shared handler, and return:
 
@@ -204,7 +204,7 @@ return c.json({ protocolVersion: 1, classification: outcome.classification });
 
 Do not execute the normal command-row compare-and-set on this branch. On the nonterminal registry branch, retain the handler outcome and return the same acknowledgement for PAM; return `{ success: true }` for every non-PAM command. A thrown handler produces no acknowledgement, so the agent retains its outbox entry.
 
-- [ ] **Step 5: Pin WebSocket non-behavior**
+- [x] **Step 5: Pin WebSocket non-behavior**
 
 Add tests proving terminal PAM WebSocket results still enter the existing orphan handling, never invoke supplemental dispatch, and nonterminal PAM invokes the handler exactly once. Do not modify WebSocket routing logic beyond any TypeScript change required to ignore the handler outcome.
 
@@ -214,7 +214,7 @@ pnpm --filter @breeze/api exec vitest run src/services/commandResultHandlers.tes
 
 Expected: PASS.
 
-- [ ] **Step 6: Extend and run the real-Postgres result gate**
+- [x] **Step 6: Extend and run the real-Postgres result gate**
 
 Add nonterminal and terminal REST cases for `applied`, retry `duplicate`, ownership-rotation `rejected`, and lower-generation `stale`; assert identical append-only PAM effects and no terminal command-row rewrite.
 
@@ -224,7 +224,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit the acknowledgement checkpoint**
+- [x] **Step 7: Commit the acknowledgement checkpoint**
 
 ```bash
 git add apps/api/src/services/commandResultHandlers.ts apps/api/src/services/commandResultHandlers.test.ts apps/api/src/routes/agents/commands.ts apps/api/src/routes/agents/commands.test.ts apps/api/src/routes/agentWs.test.ts apps/api/src/__tests__/integration/pamActuationResults.integration.test.ts

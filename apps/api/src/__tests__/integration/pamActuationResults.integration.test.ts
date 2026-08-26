@@ -1,15 +1,17 @@
 import './setup';
 
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
+import { Hono } from 'hono';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { recordPamActuationResult, type PamAgentResultV2 } from '../../services/pamActuationResult';
+import { commandsRoutes } from '../../routes/agents/commands';
 import { getTestDb } from './setup';
 import { createOrganization, createPartner } from './db-utils';
 
 type Fixture = {
-  orgId: string; deviceId: string; requestId: string; actuationId: string;
+  orgId: string; siteId: string; deviceId: string; requestId: string; actuationId: string;
   commandId: string; agentId: string;
 };
 
@@ -20,7 +22,7 @@ function orgContext(orgId: string): DbAccessContext {
 async function createFixture(): Promise<Fixture> {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
-  const agentId = `agent-${randomUUID()}`;
+  const agentId = randomBytes(32).toString('hex');
   const [row] = await getTestDb().execute(sql`
     WITH site AS (
       INSERT INTO sites (org_id, name) VALUES (${org.id}, ${`PAM result ${randomUUID()}`}) RETURNING id
@@ -38,8 +40,8 @@ async function createFixture(): Promise<Fixture> {
         'fixture-user', 'result integration', 'C:\\Fixture\\fixture.exe', 'approved',
         now(), now() + interval '15 minutes' FROM device RETURNING id, device_id
     ), command AS (
-      INSERT INTO device_commands (device_id, type, payload, status)
-      SELECT request.device_id, 'pam_apply_v2', '{}'::jsonb, 'sent' FROM request RETURNING id, device_id
+      INSERT INTO device_commands (device_id, type, target_role, payload, status)
+      SELECT request.device_id, 'pam_apply_v2', 'agent', '{}'::jsonb, 'sent' FROM request RETURNING id, device_id
     ), actuation AS (
       INSERT INTO pam_actuations (
         org_id, device_id, elevation_request_id, request_revision, generation,
@@ -47,7 +49,7 @@ async function createFixture(): Promise<Fixture> {
       ) SELECT ${org.id}, request.device_id, request.id, 1, 1, 'active', 'dispatched',
         command.id, 'C:\\Fixture\\fixture.exe', 'fixture-user' FROM request, command RETURNING id
     )
-    SELECT device.id AS "deviceId", request.id AS "requestId", command.id AS "commandId",
+    SELECT device.id AS "deviceId", device.site_id AS "siteId", request.id AS "requestId", command.id AS "commandId",
            actuation.id AS "actuationId" FROM device, request, command, actuation
   `) as unknown as Array<Omit<Fixture, 'orgId' | 'agentId'>>;
   return { orgId: org.id, agentId, ...row! };
@@ -59,6 +61,45 @@ function resultFor(fixture: Fixture, overrides: Partial<PamAgentResultV2> = {}):
     generation: 1, state: 'verified_active', observedAt: new Date().toISOString(),
     evidence: { bootId: 'boot-1', privilegedTokenPresent: true }, ...overrides,
   };
+}
+
+function restApp(fixture: Fixture): Hono {
+  const app = new Hono();
+  app.use('/agents/*', async (c, next) => {
+    c.set('agent', {
+      deviceId: fixture.deviceId,
+      orgId: fixture.orgId,
+      agentId: fixture.agentId,
+      siteId: fixture.siteId,
+      role: 'agent',
+    });
+    await next();
+  });
+  app.route('/agents', commandsRoutes);
+  return app;
+}
+
+function submitRest(fixture: Fixture, result: PamAgentResultV2) {
+  return withDbAccessContext(orgContext(fixture.orgId), async () =>
+    restApp(fixture).request(`/agents/${fixture.agentId}/commands/${fixture.commandId}/result`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        commandId: fixture.commandId,
+        status: 'completed',
+        result,
+      }),
+    }),
+  );
+}
+
+async function commandRow(commandId: string): Promise<Record<string, unknown>> {
+  const [row] = await getTestDb().execute(sql`
+    SELECT to_jsonb(command_row) AS row
+    FROM device_commands command_row
+    WHERE command_row.id = ${commandId}
+  `) as unknown as Array<{ row: Record<string, unknown> }>;
+  return row!.row;
 }
 
 describe('PAM REST/WebSocket shared result transaction', () => {
@@ -132,5 +173,81 @@ describe('PAM REST/WebSocket shared result transaction', () => {
     expect(state!.observedState).toBe('cleaned');
     expect(state!.cleanedAt).toBeTruthy();
     expect(state!.sessionEndedAt).toBeTruthy();
+  });
+
+  it('acknowledges a nonterminal REST apply and a terminal retry as duplicate without rewriting the command', async () => {
+    const result = resultFor(fixtureA);
+
+    const applied = await submitRest(fixtureA, result);
+    expect(applied.status).toBe(200);
+    await expect(applied.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+
+    const terminalSnapshot = await commandRow(fixtureA.commandId);
+    const duplicate = await submitRest(fixtureA, result);
+    expect(duplicate.status).toBe(200);
+    await expect(duplicate.json()).resolves.toEqual({ protocolVersion: 1, classification: 'duplicate' });
+    expect(await commandRow(fixtureA.commandId)).toEqual(terminalSnapshot);
+
+    const [count] = await getTestDb().execute(sql`
+      SELECT count(*)::int AS count
+      FROM pam_actuation_results
+      WHERE actuation_id = ${fixtureA.actuationId}
+    `) as unknown as Array<{ count: number }>;
+    expect(count!.count).toBe(1);
+  });
+
+  it('acknowledges terminal ownership rotation as rejected with no append or command rewrite', async () => {
+    const [replacement] = await getTestDb().execute(sql`
+      INSERT INTO device_commands (device_id, type, target_role, payload, status)
+      VALUES (${fixtureA.deviceId}, 'pam_apply_v2', 'agent', '{}'::jsonb, 'sent')
+      RETURNING id
+    `) as unknown as Array<{ id: string }>;
+    await getTestDb().execute(sql`
+      UPDATE pam_actuations
+      SET current_command_id = ${replacement!.id}
+      WHERE id = ${fixtureA.actuationId}
+    `);
+    await getTestDb().execute(sql`
+      UPDATE device_commands
+      SET status = 'completed', result = '{"status":"completed","retained":true}'::jsonb,
+          payload = '{"retained":true}'::jsonb, completed_at = '2026-08-25T12:00:00.000Z'
+      WHERE id = ${fixtureA.commandId}
+    `);
+    const terminalSnapshot = await commandRow(fixtureA.commandId);
+
+    const response = await submitRest(fixtureA, resultFor(fixtureA));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ protocolVersion: 1, classification: 'rejected' });
+    expect(await commandRow(fixtureA.commandId)).toEqual(terminalSnapshot);
+
+    const [count] = await getTestDb().execute(sql`
+      SELECT count(*)::int AS count FROM pam_actuation_results
+      WHERE actuation_id = ${fixtureA.actuationId}
+    `) as unknown as Array<{ count: number }>;
+    expect(count!.count).toBe(0);
+  });
+
+  it('acknowledges terminal lower-generation evidence as stale with no append or command rewrite', async () => {
+    await getTestDb().execute(sql`
+      UPDATE pam_actuations SET generation = 2 WHERE id = ${fixtureA.actuationId}
+    `);
+    await getTestDb().execute(sql`
+      UPDATE device_commands
+      SET status = 'completed', result = '{"status":"completed","retained":true}'::jsonb,
+          payload = '{"retained":true}'::jsonb, completed_at = '2026-08-25T12:00:00.000Z'
+      WHERE id = ${fixtureA.commandId}
+    `);
+    const terminalSnapshot = await commandRow(fixtureA.commandId);
+
+    const response = await submitRest(fixtureA, resultFor(fixtureA));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ protocolVersion: 1, classification: 'stale' });
+    expect(await commandRow(fixtureA.commandId)).toEqual(terminalSnapshot);
+
+    const [count] = await getTestDb().execute(sql`
+      SELECT count(*)::int AS count FROM pam_actuation_results
+      WHERE actuation_id = ${fixtureA.actuationId}
+    `) as unknown as Array<{ count: number }>;
+    expect(count!.count).toBe(0);
   });
 });

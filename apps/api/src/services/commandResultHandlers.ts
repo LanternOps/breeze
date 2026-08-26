@@ -41,7 +41,15 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
-import { pamAgentResultV2Schema, recordPamActuationResult } from './pamActuationResult';
+import {
+  pamAgentResultV2Schema,
+  recordPamActuationResult,
+  type PamActuationResultClassification,
+} from './pamActuationResult';
+
+export type CommandResultHandlerOutcome =
+  | { kind: 'pam'; classification: PamActuationResultClassification }
+  | void;
 
 export type CommandResultHandler = (params: {
   agentId: string;
@@ -60,7 +68,7 @@ export type CommandResultHandler = (params: {
   result: z.infer<typeof commandResultSchema>;
   resolvedDeviceId: string;
   stdout: string | undefined;
-}) => Promise<void>;
+}) => Promise<CommandResultHandlerOutcome>;
 
 // ---------------------------------------------------------------------------
 // Per-command-type result handlers (used by the dispatch map in processCommandResult)
@@ -578,18 +586,19 @@ async function handlePamActuationV2Result({
   commandId,
   result,
   resolvedDeviceId,
-}: Parameters<CommandResultHandler>[0]): Promise<void> {
+}: Parameters<CommandResultHandler>[0]): Promise<CommandResultHandlerOutcome> {
   const parsed = pamAgentResultV2Schema.safeParse(result.result);
   if (!parsed.success) {
     console.warn(`[AgentWs] Ignoring malformed PAM v2 result for command ${commandId}`);
     return;
   }
-  await recordPamActuationResult({
+  const classification = await recordPamActuationResult({
     agentId,
     deviceId: resolvedDeviceId,
     commandId,
     result: parsed.data,
   });
+  return { kind: 'pam', classification };
 }
 
 export const commandResultHandlers: Record<string, CommandResultHandler> = {

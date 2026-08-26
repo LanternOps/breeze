@@ -72,7 +72,7 @@ describe('PAM v2 command result handlers', () => {
         observedAt: '2026-08-25T12:00:00.000Z',
         evidence: { bootId: 'boot-1' },
       };
-      await commandResultHandlers[commandType]!({
+      const outcome = await commandResultHandlers[commandType]!({
         agentId: 'agent-1',
         commandId: '33333333-3333-4333-8333-333333333333',
         resolvedDeviceId: '44444444-4444-4444-8444-444444444444',
@@ -86,6 +86,7 @@ describe('PAM v2 command result handlers', () => {
         commandId: '33333333-3333-4333-8333-333333333333',
         result: protocolResult,
       });
+      expect(outcome).toEqual({ kind: 'pam', classification: 'applied' });
     },
   );
 });
