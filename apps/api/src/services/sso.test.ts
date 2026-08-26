@@ -632,6 +632,39 @@ describe('buildAuthorizationUrl re-auth params', () => {
   });
 });
 
+/**
+ * The Date postgres.js hands back for a `timestamp without time zone` column on
+ * a host whose UTC offset is `offsetMinutes`, using Date's own sign convention
+ * (positive = WEST of UTC, e.g. 360 for America/Denver in summer; negative =
+ * east, e.g. -120 for Europe/Berlin in summer).
+ *
+ * This exists because {@link pgOffsetlessTimestamp} — faithful as it is — is
+ * WORTHLESS as a regression guard on a UTC runner, and CI runners are UTC. With
+ * offset 0, `utcMsFromOffsetlessTimestamp(d)` and `d.getTime()` are the same
+ * number, so every arithmetic assertion about the conversion passes whether or
+ * not the conversion exists. Overriding `getTimezoneOffset` simulates a non-UTC
+ * host regardless of the real one, so these tests have identical teeth under
+ * TZ=UTC and TZ=America/Denver.
+ */
+function offsetlessTimestampFromHostAt(trueUtcMs: number, offsetMinutes: number): Date {
+  // Postgres emits the UTC wall clock; a host `offsetMinutes` west of UTC reads
+  // that wall clock as a local time that is `offsetMinutes` later in real terms.
+  const naive = new Date(trueUtcMs + offsetMinutes * 60_000);
+  Object.defineProperty(naive, 'getTimezoneOffset', {
+    value: () => offsetMinutes,
+    configurable: true,
+  });
+  return naive;
+}
+
+const SIMULATED_HOSTS = [
+  { label: 'UTC', offsetMinutes: 0 },
+  { label: 'America/Denver (west of UTC, MDT)', offsetMinutes: 360 },
+  { label: 'America/Los_Angeles (west of UTC, PDT)', offsetMinutes: 420 },
+  { label: 'Europe/Berlin (east of UTC, CEST)', offsetMinutes: -120 },
+  { label: 'Asia/Kathmandu (east of UTC, :45 offset)', offsetMinutes: -345 },
+];
+
 describe('assertFreshIdpAuthentication', () => {
   const NOW = 1_800_000_000_000;        // fixed clock, ms
   const STARTED = NOW - 30_000;         // transaction began 30s ago
@@ -704,10 +737,28 @@ describe('assertFreshIdpAuthentication', () => {
     // in the FUTURE and every attempt is stale (feature dead on arrival); east
     // of UTC it slides into the PAST and a cached IdP session that old is
     // accepted as fresh — a real weakening of the only control this feature has.
-    it('is not skewed by the host timezone the way a bare .getTime() is', () => {
-      const offsetMs = sessionStartedAt.getTimezoneOffset() * 60_000;
-      expect(utcMsFromOffsetlessTimestamp(sessionStartedAt)).toBe(STARTED);
-      expect(sessionStartedAt.getTime()).toBe(STARTED + offsetMs);
+    //
+    // Written against SIMULATED host offsets, not the runner's own: on a UTC
+    // runner the real offset is 0 and this whole contract collapses to `x === x`.
+    it('a bare .getTime() bound is dead on arrival west of UTC and permissive east of it', () => {
+      const during = Math.floor(STARTED / 1000) + 5;
+      const cachedAnHourBeforeTheClick = Math.floor(STARTED / 1000) - 3600;
+
+      // West (UTC-6): naive bound is 6h in the future, so a genuine
+      // during-the-round-trip auth_time reads stale — 100% of attempts fail.
+      const west = offsetlessTimestampFromHostAt(STARTED, 360);
+      expect(assertFreshIdpAuthentication({ auth_time: during }, west.getTime(), NOW))
+        .toEqual({ ok: false, reason: 'auth_time_stale' });
+      expect(assertFreshIdpAuthentication({ auth_time: during }, utcMsFromOffsetlessTimestamp(west), NOW))
+        .toEqual({ ok: true });
+
+      // East (UTC+2): naive bound is 2h in the past, so an IdP session cached an
+      // hour BEFORE the click is waved through as a fresh re-authentication.
+      const east = offsetlessTimestampFromHostAt(STARTED, -120);
+      expect(assertFreshIdpAuthentication({ auth_time: cachedAnHourBeforeTheClick }, east.getTime(), NOW))
+        .toEqual({ ok: true });
+      expect(assertFreshIdpAuthentication({ auth_time: cachedAnHourBeforeTheClick }, utcMsFromOffsetlessTimestamp(east), NOW))
+        .toEqual({ ok: false, reason: 'auth_time_stale' });
     });
   });
 });
@@ -718,13 +769,20 @@ describe('utcMsFromOffsetlessTimestamp', () => {
     expect(utcMsFromOffsetlessTimestamp(pgOffsetlessTimestamp(instant))).toBe(instant);
   });
 
-  it('is a no-op under UTC, which is why hosted production never saw this', () => {
-    const instant = Date.UTC(2026, 7, 25, 18, 34, 15, 123);
-    const fromDb = pgOffsetlessTimestamp(instant);
-    if (fromDb.getTimezoneOffset() === 0) {
-      expect(utcMsFromOffsetlessTimestamp(fromDb)).toBe(fromDb.getTime());
-    } else {
-      expect(utcMsFromOffsetlessTimestamp(fromDb)).not.toBe(fromDb.getTime());
+  // The row that actually guards the conversion. The UTC row documents WHY this
+  // defect reached production green (the conversion is a no-op there); every
+  // other row fails if the offset subtraction is removed, so the suite has teeth
+  // on a UTC CI runner and on a US developer's machine alike.
+  it.each(SIMULATED_HOSTS)(
+    'recovers the true epoch on a host at $label',
+    ({ offsetMinutes }) => {
+      const instant = Date.UTC(2026, 7, 25, 18, 34, 15, 123);
+      const fromDb = offsetlessTimestampFromHostAt(instant, offsetMinutes);
+
+      expect(utcMsFromOffsetlessTimestamp(fromDb)).toBe(instant);
+      // And the naive read really is wrong by exactly the host offset — the
+      // reason the conversion has to exist at all.
+      expect(fromDb.getTime()).toBe(instant + offsetMinutes * 60_000);
     }
-  });
+  );
 });

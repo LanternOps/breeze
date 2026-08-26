@@ -93,8 +93,15 @@ vi.mock('../services/sso', () => ({
   // that puts the session's created_at on the same clock as the id_token's
   // auth_time. A stub returning `undefined` would make the freshness bound
   // NaN-ish and the timezone test below meaningless.
-  utcMsFromOffsetlessTimestamp: (value: Date) =>
-    value.getTime() - value.getTimezoneOffset() * 60_000,
+  //
+  // Wrapped in vi.fn() so the CALL ITSELF is observable. Every value-based
+  // assertion about this conversion is vacuous under TZ=UTC — the offset is 0,
+  // so the converted bound and a naive `.getTime()` are the SAME number and a
+  // reverted call site still passes. That is exactly how the missing conversion
+  // shipped past a green (UTC) CI run. Asserting that the route CALLED this,
+  // with the session's own createdAt, has teeth in every host timezone.
+  utcMsFromOffsetlessTimestamp: vi.fn((value: Date) =>
+    value.getTime() - value.getTimezoneOffset() * 60_000),
   mapUserAttributes: vi.fn(),
   discoverOIDCConfig: vi.fn(),
   // Real logic (not a stub) — getOIDCConfig (defined in sso.ts, not mocked)
@@ -219,6 +226,7 @@ import {
   exchangeCodeForTokens,
   getUserInfo,
   mapUserAttributes,
+  utcMsFromOffsetlessTimestamp,
   verifyIdTokenSignature,
 } from '../services/sso';
 import { mintStepUpGrant } from '../services/mfaStepUpGrant';
@@ -676,11 +684,19 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
   //
   // This test is the reason the fixture takes an epoch rather than a Date: it
   // only has teeth when the session row is built the way the driver builds it.
-  // Under TZ=UTC the offset is zero and it passes either way — which is exactly
-  // how this shipped past a green CI run.
+  //
+  // It is deliberately NOT written as an arithmetic comparison of the bound
+  // against `createdAt.getTime()`. Under TZ=UTC the host offset is zero, so
+  // those two numbers are identical and every such assertion passes with or
+  // without the conversion — which is exactly how this shipped past a green CI
+  // run on UTC runners. The load-bearing assertions here are therefore about
+  // the CALL: the route must hand the raw `createdAt` Date to
+  // utcMsFromOffsetlessTimestamp and use that function's return value as the
+  // bound. Deleting the conversion at the call site fails this in every
+  // timezone, UTC included.
   it('compares auth_time against the click on the SAME clock, whatever the host timezone', async () => {
     const sessionCreatedAtMs = Date.now() - 60_000;
-    primeReauthCallback({
+    const { session } = primeReauthCallback({
       sessionCreatedAtMs,
       // 30s after the click: unambiguously fresh on a correct clock.
       idClaims: { sub: EXTERNAL_ID, email: 'tech@acme.example', auth_time: Math.floor(sessionCreatedAtMs / 1000) + 30 }
@@ -688,12 +704,21 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
+    // TZ-independent teeth #1: the conversion ran, on the session's OWN
+    // created_at Date (not on `Date.now()`, not on a pre-converted number).
+    expect(utcMsFromOffsetlessTimestamp).toHaveBeenCalledWith(session.createdAt);
+
     const [, boundMs] = vi.mocked(assertFreshIdpAuthentication).mock.calls.at(-1)!;
+    // TZ-independent teeth #2: the bound the freshness check received is the
+    // value that conversion RETURNED — so the two calls are wired together
+    // rather than coincidentally agreeing on a UTC host.
+    const converted = vi.mocked(utcMsFromOffsetlessTimestamp).mock.results.at(-1)!;
+    expect(converted.type).toBe('return');
+    expect(boundMs).toBe(converted.value);
+
+    // And, on a correct clock, that bound is the true epoch of the click.
     expect(boundMs).toBe(sessionCreatedAtMs);
-    // Pins that the offset was actually neutralised rather than the fixture
-    // having handed over a true-instant Date all along.
-    const naive = pgOffsetlessTimestamp(sessionCreatedAtMs);
-    expect(naive.getTime() - boundMs).toBe(naive.getTimezoneOffset() * 60_000);
+    expect(session.createdAt.getTime() - boundMs).toBe(session.createdAt.getTimezoneOffset() * 60_000);
 
     expect(assertFreshIdpAuthentication).toHaveLastReturnedWith({ ok: true });
     expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
