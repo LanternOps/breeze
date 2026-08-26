@@ -560,6 +560,23 @@ type Heartbeat struct {
 	pamLifetimeManager       pamlifetime.Manager
 	pamReconciled            atomic.Bool
 	pamVerificationAvailable atomic.Bool
+	// PAM startup reconciliation has a separate, non-expiring REST outbox.
+	// pamReconciliationMu protects only the small in-memory staged set and
+	// availability/error markers; it is never held across disk or network I/O.
+	pamReconciliationOutbox           *pamReconciliationOutbox
+	pamReconciliationMu               sync.Mutex
+	pamReconciliationStaged           map[string]pamlifetime.Result
+	pamReconciliationBlocked          map[string]struct{}
+	pamReconciliationIdentityFailures int
+	pamReconciliationManagerAvailable bool
+	pamReconciliationWake             chan struct{}
+	pamReconciliationRetryOnce        sync.Once
+	pamReconciliationPassRunning      atomic.Bool
+	pamLocalReconcileRunning          atomic.Bool
+	// Test seams. Production uses resolvePamBindings and
+	// submitPamReconciliationResult when these are nil.
+	pamResolveBindingsFn func(context.Context, []pamBindingCandidate) ([]pamBindingDisposition, error)
+	pamSubmitResultFn    func(context.Context, string, pamlifetime.Result) (pamResultAcknowledgement, error)
 
 	// sendHeartbeatFn is an optional override used by tests to replace the
 	// real sendHeartbeat call inside sendHeartbeatWithWatchdog. nil in
@@ -769,6 +786,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Build HTTP client with optional mTLS transport
 	httpClient := newHeartbeatHTTPClient(tlsCfg)
 
+	outboxRoot := backupResultOutboxDir()
 	h := &Heartbeat{
 		config:       cfg,
 		secureToken:  secToken,
@@ -782,27 +800,31 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
-		sessionCol:      collectors.NewSessionCollector(),
-		policyStateCol:  collectors.NewPolicyStateCollector(),
-		patchCol:        collectors.NewPatchCollector(),
-		patchMgr:        patching.NewDefaultManager(cfg),
-		connectionsCol:  collectors.NewConnectionsCollector(),
-		eventLogCol:     collectors.NewEventLogCollector(),
-		bootCol:         collectors.NewBootPerformanceCollector(),
-		reliabilityCol:  collectors.NewReliabilityCollector(),
-		agentVersion:    version,
-		executor:        executor.New(cfg),
-		desktopMgr:      desktop.NewSessionManager(),
-		wsDesktopMgr:    desktop.NewWsSessionManager(),
-		terminalMgr:     terminal.NewManager(),
-		tunnelMgr:       tunnel.NewManager(false),
-		securityScanner: &security.SecurityScanner{Config: cfg},
-		pool:            workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
-		healthMon:       health.NewMonitor(),
-		retryCfg:        httputil.DefaultRetryConfig(),
-		seenCommands:    make(map[string]time.Time),
-		backupOutbox:    newBackupResultOutbox(backupResultOutboxDir()),
-		desktopTargets:  make(map[string]string),
+		sessionCol:               collectors.NewSessionCollector(),
+		policyStateCol:           collectors.NewPolicyStateCollector(),
+		patchCol:                 collectors.NewPatchCollector(),
+		patchMgr:                 patching.NewDefaultManager(cfg),
+		connectionsCol:           collectors.NewConnectionsCollector(),
+		eventLogCol:              collectors.NewEventLogCollector(),
+		bootCol:                  collectors.NewBootPerformanceCollector(),
+		reliabilityCol:           collectors.NewReliabilityCollector(),
+		agentVersion:             version,
+		executor:                 executor.New(cfg),
+		desktopMgr:               desktop.NewSessionManager(),
+		wsDesktopMgr:             desktop.NewWsSessionManager(),
+		terminalMgr:              terminal.NewManager(),
+		tunnelMgr:                tunnel.NewManager(false),
+		securityScanner:          &security.SecurityScanner{Config: cfg},
+		pool:                     workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
+		healthMon:                health.NewMonitor(),
+		retryCfg:                 httputil.DefaultRetryConfig(),
+		seenCommands:             make(map[string]time.Time),
+		backupOutbox:             newBackupResultOutbox(outboxRoot),
+		pamReconciliationOutbox:  newPamReconciliationOutbox(outboxRoot),
+		pamReconciliationStaged:  make(map[string]pamlifetime.Result),
+		pamReconciliationBlocked: make(map[string]struct{}),
+		pamReconciliationWake:    make(chan struct{}, 1),
+		desktopTargets:           make(map[string]string),
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
@@ -1050,12 +1072,18 @@ func (h *Heartbeat) SetStatePath(path string) {
 func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
 	h.pamReconciled.Store(false)
 	h.pamVerificationAvailable.Store(false)
+	h.pamLocalReconcileRunning.Store(true)
+	defer h.pamLocalReconcileRunning.Store(false)
 	if h.pamLifetimeManager == nil {
+		h.setPamReconciliationManagerAvailable(false)
 		return nil
 	}
 	results := h.pamLifetimeManager.Reconcile(ctx)
-	h.refreshPamLifetimeAvailability()
-	h.pamReconciled.Store(true)
+	h.setPamReconciliationManagerAvailable(h.refreshPamLifetimeAvailability())
+	results = h.stagePamReconciliationResults(results)
+	h.pamLocalReconcileRunning.Store(false)
+	h.reconcilePamEvidence(ctx)
+	h.signalPamReconciliationWork()
 	return results
 }
 
@@ -1387,6 +1415,8 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 }
 
 func (h *Heartbeat) Start() {
+	h.startPamReconciliationRetryLoop()
+
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
 	// that was interrupted between the durable disk write and the server
 	// confirmation. This runs first on purpose: if the agent was offline long

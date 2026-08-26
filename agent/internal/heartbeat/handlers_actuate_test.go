@@ -23,6 +23,7 @@ type fakePamLifetimeManager struct {
 	cleanupCalls     int
 	reconcileStarted chan<- struct{}
 	reconcileRelease <-chan struct{}
+	reconcileResults []pamlifetime.Result
 	setEnabledErr    error
 	setEnabledCalls  []bool
 	protocolVersion  int
@@ -64,7 +65,7 @@ func (m *fakePamLifetimeManager) Reconcile(context.Context) []pamlifetime.Result
 	if m.reconcileRelease != nil {
 		<-m.reconcileRelease
 	}
-	return nil
+	return append([]pamlifetime.Result(nil), m.reconcileResults...)
 }
 func (m *fakePamLifetimeManager) SetEnabled(ctx context.Context, enabled bool) error {
 	gate := m.initLeaseGate()

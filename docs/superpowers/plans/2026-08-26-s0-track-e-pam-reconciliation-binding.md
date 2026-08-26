@@ -339,11 +339,11 @@ type pamResultAcknowledgement struct {
 }
 ```
 
-- [ ] **Step 1: Write transport RED tests**
+- [x] **Step 1: Write transport RED tests**
 
 With `httptest.Server`, prove resolver request path/auth/body, 100-candidate chunking, response correlation by observation ID, primary-agent URL, missing route/non-200/malformed response/missing disposition as errors, and exact REST result acknowledgement parsing. Assert redirects are refused by the existing HTTP client policy.
 
-- [ ] **Step 2: Run transport tests and verify RED**
+- [x] **Step 2: Run transport tests and verify RED**
 
 ```bash
 cd agent && go test ./internal/heartbeat -run 'TestPamReconciliationTransport' -count=1
@@ -351,11 +351,11 @@ cd agent && go test ./internal/heartbeat -run 'TestPamReconciliationTransport' -
 
 Expected: FAIL because the transport is absent.
 
-- [ ] **Step 3: Implement REST-only transport methods**
+- [x] **Step 3: Implement REST-only transport methods**
 
 Use `httputil.Do` with bounded contexts, `h.serverURL()`, `h.authHeader()`, and `h.httpClient()`. Resolver path is `/api/v1/agents/<agentId>/pam/reconciliation-bindings`; result path remains `/api/v1/agents/<agentId>/commands/<commandId>/result`. Wrap each `pamlifetime.Result` as `tools.NewSuccessResult(result, 0)` with `Result` explicitly set. Accept only protocol version 1 and the four exact classification strings.
 
-- [ ] **Step 4: Write controller RED tests**
+- [x] **Step 4: Write controller RED tests**
 
 Prove the complete state table:
 
@@ -375,7 +375,7 @@ startup quarantine same bound       -> remains quarantined
 
 Also prove only one retry loop runs, concurrent command admission cannot overtake the barrier, and awaiting acknowledgement does not keep admission closed after confirmed durable handoff.
 
-- [ ] **Step 5: Run controller tests and verify RED**
+- [x] **Step 5: Run controller tests and verify RED**
 
 ```bash
 cd agent && go test -race ./internal/heartbeat -run 'TestPamReconciliationController|TestPamCommandAdmission' -count=1
@@ -383,13 +383,13 @@ cd agent && go test -race ./internal/heartbeat -run 'TestPamReconciliationContro
 
 Expected: FAIL because local reconciliation currently sets `pamReconciled` true without server binding.
 
-- [ ] **Step 6: Implement the startup barrier and retry loop**
+- [x] **Step 6: Implement the startup barrier and retry loop**
 
 In `ReconcilePAMLifetime`, set both readiness flags false, run the manager, replace every returned observation ID with `ReconciliationObservationID`, stage the results, load existing pending/quarantine entries, and perform one bounded resolve/drain pass. Set `pamReconciled=true` only when the local manager is available, no staged/unresolved item remains, and no quarantine remains; pending acknowledged-delivery entries are a completed durable handoff.
 
 Start a single retry goroutine at the top of `Heartbeat.Start`; retry immediately once and then on bounded exponential backoff capped at the heartbeat interval, waking on new work and stopping on `stopChan`. Every transition to unresolved/quarantine sets `pamReconciled=false`; clearing the last blocker recomputes readiness. Do not submit reconciliation entries over `wsClient` or `backupResultOutbox.Flush`.
 
-- [ ] **Step 7: Run GREEN and race tests**
+- [x] **Step 7: Run GREEN and race tests**
 
 ```bash
 cd agent && go test -race ./internal/heartbeat ./internal/pamlifetime -run 'TestPamReconciliation|TestPamCommandAdmission|TestReconciliationObservationID' -count=1
@@ -397,7 +397,7 @@ cd agent && go test -race ./internal/heartbeat ./internal/pamlifetime -run 'Test
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit the transport/barrier checkpoint**
+- [x] **Step 8: Commit the transport/barrier checkpoint**
 
 ```bash
 git add agent/internal/heartbeat/pam_reconciliation.go agent/internal/heartbeat/pam_reconciliation_test.go agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/handlers_actuate_test.go
