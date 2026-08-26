@@ -49,9 +49,12 @@ function getSessionExpiredNotice(t: ReturnType<typeof useTranslation<'auth'>>['t
 }
 
 // Copy for SSO callback `?error=<reason>` bounces that land back on /login.
-// `sso_link_required` (#2183): a password-holding user tried to sign in via SSO
-// and was refused auto-linking — they must connect SSO from an authenticated
-// session instead (Profile → Security → Connect SSO).
+// `sso_link_required` (#2183/#4067): since #4067, password-holding users are
+// routed into the connect-your-sign-in ceremony instead of landing here. This
+// banner remains only for the flows that can't enter it (an SSO-only account
+// already linked to a DIFFERENT provider, or the ceremony store being
+// unavailable) — so it must never instruct a password login, which
+// enforce_sso may forbid tenant-wide.
 function getSsoLoginNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): string | undefined {
   if (typeof window === 'undefined') return undefined;
   const params = new URLSearchParams(window.location.search);
@@ -59,7 +62,7 @@ function getSsoLoginNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): s
   const ssoLoginErrorCopy: Record<string, string> = {
     sso_link_required: t('login.ssoErrors.ssoLinkRequired', {
       defaultValue:
-        'This account already has a password. Sign in with your password, then connect SSO under Profile → Security.',
+        'Your sign-in succeeded, but it couldn’t be connected to your account automatically. Sign in the way you usually do, or contact your administrator.',
     }),
   // Partner axis (#2183): identity-first, no JIT — an unrecognized identity
   // needs an out-of-band invite before SSO can sign it in.

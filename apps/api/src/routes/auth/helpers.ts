@@ -1066,6 +1066,13 @@ export interface PendingMfaRecord {
   statusExpectation: string;
   allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
   expiresAt: number;
+  /**
+   * #4067: set when this MFA step is the continuation of a link-on-first-SSO-
+   * login ceremony (the sso:pendinglink token hash). On successful factor
+   * verification the completion endpoints finalize the SSO link + SSO-style
+   * mint instead of the password-login mint.
+   */
+  ssoLinkTokenHash?: string;
 }
 
 /**
@@ -1094,6 +1101,14 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
   ) {
     return null;
   }
+  // #4067: a PRESENT-but-malformed link pointer must reject the whole record,
+  // never be silently dropped — dropping it would downgrade an SSO-link
+  // continuation into a plain password-login mint, on the one path whose
+  // password check deliberately bypasses assertPasswordAuthAllowedBySso.
+  if ('ssoLinkTokenHash' in parsed
+      && (typeof parsed.ssoLinkTokenHash !== 'string' || parsed.ssoLinkTokenHash.length === 0)) {
+    return null;
+  }
   return {
     userId: parsed.userId,
     mfaMethod: method,
@@ -1107,6 +1122,9 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
       passkey: am.passkey !== false,
     },
     expiresAt: parsed.expiresAt,
+    ...(typeof parsed.ssoLinkTokenHash === 'string' && parsed.ssoLinkTokenHash.length > 0
+      ? { ssoLinkTokenHash: parsed.ssoLinkTokenHash }
+      : {}),
   };
 }
 

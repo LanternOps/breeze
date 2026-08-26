@@ -51,6 +51,8 @@ import {
   mintLoginRegisterGrant
 } from './helpers';
 
+import { finalizeSsoPendingLink } from './ssoLinkCompletion';
+
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
 
 // Body schemas that require a password re-prompt. A stolen access token
@@ -333,6 +335,50 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
     // Clear temp token
     await redis.del(`mfa:pending:${tempToken}`);
+
+    // #4067: this MFA step may be the continuation of a link-on-first-SSO-
+    // login ceremony (/sso/link/confirm verified the password, this endpoint
+    // verified the Breeze-held factor). Finalize the SSO link + SSO-style
+    // mint instead of the password-login mint below —
+    // finalizeSsoPendingLink re-validates the user/provider/epoch bindings
+    // against live state and refuses on any drift.
+    if (pending.ssoLinkTokenHash) {
+      const outcome = await finalizeSsoPendingLink(c, pending.ssoLinkTokenHash, {
+        breezeMfaVerified: true,
+        expectedUserId: user.id,
+      });
+      if (!outcome.ok) {
+        if (outcome.error === 'identity_in_use') {
+          return c.json({ error: 'identity_in_use' }, 409);
+        }
+        if (outcome.error === 'completion_failed') {
+          // Proofs were fine; the account can't complete (membership/mint).
+          // NOT the expired view — a restart loops the user forever.
+          return c.json({ error: 'completion_failed' }, 403);
+        }
+        // Distinct code: the FACTOR was correct — it's the link ceremony that
+        // is dead (TTL, provider re-config, state drift). The connect page
+        // maps this to its expired view; 'Invalid or expired MFA session'
+        // here would strand the user retrying a code that can never work.
+        return c.json({ error: 'sso_link_expired' }, 401);
+      }
+      setRefreshTokenCookie(c, outcome.refreshToken);
+      c.header('Cache-Control', 'no-store');
+      return c.json({
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          mfaEnabled: true,
+          avatarUrl: user.avatarUrl,
+          isPlatformAdmin: user.isPlatformAdmin === true
+        },
+        tokens: { accessToken: outcome.accessToken, expiresInSeconds: outcome.expiresInSeconds },
+        mfaRequired: false,
+        requiresSetup: userRequiresSetup(user),
+        redirectPath: outcome.redirectPath
+      });
+    }
 
     // Partner/org context was already resolved above (mfaContext) — reuse it
     // rather than re-querying.

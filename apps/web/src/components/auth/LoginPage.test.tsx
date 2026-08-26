@@ -194,7 +194,7 @@ describe('LoginPage partner SSO button', () => {
     render(<LoginPage />);
 
     const notice = await screen.findByRole('alert');
-    expect(notice).toHaveTextContent(/This account already has a password/i);
+    expect(notice).toHaveTextContent(/couldn.t be connected to your account automatically/i);
 
     Object.defineProperty(window, 'location', { configurable: true, value: realWindow });
   });
@@ -367,7 +367,7 @@ describe('LoginPage session-expiry notice', () => {
       render(<LoginPage />);
 
       const notice = await screen.findByRole('alert');
-      expect(notice).toHaveTextContent(/This account already has a password/i);
+      expect(notice).toHaveTextContent(/couldn.t be connected to your account automatically/i);
       expect(screen.queryByTestId('login-session-expired-notice')).not.toBeInTheDocument();
     }));
 });

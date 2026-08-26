@@ -1152,6 +1152,9 @@ type ApiAuthSuccess = {
   tokens?: Tokens;
   requiresSetup?: boolean;
   error?: string;
+  // #4067: present when the completed step was the link-on-first-SSO-login
+  // ceremony — the sanitized post-login relay target from the SSO initiation.
+  redirectPath?: string;
 };
 
 export type PasskeyRegistrationOptions = PublicKeyCredentialCreationOptionsJSON;
@@ -1216,7 +1219,8 @@ export async function apiLogin(email: string, password: string): Promise<{
       success: true,
       user,
       tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
+      requiresSetup: !!data.requiresSetup,
+      ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
     };
   } catch {
     return { success: false, error: 'Network error' };
@@ -1244,7 +1248,8 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
       success: true,
       user,
       tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
+      requiresSetup: !!data.requiresSetup,
+      ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
     };
   } catch {
     return { success: false, error: 'Network error' };
@@ -1290,7 +1295,8 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
       success: true,
       user,
       tokens: verifyData.tokens,
-      requiresSetup: !!verifyData.requiresSetup
+      requiresSetup: !!verifyData.requiresSetup,
+      ...(typeof verifyData.redirectPath === 'string' ? { redirectPath: verifyData.redirectPath } : {})
     };
   } catch (error) {
     if (error instanceof Error && error.name === 'NotAllowedError') {
@@ -1298,6 +1304,83 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
     }
     console.warn('[apiVerifyPasskeyMFA] passkey MFA verification failed:', error);
     return { success: false, error: 'Network error' };
+  }
+}
+
+// ── #4067: link-on-first-SSO-login ceremony ─────────────────────────────────
+// The SSO callback parked the verified IdP identity server-side and bound the
+// ceremony to this browser via an HttpOnly cookie scoped to the API's
+// /sso/link endpoints (the API owns the exact path), so both calls just need
+// credentials: 'include'.
+
+export async function apiSsoLinkPending(): Promise<
+  | { success: true; email: string; providerName: string | null }
+  | { success: false; expired: boolean; error?: string }
+> {
+  try {
+    const response = await fetch(buildApiUrl('/sso/link/pending'), {
+      method: 'GET',
+      credentials: 'include'
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, expired: response.status === 404, error: extractApiError(data, 'Ceremony unavailable') };
+    }
+    return { success: true, email: String(data.email ?? ''), providerName: data.providerName ?? null };
+  } catch {
+    return { success: false, expired: false, error: 'Network error' };
+  }
+}
+
+export type SsoLinkConfirmResult =
+  | { state: 'mfa'; tempToken: string; mfaMethod: MfaMethod; passkeyAvailable: boolean; phoneLast4: string | null }
+  | { state: 'complete'; user: User; tokens: Tokens; requiresSetup: boolean; redirectPath?: string }
+  | { state: 'failed'; reason: 'expired' | 'identity_in_use' | 'completion_failed' | 'other'; error?: string };
+
+export async function apiSsoLinkConfirm(password: string): Promise<SsoLinkConfirmResult> {
+  try {
+    const response = await fetch(buildApiUrl('/sso/link/confirm'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ password })
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      if (response.status === 409) return { state: 'failed', reason: 'identity_in_use' };
+      if (data?.error === 'sso_link_expired') return { state: 'failed', reason: 'expired' };
+      if (data?.error === 'completion_failed') return { state: 'failed', reason: 'completion_failed' };
+      return { state: 'failed', reason: 'other', error: extractApiError(data, 'Confirmation failed') };
+    }
+
+    if (data.mfaRequired) {
+      if (typeof data.tempToken !== 'string' || data.tempToken.length === 0) {
+        return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
+      }
+      return {
+        state: 'mfa',
+        tempToken: data.tempToken,
+        mfaMethod: (data.mfaMethod as MfaMethod) || 'totp',
+        passkeyAvailable: data.passkeyAvailable === true,
+        phoneLast4: typeof data.phoneLast4 === 'string' ? data.phoneLast4 : null
+      };
+    }
+
+    if (data.user && data.tokens) {
+      return {
+        state: 'complete',
+        user: data.user,
+        tokens: data.tokens,
+        requiresSetup: !!data.requiresSetup,
+        ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
+      };
+    }
+
+    // 200 without a recognizable shape — API drift; surface, don't strand.
+    return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
+  } catch {
+    return { state: 'failed', reason: 'other', error: 'Network error' };
   }
 }
 
