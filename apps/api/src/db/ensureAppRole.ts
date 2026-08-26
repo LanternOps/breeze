@@ -11,8 +11,15 @@ import { selectAppRolePassword } from './requestDatabaseConfig';
  * This runs from autoMigrate (which connects as the admin) because that is the
  * one place at startup where we have an admin connection and can afford to do
  * DDL. It is idempotent and safe to re-run.
+ *
+ * Returns `true` if the role was created/updated, `false` if the call was
+ * skipped because neither password env var is set. Callers that need
+ * `breeze_app` to exist (e.g. autoMigrate, before applying RLS-policy
+ * migrations) should check the return value and fail fast with a pointed
+ * error rather than let Postgres surface an unrelated-looking
+ * `role "breeze_app" does not exist` failure many files later.
  */
-export async function ensureAppRole(): Promise<void> {
+export async function ensureAppRole(): Promise<boolean> {
   const connectionString =
     process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
@@ -24,7 +31,7 @@ export async function ensureAppRole(): Promise<void> {
     console.warn(
       '[ensure-app-role] Neither BREEZE_APP_DB_PASSWORD nor POSTGRES_PASSWORD is set — skipping breeze_app role setup. RLS will NOT be enforced against the admin connection.',
     );
-    return;
+    return false;
   }
 
   const client = postgres(connectionString, { max: 1 });
@@ -157,6 +164,7 @@ export async function ensureAppRole(): Promise<void> {
     `);
 
     console.log('[ensure-app-role] breeze_app role ensured (NOSUPERUSER, NOBYPASSRLS)');
+    return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[ensure-app-role] failed: ${message}`);

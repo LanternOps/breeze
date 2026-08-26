@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import {
   detectState,
+  assertAppRoleBootstrapped,
   hashSql,
   hasNoTransactionDirective,
   splitSqlStatements,
@@ -85,6 +86,23 @@ describe('autoMigrate', () => {
 
     it('should return "normal" when both users and breeze_migrations exist', () => {
       expect(detectState(true, true)).toBe('normal');
+    });
+  });
+
+  describe('assertAppRoleBootstrapped', () => {
+    it('does not throw when ensureAppRole succeeded', () => {
+      expect(() => assertAppRoleBootstrapped(true, false)).not.toThrow();
+      expect(() => assertAppRoleBootstrapped(true, true)).not.toThrow();
+    });
+
+    it('does not throw when ensureAppRole was skipped but breeze_app already exists (e.g. compose-provisioned dev DB)', () => {
+      expect(() => assertAppRoleBootstrapped(false, true)).not.toThrow();
+    });
+
+    it('throws a pointed error when ensureAppRole was skipped AND breeze_app does not exist (#4048)', () => {
+      expect(() => assertAppRoleBootstrapped(false, false)).toThrow(
+        /BREEZE_APP_DB_PASSWORD.*POSTGRES_PASSWORD.*globalPassThroughEnv/s,
+      );
     });
   });
 
