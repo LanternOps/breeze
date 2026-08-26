@@ -255,7 +255,7 @@ type pamReconciliationOutboxEntry struct {
 }
 ```
 
-- [ ] **Step 1: Write deterministic-identity RED tests**
+- [x] **Step 1: Write deterministic-identity RED tests**
 
 Use fixed inputs to prove byte-for-byte stable UUIDv5 output, lowercase actuation canonicalization, JSON escaping in `bootId`, different IDs for generation/state/native boot changes, and the same ID for repeated `windows-boot-unavailable` failure evidence. Pin this exact golden vector so an encoding change cannot silently fork identity across releases:
 
@@ -267,7 +267,7 @@ bootId      = windows-boot-42
 UUIDv5      = cf09e252-8185-580e-816b-e8708805f663
 ```
 
-- [ ] **Step 2: Run the identity test and verify RED**
+- [x] **Step 2: Run the identity test and verify RED**
 
 ```bash
 cd agent && go test ./internal/pamlifetime -run TestReconciliationObservationID -count=1
@@ -275,15 +275,15 @@ cd agent && go test ./internal/pamlifetime -run TestReconciliationObservationID 
 
 Expected: FAIL because the function does not exist.
 
-- [ ] **Step 3: Implement exact UUIDv5 identity**
+- [x] **Step 3: Implement exact UUIDv5 identity**
 
 Validate/canonicalize `ActuationID` with `uuid.Parse`, encode `[]any{strings.ToLower(parsed.String()), result.Generation, string(result.State), result.Evidence.BootID}` using `encoding/json`, prefix the exact design URL, and call `uuid.NewSHA1(uuid.NameSpaceURL, nameBytes)`. Return an error for zero generation, empty state, or empty boot ID.
 
-- [ ] **Step 4: Write durable outbox RED tests**
+- [x] **Step 4: Write durable outbox RED tests**
 
 Test confirmed enqueue, same command/observation coalescing, different boot identity creating a second entry, pending and quarantine persistence across reconstruction, atomic rebind to a different command, pending-to-quarantine move, removal only by exact key, ordinary backup cap/age eviction leaving PAM files untouched, write/sync/rename failures returning errors, and corrupt/unreadable PAM files remaining blocking instead of being deleted.
 
-- [ ] **Step 5: Run outbox tests and verify RED**
+- [x] **Step 5: Run outbox tests and verify RED**
 
 ```bash
 cd agent && go test ./internal/heartbeat -run 'TestPamReconciliationOutbox|TestBackupResultOutbox' -count=1
@@ -291,11 +291,11 @@ cd agent && go test ./internal/heartbeat -run 'TestPamReconciliationOutbox|TestB
 
 Expected: FAIL because the PAM namespace and error-returning methods do not exist.
 
-- [ ] **Step 6: Implement the separate namespace under the existing outbox root**
+- [x] **Step 6: Implement the separate namespace under the existing outbox root**
 
 Use `<ordinary-outbox>/pam-reconciliation/pending` and `/quarantine`. Use filenames `<command-uuid>.<observation-uuid>.json`; both IDs must be canonical UUIDs. Never scan these subdirectories from ordinary `loadAllLocked`. For a new immutable entry, create a same-directory temporary file, chmod 0600, encode, `Sync`, close, then rename to a previously nonexistent final name. Rebind writes the new file before removing the old file. Quarantine moves to its distinct nonexistent destination. Do not hold the mutex during network calls.
 
-- [ ] **Step 7: Run GREEN and race tests**
+- [x] **Step 7: Run GREEN and race tests**
 
 ```bash
 cd agent && go test -race ./internal/pamlifetime ./internal/heartbeat -run 'TestReconciliationObservationID|TestPamReconciliationOutbox|TestBackupResultOutbox' -count=1
@@ -303,7 +303,7 @@ cd agent && go test -race ./internal/pamlifetime ./internal/heartbeat -run 'Test
 
 Expected: PASS, with ordinary outbox behavior unchanged.
 
-- [ ] **Step 8: Commit the durable-agent checkpoint**
+- [x] **Step 8: Commit the durable-agent checkpoint**
 
 ```bash
 git add agent/internal/pamlifetime/reconciliation_identity.go agent/internal/pamlifetime/reconciliation_identity_test.go agent/internal/heartbeat/pam_reconciliation_outbox.go agent/internal/heartbeat/pam_reconciliation_outbox_test.go agent/internal/heartbeat/backup_result_outbox.go agent/internal/heartbeat/backup_result_outbox_test.go

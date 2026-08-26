@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/websocket"
 )
 
@@ -125,6 +126,37 @@ func TestBackupResultOutbox_CapEviction_TwentyFirstEnqueueEvictsOldest(t *testin
 	}
 	if _, err := os.Stat(o.entryPath("cmd-21")); err != nil {
 		t.Fatalf("expected newly enqueued cmd-21 to be present, stat err=%v", err)
+	}
+}
+
+func TestBackupResultOutbox_CapAndAgeNeverTouchPamReconciliationNamespace(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "outbox")
+	pamOutbox := newPamReconciliationOutbox(root)
+	pamObservation := testPamObservation(testPamObservationID)
+	pamObservation.State = pamlifetime.ResultFailed
+	if err := pamOutbox.Enqueue(testPamCommandID, pamObservation); err != nil {
+		t.Fatal(err)
+	}
+
+	ordinary := newBackupResultOutbox(root)
+	base := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	tick := 0
+	ordinary.nowFn = func() time.Time {
+		tick++
+		return base.Add(time.Duration(tick) * time.Hour)
+	}
+	for i := 0; i <= backupResultOutboxMaxPending; i++ {
+		ordinary.Enqueue(testResult(fmt.Sprintf("ordinary-%02d", i)))
+	}
+	ordinary.nowFn = func() time.Time { return base.Add(backupResultOutboxMaxAge + 100*time.Hour) }
+	ordinary.Flush(func(websocket.CommandResult) error { return nil })
+
+	snapshot, err := newPamReconciliationOutbox(root).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Pending) != 1 || snapshot.Pending[0].Observation.ObservationID != testPamObservationID {
+		t.Fatalf("ordinary eviction changed PAM namespace: %+v", snapshot)
 	}
 }
 
