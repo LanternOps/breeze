@@ -2032,6 +2032,7 @@ async function executeAutomationActionsInOrder(args: {
   scriptsById: ActionExecutionContext['scriptsById'];
   channelsById: ActionExecutionContext['channelsById'];
   variableScope: TenantVariableScope;
+  trigger: AutomationTriggerContext | undefined;
   onFailure: 'stop' | 'continue' | 'notify';
   notificationTargets?: NotificationTargets;
   createdBy: string | null;
@@ -2136,14 +2137,14 @@ async function executeAutomationActionsInOrder(args: {
 
     await runWithConcurrency(activeDevices, 5, async (device) => {
       try {
-        const result = await withAutomationRuntimeDb(() => executeAction(action, actionIndex, {
+        const result = await withAutomationRuntimeDb(() => executeAction(action, actionIndex, buildActionExecutionContext({
           automation: args.automation,
           runId: args.runId,
-          device,
           scriptsById: args.scriptsById,
           channelsById: args.channelsById,
           variableScope: args.variableScope,
-        }));
+          trigger: args.trigger,
+        }, device)));
         logs.push(result.log);
         await persistActionExecutionOutcome(args.runId, device.id, actionIndex, result);
         if (
@@ -2551,6 +2552,7 @@ async function executeAutomationRunInner(
     scriptsById,
     channelsById,
     variableScope,
+    trigger: triggerContext,
     onFailure: normalized.onFailure,
     notificationTargets: normalized.notificationTargets,
     resolvedReferences,
@@ -2960,6 +2962,7 @@ export async function executeConfigPolicyAutomationRun(
     scriptsById,
     channelsById,
     variableScope,
+    trigger: undefined,
     onFailure,
     notificationTargets: notifyTargets,
     resolvedReferences: admission.resolvedReferences,
