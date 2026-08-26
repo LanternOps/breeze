@@ -266,6 +266,11 @@ pnpm test
 # API only
 pnpm --filter @breeze/api test
 
+# Run ONE test file while developing (do NOT insert `--` before the flag — see trap below)
+pnpm --filter @breeze/api test --run src/routes/auth.test.ts
+# equivalent, and avoids the pnpm passthrough entirely:
+cd apps/api && npx vitest run src/routes/auth.test.ts
+
 # NOTE: `pnpm test` does NOT run the RLS/integration contract suites
 # (separate vitest configs: vitest.config.rls.ts, vitest.integration.config.ts).
 # Local green ≠ CI green — run those explicitly when touching tenancy/cascade code.
@@ -279,6 +284,11 @@ cd agent && go test -race ./internal/discovery/...
 # E2E
 cd e2e-tests && pnpm test
 ```
+
+**Two traps when scoping a run to one file (every workspace package's `test` script is a bare `"vitest"`, so these apply everywhere, not just `apps/api`):**
+
+- **Never write `pnpm --filter <pkg> test -- --run <path>`.** Confirmed by direct repro: this ran the *entire* suite (1,470 files / 25,380 tests) instead of the one file, and hung well past 2 minutes. Root cause: pnpm forwards the literal `--` token into the script's argv (verified via `NODE_OPTIONS=--require` argv logging: vitest actually receives `["--", "--run", "<path>"]`), and vitest's CLI parser stops parsing recognized flags at that `--`, so `--run` is swallowed as a raw positional filter string instead of the flag that disables watch mode — vitest stays in watch mode and falls back to scanning the whole project. **Drop the `--`**: `pnpm --filter <pkg> test --run <path>` works correctly (verified: 1 file, exits in seconds) and is exactly what `ci.yml`'s `compatibility.test.ts` step already does. `cd apps/api && npx vitest run <path>` (the `run` subcommand, no `--filter` involved) is the simplest way to sidestep this entirely.
+- **Vitest's path filter is a plain substring match, not a glob and not a directory prefix.** `vitest run src/routes/auth/` (trailing slash) matches only files physically inside the `auth/` directory and will **silently skip** sibling files `src/routes/auth.test.ts` and `src/routes/auth.passkeys.test.ts` — a targeted run can read green while both siblings are red and never executed. An asterisk does **not** help either — `vitest run src/routes/auth*` matches zero files (confirmed: "No test files found"); vitest does not glob-expand CLI filters. To cover a file and its dotted siblings, either list them explicitly (`vitest run src/routes/auth.test.ts src/routes/auth.passkeys.test.ts`) or drop the trailing slash and rely on substring matching (`vitest run src/routes/auth`) — but check the reported file count, since a bare substring can pull in unrelated matches too (e.g. `src/routes/auth` also matches `authenticator.test.ts`).
 
 ---
 
