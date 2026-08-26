@@ -7,24 +7,67 @@ const root = resolve(import.meta.dirname, '../../../..');
 const read = (path: string): string => readFileSync(resolve(root, path), 'utf8');
 
 describe('production readiness wiring', () => {
+  // Compose exposes ONE dependency condition, `service_healthy`, and it gates
+  // startup — so whatever the healthcheck probes also decides whether
+  // dependents may start. Probing /ready here would promote an admission
+  // signal into a hard startup dependency for ingress: on a first boot or a
+  // full recreation, a required consumer that cannot attach leaves the API
+  // unhealthy, Compose abandons the operation, and caddy never starts. An
+  // internal worker fault would become loss of ingress for the whole fleet.
   it.each([
     ['docker-compose.yml', '40s'],
     ['docker-compose.override.yml.dev', '60s'],
     ['deploy/docker-compose.prod.yml', '40s'],
-  ])('%s admits API traffic through /ready after its start period', (path, startPeriod) => {
+  ])('%s healthchecks the API on LIVENESS, never readiness', (path, startPeriod) => {
     const document = load(read(path)) as {
       services: { api: { healthcheck: { test: string[]; start_period: string } } };
     };
     const healthcheck = document.services.api.healthcheck;
+    const probe = healthcheck.test.join(' ');
 
-    expect(healthcheck.test.join(' ')).toContain('http://127.0.0.1:3001/ready');
+    expect(probe).toContain('http://127.0.0.1:3001/health');
+    expect(probe).not.toContain('/ready');
     expect(healthcheck.start_period).toBe(startPeriod);
+  });
+
+  // The reason the rule above is load-bearing rather than stylistic. If these
+  // dependencies are ever dropped, revisit it deliberately — do not let a
+  // readiness probe drift back into `healthcheck:` because "nothing depends on
+  // it any more" turned out to be temporarily true.
+  it.each([
+    ['docker-compose.yml', ['caddy', 'web', 'portal']],
+    ['deploy/docker-compose.prod.yml', ['caddy', 'web', 'portal']],
+  ])('%s gates %s startup on the API healthcheck', (path, dependents) => {
+    const document = load(read(path)) as {
+      services: Record<string, { depends_on?: Record<string, { condition: string }> }>;
+    };
+
+    for (const name of dependents) {
+      expect(document.services[name]?.depends_on?.api?.condition).toBe('service_healthy');
+    }
   });
 
   it('uses readiness, not liveness, for the post-deploy admission gate', () => {
     const deploy = read('scripts/prod/deploy.sh');
     expect(deploy).toContain('https://${BREEZE_DOMAIN}/ready');
     expect(deploy).not.toMatch(/curl[^\n]+https:\/\/\$\{BREEZE_DOMAIN\}\/health/);
+  });
+
+  // `curl --fail` only fails at >= 400, so an authenticating proxy answering
+  // /ready with a 302 to its identity provider exits 0 and the gate proves
+  // nothing — measured against a live Cloudflare Access instance, where the
+  // Access policy covered /health but not /ready. Assert the unredirected
+  // status is exactly 200 and that the body carries Breeze's own verdict.
+  it('asserts an exact 200 and a ready body, not merely a non-4xx response', () => {
+    const deploy = read('scripts/prod/deploy.sh');
+
+    expect(deploy).toContain("--write-out '%{http_code}'");
+    expect(deploy).toContain('"ready":true');
+    // -L can follow the redirect onto a 200 login page, which passes for the
+    // same reason the bare --fail check does.
+    expect(deploy).not.toMatch(/curl[^\n]*\s-L\b/);
+    // The smoke loop and its final check must both go through the helper.
+    expect(deploy).not.toMatch(/curl[^\n]+--fail[^\n]+\/ready/);
   });
 
   it('keeps both liveness routes mounted independently of readiness', () => {

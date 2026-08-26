@@ -465,9 +465,20 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # LIVENESS, deliberately not /ready. Compose has one dependency condition —
+    # `service_healthy` — and it is a STARTUP gate, so whatever runs here also
+    # decides whether dependents are allowed to start at all. caddy, web and
+    # portal all declare `depends_on: api: condition: service_healthy`, so
+    # probing /ready here promotes an admission signal into a hard startup
+    # dependency: a required queue consumer that cannot attach on a first boot
+    # or a full recreation leaves the API unhealthy, Compose gives up after the
+    # grace below, and caddy never starts — an internal worker problem becomes
+    # loss of ingress for the whole fleet. /ready belongs on the deploy
+    # admission gate and any external load balancer, which can drain traffic
+    # without preventing a process from starting. See docs/operations/health-probes.md.
     healthcheck:
       <<: *healthcheck
-      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/ready']
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
       start_period: 40s
     networks:
       - breeze
