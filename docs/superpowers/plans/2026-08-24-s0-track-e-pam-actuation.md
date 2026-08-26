@@ -583,6 +583,8 @@ Implementation note (2026-08-26): startup reconciliation and fail-closed command
 
 Authoritative design addendum (2026-08-26): [`2026-08-26-s0-track-e-pam-reconciliation-binding-design.md`](../specs/2026-08-26-s0-track-e-pam-reconciliation-binding-design.md) defines an agent-authenticated, read-only binding resolver, durable startup-evidence handoff, and narrow terminal-PAM observation forwarding through the existing frozen result transaction. Implementation and its RED/GREEN gates remain pending, so this step stays unchecked and Task 8 remains blocked.
 
+Executable Step 3 addendum (2026-08-26): [`2026-08-26-s0-track-e-pam-reconciliation-binding.md`](2026-08-26-s0-track-e-pam-reconciliation-binding.md) decomposes the reviewed design into the resolver, acknowledged REST result, deterministic identity/durable outbox, startup barrier/re-resolution, telemetry/runbook, and final gate checkpoints. Follow that addendum with strict RED/GREEN; do not infer completion from the design commit.
+
 - [x] **Step 4: Bind PAM disable to cleanup and account lifecycle**
 
 Change `handleUACInterception(false)` to stop new UAC capture, invoke manager disable/cleanup for all active rows, deprovision and verify the local account, persist/report failures, then clear the enabled state only after proof. Re-enable does not resurrect old desired-active generations. Capability advertisement drops to zero while reconciliation or verification is unavailable.

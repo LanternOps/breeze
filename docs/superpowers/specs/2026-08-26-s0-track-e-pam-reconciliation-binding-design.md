@@ -1,6 +1,7 @@
 ---
 tracking_issue: https://github.com/LanternOps/breeze/issues/4060
 implementation_plan: ../plans/2026-08-24-s0-track-e-pam-actuation.md
+step3_implementation_plan: ../plans/2026-08-26-s0-track-e-pam-reconciliation-binding.md
 ---
 
 # Track E Task 7 PAM Reconciliation Binding Design
@@ -388,8 +389,9 @@ Future-generation observations remain opaque `unresolved` and fail closed;
 a server restored from an older backup can pin devices in this state, which
 the same telemetry surfaces. Re-resolution can dispose a quarantine only when
 the server later returns `duplicate` or `stale`; there is no administrative
-API, local file deletion, or silent automatic override. The implementation
-must add `docs/runbooks/pam-reconciliation-ledger-reset.md`, and that reviewed,
+API, ad hoc local file deletion outside the runbook, or silent automatic
+override. The implementation must add
+`docs/runbooks/pam-reconciliation-ledger-reset.md`, and that reviewed,
 operator-driven ledger reset is the only manual quarantine-clear procedure.
 
 ## Failure Semantics
