@@ -70,6 +70,7 @@ export async function claimPendingCommandsForDevice(
   capabilities?: {
     peripheralPolicyProtocolVersion?: number;
     rollbackProtocolVersion?: number;
+    pamLifetimeProtocolVersion?: number;
   },
 ): Promise<DeviceCommandRow[]> {
   // Only HTTP delivery paths (heartbeat responses) claim batches; the agent
@@ -117,6 +118,9 @@ export async function claimPendingCommandsForDevice(
     }
     if (targetRole === 'agent' && capabilities?.rollbackProtocolVersion !== 1) {
       unsupportedProtocolTypes.push('agent_rollback_v1');
+    }
+    if (targetRole === 'agent' && capabilities?.pamLifetimeProtocolVersion !== 2) {
+      unsupportedProtocolTypes.push('pam_apply_v2', 'pam_cleanup_v2');
     }
 
     const pendingCommands = await tx

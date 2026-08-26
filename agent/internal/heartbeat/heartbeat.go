@@ -41,6 +41,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -191,6 +192,7 @@ type SecurityCapabilities struct {
 	// unknown values as capability 0 on every heartbeat.
 	PeripheralPolicyProtocolVersion int `json:"peripheralPolicyProtocolVersion,omitempty"`
 	RollbackProtocolVersion         int `json:"rollbackProtocolVersion,omitempty"`
+	PamLifetimeProtocolVersion      int `json:"pamLifetimeProtocolVersion,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -554,7 +556,8 @@ type Heartbeat struct {
 	untrustedReleaseAt  time.Time
 
 	// Path to the agent state file, set by main after startup.
-	statePath string
+	statePath          string
+	pamLifetimeManager pamlifetime.Manager
 
 	// sendHeartbeatFn is an optional override used by tests to replace the
 	// real sendHeartbeat call inside sendHeartbeatWithWatchdog. nil in
@@ -1035,6 +1038,9 @@ func (h *Heartbeat) SetAuthMonitor(m *authstate.Monitor) {
 // SetStatePath sets the path to the agent state file for heartbeat updates.
 func (h *Heartbeat) SetStatePath(path string) {
 	h.statePath = path
+	if path != "" && h.pamLifetimeManager == nil {
+		h.pamLifetimeManager = pamlifetime.NewManager(pamlifetime.NewStore(filepath.Join(filepath.Dir(path), "pam-lifetime-ledger.json")))
+	}
 }
 
 func (h *Heartbeat) httpClient() *http.Client {
@@ -3927,6 +3933,9 @@ func (h *Heartbeat) sendHeartbeat() {
 			PeripheralPolicyProtocolVersion: 2,
 			RollbackProtocolVersion:         1,
 		},
+	}
+	if capability, ok := h.pamLifetimeManager.(interface{ ProtocolVersion() int }); ok {
+		payload.SecurityCapabilities.PamLifetimeProtocolVersion = capability.ProtocolVersion()
 	}
 	if componentVersions, complete := h.rollbackComponentVersions(); complete {
 		payload.RollbackComponentVersions = componentVersions

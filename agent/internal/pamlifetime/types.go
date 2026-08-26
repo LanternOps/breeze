@@ -1,0 +1,72 @@
+package pamlifetime
+
+import (
+	"context"
+	"time"
+)
+
+type DesiredState string
+
+const (
+	DesiredActive  DesiredState = "active"
+	DesiredCleanup DesiredState = "cleanup"
+)
+
+type ResultState string
+
+const (
+	ResultApplied ResultState = "applied"
+	ResultCleaned ResultState = "cleaned"
+	ResultFailed  ResultState = "failed"
+)
+
+const FailureUnsupportedPlatform = "unsupported_platform"
+
+type ApplyCommand struct {
+	ProtocolVersion        int       `json:"protocolVersion"`
+	ActuationID            string    `json:"actuationId"`
+	Generation             uint64    `json:"generation"`
+	RequestID              string    `json:"requestId"`
+	DeviceID               string    `json:"deviceId"`
+	OrgID                  string    `json:"orgId"`
+	TargetPath             string    `json:"targetPath"`
+	TargetHash             *string   `json:"targetHash"`
+	SubjectUsername        string    `json:"subjectUsername"`
+	ExpiresAt              time.Time `json:"expiresAt"`
+	ServerTime             time.Time `json:"serverTime"`
+	MaxRemainingLifetimeMS int64     `json:"maxRemainingLifetimeMs"`
+}
+
+type CleanupCommand struct {
+	ProtocolVersion int    `json:"protocolVersion"`
+	ActuationID     string `json:"actuationId"`
+	Generation      uint64 `json:"generation"`
+	RequestID       string `json:"requestId"`
+	DeviceID        string `json:"deviceId"`
+	OrgID           string `json:"orgId"`
+}
+
+type ResultEvidence struct {
+	PID                 int        `json:"pid,omitempty"`
+	ProcessCreationTime *time.Time `json:"processCreationTime,omitempty"`
+	JobName             string     `json:"jobName,omitempty"`
+	BootID              string     `json:"bootId,omitempty"`
+}
+
+type Result struct {
+	ProtocolVersion int            `json:"protocolVersion"`
+	ObservationID   string         `json:"observationId"`
+	ActuationID     string         `json:"actuationId"`
+	Generation      uint64         `json:"generation"`
+	State           ResultState    `json:"state"`
+	ObservedAt      time.Time      `json:"observedAt"`
+	FailureCode     string         `json:"failureCode,omitempty"`
+	Evidence        ResultEvidence `json:"evidence"`
+}
+
+type Manager interface {
+	Apply(context.Context, ApplyCommand) Result
+	Cleanup(context.Context, CleanupCommand) Result
+	Reconcile(context.Context) []Result
+	SetEnabled(context.Context, bool) error
+}

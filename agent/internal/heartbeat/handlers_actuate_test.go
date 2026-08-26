@@ -4,13 +4,78 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
+
+type fakePamLifetimeManager struct {
+	applyResult   pamlifetime.Result
+	cleanupResult pamlifetime.Result
+	applyCalls    int
+	cleanupCalls  int
+}
+
+func (m *fakePamLifetimeManager) Apply(context.Context, pamlifetime.ApplyCommand) pamlifetime.Result {
+	m.applyCalls++
+	return m.applyResult
+}
+func (m *fakePamLifetimeManager) Cleanup(context.Context, pamlifetime.CleanupCommand) pamlifetime.Result {
+	m.cleanupCalls++
+	return m.cleanupResult
+}
+func (*fakePamLifetimeManager) Reconcile(context.Context) []pamlifetime.Result { return nil }
+func (*fakePamLifetimeManager) SetEnabled(context.Context, bool) error         { return nil }
+
+func TestPamLifetimeV2HandlersReturnSharedStructuredResult(t *testing.T) {
+	apply := pamlifetime.Result{ProtocolVersion: 2, ObservationID: "10000000-0000-4000-8000-000000000009", ActuationID: "10000000-0000-4000-8000-000000000001", Generation: 1, State: pamlifetime.ResultFailed, ObservedAt: time.Now(), FailureCode: pamlifetime.FailureUnsupportedPlatform}
+	cleanup := apply
+	cleanup.Generation = 2
+	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: &fakePamLifetimeManager{applyResult: apply, cleanupResult: cleanup}}
+
+	applyResult := handlePamApplyV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2, "actuationId": apply.ActuationID, "generation": 1,
+		"requestId": "10000000-0000-4000-8000-000000000002", "deviceId": "10000000-0000-4000-8000-000000000003", "orgId": "10000000-0000-4000-8000-000000000004",
+		"targetPath": `C:\\Windows\\System32\\mmc.exe`, "targetHash": nil, "subjectUsername": `CORP\\alice`,
+		"expiresAt": time.Now().Add(time.Minute).Format(time.RFC3339Nano), "serverTime": time.Now().Format(time.RFC3339Nano), "maxRemainingLifetimeMs": 120000,
+	}})
+	if applyResult.Status != "completed" || applyResult.Result != apply {
+		t.Fatalf("apply result = %#v", applyResult)
+	}
+	cleanupResult := handlePamCleanupV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2, "actuationId": apply.ActuationID, "generation": 2,
+		"requestId": "10000000-0000-4000-8000-000000000002", "deviceId": "10000000-0000-4000-8000-000000000003", "orgId": "10000000-0000-4000-8000-000000000004",
+	}})
+	if cleanupResult.Status != "completed" || cleanupResult.Result != cleanup {
+		t.Fatalf("cleanup result = %#v", cleanupResult)
+	}
+}
+
+func TestPamLifetimeV2HandlersRejectCrossTenantIdentityBeforeManager(t *testing.T) {
+	manager := &fakePamLifetimeManager{}
+	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: manager}
+	result := handlePamCleanupV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2, "actuationId": "10000000-0000-4000-8000-000000000001", "generation": 2,
+		"requestId": "10000000-0000-4000-8000-000000000002", "deviceId": "10000000-0000-4000-8000-000000000099", "orgId": "10000000-0000-4000-8000-000000000004",
+	}})
+	if result.Status != "failed" || manager.cleanupCalls != 0 {
+		t.Fatalf("result=%+v cleanupCalls=%d", result, manager.cleanupCalls)
+	}
+}
+
+func TestSetStatePathInitializesFailClosedPamLifetimeManager(t *testing.T) {
+	h := &Heartbeat{}
+	h.SetStatePath(filepath.Join(t.TempDir(), "agent-state.json"))
+	if h.pamLifetimeManager == nil {
+		t.Fatal("PAM lifetime manager was not initialized")
+	}
+}
 
 type fakeElevationManager struct {
 	cred        elevaccount.Credential

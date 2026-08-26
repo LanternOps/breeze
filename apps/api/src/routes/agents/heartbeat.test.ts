@@ -1963,44 +1963,51 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
   it.each([
     {
       name: 'recognized exact integers',
-      capabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1 },
+      capabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
       expectedPeripheral: 2,
       expectedRollback: 1,
+      expectedPam: 2,
     },
     {
       name: 'omitted capability object',
       capabilities: undefined,
       expectedPeripheral: 0,
       expectedRollback: 0,
+      expectedPam: 0,
     },
     {
       name: 'explicit zero downgrade',
-      capabilities: { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0 },
+      capabilities: { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0 },
       expectedPeripheral: 0,
       expectedRollback: 0,
+      expectedPam: 0,
     },
     {
       name: 'unknown integer versions',
-      capabilities: { peripheralPolicyProtocolVersion: 3, rollbackProtocolVersion: 2 },
+      capabilities: { peripheralPolicyProtocolVersion: 3, rollbackProtocolVersion: 2, pamLifetimeProtocolVersion: 3 },
       expectedPeripheral: 0,
       expectedRollback: 0,
+      expectedPam: 0,
     },
     {
       name: 'fractional versions',
-      capabilities: { peripheralPolicyProtocolVersion: 2.5, rollbackProtocolVersion: 1.5 },
+      capabilities: { peripheralPolicyProtocolVersion: 2.5, rollbackProtocolVersion: 1.5, pamLifetimeProtocolVersion: 2.5 },
       expectedPeripheral: 0,
       expectedRollback: 0,
+      expectedPam: 0,
     },
     {
       name: 'string versions',
-      capabilities: { peripheralPolicyProtocolVersion: '2', rollbackProtocolVersion: '1' },
+      capabilities: { peripheralPolicyProtocolVersion: '2', rollbackProtocolVersion: '1', pamLifetimeProtocolVersion: '2' },
       expectedPeripheral: 0,
       expectedRollback: 0,
+      expectedPam: 0,
     },
   ])('persists tolerant non-sticky control protocol capabilities: $name', async ({
     capabilities,
     expectedPeripheral,
     expectedRollback,
+    expectedPam,
   }) => {
     const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
     await setupMocks(setSpy);
@@ -2018,6 +2025,7 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(updateArg.peripheralPolicyProtocolVersion).toBe(expectedPeripheral);
     expect(updateArg.rollbackProtocolVersion).toBe(expectedRollback);
+    expect(updateArg.pamLifetimeProtocolVersion).toBe(expectedPam);
   });
 });
 
@@ -3856,7 +3864,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         ...minimalHeartbeatBody,
-        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1 },
+        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
       }),
     });
 
@@ -3868,7 +3876,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
       'device-1', 10, 'agent', undefined,
-      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1 },
+      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
     );
   });
 
@@ -3907,7 +3915,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       10,
       'agent',
       ['self_uninstall'],
-      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0 },
+      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0 },
     );
   });
 

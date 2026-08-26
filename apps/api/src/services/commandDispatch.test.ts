@@ -200,7 +200,7 @@ describe('command dispatch helpers', () => {
     expect(rejectWhere).toHaveBeenCalledTimes(1);
     expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
       'deviceCommands.type',
-      ['peripheral_policy_sync_v2', 'agent_rollback_v1'],
+      ['peripheral_policy_sync_v2', 'agent_rollback_v1', 'pam_apply_v2', 'pam_cleanup_v2'],
     );
   });
 
@@ -222,11 +222,39 @@ describe('command dispatch helpers', () => {
     await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2,
       rollbackProtocolVersion: 0,
+      pamLifetimeProtocolVersion: 2,
     });
 
     expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
       'deviceCommands.type',
       ['agent_rollback_v1'],
+    );
+  });
+
+  it('withholds PAM lifetime commands when this heartbeat does not report protocol v2', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([]) }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn(),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+      peripheralPolicyProtocolVersion: 2,
+      rollbackProtocolVersion: 1,
+      pamLifetimeProtocolVersion: 0,
+    });
+
+    expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
+      'deviceCommands.type',
+      ['pam_apply_v2', 'pam_cleanup_v2'],
     );
   });
 

@@ -1,14 +1,17 @@
 package heartbeat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -40,6 +43,67 @@ import (
 
 func init() {
 	handlerRegistry[tools.CmdActuateElevation] = handleActuateElevation
+	handlerRegistry[tools.CmdPamApplyV2] = handlePamApplyV2
+	handlerRegistry[tools.CmdPamCleanupV2] = handlePamCleanupV2
+}
+
+func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+	var payload pamlifetime.ApplyCommand
+	if err := decodePamLifetimePayload(cmd.Payload, &payload); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if err := validatePamLifetimeLocalIdentity(h, payload.DeviceID, payload.OrgID); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if h == nil || h.pamLifetimeManager == nil {
+		return tools.NewErrorResult(errors.New("PAM lifetime manager unavailable"), time.Since(start).Milliseconds())
+	}
+	result := h.pamLifetimeManager.Apply(context.Background(), payload)
+	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+	commandResult.Result = result
+	return commandResult
+}
+
+func handlePamCleanupV2(h *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+	var payload pamlifetime.CleanupCommand
+	if err := decodePamLifetimePayload(cmd.Payload, &payload); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if err := validatePamLifetimeLocalIdentity(h, payload.DeviceID, payload.OrgID); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if h == nil || h.pamLifetimeManager == nil {
+		return tools.NewErrorResult(errors.New("PAM lifetime manager unavailable"), time.Since(start).Milliseconds())
+	}
+	result := h.pamLifetimeManager.Cleanup(context.Background(), payload)
+	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+	commandResult.Result = result
+	return commandResult
+}
+
+func validatePamLifetimeLocalIdentity(h *Heartbeat, deviceID, orgID string) error {
+	if h == nil || h.config == nil || h.config.DeviceID == "" || h.config.OrgID == "" {
+		return errors.New("PAM lifetime local identity unavailable")
+	}
+	if deviceID != h.config.DeviceID || orgID != h.config.OrgID {
+		return errors.New("PAM lifetime command identity does not match enrolled device")
+	}
+	return nil
+}
+
+func decodePamLifetimePayload(payload map[string]any, destination any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal PAM lifetime v2 payload: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return fmt.Errorf("decode PAM lifetime v2 payload: %w", err)
+	}
+	return nil
 }
 
 // actuatePayload is the typed view of cmd.Payload. Kept local — no

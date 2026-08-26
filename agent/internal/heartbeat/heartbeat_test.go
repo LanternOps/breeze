@@ -319,17 +319,22 @@ func TestSecurityCapabilitiesControlProtocolJSON(t *testing.T) {
 		wantRollbackValue   any
 		wantPeripheralKey   bool
 		wantRollbackKey     bool
+		wantPamValue        any
+		wantPamKey          bool
 	}{
 		{
 			name: "reports exact supported versions",
 			capabilities: SecurityCapabilities{
 				PeripheralPolicyProtocolVersion: 2,
 				RollbackProtocolVersion:         1,
+				PamLifetimeProtocolVersion:      2,
 			},
 			wantPeripheralValue: float64(2),
 			wantRollbackValue:   float64(1),
 			wantPeripheralKey:   true,
 			wantRollbackKey:     true,
+			wantPamValue:        float64(2),
+			wantPamKey:          true,
 		},
 		{name: "omits unsupported zero values"},
 	}
@@ -360,6 +365,14 @@ func TestSecurityCapabilitiesControlProtocolJSON(t *testing.T) {
 			}
 			if rollbackPresent && rollbackValue != tt.wantRollbackValue {
 				t.Fatalf("rollbackProtocolVersion = %v, want %v", rollbackValue, tt.wantRollbackValue)
+			}
+
+			pamValue, pamPresent := decoded["pamLifetimeProtocolVersion"]
+			if pamPresent != tt.wantPamKey {
+				t.Fatalf("pamLifetimeProtocolVersion present = %v, want %v; payload=%s", pamPresent, tt.wantPamKey, body)
+			}
+			if pamPresent && pamValue != tt.wantPamValue {
+				t.Fatalf("pamLifetimeProtocolVersion = %v, want %v", pamValue, tt.wantPamValue)
 			}
 		})
 	}
