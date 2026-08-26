@@ -795,7 +795,7 @@ describe('queued recovery authorization against real PostgreSQL', () => {
       dedupeKey: `queued-recovery-${randomUUID()}`,
       modeAtStart: 'act',
       policySnapshot: { schemaVersion: 1 } as never,
-      status: 'queued',
+      status: 'running',
     }).returning({ id: aiAgentRuns.id });
     if (!run) throw new Error('AI run fixture failed');
     const subject = await capture(
