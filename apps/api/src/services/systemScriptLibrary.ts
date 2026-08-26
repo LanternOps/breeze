@@ -138,10 +138,14 @@ try {
   # the restored identity is used.
   $msi = Join-Path $work 'breeze-agent.msi'
   $haveGood = (Test-Path $msi) -and ((Get-FileHash -Algorithm SHA256 -Path $msi).Hash -eq $MsiSha)
+  # -TimeoutSec keeps the one variable-duration step well inside the command's
+  # 1800s budget: if the executor timeout fired while msiexec is mid-flight it
+  # would kill only this PowerShell process, not msiexec (no process tree
+  # management on Windows), leaving an unsupervised installer run.
   if (-not $haveGood) {
     Log 'downloading target MSI'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $MsiUrl -OutFile $msi -UseBasicParsing
+    Invoke-WebRequest -Uri $MsiUrl -OutFile $msi -UseBasicParsing -TimeoutSec 600
     $h = (Get-FileHash -Algorithm SHA256 -Path $msi).Hash
     if ($h -ne $MsiSha) { Log "HASH MISMATCH got=$h; aborting (nothing touched)"; exit 1 }
   }
@@ -158,11 +162,18 @@ try {
 
   # From here the running agent dies (its own MSI stops it during uninstall).
   # This process survives it; the command never reports a result - expected.
+  # 3010 (ERROR_SUCCESS_REBOOT_REQUIRED) and 1641 (reboot initiated) are
+  # success: /qn /norestart makes msiexec report 3010 instead of rebooting,
+  # and treating it as failure here would abort AFTER the uninstall actually
+  # completed - leaving the device with no agent at all. Same convention as
+  # the agent's own software installer.
+  $msiOk = @(0, 3010, 1641)
   Log 'uninstalling current edition'
   $uninstallArgs = '/x {0} /qn /norestart /l*v "{1}"' -f $source.PSChildName, (Join-Path $work 'uninstall.log')
   $p = Start-Process msiexec.exe -ArgumentList $uninstallArgs -Wait -PassThru
   Log "uninstall exit $($p.ExitCode)"
-  if ($p.ExitCode -ne 0) { Log 'uninstall failed; the existing agent should still be intact'; exit 1 }
+  if ($msiOk -notcontains $p.ExitCode) { Log 'uninstall failed; the existing agent should still be intact'; exit 1 }
+  if ($p.ExitCode -ne 0) { Log 'uninstall succeeded, reboot pending' }
 
   # Restore identity BEFORE install so the service's first start sees it.
   Copy-Item (Join-Path $bak 'agent.yaml') $cfgDir -Force
@@ -175,10 +186,11 @@ try {
   $installArgs = '/i "{0}" /qn /norestart /l*v "{1}"' -f $msi, (Join-Path $work 'install.log')
   $p2 = Start-Process msiexec.exe -ArgumentList $installArgs -Wait -PassThru
   Log "install exit $($p2.ExitCode)"
-  if ($p2.ExitCode -ne 0) {
+  if ($msiOk -notcontains $p2.ExitCode) {
     Log 'TARGET INSTALL FAILED - device is currently agent-less; reinstall the agent manually'
     exit 1
   }
+  if ($p2.ExitCode -ne 0) { Log 'install succeeded, reboot pending' }
 
   Start-Sleep -Seconds 20
   $svc = Get-Service BreezeAgent -ErrorAction SilentlyContinue

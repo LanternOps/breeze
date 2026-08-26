@@ -84,6 +84,14 @@ describe('SYSTEM_LIBRARY_SCRIPTS definitions', () => {
     }
   });
 
+  it('edition migration treats MSI reboot-required exit codes as success', () => {
+    // 3010 (ERROR_SUCCESS_REBOOT_REQUIRED) / 1641: /qn /norestart reports
+    // these on SUCCESS. Treating them as failure would abort after the
+    // uninstall completed, stranding the device agent-less (review finding).
+    expect(editionMigration!.content).toContain('@(0, 3010, 1641)');
+    expect(editionMigration!.content).not.toMatch(/\$p\.ExitCode -ne 0\) \{ Log 'uninstall failed/);
+  });
+
   it('content avoids the agent SecurityLevelStrict blocked tokens', () => {
     // Partial local mirror of agent/internal/executor/security.go (the
     // credential-tool tokens are obfuscated there and cannot drift here).
