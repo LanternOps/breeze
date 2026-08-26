@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alerts } from './alerts';
@@ -85,7 +86,15 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   eventId: varchar('event_id', { length: 100 }).notNull(),
   payload: jsonb('payload').notNull(),
   status: webhookDeliveryStatusEnum('status').notNull().default('pending'),
+  /** HTTP delivery attempts. Written by the delivery callback, shown in the UI. */
   attempts: integer('attempts').notNull().default(0),
+  /**
+   * Times the recovery sweep has re-queued this row (#4095). Deliberately NOT
+   * `attempts`: that column is overwritten by the delivery callback, so a
+   * counter kept there would reset on the first completed attempt and would
+   * misreport enqueue recoveries as HTTP attempts in the UI.
+   */
+  recoveryAttempts: integer('recovery_attempts').notNull().default(0),
   nextRetryAt: timestamp('next_retry_at'),
   responseStatus: integer('response_status'),
   responseBody: text('response_body'),
@@ -98,7 +107,15 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   // queues an outbound POST per matching webhook, so without this a redelivered
   // event POSTs to the customer's endpoint twice (2026-09-11-a migration).
   webhookEventUq: uniqueIndex('webhook_deliveries_webhook_event_uq')
-    .on(table.webhookId, table.eventId)
+    .on(table.webhookId, table.eventId),
+  // Partial, over the UNRESOLVED statuses only (2026-09-11-d migration). The
+  // recovery sweep ticks every five minutes forever and this table has no
+  // retention job, so the index it scans must not grow with the table —
+  // `pending`/`retrying` are transient, so in a healthy fleet this holds ~0
+  // entries however large `webhook_deliveries` becomes.
+  unresolvedIdx: index('webhook_deliveries_unresolved_idx')
+    .on(table.status, table.createdAt)
+    .where(sql`${table.status} IN ('pending', 'retrying')`)
 }));
 
 export const eventBusEvents = pgTable('event_bus_events', {
