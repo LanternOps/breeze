@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -5,16 +6,10 @@ import {
   Server,
   Trash2,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 import '../../lib/i18n';
-
-export type DRPlanDevice = {
-  id: string;
-  hostname?: string | null;
-  displayName?: string | null;
-  status?: string | null;
-};
 
 export type DRGroupForm = {
   localId: string;
@@ -29,28 +24,29 @@ type DRPlanGroupCardProps = {
   group: DRGroupForm;
   index: number;
   total: number;
-  devices: DRPlanDevice[];
   dependencyOptions: DRGroupForm[];
   onChange: (updater: (group: DRGroupForm) => DRGroupForm) => void;
   onMove: (direction: -1 | 1) => void;
   onRemove: () => void;
+  onCanSubmitChange: (canSubmit: boolean) => void;
 };
-
-function deviceName(device: DRPlanDevice): string {
-  return device.displayName ?? device.hostname ?? device.id;
-}
 
 export default function DRPlanGroupCard({
   group,
   index,
   total,
-  devices,
   dependencyOptions,
   onChange,
   onMove,
   onRemove,
+  onCanSubmitChange,
 }: DRPlanGroupCardProps) {
   const { t } = useTranslation('backup');
+  const [deviceSearch, setDeviceSearch] = useState('');
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    includeIds: group.deviceIds,
+  });
   return (
     <article className="rounded-lg border">
       <div className="flex items-center justify-between border-b bg-muted/20 px-4 py-3">
@@ -151,53 +147,18 @@ export default function DRPlanGroupCard({
           <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             <Server className="h-3.5 w-3.5" />
             {t('dRPlanGroupCard.deviceSelection')} </div>
-          <div className="max-h-44 overflow-y-auto rounded-md border bg-background">
-            {devices.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-muted-foreground">{t('dRPlanGroupCard.noDevicesAvailableToAssign')}</div>
-            ) : (
-              devices.map((device) => {
-                const selected = group.deviceIds.includes(device.id);
-                return (
-                  <label
-                    key={device.id}
-                    className={cn(
-                      'flex items-center justify-between gap-3 border-b px-3 py-2 text-sm last:border-b-0 hover:bg-muted/30',
-                      selected && 'bg-primary/5'
-                    )}
-                  >
-                    <span className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() =>
-                          onChange((current) => ({
-                            ...current,
-                            deviceIds: current.deviceIds.includes(device.id)
-                              ? current.deviceIds.filter((id) => id !== device.id)
-                              : [...current.deviceIds, device.id],
-                          }))
-                        }
-                        className="h-4 w-4 rounded"
-                      />
-                      <span>
-                        <span className="block font-medium text-foreground">{deviceName(device)}</span>
-                        <span className="block text-xs text-muted-foreground">{device.id.slice(0, 8)}</span>
-                      </span>
-                    </span>
-                    <span
-                      className={cn(
-                        'rounded-full px-2 py-0.5 chart-legend-xs font-medium',
-                        device.status === 'online'
-                          ? 'bg-success/10 text-success'
-                          : 'bg-muted text-muted-foreground'
-                      )}
-                    >
-                      {device.status ?? 'Unknown'}
-                    </span>
-                  </label>
-                );
-              })
-            )}
+          <div className="rounded-md border bg-background p-2">
+            <DeviceOptionPicker
+              result={deviceOptions}
+              selectedIds={group.deviceIds}
+              onSelectedIdsChange={(deviceIds) =>
+                onChange((current) => ({ ...current, deviceIds }))
+              }
+              search={deviceSearch}
+              onSearchChange={setDeviceSearch}
+              showSelectAll
+              onCanSubmitChange={onCanSubmitChange}
+            />
           </div>
         </div>
       </div>

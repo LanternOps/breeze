@@ -471,11 +471,19 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
 
     try {
       setActionInProgress(true);
-      await executeScript(script.id, [device.id], parameters, runAs, targetSessionId);
-      showToast({
-        type: "success",
-        message: `Script "${script.name}" queued for ${device.hostname}`,
-      });
+      const result = await executeScript(script.id, [device.id], parameters, runAs, targetSessionId);
+      const target = result.targets.find(candidate => candidate.requestedDeviceId === device.id);
+      if (target?.admission === "admitted") {
+        showToast({
+          type: "success",
+          message: `Script "${script.name}" queued for ${device.hostname}`,
+        });
+      } else {
+        showToast({
+          type: "error",
+          message: `${t("deviceDetailPage.failedToQueueScript")}: ${target?.reasonCode ?? target?.admission ?? "not_admitted"}`,
+        });
+      }
     } catch (err) {
       showToast({
         type: "error",

@@ -127,23 +127,23 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * (2026-09-06-a-agent-runs-org-immutable.sql).
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
-  'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
+  'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
-  'automation_run_device_results',
+  'automation_action_results', 'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_sla_events',
   'backup_snapshots', 'backup_verifications',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
   'cis_baseline_results', 'cis_remediation_actions',
   'deployment_invites',
-  'device_boot_metrics', 'device_change_log', 'device_config_state',
+  'device_agent_health_latest', 'device_boot_metrics', 'device_change_log', 'device_config_state',
   'device_connections', 'device_disks', 'device_event_logs',
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
   'device_group_memberships', 'device_hardware', 'device_ip_history',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
-  'device_reliability', 'device_reliability_history', 'device_sessions',
+  'device_reliability', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
   'device_vulnerabilities', 'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
@@ -161,10 +161,22 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'security_threats',
   'sensitive_data_findings', 'sensitive_data_scans',
   'service_process_check_results',
-  'software_inventory', 'software_policy_audit', 'software_remediation_requests', 'sql_instances',
+  'software_inventory', 'software_inventory_observations', 'software_policy_audit', 'software_remediation_requests', 'sql_instances',
   'support_sessions',
   'tickets', 'time_series_metrics', 'tunnel_sessions',
 ] as const;
+
+/**
+ * Registered device/org tables whose org stamp is propagated by a composite
+ * foreign key on `devices(id, org_id)`. They remain in the complete registry
+ * above, but move-org must not issue its ordinary app-role UPDATE against
+ * them. In particular, health observations revoke UPDATE from `breeze_app` so
+ * immutable evidence can only be restamped by PostgreSQL's referential action.
+ */
+export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
+  'agent_health_observations',
+  'software_inventory_observations',
+];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
@@ -229,6 +241,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // Deployment invites (FK device_id → devices.id; no cascade)
   'deployment_invites',
   // Core device tables
+  // Latest projection references the immutable observation, so it must be
+  // deleted before the observation in the explicit device cascade.
+  'device_agent_health_latest', 'device_software_inventory_state',
+  'agent_health_observations', 'software_inventory_observations',
   'device_group_memberships', 'group_membership_log',
   'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
@@ -250,7 +266,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_event_logs', 'automation_policy_compliance', 'backup_sla_events',
   // Per-device automation execution results (FK device_id → devices.id ON DELETE
   // CASCADE; leaf table, no children) — #2023
-  'automation_run_device_results',
+  'automation_action_results', 'automation_run_device_results',
   // Security
   'sensitive_data_scans', 'sensitive_data_findings',
   'dns_security_events', 'dns_event_aggregations',

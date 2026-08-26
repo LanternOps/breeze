@@ -40,6 +40,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // websocket path accepted roughly 3x the intended budget for CJK-heavy output
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
+import { applyAutomationActionTerminal } from './automationActionResults';
 
 export type CommandResultHandler = (params: {
   agentId: string;
@@ -58,7 +59,7 @@ export type CommandResultHandler = (params: {
   result: z.infer<typeof commandResultSchema>;
   resolvedDeviceId: string;
   stdout: string | undefined;
-}) => Promise<void>;
+}) => Promise<unknown>;
 
 // ---------------------------------------------------------------------------
 // Per-command-type result handlers (used by the dispatch map in processCommandResult)
@@ -318,7 +319,7 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
   }
 }
 
-async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<{ id: string; scriptId: string } | null> {
   try {
     const payload = command.payload as Record<string, unknown> | null;
     const executionId = payload?.executionId as string | undefined;
@@ -341,7 +342,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         undefined,
         { commandId: command.id, agentId, executionId },
       );
-      return;
+      return null;
     }
     if (executionId) {
       let scriptStatus: 'completed' | 'failed' | 'timeout';
@@ -377,6 +378,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           id: scriptExecutions.id,
           scriptId: scriptExecutions.scriptId,
         });
+      let effectiveExecution = updatedExecutions[0] ?? null;
 
       // #3607 — second chance for an execution a server-side sweep already
       // stamped terminal.
@@ -426,6 +428,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           });
 
         if (recovered.length > 0) {
+          effectiveExecution = recovered[0] ?? null;
           console.warn(
             `[AgentWs] #3607 recovered late script result onto swept execution ${executionId} (command ${command.id})`
           );
@@ -476,6 +479,17 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         }
       }
 
+      if (effectiveExecution) {
+        await applyAutomationActionTerminal({
+          source: 'script_execution',
+          scriptExecutionId: effectiveExecution.id,
+          terminalStatus: scriptStatus === 'completed' ? 'succeeded' : 'failed',
+          output: executionValues.stdout,
+          error: executionValues.errorMessage ?? executionValues.stderr,
+          completedAt: executionValues.completedAt,
+        });
+      }
+
       // Update batch counters if this is part of a batch. `updatedExecutions`
       // is intentionally the FIRST update's rows only — the #3607 recovery
       // above is excluded from counting for the reason documented there.
@@ -492,7 +506,9 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutionBatches.scriptId, updatedExecutions[0].scriptId)
           ));
       }
+      return effectiveExecution;
     }
+    return null;
   } catch (err) {
     // #3162 lived undetected because this catch logged to the container and
     // nothing else — a swallowed 22P02 silently discarded every automation's
@@ -505,6 +521,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       agentId,
       executionId: String((command.payload as Record<string, unknown> | null)?.executionId ?? ''),
     });
+    return null;
   }
 }
 

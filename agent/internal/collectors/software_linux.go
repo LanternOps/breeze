@@ -3,35 +3,74 @@
 package collectors
 
 import (
+	"errors"
+	"log/slog"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Collect retrieves installed software on Linux using dpkg-query or rpm
-func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
-	// Try dpkg-query first (Debian/Ubuntu)
-	software, err := collectFromDpkg()
-	if err == nil && len(software) > 0 {
-		return software, nil
-	}
+var softwareCommandOutput = runCollectorOutput
+var softwareLookPath = exec.LookPath
 
-	// Fall back to rpm (RHEL/CentOS/Fedora)
-	software, err = collectFromRpm()
-	if err == nil && len(software) > 0 {
-		return software, nil
-	}
+type softwareSourceError struct {
+	code string
+	err  error
+}
 
-	// If both fail, return empty list with no error
-	// (system may not have either package manager)
-	return []SoftwareItem{}, nil
+func (e *softwareSourceError) Error() string { return e.err.Error() }
+func (e *softwareSourceError) Unwrap() error { return e.err }
+
+func softwareFailureCode(err error) string {
+	var sourceErr *softwareSourceError
+	if errors.As(err, &sourceErr) {
+		return sourceErr.code
+	}
+	return SoftwareFailureCommandFailed
+}
+
+// CollectObservation retrieves installed software from every applicable Linux package manager.
+func (c *SoftwareCollector) CollectObservation() (SoftwareInventoryObservationV2, error) {
+	if c.collectObservation != nil {
+		return c.collectObservation()
+	}
+	type candidate struct {
+		source  string
+		binary  string
+		collect func() ([]SoftwareItem, error)
+	}
+	candidates := []candidate{
+		{SoftwareSourceLinuxDpkg, "dpkg-query", collectFromDpkg},
+		{SoftwareSourceLinuxRPM, "rpm", collectFromRpm},
+	}
+	results := make([]softwareSourceResult, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, err := softwareLookPath(candidate.binary); err != nil {
+			continue
+		}
+		items, err := candidate.collect()
+		result := softwareSourceResult{Source: candidate.source, Items: items}
+		if err != nil {
+			slog.Warn("software inventory source failed", "source", candidate.source, "error", err.Error())
+			result.FailureCode = softwareFailureCode(err)
+		}
+		results = append(results, result)
+	}
+	if len(results) == 0 {
+		results = []softwareSourceResult{
+			{Source: SoftwareSourceLinuxDpkg, FailureCode: SoftwareFailureSourceUnavailable},
+			{Source: SoftwareSourceLinuxRPM, FailureCode: SoftwareFailureSourceUnavailable},
+		}
+	}
+	return buildSoftwareObservation(c.collectorVersion, results, c.now, c.newObservationID), nil
 }
 
 // collectFromDpkg retrieves packages using dpkg-query (Debian/Ubuntu)
 func collectFromDpkg() ([]SoftwareItem, error) {
-	output, err := runCollectorOutput(collectorLongCommandTimeout, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Maintainer}\t${Installed-Size}\n")
+	output, err := softwareCommandOutput(collectorLongCommandTimeout, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Maintainer}\t${Installed-Size}\n")
 	if err != nil {
-		return nil, err
+		return nil, &softwareSourceError{code: SoftwareFailureCommandFailed, err: err}
 	}
 
 	var software []SoftwareItem
@@ -74,13 +113,10 @@ func collectFromDpkg() ([]SoftwareItem, error) {
 		}
 
 		software = append(software, sanitizeLinuxSoftwareItem(item))
-		if len(software) >= collectorResultLimit {
-			break
-		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, &softwareSourceError{code: SoftwareFailureScanFailed, err: err}
 	}
 
 	return software, nil
@@ -88,9 +124,9 @@ func collectFromDpkg() ([]SoftwareItem, error) {
 
 // collectFromRpm retrieves packages using rpm (RHEL/CentOS/Fedora)
 func collectFromRpm() ([]SoftwareItem, error) {
-	output, err := runCollectorOutput(collectorLongCommandTimeout, "rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\t%{INSTALLTIME}\n")
+	output, err := softwareCommandOutput(collectorLongCommandTimeout, "rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\t%{INSTALLTIME}\n")
 	if err != nil {
-		return nil, err
+		return nil, &softwareSourceError{code: SoftwareFailureCommandFailed, err: err}
 	}
 
 	var software []SoftwareItem
@@ -139,24 +175,15 @@ func collectFromRpm() ([]SoftwareItem, error) {
 		}
 
 		software = append(software, sanitizeLinuxSoftwareItem(item))
-		if len(software) >= collectorResultLimit {
-			break
-		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, &softwareSourceError{code: SoftwareFailureScanFailed, err: err}
 	}
 
 	return software, nil
 }
 
 func sanitizeLinuxSoftwareItem(item SoftwareItem) SoftwareItem {
-	item.Name = truncateCollectorString(item.Name)
-	item.Version = truncateCollectorString(item.Version)
-	item.Vendor = truncateCollectorString(item.Vendor)
-	item.InstallDate = truncateCollectorString(item.InstallDate)
-	item.InstallLocation = truncateCollectorString(item.InstallLocation)
-	item.UninstallString = truncateCollectorString(item.UninstallString)
-	return item
+	return sanitizeSoftwareInventoryItem(item)
 }

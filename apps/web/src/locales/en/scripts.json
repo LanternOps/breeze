@@ -812,6 +812,8 @@
       "advancedFilters": "Advanced Filters",
       "executing": "Executing...",
       "started": "Started!",
+      "queued": "Queued",
+      "reviewResult": "Review result",
       "confirmExecute": "Confirm Execute",
       "execute": "Execute"
     },
@@ -830,7 +832,15 @@
     "orSeparator": " or ",
     "progress": {
       "submitting": "Submitting to {{count}} devices...",
-      "submitted": "Submitted to {{count}} devices"
+      "submitted": "Submitted to {{count}} devices",
+      "admitted": "{{admitted}} of {{count}} devices admitted to the queue",
+      "submittingTarget": "Submitting"
+    },
+    "admission": {
+      "allAdmitted": "All selected devices were admitted and queued.",
+      "partiallyAdmitted": "Some devices were admitted and queued. Review the remaining targets.",
+      "rejected": "No devices were admitted. Review the reasons below.",
+      "queued": "Queued"
     },
     "confirm": {
       "title": "Confirm Execution",

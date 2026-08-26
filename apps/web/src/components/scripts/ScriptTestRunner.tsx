@@ -9,6 +9,7 @@ import { asList } from '@/lib/asList';
 import { OutputSection } from './ExecutionDetails';
 import type { OSType } from './ScriptList';
 import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 
 export type TestDevice = {
   id: string;
@@ -326,7 +327,7 @@ export default function ScriptTestRunner({
     setPhase('starting');
     setExecution(null);
     try {
-      const data = await runAction<{ executions?: Array<{ executionId: string }> }>({
+      const data = await runAction<ScriptAdmissionResult>({
         request: () => fetchWithAuth(`/scripts/${scriptId}/execute`, {
           method: 'POST',
           body: JSON.stringify({
@@ -339,12 +340,12 @@ export default function ScriptTestRunner({
         onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
 
-      const executionId = data.executions?.[0]?.executionId;
+      const target = data.targets.find(candidate => candidate.requestedDeviceId === selectedDeviceId);
+      const executionId = target?.admission === 'admitted' ? target.executionId : undefined;
       if (!executionId) {
-        // 201 with zero executions (e.g. maintenance-suppressed) — runAction
-        // treats it as success, so surface it here.
         setPhase('idle');
-        setRunError(t('testRunner.errors.notStarted'));
+        const reason = target?.reasonCode ?? target?.admission ?? t('testRunner.errors.notStarted');
+        setRunError(`${t('testRunner.errors.notStarted')} (${reason})`);
         return;
       }
 

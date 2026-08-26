@@ -48,6 +48,10 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
+const runOutsideDbAccess = <T>(fn: () => T): T => {
+  const outside = dbModule.runOutsideDbContext;
+  return typeof outside === 'function' ? outside(fn) : fn();
+};
 
 /** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
 function isRelationNotFoundError(error: unknown): boolean {
@@ -825,11 +829,11 @@ async function processExecuteConfigPolicyRun(
   data: ExecuteConfigPolicyRunJobData,
 ): Promise<{ runId?: string; skipped?: string }> {
   // Load the config policy automation row
-  const [cpAutomation] = await db
+  const [cpAutomation] = await runWithSystemDbAccess(() => db
     .select()
     .from(configPolicyAutomations)
     .where(eq(configPolicyAutomations.id, data.configPolicyAutomationId))
-    .limit(1);
+    .limit(1));
 
   if (!cpAutomation) {
     return { skipped: 'config_policy_automation_not_found' };
@@ -845,12 +849,25 @@ async function processExecuteConfigPolicyRun(
   return { runId: result.runId };
 }
 
-function createAutomationWorker(): Worker<AutomationJobData> {
+export function createAutomationWorker(): Worker<AutomationJobData> {
   return new Worker<AutomationJobData>(
     AUTOMATION_QUEUE,
     async (job: Job<AutomationJobData>) => {
+      const data = parseQueueJobData(AUTOMATION_QUEUE, job, automationQueueJobDataSchema);
+      // Runtime execution deliberately owns a sequence of short system
+      // contexts. Keeping the worker's historical ambient transaction here
+      // would pin one pooled connection for the whole fleet run and force the
+      // action-result seeder/reconciler either to reuse that long transaction
+      // or allocate a second connection per device.
+      if (data.type === 'execute-run') {
+        assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-run');
+        return runOutsideDbAccess(() => processExecuteRun(data));
+      }
+      if (data.type === 'execute-config-policy-run') {
+        assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-config-policy-run');
+        return runOutsideDbAccess(() => processExecuteConfigPolicyRun(data));
+      }
       return runWithSystemDbAccess(async () => {
-        const data = parseQueueJobData(AUTOMATION_QUEUE, job, automationQueueJobDataSchema);
         switch (data.type) {
           case 'scan-schedules':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'scan-schedules');
@@ -861,15 +878,9 @@ function createAutomationWorker(): Worker<AutomationJobData> {
           case 'trigger-event':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-event');
             return processTriggerEvent(data);
-          case 'execute-run':
-            assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-run');
-            return processExecuteRun(data);
           case 'trigger-config-policy-schedule':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-config-policy-schedule');
             return processTriggerConfigPolicySchedule(data);
-          case 'execute-config-policy-run':
-            assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-config-policy-run');
-            return processExecuteConfigPolicyRun(data);
         }
       });
     },

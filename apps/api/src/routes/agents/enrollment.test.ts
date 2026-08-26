@@ -191,6 +191,8 @@ interface TxSpy {
   deviceInsertValues: Record<string, unknown>[];
   /** Tables passed to tx.update(...) — used to prove the OLD row is untouched. */
   updatedTables: unknown[];
+  /** set() payloads passed to tx.update(devices) — asserts in-place re-enrollment. */
+  deviceUpdateValues: Record<string, unknown>[];
 }
 
 /**
@@ -204,6 +206,7 @@ function mockTransaction(insertedDevice: Record<string, unknown>, keyId = 'key-x
     insert: vi.fn(),
     deviceInsertValues: [],
     updatedTables: [],
+    deviceUpdateValues: [],
   };
 
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
@@ -220,11 +223,14 @@ function mockTransaction(insertedDevice: Record<string, unknown>, keyId = 'key-x
         // enrollment-key consume returns the claimed key id.
         const returned = table === devicesTable ? insertedDevice : { id: keyId };
         return {
-          set: vi.fn().mockReturnValue({
-            where: vi.fn(() => Object.assign(
-              Promise.resolve(undefined) as any,
-              { returning: vi.fn().mockResolvedValue([returned]) },
-            )),
+          set: vi.fn((values: Record<string, unknown>) => {
+            if (table === devicesTable) spy.deviceUpdateValues.push(values);
+            return {
+              where: vi.fn(() => Object.assign(
+                Promise.resolve(undefined) as any,
+                { returning: vi.fn().mockResolvedValue([returned]) },
+              )),
+            };
           }),
         };
       }),
@@ -963,6 +969,9 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     // In-place re-enroll: the devices UPDATE is the known, allowed write.
     expect(tx.updatedTables).toContain(devicesTable);
     expect(tx.deviceInsertValues).toHaveLength(0);
+    expect(tx.deviceUpdateValues).toHaveLength(1);
+    expect(tx.deviceUpdateValues[0]).toMatchObject({ status: 'pending' });
+    expect(tx.deviceUpdateValues[0]).not.toHaveProperty('lastSeenAt');
     expect(raiseDeviceIdentityCollisionAlert).not.toHaveBeenCalled();
   });
 
@@ -2606,6 +2615,20 @@ describe('POST /agents/enroll — virtualization attribute persistence (#1387)',
     const deviceValues = (deviceInsertValues.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(deviceValues.isVirtual).toBe(true);
     expect(deviceValues.virtualizationPlatform).toBe('hyperv');
+  });
+
+  it('persists a fresh enrollment as pending without fabricating a last-seen timestamp', async () => {
+    const deviceInsertValues = arrangeFreshEnroll();
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    const deviceValues = (deviceInsertValues.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(deviceValues.status).toBe('pending');
+    expect(deviceValues).not.toHaveProperty('lastSeenAt');
   });
 
   it('defaults to isVirtual=false / null platform when the agent omits the fields', async () => {

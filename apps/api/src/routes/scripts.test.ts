@@ -18,8 +18,17 @@ const { executeScriptOnDevicesMock } = vi.hoisted(() => ({
   executeScriptOnDevicesMock: vi.fn(),
 }));
 
+const { applyAutomationActionTerminalMock } = vi.hoisted(() => ({
+  applyAutomationActionTerminalMock: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('../services/scriptExecution', () => ({
   executeScriptOnDevices: executeScriptOnDevicesMock,
+}));
+
+vi.mock('../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -1294,6 +1303,11 @@ describe('scripts routes', () => {
     });
 
     expect(res.status).toBe(200);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'cancellation',
+      scriptExecutionId: EXECUTION_ID,
+      terminalStatus: 'cancelled',
+    }));
   });
 
   it('cancels an execution unchanged when the caller has no site restriction', async () => {
@@ -1332,6 +1346,40 @@ describe('scripts routes', () => {
     });
 
     expect(res.status).toBe(200);
+  });
+
+  it('does not terminalize automation when a concurrent result wins the cancellation CAS', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'running',
+              deviceId: 'device-1',
+              deviceOrgId: ORG_ID,
+              deviceSiteId: 'site-allowed',
+            }]),
+          }),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(applyAutomationActionTerminalMock).not.toHaveBeenCalled();
+    expect(db.update).toHaveBeenCalledTimes(1);
   });
 
   it('should validate create payload', async () => {
@@ -1437,36 +1485,29 @@ describe('scripts routes', () => {
     expect(res.status).toBe(400);
   });
 
-  // #3409 PR2 gave executeScriptOnDevices a per-device failure channel. The
-  // service reports ok:true even when every device failed (the REQUEST was
-  // valid), so without these branches the route answered 201
-  // {status:'queued', executions:[]} and the UI toasted success for a run that
-  // dispatched to nobody.
-  describe('per-device dispatch failures on execute', () => {
+  describe('canonical per-target admission on execute', () => {
     const executeBody = (deviceIds: string[]) => ({
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({ deviceIds }),
     });
 
-    it('returns 422 and writes no audit when every device failed to dispatch', async () => {
+    it('returns an exact rejected 201 body and writes no success audit', async () => {
       executeScriptOnDevicesMock.mockResolvedValueOnce({
         ok: true,
-        batchId: null,
-        batchIds: [],
-        scriptId: SCRIPT_ID_1,
+        admission: {
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'rejected',
+          targets: [{
+            requestedDeviceId: '11111111-1111-1111-1111-111111111111',
+            admission: 'excluded',
+            reasonCode: 'unresolved_variables',
+          }],
+        },
         script: { id: SCRIPT_ID_1, name: 'Script One' },
-        devicesTargeted: 1,
-        maintenanceSuppressedDeviceIds: [],
-        executions: [],
-        failures: [{
-          deviceId: '11111111-1111-1111-1111-111111111111',
-          code: 'unresolved_variables',
-          error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
-        }],
-        status: 'queued',
         triggerType: 'manual',
         runAs: 'system',
+        ignoredParameters: [],
         auditOrgId: ORG_ID,
       });
 
@@ -1475,34 +1516,39 @@ describe('scripts routes', () => {
         executeBody(['11111111-1111-1111-1111-111111111111']),
       );
 
-      expect(res.status).toBe(422);
-      const body = await res.json();
-      expect(body.error).toContain('no value set for {{var.api_key}}');
-      expect(body.failures).toHaveLength(1);
+      expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'rejected',
+        targets: [{
+          requestedDeviceId: '11111111-1111-1111-1111-111111111111',
+          admission: 'excluded',
+          reasonCode: 'unresolved_variables',
+        }],
+      });
       expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
-    it('returns 201 with failures alongside executions on a partial failure', async () => {
+    it('returns the exact partial admission body and audits safe correlation data once', async () => {
       executeScriptOnDevicesMock.mockResolvedValueOnce({
         ok: true,
-        batchId: 'batch-1',
-        batchIds: ['batch-1'],
-        scriptId: SCRIPT_ID_1,
+        admission: {
+          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          status: 'partially_queued',
+          targets: [{
+            requestedDeviceId: '11111111-1111-1111-1111-111111111111',
+            admission: 'admitted',
+            executionId: 'exec-1',
+            commandId: 'cmd-1',
+            batchId: 'batch-1',
+          }, {
+            requestedDeviceId: '22222222-2222-2222-2222-222222222222',
+            admission: 'denied',
+            reasonCode: 'not_found_or_inaccessible',
+          }],
+        },
         script: { id: SCRIPT_ID_1, name: 'Script One' },
-        devicesTargeted: 2,
-        maintenanceSuppressedDeviceIds: [],
-        executions: [{
-          executionId: 'exec-1',
-          deviceId: '11111111-1111-1111-1111-111111111111',
-          commandId: 'cmd-1',
-        }],
-        failures: [{
-          deviceId: '22222222-2222-2222-2222-222222222222',
-          code: 'unresolved_variables',
-          error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
-        }],
         ignoredParameters: [],
-        status: 'queued',
         triggerType: 'manual',
         runAs: 'system',
         auditOrgId: ORG_ID,
@@ -1518,41 +1564,16 @@ describe('scripts routes', () => {
 
       expect(res.status).toBe(201);
       const body = await res.json();
-      expect(body.executions).toHaveLength(1);
-      expect(body.failures).toHaveLength(1);
-      expect(body.failures[0].deviceId).toBe('22222222-2222-2222-2222-222222222222');
-    });
-
-    it('omits failures entirely on a clean run', async () => {
-      executeScriptOnDevicesMock.mockResolvedValueOnce({
-        ok: true,
-        batchId: null,
-        batchIds: [],
-        scriptId: SCRIPT_ID_1,
-        script: { id: SCRIPT_ID_1, name: 'Script One' },
-        devicesTargeted: 1,
-        maintenanceSuppressedDeviceIds: [],
-        executions: [{
-          executionId: 'exec-1',
-          deviceId: '11111111-1111-1111-1111-111111111111',
-          commandId: 'cmd-1',
-        }],
-        failures: [],
-        ignoredParameters: [],
-        status: 'queued',
-        triggerType: 'manual',
-        runAs: 'system',
-        auditOrgId: ORG_ID,
-      });
-
-      const res = await app.request(
-        `/scripts/${SCRIPT_ID_1}/execute`,
-        executeBody(['11111111-1111-1111-1111-111111111111']),
-      );
-
-      expect(res.status).toBe(201);
-      const body = await res.json();
-      expect(body.failures).toBeUndefined();
+      expect(Object.keys(body).sort()).toEqual(['requestId', 'status', 'targets']);
+      expect(body.targets).toHaveLength(2);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({
+          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          admissionStatus: 'partially_queued',
+          batchIds: ['batch-1'],
+        }),
+      }));
     });
   });
 
@@ -1574,26 +1595,24 @@ describe('scripts routes', () => {
 
     const okResultWithIgnored = (ignoredParameters: string[]) => ({
       ok: true,
-      batchId: null,
-      batchIds: [],
-      scriptId: SCRIPT_ID_1,
+      admission: {
+        requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        status: 'queued' as const,
+        targets: [{
+          requestedDeviceId: '11111111-1111-1111-1111-111111111111',
+          admission: 'admitted' as const,
+          executionId: 'exec-1',
+          commandId: 'cmd-1',
+        }],
+      },
       script: { id: SCRIPT_ID_1, name: 'Script One' },
-      devicesTargeted: 1,
-      maintenanceSuppressedDeviceIds: [],
-      executions: [{
-        executionId: 'exec-1',
-        deviceId: '11111111-1111-1111-1111-111111111111',
-        commandId: 'cmd-1',
-      }],
-      failures: [],
       ignoredParameters,
-      status: 'queued' as const,
       triggerType: 'manual' as const,
       runAs: 'system',
       auditOrgId: ORG_ID,
     });
 
-    it('returns the ignored bound keys on the 201 body', async () => {
+    it('keeps ignored bound keys out of the exact admission response', async () => {
       executeScriptOnDevicesMock.mockResolvedValueOnce(okResultWithIgnored(['api_key', 'site_code']));
 
       const res = await app.request(
@@ -1603,10 +1622,9 @@ describe('scripts routes', () => {
 
       expect(res.status).toBe(201);
       const body = await res.json();
-      expect(body.ignoredParameters).toEqual(['api_key', 'site_code']);
-      // The run still succeeded — ignoring is not failing.
-      expect(body.executions).toHaveLength(1);
-      expect(body.failures).toBeUndefined();
+      expect(Object.keys(body).sort()).toEqual(['requestId', 'status', 'targets']);
+      expect(JSON.stringify(body)).not.toContain('api_key');
+      expect(JSON.stringify(body)).not.toContain('site_code');
     });
 
     it('audits the ignored KEYS (and no values) under a dedicated details field', async () => {
@@ -1631,7 +1649,7 @@ describe('scripts routes', () => {
       expect(JSON.stringify(auditDetails)).not.toContain('s3cret-value-the-caller-sent');
     });
 
-    it('omits ignoredParameters entirely on a clean run', async () => {
+    it('returns the same exact response shape when nothing was ignored', async () => {
       executeScriptOnDevicesMock.mockResolvedValueOnce(okResultWithIgnored([]));
 
       const res = await app.request(
@@ -1641,10 +1659,7 @@ describe('scripts routes', () => {
 
       expect(res.status).toBe(201);
       const body = await res.json();
-      // ABSENT, not an empty array — the common clean-run shape is unchanged,
-      // so a client can treat presence alone as "warn the user".
-      expect(body.ignoredParameters).toBeUndefined();
-      expect('ignoredParameters' in body).toBe(false);
+      expect(Object.keys(body).sort()).toEqual(['requestId', 'status', 'targets']);
       expect(writeRouteAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({

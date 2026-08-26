@@ -6,6 +6,8 @@ const {
   publishEventMock,
   selectDistinctMock,
   selectMock,
+  transactionMock,
+  txSelectMock,
   updateMock,
 } = vi.hoisted(() => ({
   insertMock: vi.fn(),
@@ -13,6 +15,8 @@ const {
   publishEventMock: vi.fn(),
   selectDistinctMock: vi.fn(),
   selectMock: vi.fn(),
+  transactionMock: vi.fn(),
+  txSelectMock: vi.fn(),
   updateMock: vi.fn(),
 }));
 
@@ -22,6 +26,7 @@ vi.mock('../db', () => ({
     update: updateMock,
     select: selectMock,
     selectDistinct: selectDistinctMock,
+    transaction: transactionMock,
   },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
@@ -51,6 +56,22 @@ const AUTOMATION = {
 } as any;
 
 function mockInsertAndUpdate() {
+  txSelectMock
+    .mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+    })
+    .mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }]),
+        }),
+      }),
+    });
+  transactionMock.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
+    insert: insertMock,
+    select: txSelectMock,
+    update: updateMock,
+  }));
   insertValuesMock.mockReturnValue({
     returning: vi.fn().mockResolvedValue([{
       id: 'run-1',

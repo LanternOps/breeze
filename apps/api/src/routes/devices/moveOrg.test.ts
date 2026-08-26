@@ -84,6 +84,7 @@ import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrenc
 import {
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceOrgDenormalizedTables,
+  DEVICE_ORG_FK_CASCADE_TABLES,
   getDeviceOrgMoveDeleteTables,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
@@ -346,10 +347,17 @@ describe('POST /devices/:id/move-org', () => {
       // last and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
       // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
-        ...getDeviceOrgDenormalizedTables(),
+        ...getDeviceOrgDenormalizedTables().filter(
+          (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never),
+        ),
         ...getDeviceOrgMoveDeleteTables(),
         ...CUSTOM_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
+      ]);
+      expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
+      expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
+        'agent_health_observations',
+        'software_inventory_observations',
       ]);
 
       expect(statements).toContain(

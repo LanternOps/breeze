@@ -50,6 +50,7 @@ import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
+import type { AutomationAction } from './automationRuntime';
 
 // ============================================
 // Inline settings schemas
@@ -1143,6 +1144,47 @@ async function assembleInlineSettings(
 // Feature Links
 // ============================================
 
+async function normalizeConfigPolicyAutomationSettings(settings: unknown): Promise<{
+  settings: Record<string, unknown>;
+  actions: AutomationAction[];
+}> {
+  const { normalizeAutomationActions } = await import('./automationRuntime');
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    return { settings: { items: [] }, actions: [] };
+  }
+  const source = settings as Record<string, unknown>;
+  const sourceItems = Array.isArray(source.items) ? source.items : [];
+  const actions: AutomationAction[] = [];
+  const items = sourceItems.map((item, index) => {
+    const row = item && typeof item === 'object' && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : {};
+    const normalizedActions = normalizeAutomationActions(row.actions ?? []);
+    actions.push(...normalizedActions);
+    return {
+      ...row,
+      name: String(row.name ?? `Automation ${index + 1}`),
+      actions: normalizedActions,
+    };
+  });
+  return { settings: { ...source, items }, actions };
+}
+
+async function authorizeConfigPolicyAutomationSettings(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  configPolicyId: string,
+  actions: readonly AutomationAction[],
+): Promise<void> {
+  const [policy] = await tx
+    .select({ orgId: configurationPolicies.orgId, partnerId: configurationPolicies.partnerId })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, configPolicyId))
+    .limit(1);
+  if (!policy) throw new Error('Configuration policy not found');
+  const { resolveAutomationReferencesForOwner } = await import('./automationRuntime');
+  await resolveAutomationReferencesForOwner(tx, policy, actions);
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
@@ -1172,11 +1214,20 @@ export async function addFeatureLink(
     inlineSettings = remoteAccessInlineSettingsSchema.parse(inlineSettings);
   }
 
+  const normalizedAutomation = featureType === 'automation'
+    ? await normalizeConfigPolicyAutomationSettings(inlineSettings)
+    : null;
+  if (normalizedAutomation) inlineSettings = normalizedAutomation.settings;
+
   return db.transaction(async (tx) => {
     const effectiveInlineSettings =
       featureType === 'patch'
         ? normalizePatchInlineSettings(inlineSettings)
         : inlineSettings;
+
+    if (normalizedAutomation) {
+      await authorizeConfigPolicyAutomationSettings(tx, configPolicyId, normalizedAutomation.actions);
+    }
 
     // ON CONFLICT DO NOTHING instead of catch-and-map: callers run inside the
     // withDbAccessContext transaction, and postgres.js re-throws a raised
@@ -1267,6 +1318,12 @@ export async function updateFeatureLink(
       // fall back to {} rather than making the whole update impossible.
       const stored = remoteAccessInlineSettingsSchema.safeParse(existing.inlineSettings ?? {});
       updates.inlineSettings = { ...(stored.success ? stored.data : {}), ...incoming };
+    }
+
+    if (existing.featureType === 'automation' && updates.inlineSettings !== undefined) {
+      const normalized = await normalizeConfigPolicyAutomationSettings(updates.inlineSettings);
+      updates.inlineSettings = normalized.settings;
+      await authorizeConfigPolicyAutomationSettings(tx, existing.configPolicyId, normalized.actions);
     }
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };

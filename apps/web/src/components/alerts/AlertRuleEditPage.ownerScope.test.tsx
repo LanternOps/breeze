@@ -57,6 +57,10 @@ function mockBackgroundEndpoints() {
     if (url === '/orgs/sites') return Promise.resolve(json({ sites: [] }));
     if (url === '/groups') return Promise.resolve(json({ groups: [] }));
     if (url === '/devices') return Promise.resolve(json({ devices: [] }));
+    if (url.startsWith('/devices/options?')) return Promise.resolve(json({
+      data: [],
+      page: { nextCursor: null, returned: 0, total: 0, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+    }));
     if (url === '/alerts/channels') return Promise.resolve(json({ channels: [] }));
     // POST /alerts/rules (create) and PUT /alerts/rules/:id (edit) both fall
     // through to this default success response.
@@ -135,5 +139,22 @@ describe('AlertRuleEditPage — owner scope (#2128)', () => {
       expect(body.orgId).toBe('org-9');
       expect('ownerScope' in body).toBe(false);
     });
+  });
+
+  it('scopes device choices to the focused organization through server options', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'org-9' });
+    orgState.current = { currentOrgId: 'org-9', allOrgs: false, organizations: [] };
+
+    render(<AlertRuleEditPage isNew />);
+    const targetTypeSelect = document.querySelector<HTMLSelectElement>('select[name="targetType"]');
+    expect(targetTypeSelect).toBeTruthy();
+    fireEvent.change(targetTypeSelect!, { target: { value: 'device' } });
+
+    await waitFor(() => {
+      const optionCall = fetchMock.mock.calls.find(([url]) => String(url).startsWith('/devices/options?'));
+      expect(optionCall).toBeTruthy();
+      expect(String(optionCall![0])).toContain('orgId=org-9');
+    });
+    expect(fetchMock.mock.calls.some(([url]) => /^\/devices(?:\?|$)/.test(String(url)))).toBe(false);
   });
 });

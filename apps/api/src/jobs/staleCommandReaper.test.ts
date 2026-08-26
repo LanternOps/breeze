@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 
-const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock, applyAutomationActionTerminalMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   deviceCommandsTable: {
@@ -72,6 +72,7 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     completedAt: 'script_execution_batches.completed_at',
   },
   queueBackupStopCommandMock: vi.fn(),
+  applyAutomationActionTerminalMock: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('bullmq', () => ({
@@ -115,6 +116,11 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
+}));
+
+vi.mock('../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 vi.mock('../services/commandQueue', async (importOriginal) => {
@@ -249,6 +255,12 @@ describe('stale command reaper', () => {
     expect(reaped).toBe(4);
     expect(deviceCommandReturning).toHaveBeenCalledTimes(4);
     expect(restoreWhere).toHaveBeenCalledTimes(4);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledTimes(4);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      commandId: 'cmd-restore',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   // #2774 — a drain-window self_uninstall must outlive the 30-min timeout
@@ -964,6 +976,12 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     );
     // Delivered rows never touch device_commands
     expect(commandSet).not.toHaveBeenCalled();
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledTimes(3);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      deploymentResultId: 'reaped',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   it('tier 1: leaves a delivered row alone before the 55-min timeout', async () => {
@@ -1124,6 +1142,11 @@ describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
 
     expect(reaped).toBe(1);
     expect(execSet).toHaveBeenCalledTimes(1);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      scriptExecutionId: 'exec-1',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   // Pins the `running` reference-time branch, which had no coverage anywhere in

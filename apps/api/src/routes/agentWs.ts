@@ -71,6 +71,7 @@ import {
 import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
 import { commandAcceptsAgentResultCondition } from '../services/commandResultAcceptance';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
@@ -1722,6 +1723,7 @@ async function processCommandResult(
     // (resolved ONLY on the 0-row branch, so the happy path pays nothing) is
     // what tells those apart in Sentry. Non-throwing, so the stale-result
     // early-return keeps its existing behaviour.
+    const terminalCompletedAt = new Date();
     const updatedCommands = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
         dbWriteExpectingRows(
@@ -1731,7 +1733,7 @@ async function processCommandResult(
               .update(deviceCommands)
               .set({
                   status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
-                  completedAt: new Date(),
+                  completedAt: terminalCompletedAt,
                   result: buildStoredCommandResult(command.type, normalizedResult, stdout),
                   ...terminalPayloadErasureSet(),
               })
@@ -1757,6 +1759,14 @@ async function processCommandResult(
       console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
       return;
     }
+
+    await applyCommandAutomationTerminal({
+      commandId: result.commandId,
+      result: normalizedResult,
+      output: stdout ?? null,
+      error: normalizedResult.error ?? normalizedResult.stderr ?? null,
+      completedAt: terminalCompletedAt,
+    });
 
     // Finding #8: emit the append-only audit event for a WS-ingested command
     // result, matching the REST path (routes/agents/commands.ts). Placed

@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ScriptExecutionsPage from './ScriptExecutionsPage';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 
 const { fetchWithAuthMock } = vi.hoisted(() => ({ fetchWithAuthMock: vi.fn() }));
 
@@ -9,6 +10,16 @@ vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
   return { ...actual, fetchWithAuth: fetchWithAuthMock };
 });
+vi.mock('./ScriptExecutionModal', () => ({
+  default: ({ onExecute, script }: {
+    onExecute: (scriptId: string, deviceIds: string[], parameters: Record<string, string | number | boolean>, runAs: 'system' | 'user') => Promise<ScriptAdmissionResult>;
+    script: { id: string };
+  }) => (
+    <button type="button" onClick={() => void onExecute(script.id, ['device-1'], {}, 'system')}>
+      Confirm Execute
+    </button>
+  ),
+}));
 
 const SCRIPT_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const EXECUTION_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
@@ -132,5 +143,58 @@ describe('ScriptExecutionsPage', () => {
 
     await waitFor(() => expect(screen.queryByText('Execution Details')).toBeNull());
     expect(screen.queryByText('FULL STDOUT FROM DETAIL')).toBeNull();
+  });
+
+  it('refreshes executions only when the admission includes an admitted target', async () => {
+    let executionListCalls = 0;
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === `/scripts/${SCRIPT_ID}`) return jsonResponse({ script });
+      if (url === `/scripts/${SCRIPT_ID}/executions`) {
+        executionListCalls += 1;
+        return jsonResponse({ executions: [listRow] });
+      }
+      if (url === '/orgs/sites') return jsonResponse({ sites: [] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'admitted', executionId: 'execution-2' }],
+        }, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    fireEvent.click(await screen.findByText('Run Script'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(executionListCalls).toBeGreaterThanOrEqual(2));
+  });
+
+  it('does not refresh executions for a typed all-target rejection', async () => {
+    let executionListCalls = 0;
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === `/scripts/${SCRIPT_ID}`) return jsonResponse({ script });
+      if (url === `/scripts/${SCRIPT_ID}/executions`) {
+        executionListCalls += 1;
+        return jsonResponse({ executions: [listRow] });
+      }
+      if (url === '/orgs/sites') return jsonResponse({ sites: [] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          status: 'rejected',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'denied', reasonCode: 'site_access_denied' }],
+        }, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    fireEvent.click(await screen.findByText('Run Script'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => url === `/scripts/${SCRIPT_ID}/execute`)).toBe(true));
+
+    expect(executionListCalls).toBe(1);
   });
 });
