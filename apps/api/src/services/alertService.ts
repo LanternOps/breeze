@@ -258,16 +258,20 @@ export async function resolveAlert(
   alertId: string,
   resolutionNote?: string,
   resolvedBy?: string
-): Promise<void> {
+): Promise<boolean> {
+  // Winner-takes-all. The status predicate IS the concurrency control: reading
+  // the row first and then updating by id unconditionally lets two callers
+  // both "resolve" the same alert and both run the fan-out below — the state
+  // transition, the cooldown write, and an `alert.resolved` publish that
+  // cancels escalations and feeds the AI triage loop guard.
+  //
+  // Two callers is not hypothetical: policy.compliant redelivery, the
+  // auto-resolve sweep and monitorWorker can all reach the same alert, and
+  // wave 3.5c makes event delivery at-least-once.
+  //
+  // RETURNING replaces the previous SELECT — the returned row carries every
+  // column the rest of this function needs.
   const [alert] = await db
-    .select()
-    .from(alerts)
-    .where(eq(alerts.id, alertId))
-    .limit(1);
-
-  if (!alert) return;
-
-  await db
     .update(alerts)
     .set({
       status: 'resolved',
@@ -275,7 +279,14 @@ export async function resolveAlert(
       resolvedBy: resolvedBy ?? null,
       resolutionNote: resolutionNote ?? null
     })
-    .where(eq(alerts.id, alertId));
+    .where(and(
+      eq(alerts.id, alertId),
+      inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
+    ))
+    .returning();
+
+  // Already resolved by someone else (or gone). Not an error — just not ours.
+  if (!alert) return false;
 
   // Phase 6a: Record resolution state transition for flapping detection
   try {
@@ -340,6 +351,7 @@ export async function resolveAlert(
   );
 
   console.log(`[AlertService] Resolved alert ${alertId}`);
+  return true;
 }
 
 /**
