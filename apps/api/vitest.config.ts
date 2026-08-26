@@ -174,6 +174,13 @@ export default defineConfig({
       // Real-DB suites owned by vitest.integration.config.ts (#3778).
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',
+      // Canary for issue #4046: asserts the process observes a non-UTC
+      // offset. It must ONLY run under the pinned non-UTC pass
+      // (vitest.config.tz.ts, TZ=America/Denver), where it belongs — it is
+      // excluded here deliberately, not because it doesn't apply to the
+      // unit runner: it WOULD fail on this (UTC) runner, since that is
+      // exactly the point of the check.
+      'src/__tests__/tzPinCanary.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

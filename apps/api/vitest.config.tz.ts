@@ -36,6 +36,12 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // MAINTENANCE (as of this PR, #4041 is still open): once #4041 merges,
+    // it adds two new TZ-sensitive test files that belong in this list and
+    // are NOT auto-discovered (this is a manual allowlist, not a broad
+    // glob) — add both when that PR lands:
+    //   'src/routes/sso.reauth.test.ts'
+    //   'src/testUtils/pgOffsetlessTimestamp.test.ts'
     include: [
       'src/routes/auth.test.ts',
       'src/routes/auth.passkeys.test.ts',
@@ -56,6 +62,10 @@ export default defineConfig({
       'src/services/apiKeyAuthorization.test.ts',
       'src/services/approverWebAuthn.test.ts',
       'src/services/authEmailQueue.test.ts',
+      // Canary asserting the pin itself is active — see its own file
+      // header. Deliberately excluded from vitest.config.ts (main) so it
+      // fails loudly there if it's ever accidentally run under UTC.
+      'src/__tests__/tzPinCanary.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
   },
