@@ -159,6 +159,8 @@ Alert rules define what conditions to watch for and which devices to monitor.
 
 Before deploying a rule to production, you can test it against a specific device. From the rule list, click the **Test** button, select a target device, and Breeze will simulate condition evaluation and show you whether the rule would trigger.
 
+The verdict is the rule's real evaluation result against that device's current data — not an approximation — and it reflects the rule **as you have it open in the editor**, including unsaved edits. Previously the test could report on the last saved version, so a threshold you had just changed appeared to behave in a way it no longer would.
+
 ### Partner-wide Rules
 
 A partner-scoped user with access to every organization can create an alert rule as **partner-wide** ("All organizations") instead of scoping it to one org, so the same threshold or condition applies fleet-wide across every organization the partner manages. Choose the owner scope when creating the rule -- it's set once at creation and can't be changed afterward. Partner-wide rules show an **All orgs** badge in the rule list.

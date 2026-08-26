@@ -1,0 +1,84 @@
+---
+title: AI Agents
+description: Configure an AI agent that triages alerts, records what it did, and proposes actions for a human to approve.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+An AI agent is a named, permission-scoped worker you configure once. It wakes on a trigger, gathers context from the devices it is allowed to see, and writes up what it found. Every run is recorded, and anything the agent wants to *do* is proposed for a person to approve.
+
+Agents are off by default and must be enabled by your operator before they appear. See [Enabling agents](#enabling-agents).
+
+<Aside type="caution" title="Agents do not act on their own in this release">
+  The only modes accepted today are **Off** and **Shadow**. An agent in Shadow mode observes, reasons, and proposes — it never executes an action by itself. Autonomous execution is a later release; until then, every action an agent proposes waits for a human decision.
+</Aside>
+
+## What an agent does
+
+Manage agents under **Settings → AI Agents**.
+
+An agent has a **kind**, which decides what it is for and what triggers it. Triage agents run against alerts: when an alert fires, the agent reads the device, its recent history, and related signals, then records its assessment on the run.
+
+Each agent carries its own limits — devices per run, concurrent runs, runs per hour, turns per run, spend per run and per day, wall-clock time, and a ceiling on the percentage of your fleet it may touch in a day. These are enforced per run, not advisory.
+
+<Aside>
+  An organization can have one live agent of each kind. If you need to change an agent's configuration, edit it — you cannot create a second agent of the same kind alongside it.
+</Aside>
+
+## Runs
+
+Every time an agent wakes, it opens a **run**. The run is the audit surface: open it to see what triggered the agent, which devices it looked at, and what it concluded.
+
+Runs are triggered by an **alert**, by a **schedule**, by a **ticket**, or **manually** from the agent itself. A run moves through these states:
+
+| Status | Meaning |
+|---|---|
+| `queued` | Accepted and waiting for a runner. |
+| `running` | Actively working. |
+| `awaiting_approval` | The agent proposed an action and is waiting on a person. |
+| `completed` | Finished. |
+| `failed` | Stopped on an error. |
+| `cancelled` | Stopped by a person. |
+| `expired` | Exceeded its wall-clock budget. |
+| `skipped` | Did not run — for example, the agent's own policy filtered the trigger out. |
+
+A run that ends in `skipped` tells you the agent was reached but declined the work, which is different from never having been triggered at all.
+
+## Approving what an agent proposes
+
+When an agent wants to take an action, it does not perform it. It records the proposal and the run moves to `awaiting_approval`. You are notified in the app, and the proposal appears in the **Approvals** inbox, where you approve or reject it.
+
+Nothing an agent proposes takes effect without a person deciding. Rejecting a proposal ends it; the agent does not retry the same action behind you.
+
+## Agent activity in the audit trail
+
+Actions that originate from an agent are attributed to **the agent**, not to the person who configured it or happened to be signed in. Agent-created entries in the audit log carry the agent as the actor, so an agent's work is never mistaken for a technician's during a review.
+
+## Permissions
+
+Agents are gated on their own capabilities rather than on general organization permissions:
+
+| Permission | Grants |
+|---|---|
+| `ai_agents:read` | View agents and their runs. |
+| `ai_agents:write` | Create, edit, disable, and trigger agents. |
+
+These are deliberately separate from `organizations:write`. Authoring an agent policy is what will eventually authorize autonomous action on customer machines, so it is not bundled into a permission every organization admin already holds. Partner Admin retains access through its full-access role.
+
+Creating, editing, disabling, or manually triggering an agent additionally requires you to complete MFA.
+
+## Alert triage wiring
+
+Creating a triage agent automatically creates a matching **system-managed automation** that wakes the agent when an alert fires. You will see it on the Automations page, marked as system-managed.
+
+<Aside type="caution">
+  Edit the agent, not the automation. The managed automation exists only to route alerts to the agent — severity, site, tag, maintenance-window and cooldown filtering all live on the agent's own policy. The API refuses automations that try to use the `ai_triage` action directly.
+</Aside>
+
+Disabling the agent disables its wiring too, so an agent that is switched off never gets live alerts routed in front of it.
+
+## Enabling agents
+
+Agents are off unless your operator sets `BREEZE_AI_AGENTS_ENABLED=true`. Upgrading does not turn them on, and no existing role gains access to them by default — the `ai_agents` permissions must be granted to a role explicitly.
+
+Self-hosted operators: see [Environment Variables](/deploy/environment/) for the flag, and remember it must also be mapped in the `api` service's `environment:` block of your compose file — a value in `.env` alone has no effect.

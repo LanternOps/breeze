@@ -399,6 +399,7 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `PUBLIC_ENABLE_EDR_INTEGRATIONS` | `false` | Surface the EDR UI: the `/security/edr` fleet page, the device Security-tab EDR panel, and the Security dashboard summary cards. Set `true` at web image build time to enable. |
 | `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` | `false` | Surface network-discovered assets alongside agent endpoints in the Devices list view. Set `true` at web image build time to enable. |
 | `BREEZE_WORKSPACE_ENABLED` | `false` in the production compose files (`true` in the dev override) | Load the built-in **AI Workspace** extension. Off by default — leave it unset unless you want Workspace. **Requires a PostgreSQL image that provides the `pgvector` extension** (see the aside below). |
+| `BREEZE_AI_AGENTS_ENABLED` | `false` | Surface **AI Agents** (Settings → AI Agents). Off by default — no agent exists, runs, or appears in the UI until this is `true`. Even when enabled, agents only observe and propose in this release; nothing runs unattended. Must also be mapped in the `api` service's `environment:` block, not just set in `.env`. |
 
 <Aside>
   Variables prefixed with `PUBLIC_` are **web build-time flags** — they are baked into the web bundle when the image is built and cannot be changed at runtime by editing `.env`. To toggle them, set the value in your build environment and rebuild the web image.
