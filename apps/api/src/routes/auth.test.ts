@@ -1529,6 +1529,138 @@ describe('auth routes', () => {
     });
   });
 
+  // #4018: the PASSWORDLESS road through Case 2. Every other test in this file
+  // hard-codes `passwordHash: '$argon2id$hash'` on the shared db.select mock, so
+  // the branch resolveEnrollmentStepUp takes for `password_hash IS NULL` had
+  // ZERO coverage in either direction — and this is the caller that matters
+  // most, because it is the one with no ambient DB access context (the
+  // `await authMiddleware(c, async () => {})` above tears it down when its empty
+  // `next` returns).
+  describe('POST /auth/mfa/verify — setup confirmation on a PASSWORDLESS account (#4018)', () => {
+    // One row answers every read on this path: resolveEnrollmentStepUp's
+    // passwordHash probe AND both userIsMfaProtected probes (no factor yet).
+    function mockPasswordlessPendingSetup(row: Record<string, unknown> = {}) {
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({
+          secret: 'SETUPSECRET123',
+          recoveryCodes: ['CODE-0001', 'CODE-0002']
+        })),
+        del: vi.fn().mockResolvedValue(1),
+        setex: vi.fn(),
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(consumeMFAToken).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { passwordHash: null, mfaEnabled: false, passkeyCount: 0, ...row }
+            ])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+      } as any);
+    }
+
+    // mfaVerifySchema types ssoReauthGrantId as z.string().uuid() — mintStepUpGrant
+    // returns randomUUID(), so anything else is a 400 before the road is reached.
+    const SSO_GRANT_ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+
+    function confirm(body: Record<string, unknown>) {
+      return app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    }
+
+    it('enrolls the first factor with a valid SSO re-auth grant, consuming it exactly once', async () => {
+      mockPasswordlessPendingSetup();
+      const grants = useGrantStore([SSO_GRANT_ID]);
+
+      const res = await confirm({ code: '123456', ssoReauthGrantId: SSO_GRANT_ID });
+
+      expect(res.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(
+        SSO_GRANT_ID,
+        expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' })
+      );
+      expect(grants.has(SSO_GRANT_ID)).toBe(false);
+    });
+
+    // The dead end review finding 7 is about, seen from the server: a client
+    // that lost its single-use grant sends nothing, and a generic
+    // `Invalid credentials` would render on a screen with no password field.
+    it('answers enrollment_proof_required — not a generic 401 — when NO proof is sent', async () => {
+      mockPasswordlessPendingSetup();
+
+      const res = await confirm({ code: '123456' });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({
+        error: 'enrollment_proof_required',
+        reauthUrl: '/sso/reauth/start',
+      });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('401s a grant that no longer validates (replayed, wrong session, bumped epoch)', async () => {
+      mockPasswordlessPendingSetup();
+      useGrantStore([]); // empty store: the grant is gone
+
+      const res = await confirm({ code: '123456', ssoReauthGrantId: SSO_GRANT_ID });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ error: 'Invalid credentials' });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // enroll_first_factor authorizes a FIRST factor and nothing else. A
+    // passwordless account that already holds one must go the SR2-20 road.
+    it('refuses the SSO road outright for a passwordless account that ALREADY has a factor', async () => {
+      mockPasswordlessPendingSetup({ mfaEnabled: true });
+      const grants = useGrantStore([SSO_GRANT_ID]);
+
+      const res = await confirm({ code: '123456', ssoReauthGrantId: SSO_GRANT_ID });
+
+      // enforceExistingFactorStepUp (SR2-20) fires first for this shape — the
+      // point is that the enroll_first_factor grant does NOT satisfy it, and is
+      // not spent trying.
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(grants.has(SSO_GRANT_ID)).toBe(true);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // The password road through this same endpoint must be byte-for-byte
+    // unchanged: an account WITH a password never needs (or may use) a grant.
+    it('leaves the password road alone — a password account needs no grant here', async () => {
+      mockPasswordlessPendingSetup({ passwordHash: '$argon2id$hash' });
+
+      const res = await confirm({ code: '123456' });
+
+      expect(res.status).toBe(200);
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    // ...and must be REFUSED the SSO road, so two proofs of differing strength
+    // can never reach the same door.
+    it('refuses an SSO grant offered by an account that HAS a password', async () => {
+      mockPasswordlessPendingSetup({ passwordHash: '$argon2id$hash' });
+      const grants = useGrantStore([SSO_GRANT_ID]);
+
+      const res = await confirm({ code: '123456', ssoReauthGrantId: SSO_GRANT_ID });
+
+      // passwordAlreadyProven short-circuits the password road for a password
+      // account, so the grant is simply never consulted.
+      expect(res.status).toBe(200);
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(grants.has(SSO_GRANT_ID)).toBe(true);
+    });
+  });
+
   // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
   // requires a fresh existing-factor step-up grant. A no-factor account's
   // initial enrollment (default db.select mock = []) stays password-only,
