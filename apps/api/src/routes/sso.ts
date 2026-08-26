@@ -80,6 +80,7 @@ import {
   createSsoPendingLink,
   peekSsoPendingLink,
   deleteSsoPendingLink,
+  touchSsoPendingLink,
   hashSsoPendingLinkToken,
   SSO_PENDING_LINK_TTL_SECONDS,
 } from '../services/ssoPendingLink';
@@ -3265,7 +3266,10 @@ ssoRoutes.get('/callback', async (c) => {
 
       if (byEmail) {
         const hasPassword = byEmail.passwordHash != null;
-        const [otherProviderLink] = await withSystemDbAccessContext(async () =>
+        // Only consulted on the passwordless path below — the ceremony entry
+        // is decided by the password alone, so skip the read when it can't
+        // change the outcome.
+        const [otherProviderLink] = hasPassword ? [undefined] : await withSystemDbAccessContext(async () =>
           db
             .select({ id: userSsoIdentities.id })
             .from(userSsoIdentities)
@@ -3764,6 +3768,12 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
       ssoLinkTokenHash: tokenHash,
     };
     await redis.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
+    // Re-arm the link record's TTL — and the cookie's Max-Age — to match the
+    // fresh MFA window; otherwise a user who spent a few minutes on the
+    // password step enters a CORRECT factor code only to find the ceremony
+    // expired underneath it.
+    await touchSsoPendingLink(tokenHash);
+    c.header('Set-Cookie', buildSsoPendingLinkCookie(rawToken), { append: true });
 
     await floorPromise;
     return c.json({

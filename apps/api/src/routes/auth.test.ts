@@ -1380,14 +1380,17 @@ describe('auth routes', () => {
       expect(setCookie).toContain('breeze_refresh_token=');
     });
 
-    it('rejects with a generic 401 when the link-ceremony finalizer refuses', async () => {
+    it('rejects with the distinct sso_link_expired code when the link-ceremony finalizer refuses', async () => {
       getMock.mockResolvedValue(pendingRecord({ ssoLinkTokenHash: 'link-hash-1' }));
       vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'link_expired' } as any);
 
       const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
 
       expect(res.status).toBe(401);
-      expect((await res.json() as Record<string, unknown>).error).toBe('Invalid or expired MFA session');
+      // Distinct from 'Invalid or expired MFA session': the factor was
+      // CORRECT — the connect page must route to its expired/restart view,
+      // not invite the user to retry a code that can never work.
+      expect((await res.json() as Record<string, unknown>).error).toBe('sso_link_expired');
       expect(createTokenPair).not.toHaveBeenCalled();
     });
   });

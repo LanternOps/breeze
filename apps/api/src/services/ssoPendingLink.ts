@@ -134,7 +134,11 @@ function parseRecord(raw: string | null): SsoPendingLink | null {
   if (!raw) return null;
   try {
     return JSON.parse(raw) as SsoPendingLink;
-  } catch {
+  } catch (err) {
+    // A corrupt/truncated record (or shape drift during a rolling deploy)
+    // must fail closed — but never silently, or serialization bugs hide
+    // behind "your link expired" indefinitely.
+    console.error('[sso-pending-link] unparseable pending record; treating as absent:', err);
     return null;
   }
 }
@@ -143,7 +147,10 @@ function parseRecord(raw: string | null): SsoPendingLink | null {
  * burn the record — only successful completion (or exhaustion) does. */
 export async function peekSsoPendingLink(tokenHash: string): Promise<SsoPendingLink | null> {
   const redis = getRedis();
-  if (!redis) return null;
+  if (!redis) {
+    console.warn('[sso-pending-link] Redis unavailable during peek — ceremony will read as expired');
+    return null;
+  }
   return parseRecord(await redis.get(pendingKey(tokenHash)));
 }
 
@@ -151,8 +158,30 @@ export async function peekSsoPendingLink(tokenHash: string): Promise<SsoPendingL
  * link + mint (or by the MFA continuation's finalizer). */
 export async function consumeSsoPendingLink(tokenHash: string): Promise<SsoPendingLink | null> {
   const redis = getRedis();
-  if (!redis) return null;
+  if (!redis) {
+    // Distinguishable from a genuine expiry in logs: a Redis blip between the
+    // password step and the MFA continuation otherwise reads as "no record"
+    // and 401s every completion with zero server-side trace.
+    console.warn('[sso-pending-link] Redis unavailable during consume — ceremony will read as expired');
+    return null;
+  }
   return parseRecord(await getDelAtomic(redis as RedisWithGetDel, pendingKey(tokenHash)));
+}
+
+/**
+ * Re-arm the record's TTL to the full window. Called when the password step
+ * succeeds and hands off to the MFA continuation: the factor step gets its own
+ * 5-minute window (matching the fresh mfa:pending record), instead of racing
+ * whatever remained of the callback-time TTL — without this, a user who takes
+ * a few minutes on the password step enters a CORRECT MFA code and is told
+ * their session is invalid. Best-effort: a miss just leaves the original TTL.
+ */
+export async function touchSsoPendingLink(tokenHash: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const raw = await redis.get(pendingKey(tokenHash));
+  if (!raw) return;
+  await redis.setex(pendingKey(tokenHash), SSO_PENDING_LINK_TTL_SECONDS, raw);
 }
 
 /** Hard invalidation (attempt exhaustion, stale-state verdicts). Best-effort. */

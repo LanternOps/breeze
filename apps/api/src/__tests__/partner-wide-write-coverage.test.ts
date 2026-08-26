@@ -73,6 +73,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/auth/mfa.ts': 'writes the acting user\'s own MFA enrolment',
   'routes/auth/passkeys.ts': 'writes the acting user\'s own passkey credentials',
   'routes/auth/password.ts': 'writes the acting user\'s own password hash',
+  'routes/auth/ssoLinkCompletion.ts': 'SSO login completion (#4067): stamps the signing-in user\'s own last-login column',
   'routes/auth/phone.ts': 'writes the acting user\'s own phone factor',
   'routes/auth/verifyEmail.ts': 'writes the acting user\'s own email-verification state',
   'routes/system.ts': 'platform-admin/system bootstrap surface, gated on isPlatformAdmin',

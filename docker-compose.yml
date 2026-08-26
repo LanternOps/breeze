@@ -122,6 +122,11 @@ services:
       REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT: ${REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT:-}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       PARTNER_API_CURSOR_SIGNING_KEY: ${PARTNER_API_CURSOR_SIGNING_KEY:?Set PARTNER_API_CURSOR_SIGNING_KEY in .env}
+      # Pending-account booking link (2bca92a83): optional scheduler URL +
+      # label surfaced on the payment-pending screen. Must be mapped here or
+      # setting them in .env is a silent no-op (IS_HOSTED / #570 class).
+      PENDING_ACCOUNT_MEETING_URL: ${PENDING_ACCOUNT_MEETING_URL:-}
+      PENDING_ACCOUNT_MEETING_LABEL: ${PENDING_ACCOUNT_MEETING_LABEL:-}
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
       # Backup control-plane URL pushed to agents via heartbeat (#2288);
       # see docs/deploy/agent-server-url-migration.md

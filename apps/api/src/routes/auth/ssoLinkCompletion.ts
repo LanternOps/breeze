@@ -457,6 +457,9 @@ export async function finalizeSsoPendingLink(
   // null and reports the generic expiry.
   const record = await consumeSsoPendingLink(tokenHash);
   if (!record) {
+    // TTL expiry, a concurrent finalize winning the consume, or Redis being
+    // unavailable (the service logs that case) — all fail closed here.
+    console.warn('[sso/link] finalize found no pending record (expired, already consumed, or store unavailable)');
     return { ok: false, error: 'link_expired' };
   }
 
@@ -527,18 +530,37 @@ export async function finalizeSsoPendingLink(
     if (domainBlocked) return rejected('domain_blocked');
   }
 
-  const completion = await completeSsoLogin(c, {
-    provider,
-    user,
-    idpMfaAsserted: record.idpMfaAsserted,
-    breezeMfaVerified: opts.breezeMfaVerified,
-    externalSub: record.externalSub,
-    email: record.email,
-    profile: record.profile,
-    encryptedAccessToken: record.encryptedAccessToken,
-    encryptedRefreshToken: record.encryptedRefreshToken,
-    tokenExpiresAt: record.tokenExpiresAt ? new Date(record.tokenExpiresAt) : null,
-  });
+  let completion: SsoCompletionResult;
+  try {
+    completion = await completeSsoLogin(c, {
+      provider,
+      user,
+      idpMfaAsserted: record.idpMfaAsserted,
+      breezeMfaVerified: opts.breezeMfaVerified,
+      externalSub: record.externalSub,
+      email: record.email,
+      profile: record.profile,
+      encryptedAccessToken: record.encryptedAccessToken,
+      encryptedRefreshToken: record.encryptedRefreshToken,
+      tokenExpiresAt: record.tokenExpiresAt ? new Date(record.tokenExpiresAt) : null,
+    });
+  } catch (err) {
+    // The identity upsert commits before the mint inside completeSsoLogin, so
+    // a thrown mint/session error can leave a DURABLE link behind while the
+    // request 500s. Every gate authorizing the link already passed, so that
+    // is not an authz hole — but the audit trail must not stay silent about
+    // a persisted credential, so record the possibility before rethrowing.
+    writeRouteAudit(c, {
+      orgId: provider.orgId,
+      action: 'sso.link.ceremony_rejected',
+      resourceType: 'sso_provider',
+      resourceId: provider.id,
+      resourceName: provider.name,
+      result: 'denied',
+      details: { reason: 'completion_error', userId: user.id, partnerId: provider.partnerId, linkMayPersist: true },
+    });
+    throw err;
+  }
   if (!completion.ok) {
     writeRouteAudit(c, {
       orgId: provider.orgId,
@@ -547,7 +569,15 @@ export async function finalizeSsoPendingLink(
       resourceId: provider.id,
       resourceName: provider.name,
       result: 'denied',
-      details: { reason: completion.error, userId: user.id, partnerId: provider.partnerId },
+      details: {
+        reason: completion.error,
+        userId: user.id,
+        partnerId: provider.partnerId,
+        // epoch_unavailable is the one rejection that fires AFTER the
+        // identity upsert committed — the link persists even though this
+        // ceremony reads as denied.
+        ...(completion.error === 'epoch_unavailable' ? { linkMayPersist: true } : {}),
+      },
     });
     return { ok: false, error: completion.error };
   }

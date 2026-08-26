@@ -4898,6 +4898,10 @@ describe('sso routes', () => {
           providerName: 'Acme IdP',
         });
         expect(res.headers.get('cache-control')).toBe('no-store');
+        // Non-consuming: the describe call must never burn the record — a
+        // consume here would make the page itself kill every ceremony.
+        expect(pendingLinkRedis.getdel).not.toHaveBeenCalled();
+        expect(pendingLinkRedis.del).not.toHaveBeenCalled();
       });
 
       it('404s without the cookie (a forwarded URL has no ceremony)', async () => {
@@ -5017,6 +5021,18 @@ describe('sso routes', () => {
         const pendingMfa = JSON.parse(String(setexCalls[0]![2]));
         expect(pendingMfa.ssoLinkTokenHash).toBe(TOKEN_HASH);
         expect(pendingMfa.userId).toBe(USER_UUID);
+
+        // The handoff re-arms the link record's TTL (and the cookie) to the
+        // fresh MFA window — without this, a slow password step + SMS latency
+        // makes a CORRECT factor code fail with "link expired" (#4067 review).
+        const touchCalls = pendingLinkRedis.setex.mock.calls.filter(
+          ([k]) => String(k) === `sso:pendinglink:${TOKEN_HASH}`,
+        );
+        expect(touchCalls).toHaveLength(1);
+        expect(touchCalls[0]![1]).toBe(300);
+        const setCookies = res.headers.getSetCookie?.() ?? [];
+        const rearmed = setCookies.find((v) => v.startsWith(`breeze_sso_pending_link=${RAW_TOKEN}`));
+        expect(rearmed).toContain('Max-Age=300');
       });
 
       it('refuses with 409 when the (provider, sub) identity belongs to another account', async () => {
@@ -5059,6 +5075,15 @@ describe('sso routes', () => {
         const res = await confirm();
         expect(res.status).toBe(401);
         expect(createTokenPair).not.toHaveBeenCalled();
+        // Discriminating assertion: the 401 must come from the EPOCH guard
+        // specifically — an under-supplied mock queue would otherwise produce
+        // the same 401 via provider_missing and mask a deleted guard (the
+        // exact vacuity the #4067 review caught). Per-guard coverage lives in
+        // routes/auth/ssoLinkCompletion.test.ts.
+        const rejection = vi.mocked(writeRouteAudit).mock.calls.find(
+          ([, payload]) => (payload as { action?: string }).action === 'sso.link.ceremony_rejected',
+        );
+        expect((rejection?.[1] as { details?: { reason?: string } })?.details?.reason).toBe('epoch_mismatch');
       });
     });
   });

@@ -352,6 +352,7 @@ function pendingMfaJson(overrides: Partial<{
   statusExpectation: string;
   allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
   expiresAt: number;
+  ssoLinkTokenHash: string;
 }> = {}): string {
   return JSON.stringify({
     userId: 'user-123',
@@ -1218,7 +1219,7 @@ describe('passkey MFA auth routes', () => {
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 
-  it('rejects the passkey link continuation with a generic 401 when the finalizer refuses', async () => {
+  it('rejects the passkey link continuation with the distinct sso_link_expired code when the finalizer refuses', async () => {
     redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey', ssoLinkTokenHash: 'link-hash-1' }));
     dbState.selectQueue.push(
       [user],
@@ -1244,7 +1245,7 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) });
+    expect(await res.json()).toMatchObject({ error: 'sso_link_expired' });
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 

@@ -1248,7 +1248,8 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
       success: true,
       user,
       tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
+      requiresSetup: !!data.requiresSetup,
+      ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
     };
   } catch {
     return { success: false, error: 'Network error' };

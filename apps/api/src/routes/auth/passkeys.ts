@@ -512,7 +512,9 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       if (outcome.error === 'identity_in_use') {
         return c.json({ error: 'identity_in_use' }, 409);
       }
-      return c.json({ error: 'Invalid or expired MFA session' }, 401);
+      // Distinct code: the factor was correct — the link ceremony is dead.
+      // The connect page maps this to its expired view (see mfa.ts sibling).
+      return c.json({ error: 'sso_link_expired' }, 401);
     }
     setRefreshTokenCookie(c, outcome.refreshToken);
     c.header('Cache-Control', 'no-store');

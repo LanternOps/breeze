@@ -351,7 +351,11 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         if (outcome.error === 'identity_in_use') {
           return c.json({ error: 'identity_in_use' }, 409);
         }
-        return c.json({ error: 'Invalid or expired MFA session' }, 401);
+        // Distinct code: the FACTOR was correct — it's the link ceremony that
+        // is dead (TTL, provider re-config, state drift). The connect page
+        // maps this to its expired view; 'Invalid or expired MFA session'
+        // here would strand the user retrying a code that can never work.
+        return c.json({ error: 'sso_link_expired' }, 401);
       }
       setRefreshTokenCookie(c, outcome.refreshToken);
       c.header('Cache-Control', 'no-store');

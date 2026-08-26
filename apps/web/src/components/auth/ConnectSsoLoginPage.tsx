@@ -30,6 +30,10 @@ export default function ConnectSsoLoginPage() {
 
   const [pending, setPending] = useState<{ email: string; providerName: string | null } | null>(null);
   const [expired, setExpired] = useState(false);
+  // Transient failure reading the ceremony (network blip, 503, 429) — NOT
+  // expiry. Rendering these as "expired" would send the user on a needless
+  // full IdP round-trip when a retry would have worked.
+  const [unavailable, setUnavailable] = useState(false);
   const [checking, setChecking] = useState(true);
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string>();
@@ -43,18 +47,23 @@ export default function ConnectSsoLoginPage() {
   const [smsSending, setSmsSending] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    apiSsoLinkPending().then((result) => {
-      if (cancelled) return;
+  const describeCeremony = () => {
+    setChecking(true);
+    setUnavailable(false);
+    return apiSsoLinkPending().then((result) => {
       if (result.success) {
         setPending({ email: result.email, providerName: result.providerName });
-      } else {
+      } else if (result.expired) {
         setExpired(true);
+      } else {
+        setUnavailable(true);
       }
       setChecking(false);
     });
-    return () => { cancelled = true; };
+  };
+
+  useEffect(() => {
+    void describeCeremony();
   }, []);
 
   const completeLogin = async (result: {
@@ -69,6 +78,11 @@ export default function ConnectSsoLoginPage() {
       await navigateTo(result.requiresSetup ? '/setup' : (result.redirectPath || '/'));
       return true;
     }
+    // Defensive: a 200 without user/tokens (API drift) must not strand the
+    // user on a silently re-enabled button.
+    setError(t('connectSso.completionFailed', {
+      defaultValue: 'Your password was correct, but the sign-in could not be completed. Contact your administrator.',
+    }));
     return false;
   };
 
@@ -86,6 +100,11 @@ export default function ConnectSsoLoginPage() {
       } else if (result.identityInUse) {
         setError(t('connectSso.identityInUse', {
           defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
+        }));
+      } else if (result.error && /^(no_org_access|no_partner_access|invalid_role_scope|epoch_unavailable)$/.test(result.error)) {
+        // Raw membership/mint gate codes are not user language.
+        setError(t('connectSso.completionFailed', {
+          defaultValue: 'Your password was correct, but the sign-in could not be completed. Contact your administrator.',
         }));
       } else {
         setError(result.error);
@@ -116,7 +135,17 @@ export default function ConnectSsoLoginPage() {
 
     const result = await apiVerifyMFA(code, tempToken, mfaMethod);
     if (!result.success) {
-      setError(result.error);
+      if (result.error === 'sso_link_expired') {
+        // The factor was fine — the ceremony died underneath it. Retrying the
+        // code can never work; route to the expired view's restart CTA.
+        setExpired(true);
+      } else if (result.error === 'identity_in_use') {
+        setError(t('connectSso.identityInUse', {
+          defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
+        }));
+      } else {
+        setError(result.error);
+      }
       setLoading(false);
       return;
     }
@@ -131,7 +160,15 @@ export default function ConnectSsoLoginPage() {
 
     const result = await apiVerifyPasskeyMFA(tempToken);
     if (!result.success) {
-      setError(result.error);
+      if (result.error === 'sso_link_expired') {
+        setExpired(true);
+      } else if (result.error === 'identity_in_use') {
+        setError(t('connectSso.identityInUse', {
+          defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
+        }));
+      } else {
+        setError(result.error);
+      }
       setLoading(false);
       return;
     }
@@ -154,6 +191,31 @@ export default function ConnectSsoLoginPage() {
 
   if (checking) {
     return <div data-testid="connect-sso-checking" className="u-min-h-px-160" />;
+  }
+
+  if (unavailable) {
+    return (
+      <div data-testid="connect-sso-unavailable">
+        <div className="mb-8">
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">
+            {t('connectSso.unavailableTitle', { defaultValue: "We couldn't check your sign-in link" })}
+          </h1>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t('connectSso.unavailableBody', {
+            defaultValue: 'Something went wrong while loading this page. Your link may still be valid — try again.',
+          })}
+        </p>
+        <button
+          type="button"
+          data-testid="connect-sso-retry"
+          onClick={() => { void describeCeremony(); }}
+          className="mt-6 flex w-full items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+        >
+          {t('connectSso.retry', { defaultValue: 'Try again' })}
+        </button>
+      </div>
+    );
   }
 
   if (expired) {
