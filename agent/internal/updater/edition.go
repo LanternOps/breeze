@@ -53,11 +53,14 @@ func editionAllowed(assetEdition string) bool {
 	case "self-host":
 		return true
 	case "hosted":
-		// One-way self-host → hosted transition. Logged because the next
-		// binary this agent runs will enforce the hosted host-policy
-		// allowlist — visible, deliberate, and only reachable via a
-		// signature-verified manifest.
-		log.Info("accepting hosted-edition update artifact from this self-host build (one-way edition transition)")
+		// One-way self-host → hosted transition. Logged at Warn because the
+		// log shipper's default MinLevel is warn (config.go) — Info would
+		// exist only in the device-local file, and if the transitioned build
+		// ever loses management connectivity (the documented residual risk
+		// above), server-side logs are the only forensic record of when the
+		// transition happened. Fires at most once per component transition,
+		// and only via a signature-verified manifest.
+		log.Warn("accepting hosted-edition update artifact from this self-host build (one-way edition transition)")
 		return true
 	default:
 		return false

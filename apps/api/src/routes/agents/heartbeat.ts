@@ -1,12 +1,11 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, notInArray } from 'drizzle-orm';
+import { and, eq, notInArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   devices,
   deviceMetrics,
-  agentVersions,
   agentLogs,
   onedriveDeviceState,
 } from '../../db/schema';
@@ -77,28 +76,88 @@ export function detectWatchdogStateCollapse(
 
 // #4072 — one withhold warn per device per process. The edition gate fires on
 // every heartbeat of an affected device (~60s apart) for as long as it stays
-// on an incompatible build, so an undeduped warn is log spam at fleet scale;
-// bounded by fleet size, same shape as the pin-miss/malformed-window caches.
+// on an incompatible build, so an undeduped warn is log spam at fleet scale.
+// Uncapped Set, deliberately: growth is bounded by the count of affected
+// devices (each entry is one device id), unlike the per-beat watchdog restart
+// cache that needs eviction.
+// The entry is REMOVED when the device accepts again (heartbeat main branch),
+// so a later regression to an incompatible build re-warns instead of being
+// permanently consumed by the first episode.
 const warnedEditionWithheldDevices = new Set<string>();
+// Separate dedupe for the far more severe failover-recovery withhold (device
+// stuck OFFLINE, not idling) — its error must not be suppressed by an earlier
+// routine offer-withhold warn for the same device.
+const warnedEditionRecoveryWithheldDevices = new Set<string>();
+// One aggregate Sentry event per process for routine offer withholds. Console
+// lines rotate out of droplet docker logs; this is the same "invisible
+// fleet-wide freeze must reach Sentry" bar the pin-miss path documents.
+let editionWithheldCaptured = false;
 
 export function __resetEditionWithheldWarnCacheForTests(): void {
   warnedEditionWithheldDevices.clear();
+  warnedEditionRecoveryWithheldDevices.clear();
+  editionWithheldCaptured = false;
 }
 
-function warnEditionOfferWithheld(args: {
+type EditionWithheldContext = {
   deviceId: string;
   reportedEdition: string | null | undefined;
   agentVersion: string | null | undefined;
-}): void {
+};
+
+// The message states the OBSERVED facts and keeps every remediation
+// conditional — agentAcceptsServedEdition returns false for several distinct
+// states (silent post-cutover self-host build, hosted build on a self-host
+// server, unusable version) and asserting one cause for all of them sends an
+// operator down the wrong path.
+function editionWithheldDetail(args: EditionWithheldContext): string {
+  return (
+    `this server serves ${getBinaryEdition()}-edition artifacts and the downloading build ` +
+    `(reported edition=${args.reportedEdition ?? 'none'}, version=${args.agentVersion ?? 'unknown'}) ` +
+    `cannot be confirmed to accept them — the agent-side edition check refuses a mismatched ` +
+    `artifact AFTER download and retries every heartbeat forever, so the server withholds instead. ` +
+    `If the build is a silent ≥0.105.0 self-host agent, recover it with a ` +
+    `${getBinaryEdition()}-edition installer or an agent release that reports its edition; ` +
+    `if it reports the other edition, it is enrolled against a server of the wrong edition.`
+  );
+}
+
+function warnEditionOfferWithheld(args: EditionWithheldContext): void {
   if (warnedEditionWithheldDevices.has(args.deviceId)) return;
   warnedEditionWithheldDevices.add(args.deviceId);
   console.warn(
-    `[agents] update offers withheld for device ${args.deviceId} (#4072): this deployment serves ` +
-      `artifacts the device's build would refuse after download (reported edition=` +
-      `${args.reportedEdition ?? 'none'}, version=${args.agentVersion ?? 'unknown'}). ` +
-      `The device idles on its current version instead of wedging in an update-retry loop; ` +
-      `recover it with an installer of the served edition, or an agent release that can ` +
-      `accept the transition.`,
+    `[agents] update offers withheld for device ${args.deviceId} (#4072): ${editionWithheldDetail(args)} ` +
+      `The device idles on its current version.`,
+  );
+  if (!editionWithheldCaptured) {
+    editionWithheldCaptured = true;
+    captureException(
+      new Error(
+        `Update offers withheld by the artifact-edition gate (#4072) for at least one device ` +
+          `(first: ${args.deviceId}). Affected devices idle on their current version until ` +
+          `recovered; see per-device [agents] warns for details.`,
+      ),
+    );
+  }
+}
+
+// Failover-branch variant: the watchdog is the ONLY recovery path for a
+// wedged main agent (#1104), so withholding it means the device stays DOWN,
+// not merely un-upgraded. Error level + per-device Sentry, deduped.
+function warnEditionRecoveryWithheld(args: EditionWithheldContext): void {
+  if (warnedEditionRecoveryWithheldDevices.has(args.deviceId)) return;
+  warnedEditionRecoveryWithheldDevices.add(args.deviceId);
+  console.error(
+    `[agents] agent RECOVERY withheld for device ${args.deviceId} (#4072): the main agent is ` +
+      `silent and the watchdog — the only recovery path — would refuse the recovery artifact: ` +
+      `${editionWithheldDetail(args)} This device stays down until manually recovered.`,
+  );
+  captureException(
+    new Error(
+      `Agent recovery withheld by the artifact-edition gate for device ${args.deviceId} ` +
+        `(#4072): main agent silent, watchdog cannot accept the served artifact edition. ` +
+        `Manual recovery required.`,
+    ),
   );
 }
 
@@ -523,8 +582,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // edition. A watchdog build that would refuse the served artifact edition
     // after download must not be offered it — the refusal just re-arms every
     // failover beat.
+    //
+    // A SILENT watchdog is NOT evidence of a self-host build the way a silent
+    // main agent is: watchdog edition reporting first ships alongside this
+    // gate, so every watchdog in the field today is silent — including the
+    // hosted fleet's, whose recovery path (#1104) must not be withheld. Fall
+    // back to the device row's agentEdition, written unconditionally from
+    // every MAIN-agent beat: agent and watchdog install and upgrade from the
+    // same lane, so the main agent's build edition identifies the watchdog's.
+    // If both are silent (the stranded pre-telemetry band), the version-band
+    // inference inside the predicate takes over. Known imprecision: a device
+    // whose main agent already reports 'self-host' (transition-capable) but
+    // whose watchdog is still an older self-host build gets a hosted offer
+    // its watchdog refuses — failover-only, self-heals once the watchdog
+    // catches up via the main branch.
     const watchdogAcceptsServedEdition = agentAcceptsServedEdition({
-      reportedEdition: data.agentEdition,
+      reportedEdition: data.agentEdition ?? device.agentEdition,
       agentVersion: data.agentVersion,
     });
 
@@ -575,6 +648,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // agent (which self-updates from its own heartbeat) and the watchdog never
     // both write the same binary.
     let agentUpgradeTo: string | undefined;
+    if (
+      mainAgentSilent &&
+      normalizedArch &&
+      device.agentVersion &&
+      !device.agentVersion.startsWith('dev-') &&
+      !watchdogAcceptsServedEdition
+    ) {
+      // #4072 — the ONLY recovery path for this wedged main agent is being
+      // withheld by the edition gate. That leaves the device DOWN, so it must
+      // be loudly observable — not folded into the routine withhold warn
+      // (which may have fired weeks earlier from the upgrade branch, or never,
+      // when no watchdog target resolves).
+      warnEditionRecoveryWithheld({
+        deviceId: device.id,
+        reportedEdition: data.agentEdition,
+        agentVersion: data.agentVersion,
+      });
+    } else if (mainAgentSilent && watchdogAcceptsServedEdition) {
+      warnedEditionRecoveryWithheldDevices.delete(device.id);
+    }
     if (
       mainAgentSilent &&
       normalizedArch &&
@@ -1075,6 +1168,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       reportedEdition: data.agentEdition,
       agentVersion: data.agentVersion,
     });
+  } else if (acceptsServedEdition) {
+    // Re-arm the per-device withhold warn: if this device later regresses to
+    // an incompatible build (same process), that is a fresh episode and must
+    // log again rather than being consumed by the first one.
+    warnedEditionWithheldDevices.delete(device.id);
   }
 
   if (normalizedArch && acceptsServedEdition) {
@@ -1120,30 +1218,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // care why the download started) (#4072).
   if (normalizedArch && acceptsServedEdition) {
     try {
-      const [latestHelper] = await db
-        .select({ version: agentVersions.version })
-        .from(agentVersions)
-        .where(
-          and(
-            eq(agentVersions.platform, device.osType),
-            eq(agentVersions.architecture, normalizedArch),
-            eq(agentVersions.component, 'helper'),
-            eq(agentVersions.isLatest, true),
-            // Each server only serves its own build edition (#4072).
-            eq(agentVersions.edition, getBinaryEdition())
-          )
-        )
-        .orderBy(desc(agentVersions.createdAt))
-        .limit(1);
+      // Global latest for the helper via the same edition-scoped resolver as
+      // the agent/watchdog channels (#4072 — replaces an inline query that
+      // was not edition-scoped). The helper channel is unpinnable, hence
+      // pin: null — which is exactly the isLatest lookup the inline query did.
+      const latestHelperVersion = await resolvePinnedUpgradeTarget({
+        component: 'helper',
+        platform: device.osType,
+        architecture: normalizedArch,
+        pin: null,
+        agentId,
+      });
 
-if (latestHelper) {
+      if (latestHelperVersion) {
         // If agent reports no helper version, always upgrade (bootstraps first install
         // or recovers from broken helper that never wrote its status file) — bootstrap
         // is NOT subject to the org update policy. Version-to-version upgrades are.
         if (!data.helperVersion) {
-          helperUpgradeTo = latestHelper.version;
-        } else if (updateGateAllows && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
-          helperUpgradeTo = latestHelper.version;
+          helperUpgradeTo = latestHelperVersion;
+        } else if (updateGateAllows && compareAgentVersions(latestHelperVersion, data.helperVersion) > 0) {
+          helperUpgradeTo = latestHelperVersion;
         }
       }
     } catch (err) {

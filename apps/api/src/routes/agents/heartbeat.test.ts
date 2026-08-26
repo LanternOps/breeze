@@ -1707,6 +1707,49 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
     }
   });
 
+  it('routes the withhold to Sentry once per process (fleet-freeze observability parity with the pin-miss path)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+    __resetEditionWithheldWarnCacheForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      const withheldCaptures = vi
+        .mocked(captureException)
+        .mock.calls.filter((c) => String((c[0] as Error)?.message ?? c[0]).includes('#4072'));
+      expect(withheldCaptures).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('re-arms the per-device warn once the device accepts again (a later regression must re-log)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+    __resetEditionWithheldWarnCacheForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      prime([{ version: '0.66.0' }]);
+      await beat(); // withheld → warns
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => true);
+      prime([{ version: '0.66.0' }]);
+      await beat(); // accepting → clears the dedupe entry
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      prime([{ version: '0.66.0' }]);
+      await beat(); // regressed → must warn AGAIN
+      const withheldWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('#4072'));
+      expect(withheldWarns).toHaveLength(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   describe('watchdog failover branch', () => {
     const sixteenMinutesAgo = new Date(Date.now() - 16 * 60 * 1000);
 
@@ -1758,6 +1801,59 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
       const body = (await resp.json()) as OfferBody;
       expect(body.watchdogUpgradeTo).toBe('0.66.0');
       expect(body.upgradeTo).toBe('0.66.0');
+    });
+
+    it('a SILENT watchdog falls back to the device row’s stored agentEdition — deployed watchdogs predate edition reporting, and withholding recovery from the whole hosted fleet would be the regression', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      selectMock.mockReturnValueOnce(
+        selectChainResolving([
+          {
+            id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+            architecture: 'amd64', agentVersion: '0.107.1', watchdogVersion: '0.107.1',
+            agentEdition: 'hosted',
+            lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+          },
+        ]),
+      );
+      selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+      // Watchdog beat WITHOUT agentEdition — every watchdog in the field today.
+      const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'watchdog', agentVersion: '0.107.1', watchdogState: 'FAILOVER' }),
+      });
+      expect(resp.status).toBe(200);
+      expect(vi.mocked(agentAcceptsServedEdition)).toHaveBeenCalledWith({
+        reportedEdition: 'hosted',
+        agentVersion: '0.107.1',
+      });
+    });
+
+    it('a withheld RECOVERY (main agent silent) logs at error level and captures to Sentry — a device stuck offline must never be silent', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      const { captureException } = await import('../../services/sentry');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+      __resetEditionWithheldWarnCacheForTests();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        primeWatchdog();
+        await watchdogBeat();
+        primeWatchdog();
+        await watchdogBeat();
+        const recoveryErrors = errorSpy.mock.calls.filter(
+          (c) => String(c[0]).includes('#4072') && String(c[0]).toLowerCase().includes('recovery'),
+        );
+        // Deduped per device per process — once, not per failover beat.
+        expect(recoveryErrors).toHaveLength(1);
+        const recoveryCaptures = vi
+          .mocked(captureException)
+          .mock.calls.filter((c) => String((c[0] as Error)?.message ?? c[0]).includes('recovery withheld'));
+        expect(recoveryCaptures).toHaveLength(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
   });
 });

@@ -2445,7 +2445,9 @@ export async function resolvePinnedUpgradeTarget(args: {
     // version) so a persistent misconfig captures ONCE per process, not per beat.
     console.warn(
       `[agents] update withheld for ${agentId ?? 'device'}: pinned ${component} version ` +
-        `"${pin}" has no registered build for ${platform}/${architecture} (fail closed)`,
+        `"${pin}" has no registered ${getBinaryEdition()}-edition build for ` +
+        `${platform}/${architecture} (fail closed; a build registered under the other ` +
+        `edition does not count — #4072)`,
     );
     const key = `${component}:${platform}:${architecture}:${pin}`;
     if (!warnedMissingPinBuilds.has(key)) {
@@ -2453,8 +2455,8 @@ export async function resolvePinnedUpgradeTarget(args: {
       captureException(
         new Error(
           `Agent update withheld (#2124): pinned ${component} version "${pin}" has no ` +
-            `registered build for ${platform}/${architecture}; fleet freeze until a build ` +
-            `is published or the pin is corrected.`,
+            `registered ${getBinaryEdition()}-edition build for ${platform}/${architecture}; ` +
+            `fleet freeze until a build is published under this edition or the pin is corrected.`,
         ),
       );
     }
