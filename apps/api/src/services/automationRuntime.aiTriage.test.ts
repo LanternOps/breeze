@@ -160,7 +160,7 @@ describe('executeAiTriageAction', () => {
       },
       dedupeKey: 'alert:alert-1',
     });
-    expect(result.success).toBe(true);
+    expect(result.outcome.status).toBe('succeeded');
     expect(result.log.message).toBe('ai_triage queued agent run');
     expect(result.log.details).toEqual({ agentRunId: 'agent-run-1' });
   });
@@ -288,7 +288,7 @@ describe('executeAiTriageAction', () => {
     expect(result.log.details).toMatchObject({ errorCode: 'enqueue_failed' });
   });
 
-  it('still reports success for a genuinely queued run', async () => {
+  it('terminalizes the parent action after a genuinely queued child run', async () => {
     createAndEnqueueAgentRunMock.mockResolvedValue({
       created: true,
       run: { id: 'agent-run-3', status: 'queued', errorCode: null },
@@ -300,7 +300,7 @@ describe('executeAiTriageAction', () => {
       makeContext(),
     );
 
-    expect(result.success).toBe(true);
+    expect(result.outcome.status).toBe('succeeded');
     expect(result.log.message).toBe('ai_triage queued agent run');
   });
 

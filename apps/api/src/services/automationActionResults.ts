@@ -158,6 +158,33 @@ function aggregateDeviceStatuses(statuses: Array<'pending' | 'running' | 'succes
   return { status: 'partial', devicesSucceeded, devicesFailed };
 }
 
+function aggregateActionDetails(actions: Array<{
+  actionIndex: number;
+  status: AutomationActionResultStatus;
+  message: string | null;
+  output: string | null;
+  error: string | null;
+}>): { output: string | null; error: string | null } {
+  const ordered = [...actions].sort((a, b) => a.actionIndex - b.actionIndex);
+  const output = ordered
+    .map((action) => action.output ?? action.message)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .join('\n');
+  const MAX_OUTPUT_CHARS = 16_000;
+  const trimmedOutput = output.length > MAX_OUTPUT_CHARS
+    ? `${output.slice(0, MAX_OUTPUT_CHARS)}\n…(truncated)`
+    : output;
+  const failed = ordered.find((action) => (
+    action.status === 'failed'
+    || action.status === 'timed_out'
+    || action.status === 'cancelled'
+  ));
+  return {
+    output: trimmedOutput.length > 0 ? trimmedOutput : null,
+    error: failed?.error ?? failed?.message ?? null,
+  };
+}
+
 async function inDeliberateSystemContext<T>(fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()?.scope === 'system') return fn();
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -213,7 +240,11 @@ async function reconcileInCurrentContext(runId: string): Promise<Publication[]> 
   const actionRows = await db.select({
     deviceId: automationActionResults.deviceId,
     orgId: automationActionResults.orgId,
+    actionIndex: automationActionResults.actionIndex,
     status: automationActionResults.status,
+    message: automationActionResults.message,
+    output: automationActionResults.output,
+    error: automationActionResults.error,
     completedAt: automationActionResults.completedAt,
   }).from(automationActionResults).where(eq(automationActionResults.runId, runId));
   if (actionRows.length === 0) return [];
@@ -226,6 +257,7 @@ async function reconcileInCurrentContext(runId: string): Promise<Publication[]> 
   }
   for (const [deviceId, actions] of byDevice) {
     const aggregate = aggregateActionStatuses(actions.map((action) => action.status));
+    const details = aggregateActionDetails(actions);
     const terminal = aggregate.status === 'success' || aggregate.status === 'failed' || aggregate.status === 'skipped';
     const completedAt = terminal
       ? new Date(Math.max(...actions.map((action) => action.completedAt?.getTime() ?? 0), Date.now()))
@@ -236,6 +268,8 @@ async function reconcileInCurrentContext(runId: string): Promise<Publication[]> 
         ? undefined
         : sql`COALESCE(${automationRunDeviceResults.startedAt}, now())`,
       completedAt,
+      output: details.output,
+      error: details.error,
       updatedAt: new Date(),
     }).where(and(
       eq(automationRunDeviceResults.runId, runId),
@@ -405,4 +439,5 @@ export const __testOnly = {
   decideTerminalTransition,
   aggregateActionStatuses,
   aggregateDeviceStatuses,
+  aggregateActionDetails,
 };
