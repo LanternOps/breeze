@@ -905,7 +905,7 @@ describe('sweepOffboardingTenants', () => {
   // indistinguishable from a clean drain (the #2774 false-confidence bug).
   it('repairs an incomplete entry (queues uninstalls) instead of finalizing it', async () => {
     queueCandidates([{ id: 'org-1', startedAt: null }], []);
-    queueSelect([{ id: 'org-1' }]); // tenant row FOR UPDATE (lock-order guard, #2877)
+    queueSelect([{ status: 'offboarding', startedAt: null }]); // tenant row FOR UPDATE — now also the #4022 precondition recheck
     queueSelect([{ id: 'd1' }]); // devices to queue
     queueSelect([]); // no existing uninstalls
 
@@ -932,7 +932,7 @@ describe('sweepOffboardingTenants', () => {
       return { enrollmentKeysInvalidated: 0, agentTokensRestored: 0 };
     });
     queueCandidates([{ id: 'org-1', startedAt: null }], []);
-    queueSelect([{ id: 'org-1' }]); // tenant row FOR UPDATE (lock-order guard, #2877)
+    queueSelect([{ status: 'offboarding', startedAt: null }]); // tenant row FOR UPDATE — now also the #4022 precondition recheck
     queueSelect([{ id: 'd1' }]); // devices to queue
     queueSelect([]); // no existing uninstalls
 

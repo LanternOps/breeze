@@ -830,15 +830,24 @@ export async function finalizePartnerOffboarding(
  * Queueing is idempotent (dedupes against in-flight uninstalls), so re-running
  * it is safe; the stamp write is the marker that the entry is now complete.
  */
-async function repairIncompleteEntry(
+/**
+ * Exported for the integration test that pins #4022: the sweep calls this from a
+ * SNAPSHOTTED candidate taken in an earlier, already-committed context, and by
+ * the time an abort has committed the sweep own select no longer returns the
+ * tenant. A lock-barrier test that holds an uncommitted UPDATE open across the
+ * repair could drive it through sweepOffboardingTenants instead, and would pin
+ * the FOR UPDATE as well as the recheck; this export is the cost of not doing
+ * that here.
+ */
+export async function repairIncompleteEntry(
   scope: 'organization' | 'partner',
   scopeId: string,
   orgIds: string[],
   now: Date
 ): Promise<void> {
-  console.warn(
-    `[tenantOffboarding] ${scope} ${scopeId} is offboarding with no drain stamp — completing the entry`
-  );
+  // Logged AFTER the recheck below, not here: the candidate was snapshotted in
+  // an earlier committed context, so at this point we do not yet own the row
+  // and do not know the entry is still incomplete.
   // Take the TENANT ROW lock first, matching the request path's acquisition
   // order (route UPDATE on organizations/partners, then key/device work).
   // Without this, a repair racing an operator's PATCH retry on the same torn
@@ -848,19 +857,53 @@ async function repairIncompleteEntry(
   // the same cross-connection cycle Postgres cannot detect (#2877). Row lock
   // first means whichever side wins the tenant row proceeds while the other
   // waits holding nothing.
+  //
+  // The lock is also what makes the precondition trustworthy, so re-read the
+  // status and stamp WITH it and abandon if they have moved (#4022). The
+  // sweep selects candidates in one system context and repairs each in a
+  // separate one, and the repair branch keys on the SNAPSHOTTED `startedAt`,
+  // so an operator can abort the tenant in between. Abort with a null stamp is
+  // a legitimate no-op — its UPDATE guards on `isNotNull(offboardingStartedAt)`
+  // and returns before cancelling — so nothing downstream would notice, and
+  // the stamp write's own `isNull` guard still matches. Without this recheck
+  // the repair queues fresh self_uninstall rows against a tenant that is now
+  // active or trial, where `getAgentTenantState` no longer returns 'draining'
+  // and the claim runs with no type allowlist: the fleet collects them as
+  // ordinary commands on the next heartbeat. The audit row would then record
+  // `offboarding_entry_repaired` with a success result, so nothing about it
+  // looks wrong afterwards.
+  let stillIncomplete: boolean;
   if (scope === 'organization') {
-    await db
-      .select({ id: organizations.id })
+    const [row] = await db
+      .select({ status: organizations.status, startedAt: organizations.offboardingStartedAt })
       .from(organizations)
       .where(eq(organizations.id, scopeId))
       .for('update');
+    stillIncomplete = row?.status === 'offboarding' && row.startedAt === null;
   } else {
-    await db
-      .select({ id: partners.id })
+    const [row] = await db
+      .select({ status: partners.status, startedAt: partners.offboardingStartedAt })
       .from(partners)
       .where(eq(partners.id, scopeId))
       .for('update');
+    stillIncomplete = row?.status === 'offboarding' && row.startedAt === null;
   }
+
+  if (!stillIncomplete) {
+    // Deliberately not an error: losing this race is the CORRECT outcome. The
+    // usual cause is an operator aborting the offboarding, but another repair
+    // winning the row first leaves `offboarding` + stamped and lands here too.
+    // Logged because a steady stream means the sweep is routinely racing.
+    console.warn(
+      `[tenantOffboarding] ${scope} ${scopeId} left the incomplete-entry state before the repair took its lock — abandoning`
+    );
+    return;
+  }
+
+  console.warn(
+    `[tenantOffboarding] ${scope} ${scopeId} is offboarding with no drain stamp — completing the entry`
+  );
+
   // Drain prep FIRST, matching begin*Offboarding: #2785 made this step the one
   // that lifts a superseded token suspension, so queueing before it would leave
   // a window where the uninstall exists but the fleet is still 401ing.
