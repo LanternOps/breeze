@@ -581,6 +581,8 @@ Construct the manager during agent startup, load the durable ledger, and block P
 
 Implementation note (2026-08-26): startup reconciliation and fail-closed command admission are implemented, but this step remains unchecked because startup `Reconcile` evidence is logged locally only. The frozen command-result transport requires the exact current `device_command` ID, while the durable PAM ledger carries actuation/request identity but not that command ownership. No command-ID bypass or alternate wire transaction was added; transport completion remains blocked on an authoritative ownership-preserving design.
 
+Authoritative design addendum (2026-08-26): [`2026-08-26-s0-track-e-pam-reconciliation-binding-design.md`](../specs/2026-08-26-s0-track-e-pam-reconciliation-binding-design.md) defines an agent-authenticated, read-only binding resolver, durable startup-evidence handoff, and narrow terminal-PAM observation forwarding through the existing frozen result transaction. Implementation and its RED/GREEN gates remain pending, so this step stays unchecked and Task 8 remains blocked.
+
 - [x] **Step 4: Bind PAM disable to cleanup and account lifecycle**
 
 Change `handleUACInterception(false)` to stop new UAC capture, invoke manager disable/cleanup for all active rows, deprovision and verify the local account, persist/report failures, then clear the enabled state only after proof. Re-enable does not resurrect old desired-active generations. Capability advertisement drops to zero while reconciliation or verification is unavailable.
