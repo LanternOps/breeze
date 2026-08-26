@@ -1,3 +1,7 @@
+---
+tracking_issue: 4060
+---
+
 # S0 Track C Readiness and Offline Scaling Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -7,6 +11,8 @@
 **Architecture:** Extend the existing TTL-cached, single-flight readiness evaluator with a process-local BullMQ consumer registry; do not create a second evaluator. Keep `/health` as liveness, serve both readiness paths from the same evaluator, and expose only aggregate consumer health publicly. Keep offline continuation in BullMQ job data, derive stable transition identities from the observed device state, use a one-winner database compare-and-set, and perform queue/event/alert work outside database contexts.
 
 **Tech Stack:** TypeScript, Hono, BullMQ/Redis, Drizzle/PostgreSQL, Vitest, Docker Compose, shell-based exact-candidate evidence tooling.
+
+**Tracking status (2026-08-25):** Tasks 1–4 are code-complete and passed exact-head PR CI at `5e3ee6ace09d717a0620336d735ac3a7b57a8b16`. Task 5 remains fixed-unverified: no exact-SHA disposable stack, exact 10,000-stale-device fixture, or reviewed in-process consumer fault control is available, so no deployment, hosted-admission, rollout, or candidate-scale claim is made.
 
 ## Finding map
 
@@ -19,6 +25,7 @@
 
 - Preserve the existing `createReadinessEvaluator()` TTL, single-flight, bounded-probe, invalidation, and shutdown behavior. There is one evaluator and one readiness verdict.
 - Publish a **10,000 ms maximum readiness transition visibility threshold** in `docs/operations/health-probes.md`. Defaults remain a 5,000 ms cache TTL and 3,000 ms per-probe timeout. Clamp configuration so `ttlMs + probeTimeoutMs <= 10_000`; never claim instantaneous failure or recovery.
+- Keep Compose API healthchecks on `/health` liveness because `service_healthy` gates dependent startup. Use `/ready` for the exact-status deploy admission check and any external admission controller that can withhold traffic without preventing process startup.
 - A registry lifecycle transition calls `readiness.invalidate()`, so worker transitions normally become visible earlier than the published bound. The bound still covers the next request, a cached dependency verdict, and one bounded probe.
 - All BullMQ consumers started by `initializeWorkers()` are required whenever their configured initializer is enabled. This is deliberate: the API must not admit work to a queue whose in-process consumer is absent.
 - `abuseSignalsWorker` is the only verified feature-gated consumer group that may be absent: it is required when `abuseSignalsEnabled()` is true and is recorded as optional `disabled` with reason code `feature_disabled` otherwise.
@@ -148,11 +155,11 @@ export function offlineContinuationJobId(sweepId: string, cursor: string): strin
 - Changes `attachWorkerObservability(worker: Worker, name: string): void` to preserve existing Sentry execution tagging and reporting while delegating lifecycle tracking to `workerReadinessRegistry.attach(name, worker)`.
 - Task 2 consumes `expect()`, `disable()`, and `recordInitializationFailure()`; Task 3 consumes `snapshot()`, `requiredConsumersRunnable()`, and `summarizeConsumerReadiness()`.
 
-- [ ] **Step 1: Write registry RED tests**
+- [x] **Step 1: Write registry RED tests**
 
 Use an EventEmitter-based fake Worker with `isRunning()` and a controllable `client` promise. Add literal tests for: a newly expected required consumer is not runnable; `ready` makes it runnable; `completed` advances last-success time; job `failed` records a code without stopping the loop; Worker `error` makes Redis disconnected; later `ready` recovers; `closing` and `closed` fail readiness; initialization failure fails readiness; optional disabled does not; required disabled does; duplicate names throw; invalid error names become `worker_error`; every material transition invalidates exactly once; and `summarizeConsumerReadiness()` contains only the five aggregate integer fields.
 
-- [ ] **Step 2: Run RED and retain the failing output**
+- [x] **Step 2: Run RED and retain the failing output**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -162,11 +169,11 @@ pnpm --filter @breeze/api exec vitest run \
 
 Expected: FAIL because `workerReadinessRegistry.ts` and the lifecycle delegation do not exist. The task report records the failing test names, not merely the command exit code.
 
-- [ ] **Step 3: Implement the minimal in-memory registry**
+- [x] **Step 3: Implement the minimal in-memory registry**
 
 Implement the shared contract without timers, persistence, raw-error storage, or route serialization. Attach lifecycle tracking after preserving `tagJobExecution()`. Do not remove existing Sentry tags, isolation scopes, `error` capture, or `failed` capture.
 
-- [ ] **Step 4: Run GREEN and static checks**
+- [x] **Step 4: Run GREEN and static checks**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -181,7 +188,7 @@ pnpm --filter @breeze/api exec eslint \
 
 Expected: both files pass; lint emits no new error.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/workerReadinessRegistry.ts apps/api/src/services/workerReadinessRegistry.test.ts apps/api/src/jobs/workerObservability.ts apps/api/src/jobs/workerObservability.test.ts
@@ -272,7 +279,7 @@ export function declareExpectedConsumers(input: {
 - Multi-consumer mappings are explicit: `peripheralJobs` declares `peripheralAnomalyWorker` and `peripheralPolicyDistributionWorker`; `vulnerabilityJobs` declares `vulnerabilityJobs` and `vulnerabilityMaintenance`; `patchJobWorker` declares `patchJobWorker` and `patchJobDeviceWorker`; `pamJobs` declares `pamExpiryEnforcerWorker` and `pamStaleRequestWorker`. Every other verified initializer group declares its one attached consumer name.
 - Schedule-only disable flags do not change manifest requirements. A consumer that exists but has no repeat producer is still runnable.
 
-- [ ] **Step 1: Write manifest and coverage RED tests**
+- [x] **Step 1: Write manifest and coverage RED tests**
 
 Parse production TypeScript with the repo's TypeScript compiler dependency. Assert:
 
@@ -285,7 +292,7 @@ Parse production TypeScript with the repo's TypeScript compiler dependency. Asse
 
 Add unit cases for `declareExpectedConsumers()` with Redis unavailable, Redis available/abuse disabled, and Redis available/abuse enabled. Redis unavailable must not mark required consumers disabled.
 
-- [ ] **Step 2: Run RED and retain the complete missing-site list**
+- [x] **Step 2: Run RED and retain the complete missing-site list**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -296,11 +303,11 @@ pnpm --filter @breeze/api exec vitest run \
 
 Expected: FAIL and enumerate the verified uninstrumented construction files above.
 
-- [ ] **Step 3: Implement manifest-driven startup and complete instrumentation**
+- [x] **Step 3: Implement manifest-driven startup and complete instrumentation**
 
 In `initializeWorkers()`, call `declareExpectedConsumers()` before any initializer promise starts. On catch, call `recordInitializationFailure()` for every consumer declared by that initializer group. In the explicit abuse-signals off branch call `disable('abuseSignalsWorker', 'feature_disabled')`. Attach each construction immediately after creating it, including both patch workers and both PAM workers. Remove the boot-only `workerStatus` record and unused `getWorkerStatus()` only after the coverage and manifest tests prove parity.
 
-- [ ] **Step 4: Run GREEN and regress all job suites**
+- [x] **Step 4: Run GREEN and regress all job suites**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -314,7 +321,7 @@ pnpm --filter @breeze/api lint
 
 Expected: the focused contract and existing job suite pass; typecheck/lint add no error.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/index.ts apps/api/src/jobs apps/api/src/workers/webhookDelivery.ts
@@ -386,15 +393,15 @@ export type PublicReadinessResponse =
 
 `resolveReadinessTiming()` parses integers, clamps `probeTimeoutMs` to 100–5,000 ms, then clamps `ttlMs` to 0–`10_000 - probeTimeoutMs`. It logs a sanitized value-only warning through a caller callback when it clamps. Default total is 8,000 ms. The operations document publishes 10 seconds as the maximum supported failure/recovery visibility threshold and explains that configured values are constrained to preserve it.
 
-- [ ] **Step 1: Write timing, evaluator, route, and wiring RED tests**
+- [x] **Step 1: Write timing, evaluator, route, and wiring RED tests**
 
 Test defaults, invalid input, each clamp boundary, and the invariant `ttlMs + probeTimeoutMs <= 10_000`. Extend evaluator tests so missing, stopped, Redis-disconnected, and initialization-failed required consumers make `workers=false`/`ready=false`, optional disabled does not, a recovered registry makes the next invalidated evaluation ready, and shutdown still wins.
 
 Mount one fake evaluator at both `/ready` and `/health/ready`; assert identical status and compatibility fields for healthy, DB-down, Redis-down, missing-consumer, stopped-consumer, and evaluator-error cases. Assert the response contains exactly aggregate consumer counts and contains no internal name, timestamp, error code/message, hostname, URL, or connection string from the fixture.
 
-In `productionReadinessWiring.test.ts`, parse all three Compose files and `scripts/prod/deploy.sh`. Assert API healthchecks use `http://127.0.0.1:3001/ready`, have a nonzero `start_period`, and the deploy success gate requests `https://${BREEZE_DOMAIN}/ready`. Also assert `/health` and `/health/live` routes remain mounted as liveness.
+In `productionReadinessWiring.test.ts`, parse all three Compose files and `scripts/prod/deploy.sh`. Assert API healthchecks use `http://127.0.0.1:3001/health`, never `/ready`, preserve their nonzero `start_period`, and remain the startup dependency for caddy/web/portal. Assert the deploy admission gate requests `https://${BREEZE_DOMAIN}/ready`, requires an unredirected HTTP 200 with `"ready":true`, and never follows an authentication redirect. Also assert `/health` and `/health/live` routes remain mounted as liveness.
 
-- [ ] **Step 2: Run RED and retain the divergent-path failures**
+- [x] **Step 2: Run RED and retain the divergent-path failures**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -404,17 +411,17 @@ pnpm --filter @breeze/api exec vitest run \
   src/config/productionReadinessWiring.test.ts
 ```
 
-Expected: FAIL because timing is unconstrained to the published bound, `/health/ready` has a separate evaluator, consumer aggregates are absent, and readiness probes still use `/health`.
+Expected: FAIL because timing is unconstrained to the published bound, `/health/ready` has a separate evaluator, consumer aggregates are absent, and the deploy admission probe still uses `/health`.
 
-- [ ] **Step 3: Implement one internal snapshot and one public serializer**
+- [x] **Step 3: Implement one internal snapshot and one public serializer**
 
 Replace `workersHealthy(redisOk)` with the Task 1 registry snapshot and a pure composition helper. Preserve `workers` as a compatibility boolean. Make `createReadinessHandler()` construct `PublicReadinessResponse` field by field from one evaluator snapshot plus `summarizeConsumerReadiness(snapshot.consumers)`; never spread `snapshot.consumers`. Mount the same handler/evaluator at `/ready` and `/health/ready`, and delete the bare DB/Redis-only `/health/ready` branch.
 
 Move timing parsing from `index.ts` to `readinessConfig.ts`, document the two environment variables in `.env.example`, and publish the threshold in `docs/operations/health-probes.md` without internal hostnames.
 
-- [ ] **Step 4: Change only admission probes and run GREEN**
+- [x] **Step 4: Keep startup probes on liveness, change only admission probes, and run GREEN**
 
-Switch the API healthcheck in the three tracked Compose configurations and the post-deploy admission curl to `/ready`. Preserve `/health` and `/health/live` as liveness paths. Preserve the verified `start_period` values: 40 seconds in base/production and 60 seconds in development.
+Keep the API healthcheck in the three tracked Compose configurations on `/health`, because Compose uses it as a hard startup dependency for caddy/web/portal. Switch only the post-deploy admission request to `/ready`, requiring an unredirected HTTP 200 with `"ready":true`. Preserve `/health` and `/health/live` as liveness paths. Preserve the verified `start_period` values: 40 seconds in base/production and 60 seconds in development.
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -433,14 +440,14 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.dev config -
 
 Expected: all tests and Compose validations pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .env.example docs/operations/health-probes.md apps/api/src/config/readinessConfig.ts apps/api/src/config/readinessConfig.test.ts apps/api/src/config/productionReadinessWiring.test.ts apps/api/src/services/readiness.ts apps/api/src/services/readiness.test.ts apps/api/src/routes/readiness.ts apps/api/src/routes/readiness.test.ts apps/api/src/index.ts docker-compose.yml docker-compose.override.yml.dev deploy/docker-compose.prod.yml scripts/prod/deploy.sh
 git commit -m "fix(ops): gate admission on continuous readiness"
 ```
 
-**Rollout boundary:** `/opt/breeze/docker-compose.yml` is untracked and is not edited by this task. At a separately authorized rollout, back it up, change only the API readiness healthcheck, preserve an adequate `start_period`, validate with `docker compose config`, and execute Task 5 against the exact candidate.
+**Rollout boundary:** `/opt/breeze/docker-compose.yml` is untracked and is not edited by this task. At a separately authorized rollout, back it up, preserve the API liveness healthcheck and adequate `start_period`, validate with `docker compose config`, configure any external admission controller to use `/ready`, and execute Task 5 against the exact candidate.
 
 ### Task 4: Make offline continuation and transitions durable and idempotent
 
@@ -458,7 +465,7 @@ git commit -m "fix(ops): gate admission on continuous readiness"
 - `processDetectOffline(data, dependencies)` creates or reuses `sweepId` and `cutoffAt`, keyset-pages strictly after `cursor`, enqueues deterministic mark work, and enqueues one deterministic continuation before returning when the per-job cap is reached.
 - `processMarkOffline(data)` returns `{ transitioned: boolean; alertCreated: boolean }` and performs exactly one compare-and-set update inside its database context.
 
-- [ ] **Step 1: Write transition identity, continuation, CAS, context, and configuration RED tests**
+- [x] **Step 1: Write transition identity, continuation, CAS, context, and configuration RED tests**
 
 Add literal tests proving:
 
@@ -470,7 +477,7 @@ Add literal tests proving:
 6. the repeat configuration is `{ every: 30_000, offset: 7_000 }`, and a continuation is enqueued immediately;
 7. concurrency defaults to 5, accepts 1 and 20, and clamps/rejects zero, negatives, fractions, non-numbers, and values above 20 to a safe bounded value without increasing the default.
 
-- [ ] **Step 2: Run RED and retain each behavioral failure**
+- [x] **Step 2: Run RED and retain each behavioral failure**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -483,11 +490,11 @@ pnpm --filter @breeze/api exec vitest run \
 
 Expected: continuation, deterministic identity, CAS, context-depth, offset, and bounded concurrency assertions fail against the current worker.
 
-- [ ] **Step 3: Implement durable continuation and deterministic enqueue identity**
+- [x] **Step 3: Implement durable continuation and deterministic enqueue identity**
 
 A root job creates `sweepId` and `cutoffAt` once; a continuation reuses both. Canonicalize `observedLastSeenAt` with `new Date(value).toISOString()` before hashing or querying. Use bounded completed/failed retention on mark and continuation jobs. Enqueue a continuation before return whenever the cap is reached. Duplicate scans remain safe because mark job IDs and the database transition are both idempotent.
 
-- [ ] **Step 4: Replace read-then-update with a one-winner CAS and run GREEN**
+- [x] **Step 4: Replace read-then-update with a one-winner CAS and run GREEN**
 
 Use a short system context for this shape:
 
@@ -530,7 +537,7 @@ pnpm --filter @breeze/api exec eslint src/jobs/offlineDetector.ts src/jobs/offli
 
 Expected: all focused and adjacent regressions pass; concurrency remains bounded with default 5.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/jobs/offlineDetector.ts apps/api/src/jobs/offlineDetector_fanout.test.ts apps/api/src/jobs/offlineDetector.dbcontext.test.ts apps/api/src/jobs/offlineDetector.test.ts apps/api/src/jobs/offlineDetector_configPolicy.test.ts apps/api/src/jobs/offlineDetector_reeval.test.ts
