@@ -618,7 +618,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     const res = await doCallback();
 
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('error=reauth_not_fresh');
+    expect(res.headers.get('location')).toContain('ssoReauthError=reauth_not_fresh');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -630,7 +630,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     const res = await doCallback();
 
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('error=reauth_not_fresh');
+    expect(res.headers.get('location')).toContain('ssoReauthError=reauth_not_fresh');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -670,7 +670,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=reauth_not_fresh');
+    expect(res.headers.get('location')).toContain('ssoReauthError=reauth_not_fresh');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -735,7 +735,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     const res = await doCallback();
 
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('error=identity_mismatch');
+    expect(res.headers.get('location')).toContain('ssoReauthError=identity_mismatch');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -744,7 +744,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=identity_mismatch');
+    expect(res.headers.get('location')).toContain('ssoReauthError=identity_mismatch');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
     expect(db.insert).not.toHaveBeenCalled();
   });
@@ -760,7 +760,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(res.headers.get('location')).toContain('ssoReauthError=session_invalid');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -770,7 +770,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(res.headers.get('location')).toContain('ssoReauthError=session_invalid');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -780,7 +780,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(res.headers.get('location')).toContain('ssoReauthError=session_invalid');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -789,7 +789,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(res.headers.get('location')).toContain('ssoReauthError=session_invalid');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -798,7 +798,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(res.headers.get('location')).toContain('ssoReauthError=session_invalid');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -807,7 +807,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=session_invalid');
+    expect(res.headers.get('location')).toContain('ssoReauthError=session_invalid');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -818,7 +818,7 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toContain('error=password_set');
+    expect(res.headers.get('location')).toContain('ssoReauthError=password_set');
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
@@ -851,7 +851,97 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
 
     const res = await doCallback();
 
-    expect(res.headers.get('location')).toBe('/settings/profile?error=reauth_unavailable');
+    expect(res.headers.get('location')).toBe('/settings/profile?ssoReauthError=reauth_unavailable');
+  });
+
+  // A mint failure is an INFRASTRUCTURE outcome, not a user decision. Without a
+  // terminal audit row a Redis outage looks exactly like the user closing the
+  // IdP tab: `sso.reauth.started` and then nothing. Every other terminal
+  // outcome on this road writes one.
+  it('audits a mint failure as grant_mint_failed rather than going silent', async () => {
+    primeReauthCallback();
+    vi.mocked(mintStepUpGrant).mockResolvedValueOnce(null);
+
+    await doCallback();
+
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sso.reauth.rejected',
+        result: 'denied',
+        details: expect.objectContaining({ mode: 'reauth', reason: 'grant_mint_failed', userId: USER_ID }),
+      })
+    );
+    expect(writeRouteAudit).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'sso.reauth.completed' })
+    );
+  });
+
+  // ── Reauth is NOT a login: failures stay on /settings/profile ────────────
+  //
+  // Both sites below used to discriminate on `callbackMode === 'link'`, which
+  // drops reauth into the login-mode `else`. An already-signed-in user
+  // re-authenticating was then redirected to /login with SSO-LOGIN copy, on a
+  // page whose error handler for these codes does not exist. The generation
+  // site is live in normal operation: `config_version` bumps on ANY provider
+  // edit — including this feature's own trustsIdpMfa toggle — and a bump inside
+  // the 10-minute state TTL lands here.
+
+  it('keeps a config_version bump mid-flight on the profile page, namespaced', async () => {
+    // Session snapshot 7 vs a provider the admin has since edited to 8.
+    primeReauthCallback({ provider: { ...ACTIVE_OIDC_PROVIDER, configVersion: 8 } });
+
+    const res = await doCallback();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/settings/profile?ssoReauthError=config_changed');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('keeps a disabled provider on the profile page, namespaced', async () => {
+    primeReauthCallback({ provider: { ...ACTIVE_OIDC_PROVIDER, status: 'inactive' } });
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toBe('/settings/profile?ssoReauthError=provider_inactive');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('keeps an email_verified=false assertion on the profile page, namespaced', async () => {
+    primeReauthCallback({
+      idClaims: {
+        sub: EXTERNAL_ID,
+        email: 'tech@acme.example',
+        email_verified: false,
+        auth_time: secondsAgo(5),
+      }
+    });
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toBe('/settings/profile?ssoReauthError=email_unverified');
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  // Pins the CURRENT mint-site contract, deliberately without changing it.
+  // Neither /sso/reauth/start nor this callback consults userIsMfaProtected, so
+  // a passwordless account that already holds TOTP still gets a live grant; only
+  // resolveEnrollmentStepUp refuses to spend it. That is safe today because
+  // there is exactly one redemption site. A SECOND redemption site added later
+  // would inherit a grant that should never have existed — this test is here so
+  // that change has to be deliberate.
+  it('mints even for an already-protected account: the refusal lives at redemption, not here', async () => {
+    primeReauthCallback({
+      reauthUser: { ...ACTIVE_REAUTH_USER, mfaEnabled: true },
+    });
+
+    const res = await doCallback();
+
+    expect(mintStepUpGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER_ID, operation: 'enroll_first_factor' })
+    );
+    expect(res.headers.get('location')).toBe('/settings/profile#ssoReauthGrant=grant-abc');
   });
 
   it('never mints login tokens, creates users, or links identities in reauth mode', async () => {

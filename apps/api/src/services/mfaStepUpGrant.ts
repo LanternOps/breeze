@@ -64,12 +64,20 @@ function bindsMatch(record: GrantBind, bind: GrantBind): boolean {
  */
 export async function mintStepUpGrant(bind: GrantBind): Promise<string | null> {
   const redis = getRedis();
-  if (!redis) return null;
+  if (!redis) {
+    console.error(`[mfaStepUpGrant] mint declined for user ${bind.userId} (${bind.operation}): Redis unavailable`);
+    return null;
+  }
   try {
     const id = randomUUID();
     await redis.setex(key(id), TTL_SECONDS, JSON.stringify(bind));
     return id;
-  } catch {
+  } catch (err) {
+    // Still fails closed (null), but no longer silently: a bare `catch {}` here
+    // made a Redis outage indistinguishable from a user abandoning the flow —
+    // the caller redirects with an opaque code and the cause never reaches a
+    // log. Callers add their own audit row; this is the technical cause.
+    console.error(`[mfaStepUpGrant] mint failed for user ${bind.userId} (${bind.operation}):`, err);
     return null;
   }
 }
