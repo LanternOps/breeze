@@ -1959,6 +1959,9 @@
     "ssoReauthConfigChanged": "Your single sign-on settings changed while you were verifying. Start the verification again.",
     "ssoReauthEmailUnverified": "Your identity provider reports that your email address is not verified. Verify it there, then try again.",
     "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up multi-factor authentication.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "This account signs in through an identity provider and has no password. Re-verify with your provider before adding a passkey.",
+    "verifyWithYourIdentityProvider": "Verify with your identity provider",
+    "passkeyIdpVerificationRequired": "Verify with your identity provider before adding a passkey.",
     "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
     "couldNotStartIdentityProviderVerification": "Could not start identity provider verification."
   },

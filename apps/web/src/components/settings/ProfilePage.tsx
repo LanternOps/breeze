@@ -477,6 +477,18 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const handleMfaRequestSetup = (currentPassword: string): Promise<boolean> =>
     requestMfaSetup({ currentPassword });
 
+  // #4018, ONE source of truth for both enrollment roads on this page (TOTP via
+  // MFASettings, passkeys via the card below). `undefined` is UNKNOWN — a
+  // session persisted before /users/me carried the field — and must keep the
+  // password road, which is the fail-safe direction: the server rejects a wrong
+  // password, whereas wrongly hiding the prompt strands a password user.
+  const isPasswordless = user?.hasPassword === false;
+  // The grant is minted by the SSO re-auth callback and held only here. Both
+  // register/options (validate, non-consuming) and register/verify (consume)
+  // take the SAME id, so one IdP round-trip installs exactly one factor —
+  // whichever road spends it first.
+  const hasSsoReauthGrant = ssoReauthGrantId !== null;
+
   // Consume an `#ssoReauthGrant=<id>` handed back by the SSO callback: the user
   // has just re-proved their identity at the IdP, so run /mfa/setup with the
   // grant and drop them straight on the QR screen. Mount-only by design — the
@@ -555,7 +567,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // server answers `enrollment_proof_required`. MFASettings withholds the
       // submit in that state (it shows the IdP re-verify CTA instead), so this
       // is the belt-and-braces half of the same rule.
-      if (!currentPassword && !ssoReauthGrantId && user?.hasPassword === false) {
+      if (!currentPassword && !ssoReauthGrantId && isPasswordless) {
         setMfaError(t('profilePage.ssoReauthProofExpired'));
         return;
       }
@@ -646,15 +658,44 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   };
 
   const handleAddPasskey = async () => {
-    if (!passkeyPassword || isAddingPasskey) return;
+    if (isAddingPasskey) return;
+    // #4018: a passwordless SSO account proves identity with a fresh forced IdP
+    // round-trip instead of a password it does not have. Without this the
+    // handler hard-returned on `!passkeyPassword` and a passwordless user could
+    // never register a passkey at all — the exact dead end this feature exists
+    // to remove, with the API side already accepting the grant and no caller.
+    if (isPasswordless) {
+      if (!ssoReauthGrantId) {
+        // Belt-and-braces: the card renders the re-verify CTA instead of a
+        // submit in this state, so this is only reachable programmatically.
+        setPasskeyError(t('profilePage.passkeyIdpVerificationRequired'));
+        return;
+      }
+    } else if (!passkeyPassword) {
+      return;
+    }
     setPasskeyError(undefined);
     setPasskeySuccess(undefined);
     try {
       setIsAddingPasskey(true);
       const label = passkeyName.trim() || 'Passkey';
+      // The SAME grant id goes to BOTH calls: register/options only VALIDATES
+      // it, register/verify CONSUMES it. Minting a second grant in between
+      // would fail the consume — each is bound to the epochs + sid captured at
+      // mint time — and burn the user's round trip for nothing.
+      //
+      // The password road is deliberately asymmetric: it proves itself ONCE at
+      // register/options. registerVerifySchema carries no password field at all
+      // (the server calls resolveEnrollmentStepUp there with
+      // `passwordAlreadyProven`), so re-sending the plaintext password would be
+      // a second exposure buying nothing.
+      const optionsProof = isPasswordless
+        ? { ssoReauthGrantId }
+        : { currentPassword: passkeyPassword };
+      const verifyProof = isPasswordless ? { ssoReauthGrantId } : {};
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
-        body: JSON.stringify({ currentPassword: passkeyPassword, name: label })
+        body: JSON.stringify({ ...optionsProof, name: label })
       });
 
       const optionsData = await optionsResponse.json().catch(() => ({}));
@@ -668,7 +709,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const credential = await createPasskeyCredential(optionsJSON);
       const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
         method: 'POST',
-        body: JSON.stringify({ name: label, credential })
+        body: JSON.stringify({ name: label, credential, ...verifyProof })
       });
 
       const verifyData = await verifyResponse.json().catch(() => ({}));
@@ -681,6 +722,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
       setPasskeyName('');
       setPasskeyPassword('');
+      // register/verify is the terminal write that BURNS the grant. Drop it so
+      // a later action on this page can't retry with a proof the server has
+      // already spent — same rule as the TOTP terminal write.
+      setSsoReauthGrantId(null);
+      setSsoSetupReady(false);
       if (Array.isArray(verifyData.recoveryCodes)) {
         setRecoveryCodes(verifyData.recoveryCodes);
       }
@@ -929,7 +975,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         hasPassword={user?.hasPassword}
         onSsoReauth={handleSsoReauthStart}
         ssoSetupReady={ssoSetupReady}
-        ssoReauthGrantAvailable={ssoReauthGrantId !== null}
+        ssoReauthGrantAvailable={hasSsoReauthGrant}
         qrCodeDataUrl={qrCodeDataUrl}
         recoveryCodes={recoveryCodes}
         onRequestSetup={handleMfaRequestSetup}
@@ -1037,7 +1083,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           <div className="space-y-1">
             <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
             <p className="text-xs text-muted-foreground">
-              {t('profilePage.reEnterYourAccountPasswordBeforeAddingOrDeletingAPasskey')}</p>
+              {isPasswordless
+                ? t('profilePage.thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey')
+                : t('profilePage.reEnterYourAccountPasswordBeforeAddingOrDeletingAPasskey')}</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="passkey-name">
@@ -1052,27 +1100,44 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               disabled={isAddingPasskey}
             />
           </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="passkey-password">
-              {t('profilePage.currentPassword')}</label>
-            <input
-              id="passkey-password"
-              type="password"
-              autoComplete="current-password"
-              value={passkeyPassword}
-              onChange={event => setPasskeyPassword(event.target.value)}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              disabled={isAddingPasskey}
-            />
-          </div>
-          <button
-            type="button"
-            onClick={handleAddPasskey}
-            disabled={isAddingPasskey || !passkeyPassword}
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
-          </button>
+          {/* #4018: no password field for an account that has no password —
+              the proof is a fresh IdP round-trip instead. */}
+          {!isPasswordless && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="passkey-password">
+                {t('profilePage.currentPassword')}</label>
+              <input
+                id="passkey-password"
+                type="password"
+                autoComplete="current-password"
+                value={passkeyPassword}
+                onChange={event => setPasskeyPassword(event.target.value)}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                disabled={isAddingPasskey}
+              />
+            </div>
+          )}
+          {isPasswordless && !hasSsoReauthGrant ? (
+            <button
+              type="button"
+              data-testid="passkey-sso-reauth"
+              onClick={() => { void handleSsoReauthStart(); }}
+              disabled={isAddingPasskey || isStartingSsoReauth}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('profilePage.verifyWithYourIdentityProvider')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="passkey-add"
+              onClick={handleAddPasskey}
+              disabled={isAddingPasskey || (!isPasswordless && !passkeyPassword)}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
+            </button>
+          )}
         </div>
 
         {passkeySuccess && (
