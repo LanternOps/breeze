@@ -50,7 +50,7 @@ interface RouteFixture {
   commandId: string;
   actuationId: string;
   resultId: string;
-  postMove: () => Promise<Response>;
+  postMove: () => Response | Promise<Response>;
 }
 
 const DATABASE_URL = process.env.DATABASE_URL

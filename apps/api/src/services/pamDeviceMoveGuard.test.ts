@@ -15,7 +15,7 @@ const CONTRADICTORY_ORG_ID = '10000000-0000-4000-8000-000000000003';
 const dialect = new PgDialect();
 
 function makeTx(blocked: boolean) {
-  const execute = vi.fn(async () => ({ rows: [{ blocked }] }));
+  const execute = vi.fn(async (_query: unknown) => ({ rows: [{ blocked }] }));
   return { tx: { execute } as never, execute };
 }
 
@@ -48,7 +48,7 @@ describe('assertPamDeviceOrgMoveAllowed', () => {
       sourceOrgId: CONTRADICTORY_ORG_ID,
     });
 
-    const rendered = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL);
+    const rendered = dialect.sqlToQuery(execute.mock.calls[0]![0] as unknown as SQL);
     expect(rendered.sql).toMatch(/select exists/i);
     expect(rendered.sql).toMatch(/from pam_actuations/i);
     expect(rendered.sql).toMatch(/device_id = \$1::uuid/i);
