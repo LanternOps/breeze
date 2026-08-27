@@ -42,7 +42,7 @@ type suspendedProcessOwnership struct {
 	Identity      ProcessIdentity
 	processHandle uintptr
 	threadHandle  uintptr
-	native        any
+	native        any //nolint:unused // Accessed by Windows-only lifecycle primitives.
 }
 
 type jobOwnership struct {
@@ -50,7 +50,7 @@ type jobOwnership struct {
 	handle      uintptr
 	inheritable bool
 	limitFlags  uint32
-	native      any
+	native      any //nolint:unused // Accessed by Windows-only lifecycle primitives.
 }
 
 type windowsPrimitives interface {

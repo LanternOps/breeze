@@ -138,7 +138,7 @@ func (h *Heartbeat) postPamJSON(ctx context.Context, requestURL string, payload 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("PAM reconciliation request failed with status %d", resp.StatusCode)
 	}

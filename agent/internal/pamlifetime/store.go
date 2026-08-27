@@ -263,17 +263,17 @@ func (s *Store) persistLocked() error {
 		return fmt.Errorf("create PAM lifetime ledger temporary file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("secure PAM lifetime ledger temporary file: %w", err)
 	}
 	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write PAM lifetime ledger: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("flush PAM lifetime ledger: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
