@@ -338,6 +338,74 @@ describe('MergeOrgModal — submit + progress', () => {
     expect(onMerged).not.toHaveBeenCalled();
   });
 
+  it('drops a merge POST response that resolves after unmount (no phase change, no polling, no onMerged)', async () => {
+    vi.useFakeTimers();
+    const onMerged = vi.fn();
+    let releaseMerge: ((body: unknown, status?: number) => void) | undefined;
+    let pollCalls = 0;
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'POST' && url.endsWith('/merge-preview')) return jsonResponse(PREVIEW_OK);
+      if (init?.method === 'POST' && /\/organizations\/[^/]+\/merge$/.test(url)) {
+        // The merge POST itself never resolves until the test releases it —
+        // this is the path finding #3's re-review flagged: `startPolling`
+        // mints a FRESH token on every call, so if this resolves after
+        // unmount, the poll-token guard (proven above) never even gets a
+        // chance to catch it — the fix has to stop it before that.
+        return new Promise<Response>((resolve) => {
+          releaseMerge = (body: unknown, status = 202) => resolve(jsonResponse(body, status < 400, status));
+        });
+      }
+      if (url.includes('/merge-runs/')) {
+        pollCalls += 1;
+        return jsonResponse({ state: 'active' });
+      }
+      return jsonResponse({});
+    });
+
+    const { unmount } = render(
+      <MergeOrgModal
+        loserOrg={LOSER}
+        orgs={ALL_ORGS}
+        onClose={vi.fn()}
+        onMerged={onMerged}
+        onDoneClose={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    fireEvent.change(screen.getByTestId('org-merge-confirm-input'), { target: { value: LOSER.name } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('org-merge-submit'));
+      await vi.advanceTimersByTimeAsync(0); // the merge POST itself is held pending
+    });
+
+    // Still on the pick phase — the POST hasn't resolved yet.
+    expect(screen.getByTestId('org-merge-survivor-select')).toBeInTheDocument();
+    expect(releaseMerge).toBeTruthy();
+    expect(pollCalls).toBe(0);
+
+    unmount();
+
+    await act(async () => {
+      releaseMerge!({ jobId: 'job-1' }, 202);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // No phase transition to 'progress' happened — proven by the fact that
+    // startPolling (and therefore pollJob) never ran at all, even after
+    // advancing well past a poll interval.
+    expect(pollCalls).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MERGE_POLL_INTERVAL_MS * 3);
+    });
+    expect(pollCalls).toBe(0);
+    expect(onMerged).not.toHaveBeenCalled();
+  });
+
   it('treats a completed run with no result as a failure, not a fabricated zero-row summary', async () => {
     vi.useFakeTimers();
     const onMerged = vi.fn();

@@ -114,6 +114,16 @@ export default function MergeOrgModal({ loserOrg, orgs, onClose, onMerged, onDon
   // earlier POST resolve after a later one, and without a guard the stale
   // response would overwrite the fresher preview already on screen.
   const previewRequestIdRef = useRef(0);
+  // Set false in the unmount cleanup below. Guards `submitMerge`'s
+  // continuation specifically: `pollTokenRef` only protects a poll chain
+  // that has already started, but `startPolling()` itself MINTS a fresh
+  // token on every call (via `invalidatePolling()` bumping, then reading,
+  // the counter) — so if the merge POST resolves after unmount, that fresh
+  // token looks perfectly valid and the pollJob guard above would never
+  // catch it. `submitMerge` checks this BEFORE ever calling `startPolling`,
+  // so a post-unmount POST response never mints a token, never starts a
+  // fetch loop, and never has a chance to fire `onMerged` later.
+  const mountedRef = useRef(true);
 
   const survivors = useMemo(() => eligibleSurvivors(orgs, loserOrg), [orgs, loserOrg]);
 
@@ -138,8 +148,15 @@ export default function MergeOrgModal({ loserOrg, orgs, onClose, onMerged, onDon
   }, [stopPolling]);
 
   // Cleanup on unmount — the modal can be dismissed (or the parent can
-  // navigate away) while a merge job is still queued/running.
-  useEffect(() => () => invalidatePolling(), [invalidatePolling]);
+  // navigate away) while a merge job is still queued/running, or while the
+  // merge POST itself is still in flight (see mountedRef above).
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      invalidatePolling();
+    },
+    [invalidatePolling],
+  );
 
   const fetchPreview = useCallback(
     async (survivor: string) => {
@@ -266,16 +283,22 @@ export default function MergeOrgModal({ loserOrg, orgs, onClose, onMerged, onDon
         friendly: mfaFriendly,
         onUnauthorized: handleSessionExpired,
       });
+      // The modal can be closed/unmounted while this POST is still in
+      // flight. Dropped entirely here — no phase change, no `startPolling`
+      // (which would otherwise mint a fresh, "valid-looking" poll token and
+      // run a whole polling+onMerged cycle against an unmounted modal).
+      if (!mountedRef.current) return;
       setPhase('progress');
       startPolling(data.jobId);
     } catch (err) {
+      if (!mountedRef.current) return; // ditto — nothing left to update
       // runAction already toasted an ActionError (e.g. the 400 confirmName
       // mismatch, verbatim from the server) — the modal simply stays on the
       // pick phase so the operator can correct it. onUnauthorized handles a
       // 401 redirect. Only a non-ActionError escape needs a fallback toast.
       handleActionError(err, t('organizationsPage.merge.errors.merge'));
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current) setSubmitting(false);
     }
   }, [loserOrg.id, survivorId, confirmName, t, mfaFriendly, startPolling]);
 
