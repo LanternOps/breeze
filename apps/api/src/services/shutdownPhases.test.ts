@@ -132,8 +132,9 @@ describe('runShutdownPhases', () => {
     expect(log).toEqual(['task1-ran', 'B-ran']);
   });
 
-  it('continues to the next phase on timeout, records timedOutPhases, and never produces an unhandled rejection from the straggler', async () => {
+  it('continues to the next phase on timeout, records timedOutPhases, actually runs phase B, and never produces an unhandled rejection from the straggler', async () => {
     let rejectStraggler: (err: unknown) => void = () => {};
+    const log: string[] = [];
     const phases: ShutdownPhase[] = [
       {
         name: 'A',
@@ -147,7 +148,11 @@ describe('runShutdownPhases', () => {
       },
       {
         name: 'B',
-        tasks: [async () => {}],
+        tasks: [
+          async () => {
+            log.push('B-ran');
+          },
+        ],
       },
     ];
 
@@ -161,6 +166,11 @@ describe('runShutdownPhases', () => {
       const report = await promise;
 
       expect(report.timedOutPhases).toEqual(['A']);
+      // The headline safety property: a stuck phase A task must not prevent
+      // phase B from actually running.
+      expect(log).toEqual(['B-ran']);
+      // A timed-out phase must not itself be recorded as a failure.
+      expect(report.failures).toEqual([]);
 
       // Now let the straggler reject — after the phase (and the whole run)
       // has already moved on. It must be handled, not unhandled.
