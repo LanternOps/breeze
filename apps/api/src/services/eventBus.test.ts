@@ -22,6 +22,8 @@ vi.mock('../db', () => {
   };
 });
 
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+
 describe('eventBus service', () => {
   let mockRedis: Partial<Redis>;
   let eventBusModule: typeof import('./eventBus');
@@ -30,6 +32,7 @@ describe('eventBus service', () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    vi.unstubAllEnvs();
     mockRedis = {
       xadd: vi.fn().mockResolvedValue('0-0'),
       publish: vi.fn().mockResolvedValue(1),
@@ -41,6 +44,9 @@ describe('eventBus service', () => {
     ({ getRedis, getRedisConnection } = await import('./redis'));
     vi.mocked(getRedis).mockReturnValue(mockRedis as Redis);
     vi.mocked(getRedisConnection).mockReturnValue(mockRedis as Redis);
+
+    const { _resetEventSubscriberRegistryForTests } = await import('./eventSubscriberRegistry');
+    _resetEventSubscriberRegistryForTests();
   });
 
   describe('publishUserEvent — addressed to one user', () => {
@@ -368,5 +374,100 @@ describe('eventBus service', () => {
       'breeze-api',
       '124-0'
     );
+  });
+
+  // ---------------------------------------------------------------------
+  // Registry-aware local delivery (wave 3.5c, #4085).
+  // ---------------------------------------------------------------------
+
+  describe('registry-aware local delivery', () => {
+    it('a registered local subscriber receives published events', async () => {
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+      const { registerEventSubscriber } = await import('./eventSubscriberRegistry');
+      const handler = vi.fn().mockResolvedValue(undefined);
+
+      registerEventSubscriber({
+        id: 'webhook-delivery',
+        eventTypes: [EVENT_TYPES.DEVICE_ENROLLED],
+        handler,
+      });
+
+      await publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler.mock.calls[0]![0]).toMatchObject({
+        type: EVENT_TYPES.DEVICE_ENROLLED,
+        orgId: 'org-1',
+      });
+    });
+
+    it('a queue-partitioned subscriber (enforce + csv) is NOT invoked locally', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'enforce');
+      vi.stubEnv('EVENT_DISPATCH_QUEUE_SUBSCRIBERS', 'webhook-delivery');
+
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+      const { registerEventSubscriber } = await import('./eventSubscriberRegistry');
+      const queuedHandler = vi.fn().mockResolvedValue(undefined);
+      const localHandler = vi.fn().mockResolvedValue(undefined);
+
+      registerEventSubscriber({
+        id: 'webhook-delivery',
+        eventTypes: [EVENT_TYPES.DEVICE_ENROLLED],
+        handler: queuedHandler,
+      });
+      registerEventSubscriber({
+        id: 'automation-worker',
+        eventTypes: [EVENT_TYPES.DEVICE_ENROLLED],
+        handler: localHandler,
+      });
+
+      await publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+
+      expect(queuedHandler).not.toHaveBeenCalled();
+      expect(localHandler).toHaveBeenCalledTimes(1);
+
+      vi.unstubAllEnvs();
+    });
+
+    it('a throwing registered subscriber logs EVENT_BUS_LOCAL_HANDLER_FAILED with its subscriberId and does not affect later subscribers', async () => {
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+      const { registerEventSubscriber } = await import('./eventSubscriberRegistry');
+      const { captureException } = await import('./sentry');
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const failingHandler = vi.fn().mockRejectedValue(new Error('registry subscriber boom'));
+      const survivingHandler = vi.fn().mockResolvedValue(undefined);
+
+      // 'automation-worker' sorts before 'webhook-delivery' by localeCompare,
+      // so this also proves the failure doesn't halt the sorted iteration.
+      registerEventSubscriber({
+        id: 'automation-worker',
+        eventTypes: [EVENT_TYPES.DEVICE_ENROLLED],
+        handler: failingHandler,
+      });
+      registerEventSubscriber({
+        id: 'webhook-delivery',
+        eventTypes: [EVENT_TYPES.DEVICE_ENROLLED],
+        handler: survivingHandler,
+      });
+
+      await publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+
+      expect(failingHandler).toHaveBeenCalledTimes(1);
+      expect(survivingHandler).toHaveBeenCalledTimes(1);
+
+      const localFailLogs = errorSpy.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && c[0].includes('local-handler-failed'),
+      );
+      expect(localFailLogs).toHaveLength(1);
+      const payload = JSON.parse(localFailLogs[0]![1] as string);
+      expect(payload.errorId).toBe('EVENT_BUS_LOCAL_HANDLER_FAILED');
+      expect(payload.subscriberId).toBe('automation-worker');
+      expect(payload.error.message).toBe('registry subscriber boom');
+
+      expect(captureException).toHaveBeenCalledTimes(1);
+
+      errorSpy.mockRestore();
+    });
   });
 });

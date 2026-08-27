@@ -2,6 +2,8 @@ import Redis from 'ioredis';
 import { createBlockingRedisConnection, getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
 import { runOutsideDbContext } from '../db';
+import { captureException } from './sentry';
+import { partitionSubscribersForEvent } from './eventSubscriberRegistry';
 
 // Event types for type safety
 export type EventType =
@@ -388,8 +390,6 @@ class EventBus {
     const wildcardHandlers = this.handlers.get('*') || new Set();
     const allHandlers = [...typeHandlers, ...wildcardHandlers];
 
-    if (allHandlers.length === 0) return;
-
     let handlerIndex = 0;
     for (const handler of allHandlers) {
       try {
@@ -414,6 +414,37 @@ class EventBus {
         );
       }
       handlerIndex += 1;
+    }
+
+    // Registry-aware local delivery (wave 3.5c, #4085). Subscribers registered
+    // via `registerEventSubscriber` (the replacement for the legacy `subscribe`
+    // map above) are routed through `partitionSubscribersForEvent`, which keeps
+    // this in-process path and the queue path (eventDispatchWorker) mutually
+    // exclusive in `enforce` mode.
+    const { local } = partitionSubscribersForEvent(event.type);
+    for (const sub of local) {
+      try {
+        await sub.handler(event);
+      } catch (error) {
+        // Local delivery keeps wave-3d semantics: a buggy subscriber must not
+        // break the publish path (#820). Queue delivery (eventDispatchWorker)
+        // deliberately does NOT catch — the throw drives BullMQ retries.
+        console.error(
+          '[EventBus] local-handler-failed',
+          JSON.stringify({
+            errorId: 'EVENT_BUS_LOCAL_HANDLER_FAILED',
+            eventId: event.id,
+            eventType: event.type,
+            orgId: event.orgId,
+            source: event.source,
+            subscriberId: sub.id,
+            error: error instanceof Error
+              ? { name: error.name, message: error.message, stack: error.stack }
+              : String(error),
+          }),
+        );
+        captureException(error); // NEW — five of six subscribers were stdout-only
+      }
     }
   }
 
