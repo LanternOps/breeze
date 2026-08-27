@@ -283,8 +283,8 @@ import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/disco
 import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
-import { initializeUnifiWorker } from './jobs/unifiWorker';
-import { initializeUnifiTelemetryWorker } from './jobs/unifiTelemetryWorker';
+import { initializeUnifiWorker, shutdownUnifiWorker } from './jobs/unifiWorker';
+import { initializeUnifiTelemetryWorker, shutdownUnifiTelemetryWorker } from './jobs/unifiTelemetryWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
 import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
@@ -356,7 +356,7 @@ import { initializeSuppressionExpiryReaper, shutdownSuppressionExpiryReaper } fr
 import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
-import { initializeTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
+import { initializeTicketMailboxPollWorker, shutdownTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
 import { getWebhookWorker, initializeWebhookDelivery, type WebhookFanoutDeps } from './workers/webhookDelivery';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { toWebhookConfig } from './services/webhookConfig';
@@ -1665,6 +1665,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownBackupVerificationJobs,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
+    shutdownUnifiWorker,
+    shutdownUnifiTelemetryWorker,
     shutdownSnmpWorker,
     shutdownNetworkBaselineWorker,
     shutdownDiscoveryWorker,
@@ -1732,6 +1734,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,
+    shutdownTicketMailboxPollWorker,
     shutdownInvoiceWorkers,
     shutdownContractWorkers,
     shutdownEventDispatcher,
