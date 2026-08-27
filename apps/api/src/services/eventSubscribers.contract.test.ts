@@ -11,6 +11,20 @@ import { EVENT_SUBSCRIBER_IDS } from './eventSubscriberIds';
  * eventBus.ts's legacy handler map, once via the registry-aware path added in
  * Task 2. This is the guard against that: none of the five production modules
  * migrated in Task 3 may call `.subscribe(` on the global bus any more.
+ *
+ * Two independent assertions, deliberately redundant with each other:
+ *
+ * 1. No `.subscribe(` call at all, under ANY receiver name. The original
+ *    guard here (`getEventBus\(\)\.subscribe|eventBus\.subscribe`) only
+ *    caught the inline-chained and `const eventBus = ...` spellings — it
+ *    MISSED the receiver-variable form `const bus = getEventBus();
+ *    bus.subscribe(...)`, which is house style elsewhere in this codebase
+ *    (services/notifications.ts). A revert of any of the five modules back
+ *    to that form would dual-register while the old regex stayed green.
+ * 2. No VALUE import of `getEventBus` at all (`import type { BreezeEvent }`
+ *    stays fine — these modules still need the type). This is the
+ *    structural half: no bus handle in scope, no subscription possible,
+ *    independent of how `.subscribe(` itself might be spelled or renamed.
  */
 const PRODUCTION_MODULES = [
   '../workers/webhookDelivery.ts',
@@ -20,16 +34,29 @@ const PRODUCTION_MODULES = [
   './dnsThreatAlerts.ts',
 ] as const;
 
-const SUBSCRIBE_ON_GLOBAL_BUS = /getEventBus\(\)\.subscribe|eventBus\.subscribe/;
+/** Any `.subscribe(` call, regardless of receiver variable name. */
+const ANY_SUBSCRIBE_CALL = /\.subscribe\s*\(/;
+
+/**
+ * A VALUE import of `getEventBus` from the eventBus module — i.e. anything
+ * except `import type { ... }`. Matches both `import { getEventBus } from
+ * './eventBus'` and `import { getEventBus, EVENT_TYPES } from '../services/eventBus'`.
+ */
+const GET_EVENT_BUS_VALUE_IMPORT = /import\s+(?!type\s)\{[^}]*\bgetEventBus\b[^}]*\}\s*from\s*['"][^'"]*eventBus['"]/;
 
 function readModule(relativePath: string): string {
   return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8');
 }
 
 describe('five subscribers migrated off the legacy bus (#4085 Task 3)', () => {
-  it.each(PRODUCTION_MODULES)('%s no longer calls .subscribe( on the global event bus', (path) => {
+  it.each(PRODUCTION_MODULES)('%s has no .subscribe( call under any receiver name', (path) => {
     const src = readModule(path);
-    expect(src).not.toMatch(SUBSCRIBE_ON_GLOBAL_BUS);
+    expect(src).not.toMatch(ANY_SUBSCRIBE_CALL);
+  });
+
+  it.each(PRODUCTION_MODULES)('%s does not value-import getEventBus at all', (path) => {
+    const src = readModule(path);
+    expect(src).not.toMatch(GET_EVENT_BUS_VALUE_IMPORT);
   });
 });
 
