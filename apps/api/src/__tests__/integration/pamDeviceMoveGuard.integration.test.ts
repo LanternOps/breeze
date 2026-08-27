@@ -1,10 +1,19 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { sql } from 'drizzle-orm';
+import { Hono } from 'hono';
 import postgres, { type Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { createAccessToken } from '../../services/jwt';
+import {
+  createOrganization,
+  createPartner,
+  createSite,
+  setupTestEnvironment,
+} from './db-utils';
 import { getTestDb } from './setup';
 
 type PamObservedState =
@@ -28,6 +37,20 @@ interface MoveFixture {
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
+}
+
+interface RouteFixture {
+  sourceOrgId: string;
+  sourceSiteId: string;
+  targetOrgId: string;
+  targetSiteId: string;
+  deviceId: string;
+  ticketId: string;
+  requestId: string;
+  commandId: string;
+  actuationId: string;
+  resultId: string;
+  postMove: () => Promise<Response>;
 }
 
 const DATABASE_URL = process.env.DATABASE_URL
@@ -167,6 +190,113 @@ async function insertRaceActuation(tx: Sql, fixture: MoveFixture): Promise<void>
     )
   `;
   await tx`SET CONSTRAINTS pam_actuations_device_id_org_id_fkey IMMEDIATE`;
+}
+
+async function createRouteFixture(): Promise<RouteFixture> {
+  const env = await setupTestEnvironment({ scope: 'partner' });
+  const { partner, organization: sourceOrg, site: sourceSite, user, role } = env;
+  const targetOrg = await createOrganization({ partnerId: partner.id });
+  const targetSite = await createSite({ orgId: targetOrg.id });
+  const [fixture] = await getTestDb().execute<Omit<
+    RouteFixture,
+    'sourceOrgId' | 'sourceSiteId' | 'targetOrgId' | 'targetSiteId' | 'postMove'
+  >>(sql`
+    WITH device AS (
+      INSERT INTO devices (
+        org_id, site_id, agent_id, hostname, os_type, os_version,
+        architecture, agent_version, pam_lifetime_protocol_version
+      ) VALUES (
+        ${sourceOrg.id}, ${sourceSite.id}, ${`pam-move-${randomUUID()}`},
+        ${`pam-move-host-${randomUUID()}`}, 'windows', '11', 'amd64', '2.0.0', 2
+      ) RETURNING id, site_id
+    ), ticket AS (
+      INSERT INTO tickets (org_id, partner_id, device_id, ticket_number, subject, source)
+      SELECT ${sourceOrg.id}, ${partner.id}, device.id, ${`PAM-${randomUUID()}`},
+        'PAM move ownership fixture', 'manual'
+      FROM device RETURNING id
+    ), request AS (
+      INSERT INTO elevation_requests (
+        org_id, site_id, partner_id, device_id, flow_type, subject_username,
+        reason, target_executable_path, target_executable_hash, status,
+        approved_at, expires_at
+      ) SELECT ${sourceOrg.id}, device.site_id, ${partner.id}, device.id,
+        'uac_intercept', 'fixture-user', 'PAM move ownership fixture',
+        'C:\\Program Files\\Fixture\\fixture.exe', ${'a'.repeat(64)},
+        'approved', now(), now() + interval '15 minutes'
+      FROM device RETURNING id, device_id
+    ), command AS (
+      INSERT INTO device_commands (device_id, type, target_role, payload, status)
+      SELECT request.device_id, 'pam_apply_v2', 'agent', '{}'::jsonb, 'sent'
+      FROM request RETURNING id
+    ), actuation AS (
+      INSERT INTO pam_actuations (
+        org_id, device_id, elevation_request_id, request_revision, generation,
+        desired_state, observed_state, current_command_id, target_executable_path,
+        target_executable_hash, subject_username
+      ) SELECT ${sourceOrg.id}, request.device_id, request.id, 1, 1,
+        'active', 'dispatched', command.id, 'C:\\Program Files\\Fixture\\fixture.exe',
+        ${'a'.repeat(64)}, 'fixture-user'
+      FROM request, command RETURNING id, device_id
+    ), result AS (
+      INSERT INTO pam_actuation_results (
+        observation_id, org_id, device_id, actuation_id, generation,
+        result_kind, evidence, observed_at
+      ) SELECT ${randomUUID()}, ${sourceOrg.id}, actuation.device_id, actuation.id, 1,
+        'received', '{"source":"move-guard-integration"}'::jsonb, now()
+      FROM actuation RETURNING id
+    )
+    SELECT device.id AS "deviceId", ticket.id AS "ticketId", request.id AS "requestId",
+      command.id AS "commandId", actuation.id AS "actuationId", result.id AS "resultId"
+    FROM device, ticket, request, command, actuation, result
+  `);
+  if (!fixture) throw new Error('route fixture insert failed');
+
+  const token = await createAccessToken({
+    sub: user.id,
+    email: user.email,
+    roleId: role.id,
+    orgId: null,
+    partnerId: partner.id,
+    scope: 'partner',
+    mfa: true,
+    aep: 1,
+    mep: 1,
+    sid: randomUUID(),
+  });
+  const app = new Hono();
+  app.route('/devices', moveOrgRoutes);
+
+  return {
+    ...fixture,
+    sourceOrgId: sourceOrg.id,
+    sourceSiteId: sourceSite.id,
+    targetOrgId: targetOrg.id,
+    targetSiteId: targetSite.id,
+    postMove: () => app.request(`/devices/${fixture.deviceId}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: targetOrg.id, siteId: targetSite.id }),
+    }),
+  };
+}
+
+async function routeSnapshot(fixture: RouteFixture): Promise<Record<string, unknown>> {
+  const [snapshot] = await getTestDb().execute<{ snapshot: Record<string, unknown> }>(sql`
+    SELECT jsonb_build_object(
+      'device', (SELECT to_jsonb(row) FROM devices row WHERE id = ${fixture.deviceId}),
+      'ticket', (SELECT to_jsonb(row) FROM tickets row WHERE id = ${fixture.ticketId}),
+      'request', (SELECT to_jsonb(row) FROM elevation_requests row WHERE id = ${fixture.requestId}),
+      'command', (SELECT to_jsonb(row) FROM device_commands row WHERE id = ${fixture.commandId}),
+      'actuation', (SELECT to_jsonb(row) FROM pam_actuations row WHERE id = ${fixture.actuationId}),
+      'result', (SELECT to_jsonb(row) FROM pam_actuation_results row WHERE id = ${fixture.resultId}),
+      'sourceOrg', (SELECT to_jsonb(row) FROM organizations row WHERE id = ${fixture.sourceOrgId}),
+      'sourceSite', (SELECT to_jsonb(row) FROM sites row WHERE id = ${fixture.sourceSiteId}),
+      'targetOrg', (SELECT to_jsonb(row) FROM organizations row WHERE id = ${fixture.targetOrgId}),
+      'targetSite', (SELECT to_jsonb(row) FROM sites row WHERE id = ${fixture.targetSiteId})
+    ) AS snapshot
+  `);
+  if (!snapshot) throw new Error('route snapshot query returned no row');
+  return snapshot.snapshot;
 }
 
 describe('PAM device organization-move database guard', () => {
@@ -309,4 +439,59 @@ describe('PAM device organization-move database guard', () => {
       await closeRaceClients(moveClient, actuationClient);
     }
   }, 15_000);
+
+  it('returns 409 through the real route without mutating ownership or evidence', async () => {
+    const fixture = await createRouteFixture();
+    const before = await routeSnapshot(fixture);
+
+    const response = await fixture.postMove();
+    const body = await response.json();
+
+    expect(response.status, JSON.stringify(body)).toBe(409);
+    expect(body).toEqual({
+      error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+      code: 'PAM_DEVICE_MOVE_BLOCKED',
+    });
+    expect(await routeSnapshot(fixture)).toEqual(before);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    const audits = await getTestDb().execute<{
+      orgId: string;
+      action: string;
+      details: Record<string, unknown>;
+    }>(sql`
+      SELECT org_id AS "orgId", action, details
+      FROM audit_logs
+      WHERE resource_id = ${fixture.deviceId}
+        AND action LIKE 'device.move_org.%'
+      ORDER BY action
+    `);
+    expect(audits).toEqual([{
+      orgId: fixture.sourceOrgId,
+      action: 'device.move_org.failed',
+      details: { code: 'PAM_DEVICE_MOVE_BLOCKED' },
+    }]);
+  });
+
+  it('does not grant PAM table privileges when the migration is re-applied', async () => {
+    const readPamGrants = () => getTestDb().execute<{
+      tableName: string;
+      privilegeType: string;
+    }>(sql`
+      SELECT table_name AS "tableName", privilege_type AS "privilegeType"
+      FROM information_schema.role_table_grants
+      WHERE grantee = 'breeze_app'
+        AND table_name IN ('pam_actuations', 'pam_actuation_results')
+      ORDER BY table_name, privilege_type
+    `);
+    const before = await readPamGrants();
+    const migration = await readFile(
+      new URL('../../../migrations/2026-09-17-pam-device-move-guard.sql', import.meta.url),
+      'utf8',
+    );
+
+    await getTestDb().execute(sql.raw(migration));
+
+    expect(await readPamGrants()).toEqual(before);
+  });
 });
