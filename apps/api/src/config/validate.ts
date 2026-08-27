@@ -784,6 +784,16 @@ const envObjectSchema = z
     // staying on the safe default — see docs/operations/agent-network-and-manifest-rollout.md.
     AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: z.enum(['true', 'false']).default('false'),
 
+    // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
+    // routing (partner_llm_configs.catalog_entry_id). Off by default so a
+    // rolling deploy or rollback never exposes catalog selection ahead of
+    // the resolver/route wiring that consumes it (Tasks 3.2+). When false,
+    // selection-write routes 404 and existing catalog configs resolve as
+    // unavailable('catalog_disabled') — fail-loud, never a silent fallback
+    // to direct Anthropic. Strict two-value enum so a typo boot-refuses
+    // instead of silently staying on the safe default.
+    LLM_PROVIDER_CATALOG_ENABLED: z.enum(['true', 'false']).default('false'),
+
     // Security remediation Wave 6, Task 9 (approved plan deviation D1) — the
     // managed-software destination gate (services/managedSoftwareDispatchPolicy.ts).
     //   compat (default): a private destination still requires agent

@@ -87,6 +87,7 @@ const PARTNER_CONFIG = {
   model: 'claude-sonnet-4-6',
   configId: 'config-1',
   configVersion: 3,
+  endpoint: { kind: 'anthropic' as const },
 };
 
 /** Partner-scoped technician: orgId is null on the auth context (the #3095 trigger). */
@@ -168,6 +169,9 @@ describe('result usage recording — partner-scoped sessions (#3095)', () => {
       ORG,
       expect.objectContaining({ total_cost_usd: 0.03 }),
       'partner_key',
+      // 5th arg: the catalog pricing snapshot (#3922 W3) — undefined for a
+      // direct-Anthropic partner session, which prices from MODEL_PRICING.
+      undefined,
     );
   });
 
@@ -180,7 +184,7 @@ describe('result usage recording — partner-scoped sessions (#3095)', () => {
     expect(recordUsageMock).toHaveBeenCalledWith('sess-partner', ORG, expect.objectContaining({
       total_cost_usd: 0.03,
       usage: expect.objectContaining({ input_tokens: 100, output_tokens: 50 }),
-    }), 'platform');
+    }), 'platform', undefined);
     // The RLS db-access context must also be built from the DB-row org, not auth.orgId (null).
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'organization', orgId: ORG }),
@@ -200,7 +204,7 @@ describe('result usage recording — partner-scoped sessions (#3095)', () => {
     expect(recordUsageMock).toHaveBeenCalledTimes(1);
     expect(recordUsageMock).toHaveBeenCalledWith('sess-err', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 70, output_tokens: 20 }),
-    }), 'platform');
+    }), 'platform', undefined);
   });
 });
 
@@ -220,7 +224,7 @@ describe('fallback accumulation from assistant messages', () => {
         cache_read_input_tokens: 300,
         cache_creation_input_tokens: 200,
       },
-    }), 'platform');
+    }), 'platform', undefined);
   });
 
   it('prefers SDK-reported result usage over the accumulator when present', async () => {
@@ -231,7 +235,7 @@ describe('fallback accumulation from assistant messages', () => {
 
     expect(recordUsageMock).toHaveBeenCalledWith('sess-sdk-wins', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 100, output_tokens: 50 }),
-    }), 'platform');
+    }), 'platform', undefined);
   });
 
   it('resets the accumulator between turns (multi-turn sessions)', async () => {
@@ -245,10 +249,10 @@ describe('fallback accumulation from assistant messages', () => {
     expect(recordUsageMock).toHaveBeenCalledTimes(2);
     expect(recordUsageMock).toHaveBeenNthCalledWith(1, 'sess-multiturn', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 100, output_tokens: 10 }),
-    }), 'platform');
+    }), 'platform', undefined);
     expect(recordUsageMock).toHaveBeenNthCalledWith(2, 'sess-multiturn', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 40, output_tokens: 5 }),
-    }), 'platform');
+    }), 'platform', undefined);
   });
 
   it('flushes accumulated usage when the turn ends without a result message', async () => {
@@ -261,7 +265,7 @@ describe('fallback accumulation from assistant messages', () => {
     expect(recordUsageMock).toHaveBeenCalledWith('sess-abandoned', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 500, output_tokens: 60 }),
       num_turns: 1,
-    }), 'platform');
+    }), 'platform', undefined);
   });
 
   it('feeds abandoned-turn usage to the per-user recordExtraUsage hook (client sessions)', async () => {
@@ -287,7 +291,7 @@ describe('fallback accumulation from assistant messages', () => {
     // Org ledger and per-user ledger both get the abandoned turn's tokens.
     expect(recordUsageMock).toHaveBeenCalledWith('sess-abandoned-extra', ORG, expect.objectContaining({
       usage: expect.objectContaining({ input_tokens: 500, output_tokens: 60 }),
-    }), 'platform');
+    }), 'platform', undefined);
     expect(recordExtraUsage).toHaveBeenCalledWith({ inputTokens: 500, outputTokens: 60, costCents: 42 });
     expect(calculateCostCentsMock).toHaveBeenCalledWith('claude-sonnet-4-5-20250929', 500, 60, 0, 0);
   });
@@ -342,7 +346,7 @@ describe('fallback accumulation from assistant messages', () => {
         cache_read_input_tokens: 120_000,
         cache_creation_input_tokens: 4_500,
       },
-    }), 'platform');
+    }), 'platform', undefined);
   });
 
   it('does not double-record when a completed turn is followed by teardown', async () => {

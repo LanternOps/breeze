@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { llmProviderCatalog } from './llmProviderCatalog';
 import { partners } from './orgs';
 import { users } from './users';
 
@@ -22,6 +23,9 @@ export const partnerLlmConfigs = pgTable('partner_llm_configs', {
   keyFingerprint: text('key_fingerprint').notNull(),
   baseUrl: text('base_url'),
   defaultModel: text('default_model'),
+  // Phase 2 (#3922) catalog selection. No onDelete: deleting a catalog entry
+  // with partners still pinned to it must fail loud (see the migration).
+  catalogEntryId: uuid('catalog_entry_id').references(() => llmProviderCatalog.id),
   status: text('status', { enum: ['active', 'error'] }).notNull().default('active'),
   configVersion: integer('config_version').notNull().default(1),
   lastError: text('last_error'),
