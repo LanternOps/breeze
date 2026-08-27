@@ -48,7 +48,7 @@ export function hashRecoveryCodes(codes: string[]): string[] {
 function legacyRecoveryCodeHash(code: string): string {
   const normalized = normalizeRecoveryCode(code);
   return createHash('sha256')
-    .update(`${getRecoveryCodePepper()}:${normalized}`) // lgtm[js/insufficient-password-hash]
+    .update(`${getRecoveryCodePepper()}:${normalized}`)
     .digest('hex');
 }
 
