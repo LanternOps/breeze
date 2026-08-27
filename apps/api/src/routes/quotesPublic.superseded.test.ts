@@ -33,6 +33,11 @@ vi.mock('../services/quoteLifecycle', () => ({ markQuoteViewed: vi.fn() }));
 vi.mock('../services/quoteOutcomeNotify', () => ({
   notifyQuoteOutcome: vi.fn().mockResolvedValue(undefined),
 }));
+// Merge-chain resolution (Task 6) is exercised for real in
+// orgMergeQuoteContinuity.integration.test.ts; here it's a pure passthrough
+// so this file stays focused on the serialization path, same rationale as
+// the quoteAcceptToken/quoteLifecycle stubs above.
+vi.mock('../services/orgMerge', () => ({ resolveMergedOrgIds: vi.fn(async (orgId: string) => [orgId]) }));
 
 import { db } from '../db';
 import {

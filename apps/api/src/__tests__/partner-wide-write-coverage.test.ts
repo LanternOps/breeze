@@ -160,6 +160,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/catalogImageStorage.ts': 'catalog item images on the catalog permission set; partner-scope routes only',
   'services/catalogService.ts': 'catalog items/prices/bundles on the catalog permission set; partner-scope routes only',
   'services/pax8CatalogService.ts': 'pax8 catalog-item import on the catalog permission set; credentials live behind /pax8\'s global gate',
+
+  // --- org lifecycle (org lifecycle wave 2, #4074) --------------------------
+  'services/orgMerge.ts': 'org_merge_events writes run under system context from the merge engine; the HTTP surface is gated by routes/orgMerge.ts\'s requireScope(partner,system) + requireOrgWrite + MFA with per-org partner checks (authorizeMergePair, including auth.canAccessOrg(survivor.id) for \'selected\'-access partner members) — not a partner-wide policy table. Every write is already scoped to orgs the caller could act on individually; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from merging orgs they already manage.',
 };
 
 /** Table export names whose rows can be partner-owned (org_id absent or nullable). */
