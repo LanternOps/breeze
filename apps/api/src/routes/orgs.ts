@@ -24,6 +24,11 @@ import {
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
+import {
+  listArchivedOrgs,
+  loadArchivedOrg,
+  type ArchivedOrgScope,
+} from '../services/archivedOrgReads';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
@@ -1183,8 +1188,41 @@ const listOrganizationsSchema = z.object({
   partnerId: z.string().guid().optional(),
   page: z.string().optional(),
   limit: z.string().optional(),
-  search: z.string().optional()
+  search: z.string().optional(),
+  // Archived orgs are invisible to the request's own RLS context by design, so
+  // they are never part of the paginated query below — they are read through
+  // the READ ONLY archived context and appended (see below).
+  includeArchived: z.enum(['true', 'false']).optional()
 });
+
+/**
+ * True when this page holds the tail of the paginated (live) result set, so
+ * appended archived orgs land exactly once across a full page walk.
+ * `apps/web/src/lib/fetchAllOrganizations.ts` walks every page and concatenates;
+ * appending unconditionally would repeat every archived org on every page.
+ */
+function isFinalOrganizationsPage(offset: number, pageLength: number, total: number): boolean {
+  return offset <= total && offset + pageLength >= total;
+}
+
+/**
+ * Which archived orgs this caller may reach, or null for "none" — a partner
+ * token carrying no partnerId gets null rather than `allPartners`, which is the
+ * whole reason `ArchivedOrgScope` is a union instead of a nullable id.
+ * Organization scope never reaches here (it returns earlier in the handler).
+ */
+function resolveArchivedOrgScope(
+  auth: Pick<AuthContext, 'scope' | 'partnerId'>,
+  queryPartnerId: string | undefined,
+): ArchivedOrgScope | null {
+  if (auth.scope === 'system') {
+    return queryPartnerId ? { kind: 'partner', partnerId: queryPartnerId } : { kind: 'allPartners' };
+  }
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return { kind: 'partner', partnerId: auth.partnerId };
+  }
+  return null;
+}
 
 // Org-scope callers may read their OWN org's name-level row without the
 // organizations:read permission (UI shell / tickets cold load, #1245 residual)
@@ -1201,7 +1239,7 @@ const requireOrgReadUnlessOwnOrg = async (c: Context, next: Next) => {
 
 orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgReadUnlessOwnOrg, zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { partnerId: queryPartnerId, search, ...pagination } = c.req.valid('query');
+  const { partnerId: queryPartnerId, search, includeArchived, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
   const trimmedSearch = search?.trim();
   const searchCondition = trimmedSearch
@@ -1240,33 +1278,54 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     });
   }
 
+  // `includeArchived` is an explicit opt-in for partner (and system) callers.
+  // Archived orgs are NOT in `accessibleOrgIds` — `computeAccessibleOrgIds`
+  // allowlists `active|trial` — so they cannot be folded into the query below;
+  // they are read through the READ ONLY archived context and appended. A
+  // partner-scope caller is hard-pinned to its own verified partner id; a
+  // partner token with no partnerId gets nothing rather than every partner's.
+  const archivedScope = includeArchived === 'true'
+    ? resolveArchivedOrgScope(auth, queryPartnerId)
+    : null;
+
   // The hidden 'quick_support' org is inside accessibleOrgIds by design (RLS),
   // so it has to be excluded from the paginated list — one shared `conditions`
   // covers both the count and the row query below.
   const notQuickSupport = ne(organizations.type, 'quick_support');
   let conditions;
+  // A partner whose only orgs are archived reaches zero accessible ids. That
+  // used to short-circuit the whole handler, which would have made
+  // `includeArchived` silently return nothing for exactly the tenant it exists
+  // to serve — so skip the live queries instead of the response.
+  let noLiveOrgs = false;
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
-    if (orgIds.length === 0) {
-      return c.json({
-        data: [],
-        pagination: { page, limit, total: 0 }
-      });
-    }
-    conditions = and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
+    noLiveOrgs = orgIds.length === 0;
+    conditions = noLiveOrgs
+      ? undefined
+      : and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
   } else {
     conditions = queryPartnerId
       ? and(eq(organizations.partnerId, queryPartnerId), notQuickSupport, isNull(organizations.deletedAt), searchCondition)
       : and(notQuickSupport, isNull(organizations.deletedAt), searchCondition);
   }
 
-  const countResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(organizations)
-    .where(conditions);
+  if (noLiveOrgs && archivedScope === null) {
+    return c.json({
+      data: [],
+      pagination: { page, limit, total: 0 }
+    });
+  }
+
+  const countResult = noLiveOrgs
+    ? []
+    : await db
+        .select({ count: sql<number>`count(*)` })
+        .from(organizations)
+        .where(conditions);
   const count = countResult[0]?.count ?? 0;
 
-  const data = await db
+  const data = noLiveOrgs ? [] : await db
     .select()
     .from(organizations)
     .where(conditions)
@@ -1289,7 +1348,8 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   let orderPartnerId: string | null = null;
   if (auth.scope === 'partner' && auth.partnerId) orderPartnerId = auth.partnerId;
   else if (auth.scope === 'system' && queryPartnerId) orderPartnerId = queryPartnerId;
-  if (orderPartnerId) {
+  // Nothing to order when the live query never ran (archived-only partner).
+  if (orderPartnerId && !noLiveOrgs) {
     try {
       const settingsRow = await withSystemDbAccessContext(async () => {
         const [row] = await db
@@ -1343,8 +1403,22 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     deviceCounts.map((row) => [row.orgId, Number(row.count)])
   );
 
+  const liveRows = ordered.map((org) => ({
+    ...org,
+    deviceCount: deviceCountByOrgId.get(org.id) ?? 0,
+  }));
+
+  // Archived orgs ride along on the LAST page only, so a full page walk
+  // (fetchAllOrganizations.ts) sees each of them exactly once. They are not
+  // counted in `pagination.total`: that number belongs to the paginated query,
+  // and inflating it would make the walk ask for a page that doesn't exist.
+  const archivedRows = archivedScope
+    && isFinalOrganizationsPage(offset, liveRows.length, Number(count))
+    ? await listArchivedOrgs({ scope: archivedScope, search: trimmedSearch, limit })
+    : [];
+
   return c.json({
-    data: ordered.map((org) => ({ ...org, deviceCount: deviceCountByOrgId.get(org.id) ?? 0 })),
+    data: [...liveRows, ...archivedRows],
     pagination: { page, limit, total: Number(count) }
   });
 });
@@ -1623,7 +1697,18 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
 
+  // An archived org is absent from `accessibleOrgIds` by design, so it fails
+  // `canAccessOrg` and would 404 here. Serve it read-only instead — the archive
+  // detail view (Restore + purge countdown) is the whole point of keeping the
+  // tenant around. `loadArchivedOrg` re-checks the partner itself and collapses
+  // "other partner" into the same null as "not archived", so a cross-partner id
+  // still 404s and never becomes an existence oracle.
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
+    const archivedScope = resolveArchivedOrgScope(auth, undefined);
+    const archived = archivedScope
+      ? await loadArchivedOrg({ orgId: id, scope: archivedScope })
+      : null;
+    if (archived) return c.json(archived);
     return c.json({ error: 'Organization not found' }, 404);
   }
 
@@ -1637,6 +1722,14 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
+  }
+
+  // System scope never fails `canAccessOrg`, so an archived org reaches it
+  // through the normal read (system scope short-circuits every RLS predicate).
+  // Flag it the same way the partner branch above does, so clients get one
+  // shape regardless of who asked.
+  if (organization.status === 'archived') {
+    return c.json({ ...organization, archived: true as const });
   }
 
   return c.json(organization);

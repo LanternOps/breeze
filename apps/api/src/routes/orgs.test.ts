@@ -24,6 +24,16 @@ vi.mock('../services/enrollmentDefaults', () => ({
   }))
 }));
 
+// Archived orgs are read through a dedicated READ ONLY DB context (Wave 4
+// Task 3), which needs a real transaction — mocked here so these route tests
+// pin the CALL (partner pinning, when it fires) rather than the DB machinery.
+// The archived-context guarantees themselves are proven against real Postgres
+// in __tests__/integration/orgArchiveReadContext.integration.test.ts.
+vi.mock('../services/archivedOrgReads', () => ({
+  listArchivedOrgs: vi.fn(async () => []),
+  loadArchivedOrg: vi.fn(async () => null)
+}));
+
 vi.mock('../services/ipAllowlist', () => ({
   clearPartnerAllowlistCache: vi.fn(),
   ipAllowlistMode: vi.fn(() => 'enforce'),
@@ -244,6 +254,7 @@ import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { authMiddleware } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, readPartnerAllowlist } from '../services/ipAllowlist';
+import { listArchivedOrgs, loadArchivedOrg } from '../services/archivedOrgReads';
 import {
   restoreOrganizationTenantAccess,
   restorePartnerTenantAccess,
@@ -1671,6 +1682,109 @@ describe('org routes', () => {
       expect(body.data.find((o: { id: string }) => o.id === 'org-2').deviceCount).toBe(0);
     });
 
+    // ── includeArchived (Wave 4 Task 3) ────────────────────────────────────
+    // Archived orgs are NOT in accessibleOrgIds (computeAccessibleOrgIds
+    // allowlists active|trial), so they can never come out of the paginated
+    // query — they are read through the READ ONLY archived context and
+    // appended. These cases pin WHEN that read fires and WHO it is scoped to.
+    describe('includeArchived', () => {
+      const mockOnePartnerPage = (orgIds: string[], total = orgIds.length) => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: total }])
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({
+                    orderBy: vi.fn().mockResolvedValue(orgIds.map((id) => ({ id })))
+                  })
+                })
+              })
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce(mockOrgDeviceCounts([]));
+      };
+
+      it('does not read archived orgs at all without the flag', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage(['org-1']);
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+      });
+
+      it('appends flagged archived orgs, scoped to the caller partner', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage(['org-1']);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce([
+          { id: 'org-archived', status: 'archived', archived: true, deviceCount: 4 } as any
+        ]);
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).toHaveBeenCalledWith({
+          scope: { kind: 'partner', partnerId: 'partner-123' },
+          search: undefined,
+          limit: 10
+        });
+        const body = await res.json();
+        expect(body.data.map((o: { id: string }) => o.id)).toEqual(['org-1', 'org-archived']);
+        expect(body.data[1].archived).toBe(true);
+        // Archived rows ride along OUTSIDE the pagination arithmetic.
+        expect(body.pagination.total).toBe(1);
+      });
+
+      // fetchAllOrganizations.ts walks every page and concatenates. Appending
+      // on each one would repeat every archived org per page.
+      it('appends only on the final page of the live result set', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1', 'org-2'] });
+        mockOnePartnerPage(['org-1'], 2);
+
+        const res = await app.request('/orgs/organizations?page=1&limit=1&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+      });
+
+      // A partner whose only orgs are archived has an EMPTY accessibleOrgIds.
+      // That short-circuited the whole handler before Wave 4, which would have
+      // made the flag a no-op for exactly the tenant it exists to serve.
+      it('still returns archived orgs when the partner has no live orgs', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: [] });
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce([
+          { id: 'org-archived', status: 'archived', archived: true, deviceCount: 0 } as any
+        ]);
+
+        const res = await app.request('/orgs/organizations?includeArchived=true');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((o: { id: string }) => o.id)).toEqual(['org-archived']);
+        // No live-org queries were issued at all — there is nothing to query.
+        expect(db.select).not.toHaveBeenCalled();
+      });
+
+      // A partner token with no partnerId must get NOTHING, never every
+      // partner's archived orgs (partnerId: null means "all" in the service).
+      it('reads nothing for a partner-scope caller with no partner id', async () => {
+        setAuthContext({ scope: 'partner', partnerId: null, accessibleOrgIds: [] });
+
+        const res = await app.request('/orgs/organizations?includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+        expect((await res.json()).data).toEqual([]);
+      });
+    });
+
     // The grouped count is ONE query for the whole page, not a per-row
     // subselect: this endpoint is walked page-by-page by fetchAllOrganizations,
     // so a correlated count would multiply into hundreds of queries per render.
@@ -2180,6 +2294,40 @@ describe('org routes', () => {
       const res = await app.request('/orgs/organizations/org-999');
 
       expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      // The org row is never queried in the caller's own context. Since Wave 4
+      // the handler does probe for an ARCHIVED org first — that probe is
+      // hard-pinned to the caller's own partner and returns null here, so the
+      // 404 stands.
+      expect(db.select).not.toHaveBeenCalled();
+      expect(loadArchivedOrg).toHaveBeenCalledWith({
+        orgId: 'org-999',
+        scope: { kind: 'partner', partnerId: 'partner-123' }
+      });
+    });
+
+    it('serves an archived org of the caller partner through the read-only archived context', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: ['org-1'],
+        canAccessOrg: (orgId) => orgId === 'org-1'
+      });
+      vi.mocked(loadArchivedOrg).mockResolvedValueOnce({
+        id: 'org-archived',
+        name: 'Archived Co',
+        status: 'archived',
+        archived: true
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-archived');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.id).toBe('org-archived');
+      expect(body.archived).toBe(true);
+      // Served ONLY through the archived door — never through the request's own
+      // read-write context.
       expect(db.select).not.toHaveBeenCalled();
     });
   });
@@ -2714,7 +2862,16 @@ describe('org routes', () => {
         const res = await app.request('/orgs/organizations/org-suspended');
 
         expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Organization not found' });
         expect(db.select).not.toHaveBeenCalled();
+        // Wave 4's archived probe is the only extra lookup, and it is scoped to
+        // ARCHIVED orgs of the caller's own partner — a SUSPENDED org resolves
+        // to null there (loadArchivedOrg checks the status itself), so this
+        // route still cannot see it.
+        expect(loadArchivedOrg).toHaveBeenCalledWith({
+          orgId: 'org-suspended',
+          scope: { kind: 'partner', partnerId: 'partner-123' }
+        });
       });
     });
 
