@@ -13,7 +13,7 @@ import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
-import { buildMonitorCommand } from '../routes/monitors';
+import { buildMonitorCommand } from '../services/monitorCommands';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
 import { resolveAlert } from '../services/alertService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';

@@ -206,8 +206,7 @@ import {
 } from './jobs/webhookDeliveryRecovery';
 import {
   claimDeliveryForExecution,
-  recordDeliveryOutcome,
-  recordWebhookDelivery
+  recordDeliveryOutcome
 } from './services/webhookDeliveryRecord';
 import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/agentLogRetention';
 import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
@@ -309,6 +308,7 @@ import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker 
 // services/aiAgents/runService at module scope, so the manual-trigger route can
 // enqueue even in a process whose background workers never booted.
 import { initializeAiAgentRunner, shutdownAiAgentRunner } from './jobs/aiAgentRunner';
+import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
@@ -357,9 +357,9 @@ import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
 import { initializeTicketMailboxPollWorker, shutdownTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
-import { getWebhookWorker, initializeWebhookDelivery, type WebhookFanoutDeps } from './workers/webhookDelivery';
+import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
-import { toWebhookConfig } from './services/webhookConfig';
+import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
@@ -387,8 +387,8 @@ import {
 } from './extensions/faultAttribution';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
-import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { deviceGroups, devices, securityThreats, webhookDeliveries } from './db/schema';
+import { eq, ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
 import {
   computeWorkersHealthy,
@@ -1272,63 +1272,6 @@ let server: ReturnType<typeof serve> | null = null;
 let shutdownInProgress = false;
 let auditRetryInterval: NodeJS.Timeout | null = null;
 
-/**
- * Build the `getWebhooksForEvent`/`createDeliveryRecord` closures the durable
- * `webhook-delivery` subscriber needs (services/eventSubscribers.ts). Split out
- * of `initializeWebhookDeliveryWorker` so it can be handed to
- * `registerAllEventSubscribers()` synchronously BEFORE `initializeWorkers()`
- * runs (codex Q3 hole #2) — the claim/delivery callback wiring below is fine
- * running inside the async worker-init phase, but the subscriber lookup itself
- * must exist before any event can reach the registry.
- */
-function buildWebhookFanoutDeps(): WebhookFanoutDeps {
-  return {
-    getWebhooksForEvent: async (orgId, eventType) => {
-      return runWithSystemDbAccess(async () => {
-        const rows = await db
-          .select()
-          .from(webhooksTable)
-          .where(
-            and(
-              eq(webhooksTable.orgId, orgId),
-              eq(webhooksTable.status, 'active')
-            )
-          );
-
-        return rows
-          .filter((webhook) => {
-            const events = webhook.events ?? [];
-            return events.includes(eventType) || events.includes('*');
-          })
-          // Decrypt PER ROW inside a try/catch. url/secret/headers are encrypted
-          // at rest (encryptedColumnRegistry); decryptForColumn THROWS on a row
-          // that looks encrypted but can't be decrypted (key/AAD mismatch,
-          // partial migration, corruption). Without per-row isolation a single
-          // bad row would abort the whole .map and silently drop delivery for
-          // EVERY webhook in the org. Skip only the offending webhook (delivering
-          // with unusable credentials is worse) and surface it to Sentry. Legacy
-          // plaintext rows pass through decryptForColumn unchanged.
-          .flatMap((webhook) => {
-            try {
-              // Shared with the recovery sweep (services/webhookConfig): one
-              // decrypt/normalise path, so the two cannot drift the next time an
-              // encrypted column is added to `webhooks`.
-              return [toWebhookConfig(webhook)];
-            } catch (err) {
-              console.error(
-                `[webhookDelivery] failed to decrypt webhook ${webhook.id} (org ${webhook.orgId}); skipping delivery for this webhook only`,
-                err
-              );
-              captureException(err instanceof Error ? err : new Error(String(err)));
-              return [];
-            }
-          });
-      });
-    },
-    createDeliveryRecord: recordWebhookDelivery,
-  };
-}
-
 async function initializeWebhookDeliveryWorker(): Promise<void> {
   const webhookWorker = getWebhookWorker();
 
@@ -2108,6 +2051,13 @@ async function bootstrap(): Promise<void> {
 
   console.log(`Breeze API running at http://localhost:${port}`);
   console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
+
+  // Explicit registration (wave 3.5d-b, #4086): the lazy worker registry only
+  // loads `jobs/aiAgentRunner` for a process that runs global workers, so an
+  // `api`-role process would never trigger the old module-scope side effect.
+  // Must run before routes serve so the manual-trigger route always finds an
+  // enqueuer registered, in every role.
+  registerAiAgentEnqueuer();
 
   // Synchronous and MUST run before initializeWorkers(): the durable
   // subscriber registry (webhook fan-out, automation dispatch, notification
