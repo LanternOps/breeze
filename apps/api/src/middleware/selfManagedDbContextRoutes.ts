@@ -151,6 +151,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // The handler reads the device row through a short `withAuthDbAccessContext`
   // block and makes the agent call outside any context.
   { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/sessions\/live\/?$/ },
+  // #3922 — LLM provider catalog fidelity verification. The handler runs the
+  // full two-stage harness against an operator-supplied provider endpoint: a
+  // direct tool_use/tool_result round-trip (60s client timeout) AND a real
+  // Agent SDK subprocess session (150s timeout). Holding a pooled connection
+  // idle-in-transaction for up to minutes per call is the #1105 pool-poison
+  // class, and `safeFetch`'s own `assertOutsideHeldDbContext` tripwire throws
+  // in CI when it is called inside a held context — which the guarded fetch in
+  // the harness would do on every verification. The handler reads the revision
+  // and writes the verification through the service's own short
+  // `withSystemDbAccessContext` blocks, with the harness call between them.
+  { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/revisions\/[^/]+\/verify\/?$/ },
 ];
 
 /**
