@@ -1,24 +1,41 @@
 /**
  * apps/api/src/worker.ts — `BREEZE_ROLE=worker` entrypoint (wave 3.5d-b, #4086).
  *
- * Deliberately imports NO route modules: the import-closure contract test
- * (`services/workerEntrypointClosure.contract.test.ts`, #4086 Task 5)
- * enforces this statically. Almost every heavier dependency below — the DB
+ * No static route imports. Almost every heavier dependency below — the DB
  * module, Redis, the migration-parity waiter, the extension loader, the
  * worker registry, the event-dispatch/event-bus modules, the AI-agent
  * enqueuer, the durable event-subscriber registry — is loaded via a dynamic
  * `await import(...)` inside `main()` rather than a static top-of-file
  * import. This isn't just style: several of those modules' own *static*
- * transitive closures reach into `routes/` several hops down (for example
+ * transitive closures used to reach into `routes/` several hops down —
  * `services/eventSubscribers.ts` → `jobs/automationWorker.ts` →
  * `services/automationRuntime.ts` → `services/scriptDispatch.ts` →
- * `routes/agentWs.ts`; and `jobs/aiAgentEnqueuer.ts` →
- * `services/aiAgents/runService.ts` → `services/aiAgents/agentAuthContext.ts`
- * → `middleware/auth.ts` → `routes/auth/schemas.ts`). The import-closure
- * contract test's own STATIC-ONLY mode (used for exactly this file) does not
- * follow dynamic `import()` edges, so keeping these behind `await import(...)`
- * is what keeps this file's own closure clean — the same trick
- * `workerRegistry.ts`'s 104 `load()` thunks use.
+ * `routes/agentWs.ts`, and `extensions/builtinExtensions.ts` →
+ * `extensions/stageExtension.ts` → `services/aiTools.ts` →
+ * `services/aiToolsBackup.ts` → `services/commandQueue.ts` →
+ * `routes/agentWs.ts`. Both are fixed now (the automation-worker subscriber's
+ * handler lazily imports `automationWorker.ts` on first fire;
+ * `stageExtension.ts` imports the reserved-tool-name check from the leaf
+ * module `services/aiToolNames.ts` instead of the full `aiTools.ts` hub).
+ *
+ * The dynamic `await import(...)` boundary above is NOT by itself a
+ * guarantee of a clean closure — a module loaded that way can still
+ * statically drag in `routes/` once IT loads, exactly as the two chains
+ * above did. The real, load-bearing guarantee is
+ * `services/workerEntrypointClosure.contract.test.ts`'s SEEDED walk: it reads
+ * this file's own `await import(...)` specifiers, resolves each to a file,
+ * and walks every one of them statically, asserting the union reaches no
+ * `routes/` file. One residue remains, explicitly allowlisted there with a
+ * reviewer-facing justification rather than silently accepted:
+ * `jobs/aiAgentEnqueuer.ts` → `services/aiAgents/runService.ts` →
+ * `services/aiAgents/agentAuthContext.ts` → `middleware/auth.ts` →
+ * `routes/auth/schemas.ts` — an inert schemas/env-flag module, not
+ * socket-local dispatch; breaking it means extracting `ENABLE_2FA` out of
+ * `middleware/auth.ts`, which needs its own reviewed change.
+ *
+ * `services/workerRegistry.ts` is deliberately EXCLUDED as a seed from that
+ * walk — its own 104 `load()` thunks are lazy by design and must stay
+ * unfollowed (see that file's header).
  *
  * Only genuinely leaf modules stay as static top-of-file imports:
  * `config/env` (just `breezeRole`), `config/validate`, `services/sentry`,

@@ -8,7 +8,19 @@
  * entrypoint, `src/worker.ts`) never pulls in the modules for the workers it
  * doesn't run — in particular, never pulls in the route graph or
  * `routes/agentWs.ts` for a `global`-placement-only process. This is what
- * `workerEntrypointClosure.contract.test.ts` (#4086 Task 5) enforces.
+ * `workerEntrypointClosure.contract.test.ts` (#4086 Task 5) enforces for each
+ * registry entry.
+ *
+ * This file is itself deliberately EXCLUDED as a seed from that same test's
+ * separate SEEDED walk of `worker.ts`'s own `await import(...)` specifiers —
+ * this registry's whole point is 104 `load()` thunks that must stay
+ * unfollowed, and the seeded walk is static-only regardless (an entry's own
+ * runtime closure, dynamic-follow included, is what the per-entry
+ * `global`/`socket-owner` test above checks instead). That seeded walk is
+ * what actually proves `worker.ts`'s real boot closure — not just its static
+ * top-of-file imports — never reaches `routes/agentWs.ts`; see `worker.ts`'s
+ * own header for the one explicitly allowlisted residue
+ * (`routes/auth/schemas.ts`, an inert schemas/env-flag module).
  *
  * `placement` classifies each entry by whether its module's *runtime* import
  * closure (transitive relative imports, ignoring `import type`) reaches

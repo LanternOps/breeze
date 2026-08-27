@@ -72,7 +72,9 @@ Design docs:
 3. **Verify presence and readiness before touching `api`:**
    ```bash
    docker ps --format '{{.Names}}' | grep -q breeze-worker && echo "worker container present"
-   curl -sf http://127.0.0.1:3001/health/ready   # from inside the worker container, or via its published port
+   # The image has no curl and the worker container publishes no port — exec
+   # BusyBox wget (what the container's own healthcheck uses) inside it instead.
+   docker exec breeze-worker wget -qO- http://127.0.0.1:3001/health/ready
    ```
    The presence check matters on its own: the hand-maintained droplet
    deploy line does not start `worker` by default (see the deploy-line

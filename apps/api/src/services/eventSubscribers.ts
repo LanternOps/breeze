@@ -16,7 +16,6 @@ import {
   handleWebhookFanoutEvent,
   type WebhookFanoutDeps,
 } from '../workers/webhookDelivery';
-import { handleAutomationEvent } from '../jobs/automationWorker';
 import { handlePolicyViolationEvent, handlePolicyCompliantEvent } from './policyAlertBridge';
 import { handleAlertLifecycleEvent } from './notificationDispatcher';
 import { handleDnsThreatBlockedEvent } from './dnsThreatAlerts';
@@ -48,7 +47,17 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   registerEventSubscriber({
     id: 'automation-worker',
     eventTypes: '*',
-    handler: handleAutomationEvent,
+    // Lazy: jobs/automationWorker.ts is one of two static edges that pull the
+    // whole route graph (incl. routes/agentWs.ts, via
+    // automationRuntime -> scriptDispatch) into the worker boot closure — see
+    // workerEntrypointClosure.contract.test.ts. A dynamic import here means
+    // this module is only loaded (and its route-reaching chain only
+    // traversed) the first time an automation event actually fires, not at
+    // eventSubscribers.ts's module-eval time.
+    handler: async (event: BreezeEvent) => {
+      const { handleAutomationEvent } = await import('../jobs/automationWorker');
+      return handleAutomationEvent(event);
+    },
     retry: { attempts: 5, backoffMs: 10_000 },
   });
 

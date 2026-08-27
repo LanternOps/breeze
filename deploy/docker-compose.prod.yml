@@ -229,9 +229,6 @@ x-api-env: &api-env
   # Durable event dispatch (wave 3.5c, #4085; optional, defaults to off).
   EVENT_DISPATCH_MODE: ${EVENT_DISPATCH_MODE:-off}
   EVENT_DISPATCH_QUEUE_SUBSCRIBERS: ${EVENT_DISPATCH_QUEUE_SUBSCRIBERS:-}
-  # Process role for the 3.5d socket/worker split (wave 3.5b, #4084;
-  # optional, defaults to all).
-  BREEZE_ROLE: ${BREEZE_ROLE:-all}
   # Native APNs push for the iOS app (all optional; unset = push disabled).
   # All-or-none: setting ANY of these makes the four credentials required,
   # so a half-configured relay fails at boot instead of silently at first
@@ -404,6 +401,7 @@ services:
       <<: *healthcheck
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health/ready']
       start_period: 60s
+    stop_grace_period: 90s
     networks:
       - breeze
 

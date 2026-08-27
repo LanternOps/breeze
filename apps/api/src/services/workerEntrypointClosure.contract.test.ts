@@ -307,6 +307,123 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
     ).toEqual([]);
   });
 
+  // -------------------------------------------------------------------------
+  // Seeded closure (final-review fix, #4086): the test above only follows
+  // worker.ts's own STATIC top-of-file imports, which by design (see
+  // worker.ts's header) is almost nothing — every heavier dependency is
+  // loaded via `await import(...)` inside `bootWorker()`. That made the test
+  // above vacuous against the modules that actually matter: it never walked
+  // into services/eventSubscribers.ts or extensions/builtinExtensions.ts at
+  // all, so it could not have caught either of these two real routes/-reaching
+  // chains that existed before this fix:
+  //   (i)  services/eventSubscribers.ts -> jobs/automationWorker.ts ->
+  //        services/automationRuntime.ts -> services/scriptDispatch.ts ->
+  //        routes/agentWs.ts (now broken: the automation-worker subscriber's
+  //        handler dynamically imports automationWorker.ts on first fire).
+  //   (ii) extensions/builtinExtensions.ts -> extensions/stageExtension.ts ->
+  //        services/aiTools.ts -> services/aiToolsBackup.ts ->
+  //        services/commandQueue.ts -> routes/agentWs.ts (now broken:
+  //        stageExtension.ts imports the reserved-tool-name check from the
+  //        new leaf module services/aiToolNames.ts instead of the full
+  //        aiTools.ts hub).
+  //
+  // This test seeds from the literal `await import('<spec>')` specifiers
+  // worker.ts's own source contains, resolves each to a file, and walks
+  // EACH one statically (dynamic-follow OFF beyond the seed — a seed module's
+  // own further `await import(...)`s are its own lazy boundary, not
+  // worker.ts's problem). services/workerRegistry.ts is deliberately EXCLUDED
+  // from the seed set: its whole point is 104 `load()` thunks that must stay
+  // unfollowed, and this is a static-only walk regardless (see the module
+  // header on `importClosure`'s two modes).
+  describe('worker.ts SEEDED boot closure (its own dynamic-import specifiers, walked statically from each)', () => {
+    /**
+     * A specific (seed module, offending route file) pair allowed to remain
+     * in the seeded closure, with a reviewer-facing justification. Each entry
+     * names the EXACT file reached, not a blanket routes/ exemption — a
+     * different, new routes/ file surfacing under an already-allowlisted
+     * seed still fails the assertion below.
+     */
+    const SEEDED_CLOSURE_ALLOWLIST: ReadonlyArray<{
+      seedSpec: string;
+      offenderRelPath: string;
+      reason: string;
+    }> = [
+      {
+        seedSpec: './jobs/aiAgentEnqueuer',
+        offenderRelPath: 'routes/auth/schemas.ts',
+        reason:
+          'jobs/aiAgentEnqueuer.ts -> services/aiAgents/runService.ts -> ' +
+          'services/aiAgents/agentAuthContext.ts -> middleware/auth.ts -> ' +
+          'routes/auth/schemas.ts. This file is inert data under routes/ (two ' +
+          'envFlag()-derived booleans plus Zod schemas) — no socket state, no ' +
+          'HTTP handler registration, nothing shaped like routes/agentWs.ts. ' +
+          'Breaking this chain means extracting ENABLE_2FA out of ' +
+          'middleware/auth.ts — one of the highest-blast-radius files in the ' +
+          'app — which needs its own reviewed change, not a rider on this ' +
+          'closure-contract fix. Structural residue, reported honestly ' +
+          '(#4086 final-review pass) rather than silently patched.',
+      },
+    ];
+
+    it('worker.ts has dynamic-import seeds to walk (sanity: this test is not vacuous)', () => {
+      const { dynamicSpecs } = parseFile(WORKER_ENTRYPOINT);
+      expect(dynamicSpecs.length).toBeGreaterThan(0);
+    });
+
+    it('every seed reaches no route file beyond the explicit allowlist', () => {
+      const { dynamicSpecs } = parseFile(WORKER_ENTRYPOINT);
+      const seedSpecs = [...new Set(dynamicSpecs)];
+      const seeds = seedSpecs
+        .map((spec) => ({ spec, file: resolveRelativeSpec(WORKER_ENTRYPOINT, spec) }))
+        .filter((s): s is { spec: string; file: string } => s.file !== null && s.file !== REGISTRY_FILE);
+
+      const allowedPairs = new Map(
+        SEEDED_CLOSURE_ALLOWLIST.map((e) => [`${e.seedSpec}::${e.offenderRelPath}`, e]),
+      );
+      const usedAllowlistKeys = new Set<string>();
+      const unexplained: string[] = [];
+
+      for (const { spec, file } of seeds) {
+        const closure = importClosure(file, { followDynamic: false });
+        const routeOffenders = [...closure].filter(
+          (f) => f.startsWith(ROUTES_DIR) || f === AGENT_COMMAND_AWAIT,
+        );
+        for (const offender of routeOffenders) {
+          const key = `${spec}::${relPath(offender)}`;
+          if (allowedPairs.has(key)) {
+            usedAllowlistKeys.add(key);
+          } else {
+            unexplained.push(`${spec} (-> ${relPath(file)}) -> ... -> ${relPath(offender)}`);
+          }
+        }
+      }
+
+      expect(
+        unexplained,
+        unexplained.length > 0
+          ? `worker.ts's SEEDED boot closure reaches unexplained route file(s): ${unexplained.join('; ')}. ` +
+              `Either break the chain (a lazy dynamic-import conversion — see eventSubscribers.ts's ` +
+              `automation-worker handler or services/aiToolNames.ts for the pattern) or add a justified ` +
+              `SEEDED_CLOSURE_ALLOWLIST entry above.`
+          : undefined,
+      ).toEqual([]);
+
+      // Staleness check: every allowlisted pair must still actually occur in
+      // the real closure — an entry that no longer fires is stale slack that
+      // must be deleted, not kept "just in case".
+      const staleEntries = SEEDED_CLOSURE_ALLOWLIST.filter(
+        (e) => !usedAllowlistKeys.has(`${e.seedSpec}::${e.offenderRelPath}`),
+      );
+      expect(
+        staleEntries,
+        staleEntries.length > 0
+          ? `SEEDED_CLOSURE_ALLOWLIST entries no longer match the real closure (delete them): ` +
+              staleEntries.map((e) => `${e.seedSpec} -> ${e.offenderRelPath}`).join('; ')
+          : undefined,
+      ).toEqual([]);
+    });
+  });
+
   it('registry losslessness: WORKER_REGISTRY names set-equal the 104-name list', () => {
     const actual = WORKER_REGISTRY.map((e) => e.name);
     expect(new Set(actual)).toEqual(new Set(EXPECTED_NAMES));
