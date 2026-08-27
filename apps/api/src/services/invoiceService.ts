@@ -19,6 +19,7 @@ import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import { changeOrgCurrency } from './orgCurrencyService';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
 
 /**
  * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
@@ -1592,7 +1593,17 @@ export async function runOverdueSweep(asOf: Date = new Date()): Promise<number> 
     const today = asOf.toISOString().slice(0, 10);
     const due = await db.select({ id: invoices.id, orgId: invoices.orgId, partnerId: invoices.partnerId })
       .from(invoices)
-      .where(and(inArray(invoices.status, ['sent', 'partially_paid'] as never), lt(invoices.dueDate, today), sql`${invoices.balance} > 0`));
+      .where(and(
+        inArray(invoices.status, ['sent', 'partially_paid'] as never),
+        lt(invoices.dueDate, today),
+        sql`${invoices.balance} > 0`,
+        // Org-lifecycle Wave 4: never flip an ARCHIVED/purging/merging tenant's
+        // invoice to overdue. The org is hidden and read-only for its whole
+        // retention window, so the status change (and its invoice.overdue event
+        // → notification/webhook) would be work nobody can see or act on,
+        // landing inside a tenant counting down to erasure.
+        buildAutomationEligibleOrgPredicate(invoices.orgId),
+      ));
     for (const r of due) {
       await db.update(invoices).set({ status: 'overdue', markedOverdueAt: asOf, updatedAt: asOf }).where(eq(invoices.id, r.id));
       await emitInvoiceEvent({ type: 'invoice.overdue', invoiceId: r.id, orgId: r.orgId, partnerId: r.partnerId });

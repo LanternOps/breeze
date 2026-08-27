@@ -22,6 +22,7 @@ import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from 
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { toPublicQuoteHeader, toPublicQuotePresentation } from '../services/publicQuoteDto';
+import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE, type PublicLinkOrgGate } from '../services/publicLinkOrgGate';
 import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
 import { resolvePartnerDocumentLocale } from '../services/documentLocale';
 
@@ -48,13 +49,20 @@ const tokenBlockParam = z.object({ token: z.string().min(10), blockId: z.string(
 // DB match uses the same resolved set instead of re-walking the merge chain
 // per query. resolveMergedOrgIds escalates to system scope internally, so
 // this is safe to call from a route that has no ambient DB context yet.
-async function resolve(c: { req: { valid: (k: 'param') => { token: string } } }): Promise<{ claims: QuoteAcceptClaims; orgIds: string[] } | null> {
+// Also resolves the org-lifecycle gate (Wave 4): ONE system-context read of the
+// status of the org that owns the quote TODAY — the merge SURVIVOR when the
+// token's own org merged away, since `orgIds` is exactly the set the row lookup
+// uses. Computed here so it is shared by every handler instead of re-read per
+// query, and applied to reads as well as writes: an archived org is hidden, so
+// its quote link must read as gone rather than serve a live proposal.
+async function resolve(c: { req: { valid: (k: 'param') => { token: string } } }): Promise<{ claims: QuoteAcceptClaims; orgIds: string[]; gate: PublicLinkOrgGate } | null> {
   const { token } = c.req.valid('param');
   const claims = await verifyQuoteAcceptToken(token);
   if (!claims) return null;
   if (await isQuoteAcceptJtiRevoked(claims.jti)) return null;
   const orgIds = await resolveMergedOrgIds(claims.orgId, claims.partnerId);
-  return { claims, orgIds };
+  const gate = await resolveQuoteLinkOrgGate(claims.quoteId, orgIds);
+  return { claims, orgIds, gate };
 }
 
 /** The columns every token route needs to judge whether the link is still live. */
@@ -93,6 +101,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
   const { token } = c.req.valid('param');
   const resolved = await resolve(c);
   if (!resolved) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  if (resolved.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   const { claims, orgIds } = resolved;
   try {
     const data = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
@@ -160,6 +169,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
 quotesPublicRoutes.get('/:token/images/:imageId', zValidator('param', tokenImageParam), async (c) => {
   const resolved = await resolve(c); const { imageId } = c.req.valid('param');
   if (!resolved) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  if (resolved.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   const { claims, orgIds } = resolved;
   const img = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const quote = await loadLiveAssetQuote(claims, orgIds);
@@ -179,6 +189,7 @@ quotesPublicRoutes.get('/:token/images/:imageId', zValidator('param', tokenImage
 quotesPublicRoutes.get('/:token/line-image/:lineId', zValidator('param', tokenLineImageParam), async (c) => {
   const resolved = await resolve(c); const { lineId } = c.req.valid('param');
   if (!resolved) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  if (resolved.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   const { claims, orgIds } = resolved;
   const img = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const quote = await loadLiveAssetQuote(claims, orgIds);
@@ -196,6 +207,7 @@ quotesPublicRoutes.get('/:token/line-image/:lineId', zValidator('param', tokenLi
 quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tokenBlockParam), async (c) => {
   const resolved = await resolve(c); const { blockId } = c.req.valid('param');
   if (!resolved) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  if (resolved.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   const { claims, orgIds } = resolved;
   const block = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const quote = await loadLiveAssetQuote(claims, orgIds);
@@ -213,6 +225,7 @@ quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tok
 quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zValidator('json', acceptQuoteSchema), async (c) => {
   const resolved = await resolve(c); const body = c.req.valid('json');
   if (!resolved) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  if (resolved.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   const { claims, orgIds } = resolved;
   try {
     // Pre-fetch the contract-block render data BEFORE the accept transaction —
@@ -270,6 +283,7 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
 quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zValidator('json', declineQuoteSchema), async (c) => {
   const resolved = await resolve(c); const { reason } = c.req.valid('json');
   if (!resolved) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  if (resolved.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   const { claims, orgIds } = resolved;
   const result = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, claims.quoteId), inArray(quotes.orgId, orgIds))).limit(1);
