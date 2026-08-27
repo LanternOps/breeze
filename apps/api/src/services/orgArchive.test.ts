@@ -48,7 +48,12 @@ vi.mock('./tenantLifecycle', () => ({
   liftArchiveSuspension: vi.fn(async () => ({ agentTokensRestored: 1 })),
 }));
 
-import { beginOrganizationOffboarding, finalizeOrganizationOffboarding } from './tenantOffboarding';
+import {
+  ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+  ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+  beginOrganizationOffboarding,
+  finalizeOrganizationOffboarding,
+} from './tenantOffboarding';
 import { liftArchiveSuspension } from './tenantLifecycle';
 import {
   beginOrgArchive,
@@ -189,8 +194,8 @@ describe('restoreOrgFromArchive', () => {
       `coalesce("organizations"."settings", '{}'::jsonb) - $1 - $2`
     );
     expect(settingsSql.params).toEqual([
-      'archivePurgeWarn14SentAt',
-      'archivePurgeWarn1SentAt',
+      ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+      ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
     ]);
 
     const compiled = new PgDialect().sqlToQuery(update.where as SQL);

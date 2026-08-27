@@ -19,6 +19,7 @@ vi.mock('./tenantStatus', () => ({}));
 
 import {
   buildArchivePurgeCas,
+  buildArchivePurgingRecoveryCandidatesWhere,
   buildArchiveWarningMarkerCas,
   buildArchiveWarningMarkerRelease,
   buildOrganizationFinalizeCas,
@@ -79,5 +80,21 @@ describe('archive purge sweeper CAS statements (compiled SQL)', () => {
     expect(compiled.sql).toContain('settings->>$3 = $4');
     expect(compiled.sql).toContain('RETURNING id');
     expect(compiled.params).toEqual([marker, orgId, marker, claimedValue]);
+  });
+});
+
+describe('archive purging-recovery candidate predicate (compiled SQL)', () => {
+  const dialect = new PgDialect();
+
+  // Review hardening (I3): a unit test that injects rows straight past the
+  // WHERE clause can't tell a 15-minute floor apart from no floor at all —
+  // this pins the actual predicate the sweep's recovery loop filters with.
+  it('only recovers purging rows whose CAS committed at least 15 minutes ago', () => {
+    const compiled = dialect.sqlToQuery(buildArchivePurgingRecoveryCandidatesWhere());
+
+    expect(compiled.sql).toBe(
+      `("organizations"."status" = $1 and "organizations"."updated_at" < now() - interval '15 minutes')`
+    );
+    expect(compiled.params).toEqual(['purging']);
   });
 });

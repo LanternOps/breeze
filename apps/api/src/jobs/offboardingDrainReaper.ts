@@ -51,12 +51,13 @@ function createWorker(): Worker<ReaperJobData> {
           || result.mergeUnfenced > 0
           || result.mergeShellsStamped > 0
           || result.archivePurgesEnqueued > 0
+          || result.purgingRecoveryReenqueued > 0
         ) {
           console.log(
             `[OffboardingDrainReaper] Finalized ${result.orgsFinalized} org(s), ${result.partnersFinalized} partner(s), `
             + `${result.mergeErasureReenqueued} merge erasure re-enqueue(s), ${result.mergeUnfenced} merge unfence(s), `
             + `${result.mergeShellsStamped} merge shell stamp(s), ${result.archivePurgesEnqueued} archive purge enqueue(s), `
-            + `${result.failures} failure(s)`,
+            + `${result.purgingRecoveryReenqueued} archive purge recovery re-enqueue(s), ${result.failures} failure(s)`,
           );
         }
         return result;

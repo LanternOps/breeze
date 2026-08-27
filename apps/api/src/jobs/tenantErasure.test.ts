@@ -264,10 +264,69 @@ describe('tenantErasure worker', () => {
     await processor({
       name: 'tenant-erasure',
       id: 'tenant-erasure-org-xyz',
+      // A year-old timestamp stands in for "enqueued before this worker
+      // process (this deployment) started" — the only case a source-less
+      // payload is still trusted (I2).
+      timestamp: Date.now() - 1000 * 60 * 60 * 24 * 365,
       data: { orgId: 'org-xyz', performedBy: 'admin-1' },
     });
 
     expect(cascadeDeleteOrgMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * I2 review hardening: the old guard trusted ANY source-less payload as
+   * long as the actor was currently a platform admin, which also trusts a
+   * hand-crafted `{ orgId, performedBy: <platform-admin-id> }` job dropped
+   * straight onto the queue post-deploy — every real caller has tagged
+   * `source` for a while now. A NEW source-less job (timestamp at/after this
+   * worker process's boot, which module-load time approximates) must be
+   * refused even though its actor is a genuine platform admin.
+   */
+  it('refuses a NEW source-less job even when its actor is a platform admin', async () => {
+    orgStateRows.splice(0, orgStateRows.length, [{ status: 'active', deletedAt: null }]);
+    actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: true }]);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    const result = await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      timestamp: Date.now(),
+      data: { orgId: 'org-xyz', performedBy: 'admin-1' },
+    });
+
+    expect(cascadeDeleteOrgMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ skipped: true, reason: 'status_guard' });
+  });
+
+  /**
+   * The spoof shape the bypass exists to close: `source: 'platform_admin'`
+   * on a payload attributed to a NON-admin actor must never be trusted just
+   * because the tag is present.
+   */
+  it('refuses a spoofed platform_admin source from a non-admin actor', async () => {
+    orgStateRows.splice(0, orgStateRows.length, [{ status: 'active', deletedAt: null }]);
+    actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: false }]);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    const result = await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      data: { orgId: 'org-xyz', performedBy: 'not-an-admin', source: 'platform_admin' },
+    });
+
+    expect(cascadeDeleteOrgMock).not.toHaveBeenCalled();
+    expect(createAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'tenant.erasure.refused_status_guard',
+        details: expect.objectContaining({ source: 'platform_admin' }),
+      })
+    );
+    expect(result).toEqual({ skipped: true, reason: 'status_guard' });
   });
 
   it('refuses an unqualified live org, audits org-less, logs, and completes without deleting', async () => {

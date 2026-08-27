@@ -1268,9 +1268,31 @@ describe('sweepOffboardingTenants', () => {
         orgId: candidate.id,
         performedBy: '00000000-0000-0000-0000-000000000000',
       });
+      // Review hardening (I3): the recovery backstop owns its own counter and
+      // audit — separate from `archivePurgesEnqueued`, which only the initial
+      // CAS path increments.
+      expect(second.purgingRecoveryReenqueued).toBe(1);
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.archive.purge_recovery_reenqueued',
+          resourceType: 'organization',
+          resourceId: candidate.id,
+          actorType: 'system',
+          result: 'success',
+        })
+      );
     });
 
-    it('sends the 14-day and 1-day partner-admin warnings once each when both markers are absent', async () => {
+    // Review hardening (I5): replaces the old "both send" expectation. An
+    // outage catch-up pass can find the SAME org qualifying for both buckets
+    // (both markers absent, purge_at already inside the 1-day window) — only
+    // the more urgent (1-day) copy should ever reach a recipient, but the
+    // 14-day marker must still be claimed so it can't re-fire on a later
+    // sweep once the 1-day marker is claimed and this org drops off THAT
+    // candidate list.
+    it('suppresses the less-urgent 14-day send when the 1-day bucket also fires, but still claims its marker', async () => {
       const candidate = {
         id: 'org-warning',
         partnerId: 'partner-1',
@@ -1278,22 +1300,64 @@ describe('sweepOffboardingTenants', () => {
         purgeAt: PURGE_AT,
       };
       queueCandidates([], [], [], [], [], [], [candidate], [candidate]);
-      queueSelect([{ email: 'admin@msp.test' }]);
+      // 14-day group: suppressed — claims its own marker directly, with no
+      // recipient lookup at all.
       executeQueue.push([{ id: candidate.id }]);
+      // 1-day group: the normal recipient-lookup -> claim -> send flow.
       queueSelect([{ email: 'admin@msp.test' }]);
-      executeQueue.push([{ id: candidate.id }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: NOW.toISOString() }]);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(result.failures).toBe(0);
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      const [mail] = sendEmailMock.mock.calls[0]!;
+      expect(mail).toMatchObject({
+        to: ['admin@msp.test'],
+        subject: 'Organization purge in 1 day: Acme <Ops>',
+      });
+      expect(mail.html).toContain('Acme &lt;Ops&gt;');
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'org.archive.purge_warning_sent',
+          details: expect.objectContaining({ bucketDays: 1, days: 1 }),
+        })
+      );
+      // The suppressed 14-day bucket claimed its marker but never audited a
+      // send for it.
+      expect(writeAuditEvent).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'org.archive.purge_warning_sent',
+          details: expect.objectContaining({ bucketDays: 14 }),
+        })
+      );
+    });
+
+    it('derives the warning label from actual days remaining, not the fixed bucket', async () => {
+      const candidate = {
+        id: 'org-warning-10d',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: new Date(NOW.getTime() + 10 * 24 * 60 * 60 * 1000), // 10 days out
+      };
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: NOW.toISOString() }]);
 
       await sweepOffboardingTenants(NOW);
 
-      expect(sendEmailMock).toHaveBeenCalledTimes(2);
-      expect(sendEmailMock.mock.calls.map(([mail]) => mail.subject)).toEqual([
-        'Organization purge in 14 days: Acme <Ops>',
-        'Organization purge in 1 day: Acme <Ops>',
-      ]);
-      for (const [mail] of sendEmailMock.mock.calls) {
-        expect(mail.to).toEqual(['admin@msp.test']);
-        expect(mail.html).toContain('Acme &lt;Ops&gt;');
-      }
+      expect(sendEmailMock).toHaveBeenCalledWith(
+        expect.objectContaining({ subject: 'Organization purge in 10 days: Acme' })
+      );
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'org.archive.purge_warning_sent',
+          details: expect.objectContaining({ days: 10, bucketDays: 14, orgId: candidate.id }),
+        })
+      );
     });
 
     it('selects recipients by the established Partner Admin role rather than org-access breadth', async () => {
@@ -1369,6 +1433,75 @@ describe('sweepOffboardingTenants', () => {
       await sweepOffboardingTenants(NOW);
 
       expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
+    // Review hardening (I4): the two skip paths ahead of the marker claim
+    // must never claim it (a later sweep with a real email service /
+    // recipients must still get a chance to send), but they must not fail
+    // silently either.
+    it('warns (without claiming the marker) when no email service is configured', async () => {
+      const candidate = {
+        id: 'org-warning-no-email-service',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      getEmailServiceMock.mockReturnValueOnce(null);
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(result.failures).toBe(0);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(executeMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(candidate.id));
+    });
+
+    it('warns (without claiming the marker) when there are zero active Partner Admin recipients', async () => {
+      const candidate = {
+        id: 'org-warning-no-recipients',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([]); // no active Partner Admins
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(result.failures).toBe(0);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(executeMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(candidate.id));
+    });
+
+    it('audits a successful warning send org-less, with the org id and computed days in details', async () => {
+      const candidate = {
+        id: 'org-warning-audit',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: NOW.toISOString() }]);
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.archive.purge_warning_sent',
+          resourceType: 'organization',
+          resourceId: candidate.id,
+          actorType: 'system',
+          result: 'success',
+          details: expect.objectContaining({ orgId: candidate.id, days: 1, bucketDays: 1 }),
+        })
+      );
     });
   });
 

@@ -144,6 +144,30 @@ export type ArchivePurgeWarningMarker =
   | typeof ARCHIVE_PURGE_WARN_14_SENT_AT_KEY
   | typeof ARCHIVE_PURGE_WARN_1_SENT_AT_KEY;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Review hardening (I3): only recover a `purging` row whose CAS committed at
+ * least 15 MINUTES ago (same fixed-interval-literal style as the merge
+ * backstop's `interval '1 hour'` / `interval '2 hours'` guards above). The
+ * initial claim loop just above this backstop already re-enqueues its own
+ * successful CASes in the same pass, so a row claimed seconds ago is very
+ * likely still finishing that very call — recovering it again here too would
+ * be harmless (enqueueTenantErasure is idempotent) but would fire the
+ * counter/audit on every normal sweep instead of only the crash/queue-outage
+ * case this backstop actually exists for.
+ *
+ * Exported so the age guard is compiled-SQL asserted (review fix): a plain
+ * unit test injecting rows straight past the WHERE clause can't tell a
+ * 15-minute floor apart from no floor at all.
+ */
+export function buildArchivePurgingRecoveryCandidatesWhere(): SQL {
+  return and(
+    eq(organizations.status, 'purging'),
+    sql`${organizations.updatedAt} < now() - interval '15 minutes'`
+  )!;
+}
+
 /** Raw SQL so the archived-only transition is atomic and compiled-SQL testable. */
 export function buildArchivePurgeCas(orgId: string): SQL {
   return sql`
@@ -1104,6 +1128,7 @@ export async function sweepOffboardingTenants(
   mergeUnfenced: number;
   mergeShellsStamped: number;
   archivePurgesEnqueued: number;
+  purgingRecoveryReenqueued: number;
 }> {
   const windowMs = OFFBOARDING_DRAIN_WINDOW_HOURS * 60 * 60 * 1000;
   let orgsFinalized = 0;
@@ -1113,6 +1138,7 @@ export async function sweepOffboardingTenants(
   let mergeUnfenced = 0;
   let mergeShellsStamped = 0;
   let archivePurgesEnqueued = 0;
+  let purgingRecoveryReenqueued = 0;
 
   const [
     offboardingOrgs,
@@ -1273,7 +1299,7 @@ export async function sweepOffboardingTenants(
         const archivePurgingCandidates = await db
           .select({ id: organizations.id })
           .from(organizations)
-          .where(eq(organizations.status, 'purging'));
+          .where(buildArchivePurgingRecoveryCandidatesWhere());
         return [
           orgs,
           ptrs,
@@ -1550,6 +1576,19 @@ export async function sweepOffboardingTenants(
         orgId: org.id,
         performedBy: ANONYMOUS_ACTOR_ID,
       });
+      purgingRecoveryReenqueued++;
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: null,
+        action: 'org.archive.purge_recovery_reenqueued',
+        resourceType: 'organization',
+        resourceId: org.id,
+        actorType: 'system',
+        actorId: null,
+        result: 'success',
+        details: {
+          note: 'purging row past the 15-minute recovery grace window; re-ran the erasure handoff',
+        },
+      });
     } catch (err) {
       failures++;
       console.error(`[tenantOffboarding] Failed to recover archive purge handoff for org ${org.id}:`, err);
@@ -1569,11 +1608,41 @@ export async function sweepOffboardingTenants(
       marker: ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
     },
   ] as const;
+  // Review hardening (I5): an outage catch-up pass can find the SAME org
+  // qualifying for BOTH buckets at once (both markers still absent, purge_at
+  // already inside the 1-day window). Sending the 14-day copy in that case
+  // would misstate how much time is actually left, so the more urgent (1-day)
+  // bucket wins the SEND. The 14-day bucket still claims its own marker below
+  // so it never re-fires on a later sweep once the 1-day marker is claimed
+  // and this org drops out of THAT candidate list.
+  const moreUrgentWarningOrgIds = new Set(archiveWarn1CandidateRows.map((org) => org.id));
+
   for (const group of warningGroups) {
+    const isLeastUrgentGroup = group.marker === ARCHIVE_PURGE_WARN_14_SENT_AT_KEY;
     for (const org of group.candidates) {
       try {
+        if (isLeastUrgentGroup && moreUrgentWarningOrgIds.has(org.id)) {
+          const claimed = (await runOutsideDbContext(() =>
+            withSystemDbAccessContext(() =>
+              db.execute(buildArchiveWarningMarkerCas(org.id, group.marker))
+            )
+          )) as unknown as Array<{ id: string }>;
+          if (claimed.length > 0) {
+            console.warn(
+              `[tenantOffboarding] org ${org.id} qualifies for both purge-warning buckets in this pass; `
+              + 'claimed the 14-day marker without sending — the 1-day bucket is more urgent and accurate'
+            );
+          }
+          continue;
+        }
+
         const emailService = getEmailService();
-        if (!emailService) continue;
+        if (!emailService) {
+          console.warn(
+            `[tenantOffboarding] no email service configured — skipping the ${group.days}-day archive purge warning for org ${org.id}`
+          );
+          continue;
+        }
 
         const recipients = await runOutsideDbContext(() =>
           withSystemDbAccessContext(() =>
@@ -1592,7 +1661,13 @@ export async function sweepOffboardingTenants(
           )
         );
         const emails = [...new Set(recipients.map((recipient) => recipient.email).filter(Boolean))];
-        if (emails.length === 0) continue;
+        if (emails.length === 0) {
+          console.warn(
+            `[tenantOffboarding] no active Partner Admin recipients for org ${org.id}; `
+            + `skipping the ${group.days}-day archive purge warning`
+          );
+          continue;
+        }
 
         // Claim before the outbound send, matching contractRenewal.ts's
         // claimNotice -> dispatchNotice precedent. This is what makes two API
@@ -1604,7 +1679,14 @@ export async function sweepOffboardingTenants(
         )) as unknown as Array<{ id: string; claimed_value: string }>;
         if (claimed.length === 0) continue;
 
-        const dayLabel = group.days === 1 ? '1 day' : `${group.days} days`;
+        // Review hardening (I5): the ACTUAL time remaining, not the fixed
+        // bucket label — an outage catch-up pass can run this well after the
+        // nominal threshold, and a stale "14 days" / "1 day" copy would
+        // misstate how much time is truly left.
+        const daysRemaining = org.purgeAt
+          ? Math.max(1, Math.round((org.purgeAt.getTime() - now.getTime()) / DAY_MS))
+          : group.days;
+        const dayLabel = daysRemaining === 1 ? '1 day' : `${daysRemaining} days`;
         const purgeAt = org.purgeAt?.toISOString() ?? 'the scheduled purge time';
         const safeName = escapeHtml(org.name);
         const safePurgeAt = escapeHtml(purgeAt);
@@ -1648,6 +1730,20 @@ export async function sweepOffboardingTenants(
           }
           throw sendErr;
         }
+
+        // Review hardening (I4): org-less audit on a successful send, mirror
+        // of every other archive-purge audit in this file.
+        writeAuditEvent(requestLikeFromSnapshot({}), {
+          orgId: null,
+          action: 'org.archive.purge_warning_sent',
+          resourceType: 'organization',
+          resourceId: org.id,
+          resourceName: org.name,
+          actorType: 'system',
+          actorId: null,
+          result: 'success',
+          details: { orgId: org.id, days: daysRemaining, bucketDays: group.days, purgeAt },
+        });
       } catch (err) {
         failures++;
         console.error(
@@ -1667,5 +1763,6 @@ export async function sweepOffboardingTenants(
     mergeUnfenced,
     mergeShellsStamped,
     archivePurgesEnqueued,
+    purgingRecoveryReenqueued,
   };
 }
