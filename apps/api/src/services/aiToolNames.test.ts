@@ -74,8 +74,7 @@ describe('aiToolNames leaf module (#4086 Task 5, chain (ii) break)', () => {
         deviceOrgDenormalizedTables: [],
         deviceOrgMoveDeleteTables: [],
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any;
+    } as never;
     const module: BreezeExtensionV1 = {
       register(registrar) {
         registrar.registerAiTool('leaf_only_reserved_for_extension_test', {
