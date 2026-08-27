@@ -31,15 +31,58 @@ interface Hooks {
 // ---------------------------------------------------------------------------
 const dbMockState = vi.hoisted(() => ({
   rowQueues: {} as Record<string, unknown[][]>,
+  // The most recently shifted row for a table, keyed by table name — lets
+  // `nextRows` synthesize a SECOND read below (wave 4a Task 6, #3826:
+  // `deliverRunFinishedNotifications` re-reads `ai_agent_runs`/`ai_agents`
+  // from `finishRun`, after `seedRows()`'s one queued row-set for each has
+  // already been consumed by the loop's own initial `loadRunContext`).
+  lastRow: {} as Record<string, unknown>,
   selects: [] as Array<{ table: string; where?: SQL }>,
   systemContextDepth: 0,
   ambientContext: undefined as { scope: string } | undefined,
 }));
 
+/**
+ * `ai_agent_runs`/`ai_agents` are read TWICE per completed run under real
+ * code: once by `loadRunContext` at the top of `executeAgentRun`, and again
+ * by `deliverRunFinishedNotifications` inside `finishRun` (Task 6). Only the
+ * first read is ever explicitly queued (`seedRows()`); rather than force
+ * every existing test to queue an identical second copy, a table that runs
+ * dry synthesizes its second read from what it already knows:
+ *  - `ai_agents`: the agent row never changes mid-run — reuse the last one.
+ *  - `ai_agent_runs`: overlay the LAST `transitionRunStatus` call's
+ *    `to`/`patch` (status, summary, outcome, intentIds) onto the seeded row,
+ *    since `transitionRunStatus` is mocked and never actually mutates it —
+ *    this is what makes the synthesized re-read reflect the run's real
+ *    terminal outcome instead of the stale pre-run seed.
+ * Every OTHER table still throws on a second, un-queued read (unchanged
+ * strictness) — only these two are ever legitimately read twice.
+ */
 function nextRows(table: string): unknown[] {
   const queue = dbMockState.rowQueues[table];
-  if (!queue || queue.length === 0) throw new Error(`No queued rows for table ${table}`);
-  return queue.shift() as unknown[];
+  if (queue && queue.length > 0) {
+    const rows = queue.shift() as unknown[];
+    if (rows.length > 0) dbMockState.lastRow[table] = rows[0];
+    return rows;
+  }
+  if (table === 'ai_agent_runs' && dbMockState.lastRow.ai_agent_runs) {
+    const base = dbMockState.lastRow.ai_agent_runs as Record<string, unknown>;
+    const calls = transitionRunStatus.mock.calls;
+    const last = calls[calls.length - 1];
+    if (!last) return [base];
+    const patch = (last[3] ?? {}) as Record<string, unknown>;
+    return [{
+      ...base,
+      status: last[2],
+      summary: (patch.summary as string | null | undefined) ?? null,
+      outcome: patch.outcome ?? {},
+      intentIds: patch.intentIds ?? [],
+    }];
+  }
+  if (table === 'ai_agents' && dbMockState.lastRow.ai_agents) {
+    return [dbMockState.lastRow.ai_agents];
+  }
+  throw new Error(`No queued rows for table ${table}`);
 }
 
 vi.mock('../../db', () => {
@@ -136,6 +179,16 @@ vi.mock('./recipients', () => ({ resolveRecipientUserIds }));
 const createNotification = vi.hoisted(() =>
   vi.fn<(input: Record<string, unknown>) => Promise<string | null>>(async () => 'notification-1'));
 vi.mock('../userNotifications', () => ({ createNotification }));
+
+// `deliverRunFinishedNotifications` (Task 6) lives in `./runFinishedNotify`,
+// NOT this file — it resolves `./recipients`/`../userNotifications` from the
+// SAME directory as runLoop.ts, so the two mocks above still intercept its
+// calls even though it's a different module making them (Vitest mocks by
+// resolved module path, not by importer). Only the retry-enqueue side needs
+// its own mock here.
+const enqueueAgentNotifyRetry = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(async () => undefined));
+vi.mock('../../jobs/agentNotifyRetryWorker', () => ({ enqueueAgentNotifyRetry }));
 
 const resolveLlmConfigForOrg = vi.hoisted(() =>
   vi.fn<(orgId: string) => Promise<{ source: string; apiKey?: string; model: string }>>());
@@ -308,6 +361,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.rowQueues = {};
+  dbMockState.lastRow = {};
   dbMockState.selects.length = 0;
   dbMockState.systemContextDepth = 0;
   dbMockState.ambientContext = undefined;
@@ -323,6 +377,7 @@ beforeEach(() => {
   closeAgentRunSession.mockResolvedValue(undefined);
   resolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: 'sk-test', model: 'claude-fallback' });
   resolveRecipientUserIds.mockResolvedValue([]);
+  enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
   createBreezeMcpServer.mockImplementation((getAuth: () => unknown, pre: Hooks['pre'], post: Hooks['post']) => {
     hooks.getAuth = getAuth;
@@ -607,6 +662,34 @@ describe('executeAgentRun', () => {
     }
     expect(createNotification.mock.calls.map(([i]) => (i as { userId: string }).userId))
       .toEqual([USER_A, USER_B]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Durable notify retry lane (wave 4a, Task 6)
+  // -------------------------------------------------------------------------
+
+  it('a notify failure enqueues exactly one durable retry job and does not fail the run', async () => {
+    seedRows({ recipients: { userIds: [], roleIds: [] } });
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    createNotification.mockRejectedValueOnce(new Error('notifications db down'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await executeAgentRun(RUN_ID);
+
+    expect(enqueueAgentNotifyRetry).toHaveBeenCalledTimes(1);
+    expect(enqueueAgentNotifyRetry).toHaveBeenCalledWith(RUN_ID);
+    // The notify failure must never redefine the run's own terminal status —
+    // it already committed 'completed' before notify ran at all.
+    expect(finalTransition()!.to).toBe('completed');
+  });
+
+  it('a normal successful notify never enqueues a retry job', async () => {
+    seedRows();
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(enqueueAgentNotifyRetry).not.toHaveBeenCalled();
   });
 
   it('builds the agent AuthContext from the RUN row, pinned to the device site', async () => {

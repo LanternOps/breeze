@@ -74,7 +74,6 @@ import { publishEvent } from '../eventBus';
 import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
 import type { UsableLlmConfig } from '../llm/llmConfigResolver';
 import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
-import { createNotification } from '../userNotifications';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
@@ -85,8 +84,14 @@ import {
   reconcileHungExecutions,
   startToolExecution,
 } from './executionLedger';
-import { resolveRecipientUserIds } from './recipients';
+import { deliverRunFinishedNotifications } from './runFinishedNotify';
 import { transitionRunStatus } from './runService';
+// jobs/, not services/ — the durable retry lane for a notify failure (Task 6,
+// #3826). BullMQ-touching but harmless to import here: `enqueueAgentNotifyRetry`
+// itself lazily constructs its Queue only when actually called (services/redis.ts
+// never connects at import time), and this module does NOT import runLoop.ts
+// back — see runFinishedNotify.ts's header for why that direction would cycle.
+import { enqueueAgentNotifyRetry } from '../../jobs/agentNotifyRetryWorker';
 import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
@@ -598,60 +603,6 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
   };
 }
 
-async function notifyRunFinished(
-  ctx: RunContext,
-  finished: { status: string; summary: string; intentIds: string[] },
-): Promise<void> {
-  try {
-    // The run's immutable snapshot, NOT `ctx.agent.recipients`. The agent row
-    // loaded by `run.agent_id` is always the PARTNER BASELINE
-    // (resolveEffectiveAgentSystem pins `agentId: partnerRow.id`), so its raw
-    // recipients column silently drops every recipient an organization added
-    // through its override — and notifies nobody at all when only the override
-    // configured any. `mergeAgentPolicies` already unions the two sets into
-    // `effective.recipients`, and `resolveRecipientUserIds` re-derives
-    // membership against the RUN org, so the merged set is the correct input.
-    const userIds = await resolveRecipientUserIds(
-      {
-        orgId: ctx.agent.orgId,
-        partnerId: ctx.agent.partnerId,
-        recipients: ctx.run.policySnapshot.effective.recipients,
-      },
-      ctx.run.orgId,
-    );
-    if (userIds.length === 0) return;
-
-    const firstLine = finished.summary.split('\n')[0]?.trim() ?? '';
-    // AFTER the status commit and outside any held transaction (#1105).
-    await inSystemDbContext(async () => {
-      for (const userId of userIds) {
-        await createNotification({
-          userId,
-          orgId: ctx.run.orgId,
-          type: 'ai',
-          title: 'Agent run finished',
-          message: `${ctx.agent.name}: ${firstLine || finished.status}`,
-          // There is no run-detail page until wave 6; link to the approvals
-          // queue only when there is actually something waiting there.
-          link: finished.intentIds.length > 0 ? '/approvals' : null,
-          metadata: {
-            runId: ctx.run.id,
-            agentId: ctx.agent.id,
-            intentIds: finished.intentIds,
-            status: finished.status,
-          },
-          dedupeKey: `agent-run:${ctx.run.id}`,
-        });
-      }
-    });
-  } catch (error) {
-    // A notification failure must never redefine the run's outcome.
-    console.error('[aiAgentRunLoop] failed to notify run recipients', {
-      runId: ctx.run.id, error,
-    });
-  }
-}
-
 interface LoopResult {
   summary: string;
   costCents: number;
@@ -1085,11 +1036,20 @@ async function finishRun(
   // executor or `reapStalledAgentRuns` already owns this run), which is
   // exactly the case the ledger cleanup exists for. See the note there.
 
-  await notifyRunFinished(ctx, {
-    status,
-    summary: result.summary,
-    intentIds: result.intentIds,
-  });
+  // `deliverRunFinishedNotifications` re-reads the run row it just committed
+  // above (Task 6, #3826) rather than taking `status`/`result` in-process —
+  // see runFinishedNotify.ts's header for why the retry worker needs the
+  // SAME by-id entry point. A failure here must never redefine the run's
+  // terminal status, so it's caught here and durably retried instead of
+  // left to just fail silently as the old inline version did.
+  try {
+    await deliverRunFinishedNotifications(ctx.run.id);
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to notify run recipients — enqueuing durable retry', {
+      runId: ctx.run.id, error,
+    });
+    await enqueueAgentNotifyRetry(ctx.run.id);
+  }
 }
 
 /**

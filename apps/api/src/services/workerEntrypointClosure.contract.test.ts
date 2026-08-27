@@ -264,16 +264,17 @@ function parseRegistrySource(): RegistryEntrySource[] {
   }));
 }
 
-// The 104 names WORKER_REGISTRY must contain, in `index.ts`'s original order
-// (deliberately duplicated here, not imported from workerRegistry.test.ts —
-// see Task 5 in the plan doc: this is an independent contract, not a shared
-// fixture, so an edit that silently drops/renames an entry can't slip past
-// both suites at once).
+// The names WORKER_REGISTRY must contain, in `index.ts`'s original order plus
+// every entry added since (deliberately duplicated here, not imported from
+// workerRegistry.test.ts — see Task 5 in the plan doc: this is an independent
+// contract, not a shared fixture, so an edit that silently drops/renames an
+// entry can't slip past both suites at once).
 const EXPECTED_NAMES = [
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
+  'agentNotifyRetry',
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'logCorrelationWorker', 'agentLogRetention',
@@ -439,7 +440,7 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
     });
   });
 
-  it('registry losslessness: WORKER_REGISTRY names set-equal the 104-name list', () => {
+  it('registry losslessness: WORKER_REGISTRY names set-equal the expected-name list', () => {
     const actual = WORKER_REGISTRY.map((e) => e.name);
     expect(new Set(actual)).toEqual(new Set(EXPECTED_NAMES));
     expect(actual.length).toBe(EXPECTED_NAMES.length);
@@ -447,7 +448,7 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
 
   describe('global-placement entries never reach socket-local dispatch', () => {
     const entries = parseRegistrySource();
-    expect(entries.length).toBe(105); // sanity: the source-parsing regex itself must find all 105
+    expect(entries.length).toBe(106); // sanity: the source-parsing regex itself must find all 106
 
     const globalEntries = entries.filter((e) => e.placement === 'global');
     expect(globalEntries.length).toBeGreaterThan(0);

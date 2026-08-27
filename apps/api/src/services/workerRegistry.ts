@@ -219,6 +219,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Durable retry lane for run-finished notifications (wave 4a Task 6,
+    // #3826). Its only real dependency is `services/aiAgents/runFinishedNotify.ts`
+    // (db + recipients + userNotifications) — deliberately NOT `runLoop.ts`'s
+    // full SDK-tool graph, so its closure stays `global` (verified by
+    // workerEntrypointClosure.contract.test.ts) unlike `aiAgentRunner` above.
+    name: 'agentNotifyRetry',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/agentNotifyRetryWorker');
+      return { init: m.initializeAgentNotifyRetryWorker, shutdown: m.shutdownAgentNotifyRetryWorker };
+    },
+  },
+  {
     name: 'auditBaselineJobs',
     placement: 'socket-owner',
     load: async () => {
