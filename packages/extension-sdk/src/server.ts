@@ -19,6 +19,49 @@ export interface ExtensionRegistrar {
   registerAiTool(name: string, tool: ExtensionAiTool): void;
 }
 
+/** Outcome codes an extension can branch on. Anything else is an unexpected error. */
+export type ExtensionAiErrorCode = 'ai_unavailable' | 'budget_exceeded' | 'rate_limited';
+
+export class ExtensionAiError extends Error {
+  constructor(
+    public readonly code: ExtensionAiErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ExtensionAiError';
+  }
+}
+
+export interface ExtensionAiInvokeInput {
+  orgId: string;
+  /** Stable surface tag for audit/cost attribution, e.g. 'workspace_enrichment'. */
+  surface: string;
+  /** Acting principal, for rate limiting + audit. 'system' for host-triggered runs. */
+  principal: { type: 'user' | 'agent' | 'system'; id: string | null };
+  system?: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  maxTokens: number;
+  /** Optional model override; must be a platform-priced model id. Host default applies when omitted. */
+  model?: string;
+}
+
+export interface ExtensionAiInvokeResult {
+  text: string; // concatenated text blocks of the response
+  model: string;
+  billingSource: 'platform' | 'partner_key';
+  usage: { inputTokens: number; outputTokens: number };
+}
+
+export interface ExtensionAiContext {
+  /**
+   * Metered LLM call: the host resolves the org's provider (partner BYOK or
+   * platform), enforces rate limits and org budget, performs the call, and
+   * records usage BEFORE resolving. Throws ExtensionAiError for expected
+   * failure modes; never falls back across billing sources.
+   */
+  invoke(input: ExtensionAiInvokeInput): Promise<ExtensionAiInvokeResult>;
+}
+
 export interface ExtensionRuntimeContext {
   db: Record<string, unknown> & { execute(query: unknown): Promise<unknown> };
   secrets: {
@@ -41,6 +84,8 @@ export interface ExtensionRuntimeContext {
      */
     installedOrgs(): Promise<string[]>;
   };
+  /** Optional metered LLM invocation capability — older hosts may not provide it. */
+  ai?: ExtensionAiContext;
 }
 
 export interface BreezeExtensionV1 {
