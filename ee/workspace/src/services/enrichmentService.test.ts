@@ -196,6 +196,96 @@ describe('run', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * PERMANENT AI failures drain the phase; TRANSIENT ones abort it.
+   *
+   * Before this split, every ExtensionAiError became a TransientIngestError:
+   * an org that had simply switched AI off, a partner on a plan without AI, or
+   * a deployment with a typo'd WORKSPACE_CONTENT_LLM_MODEL burned all
+   * `max_attempts`, failed the ingest job, and a fresh job repeated it forever
+   * — so indexing and crosswalk never finished either. The classification now
+   * comes from the HOST (`ExtensionAiError.permanent`), which is the only side
+   * that can tell a rolling daily cap from an "AI is off" switch.
+   */
+  describe('permanent vs transient AI failures', () => {
+    function drainingDb(pending: Array<{ id: string; rel_path: string; extracted_text: string }>) {
+      // count(*) answers NON-zero so a `remaining: 0` in the result can only
+      // come from the drain short-circuit, never from a fake that happens to
+      // report an empty queue.
+      const execute = vi.fn(async (query: unknown) => {
+        const text = sqlText(query);
+        if (text.includes('workspace_projects')) return [];
+        if (text.includes('SELECT fi.id, fi.rel_path')) return pending;
+        if (text.includes('count(*)')) return [{ n: 5 }];
+        return [];
+      });
+      return { execute } as unknown as WorkspaceDatabase;
+    }
+
+    const pending = [
+      { id: 'f1', rel_path: 'a.md', extracted_text: 'text a' },
+      { id: 'f2', rel_path: 'b.md', extracted_text: 'text b' },
+    ];
+
+    it.each([
+      ['budget_exceeded', 'AI features are disabled for this organization'],
+      ['budget_exceeded', 'AI assistant requires the Community plan.'],
+      ['ai_unavailable', 'AI model "claude-hiaku-4-5" is not available for metered extension use.'],
+      ['not_configured', 'AI is not configured on this deployment.'],
+    ] as const)('drains the phase on a PERMANENT %s', async (code, message) => {
+      const db = drainingDb(pending);
+      const invoke: EnrichmentInvoke = vi.fn(async () => {
+        throw new ExtensionAiError(code, message, { permanent: true });
+      });
+      const svc = createEnrichmentService(db, { invoke });
+
+      const result = await svc.run(ORG, 8);
+
+      expect(result).toMatchObject({ processed: 0, remaining: 0, errors: [], aiUnavailable: true });
+      // Aborted on the FIRST file — the rest of the batch is not burned into
+      // model=NULL rows, so they stay re-enrichable if AI comes back.
+      expect(invoke).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['rate_limited', 'Organization rate limit exceeded'],
+      ['ai_unavailable', 'AI is unavailable until the partner Anthropic API key is reconnected.'],
+      ['budget_exceeded', 'Daily AI budget exceeded ($10.00)'],
+    ] as const)('stays TRANSIENT on %s (retrying can still help)', async (code, message) => {
+      const db = drainingDb(pending);
+      const invoke: EnrichmentInvoke = vi.fn(async () => {
+        throw new ExtensionAiError(code, message);
+      });
+      const svc = createEnrichmentService(db, { invoke });
+
+      const caught = await svc.run(ORG, 8).catch((e: unknown) => e);
+
+      expect(caught).toBeInstanceOf(TransientIngestError);
+      expect(isTransientIngestError(caught)).toBe(true);
+      expect((caught as Error).message).toContain(code);
+      expect(invoke).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats an ExtensionAiError with NO permanent field as transient (older host)', async () => {
+      // Belt and braces for a host built before the flag existed: `permanent`
+      // arriving undefined must never be read as "drain the phase".
+      const db = drainingDb(pending);
+      const legacyError = Object.assign(
+        new Error('BYOK key invalid'),
+        { name: 'ExtensionAiError', code: 'ai_unavailable' },
+      );
+      Object.setPrototypeOf(legacyError, ExtensionAiError.prototype);
+      // The field the current constructor would have set, removed.
+      delete (legacyError as { permanent?: unknown }).permanent;
+
+      const svc = createEnrichmentService(db, {
+        invoke: vi.fn(async () => { throw legacyError; }) as EnrichmentInvoke,
+      });
+
+      await expect(svc.run(ORG, 8)).rejects.toBeInstanceOf(TransientIngestError);
+    });
+  });
+
   it('still fail-softs a plain Error from invoke into a per-file error, not an abort', async () => {
     const pending = [{ id: 'f1', rel_path: 'a.md', extracted_text: 'text a' }];
     const db = fakeDb(pending);

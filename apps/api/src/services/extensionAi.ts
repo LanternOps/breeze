@@ -15,7 +15,7 @@ import {
 import {
   calculateCostCents,
   checkAiRateLimit,
-  checkBudget,
+  checkBudgetDetailed,
   checkSystemAiRateLimit,
   deductBillingCredits,
   isPricedModel,
@@ -28,6 +28,7 @@ import {
   resolveLlmConfigForOrg,
   type UsableLlmConfig,
 } from './llm/llmConfigResolver';
+import { captureException, captureMessage } from './sentry';
 
 const EXTENSION_AI_DEFAULT_MODEL = 'claude-haiku-4-5';
 
@@ -54,6 +55,11 @@ function httpStatusOf(error: unknown): number | null {
  * poison file. 401/403 is a credential problem, so it aborts too — and, for a
  * partner key, is recorded on the config row so the partner's AI settings stop
  * reporting a key that Anthropic is rejecting.
+ *
+ * Every ExtensionAiError raised here is TRANSIENT (`permanent` left false),
+ * including a rejected partner credential: the partner must keep seeing a loud,
+ * visible failure until they reconnect the key, never a feature that has
+ * quietly degraded itself.
  */
 async function classifyProviderFailure(
   error: unknown,
@@ -64,17 +70,34 @@ async function classifyProviderFailure(
   if (status === 401 || status === 403) {
     if (resolved.source === 'partner') {
       try {
-        await markPartnerLlmError({
+        const stamped = await markPartnerLlmError({
           configId: resolved.configId,
           configVersion: resolved.configVersion,
           reason: 'auth_rejected',
         });
+        if (!stamped) {
+          // A compare-and-set miss: the config row's id/version moved (the
+          // partner rotated or removed the key mid-flight), so NOTHING was
+          // written. Treating that as stamped is how a partner's AI settings
+          // keep advertising a key Anthropic is rejecting.
+          console.warn('[extension-ai] rejected partner credential was NOT stamped (config version moved)', {
+            partnerId: resolved.partnerId,
+            configVersion: resolved.configVersion,
+          });
+          captureMessage('Rejected partner AI credential could not be stamped', {
+            eventCode: 'ai_partner_key_error_stamp_stale',
+            tags: { partner_id: resolved.partnerId },
+          });
+        }
       } catch (markError) {
         // Recording the rejection is best-effort: never mask the original cause.
         console.error('[extension-ai] failed to mark rejected partner credential', {
           partnerId: resolved.partnerId,
           error: markError,
         });
+        // Was silent to Sentry entirely — mirrors llmConfigResolver's own
+        // markPartnerLlmError failure path, which does report.
+        captureException(markError, undefined, { partner_id: resolved.partnerId });
       }
     }
     return new ExtensionAiError('ai_unavailable', errorMessage(error));
@@ -100,9 +123,14 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         ?? process.env.WORKSPACE_CONTENT_LLM_MODEL
         ?? EXTENSION_AI_DEFAULT_MODEL;
       if (!isPricedModel(model)) {
+        // PERMANENT: the model id is a deployment constant (a
+        // WORKSPACE_CONTENT_LLM_MODEL typo, or an id retired from the pricing
+        // table). Every retry reproduces it exactly, so a retrying caller must
+        // degrade instead of burning its attempts.
         throw new ExtensionAiError(
           'ai_unavailable',
           `AI model "${model}" is not available for metered extension use.`,
+          { permanent: true },
         );
       }
 
@@ -135,6 +163,7 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         throw new ExtensionAiError(
           'not_configured',
           'AI is not configured on this deployment.',
+          { permanent: true },
         );
       }
 
@@ -148,9 +177,15 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         throw new ExtensionAiError('rate_limited', rateLimitError);
       }
 
-      const budgetError = await checkBudget(input.orgId, billingSource);
-      if (budgetError) {
-        throw new ExtensionAiError('budget_exceeded', budgetError);
+      // Detailed form on purpose: `budget_exceeded` covers both a spend cap
+      // that rolls over (retry later) and an org/plan with AI switched off
+      // (retrying forever is the bug this exists to stop). Only the tracker
+      // knows which, so it is the tracker that decides `permanent`.
+      const budgetDenial = await checkBudgetDetailed(input.orgId, billingSource);
+      if (budgetDenial) {
+        throw new ExtensionAiError('budget_exceeded', budgetDenial.message, {
+          permanent: budgetDenial.permanent,
+        });
       }
 
       const client = buildAnthropicClient(usable);
