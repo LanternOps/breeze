@@ -73,9 +73,9 @@ describe('PartnerAiProviderTab', () => {
     // No model select / disconnect until a key is connected.
     expect(screen.queryByTestId('ai-provider-model-select')).toBeNull();
     expect(screen.queryByTestId('ai-provider-disconnect')).toBeNull();
-    // Spec §3 non-goal disclosure is always visible.
+    // Workspace enrichment disclosure is always visible.
     expect(screen.getByTestId('ai-provider-workspace-note').textContent)
-      .toContain('Workspace content enrichment currently uses the platform key');
+      .toContain('Workspace content enrichment uses your configured AI provider and appears in your AI usage');
   });
 
   it('renders the connected state from GET (last4, verified date, model)', async () => {

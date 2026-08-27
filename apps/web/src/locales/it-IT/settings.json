@@ -159,7 +159,7 @@
     "disconnectFailed": "Impossibile disconnettere la chiave Anthropic.",
     "permissionDenied": "La gestione del provider IA richiede autorizzazioni di fatturazione e l'accesso a tutte le organizzazioni.",
     "loadFailed": "Impossibile caricare la configurazione del provider IA.",
-    "workspaceDisclosure": "L'arricchimento dei contenuti di Workspace attualmente usa la chiave della piattaforma."
+    "workspaceDisclosure": "L'arricchimento dei contenuti di Workspace utilizza il provider IA configurato e appare nel tuo utilizzo IA."
   },
   "partnerDefaults": {
     "notSet": "Non impostato — le org si configurano singolarmente",

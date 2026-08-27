@@ -33,6 +33,10 @@ const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion:
   'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 }
 };
 
+export function isPricedModel(model: string): boolean {
+  return model in MODEL_PRICING;
+}
+
 // Models a partner may pin as their BYOK default. MODEL_PRICING keeps legacy
 // snapshot ids for cost attribution on old sessions; those must not be offered
 // (or accepted) as new defaults — a retired snapshot pinned partner-wide fails
@@ -107,7 +111,16 @@ export async function checkBillingCredits(
   }
 }
 
-async function deductBillingCredits(orgId: string, costCents: number): Promise<void> {
+/**
+ * Draw platform-funded spend down from the org's prepaid AI credit balance.
+ *
+ * Exported for callers that record usage through `recordUsage` (which does NOT
+ * deduct — see the note on `recordSessionlessSdkUsage`) and therefore have to
+ * make the deduction themselves. Only ever call this for
+ * `billingSource === 'platform'`: partner BYOK spend is billed by Anthropic to
+ * the partner, not against our credits.
+ */
+export async function deductBillingCredits(orgId: string, costCents: number): Promise<void> {
   const billingUrl = process.env.BILLING_SERVICE_URL;
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
   if (!billingUrl || !billingKey) return;
@@ -340,6 +353,31 @@ export async function checkUserAiRateLimit(userId: string): Promise<string | nul
   const userResult = await rateLimiter(redis, `ai:msg:user:${userId}`, 20, 60);
   if (!userResult.allowed) {
     return `Rate limit exceeded. Try again at ${userResult.resetAt.toISOString()}`;
+  }
+  return null;
+}
+
+/**
+ * Org-scoped rate limit for non-interactive AI work driven by a SYSTEM
+ * principal (no acting user) — e.g. an extension's bulk enrichment batch.
+ *
+ * Deliberately skips `checkAiRateLimit`'s per-USER bucket. That bucket is keyed
+ * `ai:msg:user:<id>` with no org component, so a synthetic actor id ("this
+ * surface") would put every tenant's automation in ONE deployment-wide bucket —
+ * one partner's batch would rate-limit everybody else's. Keying the synthetic
+ * actor per org fixes the coupling but still caps automation at the
+ * interactive-chat 20/min, which a legitimate 100-file batch trips. The per-org
+ * HOURLY ceiling is the meaningful bound here, and `checkBudget` bounds spend.
+ */
+export async function checkSystemAiRateLimit(orgId: string): Promise<string | null> {
+  const redis = getRedis();
+  // Self-contexted for the same reason as checkAiRateLimit (#2190).
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
+  const msgsPerHour = budget?.messagesPerHourPerOrg ?? 200;
+
+  const orgResult = await rateLimiter(redis, `ai:msg:org:${orgId}`, msgsPerHour, 3600);
+  if (!orgResult.allowed) {
+    return `Organization rate limit exceeded. Try again at ${orgResult.resetAt.toISOString()}`;
   }
   return null;
 }

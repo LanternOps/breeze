@@ -159,7 +159,7 @@
     "disconnectFailed": "Der Anthropic-Schlüssel konnte nicht getrennt werden.",
     "permissionDenied": "Zum Verwalten des KI-Anbieters sind Abrechnungsberechtigungen und Zugriff auf alle Organisationen erforderlich.",
     "loadFailed": "Die Konfiguration des KI-Anbieters konnte nicht geladen werden.",
-    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet derzeit den Plattform-Schlüssel."
+    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung."
   },
   "partnerDefaults": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",

@@ -21,6 +21,7 @@ import { hasCoreAiToolName } from '../services/aiTools';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
+import { buildExtensionAiContext } from '../services/extensionAi';
 
 /**
  * Stage an extension's contributions into an isolated session, through the
@@ -67,6 +68,7 @@ export async function defaultStageExtension(
 
   const context: ExtensionRuntimeContext = {
     db: db as unknown as ExtensionRuntimeContext['db'],
+    ai: buildExtensionAiContext(),
     secrets: {
       encryptForColumn: (table, column, plaintext) =>
         encryptSecret(plaintext, { aad: `${table}.${column}` }) ?? '',

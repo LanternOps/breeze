@@ -159,7 +159,7 @@
     "disconnectFailed": "No se pudo desconectar la clave de Anthropic.",
     "permissionDenied": "Administrar el proveedor de IA requiere permisos de facturación y acceso a todas las organizaciones.",
     "loadFailed": "No se pudo cargar la configuración del proveedor de IA.",
-    "workspaceDisclosure": "El enriquecimiento de contenido de Workspace actualmente usa la clave de la plataforma."
+    "workspaceDisclosure": "El enriquecimiento de contenido de Workspace usa tu proveedor de IA configurado y aparece en tu uso de IA."
   },
   "partnerDefaults": {
     "notSet": "No configurado: las organizaciones se configuran individualmente",
