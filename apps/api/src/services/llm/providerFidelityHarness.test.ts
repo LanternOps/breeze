@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const TEST_API_KEY = 'sk-fidelity-secret-key';
 
-const { anthropicState, sdkState } = vi.hoisted(() => ({
+const { anthropicState, sdkState, safeFetchMock } = vi.hoisted(() => ({
+  safeFetchMock: vi.fn(async () => new Response('{}', { status: 200 })),
   anthropicState: {
     create: vi.fn(),
     constructorOptions: [] as Array<Record<string, unknown>>,
@@ -13,6 +14,12 @@ const { anthropicState, sdkState } = vi.hoisted(() => ({
     queryCalls: [] as Array<Record<string, unknown>>,
     importThrows: null as Error | null,
   },
+}));
+
+vi.mock('../urlSafety', () => ({
+  safeFetch: safeFetchMock,
+  assertSafeUrl: vi.fn(async () => undefined),
+  SsrfBlockedError: class SsrfBlockedError extends Error {},
 }));
 
 vi.mock('@anthropic-ai/sdk', () => {
@@ -108,6 +115,8 @@ function stepByName(result: { steps: Array<{ name: string; ok: boolean; detail?:
 }
 
 beforeEach(() => {
+  safeFetchMock.mockReset();
+  safeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
   anthropicState.create.mockReset();
   anthropicState.constructorOptions.length = 0;
   sdkState.tools.length = 0;
@@ -283,6 +292,36 @@ describe('runFidelityCheck', () => {
     expect(options.baseURL).toBe(INPUT.baseUrl);
     expect(options.authToken).toBe(TEST_API_KEY);
     expect(options.apiKey).toBeNull();
+  });
+
+  it('routes the direct stage through an SSRF-guarded, origin-pinned fetch', async () => {
+    stageOkAnthropic();
+    safeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+
+    await runFidelityCheck(INPUT);
+
+    const guardedFetch = anthropicState.constructorOptions[0]!.fetch as
+      (url: string, init?: RequestInit) => Promise<Response>;
+    expect(typeof guardedFetch).toBe('function');
+
+    await guardedFetch(`${INPUT.baseUrl}/messages`, { method: 'POST', body: '{}' });
+    expect(safeFetchMock).toHaveBeenCalledWith(
+      `${INPUT.baseUrl}/messages`,
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('blocks a redirected or rewritten request to a different origin without dialing', async () => {
+    stageOkAnthropic();
+    await runFidelityCheck(INPUT);
+    safeFetchMock.mockClear();
+
+    const guardedFetch = anthropicState.constructorOptions[0]!.fetch as
+      (url: string, init?: RequestInit) => Promise<Response>;
+
+    await expect(guardedFetch('http://169.254.169.254/latest/meta-data/'))
+      .rejects.toThrow(/egress/i);
+    expect(safeFetchMock).not.toHaveBeenCalled();
   });
 
   it('uses apiKey and nulls authToken in x-api-key mode', async () => {

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, max } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, max } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import {
   llmProviderCatalog,
@@ -7,6 +7,7 @@ import {
   type LlmProviderModelMap,
 } from '../db/schema';
 import { OFFERABLE_AI_MODELS } from './aiCostTracker';
+import { assertSafeUrl } from './urlSafety';
 import { FIDELITY_HARNESS_VERSION } from './llm/providerFidelityHarness';
 
 /**
@@ -18,9 +19,25 @@ import { FIDELITY_HARNESS_VERSION } from './llm/providerFidelityHarness';
 export const CURRENT_HARNESS_VERSION = FIDELITY_HARNESS_VERSION;
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
+/** Bounded so a pathological invalidation storm cannot spin here forever. */
+const MAX_CACHE_LOAD_ATTEMPTS = 3;
+
+interface InflightListedRead {
+  /** The invalidation epoch this read started at. */
+  epoch: number;
+  promise: Promise<ListedProvider[]>;
+}
+
 let listedProvidersCache: ListedProvider[] | null = null;
 let listedProvidersCacheLoadedAt = 0;
-let listedProvidersInflight: Promise<ListedProvider[]> | null = null;
+let listedProvidersInflight: InflightListedRead | null = null;
+/**
+ * Bumped by every invalidation. A read that started before the bump saw
+ * pre-mutation rows, so neither its result nor a cache entry derived from it
+ * may survive — otherwise a delisting that lands mid-read is undone for a
+ * further full TTL, breaking the fail-closed-on-delisting invariant.
+ */
+let listedProvidersCacheEpoch = 0;
 
 export class LlmProviderCatalogError extends Error {
   constructor(
@@ -88,7 +105,17 @@ export interface CatalogRevisionLookup {
 }
 
 function assertOfferableModelMap(modelMap: LlmProviderModelMap): void {
-  const unsupported = Object.keys(modelMap).filter(
+  const modelIds = Object.keys(modelMap);
+  // An empty map trivially satisfies the "every mapped model is verified" gate,
+  // so a revision with no models could be created, activated and listed having
+  // never passed a single fidelity check.
+  if (modelIds.length === 0) {
+    throw new LlmProviderCatalogError(
+      'A catalog revision must map at least one model.',
+      400,
+    );
+  }
+  const unsupported = modelIds.filter(
     (modelId) => !OFFERABLE_AI_MODELS.includes(modelId),
   );
   if (unsupported.length > 0) {
@@ -99,7 +126,19 @@ function assertOfferableModelMap(modelMap: LlmProviderModelMap): void {
   }
 }
 
-function validateBaseUrl(value: string): string {
+/**
+ * Shape checks plus an SSRF policy check on where the host actually resolves.
+ *
+ * The base URL is handed verbatim to an `Anthropic` client that makes real
+ * outbound requests from the API (the MFA-gated `/verify` route), so a URL
+ * pointing at loopback, RFC1918, link-local or cloud-metadata space would turn
+ * that route into an internal-service reader. `assertSafeUrl` rejects IP
+ * literals in blocked ranges without any DNS work and rejects hostnames whose
+ * every record is blocked. It is a policy gate at authoring time, NOT the
+ * rebinding pin — connect-time pinning is what the guarded fetch in the harness
+ * provides for the request that actually leaves the box.
+ */
+async function validateBaseUrl(value: string): Promise<string> {
   const baseUrl = value.trim();
   let parsed: URL;
   try {
@@ -122,7 +161,52 @@ function validateBaseUrl(value: string): string {
     );
   }
 
+  try {
+    await assertSafeUrl(baseUrl);
+  } catch (error) {
+    throw new LlmProviderCatalogError(
+      `Base URL host is not a permitted egress target: ${
+        error instanceof Error ? error.message : 'blocked address'
+      }`,
+      400,
+    );
+  }
+
   return baseUrl;
+}
+
+interface VerificationAttempt {
+  modelId: string;
+  passed: boolean;
+  createdAt: Date;
+}
+
+/**
+ * Latest attempt wins.
+ *
+ * A model counts as verified only when the MOST RECENT attempt for
+ * (revision, model, current harness version) passed. Treating any historical
+ * pass as sufficient means a later failure — a provider that broke tool-calling
+ * after being vetted — can never revoke it, and the revision stays activatable
+ * and listable as "verified". Ties resolve to the failure (fail closed).
+ */
+function latestPassingModels(rows: readonly VerificationAttempt[]): Set<string> {
+  const latest = new Map<string, VerificationAttempt>();
+  for (const row of rows) {
+    const seen = latest.get(row.modelId);
+    if (!seen) {
+      latest.set(row.modelId, row);
+      continue;
+    }
+    const rowAt = row.createdAt.getTime();
+    const seenAt = seen.createdAt.getTime();
+    if (rowAt > seenAt || (rowAt === seenAt && !row.passed)) {
+      latest.set(row.modelId, row);
+    }
+  }
+  return new Set(
+    [...latest.values()].filter((row) => row.passed).map((row) => row.modelId),
+  );
 }
 
 async function loadListedProviders(): Promise<ListedProvider[]> {
@@ -149,53 +233,73 @@ async function loadListedProviders(): Promise<ListedProvider[]> {
 
     if (rows.length === 0) return [];
 
-    const passingRows = await db
+    // Every attempt (not just the passing ones) — the verdict is the LATEST
+    // attempt per model, so a newer failure has to be visible here to beat an
+    // older pass.
+    const attemptRows = await db
       .select({
         revisionId: llmProviderVerifications.revisionId,
         modelId: llmProviderVerifications.modelId,
+        passed: llmProviderVerifications.passed,
+        createdAt: llmProviderVerifications.createdAt,
       })
       .from(llmProviderVerifications)
       .where(and(
         inArray(llmProviderVerifications.revisionId, rows.map((row) => row.revisionId)),
         eq(llmProviderVerifications.harnessVersion, CURRENT_HARNESS_VERSION),
-        eq(llmProviderVerifications.passed, true),
-      ));
+      ))
+      .orderBy(desc(llmProviderVerifications.createdAt));
 
-    const verifiedByRevision = new Map<string, Set<string>>();
-    for (const row of passingRows) {
-      const models = verifiedByRevision.get(row.revisionId) ?? new Set<string>();
-      models.add(row.modelId);
-      verifiedByRevision.set(row.revisionId, models);
+    const attemptsByRevision = new Map<string, VerificationAttempt[]>();
+    for (const row of attemptRows) {
+      const attempts = attemptsByRevision.get(row.revisionId) ?? [];
+      attempts.push(row);
+      attemptsByRevision.set(row.revisionId, attempts);
     }
 
     return rows.map((row) => ({
       ...row,
-      verifiedModels: [...(verifiedByRevision.get(row.revisionId) ?? [])].sort(),
+      verifiedModels: [
+        ...latestPassingModels(attemptsByRevision.get(row.revisionId) ?? []),
+      ].sort(),
     }));
   });
 }
 
 export async function getListedProviders(): Promise<ListedProvider[]> {
-  if (
-    listedProvidersCache
-    && Date.now() - listedProvidersCacheLoadedAt <= CACHE_TTL_MS
-  ) {
-    return listedProvidersCache;
-  }
+  for (let attempt = 0; attempt < MAX_CACHE_LOAD_ATTEMPTS; attempt += 1) {
+    if (
+      listedProvidersCache
+      && Date.now() - listedProvidersCacheLoadedAt <= CACHE_TTL_MS
+    ) {
+      return listedProvidersCache;
+    }
 
-  if (!listedProvidersInflight) {
-    listedProvidersInflight = loadListedProviders()
-      .then((providers) => {
-        listedProvidersCache = providers;
-        listedProvidersCacheLoadedAt = Date.now();
+    if (!listedProvidersInflight) {
+      const epoch = listedProvidersCacheEpoch;
+      const promise = loadListedProviders().then((providers) => {
+        if (listedProvidersCacheEpoch === epoch) {
+          listedProvidersCache = providers;
+          listedProvidersCacheLoadedAt = Date.now();
+        }
         return providers;
-      })
-      .finally(() => {
-        listedProvidersInflight = null;
       });
+      const entry: InflightListedRead = { epoch, promise };
+      listedProvidersInflight = entry;
+      void promise.catch(() => undefined).then(() => {
+        // Identity-checked: an invalidation may already have replaced this
+        // handle, and clearing a NEWER read's handle would re-stampede the DB.
+        if (listedProvidersInflight === entry) listedProvidersInflight = null;
+      });
+    }
+
+    const entry = listedProvidersInflight;
+    const providers = await entry.promise;
+    if (listedProvidersCacheEpoch === entry.epoch) return providers;
+    // A mutation landed mid-read: these rows predate it. Try again.
   }
 
-  return listedProvidersInflight;
+  return loadListedProviders();
 }
 
 export async function getListedProviderByEntryId(entryId: string): Promise<ListedProvider | null> {
@@ -206,6 +310,10 @@ export async function getListedProviderByEntryId(entryId: string): Promise<Liste
 export function invalidateLlmProviderCatalogCache(): void {
   listedProvidersCache = null;
   listedProvidersCacheLoadedAt = 0;
+  // Both halves matter: dropping only the cache leaves an in-flight read free
+  // to repopulate it with pre-mutation rows under a fresh TTL.
+  listedProvidersCacheEpoch += 1;
+  listedProvidersInflight = null;
 }
 
 export async function createCatalogEntry(input: {
@@ -240,7 +348,7 @@ export async function createRevision(input: {
   createdBy: string;
 }): Promise<{ id: string; revision: number }> {
   assertOfferableModelMap(input.modelMap);
-  const baseUrl = validateBaseUrl(input.baseUrl);
+  const baseUrl = await validateBaseUrl(input.baseUrl);
 
   const result = await withSystemDbAccessContext(async () => {
     const [revisionState] = await db
@@ -275,14 +383,18 @@ export async function createRevision(input: {
 
 async function getVerifiedModelsForRevision(revisionId: string): Promise<Set<string>> {
   const rows = await db
-    .select({ modelId: llmProviderVerifications.modelId })
+    .select({
+      modelId: llmProviderVerifications.modelId,
+      passed: llmProviderVerifications.passed,
+      createdAt: llmProviderVerifications.createdAt,
+    })
     .from(llmProviderVerifications)
     .where(and(
       eq(llmProviderVerifications.revisionId, revisionId),
       eq(llmProviderVerifications.harnessVersion, CURRENT_HARNESS_VERSION),
-      eq(llmProviderVerifications.passed, true),
-    ));
-  return new Set(rows.map((row) => row.modelId));
+    ))
+    .orderBy(desc(llmProviderVerifications.createdAt));
+  return latestPassingModels(rows);
 }
 
 function assertAllModelsVerified(modelMap: LlmProviderModelMap, verifiedModels: Set<string>): void {
@@ -467,13 +579,16 @@ export async function getAllCatalogEntriesForAdmin(): Promise<AdminCatalogEntry[
           const revisionVerifications = verifications
             .filter((verification) => verification.revisionId === revision.revisionId)
             .map(({ revisionId: _revisionId, ...verification }) => verification);
-          const verifiedModels = new Set(
+          const verifiedModels = latestPassingModels(
             revisionVerifications
               .filter((verification) => (
                 verification.harnessVersion === CURRENT_HARNESS_VERSION
-                && verification.passed
               ))
-              .map((verification) => verification.modelId),
+              .map((verification) => ({
+                modelId: verification.modelId,
+                passed: verification.passed,
+                createdAt: verification.verifiedAt,
+              })),
           );
           return {
             ...revision,

@@ -701,7 +701,7 @@ export default function LlmProviderCatalog() {
                             {modelId}
                           </label>
                           {row.included && (
-                            <div className="grid grid-cols-5 gap-2">
+                            <div className="grid grid-cols-6 gap-2">
                               <input
                                 data-testid={`llm-catalog-modelmap-${modelId}-providermodel`}
                                 type="text"
@@ -735,6 +735,15 @@ export default function LlmProviderCatalog() {
                                 value={row.cacheReadCentsPerM}
                                 onChange={(e) => updateModelMapRow(modelId, { cacheReadCentsPerM: e.target.value })}
                                 placeholder={t('admin.llmProviderCatalog.revisionForm.modelMap.cacheReadPrice')}
+                                className="border rounded px-2 py-1 text-xs"
+                              />
+                              <input
+                                data-testid={`llm-catalog-modelmap-${modelId}-cachewrite`}
+                                type="number"
+                                min={0}
+                                value={row.cacheWriteCentsPerM}
+                                onChange={(e) => updateModelMapRow(modelId, { cacheWriteCentsPerM: e.target.value })}
+                                placeholder={t('admin.llmProviderCatalog.revisionForm.modelMap.cacheWritePrice')}
                                 className="border rounded px-2 py-1 text-xs"
                               />
                             </div>

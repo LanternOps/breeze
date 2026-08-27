@@ -1,26 +1,48 @@
+/**
+ * Drizzle-mock note: `where()` CAPTURES its condition so the tests can render
+ * it through a real `PgDialect` and assert the emitted predicate + params.
+ * A builder that stubs `.where()` as an identity function asserts nothing —
+ * deleting the WHERE clause from the service leaves such a suite green, which
+ * is exactly how the verification-gating filters shipped unasserted.
+ */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const ENTRY_ID = '11111111-1111-4111-8111-111111111111';
 const REVISION_ID = '22222222-2222-4222-8222-222222222222';
+const OTHER_REVISION_ID = '55555555-5555-4555-8555-555555555555';
 const ADMIN_ID = '33333333-3333-4333-8333-333333333333';
 
-const { dbState, withSystemDbAccessContextMock } = vi.hoisted(() => ({
+const { dbState, withSystemDbAccessContextMock, assertSafeUrlMock } = vi.hoisted(() => ({
+  assertSafeUrlMock: vi.fn(async () => undefined),
   dbState: {
     selectResults: [] as unknown[][],
     insertResults: [] as unknown[][],
     updateResults: [] as unknown[][],
     insertedValues: [] as Array<Record<string, unknown>>,
     updateSets: [] as Array<Record<string, unknown>>,
+    selectWheres: [] as unknown[],
+    gate: null as Promise<void> | null,
   },
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+const dialect = new PgDialect();
+const renderSql = (condition: unknown) => dialect.sqlToQuery(condition as SQL);
+
 function queuedSelectBuilder() {
-  const resolveNext = () => Promise.resolve(dbState.selectResults.shift() ?? []);
+  const resolveNext = async () => {
+    if (dbState.gate) await dbState.gate;
+    return dbState.selectResults.shift() ?? [];
+  };
   const builder: Record<string, unknown> = {};
   builder.from = vi.fn(() => builder);
   builder.innerJoin = vi.fn(() => builder);
-  builder.where = vi.fn(() => builder);
+  builder.where = vi.fn((condition: unknown) => {
+    dbState.selectWheres.push(condition);
+    return builder;
+  });
   builder.orderBy = vi.fn(() => builder);
   builder.limit = vi.fn(resolveNext);
   builder.then = (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) =>
@@ -56,6 +78,11 @@ vi.mock('../db', () => ({
     insert: vi.fn(() => ({ values: vi.fn(queuedInsertBuilder) })),
     update: vi.fn(() => ({ set: vi.fn(queuedUpdateBuilder) })),
   },
+}));
+
+vi.mock('./urlSafety', () => ({
+  assertSafeUrl: assertSafeUrlMock,
+  SsrfBlockedError: class SsrfBlockedError extends Error {},
 }));
 
 vi.mock('./aiCostTracker', () => ({
@@ -98,6 +125,9 @@ const modelMap = {
   },
 };
 
+const T0 = new Date('2026-08-25T10:00:00Z');
+const T1 = new Date('2026-08-25T11:00:00Z');
+
 function queueListedRead() {
   dbState.selectResults.push(
     [{
@@ -111,7 +141,7 @@ function queueListedRead() {
       modelMap,
       dataNote: null,
     }],
-    [{ revisionId: REVISION_ID, modelId: 'claude-sonnet-4-6' }],
+    [{ revisionId: REVISION_ID, modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 }],
   );
 }
 
@@ -122,6 +152,8 @@ beforeEach(() => {
   dbState.updateResults.length = 0;
   dbState.insertedValues.length = 0;
   dbState.updateSets.length = 0;
+  dbState.selectWheres.length = 0;
+  dbState.gate = null;
   invalidateLlmProviderCatalogCache();
 });
 
@@ -151,7 +183,7 @@ describe('LLM provider catalog service', () => {
   it('blocks activation when any mapped model lacks a passing current-harness verification', async () => {
     dbState.selectResults.push(
       [{ id: REVISION_ID, catalogEntryId: ENTRY_ID, modelMap }],
-      [{ modelId: 'claude-sonnet-4-6' }],
+      [{ modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 }],
     );
 
     await expect(activateRevision({ entryId: ENTRY_ID, revisionId: REVISION_ID }))
@@ -163,8 +195,8 @@ describe('LLM provider catalog service', () => {
     dbState.selectResults.push(
       [{ id: REVISION_ID, catalogEntryId: ENTRY_ID, modelMap }],
       [
-        { modelId: 'claude-sonnet-4-6' },
-        { modelId: 'claude-haiku-4-5' },
+        { modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 },
+        { modelId: 'claude-haiku-4-5', passed: true, createdAt: T0 },
       ],
     );
     dbState.updateResults.push([{ id: ENTRY_ID }]);
@@ -172,6 +204,55 @@ describe('LLM provider catalog service', () => {
     await expect(activateRevision({ entryId: ENTRY_ID, revisionId: REVISION_ID }))
       .resolves.toBeUndefined();
     expect(dbState.updateSets[0]).toMatchObject({ activeRevisionId: REVISION_ID });
+  });
+
+  it('scopes the activation gate query to this revision at the current harness version', async () => {
+    dbState.selectResults.push(
+      [{ id: REVISION_ID, catalogEntryId: ENTRY_ID, modelMap }],
+      [
+        { modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 },
+        { modelId: 'claude-haiku-4-5', passed: true, createdAt: T0 },
+      ],
+    );
+    dbState.updateResults.push([{ id: ENTRY_ID }]);
+
+    await activateRevision({ entryId: ENTRY_ID, revisionId: REVISION_ID });
+
+    const gate = renderSql(dbState.selectWheres[1]);
+    expect(gate.sql).toContain('"llm_provider_verifications"."revision_id" = $');
+    expect(gate.sql).toContain('"llm_provider_verifications"."harness_version" = $');
+    expect(gate.params).toEqual([REVISION_ID, CURRENT_HARNESS_VERSION]);
+  });
+
+  it('revokes an earlier pass when the latest attempt for that model failed', async () => {
+    dbState.selectResults.push(
+      [{ id: REVISION_ID, catalogEntryId: ENTRY_ID, modelMap }],
+      [
+        // A newer FAILING attempt must beat the older pass for the same model.
+        { modelId: 'claude-sonnet-4-6', passed: false, createdAt: T1 },
+        { modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 },
+        { modelId: 'claude-haiku-4-5', passed: true, createdAt: T0 },
+      ],
+    );
+
+    await expect(activateRevision({ entryId: ENTRY_ID, revisionId: REVISION_ID }))
+      .rejects.toThrow(/claude-sonnet-4-6/);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('re-verifies a model whose latest attempt passed after an earlier failure', async () => {
+    dbState.selectResults.push(
+      [{ id: REVISION_ID, catalogEntryId: ENTRY_ID, modelMap }],
+      [
+        { modelId: 'claude-sonnet-4-6', passed: true, createdAt: T1 },
+        { modelId: 'claude-sonnet-4-6', passed: false, createdAt: T0 },
+        { modelId: 'claude-haiku-4-5', passed: true, createdAt: T0 },
+      ],
+    );
+    dbState.updateResults.push([{ id: ENTRY_ID }]);
+
+    await expect(activateRevision({ entryId: ENTRY_ID, revisionId: REVISION_ID }))
+      .resolves.toBeUndefined();
   });
 
   it('blocks listing an entry without an active revision', async () => {
@@ -195,6 +276,90 @@ describe('LLM provider catalog service', () => {
     queueListedRead();
     await getListedProviders();
     expect(db.select).toHaveBeenCalledTimes(selectCallsAfterFirstRead * 2);
+  });
+
+  it('reads only listed entries and current-harness verifications for those revisions', async () => {
+    queueListedRead();
+    await getListedProviders();
+
+    const entries = renderSql(dbState.selectWheres[0]);
+    expect(entries.sql).toContain('"llm_provider_catalog"."status" = $');
+    expect(entries.params).toEqual(['listed']);
+
+    const verifications = renderSql(dbState.selectWheres[1]);
+    expect(verifications.sql).toContain('"llm_provider_verifications"."revision_id" in (');
+    expect(verifications.sql).toContain('"llm_provider_verifications"."harness_version" = $');
+    expect(verifications.params).toEqual([REVISION_ID, CURRENT_HARNESS_VERSION]);
+  });
+
+  it('drops a model from verifiedModels when its latest attempt for that revision failed', async () => {
+    dbState.selectResults.push(
+      [{
+        entryId: ENTRY_ID,
+        slug: 'example',
+        name: 'Example',
+        revisionId: REVISION_ID,
+        revision: 1,
+        baseUrl: 'https://llm.example.test/v1',
+        authMode: 'bearer',
+        modelMap,
+        dataNote: null,
+      }],
+      [
+        { revisionId: REVISION_ID, modelId: 'claude-sonnet-4-6', passed: false, createdAt: T1 },
+        { revisionId: REVISION_ID, modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 },
+        { revisionId: REVISION_ID, modelId: 'claude-haiku-4-5', passed: true, createdAt: T0 },
+        // Same model id under a DIFFERENT revision must not leak across.
+        { revisionId: OTHER_REVISION_ID, modelId: 'claude-sonnet-4-6', passed: true, createdAt: T1 },
+      ],
+    );
+
+    const [provider] = await getListedProviders();
+    expect(provider?.verifiedModels).toEqual(['claude-haiku-4-5']);
+  });
+
+  it('discards an in-flight listed-provider read that a mutation invalidated mid-flight', async () => {
+    let release!: () => void;
+    dbState.gate = new Promise<void>((resolve) => { release = resolve; });
+    queueListedRead();
+
+    const inflight = getListedProviders();
+    // The mutation lands while the read is still on the wire; the rows it is
+    // about to see predate the mutation, so they must never become the cache.
+    invalidateLlmProviderCatalogCache();
+    dbState.selectResults.length = 0;
+    dbState.gate = null;
+    release();
+
+    await expect(inflight).resolves.toEqual([]);
+    expect(await getListedProviders()).toEqual([]);
+  });
+
+  it('rejects an empty model map before writing', async () => {
+    await expect(createRevision({
+      entryId: ENTRY_ID,
+      baseUrl: 'https://llm.example.test/v1',
+      authMode: 'bearer',
+      modelMap: {},
+      createdBy: ADMIN_ID,
+    })).rejects.toThrow(/at least one model/i);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a base URL whose host resolves only to private addresses', async () => {
+    assertSafeUrlMock.mockRejectedValueOnce(
+      new Error('all resolved IPs for metadata.internal are private/loopback/link-local'),
+    );
+
+    await expect(createRevision({
+      entryId: ENTRY_ID,
+      baseUrl: 'https://metadata.internal/v1',
+      authMode: 'bearer',
+      modelMap,
+      createdBy: ADMIN_ID,
+    })).rejects.toThrow(/private|blocked|reachable/i);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(assertSafeUrlMock).toHaveBeenCalledWith('https://metadata.internal/v1');
   });
 
   it('rejects model-map keys outside OFFERABLE_AI_MODELS before writing', async () => {

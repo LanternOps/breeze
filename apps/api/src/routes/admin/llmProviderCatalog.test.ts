@@ -31,10 +31,20 @@ vi.mock('../../services/llm/providerFidelityHarness', () => ({
   runFidelityCheck: runFidelityCheckMock,
 }));
 
+const { createAuditLogAsyncMock, captureExceptionMock } = vi.hoisted(() => ({
+  createAuditLogAsyncMock: vi.fn(async () => undefined),
+  captureExceptionMock: vi.fn(),
+}));
+
 vi.mock('../../services/auditService', () => ({
   createAuditLog: vi.fn(async () => undefined),
-  createAuditLogAsync: vi.fn(async () => undefined),
+  createAuditLogAsync: createAuditLogAsyncMock,
 }));
+
+vi.mock('../../services/sentry', async () => {
+  const actual = await vi.importActual<typeof import('../../services/sentry')>('../../services/sentry');
+  return { ...actual, captureException: captureExceptionMock };
+});
 
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
@@ -303,6 +313,83 @@ describe('admin LLM provider catalog routes', () => {
     expect(response.status).toBe(502);
     expect(await response.text()).not.toContain(TEST_API_KEY);
     expect(serviceMocks.recordVerification).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty model map before calling the service', async () => {
+    const response = await jsonRequest(
+      buildApp(platformAdmin),
+      `/admin/llm-provider-catalog/${ENTRY_ID}/revisions`,
+      'POST',
+      { baseUrl: 'https://llm.example.test/v1', authMode: 'bearer', modelMap: {} },
+    );
+
+    expect(response.status).toBe(400);
+    expect(serviceMocks.createRevision).not.toHaveBeenCalled();
+  });
+
+  it('audits the requested status value, not just the method and path', async () => {
+    await jsonRequest(
+      buildApp(platformAdmin),
+      `/admin/llm-provider-catalog/${ENTRY_ID}/status`,
+      'PATCH',
+      { status: 'delisted' },
+    );
+
+    expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'platform_admin.llm_provider_catalog.status_changed',
+      resourceId: ENTRY_ID,
+      details: expect.objectContaining({ status: 'delisted' }),
+      result: 'success',
+    }));
+  });
+
+  it('audits which revision was activated', async () => {
+    await jsonRequest(
+      buildApp(platformAdmin),
+      `/admin/llm-provider-catalog/${ENTRY_ID}/activate`,
+      'POST',
+      { revisionId: REVISION_ID },
+    );
+
+    expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'platform_admin.llm_provider_catalog.revision_activated',
+      resourceId: ENTRY_ID,
+      details: expect.objectContaining({ revisionId: REVISION_ID }),
+      result: 'success',
+    }));
+  });
+
+  it('does not report a passing fidelity check as a provider failure when the write fails', async () => {
+    const writeError = new Error('deadlock detected');
+    serviceMocks.recordVerification.mockRejectedValue(writeError);
+
+    const response = await jsonRequest(
+      buildApp(platformAdmin),
+      `/admin/llm-provider-catalog/revisions/${REVISION_ID}/verify`,
+      'POST',
+      { modelId: 'claude-sonnet-4-6', apiKey: TEST_API_KEY },
+    );
+
+    expect(response.status).toBe(500);
+    const text = await response.text();
+    expect(text).not.toContain(TEST_API_KEY);
+    expect(text).not.toContain('Fidelity check failed');
+    expect(captureExceptionMock).toHaveBeenCalledWith(writeError, undefined, expect.any(Object));
+  });
+
+  it('reports the harness failure to Sentry when the fidelity check throws', async () => {
+    const harnessError = new Error('upstream unreachable');
+    runFidelityCheckMock.mockRejectedValue(harnessError);
+
+    const response = await jsonRequest(
+      buildApp(platformAdmin),
+      `/admin/llm-provider-catalog/revisions/${REVISION_ID}/verify`,
+      'POST',
+      { modelId: 'claude-sonnet-4-6', apiKey: TEST_API_KEY },
+    );
+
+    expect(response.status).toBe(502);
+    expect(captureExceptionMock).toHaveBeenCalledWith(harnessError, undefined, expect.any(Object));
   });
 
   it('rejects malformed model pricing before calling the service', async () => {

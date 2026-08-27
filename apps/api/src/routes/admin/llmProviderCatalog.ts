@@ -14,6 +14,9 @@ import {
   setEntryStatus,
 } from '../../services/llmProviderCatalog';
 import { runFidelityCheck } from '../../services/llm/providerFidelityHarness';
+import { createAuditLogAsync } from '../../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { captureException } from '../../services/sentry';
 
 const entryIdParamSchema = z.object({ entryId: z.string().uuid() });
 const revisionIdParamSchema = z.object({ revisionId: z.string().uuid() });
@@ -35,7 +38,13 @@ const modelMapEntrySchema = z.object({
 const createRevisionSchema = z.object({
   baseUrl: z.string().trim().min(1).max(2048),
   authMode: z.enum(['x-api-key', 'bearer']),
-  modelMap: z.record(z.string().min(1), modelMapEntrySchema),
+  // Non-empty: the activation gate asks "is every mapped model verified?", and
+  // an empty map answers "yes" vacuously — a revision with no models could be
+  // created, activated and listed having never passed a fidelity check.
+  modelMap: z.record(z.string().min(1), modelMapEntrySchema)
+    .refine((map) => Object.keys(map).length > 0, {
+      message: 'modelMap must map at least one model',
+    }),
   dataNote: z.string().max(4000).optional(),
 }).strict();
 
@@ -61,6 +70,35 @@ function mapCatalogError(error: unknown, c: Context) {
 
 function redactSecret(value: string, secret: string): string {
   return value.includes(secret) ? value.replaceAll(secret, '[redacted]') : value;
+}
+
+/**
+ * `platformAdminMiddleware` audits every admin request, but only with method +
+ * path — which makes list and delist indistinguishable in the trail and records
+ * no revision id for an activation. Catalog activation deliberately has no
+ * four-eyes approval (see the plan's Deferred item 1), and the audit trail is
+ * named as part of that mitigation, so the decisive value belongs in `details`.
+ */
+function auditCatalogMutation(
+  c: Context,
+  action: string,
+  entryId: string,
+  details: Record<string, unknown>,
+): void {
+  const auth = c.get('auth');
+  void createAuditLogAsync({
+    orgId: null,
+    actorType: 'user',
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: `platform_admin.llm_provider_catalog.${action}`,
+    resourceType: 'llm_provider_catalog',
+    resourceId: entryId,
+    details,
+    ipAddress: getTrustedClientIpOrUndefined(c),
+    userAgent: c.req.header('user-agent'),
+    result: 'success',
+  });
 }
 
 export const llmProviderCatalogAdminRoutes = new Hono();
@@ -113,6 +151,7 @@ llmProviderCatalogMutationRoutes.post(
     const { revisionId } = c.req.valid('json');
     try {
       await activateRevision({ entryId, revisionId });
+      auditCatalogMutation(c, 'revision_activated', entryId, { revisionId });
       return c.json({ success: true });
     } catch (error) {
       return mapCatalogError(error, c);
@@ -129,6 +168,7 @@ llmProviderCatalogMutationRoutes.patch(
     const { status } = c.req.valid('json');
     try {
       await setEntryStatus({ entryId, status });
+      auditCatalogMutation(c, 'status_changed', entryId, { status });
       return c.json({ success: true });
     } catch (error) {
       return mapCatalogError(error, c);
@@ -153,6 +193,16 @@ llmProviderCatalogMutationRoutes.post(
       return c.json({ error: 'Model is not mapped by this revision.' }, 400);
     }
 
+    // Deliberately two separate try blocks. A single one around both would
+    // report an internal DB write failure to the operator as a 502 "the
+    // provider failed its fidelity check", which is a different diagnosis and
+    // sends them to the wrong place. Neither branch may echo the transient key,
+    // so the error itself is never returned — only Sentry'd.
+    let safeResult: {
+      passed: boolean;
+      steps: Array<{ name: string; ok: boolean; detail?: string }>;
+      harnessVersion: string;
+    };
     try {
       const result = await runFidelityCheck({
         baseUrl: revision.baseUrl,
@@ -160,7 +210,7 @@ llmProviderCatalogMutationRoutes.post(
         providerModel: mappedModel.providerModel,
         apiKey,
       });
-      const safeResult = {
+      safeResult = {
         passed: result.passed,
         steps: result.steps.map((step) => ({
           ...step,
@@ -171,7 +221,15 @@ llmProviderCatalogMutationRoutes.post(
         })),
         harnessVersion: redactSecret(result.harnessVersion, apiKey),
       };
+    } catch (error) {
+      captureException(error, undefined, {
+        route: 'admin.llm_provider_catalog.verify',
+        stage: 'fidelity_check',
+      });
+      return c.json({ error: 'Fidelity check failed.' }, 502);
+    }
 
+    try {
       await recordVerification({
         revisionId,
         modelId,
@@ -182,11 +240,15 @@ llmProviderCatalogMutationRoutes.post(
         },
         verifiedBy: c.get('auth').user.id,
       });
-
-      return c.json(safeResult);
-    } catch {
-      return c.json({ error: 'Fidelity check failed.' }, 502);
+    } catch (error) {
+      captureException(error, undefined, {
+        route: 'admin.llm_provider_catalog.verify',
+        stage: 'record_verification',
+      });
+      return c.json({ error: 'Could not record the verification result.' }, 500);
     }
+
+    return c.json(safeResult);
   },
 );
 
