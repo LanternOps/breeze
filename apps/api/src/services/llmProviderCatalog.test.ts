@@ -101,6 +101,7 @@ import {
   createCatalogEntry,
   createRevision,
   getAllCatalogEntriesForAdmin,
+  getCatalogEntryName,
   getCatalogRevisionById,
   getListedProviders,
   invalidateLlmProviderCatalogCache,
@@ -587,6 +588,21 @@ describe('LLM provider catalog service', () => {
       baseUrl: 'https://llm.example.test/v1',
       authMode: 'bearer',
       modelMap,
+    });
+  });
+
+  describe('getCatalogEntryName (#3922 W4)', () => {
+    it('resolves a name by id independent of listing status', async () => {
+      dbState.selectResults.push([{ name: 'OpenRouter' }]);
+
+      await expect(getCatalogEntryName(ENTRY_ID)).resolves.toBe('OpenRouter');
+      expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null for an id with no matching row', async () => {
+      dbState.selectResults.push([]);
+
+      await expect(getCatalogEntryName(ENTRY_ID)).resolves.toBeNull();
     });
   });
 });

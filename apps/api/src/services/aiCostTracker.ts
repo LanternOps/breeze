@@ -13,6 +13,7 @@ import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
+import { getCatalogEntryName } from './llmProviderCatalog';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -1243,6 +1244,31 @@ export async function getSessionHistory(orgId: string, options: { limit?: number
 }
 
 /**
+ * The catalog entry the org's MOST RECENT session used, or null when that
+ * session ran direct (or the org has no sessions at all) (#3922 W4). Reads the
+ * raw `catalog_entry_id` stamped on session create
+ * ({@link streamingSessionManager.ts}) — independent of the entry's current
+ * listing status, since a delisted-but-previously-used endpoint should still
+ * be nameable on the usage page.
+ *
+ * Deliberately NOT filtered to sessions that have a catalog entry: the usage
+ * page renders this in the present tense ("Billed to your key via <name>"), so
+ * narrowing to catalog-routed sessions would pin the note to the last endpoint
+ * ever used and keep asserting it after the partner switched back to Anthropic
+ * (direct) or to a different endpoint — a misstatement that never self-corrects
+ * on the exact surface this wave designates for routing provenance.
+ */
+async function getRecentCatalogEntryIdForOrg(orgId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ catalogEntryId: aiSessions.catalogEntryId })
+    .from(aiSessions)
+    .where(eq(aiSessions.orgId, orgId))
+    .orderBy(desc(aiSessions.lastActivityAt))
+    .limit(1);
+  return row?.catalogEntryId ?? null;
+}
+
+/**
  * Get usage summary for an org.
  */
 export async function getUsageSummary(orgId: string): Promise<{
@@ -1257,6 +1283,9 @@ export async function getUsageSummary(orgId: string): Promise<{
     approvalMode: string;
   } | null;
   billedTo: AiBillingSource;
+  /** Name of the catalog endpoint the org's most recent session used, or null
+   *  for direct-Anthropic / platform-key traffic (#3922 W4). */
+  catalogEndpointName: string | null;
 }> {
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -1282,6 +1311,14 @@ export async function getUsageSummary(orgId: string): Promise<{
 
   const billedTo = await getLlmBillingSourceForOrg(orgId);
 
+  // Only worth a lookup when traffic is actually billed to the partner's own
+  // key — platform-key orgs never stamp a catalog_entry_id on their sessions.
+  let catalogEndpointName: string | null = null;
+  if (billedTo === 'partner_key') {
+    const entryId = await getRecentCatalogEntryIdForOrg(orgId);
+    if (entryId) catalogEndpointName = await getCatalogEntryName(entryId);
+  }
+
   return {
     daily: {
       inputTokens: dailyUsage?.inputTokens ?? 0,
@@ -1304,5 +1341,6 @@ export async function getUsageSummary(orgId: string): Promise<{
       approvalMode: budget.approvalMode ?? 'per_step',
     } : null,
     billedTo,
+    catalogEndpointName,
   };
 }

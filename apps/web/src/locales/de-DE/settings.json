@@ -159,7 +159,22 @@
     "disconnectFailed": "Der Anthropic-Schlüssel konnte nicht getrennt werden.",
     "permissionDenied": "Zum Verwalten des KI-Anbieters sind Abrechnungsberechtigungen und Zugriff auf alle Organisationen erforderlich.",
     "loadFailed": "Die Konfiguration des KI-Anbieters konnte nicht geladen werden.",
-    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung."
+    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
+    "endpointCardTitle": "Endpunkt",
+    "endpointCardSubtitle": "Wählen Sie, wohin Ihr KI-Datenverkehr gesendet wird. Breeze prüft jede Option, bevor sie hier erscheint.",
+    "directOptionLabel": "Anthropic (direkt)",
+    "verifiedModelsLabel": "Verifizierte Modelle: {{models}}",
+    "noVerifiedModels": "Noch keine verifizierten Modelle",
+    "viewDataNote": "Datenschutzhinweis anzeigen",
+    "hideDataNote": "Datenschutzhinweis ausblenden",
+    "confirmDialogTitle": "Zu {{name}} wechseln?",
+    "confirmDialogMessageWithNote": "Bevor Ihr KI-Datenverkehr über {{name}} läuft, prüfen Sie, wie Ihre Daten verarbeitet werden:",
+    "confirmDialogMessageNoNote": "Ihren KI-Datenverkehr zu {{name}} wechseln?",
+    "consentCheckboxLabel": "Ich verstehe, dass mein KI-Datenverkehr und meine Inhalte von {{name}} verarbeitet werden",
+    "endpointUpdated": "KI-Endpunkt aktualisiert.",
+    "endpointUpdateFailed": "Der KI-Endpunkt konnte nicht aktualisiert werden.",
+    "endpointDelistedBanner": "Dieser Endpunkt wurde von Breeze aus der Liste entfernt — die KI ist pausiert, bis Sie einen anderen auswählen",
+    "endpointModelUnverifiedBanner": "Das Modell {{model}} ist für diesen Endpunkt nicht verifiziert. Wählen Sie ein anderes Modell oder einen anderen Endpunkt, um die KI fortzusetzen."
   },
   "partnerDefaults": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
@@ -1305,7 +1320,8 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tools der Stufe 2 werden automatisch mit Audit-Protokollierung ausgeführt. Werkzeuge der Stufe 3 sind weiterhin genehmigungspflichtig.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Wie ein Aktionsplan, plus Live-Screenshots zwischen den Schritten und eine dauerhafte Stopp-Schaltfläche.",
     "untitled": "Ohne Titel",
-    "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben"
+    "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
+    "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}} — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben"
   },
   "aiAgentsPage": {
     "title": "KI-Agenten",
