@@ -104,4 +104,49 @@ describe('alert.triggered redelivery cannot double-notify', () => {
       warnSpy.mockRestore();
     });
   });
+
+  describe('(d) failed-job recovery on a duplicate jobId', () => {
+    // BullMQ returns the EXISTING job for a duplicate id without enqueuing a
+    // new one. Before #4085, a redelivered alert.triggered landing on a
+    // previously-FAILED process-alert hash was a silent permanent drop — the
+    // job just sat there failed forever, since nothing ever called retry().
+    it('retries the returned job when its state is failed', async () => {
+      const retry = vi.fn().mockResolvedValue(undefined);
+      const failedJob = { id: 'job-1', getState: vi.fn().mockResolvedValue('failed'), retry };
+      queueAddMock.mockResolvedValueOnce(failedJob);
+
+      await dispatchAlertNotifications('alert-1', 'event-1');
+
+      expect(failedJob.getState).toHaveBeenCalledTimes(1);
+      expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry a job that is not in the failed state', async () => {
+      const retry = vi.fn().mockResolvedValue(undefined);
+      const waitingJob = { id: 'job-1', getState: vi.fn().mockResolvedValue('waiting'), retry };
+      queueAddMock.mockResolvedValueOnce(waitingJob);
+
+      await dispatchAlertNotifications('alert-1', 'event-1');
+
+      expect(retry).not.toHaveBeenCalled();
+    });
+
+    it('swallows a retry race (e.g. the job was purged between getState and retry) instead of throwing', async () => {
+      const retry = vi.fn().mockRejectedValue(new Error('job not found'));
+      const failedJob = { id: 'job-1', getState: vi.fn().mockResolvedValue('failed'), retry };
+      queueAddMock.mockResolvedValueOnce(failedJob);
+
+      await expect(dispatchAlertNotifications('alert-1', 'event-1')).resolves.toBeUndefined();
+      expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    it('swallows a getState failure the same way (benign — do not throw)', async () => {
+      const retry = vi.fn();
+      const flakyJob = { id: 'job-1', getState: vi.fn().mockRejectedValue(new Error('redis blip')), retry };
+      queueAddMock.mockResolvedValueOnce(flakyJob);
+
+      await expect(dispatchAlertNotifications('alert-1', 'event-1')).resolves.toBeUndefined();
+      expect(retry).not.toHaveBeenCalled();
+    });
+  });
 });

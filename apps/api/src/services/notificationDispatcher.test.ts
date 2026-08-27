@@ -447,4 +447,54 @@ describe('processSendNotification send-identity state machine', () => {
     expect(result.success).toBe(false);
     expect(insertValuesMock).not.toHaveBeenCalled();
   });
+
+  describe('(b) escalation status guard — reloads the alert at fire time', () => {
+    it('skips egress and touches no alert_notifications row when the alert is no longer active (acknowledged)', async () => {
+      // Only the alert re-load is consumed — the guard fires before the
+      // channel lookup, the send-identity insert/claim, or any DB write.
+      selectResults.push([makeAlert({ status: 'acknowledged' })]);
+
+      const result = await processSendNotification({ ...baseData, escalationStep: 1 });
+
+      expect(result.success).toBe(true);
+      expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
+      expect(insertValuesMock).not.toHaveBeenCalled();
+      expect(updateWhereMock).not.toHaveBeenCalled();
+      expect(selectWheres).toHaveLength(1);
+    });
+
+    it('skips egress when the alert has since resolved', async () => {
+      selectResults.push([makeAlert({ status: 'resolved' })]);
+
+      const result = await processSendNotification({ ...baseData, escalationStep: 2 });
+
+      expect(result.success).toBe(true);
+      expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
+      expect(insertValuesMock).not.toHaveBeenCalled();
+    });
+
+    it('still sends an escalation step when the alert is active', async () => {
+      queuePrepareSelects(makeAlert({ status: 'active' }));
+      insertReturningMock.mockResolvedValueOnce([makeNotificationRow({ escalationStep: 1 })]);
+      queueDeviceOrgSelects();
+      sendWebhookNotificationMock.mockResolvedValue({ success: true });
+
+      const result = await processSendNotification({ ...baseData, escalationStep: 1 });
+
+      expect(result.success).toBe(true);
+      expect(sendWebhookNotificationMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not apply the active-status guard to a baseline send (escalationStep 0/undefined)', async () => {
+      queuePrepareSelects(makeAlert({ status: 'acknowledged' }));
+      insertReturningMock.mockResolvedValueOnce([makeNotificationRow()]);
+      queueDeviceOrgSelects();
+      sendWebhookNotificationMock.mockResolvedValue({ success: true });
+
+      const result = await processSendNotification(baseData);
+
+      expect(result.success).toBe(true);
+      expect(sendWebhookNotificationMock).toHaveBeenCalledTimes(1);
+    });
+  });
 });

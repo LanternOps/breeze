@@ -174,6 +174,17 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     return { queued: 0, inAppSent: false, durationMs: Date.now() - startTime };
   }
 
+  // Durable status guard (#4085): `cancelAlertEscalations` only removes jobs
+  // that are DELAYED at the moment it runs — an optimization, not the
+  // correctness mechanism. Under queue delivery, `alert.resolved` can
+  // process before a retried `alert.triggered` delivery, which would
+  // otherwise re-fan-out the whole baseline notification set for an alert
+  // that is already closed. Acknowledged still gets the baseline — only
+  // escalations are cancelled on ack (today's semantics, preserved).
+  if (alert.status === 'resolved') {
+    return { queued: 0, inAppSent: false, durationMs: Date.now() - startTime };
+  }
+
   // Get device info for in-app notification
   const [device] = await db
     .select()
@@ -296,6 +307,16 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       backoff: { type: 'exponential' as const, delay: 30_000 }, // 30s, 60s (2 retries)
       removeOnComplete: true,
       removeOnFail: { count: 100 },
+      // Stable per-(alert, channel) id for the baseline (step 0) send (#4085):
+      // without this, a retried `process-alert` job (attempts:3 on the
+      // process-alert job itself) re-runs this whole addBulk and duplicates
+      // the entire baseline fan-out — every channel gets a second email/SMS/
+      // Slack/webhook/PagerDuty/Pushover send. BullMQ returns the existing
+      // job for a duplicate id instead of enqueuing a second one, so the
+      // retry collapses onto the same job. Escalation sends already have a
+      // stable jobId (`escalation-<alertId>-step<n>-<channelId>`) — this
+      // gives baseline sends the same property.
+      jobId: `alert-send-${data.alertId}-${channelId}-0`
     }
   }));
 
@@ -399,6 +420,29 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       } satisfies PrepareSendResult;
     }
 
+    // Durable status guard for escalation sends (#4085): `cancelAlertEscalations`
+    // only removes jobs that are DELAYED at the moment it runs — an
+    // optimization, not the correctness mechanism. An escalation step is a
+    // delayed job scheduled minutes/hours ahead; by the time it fires, the
+    // alert may have been acknowledged (that is what cancel-on-ack is meant
+    // to express) or resolved. Re-load the alert fresh right here (the
+    // select above IS that reload — no second query needed) and skip egress
+    // for anything but 'active'. This runs BEFORE the send-identity
+    // insert/claim below, so a skipped escalation never touches or creates
+    // an alert_notifications row. `success: true` resolves the BullMQ job
+    // cleanly — this is an intentional skip, not a failure to retry.
+    const escalationStep = data.escalationStep ?? 0;
+    if (escalationStep >= 1 && alert.status !== 'active') {
+      console.log(
+        `[NotificationDispatcher] Skipping escalation step ${escalationStep} for alert ${data.alertId} `
+        + `— status is '${alert.status}', not 'active'`
+      );
+      return {
+        send: false,
+        result: { success: true, channelType: 'unknown' }
+      } satisfies PrepareSendResult;
+    }
+
     // Get channel — the alert org's own, or a partner-wide channel owned by
     // that org's partner (#2130).
     const sendOrgPartnerId = await partnerIdForOrg(alert.orgId);
@@ -433,8 +477,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
     // load-bearing — an explicit `escalationStep: null` must still collapse
     // onto step 0; a schema column default alone would not stop it, because
     // Drizzle sends the literal `null` rather than omitting the key (#4085).
-    const escalationStep = data.escalationStep ?? 0;
-
+    // (`escalationStep` itself is computed above, ahead of the status guard.)
     const [insertedRecord] = await db
       .insert(alertNotifications)
       .values({
@@ -1209,7 +1252,18 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
         },
         {
           delay: delayMs,
-          jobId: `escalation-${alertId}-step${i + 1}-${channelId}`
+          jobId: `escalation-${alertId}-step${i + 1}-${channelId}`,
+          // Carried from the Task 8 review (#4085): now that a transport
+          // failure in processSendNotification THROWS (so BullMQ's
+          // attempts+backoff can actually retry it), a failing escalation
+          // send with no `attempts`/`removeOnFail` of its own becomes a
+          // permanently-retained failed job hash with ZERO retries — the
+          // stable jobId then stays occupied forever and nothing ever
+          // re-fires that escalation step.
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 30_000 },
+          removeOnComplete: true,
+          removeOnFail: { age: 3600 }
         }
       );
     }
@@ -1252,7 +1306,7 @@ export async function dispatchAlertNotifications(
 ): Promise<void> {
   const queue = getNotificationQueue();
 
-  await queue.add(
+  const job = await queue.add(
     'process-alert',
     {
       type: 'process-alert',
@@ -1287,6 +1341,29 @@ export async function dispatchAlertNotifications(
       removeOnFail: { age: 3600 }
     }
   );
+
+  // Failed-job recovery (#4085): `queue.add` returns the EXISTING job for a
+  // duplicate id WITHOUT enqueuing — it does not re-run a failed job. Before
+  // this, a redelivered alert.triggered landing on a previously-FAILED
+  // process-alert hash (still retained for up to an hour by the
+  // age-bounded removeOnFail above) was a silent permanent drop: the
+  // redelivery that exists specifically to recover the failure never
+  // notified anyone. Explicitly retry a failed job on every duplicate add.
+  try {
+    const state = await job.getState();
+    if (state === 'failed') {
+      await job.retry();
+    }
+  } catch (err) {
+    // Benign races: the job could be removed/reaped between getState() and
+    // retry() (e.g. the removeOnFail age purge), or getState() itself can
+    // transiently fail. Either way this must not fail the whole dispatch —
+    // log and move on.
+    console.warn(
+      `[NotificationDispatcher] Failed to retry job ${job.id} for alert ${alertId} after duplicate-id failed-state check:`,
+      err
+    );
+  }
 }
 
 /**
