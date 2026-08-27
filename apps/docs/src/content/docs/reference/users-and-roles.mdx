@@ -333,6 +333,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `organizations` | Organisation CRUD |
 | `sites` | Site management |
 | `remote` | Remote access sessions |
+| `ai_agents` | AI agent configuration and runs |
 
 The authoritative list of assignable permissions is also available at runtime via `GET /permissions/catalog`. The dashboard's role builder consumes this endpoint so the matrix of resources and actions stays in sync with the server whenever new permissions are added.
 
@@ -347,6 +348,10 @@ The authoritative list of assignable permissions is also available at runtime vi
 | `execute` | Run scripts, commands, remote sessions |
 
 Additionally, the wildcard permission `*:*` grants full administrative access.
+
+<Aside type="note">
+  `ai_agents:read` and `ai_agents:write` are deliberately separate from `organizations:write`. Authoring an agent policy is what will eventually authorize autonomous action on customer machines, so it is not bundled into a permission every organisation admin already holds. See [AI Agents](/features/ai-agents/).
+</Aside>
 
 <Aside type="note">
   The `users:invite` permission is required to invite new users and is separate from `users:write`. The `users:read` permission is required to list users **and** roles.
