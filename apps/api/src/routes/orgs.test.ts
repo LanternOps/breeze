@@ -34,6 +34,25 @@ vi.mock('../services/archivedOrgReads', () => ({
   loadArchivedOrg: vi.fn(async () => null)
 }));
 
+// Per-org selection boundary (Wave 4 review fix I-1). The mock mirrors the
+// real resolver's fail-closed rules (its own suite is
+// services/partnerOrgSelection.test.ts) so existing 'all'-access cases need no
+// wiring, and a 'selected' case only sets `selectedOrgIds`.
+const { selectedOrgIds } = vi.hoisted(() => ({ selectedOrgIds: { current: [] as string[] } }));
+vi.mock('../services/partnerOrgSelection', () => ({
+  resolvePartnerOrgReach: vi.fn(async (auth: any) => {
+    if (!auth.partnerId) return { kind: 'none' };
+    if (auth.partnerOrgAccess === 'all') return { kind: 'allOfPartner' };
+    if (auth.partnerOrgAccess === 'selected') return { kind: 'selection', orgIds: selectedOrgIds.current };
+    return { kind: 'none' };
+  }),
+  partnerMemberMayReachOrg: vi.fn(async (auth: any, orgId: string) => {
+    if (auth.partnerOrgAccess === 'all') return true;
+    if (auth.partnerOrgAccess === 'selected') return selectedOrgIds.current.includes(orgId);
+    return false;
+  })
+}));
+
 vi.mock('../services/ipAllowlist', () => ({
   clearPartnerAllowlistCache: vi.fn(),
   ipAllowlistMode: vi.fn(() => 'enforce'),
@@ -323,6 +342,7 @@ describe('org routes', () => {
     vi.clearAllMocks();
     permissionMockState.granted = true;
     permissionMockState.denied.clear();
+    selectedOrgIds.current = [];
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
@@ -1828,6 +1848,41 @@ describe('org routes', () => {
         expect(listArchivedOrgs).not.toHaveBeenCalled();
         expect((await res.json()).data).toEqual([]);
       });
+
+      // Review fix I-1: archived orgs are absent from accessibleOrgIds for
+      // EVERY member, so partner-id-only scoping meant archiving an org WIDENED
+      // who could read its full row (settings blob included) to techs who were
+      // 404'd on it the day before.
+      it("narrows the archived read to a 'selected' member's own selection", async () => {
+        selectedOrgIds.current = ['org-archived-mine'];
+        setAuthContext({
+          scope: 'partner', partnerId: 'partner-123',
+          partnerOrgAccess: 'selected', accessibleOrgIds: ['org-1']
+        });
+        mockOnePartnerPage(['org-1']);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({ orgs: [], truncated: false });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).toHaveBeenCalledWith({
+          scope: { kind: 'partnerSelection', partnerId: 'partner-123', orgIds: ['org-archived-mine'] },
+          search: undefined,
+          limit: 10
+        });
+      });
+
+      it("reads nothing at all for an org_access='none' member", async () => {
+        setAuthContext({
+          scope: 'partner', partnerId: 'partner-123',
+          partnerOrgAccess: 'none', accessibleOrgIds: []
+        });
+
+        const res = await app.request('/orgs/organizations?includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+      });
     });
 
     // The grouped count is ONE query for the whole page, not a per-row
@@ -2366,6 +2421,43 @@ describe('org routes', () => {
         orgId: '99999999-9999-9999-9999-999999999999',
         scope: { kind: 'partner', partnerId: 'partner-123' }
       });
+    });
+
+    it("scopes the archived detail probe to a 'selected' member's selection", async () => {
+      selectedOrgIds.current = ['77777777-7777-7777-7777-777777777777'];
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        partnerOrgAccess: 'selected',
+        accessibleOrgIds: ['org-1'],
+        canAccessOrg: (orgId) => orgId === 'org-1'
+      });
+
+      await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(loadArchivedOrg).toHaveBeenCalledWith({
+        orgId: '77777777-7777-7777-7777-777777777777',
+        scope: {
+          kind: 'partnerSelection',
+          partnerId: 'partner-123',
+          orgIds: ['77777777-7777-7777-7777-777777777777']
+        }
+      });
+    });
+
+    it("does not probe the archived door at all for an org_access='none' member", async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        partnerOrgAccess: 'none',
+        accessibleOrgIds: [],
+        canAccessOrg: () => false
+      });
+
+      const res = await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(res.status).toBe(404);
+      expect(loadArchivedOrg).not.toHaveBeenCalled();
     });
 
     it('serves an archived org of the caller partner through the read-only archived context', async () => {

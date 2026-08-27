@@ -76,6 +76,14 @@ vi.mock('../services/orgArchive', () => {
   };
 });
 
+// The per-org selection boundary (review fix C-B) is a separate system-context
+// read; mocked here so the db fixture above stays the org row only. Its own
+// fail-closed behaviour is covered by services/partnerOrgSelection.test.ts.
+const { mayReachOrgMock } = vi.hoisted(() => ({ mayReachOrgMock: vi.fn(async () => true) }));
+vi.mock('../services/partnerOrgSelection', () => ({
+  partnerMemberMayReachOrg: mayReachOrgMock,
+}));
+
 const { permissionAllowed } = vi.hoisted(() => ({
   permissionAllowed: { current: true },
 }));
@@ -120,6 +128,7 @@ type FakeAuth = {
   token: { mfa?: boolean };
   scope: 'system' | 'partner' | 'organization';
   partnerId: string | null;
+  partnerOrgAccess: 'all' | 'selected' | 'none' | null;
   orgId?: string | null;
   canAccessOrg: (orgId: string) => boolean;
 };
@@ -130,6 +139,7 @@ function setAuthContext(overrides: Partial<FakeAuth> = {}) {
     token: { mfa: true },
     scope: 'partner',
     partnerId: PARTNER_ID,
+    partnerOrgAccess: 'all',
     orgId: null,
     canAccessOrg: () => true,
     ...overrides,
@@ -166,6 +176,7 @@ describe('org archive routes', () => {
         status: 'active',
       },
     ];
+    mayReachOrgMock.mockResolvedValue(true);
     beginOrgArchiveMock.mockResolvedValue({ status: 'offboarding', purgeAt: PURGE_AT });
     restoreOrgFromArchiveMock.mockResolvedValue({
       recreateRequired: ['Agents that completed the archive uninstall must be re-enrolled.'],
@@ -261,6 +272,9 @@ describe('org archive routes', () => {
     });
 
     it('does not use canAccessOrg for a same-partner suspended target', async () => {
+      // canAccessOrg is false for EVERY member on a suspended/archived target
+      // (computeAccessibleOrgIds allowlists active|trial), so it cannot be the
+      // boundary here — the raw partner_users selection is (see below).
       orgRows.current[0]!.status = 'suspended';
       setAuthContext({ canAccessOrg: () => false });
       const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
@@ -446,6 +460,62 @@ describe('org archive routes', () => {
 
       expect(res.status).toBe(403);
       expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+    });
+  });
+  // ── per-org selection boundary (review fix C-B / I-1) ────────────────────
+  // Every adjacent destructive org route enforces the partner member's
+  // org_access='selected' allowlist (DELETE /organizations/:id via
+  // canAccessOrg, orgMerge on the survivor, canApplySuspendedOrgLifecycleTransition
+  // by re-reading partner_users.org_ids). Archive/restore did not — so a tech
+  // whose selection excludes customer C could drain C's fleet and schedule its
+  // permanent erasure, or undo an archive their admin started.
+  describe('org_access=selected boundary', () => {
+    it.each(['archive', 'restore'])(
+      '404s %s for a same-partner org outside the selection',
+      async (action) => {
+        setAuthContext({ partnerOrgAccess: 'selected', canAccessOrg: () => false });
+        mayReachOrgMock.mockResolvedValue(false);
+
+        const res = await postJson(`/orgs/organizations/${ORG_ID}/${action}`, {});
+
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Organization not found' });
+        expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+        expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows archive for an org INSIDE the selection', async () => {
+      setAuthContext({ partnerOrgAccess: 'selected', canAccessOrg: () => false });
+      mayReachOrgMock.mockResolvedValue(true);
+
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(202);
+      expect(mayReachOrgMock).toHaveBeenCalledWith(
+        expect.objectContaining({ partnerOrgAccess: 'selected', partnerId: PARTNER_ID }),
+        ORG_ID,
+      );
+    });
+
+    it('allows restore for an org INSIDE the selection', async () => {
+      orgRows.current[0]!.status = 'archived';
+      setAuthContext({ partnerOrgAccess: 'selected', canAccessOrg: () => false });
+      mayReachOrgMock.mockResolvedValue(true);
+
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(200);
+    });
+
+    it('does not consult the selection for system scope', async () => {
+      orgRows.current[0]!.status = 'archived';
+      setAuthContext({ scope: 'system', partnerId: null, partnerOrgAccess: null });
+
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(200);
+      expect(mayReachOrgMock).not.toHaveBeenCalled();
     });
   });
 });

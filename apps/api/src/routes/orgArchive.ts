@@ -23,6 +23,7 @@ import {
   OrgArchiveStateError,
   restoreOrgFromArchive,
 } from '../services/orgArchive';
+import { partnerMemberMayReachOrg } from '../services/partnerOrgSelection';
 import { PERMISSIONS } from '../services/permissions';
 
 export const orgArchiveRoutes = new Hono();
@@ -93,6 +94,21 @@ async function authorizeArchiveTarget(
   const partnerId =
     auth.scope === 'partner' ? auth.partnerId! : organization.partnerId;
   if (organization.partnerId !== partnerId) {
+    return { ok: false, status: 404, error: 'Organization not found' };
+  }
+
+  // Partner ownership is NOT the whole boundary. A member with
+  // `org_access='selected'` (or `'none'`) shares this partner yet may hold no
+  // rights to this org at all — and because archive/restore targets are
+  // deliberately outside `accessibleOrgIds`, `auth.canAccessOrg()` cannot say
+  // so: it returns false for every member of the partner. So consult the RAW
+  // selection, which is the one source that survives archival, exactly as
+  // `canApplySuspendedOrgLifecycleTransition` does for the suspended case.
+  // Without this, any partner member holding `orgs:write` + MFA could drain,
+  // archive and schedule the permanent erasure of a customer they cannot even
+  // open — or undo an archive their partner admin deliberately started.
+  // Indistinguishable from "not found", so it is never an existence oracle.
+  if (auth.scope === 'partner' && !(await partnerMemberMayReachOrg(auth, orgId))) {
     return { ok: false, status: 404, error: 'Organization not found' };
   }
 

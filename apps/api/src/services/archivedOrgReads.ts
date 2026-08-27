@@ -75,12 +75,37 @@ export interface ArchivedOrgListResult {
  * forgotten `?? null` away from a cross-tenant read, and this door is opened
  * from request handlers. `allPartners` is reachable only from system scope.
  */
+/**
+ * `partnerSelection` is the `org_access='selected'` member: partner ownership
+ * PLUS the member's raw `partner_users.org_ids` list. It is a separate variant
+ * rather than an optional `orgIds?: string[]` on `partner` for the same reason
+ * the union exists at all — an optional allowlist is one forgotten `??` away
+ * from widening the read, and archiving an org must never make it visible to
+ * someone who was 404'd on it the day before.
+ */
 export type ArchivedOrgScope =
   | { kind: 'partner'; partnerId: string }
+  | { kind: 'partnerSelection'; partnerId: string; orgIds: string[] }
   | { kind: 'allPartners' };
 
 function partnerCondition(scope: ArchivedOrgScope): SQL | undefined {
-  return scope.kind === 'partner' ? eq(organizations.partnerId, scope.partnerId) : undefined;
+  if (scope.kind === 'allPartners') return undefined;
+  if (scope.kind === 'partner') return eq(organizations.partnerId, scope.partnerId);
+  // An empty selection is an explicit impossible predicate, never `undefined`:
+  // `inArray(col, [])` is safe in current drizzle, but a `where(undefined)`
+  // left behind by a future edit would select every partner's archived orgs.
+  if (scope.orgIds.length === 0) return sql`false`;
+  return and(
+    eq(organizations.partnerId, scope.partnerId),
+    inArray(organizations.id, scope.orgIds),
+  );
+}
+
+/** Does this scope admit one specific archived org id? */
+function scopeAdmitsOrg(scope: ArchivedOrgScope, target: { id: string; partnerId: string }): boolean {
+  if (scope.kind === 'allPartners') return true;
+  if (target.partnerId !== scope.partnerId) return false;
+  return scope.kind === 'partner' || scope.orgIds.includes(target.id);
 }
 
 function searchCondition(search: string | undefined): SQL | undefined {
@@ -204,7 +229,9 @@ export async function loadArchivedOrg(input: {
   if (target.status !== 'archived') return null;
   if (target.deletedAt !== null) return null;
   if (target.type === 'quick_support') return null;
-  if (input.scope.kind === 'partner' && target.partnerId !== input.scope.partnerId) return null;
+  // Partner ownership AND, for a 'selected' member, the raw selection —
+  // archiving an org must not widen who can read its full row.
+  if (!scopeAdmitsOrg(input.scope, target)) return null;
 
   const [row] = await runOutsideDbContext(() =>
     withArchivedOrgReadContext([input.orgId], () =>

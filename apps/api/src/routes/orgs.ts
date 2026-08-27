@@ -29,6 +29,7 @@ import {
   loadArchivedOrg,
   type ArchivedOrgScope,
 } from '../services/archivedOrgReads';
+import { resolvePartnerOrgReach } from '../services/partnerOrgSelection';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
@@ -1224,15 +1225,23 @@ function isFinalOrganizationsPage(offset: number, pageLength: number, total: num
  * every other partner-scoped query in this file already assumes (the org-order
  * settings read, `resolveAuditOrgIdForPartner`, the list predicate itself).
  */
-function resolveArchivedOrgScope(
-  auth: Pick<AuthContext, 'scope' | 'partnerId'>,
+async function resolveArchivedOrgScope(
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess' | 'user'>,
   queryPartnerId: string | undefined,
-): ArchivedOrgScope | null {
+): Promise<ArchivedOrgScope | null> {
   if (auth.scope === 'system') {
     return queryPartnerId ? { kind: 'partner', partnerId: queryPartnerId } : { kind: 'allPartners' };
   }
-  if (auth.scope === 'partner' && auth.partnerId) {
-    return { kind: 'partner', partnerId: auth.partnerId };
+  if (auth.scope !== 'partner' || !auth.partnerId) return null;
+  // Archived orgs are absent from accessibleOrgIds by design, so the caller's
+  // per-org selection has to come from the raw partner_users.org_ids list —
+  // otherwise archiving an org WIDENS who can read it (full row incl. the
+  // settings blob) to every member of the partner, including one who was 404'd
+  // on that same org the day before. 'none'/unresolved fails closed to null.
+  const reach = await resolvePartnerOrgReach(auth);
+  if (reach.kind === 'allOfPartner') return { kind: 'partner', partnerId: auth.partnerId };
+  if (reach.kind === 'selection') {
+    return { kind: 'partnerSelection', partnerId: auth.partnerId, orgIds: reach.orgIds };
   }
   return null;
 }
@@ -1298,7 +1307,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // partner-scope caller is hard-pinned to its own verified partner id; a
   // partner token with no partnerId gets nothing rather than every partner's.
   const archivedScope = includeArchived === 'true'
-    ? resolveArchivedOrgScope(auth, queryPartnerId)
+    ? await resolveArchivedOrgScope(auth, queryPartnerId)
     : null;
 
   // The hidden 'quick_support' org is inside accessibleOrgIds by design (RLS),
@@ -1735,7 +1744,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   // "other partner" into the same null as "not archived", so a cross-partner id
   // still 404s and never becomes an existence oracle.
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
-    const archivedScope = resolveArchivedOrgScope(auth, undefined);
+    const archivedScope = await resolveArchivedOrgScope(auth, undefined);
     const archived = archivedScope
       ? await loadArchivedOrg({ orgId: id, scope: archivedScope })
       : null;
