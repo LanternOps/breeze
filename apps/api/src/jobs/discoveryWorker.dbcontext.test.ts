@@ -258,4 +258,33 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     ]);
     warn.mockRestore();
   });
+
+  it('reopens a short context for the post-dispatch markJobFailed when the outcome is not sent', async () => {
+    // A contextless UPDATE here would be an RLS-denied silent no-op in prod
+    // (0 rows, no error) — the job would sit 'pending' forever. Lock the
+    // depth-1 requirement down the same way backupWorker.dbcontext.test.ts does.
+    mockDb.select
+      .mockReturnValueOnce(selectLimitChain([PROFILE_ROW], 'profileSelect') as never)
+      .mockReturnValueOnce(selectLimitChain([VALID_AGENT_ROW], 'agentValidateSelect') as never);
+    mockDb.update.mockReturnValue(updateChain('markJobFailed') as never);
+    agentRelayMock.dispatchCommandToAgent.mockImplementation(async () => {
+      ctxState.events.push(`wsDispatch@depth${ctxState.depth}`);
+      return { status: 'indeterminate' };
+    });
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: false, agentId: 'agent-1', durationMs: expect.any(Number) });
+    expect(ctxState.events).toEqual([
+      'ctx:enter',
+      'profileSelect@depth1',
+      'agentValidateSelect@depth1',
+      'ctx:exit',
+      'isAgentConnected@depth0',
+      'wsDispatch@depth0',
+      'ctx:enter',
+      'markJobFailed@depth1',
+      'ctx:exit',
+    ]);
+  });
 });

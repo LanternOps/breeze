@@ -786,15 +786,18 @@ async function processDispatchBackup(
   // Phase 5 — settle per-target failure rows and the final job status: one
   // more short system DB context.
   return runWithSystemDbAccess(async () => {
-    if (await isBackupJobCancelled(data.jobId)) {
-      return { dispatched: false };
-    }
-
+    // Failed-send child rows settle UNCONDITIONALLY, before the cancel check —
+    // a cancel racing the sends must not strand them at status 'running' (the
+    // cancel route only touches the parent id, nothing else sweeps children).
     for (const failure of failedChildJobs) {
       await db
         .update(backupJobs)
         .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: failure.detail })
         .where(eq(backupJobs.id, failure.commandJobId));
+    }
+
+    if (await isBackupJobCancelled(data.jobId)) {
+      return { dispatched: false };
     }
 
     if (sentCount === 0) {
