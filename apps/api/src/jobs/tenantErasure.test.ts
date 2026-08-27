@@ -14,6 +14,8 @@ const {
   workerCloseMock,
   cascadeDeleteOrgMock,
   createAuditLogMock,
+  orgStateRows,
+  actorStateRows,
   capturedWorkerProcessor,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
@@ -22,6 +24,8 @@ const {
   workerCloseMock: vi.fn(),
   cascadeDeleteOrgMock: vi.fn(),
   createAuditLogMock: vi.fn(),
+  orgStateRows: [] as unknown[][],
+  actorStateRows: [] as unknown[][],
   capturedWorkerProcessor: {
     current: null as null | ((job: unknown) => Promise<unknown>),
   },
@@ -65,6 +69,24 @@ vi.mock('../services/auditService', () => ({
   createAuditLog: (...args: unknown[]) => createAuditLogMock(...(args as [])),
 }));
 
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn((fields: Record<string, unknown>) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () =>
+            'isPlatformAdmin' in fields
+              ? actorStateRows.shift() ?? []
+              : orgStateRows.shift() ?? []
+          ),
+        })),
+      })),
+    })),
+  },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
 import {
   __testOnly,
   createTenantErasureWorker,
@@ -90,6 +112,8 @@ describe('tenantErasure worker', () => {
       totalRowsDeleted: 2,
     });
     createAuditLogMock.mockResolvedValue(undefined);
+    orgStateRows.splice(0, orgStateRows.length, [{ status: 'purging', deletedAt: null }]);
+    actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: false }]);
     capturedWorkerProcessor.current = null;
   });
 
@@ -178,6 +202,115 @@ describe('tenantErasure worker', () => {
       totalRowsDeleted: 2,
       jobId: 'tenant-erasure-org-xyz',
     });
+  });
+
+  it.each([
+    { label: 'archive purge', row: { status: 'purging', deletedAt: null } },
+    { label: 'stamped merge shell', row: { status: 'merging', deletedAt: new Date('2026-08-26T00:00:00Z') } },
+    { label: 'legacy soft-delete', row: { status: 'active', deletedAt: new Date('2026-08-26T00:00:00Z') } },
+  ])('status guard permits $label state', async ({ row }) => {
+    orgStateRows.splice(0, orgStateRows.length, [row]);
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      data: { orgId: 'org-xyz', performedBy: 'admin-1' },
+    });
+
+    expect(cascadeDeleteOrgMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('status guard permits an idempotent rerun when the organization row is already gone', async () => {
+    orgStateRows.splice(0, orgStateRows.length, []);
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      data: { orgId: 'org-xyz', performedBy: 'admin-1' },
+    });
+
+    expect(cascadeDeleteOrgMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the trusted platform-admin route, which enqueues without soft-deleting first', async () => {
+    orgStateRows.splice(0, orgStateRows.length, [{ status: 'active', deletedAt: null }]);
+    actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: true }]);
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      data: {
+        orgId: 'org-xyz',
+        performedBy: 'admin-1',
+        source: 'platform_admin',
+      },
+    });
+
+    expect(cascadeDeleteOrgMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('permits a pre-deployment admin-route job without source when its actor is still a platform admin', async () => {
+    orgStateRows.splice(0, orgStateRows.length, [{ status: 'active', deletedAt: null }]);
+    actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: true }]);
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      data: { orgId: 'org-xyz', performedBy: 'admin-1' },
+    });
+
+    expect(cascadeDeleteOrgMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an unqualified live org, audits org-less, logs, and completes without deleting', async () => {
+    orgStateRows.splice(0, orgStateRows.length, [{ status: 'active', deletedAt: null }]);
+    actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: false }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    const result = await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      data: { orgId: 'org-xyz', performedBy: 'admin-1' },
+    });
+
+    expect(cascadeDeleteOrgMock).not.toHaveBeenCalled();
+    expect(createAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: null,
+        action: 'tenant.erasure.refused_status_guard',
+        resourceType: 'organization',
+        resourceId: 'org-xyz',
+        result: 'failure',
+        details: expect.objectContaining({ status: 'active', deletedAt: null }),
+      })
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refused status guard'));
+    expect(result).toEqual({ skipped: true, reason: 'status_guard' });
+  });
+
+  it('refuses an unstamped merge shell', async () => {
+    orgStateRows.splice(0, orgStateRows.length, [{ status: 'merging', deletedAt: null }]);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    createTenantErasureWorker();
+    const processor = capturedWorkerProcessor.current!;
+
+    await processor({
+      name: 'tenant-erasure',
+      id: 'tenant-erasure-org-xyz',
+      data: { orgId: 'org-xyz', performedBy: 'admin-1' },
+    });
+
+    expect(cascadeDeleteOrgMock).not.toHaveBeenCalled();
   });
 
   it('worker processor skips jobs with an unknown name', async () => {

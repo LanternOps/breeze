@@ -33,6 +33,8 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./tenantOffboarding', () => ({
+  ARCHIVE_PURGE_WARN_14_SENT_AT_KEY: 'archivePurgeWarn14SentAt',
+  ARCHIVE_PURGE_WARN_1_SENT_AT_KEY: 'archivePurgeWarn1SentAt',
   beginOrganizationOffboarding: vi.fn(async () => ({
     revocation: {},
     devicesTargeted: 0,
@@ -182,6 +184,14 @@ describe('restoreOrgFromArchive', () => {
       purgeAt: null,
       offboardingTarget: 'churn',
     });
+    const settingsSql = new PgDialect().sqlToQuery(update.values.settings as SQL);
+    expect(settingsSql.sql).toBe(
+      `coalesce("organizations"."settings", '{}'::jsonb) - $1 - $2`
+    );
+    expect(settingsSql.params).toEqual([
+      'archivePurgeWarn14SentAt',
+      'archivePurgeWarn1SentAt',
+    ]);
 
     const compiled = new PgDialect().sqlToQuery(update.where as SQL);
     expect(compiled.sql).toBe('("organizations"."id" = $1 and "organizations"."status" = $2)');

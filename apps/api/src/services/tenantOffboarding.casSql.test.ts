@@ -17,7 +17,12 @@ vi.mock('./auditEvents', () => ({
 vi.mock('./tenantLifecycle', () => ({}));
 vi.mock('./tenantStatus', () => ({}));
 
-import { buildOrganizationFinalizeCas } from './tenantOffboarding';
+import {
+  buildArchivePurgeCas,
+  buildArchiveWarningMarkerCas,
+  buildArchiveWarningMarkerRelease,
+  buildOrganizationFinalizeCas,
+} from './tenantOffboarding';
 
 describe('organization offboarding finalize CAS (compiled SQL)', () => {
   const dialect = new PgDialect();
@@ -30,5 +35,49 @@ describe('organization offboarding finalize CAS (compiled SQL)', () => {
       '("organizations"."id" = $1 and "organizations"."status" = $2 and "organizations"."offboarding_target" = $3)'
     );
     expect(compiled.params).toEqual([orgId, 'offboarding', target]);
+  });
+});
+
+describe('archive purge sweeper CAS statements (compiled SQL)', () => {
+  const dialect = new PgDialect();
+  const orgId = '11111111-1111-4111-8111-111111111111';
+
+  it('transitions only a still-archived org to purging and returns the claimed row', () => {
+    const compiled = dialect.sqlToQuery(buildArchivePurgeCas(orgId));
+
+    expect(compiled.sql).toMatch(/UPDATE organizations\s+SET status = 'purging', updated_at = now\(\)/);
+    expect(compiled.sql).toMatch(/WHERE id = \$1::uuid\s+AND status = 'archived'/);
+    expect(compiled.sql).toMatch(/RETURNING id/);
+    expect(compiled.params).toEqual([orgId]);
+  });
+
+  it.each([
+    'archivePurgeWarn14SentAt',
+    'archivePurgeWarn1SentAt',
+  ] as const)('atomically claims the absent %s jsonb marker', (marker) => {
+    const compiled = dialect.sqlToQuery(buildArchiveWarningMarkerCas(orgId, marker));
+
+    expect(compiled.sql).toMatch(/jsonb_set\(\s*COALESCE\(settings, '\{\}'::jsonb\)/);
+    expect(compiled.sql).toMatch(/WHERE id = \$2::uuid\s+AND status = 'archived'/);
+    expect(compiled.sql).toContain('settings->>$3 IS NULL');
+    expect(compiled.sql).toContain('RETURNING id');
+    expect(compiled.sql).toContain('settings->>$4 AS claimed_value');
+    expect(compiled.params).toEqual([marker, orgId, marker, marker]);
+  });
+
+  it.each([
+    'archivePurgeWarn14SentAt',
+    'archivePurgeWarn1SentAt',
+  ] as const)('releases only the matching failed-send claim for %s', (marker) => {
+    const claimedValue = '2026-07-24T12:00:00.000000+00:00';
+    const compiled = dialect.sqlToQuery(
+      buildArchiveWarningMarkerRelease(orgId, marker, claimedValue)
+    );
+
+    expect(compiled.sql).toMatch(/settings = COALESCE\(settings, '\{\}'::jsonb\) - \$1/);
+    expect(compiled.sql).toMatch(/WHERE id = \$2::uuid\s+AND status = 'archived'/);
+    expect(compiled.sql).toContain('settings->>$3 = $4');
+    expect(compiled.sql).toContain('RETURNING id');
+    expect(compiled.params).toEqual([marker, orgId, marker, claimedValue]);
   });
 });

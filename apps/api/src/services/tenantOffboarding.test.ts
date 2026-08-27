@@ -9,6 +9,8 @@ const {
   enqueueTenantErasureMock,
   getOrgMergeQueueMock,
   getMergeJobMock,
+  getEmailServiceMock,
+  sendEmailMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
@@ -24,6 +26,8 @@ const {
   enqueueTenantErasureMock: vi.fn(),
   getOrgMergeQueueMock: vi.fn(),
   getMergeJobMock: vi.fn(),
+  getEmailServiceMock: vi.fn(),
+  sendEmailMock: vi.fn(),
 }));
 
 vi.mock('../db', () => {
@@ -68,6 +72,21 @@ vi.mock('../db/schema', () => ({
     updatedAt: 'organizations.updatedAt',
     settings: 'organizations.settings',
   },
+  partnerUsers: {
+    partnerId: 'partnerUsers.partnerId',
+    userId: 'partnerUsers.userId',
+    roleId: 'partnerUsers.roleId',
+    orgAccess: 'partnerUsers.orgAccess',
+  },
+  roles: {
+    id: 'roles.id',
+    name: 'roles.name',
+  },
+  users: {
+    id: 'users.id',
+    email: 'users.email',
+    status: 'users.status',
+  },
   partners: {
     id: 'partners.id',
     status: 'partners.status',
@@ -90,6 +109,10 @@ vi.mock('../jobs/tenantErasure', () => ({
 
 vi.mock('../jobs/orgMerge', () => ({
   getOrgMergeQueue: (...args: unknown[]) => getOrgMergeQueueMock(...(args as [])),
+}));
+
+vi.mock('./email', () => ({
+  getEmailService: (...args: unknown[]) => getEmailServiceMock(...(args as [])),
 }));
 
 // The sweeper imports this one constant from the merge engine (drift-guard,
@@ -919,6 +942,8 @@ describe('sweepOffboardingTenants', () => {
     enqueueTenantErasureMock.mockResolvedValue({ id: 'tenant-erasure-org-x' });
     getMergeJobMock.mockResolvedValue(null);
     getOrgMergeQueueMock.mockReturnValue({ getJob: getMergeJobMock });
+    sendEmailMock.mockResolvedValue(undefined);
+    getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
   });
 
   const NOW = new Date('2026-07-24T12:00:00Z');
@@ -936,13 +961,21 @@ describe('sweepOffboardingTenants', () => {
     ptrs: unknown[],
     mergeErasurePending: unknown[] = [],
     mergeUnfenceCandidates: unknown[] = [],
-    mergeShellStampPending: unknown[] = []
+    mergeShellStampPending: unknown[] = [],
+    archivePurgeCandidates: unknown[] = [],
+    archiveWarn14Candidates: unknown[] = [],
+    archiveWarn1Candidates: unknown[] = [],
+    archivePurgingCandidates: unknown[] = []
   ) {
     queueSelect(orgs);
     queueSelect(ptrs);
     queueSelect(mergeErasurePending);
     queueSelect(mergeUnfenceCandidates);
     queueSelect(mergeShellStampPending);
+    queueSelect(archivePurgeCandidates);
+    queueSelect(archiveWarn14Candidates);
+    queueSelect(archiveWarn1Candidates);
+    queueSelect(archivePurgingCandidates);
   }
 
   it('finalizes an org whose fleet fully drained (before the deadline)', async () => {
@@ -1133,6 +1166,210 @@ describe('sweepOffboardingTenants', () => {
 
     expect(result.partnersFinalized).toBe(1);
     expect(severAgentCredentialsForOrgIds).toHaveBeenCalledWith(['org-1']);
+  });
+
+  describe('archive purge lifecycle', () => {
+    const PURGE_AT = new Date('2026-07-25T12:00:00.000Z');
+
+    it('CASes an overdue archived org to purging, enqueues erasure, and writes an org-less audit', async () => {
+      queueCandidates(
+        [], [], [], [], [],
+        [{ id: 'org-archive-1', partnerId: 'partner-1', name: 'Acme', purgeAt: PURGE_AT }]
+      );
+      executeQueue.push([{ id: 'org-archive-1' }]);
+      enqueueTenantErasureMock.mockResolvedValueOnce({ id: 'tenant-erasure-org-archive-1' });
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).toHaveBeenCalledWith({
+        orgId: 'org-archive-1',
+        performedBy: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.archive.purge_enqueued',
+          resourceType: 'organization',
+          resourceId: 'org-archive-1',
+          actorType: 'system',
+          details: expect.objectContaining({
+            partnerId: 'partner-1',
+            erasureJobId: 'tenant-erasure-org-archive-1',
+          }),
+        })
+      );
+      expect(result.archivePurgesEnqueued).toBe(1);
+      expect(result.failures).toBe(0);
+    });
+
+    it('does nothing when restore wins between candidate SELECT and the archived-only CAS', async () => {
+      queueCandidates(
+        [], [], [], [], [],
+        [{ id: 'org-restored', partnerId: 'partner-1', name: 'Restored', purgeAt: PURGE_AT }]
+      );
+      executeQueue.push([]);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+      expect(writeAuditEvent).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'org.archive.purge_enqueued' })
+      );
+      expect(result.archivePurgesEnqueued).toBe(0);
+    });
+
+    it('isolates a failed erasure handoff and continues with the next purge candidate', async () => {
+      queueCandidates(
+        [], [], [], [], [],
+        [
+          { id: 'org-purge-bad', partnerId: 'partner-1', name: 'Bad', purgeAt: PURGE_AT },
+          { id: 'org-purge-good', partnerId: 'partner-1', name: 'Good', purgeAt: PURGE_AT },
+        ]
+      );
+      executeQueue.push([{ id: 'org-purge-bad' }], [{ id: 'org-purge-good' }]);
+      enqueueTenantErasureMock
+        .mockRejectedValueOnce(new Error('queue unavailable'))
+        .mockResolvedValueOnce({ id: 'tenant-erasure-org-purge-good' });
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).toHaveBeenCalledTimes(2);
+      expect(result.archivePurgesEnqueued).toBe(1);
+      expect(result.failures).toBe(1);
+    });
+
+    it('retries the erasure handoff on the next sweep when the archived-to-purging CAS committed before enqueue failed', async () => {
+      const candidate = {
+        id: 'org-purge-recovery',
+        partnerId: 'partner-1',
+        name: 'Recovery',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [candidate]);
+      executeQueue.push([{ id: candidate.id }]);
+      enqueueTenantErasureMock.mockRejectedValueOnce(new Error('queue unavailable'));
+
+      const first = await sweepOffboardingTenants(NOW);
+
+      expect(first).toMatchObject({ archivePurgesEnqueued: 0, failures: 1 });
+
+      // The first CAS left the row at `purging`; a second sweep must still
+      // pass it through the stale-job-aware enqueue helper.
+      queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+      enqueueTenantErasureMock.mockResolvedValueOnce({ id: 'tenant-erasure-org-purge-recovery' });
+
+      const second = await sweepOffboardingTenants(NOW);
+
+      expect(second.failures).toBe(0);
+      expect(enqueueTenantErasureMock).toHaveBeenCalledTimes(2);
+      expect(enqueueTenantErasureMock).toHaveBeenLastCalledWith({
+        orgId: candidate.id,
+        performedBy: '00000000-0000-0000-0000-000000000000',
+      });
+    });
+
+    it('sends the 14-day and 1-day partner-admin warnings once each when both markers are absent', async () => {
+      const candidate = {
+        id: 'org-warning',
+        partnerId: 'partner-1',
+        name: 'Acme <Ops>',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [candidate], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id }]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id }]);
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(sendEmailMock).toHaveBeenCalledTimes(2);
+      expect(sendEmailMock.mock.calls.map(([mail]) => mail.subject)).toEqual([
+        'Organization purge in 14 days: Acme <Ops>',
+        'Organization purge in 1 day: Acme <Ops>',
+      ]);
+      for (const [mail] of sendEmailMock.mock.calls) {
+        expect(mail.to).toEqual(['admin@msp.test']);
+        expect(mail.html).toContain('Acme &lt;Ops&gt;');
+      }
+    });
+
+    it('selects recipients by the established Partner Admin role rather than org-access breadth', async () => {
+      const candidate = {
+        id: 'org-warning-admins',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'selected-access-admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: NOW.toISOString() }]);
+
+      await sweepOffboardingTenants(NOW);
+
+      const recipientWhere = selectWhereLog.find((where) => {
+        const encoded = JSON.stringify(where);
+        return encoded.includes('partnerUsers.partnerId') && encoded.includes('roles.name');
+      });
+      expect(recipientWhere).toBeDefined();
+      expect(JSON.stringify(recipientWhere)).toContain('Partner Admin');
+      expect(JSON.stringify(recipientWhere)).not.toContain('partnerUsers.orgAccess');
+      expect(sendEmailMock).toHaveBeenCalledWith(
+        expect.objectContaining({ to: ['selected-access-admin@msp.test'] })
+      );
+    });
+
+    it('releases its exact marker claim after an email failure so the next sweep retries', async () => {
+      const candidate = {
+        id: 'org-warning-retry',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      const firstClaim = '2026-07-24T12:00:00.000000+00:00';
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push(
+        [{ id: candidate.id, claimed_value: firstClaim }],
+        [{ id: candidate.id }],
+      );
+      sendEmailMock.mockRejectedValueOnce(new Error('email unavailable'));
+
+      const first = await sweepOffboardingTenants(NOW);
+
+      expect(first.failures).toBe(1);
+      expect(executedSqlLog.some((statement) =>
+        statement.includes("settings = COALESCE(settings, '{}'::jsonb) -")
+        && statement.includes('settings->>')
+      )).toBe(true);
+
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: '2026-07-24T12:05:00.000000+00:00' }]);
+
+      const second = await sweepOffboardingTenants(NOW);
+
+      expect(second.failures).toBe(0);
+      expect(sendEmailMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('dedupes a warning when another sweeper already claimed its atomic settings marker', async () => {
+      const candidate = {
+        id: 'org-warning-race',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([]); // marker UPDATE lost: another sweep already claimed it
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
   });
 
   // Task 4 — org-merge sweeper backstop. Two independent recovery cases the

@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations } from '../db/schema';
 import { envInt } from '../utils/envInt';
@@ -6,6 +6,8 @@ import { liftArchiveSuspension } from './tenantLifecycle';
 import {
   beginOrganizationOffboarding,
   finalizeOrganizationOffboarding,
+  ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+  ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
 } from './tenantOffboarding';
 
 const DEFAULT_ARCHIVE_RETENTION_DAYS = 90;
@@ -159,6 +161,10 @@ export async function restoreOrgFromArchive(
           // NOT NULL DEFAULT 'churn': clearing archive intent means restoring
           // the schema default, not writing an impossible NULL.
           offboardingTarget: 'churn',
+          // A restored-then-rearchived org must receive a fresh warning cycle.
+          // Keep this as one atomic jsonb expression inside the archived-only
+          // CAS; never read settings into JS and overwrite concurrent changes.
+          settings: sql`coalesce(${organizations.settings}, '{}'::jsonb) - ${ARCHIVE_PURGE_WARN_14_SENT_AT_KEY} - ${ARCHIVE_PURGE_WARN_1_SENT_AT_KEY}`,
           updatedAt: new Date(),
         })
         .where(

@@ -30,6 +30,9 @@ import { getBullMQConnection } from '../services/redis';
 import { cascadeDeleteOrg } from '../services/tenantCascade';
 import { createAuditLog } from '../services/auditService';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { organizations, users } from '../db/schema';
+import { eq } from 'drizzle-orm';
 
 const QUEUE_NAME = 'tenant-erasure';
 const JOB_NAME = 'tenant-erasure';
@@ -38,6 +41,8 @@ export interface TenantErasureJobPayload {
   orgId: string;
   performedBy: string;
   performedByEmail?: string;
+  /** The admin route has its own platform-admin + MFA + email confirmation. */
+  source?: 'platform_admin';
 }
 
 let erasureQueue: Queue | null = null;
@@ -97,7 +102,75 @@ export function createTenantErasureWorker(): Worker {
         console.warn(`[TenantErasure] Ignoring unknown job name: ${job.name}`);
         return { skipped: true };
       }
-      const { orgId, performedBy, performedByEmail } = job.data;
+      const { orgId, performedBy, performedByEmail, source } = job.data;
+
+      const [organization] = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({
+              status: organizations.status,
+              deletedAt: organizations.deletedAt,
+            })
+            .from(organizations)
+            .where(eq(organizations.id, orgId))
+            .limit(1)
+        )
+      );
+      const statusAllowsErasure =
+        !organization
+        || organization.status === 'purging'
+        || (organization.status === 'merging' && organization.deletedAt !== null)
+        || organization.deletedAt !== null;
+      // `/admin/tenant-erasure` does not soft-delete first; it authenticates a
+      // platform admin, requires MFA + confirmEmail, verifies the org exists,
+      // and then enqueues. Re-check durable actor provenance here for both new
+      // source-tagged jobs and jobs queued before the source field shipped.
+      // This preserves already-queued admin work without treating every
+      // user-attributed payload as an administrative erasure.
+      let adminRouteAllowsErasure = false;
+      if (!statusAllowsErasure) {
+        const [actor] = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .select({ isPlatformAdmin: users.isPlatformAdmin })
+              .from(users)
+              .where(eq(users.id, performedBy))
+              .limit(1)
+          )
+        );
+        adminRouteAllowsErasure = actor?.isPlatformAdmin === true
+          && (source === undefined || source === 'platform_admin');
+      }
+
+      if (!statusAllowsErasure && !adminRouteAllowsErasure) {
+        const message =
+          `[TenantErasure] refused status guard for org ${orgId}: `
+          + `status=${organization.status} deletedAt=${organization.deletedAt?.toISOString() ?? 'null'}`;
+        console.warn(message);
+        try {
+          await createAuditLog({
+            orgId: null,
+            actorType: 'user',
+            actorId: performedBy,
+            actorEmail: performedByEmail,
+            action: 'tenant.erasure.refused_status_guard',
+            resourceType: 'organization',
+            resourceId: orgId,
+            details: {
+              jobId: job.id,
+              status: organization.status,
+              deletedAt: organization.deletedAt?.toISOString() ?? null,
+              source: source ?? null,
+            },
+            result: 'failure',
+            errorMessage: message,
+          });
+        } catch (auditErr) {
+          console.error('[TenantErasure] audit write for refused status guard failed', auditErr);
+        }
+        return { skipped: true, reason: 'status_guard' };
+      }
+
       try {
         const stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
         return { ...stats, jobId: job.id };
