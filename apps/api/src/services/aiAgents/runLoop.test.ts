@@ -973,6 +973,36 @@ describe('executeAgentRun', () => {
     expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'failed');
   });
 
+  it('still reconciles and closes the session when finishRun loses the CAS (!moved)', async () => {
+    seedRows();
+    // First call is the queued->running CAS (must succeed so a session gets
+    // created); the second is finishRun's running->completed CAS, which loses
+    // to a competing executor (or reapStalledAgentRuns) here.
+    transitionRunStatus.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(transitionRunStatus).toHaveBeenCalledTimes(2);
+    expect(reconcileHungExecutions).toHaveBeenCalledWith('session-1');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'completed');
+  });
+
+  it('still reconciles and closes the session when something throws after session creation', async () => {
+    seedRows();
+    createBreezeMcpServer.mockImplementationOnce(() => {
+      throw new Error('boom — mcp server construction failed');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await executeAgentRun(RUN_ID);
+
+    // The run still ends up `failed` via executeAgentRun's outer catch, and
+    // the session created just before the throw is still cleaned up.
+    expect(finalTransition()!.to).toBe('failed');
+    expect(reconcileHungExecutions).toHaveBeenCalledWith('session-1');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'failed');
+  });
+
   it('a denied call never reaches the ledger — no execution row is started', async () => {
     seedRows({ effective: policy({ toolAllowlist: [] }) });
     scriptQuery({

@@ -153,6 +153,12 @@ vi.mock('../deploymentEngine', () => ({ isDeviceInMaintenanceWindow }));
 const publishEvent = vi.hoisted(() => vi.fn());
 vi.mock('../eventBus', () => ({ publishEvent }));
 
+const reconcileHungExecutions = vi.hoisted(() =>
+  vi.fn<(sessionId: string) => Promise<number>>());
+const closeAgentRunSession = vi.hoisted(() =>
+  vi.fn<(sessionId: string, status: 'completed' | 'failed') => Promise<void>>());
+vi.mock('./executionLedger', () => ({ reconcileHungExecutions, closeAgentRunSession }));
+
 import {
   createAndEnqueueAgentRun,
   evaluateAgentTriggerFilters,
@@ -788,6 +794,42 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
   it('reapStalledAgentRuns returns the ids it failed', async () => {
     dbMockState.updateRows = [{ id: RUN_ID }];
     await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([RUN_ID]);
+  });
+
+  it('reapStalledAgentRuns repairs the execution ledger for a reaped run that has a session', async () => {
+    // A SIGKILLed worker predates the ledger entirely: nothing in the
+    // in-process runLoop.ts cleanup ever ran for this run, so the reap itself
+    // has to reconcile the hung ai_tool_executions rows and close ai_sessions.
+    dbMockState.updateRows = [{ id: RUN_ID, sessionId: 'session-1' }];
+    reconcileHungExecutions.mockResolvedValue(2);
+    closeAgentRunSession.mockResolvedValue(undefined);
+
+    await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([RUN_ID]);
+
+    expect(reconcileHungExecutions).toHaveBeenCalledWith('session-1');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'failed');
+  });
+
+  it('reapStalledAgentRuns skips ledger cleanup for a reaped run with no session', async () => {
+    dbMockState.updateRows = [{ id: RUN_ID, sessionId: null }];
+
+    await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([RUN_ID]);
+
+    expect(reconcileHungExecutions).not.toHaveBeenCalled();
+    expect(closeAgentRunSession).not.toHaveBeenCalled();
+  });
+
+  it('reapStalledAgentRuns tolerates a ledger cleanup failure — the reap result is unaffected', async () => {
+    dbMockState.updateRows = [{ id: RUN_ID, sessionId: 'session-1' }];
+    reconcileHungExecutions.mockRejectedValueOnce(new Error('db unavailable'));
+    closeAgentRunSession.mockResolvedValue(undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([RUN_ID]);
+
+    // Even though reconcile failed, close is still attempted (best-effort, not
+    // short-circuited).
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'failed');
   });
 
   it('device_not_in_org when the device does not belong to the run org', async () => {

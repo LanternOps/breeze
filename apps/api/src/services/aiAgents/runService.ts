@@ -27,6 +27,7 @@ import { publishEvent } from '../eventBus';
 import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
 
 /**
  * Which `AiAgentLimits` field is enforced where. Every field must appear in
@@ -203,6 +204,13 @@ const STALLED_RUN_AFTER_SECONDS = 1800 + 900;
  * advisory lock and a system context, and it runs exactly when someone is
  * trying to get past the jam. The transition is a CAS, so a run that IS still
  * alive and finishes normally between the two statements is not clobbered.
+ *
+ * A reaped run predates the execution ledger (wave 4a): the SIGKILLed worker
+ * that owned it died before `runLoop.ts`'s own cleanup could ever run, so
+ * without repairing the ledger here too, a reaped run's `ai_sessions` row (if
+ * it has one) is stuck 'active' and its `ai_tool_executions` rows stuck
+ * 'executing' forever — nothing else in the codebase reaps them. Best-effort,
+ * same as every other ledger write: never allowed to fail the reap itself.
  */
 export async function reapStalledAgentRuns(scope: {
   agentId: string;
@@ -229,11 +237,31 @@ export async function reapStalledAgentRuns(scope: {
           and(isNull(aiAgentRuns.startedAt), lt(aiAgentRuns.queuedAt, cutoff)),
         ),
       ))
-      .returning({ id: aiAgentRuns.id });
+      .returning({ id: aiAgentRuns.id, sessionId: aiAgentRuns.sessionId });
     if (rows.length > 0) {
       console.warn('[aiAgentRunService] reaped stalled agent runs', {
         agentId: scope.agentId, orgId: scope.orgId, runIds: rows.map((r) => r.id),
       });
+      for (const row of rows) {
+        if (!row.sessionId) continue;
+        const sessionId = row.sessionId;
+        try {
+          await reconcileHungExecutions(sessionId);
+        } catch (error) {
+          console.error(
+            '[aiAgentRunService] failed to reconcile hung executions for a reaped run (non-fatal)',
+            { agentId: scope.agentId, orgId: scope.orgId, runId: row.id, sessionId, error },
+          );
+        }
+        try {
+          await closeAgentRunSession(sessionId, 'failed');
+        } catch (error) {
+          console.error(
+            '[aiAgentRunService] failed to close the execution-ledger session for a reaped run (non-fatal)',
+            { agentId: scope.agentId, orgId: scope.orgId, runId: row.id, sessionId, error },
+          );
+        }
+      }
     }
     return rows.map((r) => r.id);
   });

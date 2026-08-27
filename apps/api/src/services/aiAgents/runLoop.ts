@@ -972,6 +972,11 @@ export async function executeAgentRun(runId: string): Promise<void> {
 
   const effective = run.policySnapshot.effective;
 
+  // Tracks what to log the ledger session as closing under (see
+  // `cleanupExecutionLedger`) — defaults to 'failed' so a throw anywhere below,
+  // including one before this is ever reassigned, closes it correctly.
+  let ledgerOutcome: 'completed' | 'failed' = 'failed';
+
   try {
     const result = await driveSdkLoop(ctx, effective);
     const { outcome, intentIds } = result;
@@ -1008,6 +1013,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // Awaiting approval is a REAL terminal-ish state for the run: the agent is
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
+    ledgerOutcome = 'completed';
     await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', null, result);
   } catch (error) {
     const errorCode = error instanceof AgentRunError
@@ -1025,6 +1031,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
         runId, agentId: run.agentId, errorCode,
       });
     }
+  } finally {
+    // Fires on every path that got far enough to create a session — the
+    // normal finish, the `!moved` early return inside `finishRun`, AND a throw
+    // between session creation and `finishRun` (see `cleanupExecutionLedger`'s
+    // docstring). A crashed process (SIGKILL) is the one path this cannot
+    // cover; `reapStalledAgentRuns` (`runService.ts`) covers that one instead.
+    await cleanupExecutionLedger(ctx, ledgerOutcome);
   }
 }
 
@@ -1067,39 +1080,59 @@ async function finishRun(
     ...(errorCode ? { errorCode } : {}),
   });
 
-  // Ledger cleanup — best-effort, and never allowed to change the run's
-  // already-committed terminal status above. `completed`/`awaiting_approval`
-  // both close the session as `completed` (a human owning the follow-up on an
-  // awaiting_approval run is not the SESSION continuing — the agent is done
-  // thinking); anything else is `failed`.
-  if (ctx.sessionId) {
-    const sessionId = ctx.sessionId;
-    try {
-      const hungCount = await reconcileHungExecutions(sessionId);
-      if (hungCount > 0) {
-        console.warn('[aiAgentRunLoop] reconciled tool executions left in-flight at run finish', {
-          runId: ctx.run.id, sessionId, hungCount,
-        });
-      }
-    } catch (error) {
-      console.error('[aiAgentRunLoop] failed to reconcile hung executions (non-fatal)', {
-        runId: ctx.run.id, sessionId, error,
-      });
-    }
-    try {
-      await closeAgentRunSession(sessionId, status === 'failed' ? 'failed' : 'completed');
-    } catch (error) {
-      console.error('[aiAgentRunLoop] failed to close the execution-ledger session (non-fatal)', {
-        runId: ctx.run.id, sessionId, error,
-      });
-    }
-  }
+  // Ledger cleanup happens in `executeAgentRun`'s `finally`, not here — this
+  // function is skipped entirely on the `!moved` branch above (another
+  // executor or `reapStalledAgentRuns` already owns this run), which is
+  // exactly the case the ledger cleanup exists for. See the note there.
 
   await notifyRunFinished(ctx, {
     status,
     summary: result.summary,
     intentIds: result.intentIds,
   });
+}
+
+/**
+ * Best-effort execution-ledger cleanup, called from `executeAgentRun`'s
+ * `finally` so it fires on EVERY path out of a run that got as far as
+ * creating a session — not just the happy in-process finish. Covers:
+ *  - `finishRun`'s `!moved` branch (another executor, or `reapStalledAgentRuns`,
+ *    already transitioned this run out of `running`);
+ *  - a throw between session creation and `finishRun` (e.g. `createBreezeMcpServer`
+ *    or `transitionRunStatus` itself throwing), caught by `executeAgentRun`'s
+ *    own catch block;
+ *  - the normal path, where `finishRun` already committed the terminal status.
+ *
+ * `outcome` only distinguishes 'completed'/'failed' for `closeAgentRunSession`'s
+ * log line — the same two-way collapse `finishRun` used to do inline
+ * (`awaiting_approval` reads as 'completed': the agent is done thinking either
+ * way, a human owning the follow-up is not the session continuing).
+ */
+async function cleanupExecutionLedger(
+  ctx: RunContext,
+  outcome: 'completed' | 'failed',
+): Promise<void> {
+  if (!ctx.sessionId) return;
+  const sessionId = ctx.sessionId;
+  try {
+    const hungCount = await reconcileHungExecutions(sessionId);
+    if (hungCount > 0) {
+      console.warn('[aiAgentRunLoop] reconciled tool executions left in-flight at run finish', {
+        runId: ctx.run.id, sessionId, hungCount,
+      });
+    }
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to reconcile hung executions (non-fatal)', {
+      runId: ctx.run.id, sessionId, error,
+    });
+  }
+  try {
+    await closeAgentRunSession(sessionId, outcome);
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to close the execution-ledger session (non-fatal)', {
+      runId: ctx.run.id, sessionId, error,
+    });
+  }
 }
 
 /**
