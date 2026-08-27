@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   addMock,
+  getJobMock,
   queueCloseMock,
   workerCloseMock,
   cascadeDeleteOrgMock,
@@ -16,6 +17,7 @@ const {
   capturedWorkerProcessor,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
+  getJobMock: vi.fn(),
   queueCloseMock: vi.fn(),
   workerCloseMock: vi.fn(),
   cascadeDeleteOrgMock: vi.fn(),
@@ -32,6 +34,7 @@ vi.mock('bullmq', () => ({
       this.name = name;
     }
     add = (...args: unknown[]) => addMock(...(args as []));
+    getJob = (...args: unknown[]) => getJobMock(...(args as []));
     close = () => queueCloseMock();
   },
   Worker: class {
@@ -75,6 +78,7 @@ describe('tenantErasure worker', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     addMock.mockResolvedValue({ id: 'tenant-erasure-org-xyz' });
+    getJobMock.mockResolvedValue(null);
     queueCloseMock.mockResolvedValue(undefined);
     workerCloseMock.mockResolvedValue(undefined);
     cascadeDeleteOrgMock.mockResolvedValue({
@@ -113,6 +117,46 @@ describe('tenantErasure worker', () => {
       }),
     );
     expect(result.id).toBeDefined();
+  });
+
+  /**
+   * `attempts: 1` + `removeOnFail: { count: 50 }` are both deliberate here (a
+   * failed erasure must stay visible for on-call), but together they used to
+   * make the jobId dedup permanent: a bare `queue.add` under a FAILED record is
+   * discarded, so the admin's retry and `tenantOffboarding.ts`'s case-1 sweeper
+   * both silently no-opped and the tenant was never erased. For a GDPR path
+   * that is the worst way to fail — the recovery mechanism was the thing being
+   * swallowed.
+   */
+  describe('enqueueTenantErasure re-enqueue semantics', () => {
+    const PAYLOAD = { orgId: 'org-xyz', performedBy: 'admin-1' };
+    const stubJob = (state: string) => ({
+      id: 'tenant-erasure-org-xyz',
+      getState: vi.fn().mockResolvedValue(state),
+      remove: vi.fn().mockResolvedValue(undefined),
+    });
+
+    it('re-enqueues a FRESH job when the prior erasure for this org failed', async () => {
+      const stale = stubJob('failed');
+      getJobMock.mockResolvedValue(stale);
+
+      const result = await enqueueTenantErasure(PAYLOAD);
+
+      expect(stale.remove).toHaveBeenCalledTimes(1);
+      expect(addMock).toHaveBeenCalledTimes(1);
+      expect(result.id).toBe('tenant-erasure-org-xyz');
+    });
+
+    it('reuses an ACTIVE erasure instead of racing a second cascade against it', async () => {
+      const live = stubJob('active');
+      getJobMock.mockResolvedValue(live);
+
+      const result = await enqueueTenantErasure(PAYLOAD);
+
+      expect(live.remove).not.toHaveBeenCalled();
+      expect(addMock).not.toHaveBeenCalled();
+      expect(result.id).toBe('tenant-erasure-org-xyz');
+    });
   });
 
   it('initializeTenantErasureWorker registers an error/failed handler', async () => {

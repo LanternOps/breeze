@@ -1,7 +1,7 @@
 import { and, arrayContains, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, partners } from '../db/schema';
-import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
+import { ANONYMOUS_ACTOR_ID, requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { captureException } from './sentry';
 import {
   disconnectLiveAgentSocketsForOrgIds,
@@ -13,7 +13,11 @@ import {
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
 import { UNINSTALL_REASON_TENANT_OFFBOARDING } from './deviceUninstallDrain';
+import { isReusableState } from './bullmqUtils';
 import { envInt } from '../utils/envInt';
+import { enqueueTenantErasure } from '../jobs/tenantErasure';
+import { getOrgMergeQueue } from '../jobs/orgMerge';
+import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
 
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 /**
@@ -952,25 +956,124 @@ export async function repairIncompleteEntry(
  */
 export async function sweepOffboardingTenants(
   now: Date = new Date()
-): Promise<{ orgsFinalized: number; partnersFinalized: number; failures: number }> {
+): Promise<{
+  orgsFinalized: number;
+  partnersFinalized: number;
+  failures: number;
+  mergeErasureReenqueued: number;
+  mergeUnfenced: number;
+  mergeShellsStamped: number;
+}> {
   const windowMs = OFFBOARDING_DRAIN_WINDOW_HOURS * 60 * 60 * 1000;
   let orgsFinalized = 0;
   let partnersFinalized = 0;
   let failures = 0;
+  let mergeErasureReenqueued = 0;
+  let mergeUnfenced = 0;
+  let mergeShellsStamped = 0;
 
-  const [offboardingOrgs, offboardingPartners] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const orgs = await db
-        .select({ id: organizations.id, startedAt: organizations.offboardingStartedAt })
-        .from(organizations)
-        .where(and(eq(organizations.status, 'offboarding'), isNull(organizations.deletedAt)));
-      const ptrs = await db
-        .select({ id: partners.id, startedAt: partners.offboardingStartedAt })
-        .from(partners)
-        .where(and(eq(partners.status, 'offboarding'), isNull(partners.deletedAt)));
-      return [orgs, ptrs] as const;
-    })
-  );
+  const [
+    offboardingOrgs,
+    offboardingPartners,
+    mergeErasurePendingRows,
+    mergeUnfenceCandidateRows,
+    mergeShellStampPendingRows,
+  ] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const orgs = await db
+          .select({ id: organizations.id, startedAt: organizations.offboardingStartedAt })
+          .from(organizations)
+          .where(and(eq(organizations.status, 'offboarding'), isNull(organizations.deletedAt)));
+        const ptrs = await db
+          .select({ id: partners.id, startedAt: partners.offboardingStartedAt })
+          .from(partners)
+          .where(and(eq(partners.status, 'offboarding'), isNull(partners.deletedAt)));
+        // Task 4, case 1: Phase B (the merge transaction) committed — the
+        // loser is `deleted_at`-stamped — but Phase C (the job's erasure
+        // handoff) never ran or never finished. `updated_at` is the merge's
+        // own commit stamp (`executeOrgMerge` sets it on the same UPDATE that
+        // stamps `deleted_at`), so the 1h grace window is purely "give the
+        // job a chance to finish" — this never fires for a merge whose job is
+        // simply still running.
+        const mergeErasurePending = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.status, 'merging'),
+              isNotNull(organizations.deletedAt),
+              sql`${organizations.updatedAt} < now() - interval '1 hour'`
+            )
+          );
+        // Task 4, case 2: Phase A fenced the loser (`status='merging'`,
+        // `settings.mergePriorStatus` stashed) but the job died before Phase
+        // B ever opened its transaction — `deleted_at` was never stamped. The
+        // 2h window is longer than case 1's because a legitimately large
+        // merge can run for a while; the BullMQ liveness check below is what
+        // actually decides whether to touch it.
+        //
+        // The `org_merge_events` guard is what keeps this case from
+        // RESURRECTING an already-merged org. `deleted_at IS NULL` alone does
+        // not mean "the merge never ran": Phase B commits, then a SEPARATE
+        // transaction stamps `deleted_at` (see orgMerge.ts's
+        // `stampTerminalShell` for why it cannot be the same one). A process
+        // death in that gap leaves an EMPTIED loser at `merging` +
+        // `deleted_at IS NULL` with `mergePriorStatus` still stashed — which
+        // this case would happily restore to `active`, producing a permanently
+        // wedged ghost org whose every row now lives under the survivor. The
+        // merge event is the durable, in-Phase-B record that the re-tenant
+        // committed, so its presence disqualifies the row here and routes it
+        // to case 3 instead.
+        const mergeUnfenceCandidates = await db
+          .select({ id: organizations.id, partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.status, 'merging'),
+              isNull(organizations.deletedAt),
+              sql`${organizations.updatedAt} < now() - interval '2 hours'`,
+              // DO NOT "simplify" this NOT EXISTS away, and do not weaken it to
+              // a cheaper proxy (a settings flag, a status check): it is the
+              // ONLY thing standing between a torn merge and a resurrected
+              // ghost org, and it is load-bearing in a way that is not local to
+              // this file.
+              //
+              // It is also not unconditionally safe, which is worth knowing
+              // before touching it: `org_merge_events_survivor_org_id_fkey` is
+              // ON DELETE CASCADE (verified against pg_constraint). If the
+              // SURVIVOR org is itself erased later, every merge event naming
+              // it as survivor disappears — and any loser shell still stuck in
+              // the torn state would, from that moment on, look to this query
+              // exactly like "fence set, job died" and get unfenced. The window
+              // is narrow (case 3 stamps torn shells after 1h, well before a
+              // survivor erasure would realistically land) but it is real, so
+              // the guard must stay as strict as it is rather than being made
+              // to lean harder on the event row.
+              sql`NOT EXISTS (SELECT 1 FROM org_merge_events e WHERE e.loser_org_id = ${organizations.id})`
+            )
+          );
+        // Task 4, case 3: the exact state case 2 must never touch — Phase B
+        // committed (a merge event exists) but the follow-up stamp never
+        // landed. The org is already empty and already recorded as merged, so
+        // the only correct move is to finish the job: stamp it and hand it to
+        // erasure. The 1h grace matches case 1's ("give the job a chance to
+        // finish"); no BullMQ liveness check is needed because nothing here is
+        // reversible or racy — the stamp is idempotent and the erasure enqueue
+        // is jobId-collapsed.
+        const mergeShellStampPending = await db
+          .select({ id: organizations.id, partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.status, 'merging'),
+              isNull(organizations.deletedAt),
+              sql`${organizations.updatedAt} < now() - interval '1 hour'`,
+              sql`EXISTS (SELECT 1 FROM org_merge_events e WHERE e.loser_org_id = ${organizations.id})`
+            )
+          );
+        return [orgs, ptrs, mergeErasurePending, mergeUnfenceCandidates, mergeShellStampPending] as const;
+      })
+    );
 
   for (const org of offboardingOrgs) {
     try {
@@ -1038,5 +1141,162 @@ export async function sweepOffboardingTenants(
     }
   }
 
-  return { orgsFinalized, partnersFinalized, failures };
+  // --- Task 4, case 1: re-enqueue erasure for a merge that committed -------
+  for (const org of mergeErasurePendingRows) {
+    try {
+      // Idempotent, and — since the final review — actually idempotent in the
+      // direction this case needs. `enqueueTenantErasure`'s jobId is
+      // `tenant-erasure-<orgId>`, so a merge whose Phase C DID enqueue this
+      // (and only failed on the audit write that follows) collapses into the
+      // same BullMQ job rather than double-queuing the cascade.
+      //
+      // What that used to ALSO do, wrongly, was collapse into a job that had
+      // already FAILED: with `attempts: 1` + `removeOnFail: { count: 50 }`, a
+      // bare `queue.add` under an existing failed jobId is discarded, so this
+      // very re-enqueue — the sweeper's whole reason to exist for case 1 —
+      // no-opped forever and counted itself a success (`mergeErasureReenqueued++`
+      // below fires either way). `enqueueTenantErasure` now replaces a spent
+      // record instead of reusing it; see its docstring.
+      //
+      // `ANONYMOUS_ACTOR_ID` — not a sweeper-synthesized string — because this
+      // flows into the erasure worker's OWN audit rows as a uuid `actor_id`
+      // column; anything else would abort that worker's first audit write.
+      await enqueueTenantErasure({ orgId: org.id, performedBy: ANONYMOUS_ACTOR_ID });
+      mergeErasureReenqueued++;
+    } catch (err) {
+      failures++;
+      console.error(`[tenantOffboarding] Failed to re-enqueue erasure for merged org ${org.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // --- Task 4, case 2: unfence a merge whose job died pre-commit -----------
+  for (const org of mergeUnfenceCandidateRows) {
+    try {
+      // Liveness check FIRST, and fail-SAFE: any inability to reach
+      // Redis/BullMQ (not just "no job found") must SKIP this pass rather
+      // than assume the merge is dead. Unfencing a loser mid-transaction
+      // would let its writers race the merge's own re-tenant statements.
+      let jobIsLive = false;
+      try {
+        const job = await getOrgMergeQueue().getJob(`org-merge-${org.id}`);
+        jobIsLive = job ? isReusableState(await job.getState()) : false;
+      } catch (err) {
+        console.warn(
+          `[tenantOffboarding] could not reach the org-merge queue to check liveness for org ${org.id}; skipping unfence this pass (fail safe):`,
+          err
+        );
+        continue;
+      }
+      if (jobIsLive) continue; // a legitimately long merge — leave it fenced
+
+      // Atomic restore, mirroring `unfenceLoser` (services/orgMerge.ts:443-459)
+      // exactly: the CASE-computed status AND the jsonb key-delete both run
+      // INSIDE the UPDATE, so nothing here ever reads `settings` into JS and
+      // writes the whole column back. A JS-computed overwrite would silently
+      // revert any settings write that landed between the top-of-sweep
+      // candidate SELECT and this UPDATE — a platform-admin PATCH, an
+      // AI-tool write — which is exactly the race `unfenceLoser`'s atomic
+      // form avoids. It also never routes a value through
+      // `encryptColumnValueForWrite` for the same reason `unfenceLoser`
+      // doesn't: no full column value is ever assembled in application
+      // memory to begin with.
+      const restored = (await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db.execute(sql`
+            UPDATE organizations
+               SET status = (
+                     CASE
+                       WHEN settings->>${MERGE_PRIOR_STATUS_KEY} IN ('active', 'trial', 'suspended')
+                         THEN settings->>${MERGE_PRIOR_STATUS_KEY}
+                       ELSE 'suspended'
+                     END
+                   )::org_status,
+                   settings = COALESCE(settings, '{}'::jsonb) - ${MERGE_PRIOR_STATUS_KEY},
+                   updated_at = now()
+             WHERE id = ${org.id}::uuid
+               AND status = 'merging'
+               AND deleted_at IS NULL
+             RETURNING id, status::text AS restored_status`)
+        )
+      )) as unknown as Array<{ id: string; restored_status: string }>;
+
+      if (restored.length > 0) {
+        mergeUnfenced++;
+        writeAuditEvent(requestLikeFromSnapshot({}), {
+          orgId: null,
+          action: 'org.merge.unfenced_by_sweeper',
+          resourceType: 'organization',
+          resourceId: org.id,
+          actorType: 'system',
+          actorId: null,
+          result: 'success',
+          details: { partnerId: org.partnerId, restoredStatus: restored[0]!.restored_status },
+        });
+      }
+    } catch (err) {
+      failures++;
+      console.error(`[tenantOffboarding] Failed to unfence stuck merge for org ${org.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // --- Task 4, case 3: finish a merge that committed but was never stamped --
+  for (const org of mergeShellStampPendingRows) {
+    try {
+      // Legal here, and NOT legal inside the merge: this transaction holds no
+      // partner-export lock of its own, so `organizations`' export trigger
+      // takes the partner's EXCLUSIVE lock cleanly instead of hitting the
+      // shared -> exclusive upgrade refusal that forced the stamp out of
+      // Phase B in the first place (services/orgMerge.ts `stampTerminalShell`).
+      //
+      // `AND deleted_at IS NULL` makes it idempotent against a concurrent
+      // stamp by the merge's own retry, and RETURNING lets a lost race skip
+      // the audit rather than claiming work it did not do.
+      const stamped = (await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db.execute(sql`
+            UPDATE organizations
+               SET deleted_at = now(), updated_at = now()
+             WHERE id = ${org.id}::uuid
+               AND status = 'merging'
+               AND deleted_at IS NULL
+             RETURNING id`)
+        )
+      )) as unknown as Array<{ id: string }>;
+      if (stamped.length === 0) continue;
+
+      // Same idempotent handoff case 1 uses: jobId `tenant-erasure-<orgId>`
+      // collapses a duplicate, and ANONYMOUS_ACTOR_ID is a real uuid because
+      // it lands in the erasure worker's own `actor_id` column.
+      await enqueueTenantErasure({ orgId: org.id, performedBy: ANONYMOUS_ACTOR_ID });
+      mergeShellsStamped++;
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: null,
+        action: 'org.merge.stamped_by_sweeper',
+        resourceType: 'organization',
+        resourceId: org.id,
+        actorType: 'system',
+        actorId: null,
+        result: 'success',
+        details: {
+          partnerId: org.partnerId,
+          note: 'the merge transaction had committed but the terminal-shell stamp never landed; stamped and handed to tenant erasure',
+        },
+      });
+    } catch (err) {
+      failures++;
+      console.error(`[tenantOffboarding] Failed to stamp merged-away org ${org.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  return {
+    orgsFinalized,
+    partnersFinalized,
+    failures,
+    mergeErasureReenqueued,
+    mergeUnfenced,
+    mergeShellsStamped,
+  };
 }

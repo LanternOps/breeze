@@ -2945,7 +2945,10 @@
       "trial": "Prozess",
       "suspended": "Suspendiert",
       "churned": "Aufgewühlt",
-      "offboarding": "Abmeldung läuft"
+      "offboarding": "Abmeldung läuft",
+      "merging": "Zusammenführung läuft",
+      "archived": "Archiviert",
+      "purging": "Löschung läuft"
     },
     "columns": {
       "devices": "Geräte"
@@ -3038,7 +3041,10 @@
       "trial": "Prozess",
       "suspended": "Suspendiert",
       "churned": "Aufgewühlt",
-      "offboarding": "Abmeldung läuft"
+      "offboarding": "Abmeldung läuft",
+      "merging": "Zusammenführung läuft",
+      "archived": "Archiviert",
+      "purging": "Löschung läuft"
     },
     "deviceCount": "{{count}} Geräte",
     "list": {

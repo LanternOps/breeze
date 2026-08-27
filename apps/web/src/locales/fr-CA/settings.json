@@ -2993,7 +2993,10 @@
       "trial": "Procès",
       "suspended": "Suspendu",
       "churned": "Tourné",
-      "offboarding": "Départ en cours"
+      "offboarding": "Départ en cours",
+      "merging": "Fusion en cours",
+      "archived": "Archivé",
+      "purging": "Purge en cours"
     },
     "columns": {
       "devices": "Appareils"
@@ -3086,7 +3089,10 @@
       "trial": "Procès",
       "suspended": "Suspendu",
       "churned": "Tourné",
-      "offboarding": "Départ en cours"
+      "offboarding": "Départ en cours",
+      "merging": "Fusion en cours",
+      "archived": "Archivé",
+      "purging": "Purge en cours"
     },
     "deviceCount": "{{count}} appareils",
     "list": {

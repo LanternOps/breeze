@@ -2998,7 +2998,10 @@
       "trial": "Avaliação",
       "suspended": "Suspenso",
       "churned": "Cancelado",
-      "offboarding": "Em desligamento"
+      "offboarding": "Em desligamento",
+      "merging": "Em fusão",
+      "archived": "Arquivado",
+      "purging": "Em exclusão"
     },
     "columns": {
       "devices": "Dispositivos"
@@ -3091,7 +3094,10 @@
       "trial": "Avaliação",
       "suspended": "Suspenso",
       "churned": "Cancelado",
-      "offboarding": "Em desligamento"
+      "offboarding": "Em desligamento",
+      "merging": "Em fusão",
+      "archived": "Arquivado",
+      "purging": "Em exclusão"
     },
     "deviceCount": "Dispositivos {{count}}",
     "list": {

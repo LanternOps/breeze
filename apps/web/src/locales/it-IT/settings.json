@@ -2993,7 +2993,10 @@
       "trial": "Prova",
       "suspended": "Sospesa",
       "churned": "Persa",
-      "offboarding": "In dismissione"
+      "offboarding": "In dismissione",
+      "merging": "Fusione in corso",
+      "archived": "Archiviata",
+      "purging": "Eliminazione in corso"
     },
     "columns": {
       "devices": "Dispositivi"
@@ -3086,7 +3089,10 @@
       "trial": "Prova",
       "suspended": "Sospesa",
       "churned": "Persa",
-      "offboarding": "In dismissione"
+      "offboarding": "In dismissione",
+      "merging": "Fusione in corso",
+      "archived": "Archiviata",
+      "purging": "Eliminazione in corso"
     },
     "deviceCount": "{{count}} dispositivi",
     "list": {

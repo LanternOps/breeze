@@ -1,7 +1,7 @@
 /**
  * org_merge_events RLS — cross-partner forge proof (breeze_app role).
  *
- * Migration under test: 2026-08-26-org-lifecycle-foundations.sql (Section 3)
+ * Migration under test: 2026-09-12-100001-org-lifecycle-foundations.sql (Section 3)
  *
  * Shape 3 (partner-axis, flat breeze_has_partner_access(partner_id), no
  * org_id column — the table's own tenant column is partner_id; loser_org_id

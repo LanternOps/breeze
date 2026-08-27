@@ -2998,7 +2998,10 @@
       "trial": "Deneme",
       "suspended": "Askıya alındı",
       "churned": "Çalkalanmış",
-      "offboarding": "Ayrılma"
+      "offboarding": "Ayrılma",
+      "merging": "Birleştirme",
+      "archived": "Arşivlendi",
+      "purging": "Temizleme"
     },
     "columns": {
       "devices": "Cihazlar"
@@ -3091,7 +3094,10 @@
       "trial": "Deneme",
       "suspended": "Askıya alındı",
       "churned": "Çalkalanmış",
-      "offboarding": "Ayrılma"
+      "offboarding": "Ayrılma",
+      "merging": "Birleştirme",
+      "archived": "Arşivlendi",
+      "purging": "Temizleme"
     },
     "deviceCount": "{{count}} cihazlar",
     "list": {
