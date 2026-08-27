@@ -1,6 +1,13 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { alerts, alertRules, alertTemplates, automationPolicies, organizations } from '../db/schema';
+import {
+  alerts,
+  alertRules,
+  alertTemplates,
+  automationPolicies,
+  automationPolicyCompliance,
+  organizations,
+} from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
 import type { BreezeEvent } from './eventBus';
 
@@ -189,6 +196,27 @@ export async function handlePolicyViolation(orgId: string, payload: PolicyEventP
       );
       return;
     }
+  }
+
+  // The event is a wake-up, not the truth: automation_policy_compliance holds
+  // the current per-(policy, device) status, upserted BEFORE this event was
+  // published (policyEvaluationService.ts). A delayed/retried policy.violation
+  // that lands after a newer policy.compliant must not create a stale alert —
+  // FIFO can't fix this, since a failed violation delivery can retry after a
+  // later compliant.
+  const [compliance] = await db
+    .select({ status: automationPolicyCompliance.status })
+    .from(automationPolicyCompliance)
+    .where(and(
+      eq(automationPolicyCompliance.policyId, payload.policyId),
+      eq(automationPolicyCompliance.deviceId, payload.deviceId),
+    ))
+    .limit(1);
+  if (compliance && compliance.status !== 'non_compliant') {
+    // Stale or reordered violation event: the persisted evaluation state has
+    // moved on. The compliant-side handler resolves alerts; creating one here
+    // would strand an active alert with no future event to clear it.
+    return;
   }
 
   const ruleId = await ensureRule(orgId, payload.policyId, policyName, payload.enforcement);
