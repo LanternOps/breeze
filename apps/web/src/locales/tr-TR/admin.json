@@ -452,7 +452,8 @@
         "createdAt": "Oluşturuldu",
         "notVerified": "Doğrulanmadı",
         "verified": "Doğrulandı",
-        "activateBlocked": "Bu revizyon etkinleştirilmeden önce eşlenen her modelin doğrulamayı geçmesi gerekir."
+        "activateBlocked": "Bu revizyon etkinleştirilmeden önce eşlenen her modelin doğrulamayı geçmesi gerekir.",
+        "listBlocked": "Bu sağlayıcı listelenmeden önce etkin revizyondaki eşlenen her modelin doğrulamayı geçmesi gerekir."
       },
       "authModeOptions": {
         "x-api-key": "API anahtarı başlığı",
