@@ -161,37 +161,27 @@ describe('eventBus service', () => {
     );
   });
 
-  it('should invoke subscribed handlers and acknowledge the message', async () => {
-    const { getEventBus, EVENT_TYPES } = eventBusModule;
+  it('should invoke subscribed handlers on publish (local in-process delivery)', async () => {
+    const { getEventBus, publishEvent, EVENT_TYPES } = eventBusModule;
     const bus = getEventBus();
     const handler = vi.fn().mockResolvedValue(undefined);
 
     bus.subscribe(EVENT_TYPES.DEVICE_ENROLLED, handler);
 
-    const event = {
-      id: 'evt-1',
+    const eventId = await publishEvent(
+      EVENT_TYPES.DEVICE_ENROLLED,
+      'org-1',
+      { deviceId: 'dev-1' },
+      'unit-test'
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]![0]).toMatchObject({
+      id: eventId,
       type: EVENT_TYPES.DEVICE_ENROLLED,
       orgId: 'org-1',
-      source: 'unit-test',
-      priority: 'normal',
       payload: { deviceId: 'dev-1' },
-      metadata: {
-        timestamp: new Date().toISOString()
-      }
-    };
-
-    await (bus as any).processMessage(
-      '123-0',
-      ['event', JSON.stringify(event)],
-      mockRedis as Redis
-    );
-
-    expect(handler).toHaveBeenCalledWith(event);
-    expect(mockRedis.xack).toHaveBeenCalledWith(
-      'breeze:events:org-1',
-      'breeze-api',
-      '123-0'
-    );
+    });
   });
 
   // ---------------------------------------------------------------------
@@ -358,37 +348,21 @@ describe('eventBus service', () => {
   });
 
   it('should unsubscribe handlers', async () => {
-    const { getEventBus, EVENT_TYPES } = eventBusModule;
+    const { getEventBus, publishEvent, EVENT_TYPES } = eventBusModule;
     const bus = getEventBus();
     const handler = vi.fn().mockResolvedValue(undefined);
 
     const unsubscribe = bus.subscribe(EVENT_TYPES.DEVICE_ENROLLED, handler);
     unsubscribe();
 
-    const event = {
-      id: 'evt-2',
-      type: EVENT_TYPES.DEVICE_ENROLLED,
-      orgId: 'org-1',
-      source: 'unit-test',
-      priority: 'normal',
-      payload: { deviceId: 'dev-2' },
-      metadata: {
-        timestamp: new Date().toISOString()
-      }
-    };
-
-    await (bus as any).processMessage(
-      '124-0',
-      ['event', JSON.stringify(event)],
-      mockRedis as Redis
+    await publishEvent(
+      EVENT_TYPES.DEVICE_ENROLLED,
+      'org-1',
+      { deviceId: 'dev-2' },
+      'unit-test'
     );
 
     expect(handler).not.toHaveBeenCalled();
-    expect(mockRedis.xack).toHaveBeenCalledWith(
-      'breeze:events:org-1',
-      'breeze-api',
-      '124-0'
-    );
   });
 
   // ---------------------------------------------------------------------

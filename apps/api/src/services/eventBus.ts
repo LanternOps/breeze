@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import { createBlockingRedisConnection, getRedisConnection } from './redis';
+import { getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
 import { runOutsideDbContext } from '../db';
 import { captureException } from './sentry';
@@ -176,36 +176,20 @@ export type EventHandler<T = Record<string, unknown>> = (event: BreezeEvent<T>) 
 
 // Stream key pattern: breeze:events:{orgId}
 const STREAM_PREFIX = 'breeze:events';
-const CONSUMER_GROUP = 'breeze-api';
 const MAX_STREAM_LENGTH = 10000; // Trim streams to prevent unbounded growth
 
 /**
- * EventBus - Redis Streams based event system for reliable event delivery
+ * EventBus - Redis Streams + pub/sub based event system.
  *
  * Features:
- * - Guaranteed delivery via Redis Streams consumer groups
- * - Event replay capability
- * - Dead letter queue for failed processing
+ * - Durable event log via Redis Streams (XADD, MAXLEN-capped)
+ * - Real-time delivery via pub/sub (org-scoped live channel + global channel)
  * - Correlation ID tracking for distributed tracing
  * - Priority-based routing
  */
 class EventBus {
   private handlers: Map<string, Set<EventHandler>> = new Map();
-  private consumerName: string;
-  private isConsuming = false;
   private redisClient: Redis | null = null;
-  /**
-   * Dedicated connection for the `XREADGROUP ... BLOCK 5000` in
-   * `consumeLoop` — see `createBlockingRedisConnection`. Lazily created
-   * (never at import time, and never before `startConsuming()` actually
-   * runs) and cached for the bus's lifetime; a new connection per loop
-   * iteration would churn a TCP connect + AUTH every 5 seconds forever.
-   */
-  private blockingRedisClient: Redis | null = null;
-
-  constructor() {
-    this.consumerName = `consumer-${process.pid}-${randomUUID().slice(0, 8)}`;
-  }
 
   /**
    * Get or create a persistent Redis connection for the EventBus.
@@ -220,30 +204,9 @@ class EventBus {
   }
 
   /**
-   * Get or create the dedicated blocking connection used ONLY for
-   * `XREADGROUP ... BLOCK` in `consumeLoop`. Redis serves one command at a
-   * time per connection, and ioredis queues everything else behind an
-   * in-flight command — so a blocking read on the shared connection from
-   * `getOrCreateRedis()` (the same connection `getBullMQConnection()` hands
-   * to every BullMQ `Queue`) would stall every other command on it,
-   * including request-path job enqueues, by up to the full block timeout.
-   * This is the identical defect fixed in `webhookDelivery.ts`'s `BRPOP`
-   * loop; every non-blocking command in this class (publish's `xadd` /
-   * `publish`, consumer-group creation, `xack`, etc.) deliberately stays on
-   * `getOrCreateRedis()`.
-   */
-  private getBlockingRedis(): Redis {
-    if (!this.blockingRedisClient || this.blockingRedisClient.status === 'end') {
-      this.blockingRedisClient = createBlockingRedisConnection('breeze:event-bus:xreadgroup');
-    }
-    return this.blockingRedisClient;
-  }
-
-  /**
    * Close the persistent Redis connection and clean up resources.
    */
   async close(): Promise<void> {
-    this.stopConsuming();
     if (this.redisClient) {
       await this.redisClient.quit();
       this.redisClient = null;
@@ -326,8 +289,8 @@ class EventBus {
         await enqueueRouteEvent(event as BreezeEvent);
       }
 
-      // Invoke local in-process handlers immediately
-      // This handles the case where startConsuming() hasn't been called
+      // Invoke local in-process handlers immediately (this is the only
+      // delivery path — there is no consumer-group replay of the stream).
       await this.invokeLocalHandlers(event as BreezeEvent);
 
       return eventId;
@@ -494,222 +457,6 @@ class EventBus {
     };
   }
 
-  /**
-   * Start consuming events from Redis Streams
-   */
-  async startConsuming(orgIds: string[]): Promise<void> {
-    if (this.isConsuming) return;
-    this.isConsuming = true;
-
-    const redis = this.getOrCreateRedis();
-
-    // Ensure consumer groups exist for each org
-    for (const orgId of orgIds) {
-      const streamKey = `${STREAM_PREFIX}:${orgId}`;
-      try {
-        await redis.xgroup('CREATE', streamKey, CONSUMER_GROUP, '0', 'MKSTREAM');
-      } catch (err: unknown) {
-        // Group already exists - ignore
-        if (err instanceof Error && !err.message.includes('BUSYGROUP')) {
-          throw err;
-        }
-      }
-    }
-
-    // Start consuming loop
-    this.consumeLoop(orgIds);
-  }
-
-  private async consumeLoop(orgIds: string[]): Promise<void> {
-    // `redis` handles all NON-blocking commands (xack/lpush inside
-    // processMessage) and stays on the shared connection. Only the blocking
-    // XREADGROUP read below moves to its own connection — see
-    // `getBlockingRedis`.
-    const redis = this.getOrCreateRedis();
-    const streams = orgIds.map(orgId => `${STREAM_PREFIX}:${orgId}`);
-    const streamArgs = streams.flatMap(s => [s, '>']);
-
-    while (this.isConsuming) {
-      try {
-        // Read from all streams with blocking. MUST run on the dedicated
-        // connection (see getBlockingRedis) — not the shared one.
-        const results = await this.getBlockingRedis().xreadgroup(
-          'GROUP',
-          CONSUMER_GROUP,
-          this.consumerName,
-          'COUNT',
-          '10',
-          'BLOCK',
-          '5000',
-          'STREAMS',
-          ...streamArgs
-        );
-
-        if (results) {
-          for (const [, messages] of results as [string, [string, string[]][]][]) {
-            for (const [messageId, fields] of messages) {
-              await this.processMessage(messageId, fields, redis);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('[EventBus] Error in consume loop:', err);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    }
-  }
-
-  private async processMessage(
-    messageId: string,
-    fields: string[],
-    redis: Redis
-  ): Promise<void> {
-    // Parse event from fields
-    const eventJson = fields[1]; // fields = ['event', '{...}']
-    if (!eventJson) {
-      console.error(`[EventBus] Missing event JSON in message: ${messageId}`);
-      // Acknowledge and push to DLQ to prevent blocking
-      await redis.xack(`${STREAM_PREFIX}:unknown`, CONSUMER_GROUP, messageId);
-      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, error: 'missing event JSON' }));
-      return;
-    }
-
-    let event: BreezeEvent;
-    try {
-      event = JSON.parse(eventJson);
-    } catch {
-      console.error(`[EventBus] Failed to parse event: ${messageId}`);
-      // Acknowledge and push to DLQ to prevent blocking
-      await redis.xack(`${STREAM_PREFIX}:unknown`, CONSUMER_GROUP, messageId);
-      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, raw: eventJson, error: 'JSON parse failure' }));
-      return;
-    }
-
-    // Get handlers for this event type
-    const typeHandlers = this.handlers.get(event.type) || new Set();
-    const wildcardHandlers = this.handlers.get('*') || new Set();
-    const allHandlers = [...typeHandlers, ...wildcardHandlers];
-
-    if (allHandlers.length === 0) {
-      // No handlers - acknowledge immediately
-      await redis.xack(`${STREAM_PREFIX}:${event.orgId}`, CONSUMER_GROUP, messageId);
-      return;
-    }
-
-    // Process with all handlers
-    let success = true;
-    for (const handler of allHandlers) {
-      try {
-        await handler(event);
-      } catch (err) {
-        console.error(`[EventBus] Handler failed for ${event.type}:`, err);
-        success = false;
-      }
-    }
-
-    if (success) {
-      // Acknowledge successful processing
-      await redis.xack(`${STREAM_PREFIX}:${event.orgId}`, CONSUMER_GROUP, messageId);
-    } else {
-      // Move to dead letter queue after max retries
-      // For now, just acknowledge to prevent blocking
-      await redis.xack(`${STREAM_PREFIX}:${event.orgId}`, CONSUMER_GROUP, messageId);
-      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, event }));
-    }
-  }
-
-  /**
-   * Stop consuming events
-   */
-  stopConsuming(): void {
-    this.isConsuming = false;
-  }
-
-  /**
-   * Replay events from a specific point in time
-   */
-  async replay(
-    orgId: string,
-    fromTimestamp: Date,
-    toTimestamp?: Date
-  ): Promise<BreezeEvent[]> {
-    const redis = this.getOrCreateRedis();
-    const streamKey = `${STREAM_PREFIX}:${orgId}`;
-
-    // Convert timestamps to Redis stream IDs (ms-*)
-    const fromId = `${fromTimestamp.getTime()}-0`;
-    const toId = toTimestamp ? `${toTimestamp.getTime()}-0` : '+';
-
-    const results = await redis.xrange(streamKey, fromId, toId, 'COUNT', '1000');
-
-    const events: BreezeEvent[] = [];
-    for (const [, fields] of results) {
-      const eventJson = fields[1];
-      if (!eventJson) continue;
-      try {
-        events.push(JSON.parse(eventJson) as BreezeEvent);
-      } catch {
-        // Skip malformed entries during replay
-      }
-    }
-    return events;
-  }
-
-  /**
-   * Get pending events that haven't been acknowledged
-   */
-  async getPending(orgId: string, count = 100): Promise<string[]> {
-    const redis = this.getOrCreateRedis();
-    const streamKey = `${STREAM_PREFIX}:${orgId}`;
-
-    const pending = await redis.xpending(
-      streamKey,
-      CONSUMER_GROUP,
-      '-',
-      '+',
-      count.toString()
-    );
-
-    return (pending as [string, string, number, number][]).map(([id]) => id);
-  }
-
-  /**
-   * Get dead letter queue entries
-   */
-  async getDeadLetterQueue(count = 100): Promise<{ messageId: string; event: BreezeEvent }[]> {
-    const redis = this.getOrCreateRedis();
-    const entries = await redis.lrange(`${STREAM_PREFIX}:dlq`, 0, count - 1);
-    return entries.map(entry => JSON.parse(entry));
-  }
-
-  /**
-   * Retry a dead letter queue entry
-   */
-  async retryDeadLetter(index: number): Promise<void> {
-    const redis = this.getOrCreateRedis();
-    const entry = await redis.lindex(`${STREAM_PREFIX}:dlq`, index);
-    if (!entry) return;
-
-    const { event } = JSON.parse(entry) as { messageId: string; event: BreezeEvent };
-
-    // Re-publish the event
-    await this.publish(
-      event.type,
-      event.orgId,
-      event.payload,
-      event.source,
-      {
-        priority: event.priority,
-        correlationId: event.metadata.correlationId,
-        causationId: event.id, // Original event becomes causation
-        userId: event.metadata.userId,
-        siteId: event.siteId, // preserve site attribution on retry
-      }
-    );
-
-    // Remove from DLQ
-    await redis.lrem(`${STREAM_PREFIX}:dlq`, 1, entry);
-  }
 }
 
 // Singleton instance
