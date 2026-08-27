@@ -154,7 +154,8 @@ vi.mock('../services/eventDispatchQueue', () => ({
   })),
   isShadowSampledEvent: isShadowSampledEventMock,
   SHADOW_COUNT_PREFIX: 'breeze:event-shadow:count',
-  SHADOW_LOCAL_PREFIX: 'breeze:event-shadow:local'
+  SHADOW_LOCAL_PREFIX: 'breeze:event-shadow:local',
+  SHADOW_LOCAL_TTL_SECONDS: 7200
 }));
 
 vi.mock('./workerObservability', () => ({
@@ -544,22 +545,36 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
     await shutdownEventDispatchWorker();
   });
 
-  it('maintenance registration failure: closes the maintenance worker/queue AND the main worker (partial-failure cleanup), then rethrows', async () => {
+  it('maintenance registration failure: ISOLATED — closes only the maintenance worker/queue, leaves the main worker running, resolves (does not reject), and reports via captureException', async () => {
     eventDispatchModeMock.mockReturnValue('enforce');
     const boom = new Error('redis unreachable during repeatable registration');
     queueGetRepeatableJobsMock.mockRejectedValue(boom);
 
-    await expect(initializeEventDispatchWorker()).rejects.toBe(boom);
+    // Must NOT reject: index.ts sets workerStatus['eventDispatch'] = true only
+    // if this promise resolves, and a maintenance-only failure must not pin
+    // /ready to not-ready over a housekeeping job (same lesson as the
+    // off-mode backlog-probe guard just above in the same function).
+    await expect(initializeEventDispatchWorker()).resolves.toBeUndefined();
 
-    expect(workerCloseMock).toHaveBeenCalledTimes(2);
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(boom);
+
+    // Cleanup closed the maintenance worker (Worker#close, shared mock with
+    // the main worker's — see below) and the maintenance queue: one call
+    // each so far.
+    expect(workerCloseMock).toHaveBeenCalledTimes(1);
     expect(queueCloseMock).toHaveBeenCalledTimes(1);
 
-    // Nothing left dangling: a subsequent shutdown is a clean no-op.
-    workerCloseMock.mockClear();
-    queueCloseMock.mockClear();
+    // The main worker is genuinely still alive (not nulled out by the catch
+    // block): shutdown now closes it too — ONE MORE Worker#close() call.
+    // Under the old (buggy) behaviour, the catch block already nulled out
+    // `worker` here, so this shutdown call would add ZERO further close()
+    // calls and this assertion would catch the regression.
     await shutdownEventDispatchWorker();
-    expect(workerCloseMock).not.toHaveBeenCalled();
-    expect(queueCloseMock).not.toHaveBeenCalled();
+    expect(workerCloseMock).toHaveBeenCalledTimes(2);
+    // The maintenance queue was already closed and nulled in the catch block
+    // — shutdown finds nothing left to close there.
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
   });
 
   it('createEventDispatchWorker constructs with the shared BullMQ connection and concurrency 5', () => {
@@ -810,5 +825,59 @@ describe('runShadowComparisonSweep', () => {
     const summary = await runShadowComparisonSweep();
 
     expect((summary as { samplesChecked: number }).samplesChecked).toBe(200);
+  });
+
+  it('clamps the window to the local-hash TTL (2h): a 3h-old watermark does not resurrect a receipt older than the TTL as a spurious mismatch, while a recent receipt in the clamped window is still genuinely checked', async () => {
+    eventDispatchModeMock.mockReturnValue('shadow');
+    const now = Date.now();
+    const threeHoursAgo = new Date(now - 3 * 60 * 60 * 1000);
+    const twoAndHalfHoursAgo = new Date(now - 2.5 * 60 * 60 * 1000); // older than the 2h TTL floor
+    const thirtyMinutesAgo = new Date(now - 30 * 60 * 1000); // inside the clamped window
+
+    redisGetMock.mockImplementation(async (key: string) => {
+      if (key === 'breeze:event-shadow:compare-last-run') return threeHoursAgo.toISOString();
+      return null;
+    });
+
+    // A stand-in for what Postgres's own `created_at >= windowStart` predicate
+    // would do: filters the fixture by the ACTUAL windowStart param the code
+    // passed to db.execute, so this test fails if the clamp is removed (the
+    // stale row would then be included, per the mutation-verification note).
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const dialect = new PgDialect();
+    const fixtureRows = [
+      { event_id: 'evt-stale', event_type: 'alert.new', subscriber_id: 'notification-dispatcher', createdAt: twoAndHalfHoursAgo },
+      { event_id: 'evt-recent', event_type: 'alert.new', subscriber_id: 'notification-dispatcher', createdAt: thirtyMinutesAgo }
+    ];
+    executeMock.mockImplementation(async (query: unknown) => {
+      const { params } = dialect.sqlToQuery(query as never);
+      const windowStart = new Date(params[0] as string);
+      return fixtureRows
+        .filter((r) => r.createdAt.getTime() >= windowStart.getTime())
+        .map(({ event_id, event_type, subscriber_id }) => ({ event_id, event_type, subscriber_id }));
+    });
+
+    isShadowSampledEventMock.mockReturnValue(true);
+    // Neither event has a local hash — evt-recent is a genuine mismatch (it's
+    // inside the clamped window); evt-stale must never even be fetched.
+    redisHgetallMock.mockResolvedValue({});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const summary = await runShadowComparisonSweep();
+
+    const result = summary as { samplesChecked: number; mismatches: number };
+    expect(result.samplesChecked).toBe(1);
+    expect(result.mismatches).toBe(1);
+    const mismatchCall = errorSpy.mock.calls.find((c) => String(c[0]).includes('EVENT_DISPATCH_SHADOW_MISMATCH'));
+    expect(mismatchCall).toBeDefined();
+    expect(String(mismatchCall![0])).toContain('"eventId":"evt-recent"');
+    expect(String(mismatchCall![0])).not.toContain('"eventId":"evt-stale"');
+
+    const clampWarn = warnSpy.mock.calls.find((c) => String(c[0]).includes('shadow-compare-window-clamped'));
+    expect(clampWarn).toBeDefined();
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });

@@ -47,7 +47,10 @@ export interface DeliverEventJobData {
 // the same "never duplicate the rule" concern as `isShadowSampledEvent` below.
 export const SHADOW_COUNT_PREFIX = 'breeze:event-shadow:count';
 export const SHADOW_LOCAL_PREFIX = 'breeze:event-shadow:local';
-const SHADOW_LOCAL_TTL_SECONDS = 7200;
+// Also exported: the shadow-comparison job clamps its lookback window to this
+// TTL (a per-event local hash this old has already expired, so scanning past
+// it can only produce spurious "missing locally" mismatches).
+export const SHADOW_LOCAL_TTL_SECONDS = 7200;
 
 let queue: Queue<RouteEventJobData | DeliverEventJobData> | null = null;
 

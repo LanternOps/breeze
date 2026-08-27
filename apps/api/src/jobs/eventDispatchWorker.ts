@@ -14,6 +14,7 @@ import {
   isShadowSampledEvent,
   SHADOW_COUNT_PREFIX,
   SHADOW_LOCAL_PREFIX,
+  SHADOW_LOCAL_TTL_SECONDS,
   type RouteEventJobData,
   type DeliverEventJobData
 } from '../services/eventDispatchQueue';
@@ -572,9 +573,26 @@ export async function runShadowComparisonSweep(): Promise<ShadowComparisonSummar
   const now = new Date();
 
   const lastRunRaw = await redis.get(SHADOW_COMPARE_LAST_RUN_KEY);
-  const windowStart = lastRunRaw
+  const requestedWindowStart = lastRunRaw
     ? new Date(lastRunRaw)
     : new Date(now.getTime() - SHADOW_COMPARE_FALLBACK_WINDOW_MS);
+
+  // Clamp to SHADOW_LOCAL_TTL_SECONDS: `breeze:event-shadow:local:<eventId>`
+  // expires after that TTL, so after any gap longer than it (an outage, or
+  // shadow mode toggled off then back on), every sampled event older than the
+  // TTL has an expired/empty local hash — scanning that far back would only
+  // manufacture spurious `routedButNotLocal` mismatches, not real ones.
+  const ttlFloor = new Date(now.getTime() - SHADOW_LOCAL_TTL_SECONDS * 1000);
+  const windowStart = requestedWindowStart.getTime() < ttlFloor.getTime() ? ttlFloor : requestedWindowStart;
+  if (windowStart.getTime() > requestedWindowStart.getTime()) {
+    console.warn(
+      `[EventDispatchWorker] shadow-compare-window-clamped ${JSON.stringify({
+        requestedWindowStart: requestedWindowStart.toISOString(),
+        clampedWindowStart: windowStart.toISOString(),
+        skippedMs: windowStart.getTime() - requestedWindowStart.getTime()
+      })}`
+    );
+  }
 
   const rows = (await runWithSystemDbAccess(() =>
     db.execute(buildShadowWindowQuery(windowStart))
@@ -832,12 +850,18 @@ export async function initializeEventDispatchWorker(): Promise<void> {
     await registerEventDispatchMaintenanceRepeatables();
     console.log('[EventDispatchWorker] Maintenance repeatables registered (receipt-retention, shadow-compare)');
   } catch (error) {
-    // Partial-failure cleanup: a throw here (e.g. Redis unreachable while
-    // registering repeatables) must not leave a freshly-created
-    // maintenance Worker/Queue holding a connection with no handle anyone
-    // will ever close. The main event-dispatch worker created just above is
-    // torn down too, so a boot failure here leaves nothing running
-    // half-initialized for the caller to retry into.
+    // ISOLATED failure domain, deliberately NOT rethrown: the main worker
+    // constructed just above is already healthy and serving real event
+    // traffic, and this function's caller (index.ts's initializeWorkers)
+    // sets `workerStatus['eventDispatch'] = true` only if this promise
+    // resolves — the exact off-mode-backlog-probe lesson a few lines up
+    // applies here too. Maintenance registration does 3+ fresh Redis
+    // round-trips (getRepeatableJobs, 2x removeRepeatableByKey/add), so a
+    // transient Redis blip during boot must degrade to "retention/
+    // shadow-compare didn't get scheduled this boot" rather than pinning
+    // `/ready` to not-ready for the process lifetime over a housekeeping
+    // job. Close ONLY what THIS try block opened (maintenance worker/queue);
+    // the main worker/queue are untouched.
     if (maintenanceWorker) {
       await maintenanceWorker.close().catch(() => {});
       maintenanceWorker = null;
@@ -846,11 +870,8 @@ export async function initializeEventDispatchWorker(): Promise<void> {
       await maintenanceQueue.close().catch(() => {});
       maintenanceQueue = null;
     }
-    if (worker) {
-      await worker.close().catch(() => {});
-      worker = null;
-    }
-    throw error;
+    console.error('[EventDispatchWorker] Failed to register maintenance repeatables (main worker unaffected):', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
