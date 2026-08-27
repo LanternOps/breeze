@@ -260,9 +260,10 @@ function buildAnthropicClient(input: FidelityCheckInput): Anthropic {
       : { authToken: input.apiKey, apiKey: null }),
     fetch: buildGuardedLlmFetch({
       allowedOrigin: new URL(input.baseUrl).origin,
-      // No `llm_egress_events` table exists yet (Task 2.3) — this stage stays
-      // dead-code-safe per the Wave 2 map until Wave 3 wires a real recorder
-      // in through the resolver.
+      // `llm_egress_events` is org-scoped (see `llmEgressRecorder.ts`), and the
+      // harness is a platform-admin vetting tool with no tenant behind it —
+      // there is no org/partner to attribute a row to. Partner traffic is
+      // recorded where it has a tenant: the resolver-built clients in Wave 3.
       recordEgress: () => {},
     }) as unknown as typeof fetch,
     timeout: DIRECT_REQUEST_TIMEOUT_MS,

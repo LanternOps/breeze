@@ -221,6 +221,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'invoice_payments',
   'invoice_stripe_payments',
   'invoices',
+  'llm_egress_events',
   'local_vaults',
   'log_correlation_rules',
   'log_correlations',
