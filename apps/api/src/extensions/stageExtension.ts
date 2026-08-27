@@ -17,7 +17,10 @@ import {
   ExtensionContributionRegistry,
   type StagedExtensionContributions,
 } from './contributionRegistry';
-import { hasCoreAiToolName } from '../services/aiTools';
+// Leaf module — NOT '../services/aiTools' (the ~45-domain-module tool
+// registry hub, which reaches routes/agentWs.ts via aiToolsBackup.ts ->
+// commandQueue.ts). See services/aiToolNames.ts's header (#4086 Task 5).
+import { hasCoreAiToolName } from '../services/aiToolNames';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { load } from 'js-yaml';
+import { load, YAML11_SCHEMA } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 
 // apps/api/src/config -> repo root is 4 levels up.
@@ -29,7 +29,14 @@ interface ComposeFile {
 
 function loadCompose(): ComposeFile {
   const raw = readFileSync(COMPOSE_PATH, 'utf8');
-  return load(raw) as ComposeFile;
+  // The api/worker services merge a shared `x-api-env` anchor via the YAML
+  // merge key (`environment: { <<: *api-env, ... }`, wave 3.5d-b #4086) —
+  // js-yaml's default schema does not expand `<<` into the target mapping's
+  // keys (it leaves a literal `'<<'` key pointing at the aliased object), so
+  // reads via `service.environment[key]` below would silently miss every
+  // key that lives only in the shared anchor. YAML11_SCHEMA restores merge-key
+  // resolution, matching what `docker compose config` itself does.
+  return load(raw, { schema: YAML11_SCHEMA }) as ComposeFile;
 }
 
 /**

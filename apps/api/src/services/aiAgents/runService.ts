@@ -86,10 +86,14 @@ export type CreateAgentRunResult =
  * keeps the cycle open, and keeps BullMQ/Redis out of the unit-test module
  * graph of the most heavily tested function in this wave.
  *
- * `jobs/aiAgentRunner` MUST call `registerAgentRunEnqueuer(enqueueAgentRunJob)`
- * at module scope, and `index.ts` MUST import that module at boot. With no
- * enqueuer registered a run is inserted and then immediately marked `failed`
- * with `errorCode: 'enqueue_failed'` — loud, never a silently stuck `queued`.
+ * `jobs/aiAgentEnqueuer.ts` exports `registerAiAgentEnqueuer()`, which calls
+ * `registerAgentRunEnqueuer(enqueueAgentRunJob)`; every entrypoint (`index.ts`,
+ * `worker.ts`) MUST call `registerAiAgentEnqueuer()` explicitly during boot, in
+ * every role (wave 3.5d-b, #4086 — this used to be a module-scope side effect
+ * of importing `jobs/aiAgentRunner`, which the lazy worker registry no longer
+ * guarantees gets imported in an `api`-role process). With no enqueuer
+ * registered a run is inserted and then immediately marked `failed` with
+ * `errorCode: 'enqueue_failed'` — loud, never a silently stuck `queued`.
  */
 export type AgentRunEnqueuer = (runId: string) => Promise<{ enqueued: boolean; jobId?: string }>;
 
