@@ -48,7 +48,9 @@ describe('eventBus service', () => {
       xadd: vi.fn().mockResolvedValue('0-0'),
       publish: vi.fn().mockResolvedValue(1),
       xack: vi.fn().mockResolvedValue(1),
-      lpush: vi.fn().mockResolvedValue(1)
+      lpush: vi.fn().mockResolvedValue(1),
+      quit: vi.fn().mockResolvedValue('OK'),
+      status: 'ready'
     };
 
     eventBusModule = await import('./eventBus');
@@ -606,5 +608,36 @@ describe('eventBus service', () => {
     ).resolves.toEqual(expect.any(String));
 
     vi.restoreAllMocks();
+  });
+
+  describe('EventBus.close() — must not quit the shared connection (#4086)', () => {
+    it('does not call .quit() on the borrowed getRedisConnection() singleton', async () => {
+      const { getEventBus, EVENT_TYPES } = eventBusModule;
+      const bus = getEventBus();
+
+      // Drive getOrCreateRedis() so the bus holds a reference to the shared
+      // connection before closing it.
+      await bus.publish(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+      expect(mockRedis.publish as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+
+      await bus.close();
+
+      // closeRedis() is the sole owner of the shared connection's .quit() —
+      // EventBus.close() only releases its own reference.
+      expect(mockRedis.quit).not.toHaveBeenCalled();
+    });
+
+    it('re-acquires the connection via getRedisConnection() on the next publish after close()', async () => {
+      const { getEventBus, EVENT_TYPES } = eventBusModule;
+      const bus = getEventBus();
+
+      await bus.publish(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+      const callsBeforeClose = (getRedisConnection as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      await bus.close();
+      await bus.publish(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-2' }, 'unit-test');
+
+      expect((getRedisConnection as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBeforeClose);
+    });
   });
 });
