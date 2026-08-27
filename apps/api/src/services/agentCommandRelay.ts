@@ -15,8 +15,14 @@
  *     waitUntilFinished — blocking commands on the shared connection stall
  *     every enqueue, #3299; no repo precedent for QueueEvents)
  */
+import { randomUUID } from 'crypto';
+import type { Queue } from 'bullmq';
 import { getRedis } from './redis';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId } from './secretCrypto';
+import { breezeRole } from '../config/env';
+import { createInstrumentedQueue } from './bullmqQueue';
+import { readAgentPresence } from './agentPresence';
+import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
 import type { AgentCommand } from '../routes/agentWs';
 
 export const AGENT_COMMAND_RELAY_QUEUE = 'agent-command-relay';
@@ -148,4 +154,76 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
     if (Date.now() >= deadline) return { status: 'indeterminate' };
     await new Promise((resolve) => setTimeout(resolve, ACK_POLL_INTERVAL_MS));
   }
+}
+
+let relayQueue: Queue<RelayJobData> | null = null;
+
+export function getAgentCommandRelayQueue(): Queue<RelayJobData> {
+  if (!relayQueue) {
+    relayQueue = createInstrumentedQueue<RelayJobData>(AGENT_COMMAND_RELAY_QUEUE);
+  }
+  return relayQueue;
+}
+
+export async function shutdownAgentCommandRelayQueue(): Promise<void> {
+  if (relayQueue) {
+    await relayQueue.close();
+    relayQueue = null;
+  }
+}
+
+export async function isAgentConnectedAnywhere(agentId: string): Promise<boolean> {
+  if (breezeRole() !== 'worker' && isAgentConnected(agentId)) return true;
+  return (await readAgentPresence(agentId)) !== null;
+}
+
+/**
+ * Cross-process-safe agent command dispatch (wave 3.5b, #4084).
+ *
+ * Local-first: on a process that may own sockets, a locally-connected agent
+ * gets today's direct send — zero Redis, zero behavior change. Otherwise the
+ * presence lease admits (or refuses) a relay enqueue, and the api-role
+ * consumer performs the actual socket write. `sent` means the frame reached
+ * ws.send() successfully — it says nothing about execution; results flow
+ * through device_commands exactly as before.
+ */
+export async function dispatchCommandToAgent(
+  agentId: string,
+  command: AgentCommand,
+  opts: { priority?: 'probe' | 'normal'; forceRelay?: boolean } = {},
+): Promise<DispatchOutcome> {
+  if (!opts.forceRelay && breezeRole() !== 'worker' && isAgentConnected(agentId)) {
+    return sendCommandToAgent(agentId, command)
+      ? { status: 'sent', via: 'local' }
+      : { status: 'offline' };
+  }
+
+  const lease = await readAgentPresence(agentId);
+  if (!lease) return { status: 'offline' };
+
+  const relayId = randomUUID();
+  const expiresAt = Date.now() + RELAY_DELIVERY_DEADLINE_MS;
+  const binding: RelayEnvelopeBinding = {
+    agentId, commandId: command.id, targetInstanceId: lease.instanceId, expiresAt,
+  };
+  const data: RelayJobData = {
+    relayId, agentId, commandId: command.id,
+    targetInstanceId: lease.instanceId, connectionToken: lease.connectionToken,
+    expiresAt, sealedCommand: sealRelayCommand(command, binding),
+  };
+  try {
+    await getAgentCommandRelayQueue().add('relay-send', data, {
+      jobId: `relay-${relayId}`,
+      attempts: 1, // at-most-once: claims (not BullMQ retries) guard the send
+      priority: opts.priority === 'probe' ? 1 : 10,
+      removeOnComplete: true,
+      removeOnFail: 100,
+    });
+  } catch (err) {
+    return {
+      status: 'infrastructure_error',
+      message: `relay enqueue failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  return awaitRelayAck(relayId, RELAY_DELIVERY_DEADLINE_MS);
 }
