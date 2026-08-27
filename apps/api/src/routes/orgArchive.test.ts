@@ -1,0 +1,451 @@
+/**
+ * Unit tests for the org archive HTTP endpoints (org-lifecycle Wave 4, Task 2).
+ *
+ * The lifecycle service is mocked: this suite proves the route middleware,
+ * suspended/archived-compatible tenancy check, validation, response mapping,
+ * and audit contract.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+
+const { orgRows } = vi.hoisted(() => ({
+  orgRows: {
+    current: [] as Array<{
+      id: string;
+      partnerId: string;
+      name: string;
+      status: string;
+    }>,
+  },
+}));
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve(orgRows.current.slice(0, 1))),
+        })),
+      })),
+    })),
+  },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+}));
+
+vi.mock('../db/schema', () => ({
+  organizations: {
+    id: { __column: 'organizations.id' },
+    partnerId: { __column: 'organizations.partnerId' },
+    name: { __column: 'organizations.name' },
+    status: { __column: 'organizations.status' },
+  },
+}));
+
+vi.mock('drizzle-orm', async (importActual) => {
+  const actual = await importActual<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    eq: vi.fn((column: unknown, value: unknown) => ({ __eq: { column, value } })),
+  };
+});
+
+const { writeRouteAuditMock } = vi.hoisted(() => ({ writeRouteAuditMock: vi.fn() }));
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: writeRouteAuditMock,
+}));
+
+const { beginOrgArchiveMock, restoreOrgFromArchiveMock } = vi.hoisted(() => ({
+  beginOrgArchiveMock: vi.fn(),
+  restoreOrgFromArchiveMock: vi.fn(),
+}));
+vi.mock('../services/orgArchive', () => {
+  class OrgArchiveStateError extends Error {
+    constructor(
+      message: string,
+      readonly currentStatus: string | null = null,
+    ) {
+      super(message);
+      this.name = 'OrgArchiveStateError';
+    }
+  }
+  return {
+    OrgArchiveStateError,
+    beginOrgArchive: beginOrgArchiveMock,
+    restoreOrgFromArchive: restoreOrgFromArchiveMock,
+  };
+});
+
+const { permissionAllowed } = vi.hoisted(() => ({
+  permissionAllowed: { current: true },
+}));
+
+vi.mock('../middleware/auth', () => ({
+  authMiddleware: vi.fn((c: any, next: any) => next()),
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
+    const auth = c.get('auth');
+    if (!auth) return c.json({ error: 'Not authenticated' }, 401);
+    if (!scopes.includes(auth.scope)) {
+      return c.json({ error: 'Insufficient permissions' }, 403);
+    }
+    return next();
+  }),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (!permissionAllowed.current) {
+      return c.json({ error: 'Insufficient permissions' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    const auth = c.get('auth');
+    if (!auth) return c.json({ error: 'Not authenticated' }, 401);
+    if (auth.token?.mfa === false) {
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    }
+    return next();
+  }),
+}));
+
+import { authMiddleware } from '../middleware/auth';
+import { OrgArchiveStateError } from '../services/orgArchive';
+import { orgArchiveRoutes } from './orgArchive';
+
+const ORG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const PARTNER_ID = 'partner-1';
+const OTHER_PARTNER_ID = 'partner-2';
+const PURGE_AT = new Date('2026-11-24T12:00:00.000Z');
+
+type FakeAuth = {
+  user: { id: string; email: string; name?: string };
+  token: { mfa?: boolean };
+  scope: 'system' | 'partner' | 'organization';
+  partnerId: string | null;
+  orgId?: string | null;
+  canAccessOrg: (orgId: string) => boolean;
+};
+
+function setAuthContext(overrides: Partial<FakeAuth> = {}) {
+  const auth: FakeAuth = {
+    user: { id: 'user-1', email: 'tech@example.com', name: 'Tech' },
+    token: { mfa: true },
+    scope: 'partner',
+    partnerId: PARTNER_ID,
+    orgId: null,
+    canAccessOrg: () => true,
+    ...overrides,
+  };
+  vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+    c.set('auth', auth);
+    return next();
+  });
+}
+
+function buildApp() {
+  const app = new Hono();
+  app.route('/orgs', orgArchiveRoutes);
+  return app;
+}
+
+async function postJson(path: string, body?: unknown) {
+  return buildApp().request(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+describe('org archive routes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    permissionAllowed.current = true;
+    orgRows.current = [
+      {
+        id: ORG_ID,
+        partnerId: PARTNER_ID,
+        name: 'Acme Corp',
+        status: 'active',
+      },
+    ];
+    beginOrgArchiveMock.mockResolvedValue({ status: 'offboarding', purgeAt: PURGE_AT });
+    restoreOrgFromArchiveMock.mockResolvedValue({
+      recreateRequired: ['Agents that completed the archive uninstall must be re-enrolled.'],
+    });
+    setAuthContext();
+  });
+
+  describe('POST /orgs/organizations/:id/archive', () => {
+    it('returns 202, calls the service with the requested retention, and audits the target org', async () => {
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {
+        retentionDays: 30,
+      });
+
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({
+        status: 'offboarding',
+        purgeAt: PURGE_AT.toISOString(),
+      });
+      expect(beginOrgArchiveMock).toHaveBeenCalledWith({
+        orgId: ORG_ID,
+        retentionDays: 30,
+        actor: 'user-1',
+      });
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: ORG_ID,
+          action: 'org.archive.requested',
+          resourceType: 'organization',
+          resourceId: ORG_ID,
+          resourceName: 'Acme Corp',
+          details: expect.objectContaining({ retentionDays: 30 }),
+        }),
+      );
+    });
+
+    it('passes null retention through as never purge', async () => {
+      beginOrgArchiveMock.mockResolvedValueOnce({ status: 'archived', purgeAt: null });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {
+        retentionDays: null,
+      });
+
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ status: 'archived', purgeAt: null });
+      expect(beginOrgArchiveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ retentionDays: null }),
+      );
+    });
+
+    it('passes an absent retention through for the service env default', async () => {
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(202);
+      expect(beginOrgArchiveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ retentionDays: undefined }),
+      );
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({
+            retentionDays: 'default',
+            purgeAt: PURGE_AT,
+          }),
+        }),
+      );
+    });
+
+    it.each([0, 3651])('returns 400 for retentionDays=%s', async (retentionDays) => {
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {
+        retentionDays,
+      });
+
+      expect(res.status).toBe(400);
+      expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('maps a service retention RangeError to 400', async () => {
+      beginOrgArchiveMock.mockRejectedValueOnce(new RangeError('bad retention'));
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('bad retention');
+    });
+
+    it('maps an invalid archive lifecycle state to 409', async () => {
+      beginOrgArchiveMock.mockRejectedValueOnce(
+        new OrgArchiveStateError('Organization cannot be archived', 'archived'),
+      );
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe('Organization cannot be archived');
+    });
+
+    it('does not use canAccessOrg for a same-partner suspended target', async () => {
+      orgRows.current[0]!.status = 'suspended';
+      setAuthContext({ canAccessOrg: () => false });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(202);
+      expect(beginOrgArchiveMock).toHaveBeenCalled();
+    });
+
+    it('returns a 404-shaped response for a target belonging to another partner', async () => {
+      orgRows.current[0]!.partnerId = OTHER_PARTNER_ID;
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an organization-scope token', async () => {
+      setAuthContext({ scope: 'organization', partnerId: null, orgId: ORG_ID });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(403);
+      expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unauthenticated request', async () => {
+      vi.mocked(authMiddleware).mockImplementation((_c: any, next: any) => next());
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(401);
+      expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a caller without organization write permission', async () => {
+      permissionAllowed.current = false;
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(403);
+      expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects partner scope without a partner context', async () => {
+      setAuthContext({ partnerId: null });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(400);
+      expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('lets system scope resolve the target partner from the organization row', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(202);
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({ partnerId: PARTNER_ID }),
+        }),
+      );
+    });
+
+    it('rejects a request without MFA', async () => {
+      setAuthContext({ token: { mfa: false } });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(res.status).toBe(403);
+      expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /orgs/organizations/:id/restore', () => {
+    it('returns active with recreateRequired and audits the restored org', async () => {
+      orgRows.current[0]!.status = 'archived';
+      const recreateRequired = [
+        'Agents that completed the archive uninstall must be re-enrolled.',
+      ];
+      restoreOrgFromArchiveMock.mockResolvedValueOnce({ recreateRequired });
+
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'active', recreateRequired });
+      expect(restoreOrgFromArchiveMock).toHaveBeenCalledWith({
+        orgId: ORG_ID,
+        actor: 'user-1',
+      });
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: ORG_ID,
+          action: 'org.archive.restored',
+          resourceType: 'organization',
+          resourceId: ORG_ID,
+          resourceName: 'Acme Corp',
+          details: { recreateRequired },
+        }),
+      );
+    });
+
+    it('maps a purging restore refusal to 410', async () => {
+      orgRows.current[0]!.status = 'purging';
+      restoreOrgFromArchiveMock.mockRejectedValueOnce(
+        new OrgArchiveStateError('Organization is not archived'),
+      );
+
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(410);
+      expect((await res.json()).error).toMatch(/already purging/i);
+      expect(restoreOrgFromArchiveMock).toHaveBeenCalled();
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
+    it('maps any other restore state refusal to 409', async () => {
+      orgRows.current[0]!.status = 'active';
+      restoreOrgFromArchiveMock.mockRejectedValueOnce(
+        new OrgArchiveStateError('Organization is not archived'),
+      );
+
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe('Organization is not archived');
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
+    it('returns a 404-shaped response for a target belonging to another partner', async () => {
+      orgRows.current[0]!.partnerId = OTHER_PARTNER_ID;
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(404);
+      expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an organization-scope token', async () => {
+      setAuthContext({ scope: 'organization', partnerId: null, orgId: ORG_ID });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(403);
+      expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unauthenticated request', async () => {
+      vi.mocked(authMiddleware).mockImplementation((_c: any, next: any) => next());
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(401);
+      expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a caller without organization write permission', async () => {
+      permissionAllowed.current = false;
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(403);
+      expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects partner scope without a partner context', async () => {
+      setAuthContext({ partnerId: null });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(400);
+      expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+    });
+
+    it('lets system scope restore an archived target', async () => {
+      orgRows.current[0]!.status = 'archived';
+      setAuthContext({ scope: 'system', partnerId: null });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(200);
+      expect(restoreOrgFromArchiveMock).toHaveBeenCalledWith({
+        orgId: ORG_ID,
+        actor: 'user-1',
+      });
+    });
+
+    it('rejects a request without MFA', async () => {
+      setAuthContext({ token: { mfa: false } });
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(403);
+      expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+    });
+  });
+});
