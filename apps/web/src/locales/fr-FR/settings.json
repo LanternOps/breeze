@@ -3116,6 +3116,7 @@
       "errors": {
         "preview": "Échec de l'aperçu de la fusion",
         "merge": "Échec du démarrage de la fusion",
+        "missingResult": "La fusion s'est terminée mais n'a renvoyé aucune donnée de résultat. Réessayez.",
         "mfaRequired": "La fusion d'organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
       }
     }

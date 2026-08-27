@@ -3164,6 +3164,7 @@
       "errors": {
         "preview": "Anteprima dell'unione non riuscita",
         "merge": "Impossibile avviare l'unione",
+        "missingResult": "L'unione è terminata ma non ha restituito dati di risultato. Riprova.",
         "mfaRequired": "L'unione delle organizzazioni richiede l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del tuo profilo e riprova."
       }
     }

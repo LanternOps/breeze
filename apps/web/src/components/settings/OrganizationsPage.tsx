@@ -298,16 +298,34 @@ export default function OrganizationsPage() {
   };
 
   /**
-   * Called by MergeOrgModal once its merge-runs poll reports `completed`.
+   * Called by MergeOrgModal once its merge-runs poll reports a genuine
+   * `completed` result. LIST-STATE UPDATE ONLY — deliberately does not close
+   * the modal or touch `selectedOrg`. MergeOrgModal stays open on its own
+   * `done` phase so the operator can actually see the result summary; if this
+   * closed the modal too, the summary would be unmounted the instant it
+   * appeared (React 18 batches this call with the child's own `setPhase`
+   * update into one render).
+   *
    * NOT a `refreshOrgs()` — the merged-away org is not soft-deleted, it ends
    * up a terminal `status='merging'` shell with `deleted_at IS NULL`
    * (services/orgMerge.ts), so a refetch would still return it. The local
-   * filter is the only way to actually drop it from this screen; mirrors
-   * handleConfirmDelete's selectedOrg-clearing behavior below.
+   * filter is the only way to actually drop it from this screen.
    */
   const handleMergeComplete = (loserId: string) => {
     setOrganizations(prev => prev.filter(o => o.id !== loserId));
-    if (selectedOrg?.id === loserId) setSelectedOrg(null);
+  };
+
+  /**
+   * The done-phase summary's explicit Close button. Unlike a plain
+   * `handleCloseModal()`, `selectedOrg` here is known to be the org that was
+   * JUST merged away (handleMergeComplete already dropped it from the list),
+   * so it's cleared too — mirrors handleConfirmDelete's selectedOrg-clearing
+   * behavior. A plain Cancel out of the pick/failed phases (before anything
+   * merged) must NOT clear it, which is why this is a separate handler
+   * rather than folded into `onClose`.
+   */
+  const handleMergeDoneClose = () => {
+    setSelectedOrg(null);
     handleCloseModal();
   };
 
@@ -1024,6 +1042,7 @@ export default function OrganizationsPage() {
           orgs={organizations}
           onClose={handleCloseModal}
           onMerged={handleMergeComplete}
+          onDoneClose={handleMergeDoneClose}
         />
       )}
 

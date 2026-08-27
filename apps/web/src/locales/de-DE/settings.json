@@ -3116,6 +3116,7 @@
       "errors": {
         "preview": "Vorschau der Zusammenführung fehlgeschlagen",
         "merge": "Zusammenführung konnte nicht gestartet werden",
+        "missingResult": "Die Zusammenführung wurde abgeschlossen, lieferte aber keine Ergebnisdaten. Versuchen Sie es erneut.",
         "mfaRequired": "Das Zusammenführen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
       }
     }

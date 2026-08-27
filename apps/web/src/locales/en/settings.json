@@ -3169,6 +3169,7 @@
       "errors": {
         "preview": "Failed to preview the merge",
         "merge": "Failed to start the merge",
+        "missingResult": "The merge finished but returned no result data. Try again.",
         "mfaRequired": "Merging organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
     }

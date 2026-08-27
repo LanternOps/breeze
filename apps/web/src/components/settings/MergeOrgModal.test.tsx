@@ -80,7 +80,7 @@ const PREVIEW_TOO_LARGE = {
   tables: [],
   totalMovableRows: 999999,
   verdict: 'too-large' as const,
-  warnings: [],
+  warnings: ['this merge will REVOKE 3 live API keys belonging to the merged-away organization'],
 };
 
 interface MergeResponse {
@@ -130,7 +130,9 @@ afterEach(() => {
 
 describe('MergeOrgModal — survivor picker', () => {
   it('excludes the loser, quick_support orgs, and non-active/trial orgs', () => {
-    render(<MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} />);
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+    );
 
     const select = screen.getByTestId('org-merge-survivor-select');
     const optionNames = within(select)
@@ -148,7 +150,9 @@ describe('MergeOrgModal — survivor picker', () => {
 describe('MergeOrgModal — preview', () => {
   it('fetches and renders the preview on survivor selection', async () => {
     routeFetch({});
-    render(<MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} />);
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+    );
 
     fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
 
@@ -166,20 +170,31 @@ describe('MergeOrgModal — preview', () => {
 
   it('disables the confirm path and shows refusal copy on a too-large verdict', async () => {
     routeFetch({ preview: () => PREVIEW_TOO_LARGE });
-    render(<MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} />);
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+    );
 
     fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
 
     await waitFor(() => expect(screen.getByTestId('org-merge-too-large')).toBeInTheDocument());
     expect(screen.queryByTestId('org-merge-confirm-input')).not.toBeInTheDocument();
     expect(screen.getByTestId('org-merge-submit')).toBeDisabled();
+    // Warnings (audit-trail destruction, key revocation, ...) must still be
+    // visible on a too-large refusal — a self-hosted operator raising the
+    // row limit and retrying, or a partner deciding whether to contact
+    // support, still needs to see what's at stake.
+    for (const warning of PREVIEW_TOO_LARGE.warnings) {
+      expect(screen.getByText(warning)).toBeInTheDocument();
+    }
   });
 });
 
 describe('MergeOrgModal — typed-name confirmation', () => {
   it('keeps the confirm button disabled until the typed name matches exactly (case-sensitive)', async () => {
     routeFetch({});
-    render(<MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} />);
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+    );
     fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
     await waitFor(() => screen.getByTestId('org-merge-confirm-input'));
 
@@ -215,7 +230,9 @@ describe('MergeOrgModal — submit + progress', () => {
       },
     });
 
-    render(<MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={onMerged} />);
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={onMerged} onDoneClose={vi.fn()} />,
+    );
     fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -249,18 +266,95 @@ describe('MergeOrgModal — submit + progress', () => {
     expect(onMerged).toHaveBeenCalledWith(LOSER.id);
   });
 
-  it('stops polling on unmount', async () => {
+  it('stops polling on unmount and drops an in-flight poll response that resolves after unmount', async () => {
     vi.useFakeTimers();
+    const onMerged = vi.fn();
     let pollCalls = 0;
-    routeFetch({
-      poll: () => {
+    let releaseSecondPoll: ((body: unknown) => void) | undefined;
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'POST' && url.endsWith('/merge-preview')) return jsonResponse(PREVIEW_OK);
+      if (init?.method === 'POST' && /\/organizations\/[^/]+\/merge$/.test(url)) {
+        return jsonResponse({ jobId: 'job-1' }, true, 202);
+      }
+      if (url.includes('/merge-runs/')) {
         pollCalls += 1;
-        return { state: 'active' };
-      },
+        if (pollCalls === 1) return jsonResponse({ state: 'active' }); // proves ticking actually happens
+        // The SECOND tick — the one that fires while unmounting is racing
+        // it — is held open so the test can resolve it once the component is
+        // already gone.
+        return new Promise<Response>((resolve) => {
+          releaseSecondPoll = (body: unknown) => resolve(jsonResponse(body));
+        });
+      }
+      return jsonResponse({});
     });
 
     const { unmount } = render(
-      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} />,
+      <MergeOrgModal
+        loserOrg={LOSER}
+        orgs={ALL_ORGS}
+        onClose={vi.fn()}
+        onMerged={onMerged}
+        onDoneClose={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    fireEvent.change(screen.getByTestId('org-merge-confirm-input'), { target: { value: LOSER.name } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('org-merge-submit'));
+      await vi.advanceTimersByTimeAsync(0); // the immediate first poll: 'active'
+    });
+    expect(pollCalls).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MERGE_POLL_INTERVAL_MS); // the second, scheduled tick
+    });
+    expect(pollCalls).toBe(2);
+    expect(releaseSecondPoll).toBeTruthy();
+
+    unmount();
+
+    // No further ticks are ever scheduled post-unmount...
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MERGE_POLL_INTERVAL_MS * 3);
+    });
+    expect(pollCalls).toBe(2);
+
+    // ...and the already-in-flight second request, resolved only now (with a
+    // genuine completed+result payload that WOULD otherwise finish the
+    // merge), must be recognized as stale and dropped rather than updating
+    // state on an unmounted component or firing onMerged late.
+    await act(async () => {
+      releaseSecondPoll!({
+        state: 'completed',
+        result: { tables: { devices: { moved: 1, dropped: 0 } }, warnings: [], mergeEventId: 'evt-late' },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(onMerged).not.toHaveBeenCalled();
+  });
+
+  it('treats a completed run with no result as a failure, not a fabricated zero-row summary', async () => {
+    vi.useFakeTimers();
+    const onMerged = vi.fn();
+    routeFetch({
+      // A `completed` state with no `result` payload at all — a contract
+      // violation the UI must not paper over by inventing a done summary.
+      poll: () => ({ state: 'completed' }),
+    });
+
+    render(
+      <MergeOrgModal
+        loserOrg={LOSER}
+        orgs={ALL_ORGS}
+        onClose={vi.fn()}
+        onMerged={onMerged}
+        onDoneClose={vi.fn()}
+      />,
     );
     fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
     await act(async () => {
@@ -272,14 +366,11 @@ describe('MergeOrgModal — submit + progress', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    const callsSoFar = pollCalls;
-    expect(callsSoFar).toBeGreaterThan(0);
-
-    unmount();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(MERGE_POLL_INTERVAL_MS * 3);
-    });
-    expect(pollCalls).toBe(callsSoFar);
+    expect(screen.getByTestId('org-merge-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-merge-done')).not.toBeInTheDocument();
+    expect(screen.getByTestId('org-merge-failed-reason')).toHaveTextContent('returned no result data');
+    expect(screen.getByTestId('org-merge-retry')).toBeInTheDocument();
+    expect(onMerged).not.toHaveBeenCalled();
   });
 
   it('renders failedReason on a failed run and retries by re-POSTing merge', async () => {
@@ -300,7 +391,9 @@ describe('MergeOrgModal — submit + progress', () => {
       },
     });
 
-    render(<MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} />);
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+    );
     fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -334,7 +427,9 @@ describe('MergeOrgModal — server-side confirmName mismatch', () => {
         status: 400,
       }),
     });
-    render(<MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={onClose} onMerged={vi.fn()} />);
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={onClose} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+    );
     await selectSurvivorAndTypeName();
 
     fireEvent.click(screen.getByTestId('org-merge-submit'));
@@ -349,5 +444,62 @@ describe('MergeOrgModal — server-side confirmName mismatch', () => {
     );
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByTestId('org-merge-survivor-select')).toBeInTheDocument();
+  });
+});
+
+describe('MergeOrgModal — stale preview race', () => {
+  const SURVIVOR_B: Organization = {
+    id: 'survivor-b-6666-6666-6666-666666666666',
+    name: 'Beta Org',
+    status: 'active',
+    deviceCount: 5,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const ORGS_WITH_B = [...ALL_ORGS, SURVIVOR_B];
+  const PREVIEW_B = { ...PREVIEW_OK, totalMovableRows: 999, tables: [], warnings: [] };
+
+  it('drops a stale preview response for a survivor that is no longer selected, even when it resolves last', async () => {
+    let releaseA: ((data: unknown) => void) | undefined;
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'POST' && url.endsWith('/merge-preview')) {
+        const body = JSON.parse(String(init.body)) as { survivorId: string };
+        if (body.survivorId === SURVIVOR.id) {
+          // Survivor A's request is requested FIRST but held open — it must
+          // not win just because it started first.
+          return new Promise<Response>((resolve) => {
+            releaseA = (data: unknown) => resolve(jsonResponse(data));
+          });
+        }
+        return jsonResponse(PREVIEW_B);
+      }
+      return jsonResponse({});
+    });
+
+    render(
+      <MergeOrgModal
+        loserOrg={LOSER}
+        orgs={ORGS_WITH_B}
+        onClose={vi.fn()}
+        onMerged={vi.fn()}
+        onDoneClose={vi.fn()}
+      />,
+    );
+
+    // Select A, then rapidly reselect B before A's response ever arrives.
+    fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
+    fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR_B.id } });
+
+    // B's (later) request resolves immediately.
+    await waitFor(() => expect(screen.getByTestId('org-merge-total-rows')).toHaveTextContent('999'));
+
+    // Now release A's (earlier) request — it resolves LAST. It must be
+    // dropped rather than clobbering B's already-rendered preview.
+    await act(async () => {
+      releaseA!(PREVIEW_OK);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByTestId('org-merge-total-rows')).toHaveTextContent('999');
   });
 });

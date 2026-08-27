@@ -3116,6 +3116,7 @@
       "errors": {
         "preview": "No se pudo obtener la vista previa de la fusión",
         "merge": "No se pudo iniciar la fusión",
+        "missingResult": "La fusión terminó pero no devolvió datos de resultado. Vuelva a intentarlo.",
         "mfaRequired": "Fusionar organizaciones requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo."
       }
     }

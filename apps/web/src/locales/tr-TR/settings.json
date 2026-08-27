@@ -3169,6 +3169,7 @@
       "errors": {
         "preview": "Birleştirme önizlemesi başarısız oldu",
         "merge": "Birleştirme başlatılamadı",
+        "missingResult": "Birleştirme tamamlandı ancak sonuç verisi döndürmedi. Tekrar deneyin.",
         "mfaRequired": "Kuruluşları birleştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
       }
     }

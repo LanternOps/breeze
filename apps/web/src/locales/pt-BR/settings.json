@@ -3169,6 +3169,7 @@
       "errors": {
         "preview": "Falha ao pré-visualizar a mesclagem",
         "merge": "Falha ao iniciar a mesclagem",
+        "missingResult": "A mesclagem terminou, mas não retornou dados de resultado. Tente novamente.",
         "mfaRequired": "Mesclar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
       }
     }
