@@ -199,7 +199,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'elevation_requests',
   'enrollment_keys',
   'escalation_policies',
-  'event_bus_events',
+  'event_delivery_receipts',
   'executive_summaries',
   'fleet_finding_devices',
   'fleet_findings',

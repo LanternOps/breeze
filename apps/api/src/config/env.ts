@@ -1,3 +1,5 @@
+import { EVENT_SUBSCRIBER_IDS, isSubscriberId, type SubscriberId } from '../services/eventSubscriberIds';
+
 // The single truthy/falsey vocabulary for boolean-ish env vars. Kept as two
 // named sets rather than inline literals so a reader that must distinguish
 // "explicitly off" from "unrecognized" (abuseSignalsEnabled below) can never
@@ -203,6 +205,32 @@ export function abuseSignalsExplicitlyDisabled(): boolean {
   return RECOGNIZED_FALSE_FLAG_VALUES.has(
     (process.env.ABUSE_SIGNALS_ENABLED ?? '').trim().toLowerCase(),
   );
+}
+
+export type EventDispatchMode = 'off' | 'shadow' | 'enforce';
+
+/** Wave 3.5c (#4085). off = today's in-process delivery only. shadow = mirror
+ * routing plans into receipts, execute nothing via the queue. enforce = the
+ * subscribers listed in EVENT_DISPATCH_QUEUE_SUBSCRIBERS deliver via BullMQ
+ * ONLY (skipped locally); everyone else stays local. Unrecognized values fall
+ * back to 'off' with a warning — a typo must never silently change delivery. */
+export function eventDispatchMode(): EventDispatchMode {
+  const raw = (process.env.EVENT_DISPATCH_MODE ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'off') return 'off';
+  if (raw === 'shadow' || raw === 'enforce') return raw;
+  console.warn(`[config] EVENT_DISPATCH_MODE="${raw}" is not off|shadow|enforce — treating as off`);
+  return 'off';
+}
+
+export function eventDispatchQueueSubscribers(): ReadonlySet<SubscriberId> {
+  const raw = (process.env.EVENT_DISPATCH_QUEUE_SUBSCRIBERS ?? '').trim();
+  const out = new Set<SubscriberId>();
+  if (raw === '') return out;
+  for (const part of raw.split(',').map((p) => p.trim()).filter(Boolean)) {
+    if (isSubscriberId(part)) out.add(part);
+    else console.warn(`[config] EVENT_DISPATCH_QUEUE_SUBSCRIBERS contains unknown id "${part}" (known: ${EVENT_SUBSCRIBER_IDS.join(', ')}) — ignoring`);
+  }
+  return out;
 }
 
 // Recognizes an AFFIRMATIVE self-host declaration: IS_HOSTED explicitly set to

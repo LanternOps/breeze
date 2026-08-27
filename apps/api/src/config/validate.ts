@@ -8,6 +8,7 @@ import {
   RELEASE_SOURCE_REPOSITORY_SHAPE,
   isValidReleaseSourceRepository,
 } from '../services/releaseSource';
+import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import {
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
@@ -599,6 +600,15 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above — see the superRefine rule for why a typo here
     // is worse than a typo on most flags.
     ABUSE_SIGNALS_ENABLED: z.string().optional(),
+
+    // Durable event dispatch (wave 3.5c, #4085). off = today's in-process
+    // delivery only; shadow = mirror routing plans into receipts without
+    // executing via the queue; enforce = the EVENT_DISPATCH_QUEUE_SUBSCRIBERS
+    // cohort delivers via BullMQ only. Read at runtime by eventDispatchMode()
+    // / eventDispatchQueueSubscribers() in env.ts. Validated here for
+    // vocabulary/membership — see the superRefine rule below.
+    EVENT_DISPATCH_MODE: z.string().optional(),
+    EVENT_DISPATCH_QUEUE_SUBSCRIBERS: z.string().optional(),
 
     // M365 Tier-3 write-action AI tools (m365_disable_user, m365_reset_password)
     // and the action-intents release worker's headless dispatch. Dark by
@@ -1635,6 +1645,45 @@ const envSchema = envObjectSchema
         message:
           'ABUSE_SIGNALS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to the value of IS_HOSTED — signup-abuse detection is ON for a hosted deployment and OFF for a self-hosted one. Set true to opt a self-hosted multi-tenant service in, or false to switch a hosted deployment off.',
       });
+    }
+
+    // EVENT_DISPATCH_MODE / EVENT_DISPATCH_QUEUE_SUBSCRIBERS (durable event
+    // dispatch, wave 3.5c, #4085). Unlike ABUSE_SIGNALS_ENABLED above, an
+    // unrecognized mode is a HARD error here, not a warning-and-fallback: boot
+    // refusal beats a silent fallback in prod, because eventDispatchMode()'s
+    // fallback-to-off is the reader's last line of defense for a process that
+    // skipped this validator, not a substitute for catching the typo here.
+    const eventDispatchModeRaw = (data.EVENT_DISPATCH_MODE ?? '').trim().toLowerCase();
+    const eventDispatchModeValues = new Set(['', 'off', 'shadow', 'enforce']);
+    if (!eventDispatchModeValues.has(eventDispatchModeRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['EVENT_DISPATCH_MODE'],
+        message:
+          'EVENT_DISPATCH_MODE must be one of off, shadow, enforce (or unset, which defaults to off) — see eventDispatchMode() in env.ts.',
+      });
+    }
+    const eventDispatchSubscribersRaw = (data.EVENT_DISPATCH_QUEUE_SUBSCRIBERS ?? '').trim();
+    const eventDispatchSubscriberIds = eventDispatchSubscribersRaw
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    for (const id of eventDispatchSubscriberIds) {
+      if (!isSubscriberId(id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EVENT_DISPATCH_QUEUE_SUBSCRIBERS'],
+          message: `EVENT_DISPATCH_QUEUE_SUBSCRIBERS contains unknown subscriber id "${id}" — known ids: ${EVENT_SUBSCRIBER_IDS.join(', ')}.`,
+        });
+      }
+    }
+    // enforce with an empty cohort is not an error — it degenerates to
+    // "everyone stays local", same as off — but is very likely a
+    // misconfiguration (the operator meant to enforce SOMETHING), so warn.
+    if (eventDispatchModeRaw === 'enforce' && eventDispatchSubscriberIds.length === 0) {
+      console.warn(
+        '[config] EVENT_DISPATCH_MODE=enforce but EVENT_DISPATCH_QUEUE_SUBSCRIBERS is empty — no subscriber will deliver via the queue.',
+      );
     }
 
     // TRUST_CF_CONNECTING_IP. Same class as the two flags above: the runtime
