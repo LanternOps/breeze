@@ -159,7 +159,7 @@
     "disconnectFailed": "Could not disconnect the Anthropic key.",
     "permissionDenied": "Managing the AI provider requires billing permissions and access to all organizations.",
     "loadFailed": "Could not load the AI provider configuration.",
-    "workspaceDisclosure": "Workspace content enrichment currently uses the platform key."
+    "workspaceDisclosure": "Workspace content enrichment uses your configured AI provider and appears in your AI usage."
   },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",

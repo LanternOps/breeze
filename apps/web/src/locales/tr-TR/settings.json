@@ -159,7 +159,7 @@
     "disconnectFailed": "Anthropic anahtarının bağlantısı kesilemedi.",
     "permissionDenied": "Yapay zeka sağlayıcısını yönetmek için faturalama izinleri ve tüm kuruluşlara erişim gerekir.",
     "loadFailed": "Yapay zeka sağlayıcısı yapılandırması yüklenemedi.",
-    "workspaceDisclosure": "Workspace içerik zenginleştirme şu anda platform anahtarını kullanıyor."
+    "workspaceDisclosure": "Workspace içerik zenginleştirme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür."
   },
   "partnerDefaults": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",

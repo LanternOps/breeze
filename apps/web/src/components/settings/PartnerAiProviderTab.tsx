@@ -303,7 +303,7 @@ export default function PartnerAiProviderTab() {
         </>
       )}
 
-      {/* Spec §3 non-goal disclosure: workspace enrichment stays on the platform key. */}
+      {/* Workspace enrichment now routes through the configured provider (platform key or BYOK) and is metered under the caller's usage. */}
       <p className="text-xs text-muted-foreground" data-testid="ai-provider-workspace-note">
         {t('partnerAiProvider.workspaceDisclosure')}
       </p>
