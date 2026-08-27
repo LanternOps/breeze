@@ -58,7 +58,7 @@ wave: W08 (#4084)
 **Interfaces:**
 - Produces: `breezeRole(): BreezeRole` (`'all'|'api'|'worker'`, default `'all'`), `INSTANCE_ID: string`.
 
-- [ ] **Step 1: Write the leaf identity module** (const-only, no test):
+- [x] **Step 1: Write the leaf identity module** (const-only, no test):
 
 ```ts
 // apps/api/src/services/instanceIdentity.ts
@@ -70,7 +70,7 @@ import { randomUUID } from 'crypto';
 export const INSTANCE_ID = randomUUID();
 ```
 
-- [ ] **Step 2: Write the failing env-helper tests**
+- [x] **Step 2: Write the failing env-helper tests**
 
 ```ts
 // apps/api/src/config/env.breezeRole.test.ts
@@ -108,9 +108,9 @@ describe('breezeRole()', () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify failure** — `cd apps/api && npx vitest run src/config/env.breezeRole.test.ts` → FAIL (`breezeRole` not exported).
+- [x] **Step 3: Run to verify failure** — `cd apps/api && npx vitest run src/config/env.breezeRole.test.ts` → FAIL (`breezeRole` not exported).
 
-- [ ] **Step 4: Implement in `env.ts`** (mirror `eventDispatchMode`, env.ts:217):
+- [x] **Step 4: Implement in `env.ts`** (mirror `eventDispatchMode`, env.ts:217):
 
 ```ts
 export type BreezeRole = 'all' | 'api' | 'worker';
@@ -132,9 +132,9 @@ export function breezeRole(): BreezeRole {
 
 Add the matching optional-enum entry in `config/validate.ts` exactly the way `EVENT_DISPATCH_MODE` is declared there (same optionality — absent means `all`; do NOT make it required-in-production in this wave).
 
-- [ ] **Step 5: Env parity plumbing** — add to `.env.example` (`# BREEZE_ROLE=all — process role; 'worker' disables socket-local agent dispatch (wave 3.5d)`), and `BREEZE_ROLE: ${BREEZE_ROLE:-all}` to the api service `environment:` block in `docker-compose.yml` AND `deploy/docker-compose.prod.yml`. Run `cd apps/api && npx vitest run src/config/envComposeParity.test.ts` → PASS.
+- [x] **Step 5: Env parity plumbing** — add to `.env.example` (`# BREEZE_ROLE=all — process role; 'worker' disables socket-local agent dispatch (wave 3.5d)`), and `BREEZE_ROLE: ${BREEZE_ROLE:-all}` to the api service `environment:` block in `docker-compose.yml` AND `deploy/docker-compose.prod.yml`. Run `cd apps/api && npx vitest run src/config/envComposeParity.test.ts` → PASS.
 
-- [ ] **Step 6: Run tests** — `npx vitest run src/config/env.breezeRole.test.ts` → PASS. Commit: `feat(api): BREEZE_ROLE env helper + per-boot INSTANCE_ID (wave 3.5b #4084)`
+- [x] **Step 6: Run tests** — `npx vitest run src/config/env.breezeRole.test.ts` → PASS. Commit: `feat(api): BREEZE_ROLE env helper + per-boot INSTANCE_ID (wave 3.5b #4084)`
 
 ---
 
@@ -147,7 +147,7 @@ Add the matching optional-enum entry in `config/validate.ts` exactly the way `EV
 **Interfaces:**
 - Produces: `AgentPresenceLease { instanceId: string; connectionToken: string }`, `AGENT_PRESENCE_TTL_MS = 90_000`, `setAgentPresence(agentId, lease): Promise<void>`, `refreshAgentPresence(agentId, connectionToken): Promise<boolean>`, `clearAgentPresence(agentId, connectionToken): Promise<boolean>`, `readAgentPresence(agentId): Promise<AgentPresenceLease | null>`. All best-effort: Redis unavailable → no-op / `null` / `false`, never throw (presence is an admission hint; missing presence fails closed as "offline").
 
-- [ ] **Step 1: Write the failing unit tests** — mock `getRedis` (pattern: existing `services/*.test.ts` that `vi.mock('./redis', ...)`):
+- [x] **Step 1: Write the failing unit tests** — mock `getRedis` (pattern: existing `services/*.test.ts` that `vi.mock('./redis', ...)`):
 
 ```ts
 // apps/api/src/services/agentPresence.test.ts
@@ -226,9 +226,9 @@ describe('agentPresence', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure** — `npx vitest run src/services/agentPresence.test.ts` → FAIL (module missing).
+- [x] **Step 2: Run to verify failure** — `npx vitest run src/services/agentPresence.test.ts` → FAIL (module missing).
 
-- [ ] **Step 3: Implement**:
+- [x] **Step 3: Implement**:
 
 ```ts
 // apps/api/src/services/agentPresence.ts
@@ -324,7 +324,7 @@ export async function readAgentPresence(agentId: string): Promise<AgentPresenceL
 }
 ```
 
-- [ ] **Step 4: Run tests** — `npx vitest run src/services/agentPresence.test.ts` → PASS. Commit: `feat(api): fenced agent presence leases in Redis (wave 3.5b #4084)`
+- [x] **Step 4: Run tests** — `npx vitest run src/services/agentPresence.test.ts` → PASS. Commit: `feat(api): fenced agent presence leases in Redis (wave 3.5b #4084)`
 
 ---
 
@@ -338,15 +338,15 @@ export async function readAgentPresence(agentId: string): Promise<AgentPresenceL
 - Consumes: Task 2's four presence helpers, Task 1's `INSTANCE_ID`.
 - Produces: presence keys maintained for every live agent socket; a per-connection `connectionToken` (closure variable next to `socketEpoch` in `createAgentWsHandlers`).
 
-- [ ] **Step 1: Write failing tests** — mock `../services/agentPresence` and assert, via the existing handler-test harness for `createAgentWsHandlers`:
+- [x] **Step 1: Write failing tests** — mock `../services/agentPresence` and assert, via the existing handler-test harness for `createAgentWsHandlers`:
   - onOpen calls `setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken: <uuid> })` (capture the token; assert it is a non-empty string).
   - a `pong` message calls `refreshAgentPresence(agentId, <same token>)`.
   - when `refreshAgentPresence` resolves `false` AND this ws is still the mapped connection, the handler re-calls `setAgentPresence` with the same token (self-heal after an errant delete).
   - onClose (current socket) calls `clearAgentPresence(agentId, <same token>)`; onClose for a superseded socket does NOT clear (token mismatch is also guarded server-side, but don't even issue the call when `activeConnections.get(agentId) !== ws`).
 
-- [ ] **Step 2: Run to verify failure.**
+- [x] **Step 2: Run to verify failure.**
 
-- [ ] **Step 3: Implement** — all calls fire-and-forget (`void ...` or `.catch(() => {})` consistent with surrounding style; the handlers must never await Redis on the hot path):
+- [x] **Step 3: Implement** — all calls fire-and-forget (`void ...` or `.catch(() => {})` consistent with surrounding style; the handlers must never await Redis on the hot path):
   - In `createAgentWsHandlers`, next to `socketEpoch`, add `const connectionToken = randomUUID();` (add the `crypto` import if absent).
   - onOpen, immediately after `activeConnections.set(agentId, ws); socketEpoch = installAgentSocketEpoch(agentId);`:
     ```ts
@@ -376,7 +376,7 @@ export async function readAgentPresence(agentId: string): Promise<AgentPresenceL
     ```
     Add `clearAgentPresenceUnfenced(agentId)` to `agentPresence.ts` (plain `DEL`, same never-throw contract, one-line unit test in the Task 2 file).
 
-- [ ] **Step 4: Run the agentWs test file(s) + typecheck** — PASS. Commit: `feat(api): maintain fenced presence leases from the agent WS lifecycle (wave 3.5b #4084)`
+- [x] **Step 4: Run the agentWs test file(s) + typecheck** — PASS. Commit: `feat(api): maintain fenced presence leases from the agent WS lifecycle (wave 3.5b #4084)`
 
 ---
 
@@ -396,7 +396,7 @@ export async function readAgentPresence(agentId: string): Promise<AgentPresenceL
   - `writeRelayAck(relayId, outcome): Promise<void>`, `awaitRelayAck(relayId, deadlineMs): Promise<DispatchOutcome>` (deadline exceeded → `{ status: 'indeterminate' }`)
   - `AGENT_COMMAND_RELAY_QUEUE = 'agent-command-relay'`, `RELAY_DELIVERY_DEADLINE_MS = 5_000`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // apps/api/src/services/agentCommandRelay.test.ts
@@ -496,9 +496,9 @@ describe('acks', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure** — module missing.
+- [x] **Step 2: Run to verify failure** — module missing.
 
-- [ ] **Step 3: Implement part 1 of the module** (the facade + queue singleton come in Task 5 — keep this commit to primitives):
+- [x] **Step 3: Implement part 1 of the module** (the facade + queue singleton come in Task 5 — keep this commit to primitives):
 
 ```ts
 // apps/api/src/services/agentCommandRelay.ts
@@ -614,7 +614,7 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
 }
 ```
 
-- [ ] **Step 4: Run tests** — PASS (fix the `decryptSecret` import to the real secretCrypto export if the roundtrip fails to compile). Commit: `feat(api): relay envelope, at-most-once send claims, ack channel (wave 3.5b #4084)`
+- [x] **Step 4: Run tests** — PASS (fix the `decryptSecret` import to the real secretCrypto export if the roundtrip fails to compile). Commit: `feat(api): relay envelope, at-most-once send claims, ack channel (wave 3.5b #4084)`
 
 ---
 
@@ -631,7 +631,7 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
   - `isAgentConnectedAnywhere(agentId: string): Promise<boolean>`
   - `getAgentCommandRelayQueue(): Queue<RelayJobData>` / `shutdownAgentCommandRelayQueue(): Promise<void>` (mirror `eventDispatchQueue.ts:55-62`)
 
-- [ ] **Step 1: Write the failing tests** — add a mocked `../routes/agentWs` (`isAgentConnected`, `sendCommandToAgent`), mocked `./agentPresence`, mocked `./bullmqQueue` (capture `queue.add` calls). Cases:
+- [x] **Step 1: Write the failing tests** — add a mocked `../routes/agentWs` (`isAgentConnected`, `sendCommandToAgent`), mocked `./agentPresence`, mocked `./bullmqQueue` (capture `queue.add` calls). Cases:
   - local socket + send ok → `{ status: 'sent', via: 'local' }`, **no** presence read, **no** enqueue.
   - local socket + `sendCommandToAgent` returns false → `{ status: 'offline' }`, no enqueue (the local map was authoritative and the socket died mid-send).
   - no local socket + no presence → `{ status: 'offline' }`, no enqueue.
@@ -640,9 +640,9 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
   - `forceRelay: true` skips the local-first branch even when the local socket exists (staging/integration verification hook).
   - `isAgentConnectedAnywhere`: local hit → true without presence read; local miss + presence → true; both miss → false; under `BREEZE_ROLE=worker` the socket-local check is skipped entirely (assert `isAgentConnected` never called — it would throw in that role after Task 6).
 
-- [ ] **Step 2: Run to verify failure.**
+- [x] **Step 2: Run to verify failure.**
 
-- [ ] **Step 3: Implement** (append to the module):
+- [x] **Step 3: Implement** (append to the module):
 
 ```ts
 import { randomUUID } from 'crypto';
@@ -725,7 +725,7 @@ export async function dispatchCommandToAgent(
 }
 ```
 
-- [ ] **Step 4: Run tests + typecheck** — PASS. Commit: `feat(api): dispatchCommandToAgent facade — local-first with presence-admitted relay (wave 3.5b #4084)`
+- [x] **Step 4: Run tests + typecheck** — PASS. Commit: `feat(api): dispatchCommandToAgent facade — local-first with presence-admitted relay (wave 3.5b #4084)`
 
 **Post-landing review fix (Tasks 4/5, `fix(api): review fixes for wave 3.5b relay-core (#4084)`):** `sealRelayCommand` throws when `APP_ENCRYPTION_KEY_ID` is unset (the AAD binding is the tamper defense, so it must never silently fall back to unbound v1 ciphertext) — but that made the whole relay path boot-time-invisible-dead on a stock deployment (`.env.example` ships the key id empty). Fixed by (a) moving the seal call inside the facade's guarded region so a throw maps to `{ status: 'infrastructure_error' }` instead of escaping as an unhandled exception, and (b) a new `validate.ts` superRefine pairing rule: `BREEZE_ROLE` of `api`/`worker` now requires a non-blank `APP_ENCRYPTION_KEY_ID` at boot. **Task 6 does not need to add this pairing rule — it already exists.**
 
@@ -742,7 +742,7 @@ export async function dispatchCommandToAgent(
 - Consumes: Task 4 primitives, Task 2 `readAgentPresence`, Task 1 `INSTANCE_ID`, socket-local `isAgentConnected`/`sendCommandToAgent`.
 - Produces: `createAgentCommandRelayWorker(): Worker`, `initializeAgentCommandRelayWorker(): Promise<void>`; agentWs test-only export `__installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void`.
 
-- [ ] **Step 1: Write the failing processor tests** (mock agentWs, agentPresence, and the relay primitives; drive the exported processor function directly with a fake `Job`):
+- [x] **Step 1: Write the failing processor tests** (mock agentWs, agentPresence, and the relay primitives; drive the exported processor function directly with a fake `Job`):
   - expired job (`expiresAt` in the past) → ack `{ status: 'expired' }`, no claim taken, no send.
   - no local socket → ack `{ status: 'offline' }`, no claim.
   - lease missing / `instanceId` ≠ job's `targetInstanceId` / `connectionToken` mismatch / `targetInstanceId` ≠ `INSTANCE_ID` → ack `{ status: 'owner_mismatch' }`, no send. (Strict fencing per quorum: a routing decision made against a superseded lease is never executed, even if the agent reconnected here — the caller's next cycle re-routes.)
@@ -752,9 +752,9 @@ export async function dispatchCommandToAgent(
   - claim `'claimed'` + send ok → `sendCommandToAgent` called with the decrypted command, `markRelaySendComplete` called, ack `{ status: 'sent', via: 'relay' }`.
   - claim `'claimed'` + `sendCommandToAgent` returns false → ack `{ status: 'offline' }`, `markRelaySendComplete` NOT called.
 
-- [ ] **Step 2: Run to verify failure.**
+- [x] **Step 2: Run to verify failure.**
 
-- [ ] **Step 3: Implement the worker**:
+- [x] **Step 3: Implement the worker**:
 
 ```ts
 // apps/api/src/jobs/agentCommandRelayWorker.ts
@@ -834,7 +834,7 @@ export function createAgentCommandRelayWorker(): Worker {
 
 Add `initializeAgentCommandRelayWorker` following the shape of the sibling `initialize*Worker` functions in whichever module `index.ts` imports them from (grep one, e.g. `initializeEventDispatchWorker`, and mirror its error handling + shutdown hook). If 3.5c's `attachWorkerObservability` (from `services/bullmqQueue.ts`) is what `eventDispatchWorker` uses for Sentry/error reporting, attach it identically here.
 
-- [ ] **Step 4: Boot registration in `index.ts`** — next to the phase-2 event-dispatch start (index.ts:1505-1524), add:
+- [x] **Step 4: Boot registration in `index.ts`** — next to the phase-2 event-dispatch start (index.ts:1505-1524), add:
 
 ```ts
 if (breezeRole() !== 'worker') {
@@ -849,7 +849,7 @@ if (breezeRole() !== 'worker') {
 }
 ```
 
-- [ ] **Step 5: Runtime role assertions** — in `agentWs.ts`, add at the top of `sendCommandToAgent` AND `isAgentConnected` (and export nothing new for it):
+- [x] **Step 5: Runtime role assertions** — in `agentWs.ts`, add at the top of `sendCommandToAgent` AND `isAgentConnected` (and export nothing new for it):
 
 ```ts
 function assertSocketLocalDispatchAllowed(fn: string): void {
@@ -864,7 +864,7 @@ function assertSocketLocalDispatchAllowed(fn: string): void {
 
 Same assertion at the top of `sendCommandToAgentAwaitResult` (`services/agentCommandAwait.ts`), plus a doc comment stating the module is api-role-affine by design (its correlation map cannot resolve cross-process). Throwing — not returning false — is the point: a silent false is exactly the every-agent-reads-offline failure this wave exists to kill. Test: with `BREEZE_ROLE=worker` set (and restored) in the agentWs test file, each of the three throws with a message matching `/BREEZE_ROLE/`.
 
-- [ ] **Step 6: Test-only socket installer in `agentWs.ts`** (needed by Task 9's integration suite; mirror `__resetCrossTenantDropsForTest`, agentWs.ts:2993):
+- [x] **Step 6: Test-only socket installer in `agentWs.ts`** (needed by Task 9's integration suite; mirror `__resetCrossTenantDropsForTest`, agentWs.ts:2993):
 
 ```ts
 export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
@@ -876,7 +876,7 @@ export function __installAgentSocketForTest(agentId: string, ws: { send(data: st
 }
 ```
 
-- [ ] **Step 7: Run the new tests + full typecheck** — PASS. Commit: `feat(api): api-role relay consumer, boot gating, worker-role dispatch assertions (wave 3.5b #4084)`
+- [x] **Step 7: Run the new tests + full typecheck** — PASS. Commit: `feat(api): api-role relay consumer, boot gating, worker-role dispatch assertions (wave 3.5b #4084)`
 
 ---
 
@@ -891,7 +891,7 @@ export function __installAgentSocketForTest(agentId: string, ws: { send(data: st
 
 **Behavior contract (both workers):** in `BREEZE_ROLE=all` with a locally-connected agent the observable behavior is IDENTICAL to today (local-first path). The only new behavior is the relay branch, unreachable until 3.5d. Preserve each function's exact return shapes.
 
-- [ ] **Step 1: Write the failing tests** — mock `../services/agentCommandRelay`. Cases per worker:
+- [x] **Step 1: Write the failing tests** — mock `../services/agentCommandRelay`. Cases per worker:
   - `isAgentConnectedAnywhere` false → today's "No online agent" warn + `{ dispatched: false, agentId: null }`, and `dispatchCommandToAgent` never called.
   - outcome `{ status: 'sent', via: 'local' }` → `{ dispatched: true, agentId }`.
   - outcome `{ status: 'offline' }` → `{ dispatched: false, agentId }` and the error log includes the outcome status.
@@ -899,9 +899,9 @@ export function __installAgentSocketForTest(agentId: string, ws: { send(data: st
   - snmp only: `markPollDispatched` is still called after the connectivity check and before dispatch (assert call order via mock invocationCallOrder) — an indeterminate dispatch leaves the poll counted, mirroring today's send-false-after-mark semantics.
   - monitor only: dispatch is called with `{ priority: 'probe' }`.
 
-- [ ] **Step 2: Run to verify failure.**
+- [x] **Step 2: Run to verify failure.**
 
-- [ ] **Step 3: Migrate `monitorWorker.ts`** — replace the import and the block at ~160-177:
+- [x] **Step 3: Migrate `monitorWorker.ts`** — replace the import and the block at ~160-177:
 
 ```ts
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
@@ -930,7 +930,7 @@ import type { AgentCommand } from '../routes/agentWs';
 
 (If `monitorWorker.ts` only imported `sendCommandToAgent`/`isAgentConnected` for this block, the agentWs import disappears entirely; keep `AgentCommand` type-only if the file references the type.)
 
-- [ ] **Step 4: Migrate `snmpWorker.ts`** — same substitution at ~394-420: `isAgentConnected(agentId)` → `await isAgentConnectedAnywhere(agentId)`; keep the `markPollDispatched` placement and its #1105 phase-split comment intact (the facade's Redis I/O also relies on running outside a held DB context); then:
+- [x] **Step 4: Migrate `snmpWorker.ts`** — same substitution at ~394-420: `isAgentConnected(agentId)` → `await isAgentConnectedAnywhere(agentId)`; keep the `markPollDispatched` placement and its #1105 phase-split comment intact (the facade's Redis I/O also relies on running outside a held DB context); then:
 
 ```ts
   const command = buildSnmpPollCommand(data.deviceId, device, oids);
@@ -944,7 +944,7 @@ import type { AgentCommand } from '../routes/agentWs';
   return { dispatched: true, agentId };
 ```
 
-- [ ] **Step 5: Run both worker test files + typecheck** — PASS. Commit: `refactor(api): monitor + snmp workers dispatch via the cross-process facade (wave 3.5b #4084)`
+- [x] **Step 5: Run both worker test files + typecheck** — PASS. Commit: `refactor(api): monitor + snmp workers dispatch via the cross-process facade (wave 3.5b #4084)`
 
 ---
 
@@ -956,16 +956,16 @@ import type { AgentCommand } from '../routes/agentWs';
 
 **Behavior contract:** offline stays fail-fast (`markJobFailed` with the SAME message strings as today — dashboards and tests key on them). `indeterminate`/`infrastructure_error`/`expired`/`owner_mismatch` mark the job failed with a NEW distinct message naming the outcome — the command may still execute (at-most-once means no duplicate was sent), and a late result hitting a failed-marked job is the same benign race as today's send-succeeded-then-agent-crashed window. Flag this trade-off in the PR body.
 
-- [ ] **Step 1: Write the failing tests** — cases per worker:
+- [x] **Step 1: Write the failing tests** — cases per worker:
   - `isAgentConnectedAnywhere` false → `markJobFailed(jobId, 'Agent not connected')` (backup) / `markJobFailed(jobId, 'No online agent available for this site')` (discovery) — byte-identical messages.
   - outcome `sent` → job proceeds exactly as today (backup increments sentCount; discovery flips job to running).
   - outcome `offline` → backup: the existing per-target failure branch runs (warn + child-job failed row); discovery: `markJobFailed(jobId, 'Failed to send command to agent')` (today's message).
   - outcome `indeterminate` → failure branch with a message matching `/dispatch outcome indeterminate/i`.
   - backup only: `recordDispatchedExpectation('backup', deviceId, commandJobId)` still happens BEFORE dispatch (call order assertion) — the expectation-first comment at backupWorker.ts:645-651 stays valid because an unconsumed expectation still just expires via TTL.
 
-- [ ] **Step 2: Run to verify failure.**
+- [x] **Step 2: Run to verify failure.**
 
-- [ ] **Step 3: Migrate `backupWorker.ts`**:
+- [x] **Step 3: Migrate `backupWorker.ts`**:
 
 ```ts
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
@@ -997,7 +997,7 @@ At ~501: `if (!agentId || !(await isAgentConnectedAnywhere(agentId))) {` (unchan
 
 (Keep the surrounding comment block; it remains accurate.)
 
-- [ ] **Step 4: Migrate `discoveryWorker.ts`** — `!isAgentConnected(agentId)` → `!(await isAgentConnectedAnywhere(agentId))` (~571, same failure body); at ~606:
+- [x] **Step 4: Migrate `discoveryWorker.ts`** — `!isAgentConnected(agentId)` → `!(await isAgentConnectedAnywhere(agentId))` (~571, same failure body); at ~606:
 
 ```ts
   const outcome = await dispatchCommandToAgent(agentId, command);
@@ -1012,7 +1012,7 @@ At ~501: `if (!agentId || !(await isAgentConnectedAnywhere(agentId))) {` (unchan
   }
 ```
 
-- [ ] **Step 5: Run both worker test files + typecheck** — PASS. Commit: `refactor(api): backup + discovery workers dispatch via the cross-process facade (wave 3.5b #4084)`
+- [x] **Step 5: Run both worker test files + typecheck** — PASS. Commit: `refactor(api): backup + discovery workers dispatch via the cross-process facade (wave 3.5b #4084)`
 
 ---
 
@@ -1025,7 +1025,7 @@ At ~501: `if (!agentId || !(await isAgentConnectedAnywhere(agentId))) {` (unchan
 **Interfaces:**
 - Consumes: everything from Tasks 2-6 against real Redis; `__installAgentSocketForTest` (Task 6). Setup pattern: copy the header of `eventDispatchQueue.integration.test.ts` (`import './setup'`, real `REDIS_URL`, `closeRedis` in afterAll, `docker compose -f docker-compose.test.yml up` run instructions in the top comment).
 
-- [ ] **Step 1: Write the suite** (each test red-then-green against the already-implemented code is fine here — the suite's job is proving the composition against real Redis; assert precisely):
+- [x] **Step 1: Write the suite** (each test red-then-green against the already-implemented code is fine here — the suite's job is proving the composition against real Redis; assert precisely):
   1. **Presence lifecycle:** `setAgentPresence` → `readAgentPresence` roundtrip; `refreshAgentPresence` with the right/wrong token → true/false; `clearAgentPresence` with the wrong token leaves the key (fencing); PTTL is ≤ `AGENT_PRESENCE_TTL_MS` and > 0 after a refresh.
   2. **Forced-relay E2E, exactly once:** install a fake socket capturing `send()` frames via `__installAgentSocketForTest('agent-int-1', ...)`; `setAgentPresence('agent-int-1', { instanceId: INSTANCE_ID, connectionToken: 't-int' })`; start `createAgentCommandRelayWorker()`; call `dispatchCommandToAgent('agent-int-1', { id: <uuid>, type: 'network_ping', payload: { probe: true } }, { forceRelay: true })` → resolves `{ status: 'sent', via: 'relay' }` within 5s; the fake socket received EXACTLY one frame; `JSON.parse(frame)` equals the command verbatim (`{id, type, payload}`, no extra keys).
   3. **No plaintext in the queue:** enqueue with a payload containing `'sup3r-s3cret'` (no consumer running); fetch the raw job via `getAgentCommandRelayQueue().getJob('relay-<id>')` and assert `JSON.stringify(job.data)` does NOT contain the secret; then assert `openRelayCommand` with the job's own binding fields DOES recover it.
@@ -1038,9 +1038,9 @@ At ~501: `if (!agentId || !(await isAgentConnectedAnywhere(agentId))) {` (unchan
 
   Cleanup discipline (3.5c lesson — the integration-DB pollution incident): `afterEach` obliterates the relay queue (`queue.obliterate({ force: true })`), deletes every `agent-presence:*` / `agent-relay-*` key the suite created, closes workers; `afterAll` runs `closeRedis()`. Keys must be namespaced per-test-run (`agent-int-<runUUID>-…` agentIds) so parallel shards can't collide.
 
-- [ ] **Step 2: Run** — `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/agentCommandRelay.integration.test.ts` with the test stack up → ALL PASS. Verify the file count in the output is 1 and the suite actually RAN (not skipped).
+- [x] **Step 2: Run** — `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/agentCommandRelay.integration.test.ts` with the test stack up → ALL PASS. Verify the file count in the output is 1 and the suite actually RAN (not skipped).
 
-- [ ] **Step 3: Commit** — `test(api): agent command relay integration suite (wave 3.5b #4084)`
+- [x] **Step 3: Commit** — `test(api): agent command relay integration suite (wave 3.5b #4084)`
 
 ---
 
@@ -1051,7 +1051,7 @@ At ~501: `if (!agentId || !(await isAgentConnectedAnywhere(agentId))) {` (unchan
 
 **Interfaces:** none produced — this is the guard #4084's "done when" demands: a test that FAILS if a future change gives a `jobs/**` module socket-local dispatch.
 
-- [ ] **Step 1: Write the test** (mechanism mirrors `eventSubscribers.contract.test.ts:1-60` — source-text scan):
+- [x] **Step 1: Write the test** (mechanism mirrors `eventSubscribers.contract.test.ts:1-60` — source-text scan):
 
 ```ts
 // apps/api/src/jobs/agentDispatchBoundary.contract.test.ts
@@ -1104,18 +1104,18 @@ describe('jobs/** must not use socket-local agent dispatch (#4084)', () => {
 });
 ```
 
-- [ ] **Step 2: Prove it discriminates** — temporarily re-add `import { sendCommandToAgent } from '../routes/agentWs';` to `monitorWorker.ts`, run the test → FAIL naming monitorWorker; revert → PASS. (This is the red step for a guard test.)
+- [x] **Step 2: Prove it discriminates** — temporarily re-add `import { sendCommandToAgent } from '../routes/agentWs';` to `monitorWorker.ts`, run the test → FAIL naming monitorWorker; revert → PASS. (This is the red step for a guard test.)
 
-- [ ] **Step 3: Commit** — `test(api): static contract — jobs may not import socket-local dispatch (wave 3.5b #4084)`
+- [x] **Step 3: Commit** — `test(api): static contract — jobs may not import socket-local dispatch (wave 3.5b #4084)`
 
 ---
 
 ### Task 11: Full verification + PR
 
-- [ ] **Step 1: Repo-wide sweep** — `grep -rn "sendCommandToAgent\|isAgentConnected" apps/api/src/jobs/` → only the allowlisted relay worker (and type-only `AgentCommand` imports). `grep -rn "BREEZE_ROLE" apps/api/src docker-compose.yml deploy/ .env.example` → env helper + validate + compose parity all present.
-- [ ] **Step 2: Full unit suite** — `cd apps/api && npx vitest run` → 0 failures. Typecheck via the repo's turbo/CI-equivalent (`pnpm --filter @breeze/api exec tsc --noEmit` if no script exists — match what CI runs).
-- [ ] **Step 3: Contract + integration suites** (tenancy untouched, but the wave's own integration file must run): RLS coverage + the new relay suite against the test stack — `npx vitest run --config vitest.integration.config.ts` (confirm `agentCommandRelay.integration.test.ts` appears in the run output).
-- [ ] **Step 4: Update this plan doc's checkboxes**, commit any stragglers.
+- [x] **Step 1: Repo-wide sweep** — `grep -rn "sendCommandToAgent\|isAgentConnected" apps/api/src/jobs/` → only the allowlisted relay worker (and type-only `AgentCommand` imports). `grep -rn "BREEZE_ROLE" apps/api/src docker-compose.yml deploy/ .env.example` → env helper + validate + compose parity all present.
+- [x] **Step 2: Full unit suite** — `cd apps/api && npx vitest run` → 0 failures. Typecheck via the repo's turbo/CI-equivalent (`pnpm --filter @breeze/api exec tsc --noEmit` if no script exists — match what CI runs).
+- [x] **Step 3: Contract + integration suites** (tenancy untouched, but the wave's own integration file must run): RLS coverage + the new relay suite against the test stack — `npx vitest run --config vitest.integration.config.ts` (confirm `agentCommandRelay.integration.test.ts` appears in the run output).
+- [x] **Step 4: Update this plan doc's checkboxes**, commit any stragglers.
 - [ ] **Step 5: Open the PR** — branch `feature/3821-ai-agents/wave-4084` → `main`, body must include: `Closes #4084`; the quorum decision summary (2-lite+ and why pinning was rejected); "Behavior changes in `all` mode: none for locally-connected agents — new code paths are presence bookkeeping (additive) and the relay branch (unreachable until 3.5d)"; the failed-job message trade-off from Task 8; deferred follow-ups to file as issues: per-instance queue sharding + multi-consumer topology guard (multi-replica API), durable orphaned-result expectations, relay queue-age/owner-mismatch alerting, presence-write load measurement at 10k agents. **Stop after opening the PR** (auto-merge is handled by the run driver, not the implementer).
 
 ## Self-Review Notes
