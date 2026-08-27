@@ -76,6 +76,7 @@ async function captureDbCause(
 interface ListResponse {
   data: Array<Record<string, unknown>>;
   pagination: { page: number; limit: number; total: number };
+  archivedTruncated?: boolean;
 }
 
 describe('withArchivedOrgReadContext (READ ONLY transaction)', () => {
@@ -227,6 +228,36 @@ describe('GET /organizations — includeArchived', () => {
     expect(activeRow.archived).toBeFalsy();
   });
 
+  // The archived block is capped at the page limit rather than paginated, so
+  // the cap has to be visible. Real Postgres here because the cap is enforced
+  // by the discovery query's LIMIT, not by anything a mock would exercise.
+  it('caps the archived block at the page limit and says so', async () => {
+    const app = buildApp();
+    const client = await createIntegrationTestClient(app, { scope: 'partner' });
+
+    for (let i = 0; i < 3; i += 1) {
+      const org = await createOrganization({
+        partnerId: client.env.partner.id,
+        name: `Archived ${i}`,
+      });
+      await archiveOrg(org.id);
+    }
+
+    const capped = await client.get(
+      '/api/v1/orgs/organizations?page=1&limit=2&includeArchived=true',
+    );
+    const cappedBody = (await capped.json()) as ListResponse;
+    expect(cappedBody.data.filter((o) => o.archived === true)).toHaveLength(2);
+    expect(cappedBody.archivedTruncated).toBe(true);
+
+    const whole = await client.get(
+      '/api/v1/orgs/organizations?page=1&limit=50&includeArchived=true',
+    );
+    const wholeBody = (await whole.json()) as ListResponse;
+    expect(wholeBody.data.filter((o) => o.archived === true)).toHaveLength(3);
+    expect(wholeBody.archivedTruncated).toBe(false);
+  });
+
   it('returns the archived org even when the partner has no active orgs left', async () => {
     const app = buildApp();
     const client = await createIntegrationTestClient(app, { scope: 'partner' });
@@ -272,5 +303,19 @@ describe('GET /organizations/:id — archived target', () => {
       `/api/v1/orgs/organizations/${otherArchived.id}`,
     );
     expect(crossRes.status).toBe(404);
+  });
+
+  // Against real Postgres, because the failure this guards is a DRIVER error:
+  // a non-UUID reaching a uuid column raises 22P02, which surfaces as a 500
+  // (plus a Sentry event) that any caller can pump with a junk URL. A mocked
+  // suite cannot see it — the mock happily "matches" a garbage id.
+  it('404s a malformed org id instead of raising 22P02', async () => {
+    const app = buildApp();
+    const client = await createIntegrationTestClient(app, { scope: 'partner' });
+
+    for (const badId of ['undefined', 'not-a-uuid', '123']) {
+      const res = await client.get(`/api/v1/orgs/organizations/${badId}`);
+      expect(res.status, `id=${badId}`).toBe(404);
+    }
   });
 });

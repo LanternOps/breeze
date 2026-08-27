@@ -56,6 +56,20 @@ export type ArchivedOrganizationRow = OrganizationRow & { archived: true };
 export type ArchivedOrganizationListRow = ArchivedOrganizationRow & { deviceCount: number };
 
 /**
+ * Archived orgs ride ALONGSIDE the paginated live list rather than inside it
+ * (they cannot be in the same query — see the module header), so they are capped
+ * at the page `limit` instead of being paginated. `truncated` says whether that
+ * cap actually dropped rows, so the caller can tell the operator "there are more"
+ * instead of silently showing a short list — the archive view is where a missing
+ * tenant is least likely to be noticed and most expensive to miss (its purge
+ * timer is running).
+ */
+export interface ArchivedOrgListResult {
+  orgs: ArchivedOrganizationListRow[];
+  truncated: boolean;
+}
+
+/**
  * Which partner's archived orgs a read may reach. Deliberately a discriminated
  * union rather than a nullable `partnerId`: "null means every partner" is one
  * forgotten `?? null` away from a cross-tenant read, and this door is opened
@@ -114,15 +128,22 @@ async function discoverArchivedOrgIds(input: {
 
 /**
  * Full archived org rows for the scope, read through the READ ONLY context.
- * Returns `[]` (without opening the second transaction) when there are none.
+ * Returns no rows (without opening the second transaction) when there are none.
+ *
+ * Discovery asks for `limit + 1` ids purely to answer "is there more?" — the
+ * extra id is dropped before the serving read, so the cap on rows returned is
+ * exactly `limit`. That is one indexed id-only row, versus a second COUNT query
+ * over the same predicate.
  */
 export async function listArchivedOrgs(input: {
   scope: ArchivedOrgScope;
   search?: string | undefined;
   limit: number;
-}): Promise<ArchivedOrganizationListRow[]> {
-  const ids = await discoverArchivedOrgIds(input);
-  if (ids.length === 0) return [];
+}): Promise<ArchivedOrgListResult> {
+  const discovered = await discoverArchivedOrgIds({ ...input, limit: input.limit + 1 });
+  const truncated = discovered.length > input.limit;
+  const ids = truncated ? discovered.slice(0, input.limit) : discovered;
+  if (ids.length === 0) return { orgs: [], truncated: false };
 
   const { rows, deviceCounts } = await runOutsideDbContext(() =>
     withArchivedOrgReadContext(ids, async () => {
@@ -144,10 +165,13 @@ export async function listArchivedOrgs(input: {
     deviceCounts.map((row) => [row.orgId, Number(row.count)]),
   );
 
-  return rows.map((row) => ({
-    ...flagArchived(row),
-    deviceCount: deviceCountByOrgId.get(row.id) ?? 0,
-  }));
+  return {
+    orgs: rows.map((row) => ({
+      ...flagArchived(row),
+      deviceCount: deviceCountByOrgId.get(row.id) ?? 0,
+    })),
+    truncated,
+  };
 }
 
 /**

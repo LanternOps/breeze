@@ -30,7 +30,7 @@ vi.mock('../services/enrollmentDefaults', () => ({
 // The archived-context guarantees themselves are proven against real Postgres
 // in __tests__/integration/orgArchiveReadContext.integration.test.ts.
 vi.mock('../services/archivedOrgReads', () => ({
-  listArchivedOrgs: vi.fn(async () => []),
+  listArchivedOrgs: vi.fn(async () => ({ orgs: [], truncated: false })),
   loadArchivedOrg: vi.fn(async () => null)
 }));
 
@@ -1688,6 +1688,11 @@ describe('org routes', () => {
     // query — they are read through the READ ONLY archived context and
     // appended. These cases pin WHEN that read fires and WHO it is scoped to.
     describe('includeArchived', () => {
+      // Queues EXACTLY the db.select calls the handler makes: count, page rows,
+      // partner-order settings, and — only when the page returned rows — the
+      // grouped device count. An extra queued `mockReturnValueOnce` is not
+      // harmless: `vi.clearAllMocks()` clears calls but NOT the once-queue, so
+      // a leftover leaks into the next test and cascades through the file.
       const mockOnePartnerPage = (orgIds: string[], total = orgIds.length) => {
         vi.mocked(db.select)
           .mockReturnValueOnce({
@@ -1706,8 +1711,10 @@ describe('org routes', () => {
               })
             })
           } as any)
-          .mockReturnValueOnce(mockPartnerOrderSettings())
-          .mockReturnValueOnce(mockOrgDeviceCounts([]));
+          .mockReturnValueOnce(mockPartnerOrderSettings());
+        if (orgIds.length > 0) {
+          vi.mocked(db.select).mockReturnValueOnce(mockOrgDeviceCounts([]));
+        }
       };
 
       it('does not read archived orgs at all without the flag', async () => {
@@ -1723,9 +1730,10 @@ describe('org routes', () => {
       it('appends flagged archived orgs, scoped to the caller partner', async () => {
         setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
         mockOnePartnerPage(['org-1']);
-        vi.mocked(listArchivedOrgs).mockResolvedValueOnce([
-          { id: 'org-archived', status: 'archived', archived: true, deviceCount: 4 } as any
-        ]);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({
+          orgs: [{ id: 'org-archived', status: 'archived', archived: true, deviceCount: 4 } as any],
+          truncated: false
+        });
 
         const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
 
@@ -1740,6 +1748,42 @@ describe('org routes', () => {
         expect(body.data[1].archived).toBe(true);
         // Archived rows ride along OUTSIDE the pagination arithmetic.
         expect(body.pagination.total).toBe(1);
+        expect(body.archivedTruncated).toBe(false);
+      });
+
+      // The archived block is capped at `limit` instead of being paginated, so
+      // the response has to SAY when that cap dropped tenants — an archived org
+      // silently missing from the list is one whose purge timer nobody sees.
+      it('reports archivedTruncated when the archived block hit its cap', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage(['org-1']);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({
+          orgs: Array.from({ length: 10 }, (_, i) => (
+            { id: `org-archived-${i}`, status: 'archived', archived: true, deviceCount: 0 } as any
+          )),
+          truncated: true
+        });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(11); // 1 live + the capped 10
+        expect(body.archivedTruncated).toBe(true);
+      });
+
+      // An empty page past the end of the live list is NOT the tail: with
+      // total=1 and limit=1, page 2 is empty and would otherwise append a
+      // second copy of every archived org to a page walk.
+      it('does not append on an empty page past the end of the live list', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage([], 1);
+
+        const res = await app.request('/orgs/organizations?page=2&limit=1&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toEqual([]);
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
       });
 
       // fetchAllOrganizations.ts walks every page and concatenates. Appending
@@ -1759,9 +1803,10 @@ describe('org routes', () => {
       // made the flag a no-op for exactly the tenant it exists to serve.
       it('still returns archived orgs when the partner has no live orgs', async () => {
         setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: [] });
-        vi.mocked(listArchivedOrgs).mockResolvedValueOnce([
-          { id: 'org-archived', status: 'archived', archived: true, deviceCount: 0 } as any
-        ]);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({
+          orgs: [{ id: 'org-archived', status: 'archived', archived: true, deviceCount: 0 } as any],
+          truncated: false
+        });
 
         const res = await app.request('/orgs/organizations?includeArchived=true');
 
@@ -2252,35 +2297,50 @@ describe('org routes', () => {
 
   describe('GET /orgs/organizations/:id', () => {
     it('should return an organization', async () => {
-      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // UUID-shaped: the handler rejects a malformed `:id` with a 404 before
+      // any lookup, because it would otherwise reach a uuid column as 22P02.
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org' }])
+            limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org' }])
           })
         })
       } as any);
 
-      const res = await app.request('/orgs/organizations/org-1');
+      const res = await app.request(`/orgs/organizations/${orgId}`);
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.id).toBe('org-1');
+      expect(body.id).toBe(orgId);
     });
 
     it('should return 404 when organization not found', async () => {
-      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // In the caller's accessible set AND uuid-shaped, so this reaches the
+      // real lookup and 404s on an empty result — not on the scope check or
+      // the malformed-id guard, either of which would make it vacuous.
+      const orgId = '22222222-2222-2222-2222-222222222222';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      const limit = vi.fn().mockResolvedValue([]);
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
+          where: vi.fn().mockReturnValue({ limit })
         })
       } as any);
 
-      const res = await app.request('/orgs/organizations/missing');
+      const res = await app.request(`/orgs/organizations/${orgId}`);
 
       expect(res.status).toBe(404);
+      expect(limit).toHaveBeenCalled();
     });
 
     it('should block partner access when org is outside selected scope', async () => {
@@ -2291,7 +2351,9 @@ describe('org routes', () => {
         canAccessOrg: (orgId) => orgId === 'org-1'
       });
 
-      const res = await app.request('/orgs/organizations/org-999');
+      // UUID-shaped on purpose: a malformed id short-circuits to 404 before
+      // any of this, which would make the case vacuous.
+      const res = await app.request('/orgs/organizations/99999999-9999-9999-9999-999999999999');
 
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: 'Organization not found' });
@@ -2301,7 +2363,7 @@ describe('org routes', () => {
       // 404 stands.
       expect(db.select).not.toHaveBeenCalled();
       expect(loadArchivedOrg).toHaveBeenCalledWith({
-        orgId: 'org-999',
+        orgId: '99999999-9999-9999-9999-999999999999',
         scope: { kind: 'partner', partnerId: 'partner-123' }
       });
     });
@@ -2314,21 +2376,64 @@ describe('org routes', () => {
         canAccessOrg: (orgId) => orgId === 'org-1'
       });
       vi.mocked(loadArchivedOrg).mockResolvedValueOnce({
-        id: 'org-archived',
+        id: '77777777-7777-7777-7777-777777777777',
         name: 'Archived Co',
         status: 'archived',
         archived: true
       } as any);
 
-      const res = await app.request('/orgs/organizations/org-archived');
+      const res = await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.id).toBe('org-archived');
+      expect(body.id).toBe('77777777-7777-7777-7777-777777777777');
       expect(body.archived).toBe(true);
       // Served ONLY through the archived door — never through the request's own
       // read-write context.
       expect(db.select).not.toHaveBeenCalled();
+    });
+
+    // `:id` is a raw path segment and every lookup feeds it to a uuid column,
+    // where a non-UUID raises Postgres 22P02 — an uncaught 500 plus a Sentry
+    // event that any caller can pump with `/organizations/undefined`.
+    it('404s a malformed id without touching the database', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: ['33333333-3333-3333-3333-333333333333']
+      });
+
+      const res = await app.request('/orgs/organizations/not-a-uuid');
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      expect(loadArchivedOrg).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('404s a system-scope caller on a malformed id too (no 22P02 500)', async () => {
+      setAuthContext({ scope: 'system' });
+
+      const res = await app.request('/orgs/organizations/undefined');
+
+      expect(res.status).toBe(404);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    // A partner token with no partnerId has no tenant to scope the archived
+    // probe to, so it must read nothing at all — never every partner's.
+    it('does not probe for an archived org when the partner token carries no partner id', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: null,
+        accessibleOrgIds: [],
+        canAccessOrg: () => false
+      });
+
+      const res = await app.request('/orgs/organizations/44444444-4444-4444-4444-444444444444');
+
+      expect(res.status).toBe(404);
+      expect(loadArchivedOrg).not.toHaveBeenCalled();
     });
   });
 
@@ -2859,7 +2964,10 @@ describe('org routes', () => {
       it('ordinary read routes still cannot see the suspended org (no visibility widening)', async () => {
         setSuspendedOrgPartnerContext('all');
 
-        const res = await app.request('/orgs/organizations/org-suspended');
+        // The suspended org's id, UUID-shaped so the read route reaches its
+        // real branches instead of the malformed-id short-circuit.
+        const suspendedOrgId = '88888888-8888-8888-8888-888888888888';
+        const res = await app.request(`/orgs/organizations/${suspendedOrgId}`);
 
         expect(res.status).toBe(404);
         expect(await res.json()).toEqual({ error: 'Organization not found' });
@@ -2869,7 +2977,7 @@ describe('org routes', () => {
         // to null there (loadArchivedOrg checks the status itself), so this
         // route still cannot see it.
         expect(loadArchivedOrg).toHaveBeenCalledWith({
-          orgId: 'org-suspended',
+          orgId: suspendedOrgId,
           scope: { kind: 'partner', partnerId: 'partner-123' }
         });
       });

@@ -13,6 +13,7 @@ import {
   logRequestDatabaseConfigSource,
   resolveRequestDatabaseConfig,
 } from './requestDatabaseConfig';
+import { PG_UUID_REGEX } from '../utils/uuid';
 
 const requestDatabaseConfig = resolveRequestDatabaseConfig();
 logRequestDatabaseConfigSource(requestDatabaseConfig);
@@ -597,12 +598,13 @@ export async function withResolvedDbAccessContext<T, R>(
   });
 }
 
-// The exact shape `breeze_accessible_org_ids()` pre-validates the GUC payload
-// against (migrations/2026-05-18-a). A single malformed id makes that helper
-// return `ARRAY[]::uuid[]` for the WHOLE list — every row then denies, silently
-// and uniformly. Callers pass ids that came out of the database, so a miss here
-// is a programming error and deserves a throw, not a zero-row result.
-const ACCESSIBLE_ORG_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+// `PG_UUID_REGEX` is the same shape `breeze_accessible_org_ids()` pre-validates
+// the GUC payload against (migrations/2026-05-18-a) — deliberately the
+// version/variant-agnostic pattern, not the RFC-4122-strict one, so a real org
+// id can never be rejected here. A single malformed id makes that helper return
+// `ARRAY[]::uuid[]` for the WHOLE list — every row then denies, silently and
+// uniformly. Callers pass ids that came out of the database, so a miss is a
+// programming error and deserves a throw, not a zero-row result.
 
 /**
  * Read rows belonging to ARCHIVED organizations inside a Postgres `READ ONLY`
@@ -656,7 +658,7 @@ export async function withArchivedOrgReadContext<T>(
   }
 
   const uniqueOrgIds = Array.from(new Set(orgIds));
-  const malformed = uniqueOrgIds.filter((id) => !ACCESSIBLE_ORG_ID_RE.test(id));
+  const malformed = uniqueOrgIds.filter((id) => !PG_UUID_REGEX.test(id));
   if (malformed.length > 0) {
     throw new Error(
       `withArchivedOrgReadContext received ${malformed.length} malformed org id(s); `

@@ -33,6 +33,7 @@ import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
+import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
@@ -1200,8 +1201,14 @@ const listOrganizationsSchema = z.object({
  * appended archived orgs land exactly once across a full page walk.
  * `apps/web/src/lib/fetchAllOrganizations.ts` walks every page and concatenates;
  * appending unconditionally would repeat every archived org on every page.
+ *
+ * The `pageLength > 0` clause is what makes the exact-multiple case behave:
+ * with total=50 and limit=50, page 2 is empty but its offset (50) still
+ * satisfies both inequalities, so it would append a SECOND copy. An empty page
+ * is only the tail when it is also the first page (an empty result set).
  */
 function isFinalOrganizationsPage(offset: number, pageLength: number, total: number): boolean {
+  if (pageLength === 0 && offset !== 0) return false;
   return offset <= total && offset + pageLength >= total;
 }
 
@@ -1210,6 +1217,12 @@ function isFinalOrganizationsPage(offset: number, pageLength: number, total: num
  * token carrying no partnerId gets null rather than `allPartners`, which is the
  * whole reason `ArchivedOrgScope` is a union instead of a nullable id.
  * Organization scope never reaches here (it returns earlier in the handler).
+ *
+ * No id-shape guard here, unlike the detail route below: neither input is a raw
+ * path segment. `queryPartnerId` is zod `.guid()`-validated before the handler
+ * runs, and `auth.partnerId` comes from the signed token — the same trust level
+ * every other partner-scoped query in this file already assumes (the org-order
+ * settings read, `resolveAuditOrgIdForPartner`, the list predicate itself).
  */
 function resolveArchivedOrgScope(
   auth: Pick<AuthContext, 'scope' | 'partnerId'>,
@@ -1301,8 +1314,11 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
     noLiveOrgs = orgIds.length === 0;
+    // An explicit impossible predicate, not `undefined`: the live queries are
+    // skipped below, but a `where(undefined)` left behind by a future edit
+    // would select the whole table. Fail closed even in dead code.
     conditions = noLiveOrgs
-      ? undefined
+      ? sql`false`
       : and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
   } else {
     conditions = queryPartnerId
@@ -1412,14 +1428,19 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // (fetchAllOrganizations.ts) sees each of them exactly once. They are not
   // counted in `pagination.total`: that number belongs to the paginated query,
   // and inflating it would make the walk ask for a page that doesn't exist.
-  const archivedRows = archivedScope
+  const archived = archivedScope
     && isFinalOrganizationsPage(offset, liveRows.length, Number(count))
     ? await listArchivedOrgs({ scope: archivedScope, search: trimmedSearch, limit })
-    : [];
+    : null;
 
   return c.json({
-    data: [...liveRows, ...archivedRows],
-    pagination: { page, limit, total: Number(count) }
+    data: [...liveRows, ...(archived?.orgs ?? [])],
+    pagination: { page, limit, total: Number(count) },
+    // Present only on the page that actually carries the archived block, so it
+    // is never a claim about a page that didn't look. Archived orgs are capped
+    // at `limit` rather than paginated (they are a separate read), and a silent
+    // short list is the one outcome the archive view cannot afford.
+    ...(archived ? { archivedTruncated: archived.truncated } : {})
   });
 });
 
@@ -1696,6 +1717,16 @@ orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, re
 orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOrgRead, async (c) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
+
+  // Shape-check BEFORE anything touches the database. `id` is a raw path
+  // segment and every lookup below feeds it to a `uuid` column, where a
+  // non-UUID raises Postgres 22P02 — an uncaught 500 (and a Sentry event) that
+  // any unauthenticated-shaped URL like `/organizations/undefined` can pump.
+  // A malformed id cannot name a real org, so it is a 404, same as a valid id
+  // for an org that doesn't exist.
+  if (!PG_UUID_REGEX.test(id)) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
 
   // An archived org is absent from `accessibleOrgIds` by design, so it fails
   // `canAccessOrg` and would 404 here. Serve it read-only instead — the archive
