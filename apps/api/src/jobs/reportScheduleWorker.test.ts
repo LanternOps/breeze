@@ -3,6 +3,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const insertMock = vi.fn();
 const updateMock = vi.fn();
+const queueAddMock = vi.fn(async (..._args: unknown[]) => undefined);
+
+// Only the queued-path test (Redis available) ever constructs a Queue; a real
+// bullmq Queue would try to actually connect using the fake `{}` connection
+// object `getBullMQConnection()` returns below, so it's faked the same way
+// every other worker test file in this directory fakes it (see alertQueue.test.ts).
+vi.mock('bullmq', () => ({
+  Queue: class {
+    add = queueAddMock;
+    close = vi.fn();
+  },
+  Worker: class {
+    close = vi.fn();
+    on = vi.fn();
+  },
+  Job: class {},
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -133,6 +150,14 @@ vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
 }));
 
+// Defaults to 'all' so every pre-existing test (written against the
+// single-process shape) keeps exercising the inline path unchanged; role-gate
+// tests below flip this per-test and restore it in their own finally.
+const breezeRoleState = vi.hoisted(() => ({ role: 'all' as 'all' | 'api' | 'worker' }));
+vi.mock('../config/env', () => ({
+  breezeRole: () => breezeRoleState.role,
+}));
+
 vi.mock('./workerObservability', () => ({
   attachWorkerObservability: vi.fn(),
 }));
@@ -183,8 +208,19 @@ function updateChain() {
   return chain;
 }
 
+/** For the CAS claim: `.update().set().where().returning()` — `rows` mimics
+ * what Postgres would RETURNING: one row on a won claim, none on a lost one. */
+function claimUpdateChain(rows: Array<{ id: string }>) {
+  const chain: Record<string, unknown> = {};
+  chain.set = vi.fn(() => chain);
+  chain.where = vi.fn(() => chain);
+  chain.returning = vi.fn(async () => rows);
+  return chain;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  breezeRoleState.role = 'all';
   selectMock.mockReset();
   insertMock.mockReset();
   updateMock.mockReset();
@@ -336,7 +372,9 @@ describe('findDueReports', () => {
     selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
 
     const due = await findDueReports(now);
-    expect(due).toEqual([{ id: REPORT_ID, occurrenceKey: 202607010900 }]);
+    // lastGeneratedAt is the OBSERVED value at discovery time — the inline CAS
+    // claim (processCheckSchedules) uses it to detect a concurrent claim.
+    expect(due).toEqual([{ id: REPORT_ID, occurrenceKey: 202607010900, lastGeneratedAt: null }]);
   });
 
   it('falls back to the partner timezone when the org has none', async () => {
@@ -376,6 +414,135 @@ describe('findDueReports', () => {
       );
     } finally {
       consoleWarn.mockRestore();
+    }
+  });
+});
+
+// ─── Occurrence CAS + all-role gating (inline fallback) ─────────────────────
+
+describe('processCheckSchedules inline fallback (occurrence CAS + role gate)', () => {
+  function dueRow(overrides: Partial<{ id: string; lastGeneratedAt: Date | null }> = {}) {
+    return {
+      id: REPORT_ID,
+      schedule: 'daily',
+      lastGeneratedAt: null,
+      config: { schedule: { time: '09:00' } },
+      orgSettings: null,
+      partnerTimezone: null,
+      partnerSettings: null,
+      ...overrides,
+    };
+  }
+
+  it.each(['worker', 'api'] as const)(
+    "role %s: skips the inline fallback entirely (even with Redis down) — never claims, never generates",
+    async (role) => {
+      breezeRoleState.role = role;
+      selectMock.mockReturnValueOnce(selectChain([dueRow()]));
+      selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        await expect(processCheckSchedules()).resolves.toBeUndefined();
+        expect(consoleWarn).toHaveBeenCalledWith(
+          expect.stringContaining(`Redis unavailable outside 'all' role`),
+        );
+      } finally {
+        consoleWarn.mockRestore();
+      }
+
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(generateReportMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("'all' role claims the occurrence via CAS before running it", async () => {
+    selectMock.mockReturnValueOnce(selectChain([dueRow({ lastGeneratedAt: null })]));
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+    const claim = claimUpdateChain([{ id: REPORT_ID }]);
+    updateMock.mockReturnValueOnce(claim);
+    // processRunScheduledReport's own path after the claim.
+    selectMock.mockReturnValueOnce(selectChain([{
+      id: REPORT_ID,
+      orgId: ORG_ID,
+      name: 'Nightly inventory',
+      type: 'device_inventory',
+      format: 'csv',
+      schedule: 'daily',
+      config: {},
+      lastGeneratedAt: null,
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+      executionScopeFingerprint: 'f'.repeat(64),
+      executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
+    }]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()); // reportRuns -> completed
+    generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(processCheckSchedules()).resolves.toBeUndefined();
+
+    expect(claim.where).toHaveBeenCalledTimes(1);
+    expect(generateReportMock).toHaveBeenCalledTimes(1);
+    // Only ONE update happened inside processRunScheduledReport (the reportRuns
+    // completion) — the claim's own update already stamped lastGeneratedAt, so
+    // processRunScheduledReport must not have stamped it again.
+    expect(updateMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a lost claim (concurrent tick already won it) skips the report without generating", async () => {
+    selectMock.mockReturnValueOnce(selectChain([dueRow({ lastGeneratedAt: null })]));
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+    updateMock.mockReturnValueOnce(claimUpdateChain([])); // lost the race — no row returned
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(processCheckSchedules()).resolves.toBeUndefined();
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('already claimed by a concurrent check'),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
+
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(generateReportMock).not.toHaveBeenCalled();
+  });
+
+  it('the queued (Redis-available) path stays byte-identical: no claim, jobId dedup, real retry attempts', async () => {
+    const { isRedisAvailable } = await import('../services/redis');
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+
+    try {
+      selectMock.mockReturnValueOnce(selectChain([dueRow({ id: REPORT_ID, lastGeneratedAt: null })]));
+      selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+
+      await expect(processCheckSchedules()).resolves.toBeUndefined();
+
+      // No CAS claim, no inline execution — the queue absorbs the dedup/retry.
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(generateReportMock).not.toHaveBeenCalled();
+      // occurrenceKey is computed from the real current time (findDueReports
+      // is called with `new Date()`), so it isn't hard-coded here — only its
+      // presence and consistent use in both the payload and the jobId matter.
+      expect(queueAddMock).toHaveBeenCalledTimes(1);
+      const [name, payload, opts] = queueAddMock.mock.calls[0]!;
+      expect(name).toBe('run-scheduled-report');
+      expect(payload).toMatchObject({ type: 'run-scheduled-report', reportId: REPORT_ID });
+      const occurrenceKey = (payload as { occurrenceKey: number }).occurrenceKey;
+      expect(opts).toEqual(
+        expect.objectContaining({
+          jobId: `report-sched-run-${REPORT_ID}-${occurrenceKey}`,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 30_000 },
+        }),
+      );
+    } finally {
+      vi.mocked(isRedisAvailable).mockReturnValue(false);
     }
   });
 });
@@ -451,6 +618,28 @@ describe('processRunScheduledReport', () => {
     expect(mail.subject).toContain('Nightly inventory');
     expect(mail.attachments).toHaveLength(1);
     expect(mail.attachments[0]!.filename).toMatch(/device_inventory-report-.*\.csv/);
+  });
+
+  it('skips its own lastGeneratedAt stamp when the caller already claimed the occurrence', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, config: {} }]));
+    const runInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(runInsert);
+    const runCompleteUpdate = updateChain();
+    updateMock.mockReturnValueOnce(runCompleteUpdate);
+    generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await processRunScheduledReport(
+      { type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 },
+      { occurrenceClaimed: true },
+    );
+
+    // Exactly one update — the reportRuns completion. If the stamp update also
+    // fired, updateMock would have been called twice, same as the unclaimed
+    // test above.
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(runCompleteUpdate.set).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'completed' }),
+    );
   });
 
   it('rejects an out-of-authority saved config before running insert, baseline, generation, update, or delivery', async () => {
@@ -907,16 +1096,18 @@ describe('scheduled report failure handling', () => {
       ]),
     );
     selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
-    // report 1: load -> throws during generation
+    // report 1: CAS claim wins, then load -> throws during generation
+    updateMock.mockReturnValueOnce(claimUpdateChain([{ id: report.id }]));
     selectMock.mockReturnValueOnce(selectChain([report]));
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
-    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    updateMock.mockReturnValueOnce(updateChain());
     generateReportMock.mockRejectedValueOnce(new Error('boom'));
-    // report 2: load -> succeeds
+    // report 2: CAS claim wins, then load -> succeeds
+    updateMock.mockReturnValueOnce(claimUpdateChain([{ id: second.id }]));
     selectMock.mockReturnValueOnce(selectChain([second]));
     selectMock.mockReturnValueOnce(selectChain([])); // timezone lookup
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
-    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    updateMock.mockReturnValueOnce(updateChain());
     generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     await expect(processCheckSchedules()).resolves.toBeUndefined();
