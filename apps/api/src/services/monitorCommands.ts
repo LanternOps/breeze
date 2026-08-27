@@ -1,11 +1,19 @@
 /**
  * `buildMonitorCommand` — extracted from `routes/monitors.ts` (wave 3.5d-b,
- * #4086) so `jobs/monitorWorker.ts` can import it without reaching the route
- * graph (routes/monitors.ts's closure pulls in Hono route registration and,
- * transitively, other route modules). Split out verbatim: only the import
- * location changed, the body is byte-identical to the version that lived in
- * `routes/monitors.ts`. `routes/monitors.ts` re-imports and re-exports
- * `buildMonitorCommand` from here so route behavior/exports are unchanged.
+ * #4086) so `jobs/monitorWorker.ts` can import it without pulling in
+ * `routes/monitors.ts`'s Hono route registration and, transitively, other
+ * route modules. Split out verbatim: only the import location changed, the
+ * body is byte-identical to the version that lived in `routes/monitors.ts`.
+ * `routes/monitors.ts` re-imports and re-exports `buildMonitorCommand` from
+ * here so route behavior/exports are unchanged.
+ *
+ * This extraction does NOT make `monitorWorker` closure-clean of the agent
+ * socket graph: `jobs/monitorWorker.ts` still reaches `routes/agentWs.ts`
+ * through `services/agentCommandRelay.ts` (a value import of
+ * `isAgentConnected`/`sendCommandToAgent`), so `monitorWorker` remains
+ * `socket-owner` per the Task 5 placement classification, not `global`.
+ * Clearing that path requires making `agentCommandRelay`'s `routes/agentWs`
+ * dependency a lazy import — filed as a follow-up, not done here.
  */
 
 const MONITOR_TYPE_TO_COMMAND: Record<string, string> = {
