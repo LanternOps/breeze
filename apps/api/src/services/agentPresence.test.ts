@@ -41,7 +41,7 @@ describe('agentPresence', () => {
     redisMock.eval.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
     expect(await refreshAgentPresence('agent-1', 't-1')).toBe(true);
     expect(await refreshAgentPresence('agent-1', 't-2')).toBe(false);
-    const [script, numKeys, key, token, ttl] = redisMock.eval.mock.calls[0];
+    const [script, numKeys, key, token, ttl] = redisMock.eval.mock.calls[0]!;
     expect(script).toContain('PEXPIRE');
     expect(numKeys).toBe(1);
     expect(key).toBe('agent-presence:agent-1');
@@ -52,7 +52,7 @@ describe('agentPresence', () => {
   it('clearAgentPresence deletes only when the token matches (Lua DEL script)', async () => {
     redisMock.eval.mockResolvedValueOnce(1);
     expect(await clearAgentPresence('agent-1', 't-1')).toBe(true);
-    expect(redisMock.eval.mock.calls[0][0]).toContain("redis.call('DEL', KEYS[1])");
+    expect(redisMock.eval.mock.calls[0]![0]).toContain("redis.call('DEL', KEYS[1])");
   });
 
   it('readAgentPresence parses the lease and returns null on missing/corrupt', async () => {
