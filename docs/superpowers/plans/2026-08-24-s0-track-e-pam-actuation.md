@@ -625,10 +625,22 @@ registries but remain in device/organization deletion and retention contracts.
 No override, state exception, evidence mutation, ownership detachment, command
 bypass, durable-agent-ledger expansion, or Task 8 work is permitted.
 
-- [ ] **Step 1: Implement and pass the database no-transfer boundary**
-- [ ] **Step 2: Implement and pass the stable route conflict**
-- [ ] **Step 3: Pass the two-connection race, focused regressions, and exact-head core CI**
-- [ ] **Step 4: Synchronize issue #4060 and PR #4105 at the exact passing SHA**
+- [x] **Step 1: Implement and pass the database no-transfer boundary**
+- [x] **Step 2: Implement and pass the stable route conflict**
+- [x] **Step 3: Pass the two-connection race, focused regressions, and exact-head core CI**
+- [x] **Step 4: Synchronize issue #4060 and PR #4105 at the exact passing SHA**
+
+Implementation closure (2026-08-27): commits `a20069f49`, `4e933707b`, and
+`949b91123` enforce the no-transfer predicate in PostgreSQL and the API,
+preserve append-only evidence and exact ownership, and prove both transaction
+orderings without split ownership. Exact implementation candidate
+`949b91123ccde2caf40acd81ff932bbe76f1be68` passed manual core run
+[`33038259871`](https://github.com/LanternOps/breeze/actions/runs/33038259871)
+with 41 successful jobs, only the expected skipped Main Red Alert, and no
+failures; all three stacked-PR checks attached at that SHA also passed. Issue
+#4060 and PR #4105 record the same evidence. No dispatch wire-contract repair,
+Task 8 work, native Windows evidence, deployment, hosted mutation, or customer
+mutation is claimed.
 
 ### Task 8: Prove the failure matrix and produce exact-candidate Windows evidence
 

@@ -47,7 +47,7 @@ design_spec: ../specs/2026-08-26-s0-track-e-pam-device-move-guard-design.md
 - `getDeviceOrgDenormalizedTables()` no longer returns `pam_actuations` or `pam_actuation_results`.
 - `getDeviceCascadeDeleteTables()` continues returning both tables.
 
-- [ ] **Step 1: Write the database RED test**
+- [x] **Step 1: Write the database RED test**
 
 Create two organizations and sites under one partner, one device in the source,
 and one valid source-owned PAM actuation. Assert a direct admin connection
@@ -68,7 +68,7 @@ Repeat with representative actuation states `pending_dispatch`,
 `legacy_untracked`. Assert a control device with no actuation can change
 organization when all ordinary denormalized fixtures are valid.
 
-- [ ] **Step 2: Run the database test and verify RED**
+- [x] **Step 2: Run the database test and verify RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamDeviceMoveGuard.integration.test.ts
@@ -77,7 +77,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 Expected: FAIL because `devices_pam_history_move_guard` does not exist and/or
 the current dynamic cascade attempts to rewrite PAM evidence.
 
-- [ ] **Step 3: Add the fix-forward trigger migration**
+- [x] **Step 3: Add the fix-forward trigger migration**
 
 Create the function and trigger with the exact contract:
 
@@ -126,7 +126,7 @@ AND t.relname NOT IN (
 
 Do not abbreviate or partially replace the function body.
 
-- [ ] **Step 4: Remove PAM from the explicit move registry and pin coverage**
+- [x] **Step 4: Remove PAM from the explicit move registry and pin coverage**
 
 Remove only these two names from `CORE_DEVICE_ORG_DENORMALIZED_TABLES`:
 
@@ -144,11 +144,11 @@ expect(getDeviceCascadeDeleteTables()).toContain('pam_actuations');
 expect(getDeviceCascadeDeleteTables()).toContain('pam_actuation_results');
 ```
 
-- [ ] **Step 5: Run GREEN database and governance gates**
+- [x] **Step 5: Run GREEN database and governance gates**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamDeviceMoveGuard.integration.test.ts src/__tests__/integration/pamActuationLifecycle.integration.test.ts
-pnpm --filter @breeze/api exec vitest run --config vitest.config.rls.ts src/__tests__/integration/rls-coverage.integration.test.ts
+pnpm --filter @breeze/api test:rls-coverage
 pnpm --filter @breeze/api exec vitest run src/routes/devices/moveOrg.coverage.test.ts src/db/autoMigrate.test.ts
 pnpm --filter @breeze/api db:check-drift
 bash scripts/check-migration-naming.sh
@@ -157,7 +157,7 @@ bash scripts/check-migration-naming.sh
 Expected: all named files execute and pass; drift and migration naming pass;
 the append-only PAM result contract is unchanged.
 
-- [ ] **Step 6: Commit the database boundary**
+- [x] **Step 6: Commit the database boundary**
 
 ```bash
 git add apps/api/migrations/2026-09-17-pam-device-move-guard.sql apps/api/src/routes/devices/core.ts apps/api/src/routes/devices/moveOrg.coverage.test.ts apps/api/src/__tests__/integration/pamDeviceMoveGuard.integration.test.ts
@@ -190,7 +190,7 @@ export async function assertPamDeviceOrgMoveAllowed(
 ): Promise<void>;
 ```
 
-- [ ] **Step 1: Write service and route RED tests**
+- [x] **Step 1: Write service and route RED tests**
 
 The service test must assert this exact owned-scope query behavior:
 
@@ -219,7 +219,7 @@ device update. Also simulate a trigger-race error with SQLSTATE `23514` and
 409, while unrelated `23514` errors still use the existing generic failure
 path.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamDeviceMoveGuard.test.ts src/routes/devices/moveOrg.test.ts
@@ -227,7 +227,7 @@ pnpm --filter @breeze/api exec vitest run src/services/pamDeviceMoveGuard.test.t
 
 Expected: FAIL because the service, typed error, and route mapping do not exist.
 
-- [ ] **Step 3: Implement the read-only service**
+- [x] **Step 3: Implement the read-only service**
 
 Use one parameterized query and expose no row contents:
 
@@ -245,7 +245,7 @@ if (row?.blocked) throw new PamDeviceMoveBlockedError();
 
 Do not select state, result, command, subject, target, or evidence fields.
 
-- [ ] **Step 4: Integrate the guard and exact error mapper**
+- [x] **Step 4: Integrate the guard and exact error mapper**
 
 Call `assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId })` immediately
 after the source/target organization SHARE barrier and before updating the
@@ -263,7 +263,7 @@ Return the stable 409 body and write only the existing source failure audit
 with `{ code: 'PAM_DEVICE_MOVE_BLOCKED' }`. Do not report this expected conflict
 to Sentry.
 
-- [ ] **Step 5: Extend and run real-Postgres route proof**
+- [x] **Step 5: Extend and run real-Postgres route proof**
 
 In `pamDeviceMoveGuard.integration.test.ts`, drive the real route with PAM
 actuation and result fixtures. Assert 409 and byte-for-byte equality of source
@@ -278,7 +278,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected: all three files execute and pass.
 
-- [ ] **Step 6: Commit the route behavior**
+- [x] **Step 6: Commit the route behavior**
 
 ```bash
 git add apps/api/src/services/pamDeviceMoveGuard.ts apps/api/src/services/pamDeviceMoveGuard.test.ts apps/api/src/routes/devices/moveOrg.ts apps/api/src/routes/devices/moveOrg.test.ts apps/api/src/__tests__/integration/pamDeviceMoveGuard.integration.test.ts
@@ -296,7 +296,7 @@ git commit -m "fix(api): reject PAM device organization moves"
 - Produces a two-connection race proof with no split ownership outcome.
 - Produces exact-head local and CI evidence without changing Task 8.
 
-- [ ] **Step 1: Write the two-connection RED race**
+- [x] **Step 1: Write the two-connection RED race**
 
 Use two independent test connections and explicit barriers:
 
@@ -317,7 +317,7 @@ Reject any outcome where both commit, where the result table changes, or where
 the device and actuation end in different committed ownership without an
 error.
 
-- [ ] **Step 2: Run the race and verify RED/GREEN evidence**
+- [x] **Step 2: Run the race and verify RED/GREEN evidence**
 
 Run before the Task 1 migration implementation to preserve the unsafe or
 generic-failure RED observation, then after Tasks 1-2:
@@ -328,12 +328,12 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected after implementation: PASS with both orderings executed.
 
-- [ ] **Step 3: Run the complete focused regression gate**
+- [x] **Step 3: Run the complete focused regression gate**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/services/pamDeviceMoveGuard.test.ts src/routes/devices/moveOrg.test.ts src/routes/devices/moveOrg.coverage.test.ts
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamDeviceMoveGuard.integration.test.ts src/__tests__/integration/pamActuationLifecycle.integration.test.ts src/__tests__/integration/pamActuationResults.integration.test.ts src/__tests__/integration/pamReconciliationBinding.integration.test.ts src/__tests__/integration/agentRunMoveSemantics.integration.test.ts src/__tests__/integration/deviceMoveOrgCurrency.integration.test.ts
-pnpm --filter @breeze/api exec vitest run --config vitest.config.rls.ts src/__tests__/integration/rls-coverage.integration.test.ts
+pnpm --filter @breeze/api test:rls-coverage
 NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 pnpm --filter @breeze/api db:check-drift
 bash scripts/check-migration-naming.sh
@@ -343,7 +343,7 @@ git diff --check
 Expected: all named files execute and pass; typecheck, drift, migration naming,
 and diff checks pass.
 
-- [ ] **Step 4: Run exact-head core CI**
+- [x] **Step 4: Run exact-head core CI**
 
 Push the exact candidate, dispatch the existing core workflow against that
 exact SHA, and record every job conclusion. Do not describe stacked-PR
@@ -352,7 +352,13 @@ attached checks as the core run.
 Expected: the previously failing integration shard passes; only the expected
 Main Red Alert may be skipped. Any other failure remains a blocker.
 
-- [ ] **Step 5: Record closure without starting Task 8**
+Closure evidence (2026-08-27): exact implementation candidate
+`949b91123ccde2caf40acd81ff932bbe76f1be68` passed manual core run
+[`33038259871`](https://github.com/LanternOps/breeze/actions/runs/33038259871)
+with 41 successful jobs, only the expected skipped Main Red Alert, and no
+failures. All three checks attached to stacked PR #4105 passed at the same SHA.
+
+- [x] **Step 5: Record closure without starting Task 8**
 
 Check this addendum only after every local gate and exact-head core CI pass.
 Update issue #4060 and PR #4105 with the exact SHA, attached-check count, manual
@@ -360,7 +366,7 @@ core-run URL/job totals, the permanent PAM device-move restriction, and all
 remaining non-claims. Leave Task 8 and the dispatch wire-contract repair
 unchecked.
 
-- [ ] **Step 6: Commit documentation evidence**
+- [x] **Step 6: Commit documentation evidence**
 
 ```bash
 git add docs/superpowers/plans/2026-08-24-s0-track-e-pam-actuation.md docs/superpowers/plans/2026-08-26-s0-track-e-pam-device-move-guard.md
