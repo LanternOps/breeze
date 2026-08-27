@@ -25,7 +25,8 @@ import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
-import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
+import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
+import type { AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/automationRuntime';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import {
@@ -568,7 +569,7 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
 
-  if (!isAgentConnected(agentId)) {
+  if (!(await isAgentConnectedAnywhere(agentId))) {
     console.warn(
       `[DiscoveryWorker] Selected agent is not websocket-connected for job ${data.jobId} (agent=${agentId}, requestedAgent=${requestedAgentId ?? 'none'}, source=${selectionSource})`
     );
@@ -603,9 +604,14 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     }
   };
 
-  const sent = sendCommandToAgent(agentId, command);
-  if (!sent) {
-    await markJobFailed(data.jobId, 'Failed to send command to agent');
+  const outcome = await dispatchCommandToAgent(agentId, command);
+  if (outcome.status !== 'sent') {
+    await markJobFailed(
+      data.jobId,
+      outcome.status === 'offline'
+        ? 'Failed to send command to agent'
+        : `Failed to send command to agent (dispatch outcome ${outcome.status})`,
+    );
     return { dispatched: false, agentId, durationMs: Date.now() - startTime };
   }
 
@@ -623,6 +629,13 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
   console.log(`[DiscoveryWorker] Scan dispatched to agent ${agentId} for job ${data.jobId}`);
   return { dispatched: true, agentId, durationMs: Date.now() - startTime };
 }
+
+// Exposed for the wave 3.5b (#4084) dispatch-facade migration tests — mirrors
+// snmpWorker.ts's __testables pattern. processDispatchScan opens no outer DB
+// context of its own, so calling it directly is safe from a context standpoint.
+export const __testables = {
+  processDispatchScan,
+};
 
 /**
  * Process discovery results — upsert discovered assets

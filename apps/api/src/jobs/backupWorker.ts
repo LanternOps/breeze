@@ -26,11 +26,8 @@ import { recoveryTokens } from '../db/schema/recoveryTokens';
 import { eq, ne, and, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
-import {
-  sendCommandToAgent,
-  isAgentConnected,
-  type AgentCommand,
-} from '../routes/agentWs';
+import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
+import type { AgentCommand } from '../routes/agentWs';
 import {
   cleanupExpiredSnapshots,
   sweepUnreferencedBackupObjects,
@@ -499,7 +496,7 @@ async function processDispatchBackup(
     .limit(1);
 
   const agentId = device?.agentId;
-  if (!agentId || !isAgentConnected(agentId)) {
+  if (!agentId || !(await isAgentConnectedAnywhere(agentId))) {
     await markJobFailed(data.jobId, 'Agent not connected');
     return { dispatched: false };
   }
@@ -650,17 +647,19 @@ async function processDispatchBackup(
     // fail-closed on arrival (dropped), not trusted.
     await recordDispatchedExpectation('backup', data.deviceId, commandJobId);
 
-    const sent = sendCommandToAgent(agentId, command);
-    if (sent) {
+    const outcome = await dispatchCommandToAgent(agentId, command);
+    if (outcome.status === 'sent') {
       sentCount++;
     } else {
-      console.warn(`[BackupWorker] Failed to send ${target.commandType} command for job ${commandJobId}`);
+      const detail = outcome.status === 'offline'
+        ? `Failed to send ${target.commandType} command to agent`
+        : `Failed to send ${target.commandType} command to agent (dispatch outcome ${outcome.status})`;
+      console.warn(`[BackupWorker] ${detail} for job ${commandJobId}`);
       failedTargets.push(target.commandType);
-      // Mark the child job as failed so it doesn't stay orphaned in "running"
       if (commandJobId !== data.jobId) {
         await db
           .update(backupJobs)
-          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: `Failed to send ${target.commandType} command to agent` })
+          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: detail })
           .where(eq(backupJobs.id, commandJobId));
       }
     }
@@ -879,4 +878,6 @@ export const __testOnly = {
   // thing carrying a `partial` run from the queue payload into persistence, and
   // dropping that one argument silently reverts #3000 with nothing going red.
   processResults,
+  // Exposed for the wave 3.5b (#4084) dispatch-facade migration tests.
+  processDispatchBackup,
 };
