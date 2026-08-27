@@ -94,6 +94,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/'],
     ['post', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify'],
+    // Revision authoring resolves the operator-supplied base URL through
+    // assertSafeUrl (a real DNS lookup) BEFORE any DB work — holding the
+    // request transaction across it pins a pooled connection on a resolver
+    // the operator chose the timeout of.
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/'],
+    ['post', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -186,7 +193,9 @@ describe('isSelfManagedDbContextRoute', () => {
     // The other catalog mutations are DB-only and MUST keep the ambient tx.
     ['GET', '/api/v1/admin/llm-provider-catalog', 'catalog listing is DB-only'],
     ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/activate', 'activation is DB-only'],
-    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions', 'revision create is DB-only'],
+    ['GET', '/api/v1/admin/llm-provider-catalog/entry-1/revisions', 'revision create is POST-only'],
+    ['POST', '/api/v1/admin/llm-provider-catalog//revisions', 'empty entry id must not match'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/extra', 'extra segment must not match'],
     ['GET', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify', 'verify is POST-only'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions//verify', 'empty revision id must not match'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/extra', 'extra segment must not match'],

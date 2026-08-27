@@ -39,6 +39,10 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // `assertSafeUrl` (urlSafety) now carries the #1105 held-context tripwire, and
+  // probeS3Config calls it — without this export the partial mock turns every
+  // S3 "test connection" case into a module error instead of a policy result.
+  assertOutsideHeldDbContext: vi.fn(),
 }));
 
 vi.mock('../../db/schema', () => ({

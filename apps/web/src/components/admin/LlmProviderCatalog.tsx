@@ -86,6 +86,29 @@ type ModelMapDraftRow = {
   cacheWriteCentsPerM: string;
 };
 
+/**
+ * The activation/listing gate, evaluated client-side purely to keep a control
+ * from offering an action the API will reject.
+ *
+ * An empty map is NOT verified: the API's `assertAllModelsVerified` asks "is
+ * every mapped model verified?", which an empty map answers vacuously — the
+ * same trap the server-side `assertOfferableModelMap` closes.
+ */
+function isFullyVerified(revision: CatalogRevision): boolean {
+  const modelIds = Object.keys(revision.modelMap);
+  return modelIds.length > 0
+    && modelIds.every((modelId) => revision.verifiedModels.includes(modelId));
+}
+
+/**
+ * The entry's active revision, or undefined when there is none (or the pointer
+ * is orphaned — which the API also treats as unlistable, with a 409).
+ */
+function activeRevisionOf(entry: CatalogEntry): CatalogRevision | undefined {
+  if (!entry.activeRevisionId) return undefined;
+  return entry.revisions.find((revision) => revision.revisionId === entry.activeRevisionId);
+}
+
 function emptyModelMapDraft(): Record<string, ModelMapDraftRow> {
   return Object.fromEntries(
     OFFERABLE_AI_MODELS.map((modelId) => [
@@ -486,6 +509,12 @@ export default function LlmProviderCatalog() {
             <tbody>
               {entries.map((entry) => {
                 const expanded = expandedId === entry.entryId;
+                // Listing re-runs the verification gate server-side (409 on a
+                // half-verified active revision), so the button must mirror the
+                // Activate button's rule rather than only checking that SOME
+                // revision is active.
+                const activeRevision = activeRevisionOf(entry);
+                const canList = activeRevision !== undefined && isFullyVerified(activeRevision);
                 return (
                   <Fragment key={entry.entryId}>
                     <tr data-testid={`llm-catalog-row-${entry.entryId}`} className="border-b hover:bg-gray-50">
@@ -525,8 +554,9 @@ export default function LlmProviderCatalog() {
                             <button
                               data-testid={`llm-catalog-row-${entry.entryId}-list`}
                               onClick={() => handleSetStatus(entry, 'listed')}
-                              disabled={!entry.activeRevisionId || statusChangingEntryId === entry.entryId}
-                              className="px-2 py-1 text-xs border rounded hover:bg-gray-100 disabled:opacity-50"
+                              disabled={!canList || statusChangingEntryId === entry.entryId}
+                              title={canList ? undefined : t('admin.llmProviderCatalog.revision.listBlocked')}
+                              className="px-2 py-1 text-xs border rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {t('admin.llmProviderCatalog.actions.list')}
                             </button>
@@ -553,8 +583,7 @@ export default function LlmProviderCatalog() {
                             ) : (
                               entry.revisions.map((revision) => {
                                 const modelIds = Object.keys(revision.modelMap);
-                                const allVerified = modelIds.length > 0
-                                  && modelIds.every((modelId) => revision.verifiedModels.includes(modelId));
+                                const allVerified = isFullyVerified(revision);
                                 const isActive = entry.activeRevisionId === revision.revisionId;
                                 return (
                                   <div

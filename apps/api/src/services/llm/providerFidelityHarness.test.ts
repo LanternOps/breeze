@@ -343,6 +343,47 @@ describe('runFidelityCheck', () => {
     const queryOptions = (sdkState.query.mock.calls[0]![0] as { options: Record<string, unknown> }).options;
     expect(queryOptions.model).toBe(INPUT.providerModel);
   });
+
+  // Last in the file on purpose: it swaps the agent-SDK mock for a throwing one
+  // on a fresh module graph and restores it in `finally`.
+  it('never passes when the agent SDK module itself cannot be imported', async () => {
+    // The other "skipped" case is a launch failure INSIDE query(); this one is
+    // the earlier `await import('@anthropic-ai/claude-agent-sdk')` rejecting —
+    // an install where the optional dependency is simply absent. Both must
+    // record a FAILING step, because the caller persists these steps as the
+    // verification record and a record with an un-run stage must never read as
+    // a pass.
+    stageOkAnthropic();
+    sdkState.importThrows = new Error("Cannot find module '@anthropic-ai/claude-agent-sdk'");
+    // The hoisted `vi.mock` factory is evaluated once and cached, so it can
+    // never observe a flag set after the first import. Re-registering it here
+    // (against the same state) plus a module reset is what actually exercises
+    // the import-failure branch.
+    vi.doMock('@anthropic-ai/claude-agent-sdk', () => {
+      throw sdkState.importThrows;
+    });
+    vi.resetModules();
+    try {
+      const { runFidelityCheck: runOnFreshGraph } = await import('./providerFidelityHarness');
+
+      const result = await runOnFreshGraph(INPUT);
+
+      const step = stepByName(result, FIDELITY_STEP_NAMES.sdkSubprocess);
+      expect(step.ok).toBe(false);
+      // Wording unique to the import-failure catch — distinct from the
+      // launch-failure skip ("agent SDK subprocess unavailable") and from the
+      // direct-stage skip, so this asserts the branch, not merely "some skip".
+      expect(step.detail).toMatch(/^skipped: agent SDK unavailable/);
+      expect(result.passed).toBe(false);
+      // The direct stage still passed — only the un-runnable stage fails the run.
+      expect(stepByName(result, FIDELITY_STEP_NAMES.directToolUse).ok).toBe(true);
+      expect(stepByName(result, FIDELITY_STEP_NAMES.directToolResult).ok).toBe(true);
+    } finally {
+      sdkState.importThrows = null;
+      vi.doUnmock('@anthropic-ai/claude-agent-sdk');
+      vi.resetModules();
+    }
+  });
 });
 
 describe('buildFidelityChildEnv', () => {

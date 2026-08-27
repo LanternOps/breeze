@@ -189,6 +189,51 @@ describe('LlmProviderCatalog', () => {
     expect(body).toEqual({ modelId: 'claude-sonnet-4-6', apiKey: 'sk-transient-test-key' });
   });
 
+  describe('the List button mirrors the activation gate', () => {
+    // The API re-runs assertAllModelsVerified on a `listed` transition, so an
+    // enabled List button on a half-verified active revision is a button whose
+    // only outcome is a 409 toast. It has to read the SAME allVerified rule the
+    // Activate button does, not merely "an active revision exists".
+    const withActiveRevision = (verifiedModels: string[]) => ({
+      ...draftEntry,
+      activeRevisionId: 'rev-1',
+      revisions: [{ ...draftEntry.revisions[0], verifiedModels }],
+    });
+
+    it('disables List when the entry has no active revision at all', async () => {
+      mockApi([draftEntry]);
+      render(<LlmProviderCatalog />);
+      await screen.findByText('OpenRouter');
+
+      const listBtn = screen.getByTestId('llm-catalog-row-entry-1-list') as HTMLButtonElement;
+      expect(listBtn.disabled).toBe(true);
+    });
+
+    it('disables List when the active revision has an unverified mapped model', async () => {
+      mockApi([withActiveRevision([])]);
+      render(<LlmProviderCatalog />);
+      await screen.findByText('OpenRouter');
+
+      const listBtn = screen.getByTestId('llm-catalog-row-entry-1-list') as HTMLButtonElement;
+      expect(listBtn.disabled).toBe(true);
+      // A disabled control with no explanation is the failure mode this
+      // replaces — the operator has to be told to go verify the revision.
+      expect(listBtn.title).toBe(
+        'Every mapped model on the active revision needs a passing verification before this provider can be listed.',
+      );
+    });
+
+    it('enables List once every model on the active revision is verified', async () => {
+      mockApi([withActiveRevision(['claude-sonnet-4-6'])]);
+      render(<LlmProviderCatalog />);
+      await screen.findByText('OpenRouter');
+
+      const listBtn = screen.getByTestId('llm-catalog-row-entry-1-list') as HTMLButtonElement;
+      expect(listBtn.disabled).toBe(false);
+      expect(listBtn.title).toBe('');
+    });
+  });
+
   it('sets status to delisted via runAction after confirm', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     mockApi([draftEntry], {

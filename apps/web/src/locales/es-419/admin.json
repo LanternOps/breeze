@@ -452,7 +452,8 @@
         "createdAt": "Creado",
         "notVerified": "No verificado",
         "verified": "Verificado",
-        "activateBlocked": "Cada modelo asignado necesita una verificación aprobada antes de poder activar esta revisión."
+        "activateBlocked": "Cada modelo asignado necesita una verificación aprobada antes de poder activar esta revisión.",
+        "listBlocked": "Cada modelo asignado de la revisión activa necesita una verificación aprobada antes de poder listar este proveedor."
       },
       "authModeOptions": {
         "x-api-key": "Encabezado de clave de API",

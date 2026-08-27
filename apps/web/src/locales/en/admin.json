@@ -452,7 +452,8 @@
         "createdAt": "Created",
         "notVerified": "Not verified",
         "verified": "Verified",
-        "activateBlocked": "Every mapped model needs a passing verification before this revision can be activated."
+        "activateBlocked": "Every mapped model needs a passing verification before this revision can be activated.",
+        "listBlocked": "Every mapped model on the active revision needs a passing verification before this provider can be listed."
       },
       "authModeOptions": {
         "x-api-key": "API key header",

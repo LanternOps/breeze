@@ -452,7 +452,8 @@
         "createdAt": "Creata",
         "notVerified": "Non verificata",
         "verified": "Verificata",
-        "activateBlocked": "Ogni modello mappato deve superare la verifica prima che questa revisione possa essere attivata."
+        "activateBlocked": "Ogni modello mappato deve superare la verifica prima che questa revisione possa essere attivata.",
+        "listBlocked": "Ogni modello mappato della revisione attiva deve superare la verifica prima che questo provider possa essere elencato."
       },
       "authModeOptions": {
         "x-api-key": "Intestazione chiave API",

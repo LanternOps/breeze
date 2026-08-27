@@ -267,6 +267,17 @@ export async function resolveSafeRecords(
  * window.
  */
 export async function assertSafeUrl(urlStr: string, opts?: SsrfGuardOptions): Promise<void> {
+  // #1105 tripwire, same reasoning as `safeFetch` below. This function sends no
+  // request, but it DOES perform a real `dns.lookup` against a hostname the
+  // caller does not control — an unbounded network wait. Run inside a held
+  // withDbAccessContext transaction it pins a pooled connection
+  // idle-in-transaction for the duration of that resolution, which is the same
+  // pool-poison class as an outbound fetch, only quieter. Guarding the
+  // primitive (rather than trusting each new route to register itself in
+  // middleware/selfManagedDbContextRoutes.ts) is what makes a new violation
+  // visible at all. Warn-only in prod; throws under DB_CONTEXT_TRIPWIRE_STRICT.
+  assertOutsideHeldDbContext('assertSafeUrl');
+
   const u = new URL(urlStr);
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {
     throw new SsrfBlockedError(`unsupported URL scheme: ${u.protocol}`);

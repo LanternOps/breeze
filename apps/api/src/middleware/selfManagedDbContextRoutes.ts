@@ -162,6 +162,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // and writes the verification through the service's own short
   // `withSystemDbAccessContext` blocks, with the harness call between them.
   { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/revisions\/[^/]+\/verify\/?$/ },
+  // #3922 review round 2 — revision AUTHORING is the second network-touching
+  // route on this surface, and the quieter one. `createRevision` runs
+  // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,
+  // which is a real `dns.lookup` against a host the operator chose, BEFORE any
+  // of its DB work. A blackholed or merely slow resolver therefore held a
+  // pooled connection idle-in-transaction for the whole resolution — the
+  // #1105 pool-poison class without a single byte of payload leaving the box.
+  // `createRevision` wraps its reads and its insert in their own short
+  // `withSystemDbAccessContext` block, run strictly AFTER the URL check, so
+  // the handler needs no ambient transaction at all.
+  { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/[^/]+\/revisions\/?$/ },
 ];
 
 /**

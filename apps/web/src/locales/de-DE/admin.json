@@ -452,7 +452,8 @@
         "createdAt": "Erstellt",
         "notVerified": "Nicht verifiziert",
         "verified": "Verifiziert",
-        "activateBlocked": "Jedes zugeordnete Modell benötigt eine erfolgreiche Verifizierung, bevor diese Revision aktiviert werden kann."
+        "activateBlocked": "Jedes zugeordnete Modell benötigt eine erfolgreiche Verifizierung, bevor diese Revision aktiviert werden kann.",
+        "listBlocked": "Jedes zugeordnete Modell der aktiven Revision benötigt eine erfolgreiche Verifizierung, bevor dieser Anbieter gelistet werden kann."
       },
       "authModeOptions": {
         "x-api-key": "API-Schlüssel-Header",
