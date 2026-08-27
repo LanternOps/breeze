@@ -48,16 +48,36 @@ vi.mock('../../db', () => {
 });
 
 vi.mock('../../services', () => ({
-  createTokenPair: vi.fn().mockResolvedValue({
+  createSession: vi.fn(),
+  getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
+}));
+
+vi.mock('../../services/userSession', () => ({
+  issueUserSession: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'jti-1',
     expiresInSeconds: 900,
+    familyId: 'family-1',
+    transitionId: '00000000-0000-4000-8000-0000000000b1',
+    generation: 7,
   }),
-  createSession: vi.fn(),
-  mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-1'),
-  bindRefreshJtiToFamily: vi.fn(),
-  getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
+  bindIssuedUserSession: vi.fn(),
+}));
+
+vi.mock('../../services/authBrowserTransition', () => ({
+  beginAuthIssuanceForStoredTransition: vi.fn(),
+  finishAuthIssuance: vi.fn(),
+  cancelAuthIssuance: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../services/ssoBrowserTransition', () => ({
+  lockSsoProviderAuthority: vi.fn().mockResolvedValue({ ok: true }),
+}));
+
+vi.mock('../../services/recoveryCodeAuth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/recoveryCodeAuth')>()),
+  consumeRecoveryCode: vi.fn(),
 }));
 
 vi.mock('../../services/mfaPolicy', () => ({
@@ -89,9 +109,13 @@ vi.mock('./helpers', () => ({
 }));
 
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
+import { db } from '../../db';
 import { users, ssoProviders, organizationUsers, userSsoIdentities } from '../../db/schema';
 import { consumeSsoPendingLink } from '../../services/ssoPendingLink';
-import { createTokenPair, getUserEpochs } from '../../services';
+import { getUserEpochs } from '../../services';
+import { issueUserSession } from '../../services/userSession';
+import { beginAuthIssuanceForStoredTransition, cancelAuthIssuance, finishAuthIssuance } from '../../services/authBrowserTransition';
+import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { isDomainVerifiedForOrg, isSsoProvisioningBlocked } from '../../services/ssoDomainVerification';
 
 const USER_ID = '00000000-0000-4000-8000-0000000000aa';
@@ -103,6 +127,8 @@ const RECORD = {
   userEmail: 'v@example.com',
   authEpoch: 1,
   mfaEpoch: 1,
+  browserTransitionId: '00000000-0000-4000-8000-0000000000b1',
+  browserGeneration: 7,
   providerId: PROVIDER_ID,
   providerOrgId: ORG_ID,
   providerPartnerId: null,
@@ -128,6 +154,8 @@ const USER_ROW = {
   status: 'active',
   passwordHash: '$argon2id$hash',
   mfaEnabled: false,
+  authEpoch: 1,
+  mfaEpoch: 1,
 };
 
 const PROVIDER_ROW = {
@@ -173,6 +201,14 @@ beforeEach(() => {
   vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 } as never);
   vi.mocked(isDomainVerifiedForOrg).mockResolvedValue(true);
   vi.mocked(isSsoProvisioningBlocked).mockResolvedValue(false);
+  const capability = {
+    transitionId: RECORD.browserTransitionId,
+    generation: RECORD.browserGeneration,
+    operationId: '00000000-0000-4000-8000-0000000000b2',
+    expiresAt: new Date(Date.now() + 60_000),
+  } as never;
+  vi.mocked(beginAuthIssuanceForStoredTransition).mockResolvedValue({ capability, claimed: undefined } as never);
+  vi.mocked(finishAuthIssuance).mockImplementation(async (_capability, callback) => callback(db as never) as never);
 });
 
 describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
@@ -186,19 +222,55 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       expiresInSeconds: 900,
       redirectPath: '/dashboard',
     });
-    expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: USER_ID, scope: 'organization', orgId: ORG_ID }),
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER_ID, scope: 'organization', orgId: ORG_ID }),
       expect.any(Object),
     );
     const linked = auditSpy.mock.calls.find(([, p]) => (p as { action?: string }).action === 'sso.identity.linked');
     expect(linked).toBeTruthy();
   });
 
+  it('reuses an already-admitted MFA capability instead of reserving a second operation', async () => {
+    wire();
+    const capability = {
+      transitionId: RECORD.browserTransitionId,
+      generation: RECORD.browserGeneration,
+      operationId: '00000000-0000-4000-8000-0000000000c1',
+      expiresAt: new Date(Date.now() + 60_000),
+    } as never;
+
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', {
+      breezeMfaVerified: true,
+      expectedUserId: USER_ID,
+      capability,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(beginAuthIssuanceForStoredTransition).not.toHaveBeenCalled();
+    expect(finishAuthIssuance).toHaveBeenCalledWith(capability, expect.any(Function));
+  });
+
+  it('consumes a recovery code inside guarded finalization and rejects an invalid code', async () => {
+    wire();
+    vi.mocked(consumeRecoveryCode).mockRejectedValueOnce(new RecoveryCodeInvalidError());
+
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', {
+      breezeMfaVerified: true,
+      expectedUserId: USER_ID,
+      recoveryCode: 'ABCD-2345',
+    });
+
+    expect(outcome).toEqual({ ok: false, error: 'invalid_mfa_code' });
+    expect(consumeRecoveryCode).toHaveBeenCalledWith(expect.anything(), USER_ID, 'ABCD-2345');
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+  });
+
   it('returns link_expired when the record is gone (expired / already consumed / store down)', async () => {
     wire({ record: null });
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'link_expired' });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('refuses a pending-MFA record stitched to a DIFFERENT account (user_binding_mismatch)', async () => {
@@ -209,7 +281,7 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     });
     expect(outcome).toEqual({ ok: false, error: 'link_expired' });
     expect(lastRejectionReason()).toBe('user_binding_mismatch');
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -222,7 +294,7 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'link_expired' });
     expect(lastRejectionReason()).toBe(reason);
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('voids the ceremony on an auth/mfa epoch advance (password reset or factor change mid-window)', async () => {
@@ -231,7 +303,7 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'link_expired' });
     expect(lastRejectionReason()).toBe('epoch_mismatch');
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -243,7 +315,7 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'link_expired' });
     expect(lastRejectionReason()).toBe(reason);
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('re-runs the domain-ownership proof when the callback accepted an ABSENT email_verified claim', async () => {
@@ -252,7 +324,7 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'link_expired' });
     expect(lastRejectionReason()).toBe('domain_proof_revoked');
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
     expect(isDomainVerifiedForOrg).toHaveBeenCalledWith(ORG_ID, 'example.com');
   });
 
@@ -270,7 +342,7 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'link_expired' });
     expect(lastRejectionReason()).toBe('domain_blocked');
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('collapses membership/mint failures to the public completion_failed code (never raw codes on the wire)', async () => {
@@ -279,21 +351,21 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     expect(outcome).toEqual({ ok: false, error: 'completion_failed' });
     // The precise reason still lands in the audit trail.
     expect(lastRejectionReason()).toBe('no_org_access');
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('surfaces identity_in_use when the exact (provider, sub) row belongs to another account', async () => {
     wire({ identity: { id: 'identity-x', userId: 'someone-else' } });
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'identity_in_use' });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).toHaveBeenCalledOnce();
   });
 
   it('mints mfa:true when the ceremony verified a Breeze-held factor, regardless of IdP amr', async () => {
     wire();
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: USER_ID });
     expect(outcome.ok).toBe(true);
-    expect(createTokenPair).toHaveBeenCalledWith(
+    expect(issueUserSession).toHaveBeenCalledWith(
       expect.objectContaining({ mfa: true }),
       expect.any(Object),
     );

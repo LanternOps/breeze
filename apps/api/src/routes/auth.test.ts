@@ -262,6 +262,12 @@ vi.mock('../services/tenantStatus', () => ({
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined)
 }));
 
+vi.mock('../services/terminalLogout', () => ({
+  performOrdinaryTerminalLogout: vi.fn().mockResolvedValue({
+    replacement: { kind: 'browser', value: 'replacement-binding' },
+  }),
+}));
+
 // #4067: the /mfa/verify link-ceremony continuation delegates to
 // finalizeSsoPendingLink; stub it so the branch is assertable without the
 // whole SSO completion graph.
@@ -292,7 +298,7 @@ vi.mock('../middleware/auth', () => ({
       // Match the real middleware's `token: payload` shape (auth.ts:580). The
       // logout handler reads `auth.token.sid` to resolve the refresh family —
       // without a `token` object that dereference throws (500).
-      token: { sid: 'family-123', sub: 'user-123', type: 'access' },
+      token: { sid: 'family-123', sub: 'user-123', type: 'access', aep: 1, mep: 1 },
       orgId: null,
     });
     return next();
@@ -337,6 +343,7 @@ import {
   AuthIssuanceCapabilityError,
 } from '../services';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { performOrdinaryTerminalLogout } from '../services/terminalLogout';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './auth/ssoPolicy';
 import {
   getPasswordResetEligibility,
@@ -1421,10 +1428,14 @@ describe('auth routes', () => {
         refreshToken: 'sso-refresh',
         expiresInSeconds: 900,
         mfa: true,
+        session: { refreshToken: 'sso-refresh' },
         redirectPath: '/dashboard',
       } as any);
 
-      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+      const res = await postMfaVerify(
+        { tempToken: 'temp-token', code: '123456' },
+        { 'x-breeze-auth-transition': 'v1' },
+      );
 
       expect(res.status).toBe(200);
       const body = await res.json() as Record<string, unknown>;
@@ -1436,7 +1447,11 @@ describe('auth routes', () => {
       expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
         expect.anything(),
         'link-hash-1',
-        { breezeMfaVerified: true, expectedUserId: 'user-1' },
+        {
+          breezeMfaVerified: true,
+          expectedUserId: 'user-1',
+          capability: expect.objectContaining({ transitionId: 'transition-1', generation: 1 }),
+        },
       );
       // The factor was verified and the temp token consumed, but the
       // password-login mint must NOT run.
@@ -1445,6 +1460,27 @@ describe('auth routes', () => {
       expect(createTokenPair).not.toHaveBeenCalled();
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_refresh_token=');
+    });
+
+    it('hands recovery-code authority to the link finalizer and maps an invalid code to 401', async () => {
+      getMock.mockResolvedValue(pendingRecord({ ssoLinkTokenHash: 'link-hash-1' }));
+      vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'invalid_mfa_code' } as any);
+
+      const res = await postMfaVerify(
+        { tempToken: 'temp-token', code: 'ABCD-2345', method: 'recovery' },
+        { 'x-breeze-auth-transition': 'v1' },
+      );
+
+      expect(res.status).toBe(401);
+      expect((await res.json() as Record<string, unknown>).error).toBe('Invalid MFA code');
+      expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
+        expect.anything(),
+        'link-hash-1',
+        expect.objectContaining({
+          recoveryCode: 'ABCD-2345',
+          capability: expect.objectContaining({ transitionId: 'transition-1', generation: 1 }),
+        }),
+      );
     });
 
     it('maps a finalizer identity conflict to 409 identity_in_use (terminal, not retryable)', async () => {
@@ -1481,6 +1517,8 @@ describe('auth routes', () => {
       // not invite the user to retry a code that can never work.
       expect((await res.json() as Record<string, unknown>).error).toBe('sso_link_expired');
       expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
     it.each([
       { factor: 'totp', requestMethod: undefined, userMethod: 'totp', phoneNumber: null },
       { factor: 'sms', requestMethod: undefined, userMethod: 'sms', phoneNumber: '+15550000001' },
@@ -3337,7 +3375,7 @@ describe('auth routes', () => {
     });
 
     it('POST /auth/mfa/recovery-codes should rotate recovery codes when MFA is enabled', async () => {
-      const newRecoveryCodes = ['NEW-0001', 'NEW-0002'];
+      const newRecoveryCodes = ['NEWA-0001', 'NEWB-0002'];
       vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
       vi.mocked(verifyPassword).mockResolvedValue(true);
       vi.mocked(db.select)
@@ -3622,14 +3660,18 @@ describe('auth routes', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer valid-token'
+          'Authorization': 'Bearer valid-token',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_csrf_token=test-csrf-token; breeze_auth_binding=test-binding',
+          Origin: 'http://localhost',
+          'sec-fetch-site': 'same-origin'
         }
       });
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
+      expect(performOrdinaryTerminalLogout).toHaveBeenCalledOnce();
     });
   });
 

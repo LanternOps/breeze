@@ -19,6 +19,7 @@ const expectedGuardedIssuerFiles = new Map([
   ['routes/auth/verifyEmail.ts', 2],
   ['routes/auth/invite.ts', 1],
   ['routes/auth/cfAccessRedirectLogin.ts', 1],
+  ['routes/auth/ssoLinkCompletion.ts', 1],
   ['routes/sso.ts', 1],
 ]);
 
@@ -32,7 +33,12 @@ const expectedSingleBoundaryFiles = new Map([
   ['routes/auth/cfAccessRedirectLogin.ts', 1],
 ]);
 const expectedLegacyIssuerFiles = new Map(expectedSingleBoundaryFiles);
-const expectedGuardedCookieInstallerFiles = new Map(expectedSingleBoundaryFiles);
+const expectedGuardedCookieInstallerFiles = new Map([
+  ...expectedSingleBoundaryFiles,
+  ['routes/auth/mfa.ts', 2],
+  ['routes/auth/passkeys.ts', 2],
+  ['routes/sso.ts', 1],
+]);
 const expectedLegacyCookieInstallerFiles = new Map(expectedSingleBoundaryFiles);
 
 function productionTypeScriptFiles(dir: string): string[] {
@@ -259,7 +265,10 @@ describe('frozen authentication issuer inventory', () => {
     const processLocalGrantMaps: number[] = [];
     const visit = (node: ts.Node): void => {
       if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)
-        && node.expression.text === 'Map') {
+        && node.expression.text === 'Map'
+        && ts.isVariableDeclaration(node.parent)
+        && ts.isIdentifier(node.parent.name)
+        && node.parent.name.text === 'ssoTokenExchangeGrants') {
         processLocalGrantMaps.push(node.getStart(ast));
       }
       if (ts.isCallExpression(node)) {

@@ -375,9 +375,6 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       return c.json({ error: 'Invalid MFA code' }, 401);
     }
 
-    // Clear temp token
-    await redis.del(`mfa:pending:${tempToken}`);
-
     // #4067: this MFA step may be the continuation of a link-on-first-SSO-
     // login ceremony (/sso/link/confirm verified the password, this endpoint
     // verified the Breeze-held factor). Finalize the SSO link + SSO-style
@@ -385,11 +382,22 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // finalizeSsoPendingLink re-validates the user/provider/epoch bindings
     // against live state and refuses on any drift.
     if (pending.ssoLinkTokenHash) {
+      const linkCapability = capability ?? undefined;
+      capability = null; // ownership transfers to the finalizer
       const outcome = await finalizeSsoPendingLink(c, pending.ssoLinkTokenHash, {
         breezeMfaVerified: true,
         expectedUserId: user.id,
+        capability: linkCapability,
+        ...(method === 'recovery' ? { recoveryCode: code } : {}),
       });
       if (!outcome.ok) {
+        if (outcome.error === 'invalid_mfa_code') {
+          void auditUserLoginFailure(c, {
+            userId: user.id, email: user.email, name: user.name,
+            reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
+          });
+          return c.json({ error: 'Invalid MFA code' }, 401);
+        }
         if (outcome.error === 'identity_in_use') {
           return c.json({ error: 'identity_in_use' }, 409);
         }
@@ -404,7 +412,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         // here would strand the user retrying a code that can never work.
         return c.json({ error: 'sso_link_expired' }, 401);
       }
-      setRefreshTokenCookie(c, outcome.refreshToken);
+      await redis.del(`mfa:pending:${tempToken}`);
+      installAuthorizedUserSessionCookies(c, outcome.session);
       c.header('Cache-Control', 'no-store');
       return c.json({
         user: {

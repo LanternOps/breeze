@@ -31,8 +31,9 @@ describe('recovery-code finalization helper', () => {
 
   it('normalizes and hashes a documented recovery code without retaining plaintext', () => {
     expect(normalizeRecoveryCode('  abcd-2345  ')).toBe('ABCD-2345');
-    expect(hashRecoveryCode('  abcd-2345  ')).toMatch(/^[a-f0-9]{64}$/);
+    expect(hashRecoveryCode('  abcd-2345  ')).toMatch(/^scrypt\$v1\$[a-f0-9]{64}$/);
     expect(hashRecoveryCode('  abcd-2345  ')).not.toContain('ABCD-2345');
+    expect(hashRecoveryCode('  abcd-2345  ')).toBe(hashRecoveryCode('ABCD-2345'));
   });
 
   it('rejects malformed recovery authority before any database write', async () => {
@@ -58,6 +59,8 @@ describe('recovery-code finalization helper', () => {
     expect(rendered.sql).toContain('mfa_recovery_codes');
     expect(rendered.params).toContain(hash);
     expect(rendered.params).not.toContain('ABCD-2345');
+    expect(rendered.params.some((value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)))
+      .toBe(true); // rolling compatibility: one-time legacy SHA-256 hashes
     expect(harness.where).toHaveBeenCalledOnce();
   });
 

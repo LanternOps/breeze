@@ -895,7 +895,7 @@ describe('passkey MFA auth routes', () => {
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-breeze-auth-transition': 'v1' },
       body: JSON.stringify({
         tempToken: 'temp-token',
         credential: { id: 'credential-1', response: {} },
@@ -1362,12 +1362,13 @@ describe('passkey MFA auth routes', () => {
       refreshToken: 'sso-refresh',
       expiresInSeconds: 900,
       mfa: true,
+      session: { refreshToken: 'sso-refresh' },
       redirectPath: '/dashboard',
     } as any);
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-breeze-auth-transition': 'v1' },
       body: JSON.stringify({
         tempToken: 'temp-token',
         credential: { id: 'credential-1', response: {} },
@@ -1383,7 +1384,11 @@ describe('passkey MFA auth routes', () => {
     expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
       expect.anything(),
       'link-hash-1',
-      { breezeMfaVerified: true, expectedUserId: 'user-123' },
+      {
+        breezeMfaVerified: true,
+        expectedUserId: 'user-123',
+        capability: expect.objectContaining({ transitionId: 'transition-1', generation: 1 }),
+      },
     );
     // The temp token was consumed; the password-login mint must NOT run.
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');

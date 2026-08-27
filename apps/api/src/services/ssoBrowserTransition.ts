@@ -4,7 +4,7 @@ import {
   createHash,
   randomBytes,
 } from 'node:crypto';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   authBrowserTransitions,
@@ -203,6 +203,10 @@ export type ClaimedSsoCallback =
       session: typeof ssoSessions.$inferSelect;
     }>
   | Readonly<{
+      kind: 'reauth';
+      session: typeof ssoSessions.$inferSelect;
+    }>
+  | Readonly<{
       kind: 'login';
       session: typeof ssoSessions.$inferSelect;
       capability: AuthIssuanceCapability;
@@ -216,6 +220,26 @@ export type ClaimedSsoCallback =
 export async function claimSsoCallbackIssuance(
   state: string,
 ): Promise<ClaimedSsoCallback | null> {
+  // Link and re-auth callbacks never mint a Breeze login session. Consume
+  // those modes atomically before looking for a browser-transition login so
+  // they do not require (or accidentally reserve) login issuance authority.
+  const [nonLogin] = await withSystemDbAccessContext(() =>
+    db
+      .delete(ssoSessions)
+      .where(and(
+        eq(ssoSessions.state, state),
+        gt(ssoSessions.expiresAt, sql`now()`),
+        or(isNotNull(ssoSessions.linkUserId), isNotNull(ssoSessions.reauthUserId)),
+      ))
+      .returning()
+  );
+  if (nonLogin) {
+    return Object.freeze({
+      kind: nonLogin.reauthUserId ? 'reauth' as const : 'link' as const,
+      session: nonLogin,
+    });
+  }
+
   const [candidate] = await withSystemDbAccessContext(() =>
     db
       .select()
@@ -224,20 +248,6 @@ export async function claimSsoCallbackIssuance(
       .limit(1)
   );
   if (!candidate) return null;
-
-  if (candidate.linkUserId) {
-    const [consumed] = await withSystemDbAccessContext(() =>
-      db
-        .delete(ssoSessions)
-        .where(and(
-          eq(ssoSessions.id, candidate.id),
-          eq(ssoSessions.state, state),
-          gt(ssoSessions.expiresAt, sql`now()`),
-        ))
-        .returning()
-    );
-    return consumed ? Object.freeze({ kind: 'link' as const, session: consumed }) : null;
-  }
 
   if (!candidate.browserTransitionId || candidate.browserGeneration === null) {
     throw new SsoCallbackStateUnavailableError();

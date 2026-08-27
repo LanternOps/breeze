@@ -534,28 +534,40 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return c.json({ error: 'Passkey verification failed' }, 401);
   }
 
-  const updateFields = authenticationInfoToPasskeyUpdateFields(verification);
+  let updateFields: ReturnType<typeof authenticationInfoToPasskeyUpdateFields>;
+  try {
+    updateFields = authenticationInfoToPasskeyUpdateFields(verification);
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    throw error;
+  }
   if (pending.ssoLinkTokenHash) {
     // Preserve mainline's link-on-first-login semantics while the normal
     // password-login path below keeps passkey effects inside its guarded
     // issuance transaction.
-    await withSystemDbAccessContext(() =>
-      db
-        .update(userPasskeys)
-        .set({
-          counter: updateFields.counter,
-          deviceType: updateFields.deviceType,
-          backedUp: updateFields.backedUp,
-          lastUsedAt: updateFields.lastUsedAt,
-          updatedAt: new Date()
-        })
-        .where(eq(userPasskeys.id, passkey.id))
-    );
-    await redis.del(`mfa:pending:${tempToken}`);
-
+    try {
+      await withSystemDbAccessContext(() =>
+        db
+          .update(userPasskeys)
+          .set({
+            counter: updateFields.counter,
+            deviceType: updateFields.deviceType,
+            backedUp: updateFields.backedUp,
+            lastUsedAt: updateFields.lastUsedAt,
+            updatedAt: new Date()
+          })
+          .where(eq(userPasskeys.id, passkey.id))
+      );
+    } catch (error) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      throw error;
+    }
+    const linkCapability = capability ?? undefined;
+    capability = null; // ownership transfers to the finalizer
     const outcome = await finalizeSsoPendingLink(c, pending.ssoLinkTokenHash, {
       breezeMfaVerified: true,
       expectedUserId: user.id,
+      capability: linkCapability,
     });
     if (!outcome.ok) {
       if (outcome.error === 'identity_in_use') {
@@ -568,7 +580,8 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       // The connect page maps this to its expired view (see mfa.ts sibling).
       return c.json({ error: 'sso_link_expired' }, 401);
     }
-    setRefreshTokenCookie(c, outcome.refreshToken);
+    await redis.del(`mfa:pending:${tempToken}`);
+    installAuthorizedUserSessionCookies(c, outcome.session);
     c.header('Cache-Control', 'no-store');
     return c.json({
       user: {

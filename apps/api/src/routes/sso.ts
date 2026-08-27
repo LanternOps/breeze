@@ -3,6 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { eq, and, gt, ne, isNull, inArray, exists, notExists, sql } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
+import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
 import {
   ssoProviders,
@@ -76,6 +77,7 @@ import {
   auditUserLoginFailure,
   userHasUsablePasskey,
   userRequiresSetup,
+  installAuthorizedUserSessionCookies,
   type PendingMfaRecord,
 } from './auth/helpers';
 import { recordAccountFailureAndMaybeNotify } from './auth/login';
@@ -3238,7 +3240,61 @@ ssoRoutes.get('/callback', async (c) => {
             ))
             .limit(1)
         );
-        if (hasPassword || otherProviderLink) {
+        if (hasPassword) {
+          // Preserve mainline's link-on-first-login ceremony while keeping the
+          // branch's guarded issuer: park the verified IdP assertion together
+          // with the exact browser generation claimed by this callback. The
+          // delayed password/MFA finalizer must reclaim that generation before
+          // it can issue a Breeze session.
+          try {
+            const { rawToken } = await createSsoPendingLink({
+              userId: byEmail.id,
+              userEmail: byEmail.email,
+              authEpoch: byEmail.authEpoch,
+              mfaEpoch: byEmail.mfaEpoch,
+              browserTransitionId: loginCapability!.transitionId,
+              browserGeneration: loginCapability!.generation,
+              providerId: provider.id,
+              providerOrgId: provider.orgId ?? null,
+              providerPartnerId: provider.partnerId ?? null,
+              providerConfigVersion: provider.configVersion ?? 0,
+              externalSub,
+              email: attrs.email,
+              name: attrs.name ?? null,
+              profile: userInfo,
+              encryptedAccessToken: encryptSecret(tokens.access_token),
+              encryptedRefreshToken: encryptSecret(tokens.refresh_token),
+              tokenExpiresAt: tokens.expires_in
+                ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+                : null,
+              idpMfaAsserted: idpAssertedMfa(idClaims),
+              emailVerifiedClaim,
+              redirectUrl: session.redirectUrl ?? null,
+            });
+            writeRouteAudit(c, {
+              orgId: provider.orgId,
+              action: 'sso.link.ceremony_started',
+              resourceType: 'sso_provider',
+              resourceId: provider.id,
+              resourceName: provider.name,
+              result: 'success',
+              details: {
+                mode: callbackMode,
+                userId: byEmail.id,
+                partnerId: provider.partnerId,
+              },
+            });
+            clearStateCookie();
+            c.header('Set-Cookie', buildSsoPendingLinkCookie(rawToken), { append: true });
+            throw new SsoLoginFinalizationError('/auth/connect-sso');
+          } catch (error) {
+            if (error instanceof SsoLoginFinalizationError) throw error;
+            console.error('[sso/callback] failed to park pending link; falling back to sso_link_required:', error);
+            captureException(error, c);
+            throw new SsoLoginFinalizationError('/login?error=sso_link_required');
+          }
+        }
+        if (otherProviderLink) {
           throw new SsoLoginFinalizationError('/login?error=sso_link_required');
         }
         // Safe: an SSO-only account with no conflicting credential.
@@ -3540,15 +3596,18 @@ ssoRoutes.get('/callback', async (c) => {
 
     const identityOutcome = await (async () => {
       const [existingIdentity] = await tx
-        .select({ id: userSsoIdentities.id })
+        .select({ id: userSsoIdentities.id, userId: userSsoIdentities.userId })
         .from(userSsoIdentities)
         .where(and(
-          eq(userSsoIdentities.userId, user.id),
-          eq(userSsoIdentities.providerId, provider.id)
+          eq(userSsoIdentities.providerId, provider.id),
+          eq(userSsoIdentities.externalId, externalSub)
         ))
         .limit(1);
 
       if (existingIdentity) {
+        if (existingIdentity.userId !== user.id) {
+          return { error: 'identity_in_use' as const };
+        }
         await tx
           .update(userSsoIdentities)
           .set({
@@ -3935,6 +3994,8 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
       passkeyAvailable,
       authEpoch: pendingEpochs.authEpoch,
       mfaEpoch: pendingEpochs.mfaEpoch,
+      transitionId: record.browserTransitionId,
+      browserGeneration: record.browserGeneration,
       statusExpectation: user.status,
       allowedMethods: pendingPolicy.allowedMethods,
       expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
@@ -3971,7 +4032,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
     return c.json({ error: 'completion_failed' }, 403);
   }
 
-  setRefreshTokenCookie(c, outcome.refreshToken);
+  installAuthorizedUserSessionCookies(c, outcome.session);
   await floorPromise;
   return c.json({
     user: {

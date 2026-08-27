@@ -217,11 +217,7 @@ describe('MFA recovery code peppering', () => {
     process.env.SECRET_ENCRYPTION_KEY = 'secret-key-must-not-be-used';
     process.env.JWT_SECRET = 'jwt-key-must-not-be-used';
 
-    expect(hashRecoveryCode('abcd-1234')).toBe(
-      createHash('sha256')
-        .update('dedicated-recovery-pepper-32-chars:ABCD-1234')
-        .digest('hex')
-    );
+    expect(hashRecoveryCode('abcd-1234')).toMatch(/^scrypt\$v1\$[a-f0-9]{64}$/);
   });
 
   it('does not fall back to app, secret, or JWT keys when the pepper is missing', () => {

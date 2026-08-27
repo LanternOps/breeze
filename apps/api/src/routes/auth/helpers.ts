@@ -35,6 +35,11 @@ import {
   type MfaSecretDecryptionResult
 } from '../../services/mfaSecretCrypto';
 import { DEFAULT_ALLOWED_ORIGINS, shouldIncludeDefaultOrigins } from '../../services/corsOrigins';
+import {
+  getRecoveryCodePepper as getRecoveryCodePepperFromService,
+  hashRecoveryCode as hashRecoveryCodeWithKdf,
+  hashRecoveryCodes as hashRecoveryCodesWithKdf,
+} from '../../services/recoveryCodeAuth';
 import { assertActiveTenantContext } from '../../services/tenantStatus';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
 import {
@@ -1097,25 +1102,15 @@ export function decryptMfaSecretForMigration(secret: string | null | undefined):
 }
 
 export function getRecoveryCodePepper(): string {
-  const pepper = process.env.MFA_RECOVERY_CODE_PEPPER?.trim();
-  if (pepper) return pepper;
-
-  if (process.env.NODE_ENV === 'test') {
-    return 'test-mfa-recovery-code-pepper';
-  }
-
-  throw new Error('No MFA recovery code pepper configured. Set MFA_RECOVERY_CODE_PEPPER.');
+  return getRecoveryCodePepperFromService();
 }
 
 export function hashRecoveryCode(code: string): string {
-  const normalizedCode = code.trim().toUpperCase();
-  return createHash('sha256')
-    .update(`${getRecoveryCodePepper()}:${normalizedCode}`)
-    .digest('hex');
+  return hashRecoveryCodeWithKdf(code);
 }
 
 export function hashRecoveryCodes(codes: string[]): string[] {
-  return codes.map(hashRecoveryCode);
+  return hashRecoveryCodesWithKdf(codes);
 }
 
 // ============================================

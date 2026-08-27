@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, scryptSync } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { users } from '../db/schema/users';
 import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
@@ -27,13 +27,31 @@ export function getRecoveryCodePepper(): string {
 
 export function hashRecoveryCode(code: string): string {
   const normalized = normalizeRecoveryCode(code);
-  return createHash('sha256')
-    .update(`${getRecoveryCodePepper()}:${normalized}`)
-    .digest('hex');
+  const derived = scryptSync(normalized, getRecoveryCodePepper(), 32, {
+    N: 16_384,
+    r: 8,
+    p: 1,
+    maxmem: 64 * 1024 * 1024,
+  });
+  return `scrypt$v1$${derived.toString('hex')}`;
 }
 
 export function hashRecoveryCodes(codes: string[]): string[] {
   return codes.map(hashRecoveryCode);
+}
+
+/**
+ * Compatibility verifier for hashes issued before the scrypt rollout. It is
+ * used only to consume (and thereby remove) an existing one-time code; every
+ * newly generated code uses the memory-hard format above.
+ */
+function legacyRecoveryCodeHash(code: string): string {
+  const normalized = normalizeRecoveryCode(code);
+  // lgtm[js/insufficient-password-hash] Intentional one-time legacy verifier;
+  // new recovery-code authority is never persisted with this digest.
+  return createHash('sha256')
+    .update(`${getRecoveryCodePepper()}:${normalized}`)
+    .digest('hex');
 }
 
 /**
@@ -48,15 +66,16 @@ export async function consumeRecoveryCode(
   code: string,
 ): Promise<{ hash: string }> {
   const hash = hashRecoveryCode(code);
+  const legacyHash = legacyRecoveryCodeHash(code);
   const removed = await tx
     .update(users)
     .set({
-      mfaRecoveryCodes: sql`${users.mfaRecoveryCodes} - ${hash}`,
+      mfaRecoveryCodes: sql`(${users.mfaRecoveryCodes} - ${hash}) - ${legacyHash}`,
       updatedAt: new Date(),
     })
     .where(and(
       eq(users.id, userId),
-      sql`${users.mfaRecoveryCodes} @> ${JSON.stringify([hash])}::jsonb`,
+      sql`(${users.mfaRecoveryCodes} @> ${JSON.stringify([hash])}::jsonb OR ${users.mfaRecoveryCodes} @> ${JSON.stringify([legacyHash])}::jsonb)`,
     ))
     .returning({ id: users.id });
   if (removed.length !== 1) throw new RecoveryCodeInvalidError();

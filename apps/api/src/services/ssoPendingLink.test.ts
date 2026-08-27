@@ -28,6 +28,8 @@ const RECORD: Omit<SsoPendingLink, 'createdAt'> = {
   userEmail: 'v@example.com',
   authEpoch: 3,
   mfaEpoch: 2,
+  browserTransitionId: '00000000-0000-4000-8000-0000000000b1',
+  browserGeneration: 7,
   providerId: 'provider-1',
   providerOrgId: 'org-1',
   providerPartnerId: null,

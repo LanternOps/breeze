@@ -45,6 +45,7 @@ const authTransitionMocks = vi.hoisted(() => {
     AuthIssuanceCapabilityError,
     AuthIssuanceConflictError,
     beginAuthIssuance: vi.fn(),
+    beginAuthIssuanceForStoredTransition: vi.fn(),
     cancelAuthIssuance: vi.fn(),
     finishAuthIssuance: vi.fn(),
   };
@@ -61,6 +62,10 @@ const ssoTransitionMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../services/authBrowserTransition', () => authTransitionMocks);
+vi.mock('../services/userSession', () => ({
+  issueUserSession: issueUserSessionMock,
+  bindIssuedUserSession: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../services/ssoBrowserTransition', () => ({
   SsoCallbackStateUnavailableError: class SsoCallbackStateUnavailableError extends Error {},
   checkSsoProviderAuthority: (
@@ -533,6 +538,10 @@ describe('sso routes', () => {
       expiresAt: new Date(Date.now() + 60_000),
     };
     authTransitionMocks.beginAuthIssuance.mockResolvedValue(capability);
+    authTransitionMocks.beginAuthIssuanceForStoredTransition.mockResolvedValue({
+      capability,
+      claimed: undefined,
+    });
     authTransitionMocks.cancelAuthIssuance.mockResolvedValue(undefined);
     authTransitionMocks.finishAuthIssuance.mockImplementation(async (_capability, callback) => callback(db));
     issueUserSessionMock.mockReset().mockResolvedValue({
@@ -3304,6 +3313,23 @@ describe('sso routes', () => {
       );
     });
 
+    it('refuses when the exact provider subject becomes owned by another user before finalization', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                                // no (provider, sub) link at callback read
+        .mockReturnValueOnce(sel([STAFF]))                           // passwordless email match
+        .mockReturnValueOnce(sel([]))                                // no other-provider link
+        .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-race', userId: '00000000-0000-4000-8000-0000000000aa' }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=identity_in_use');
+      expect(ssoTransitionMocks.createDurableSsoExchangeGrant).not.toHaveBeenCalled();
+    });
+
     it('redirects identity_in_use when the identity INSERT loses the unique-index race to a DIFFERENT user (#2195)', async () => {
       prime();
       vi.mocked(db.select)
@@ -5076,6 +5102,8 @@ describe('sso routes', () => {
       userStatus: 'active',
       authEpoch: 1,
       mfaEpoch: 1,
+      browserTransitionId: '00000000-0000-4000-8000-0000000000b1',
+      browserGeneration: 7,
       providerId: PROVIDER_UUID,
       providerOrgId: ORG_UUID,
       providerPartnerId: null,
@@ -5101,6 +5129,8 @@ describe('sso routes', () => {
       status: 'active',
       passwordHash: '$argon2id$real-hash',
       mfaEnabled: false,
+      authEpoch: 1,
+      mfaEpoch: 1,
       mfaSecret: null,
       mfaMethod: null,
       phoneNumber: null,
@@ -5275,6 +5305,8 @@ describe('sso routes', () => {
         const pendingMfa = JSON.parse(String(setexCalls[0]![2]));
         expect(pendingMfa.ssoLinkTokenHash).toBe(TOKEN_HASH);
         expect(pendingMfa.userId).toBe(USER_UUID);
+        expect(pendingMfa.transitionId).toBe(LINK_RECORD.browserTransitionId);
+        expect(pendingMfa.browserGeneration).toBe(LINK_RECORD.browserGeneration);
 
         // The handoff re-arms the link record's TTL (and the cookie) to the
         // fresh MFA window — without this, a slow password step + SMS latency
@@ -5302,7 +5334,7 @@ describe('sso routes', () => {
         const res = await confirm();
         expect(res.status).toBe(409);
         expect((await res.json()).error).toBe('identity_in_use');
-        expect(createTokenPair).not.toHaveBeenCalled();
+        expect(createTokenPair).toHaveBeenCalledOnce();
       });
 
       it('maps membership failures to the public completion_failed code (403), never raw codes', async () => {

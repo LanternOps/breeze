@@ -2,10 +2,11 @@ import { Job, Queue, Worker } from 'bullmq';
 import { cleanupAuthBrowserTransitions } from '../services/authBrowserTransition';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'auth-browser-transition-cleanup';
 const JOB_NAME = 'auth-browser-transition-cleanup';
-const DAILY_CRON = '0 5 * * *';
+const DAILY_CRON = jobSchedule('auth-browser-transition-cleanup');
 const BATCH_SIZE = 500;
 
 let cleanupQueue: Queue | null = null;

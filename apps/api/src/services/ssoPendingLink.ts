@@ -44,6 +44,11 @@ export interface SsoPendingLink {
    * logout during the window invalidates the record. */
   authEpoch: number;
   mfaEpoch: number;
+  /** Browser issuance snapshot captured by the original SSO callback. The
+   * delayed password/MFA completion must reclaim this exact generation before
+   * it may mint a Breeze session. */
+  browserTransitionId: string;
+  browserGeneration: number;
   providerId: string;
   /** Provider axis snapshot — drives the MFA-policy scope for the ceremony's
    * pending-MFA record without re-reading the provider mid-ceremony. */
@@ -153,6 +158,8 @@ function parseRecord(raw: string | null): SsoPendingLink | null {
     typeof parsed.userEmail !== 'string' ||
     typeof parsed.authEpoch !== 'number' ||
     typeof parsed.mfaEpoch !== 'number' ||
+    typeof parsed.browserTransitionId !== 'string' ||
+    typeof parsed.browserGeneration !== 'number' ||
     typeof parsed.providerId !== 'string' ||
     typeof parsed.providerConfigVersion !== 'number' ||
     typeof parsed.externalSub !== 'string' ||
