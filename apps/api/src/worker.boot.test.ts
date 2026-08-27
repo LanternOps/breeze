@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => {
     getRedis: vi.fn<() => { ping: () => Promise<string> } | null>(),
     closeRedis: vi.fn(async () => {}),
     waitForMigrationParity: vi.fn(async () => {}),
+    initializeDatabaseForStartup: vi.fn(async () => {}),
     loadBuiltinExtensions: vi.fn(async () => {}),
     createExtensionStateStore: vi.fn(() => ({})),
     registerAiAgentEnqueuer: vi.fn(),
@@ -78,6 +79,7 @@ vi.mock('./services/redis', () => ({
   closeRedis: mocks.closeRedis,
 }));
 vi.mock('./db/migrationParity', () => ({ waitForMigrationParity: mocks.waitForMigrationParity }));
+vi.mock('./db/databaseStartup', () => ({ initializeDatabaseForStartup: mocks.initializeDatabaseForStartup }));
 vi.mock('./extensions/builtinExtensions', () => ({ loadBuiltinExtensions: mocks.loadBuiltinExtensions }));
 vi.mock('./extensions/contributionRegistry', () => ({ extensionContributionRegistry: {} }));
 vi.mock('./extensions/stateStore', () => ({ createExtensionStateStore: mocks.createExtensionStateStore }));
@@ -170,6 +172,7 @@ beforeEach(() => {
   mocks.getRedis.mockReturnValue({ ping: mocks.redisPing });
   mocks.closeRedis.mockResolvedValue(undefined);
   mocks.waitForMigrationParity.mockResolvedValue(undefined);
+  mocks.initializeDatabaseForStartup.mockResolvedValue(undefined);
   mocks.loadBuiltinExtensions.mockResolvedValue(undefined);
   mocks.createExtensionStateStore.mockReturnValue({});
   mocks.buildWebhookFanoutDeps.mockReturnValue({});
@@ -215,9 +218,10 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     expect(mocks.startRegisteredWorkers).not.toHaveBeenCalled();
   });
 
-  it('boots in order: migration parity before workers; enqueuer/subscribers before workers', async () => {
+  it('boots in order: migration parity -> role verification -> enqueuer/subscribers -> workers', async () => {
     const order: string[] = [];
     mocks.waitForMigrationParity.mockImplementation(async () => { order.push('parity'); });
+    mocks.initializeDatabaseForStartup.mockImplementation(async () => { order.push('roleVerification'); });
     mocks.registerAiAgentEnqueuer.mockImplementation(() => { order.push('registerAiAgentEnqueuer'); });
     mocks.registerAllEventSubscribers.mockImplementation(() => { order.push('registerAllEventSubscribers'); });
     mocks.startRegisteredWorkers.mockImplementation(
@@ -233,11 +237,25 @@ describe('worker.ts boot (#4086 Task 6)', () => {
 
     expect(order).toEqual([
       'parity',
+      'roleVerification',
       'registerAiAgentEnqueuer',
       'registerAllEventSubscribers',
       'startRegisteredWorkers',
       'initializeEventDispatchWorker',
     ]);
+  });
+
+  it('exits non-zero when production DB-role verification fails, before Redis is probed or workers start', async () => {
+    mocks.initializeDatabaseForStartup.mockRejectedValue(new Error('request pool is SUPERUSER'));
+
+    const worker = await importFreshWorker();
+    await waitFor(() => exitCalls.length > 0);
+
+    expect(exitCalls).toEqual([1]);
+    expect(worker._getWorkerInitPhaseForTest()).toBe('pending');
+    expect(mocks.redisPing).not.toHaveBeenCalled();
+    expect(mocks.loadBuiltinExtensions).not.toHaveBeenCalled();
+    expect(mocks.startRegisteredWorkers).not.toHaveBeenCalled();
   });
 
   it('readiness flips to ready only after every worker init result is recorded', async () => {

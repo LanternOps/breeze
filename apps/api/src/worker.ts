@@ -23,15 +23,21 @@
  * Only genuinely leaf modules stay as static top-of-file imports:
  * `config/env` (just `breezeRole`), `config/validate`, `services/sentry`,
  * `services/readiness` (zero imports of its own), `services/shutdownPhases`
- * (zero imports of its own), and `utils/envInt` (zero imports of its own) —
- * each independently verified importable without pulling in the route graph.
+ * (zero imports of its own), `utils/envInt` (zero imports of its own), and
+ * `services/rejectionSuppressions` (zero imports of its own) — each
+ * independently verified importable without pulling in the route graph.
  *
  * Boot order (the contract, see the plan doc's Task 6):
  *   1. dotenv + role guard (fail closed — this binary runs ONLY as worker).
  *   2. validateConfig(); initSentry().
  *   3. Slim raw-node:http health server, started FIRST (before DB/Redis).
  *   4. DB reachability probe, then `waitForMigrationParity()` — NEVER
- *      `autoMigrate()`. A worker-role process never applies migrations.
+ *      `autoMigrate()`. A worker-role process never applies migrations. Then
+ *      `initializeDatabaseForStartup({ autoMigrateEnabled: false, production })`
+ *      — with migrations disabled this runs ONLY `assertRequestDatabaseRoleSafe()`,
+ *      the same production role check index.ts performs, so a worker-role
+ *      process can never serve tenant-scoped queries through a SUPERUSER/
+ *      BYPASSRLS pool.
  *   5. Redis mandatory — exit non-zero if unreachable (no limp mode).
  *   6. Extension runtime in `mode: 'worker'` (parity-check-never-apply,
  *      publish tenancy, stage, validate, seed state, activate registry; no
@@ -57,6 +63,7 @@ import {
 } from './services/readiness';
 import { runShutdownPhases } from './services/shutdownPhases';
 import { envInt } from './utils/envInt';
+import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 
 if (breezeRole() !== 'worker') {
   // This binary runs ONLY as the worker role — mirrors index.ts's inverse
@@ -175,6 +182,15 @@ function startHealthServer(port: number): Server {
     }
     writeJson(res, 404, { error: 'not found' });
   });
+  // Covers EADDRINUSE (and other listen-time failures) before the global
+  // uncaughtException/unhandledRejection handlers are installed later in
+  // bootWorker() — without this, a port conflict throws asynchronously with
+  // no handler yet attached and the process dies with an opaque stack trace
+  // instead of a clear, actionable log line.
+  server.on('error', (error) => {
+    console.error(`[worker] Health server failed to start on :${port}:`, error);
+    process.exit(1);
+  });
   server.listen(port, () => {
     console.log(`[worker] health server listening on :${port}`);
   });
@@ -200,7 +216,7 @@ export async function bootWorker(): Promise<void> {
   console.log(`[worker] Validated config: NODE_ENV=${config.NODE_ENV}`);
 
   // Step 3 — slim health server FIRST, before any DB/Redis/extension work.
-  const port = parseInt(process.env.API_PORT || '3001', 10);
+  const port = envInt('API_PORT', 3001);
   healthServer = startHealthServer(port);
 
   // Everything below is dynamically imported — see the header comment for
@@ -268,6 +284,24 @@ export async function bootWorker(): Promise<void> {
     return;
   }
   migrationParityAchieved = true;
+
+  // Production DB-role verification. `autoMigrateEnabled: false` means this
+  // call runs ONLY `assertRequestDatabaseRoleSafe()` (rejects a request pool
+  // running as SUPERUSER/BYPASSRLS) — a worker-role process never migrates,
+  // but it still must never serve tenant-scoped queries through a role that
+  // bypasses RLS. Mirrors index.ts's `initializeDatabaseForStartup` call and
+  // its `NODE_ENV === 'production'` gate.
+  try {
+    await (await import('./db/databaseStartup')).initializeDatabaseForStartup({
+      autoMigrateEnabled: false,
+      production: config.NODE_ENV === 'production',
+    });
+  } catch (error) {
+    console.error('[worker] Database role verification failed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    process.exit(1);
+    return;
+  }
 
   // Step 5: Redis mandatory — never the `skipped-no-redis` limp mode.
   const redisOk = await probeRedis();
@@ -416,10 +450,30 @@ export async function bootWorker(): Promise<void> {
   process.once('SIGTERM', () => onSignal('SIGTERM'));
 
   process.on('unhandledRejection', (reason) => {
+    if (isBenignRejection(reason)) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      console.warn('[SDK] Suppressed benign unhandled rejection (session already closed):', message);
+      return;
+    }
+    if (isRecoverablePostgresConnectionTeardown(reason)) {
+      console.error('[db] Suppressed postgres connection-teardown write race; pool will reconnect (#1105):',
+        reason instanceof Error ? reason.message : String(reason));
+      captureException(reason instanceof Error ? reason : new Error(String(reason)));
+      return;
+    }
     console.error('[worker][FATAL] Unhandled rejection:', reason);
     captureException(reason instanceof Error ? reason : new Error(String(reason)));
   });
   process.on('uncaughtException', (err) => {
+    if (isBenignRejection(err)) {
+      console.warn('[SDK] Suppressed benign uncaught exception:', err.message);
+      return;
+    }
+    if (isRecoverablePostgresConnectionTeardown(err)) {
+      console.error('[db] Suppressed postgres connection-teardown write race; pool will reconnect (#1105):', err.message);
+      captureException(err);
+      return;
+    }
     console.error('[worker][FATAL] Uncaught exception:', err);
     captureException(err);
     void flushSentry().finally(() => process.exit(1));
@@ -443,19 +497,6 @@ export function _getWorkerInitPhaseForTest(): WorkerInitPhase {
 /** @internal test seam — the live readiness evaluator, for direct `.get()` calls. */
 export function _getReadinessForTest(): ReturnType<typeof createReadinessEvaluator> {
   return readiness;
-}
-
-/** @internal test seam — resets module-level boot state between tests. */
-export function _resetBootStateForTest(): void {
-  workerInitPhase = 'pending';
-  shuttingDown = false;
-  migrationParityAchieved = false;
-  healthServer = null;
-  auditRetryInterval = null;
-  probeDb = async () => false;
-  probeRedis = async () => false;
-  for (const key of Object.keys(workerStatus)) delete workerStatus[key];
-  readiness.invalidate();
 }
 
 // The guard at the top of this file already exits (or, in a test with
