@@ -174,3 +174,35 @@ export interface AiAgentDto {
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Wave 4 Part B — act mode verdicts.
+ *
+ * `execution` reports the tool dispatch outcome for a manifest-matched call
+ * that act mode actually ran (through the normal tool path): `failed` for a
+ * tool-reported error, `timeout` for a command that never resolved inside its
+ * bound, `unknown` when the dispatch outcome could not be classified either
+ * way (never conflate this with `failed` — an `unknown` execution still runs
+ * verification, since the underlying action may well have succeeded).
+ */
+export type ActExecutionVerdict = 'succeeded' | 'failed' | 'timeout' | 'unknown';
+
+/**
+ * `verification` reports the op's OWN read-back against `execution`, not a
+ * restatement of it: `skipped` is for an op with no declared postcondition
+ * (a bare script run today — see actVerify.ts), `inconclusive` is a read-back
+ * that itself failed/timed out (the action's real effect is unknown, not
+ * negative) — only `failed` triggers the rule-less attention alert.
+ */
+export type ActVerificationVerdict = 'passed' | 'failed' | 'inconclusive' | 'skipped';
+
+/**
+ * Run-level rollup computed once at finish from every acted-on op's
+ * (execution, verification) pair plus whatever else the run proposed:
+ * `remediated` — every act execution verified `passed`; `needs_attention` —
+ * at least one act execution verified `failed` or `inconclusive`;
+ * `partial` — a mix of successful act executions and unmatched-mutation
+ * proposals in the same run; `no_action` — the run performed no act
+ * executions at all (shadow/propose-only turns, or a read-only run).
+ */
+export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no_action';
