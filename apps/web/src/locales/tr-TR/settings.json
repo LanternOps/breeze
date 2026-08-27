@@ -3140,6 +3140,37 @@
       "title": "Siteyi Sil",
       "messagePrefix": "Silmek istediğinizden emin misiniz?",
       "messageSuffix": "Bu işlem geri alınamaz."
+    },
+    "merge": {
+      "openButton": "Başka bir kuruluşla birleştir",
+      "title": "Kuruluşu birleştir",
+      "description": "{{name}} kuruluşunun verilerini hayatta kalan bir kuruluşa taşıyın. {{name}} bundan sonra kalıcı olarak kapatılır ve geri alınamaz.",
+      "survivorLabel": "Şununla birleştir",
+      "survivorPlaceholder": "Hayatta kalan bir kuruluş seçin...",
+      "noEligibleSurvivors": "Birleştirilebilecek uygun kuruluş yok.",
+      "previewLoading": "Neyin taşınacağı hesaplanıyor...",
+      "totalMovableRows": "{{count}} satır taşınacak",
+      "tablesHeading": "Etkilenen tablolar",
+      "tableRowSummary": "{{table}}: {{loserRows}} satır, {{wouldDrop}} satır bırakılacak",
+      "warningsHeading": "Uyarılar",
+      "tooLarge": "Bu birleştirme, otomatik olarak çalıştırılamayacak kadar çok satır taşır. Manuel bir birleştirme planlamak için destek ekibiyle iletişime geçin.",
+      "confirmLabel": "Onaylamak için \"{{name}}\" yazın",
+      "cancel": "İptal",
+      "confirmButton": "Kuruluşu birleştir",
+      "merging": "Birleştiriliyor...",
+      "progressTitle": "Birleştirme devam ediyor",
+      "progressDescription": "Bu işlem birkaç dakika sürebilir.",
+      "doneTitle": "Birleştirme tamamlandı",
+      "resultSummary": "{{moved}} satır taşındı, {{dropped}} satır bırakıldı",
+      "close": "Kapat",
+      "failedTitle": "Birleştirme başarısız oldu",
+      "retry": "Birleştirmeyi yeniden dene",
+      "retrying": "Yeniden deneniyor...",
+      "errors": {
+        "preview": "Birleştirme önizlemesi başarısız oldu",
+        "merge": "Birleştirme başlatılamadı",
+        "mfaRequired": "Kuruluşları birleştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      }
     }
   },
   "siteDetailPage": {

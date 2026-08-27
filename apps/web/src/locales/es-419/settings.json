@@ -3087,6 +3087,37 @@
       "title": "Eliminar sitio",
       "messagePrefix": "¿Está seguro de que desea eliminar?",
       "messageSuffix": "Esta acción no se puede deshacer."
+    },
+    "merge": {
+      "openButton": "Fusionar con otra organización",
+      "title": "Fusionar organización",
+      "description": "Mueva los datos de {{name}} a una organización sobreviviente. {{name}} quedará retirada de forma permanente después y no podrá recuperarse.",
+      "survivorLabel": "Fusionar con",
+      "survivorPlaceholder": "Seleccione una organización sobreviviente...",
+      "noEligibleSurvivors": "No hay organizaciones aptas para fusionar.",
+      "previewLoading": "Calculando lo que se movería...",
+      "totalMovableRows": "Se moverán {{count}} filas",
+      "tablesHeading": "Tablas afectadas",
+      "tableRowSummary": "{{table}}: {{loserRows}} fila(s), se descartarían {{wouldDrop}}",
+      "warningsHeading": "Advertencias",
+      "tooLarge": "Esta fusión movería demasiadas filas para ejecutarse automáticamente. Comuníquese con soporte para programar una fusión manual.",
+      "confirmLabel": "Escriba \"{{name}}\" para confirmar",
+      "cancel": "Cancelar",
+      "confirmButton": "Fusionar organización",
+      "merging": "Fusionando...",
+      "progressTitle": "Fusión en curso",
+      "progressDescription": "Esto puede tardar unos minutos.",
+      "doneTitle": "Fusión completada",
+      "resultSummary": "{{moved}} fila(s) movida(s), {{dropped}} fila(s) descartada(s)",
+      "close": "Cerrar",
+      "failedTitle": "La fusión falló",
+      "retry": "Reintentar fusión",
+      "retrying": "Reintentando...",
+      "errors": {
+        "preview": "No se pudo obtener la vista previa de la fusión",
+        "merge": "No se pudo iniciar la fusión",
+        "mfaRequired": "Fusionar organizaciones requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo."
+      }
     }
   },
   "siteDetailPage": {

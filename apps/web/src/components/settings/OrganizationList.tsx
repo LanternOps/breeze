@@ -13,7 +13,15 @@ export type Organization = {
    * (id/name/slug/status) because those users reach the route without
    * `organizations:read`. Optional here so the renderer has to decide what to
    * show rather than interpolating `undefined` into a label (#3699).
+   *
+   * Mirrors `org_type` (apps/api/src/db/schema/orgs.ts). The partner/system
+   * branch of `GET /orgs/organizations` spreads the full row so this is
+   * present in practice for that branch; kept optional because the
+   * organization-scoped projection above omits it. Consumers that need to
+   * exclude the hidden `quick_support` org (e.g. the merge survivor picker)
+   * check this rather than assuming the list already filtered it out.
    */
+  type?: 'customer' | 'internal' | 'quick_support';
   deviceCount?: number;
   createdAt: string;
 };
