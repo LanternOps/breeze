@@ -70,6 +70,7 @@ vi.mock('./tenantLifecycle', () => ({
 import {
   ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
   ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+  ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
   abortOrganizationOffboarding,
   beginOrganizationOffboarding,
   finalizeOrganizationOffboarding,
@@ -147,7 +148,15 @@ describe('beginOrgArchive', () => {
     const settingsSql = new PgDialect().sqlToQuery(update.values.settings as SQL);
     expect(settingsSql.sql).toContain('jsonb_set');
     expect(settingsSql.sql).toContain(`'{${ARCHIVE_PRIOR_STATUS_KEY}}'`);
-    expect(settingsSql.params).toEqual([status]);
+    // Review r3: every engine-owned key is DROPPED before the stamp, so a
+    // stale marker or a preseeded recovery counter cannot ride into this
+    // archive from a previous cycle or from a client PATCH.
+    expect(settingsSql.params).toEqual([
+      ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+      ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+      ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+      status,
+    ]);
 
     const compiled = new PgDialect().sqlToQuery(update.where as SQL);
     expect(compiled.sql).toBe('("organizations"."id" = $1 and "organizations"."status" = $2)');
@@ -256,6 +265,9 @@ describe('restoreOrgFromArchive', () => {
       ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
       ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
       ARCHIVE_PRIOR_STATUS_KEY,
+      // Review r3: the purge-retry counter is reset on the way out too, so a
+      // re-archive always starts from a clean ceiling.
+      ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
     ]));
   });
 

@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
@@ -30,6 +30,7 @@ import {
   type ArchivedOrgScope,
 } from '../services/archivedOrgReads';
 import { resolvePartnerOrgReach } from '../services/partnerOrgSelection';
+import { stripOrgLifecycleInternalSettings } from '../services/orgSettingsInternalKeys';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
@@ -1583,7 +1584,9 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     slug: data.slug,
     type: data.type,
     status: data.status,
-    settings: data.settings,
+    // The lifecycle engine owns some keys in this blob (prior status, purge
+    // warning markers, the purge-retry counter). Never let a client seed them.
+    settings: stripOrgLifecycleInternalSettings(data.settings),
     contractStart: data.contractStart ? new Date(data.contractStart) : null,
     contractEnd: data.contractEnd ? new Date(data.contractEnd) : null,
     billingContact: data.billingContact
@@ -1880,7 +1883,22 @@ async function canApplySuspendedOrgLifecycleTransition(
  * For `purging` it is worse — un-fencing a tenant whose erasure cascade is
  * already deleting tables, and hiding it from the recovery backstop.
  */
-const LIFECYCLE_FROZEN_ORG_STATUSES: Record<string, string> = {
+/**
+ * The frozen set as a value list, for re-asserting the guard inside the
+ * UPDATE's own WHERE. `satisfies` proves at compile time that each entry is a
+ * real `org_status` member, so a typo cannot silently produce a predicate that
+ * excludes nothing.
+ *
+ * `notInArray` over `organizations.status` is safe from the NULL trap
+ * (`NOT (...)` drops NULL rows): the column is `NOT NULL DEFAULT 'active'`.
+ */
+type OrgStatusValue = (typeof organizations.$inferSelect)['status'];
+const LIFECYCLE_FROZEN_ORG_STATUS_VALUES = ['archived', 'purging', 'merging'] as const satisfies readonly OrgStatusValue[];
+
+const LIFECYCLE_FROZEN_ORG_STATUSES: Record<
+  (typeof LIFECYCLE_FROZEN_ORG_STATUS_VALUES)[number],
+  string
+> = {
   archived:
     'Organization is archived — restore it with POST /orgs/organizations/:id/restore; its status cannot be changed directly.',
   purging:
@@ -1888,6 +1906,12 @@ const LIFECYCLE_FROZEN_ORG_STATUSES: Record<string, string> = {
   merging:
     'Organization is being merged — use the organization merge endpoints; its status cannot be changed directly.',
 };
+
+/** The refusal message for a status, or undefined when it is not frozen. */
+function lifecycleFrozenMessage(status: string | null | undefined): string | undefined {
+  if (!status) return undefined;
+  return (LIFECYCLE_FROZEN_ORG_STATUSES as Record<string, string | undefined>)[status];
+}
 
 /**
  * The org's CURRENT status, read under a system context because a frozen org is
@@ -1947,7 +1971,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   // would "unarchive" a customer by flipping status in an admin surface.
   if (data.status !== undefined) {
     const currentStatus = await readOrgLifecycleStatus(id);
-    const frozen = currentStatus ? LIFECYCLE_FROZEN_ORG_STATUSES[currentStatus] : undefined;
+    const frozen = lifecycleFrozenMessage(currentStatus);
     if (frozen) {
       return c.json({ error: frozen, code: 'ORG_LIFECYCLE_FROZEN', currentStatus }, 409);
     }
@@ -2061,9 +2085,18 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
   if (data.settings !== undefined) {
+    // This write replaces `settings` WHOLESALE, so a client payload naming a
+    // lifecycle-internal key would become that key's stored value. Strip them
+    // first: a preseeded `purgingRecoveryAttempts` would neuter the purge-retry
+    // ceiling, and a preseeded `archivePriorStatus`/`mergePriorStatus` would
+    // choose what a later restore/unfence reactivates the tenant AS.
     // Encrypt secret-bearing fields (e.g. logForwarding.elasticsearchApiKey)
     // before writing organizations.settings. See encryptedColumnRegistry.
-    updates.settings = encryptColumnValueForWrite('organizations', 'settings', data.settings);
+    updates.settings = encryptColumnValueForWrite(
+      'organizations',
+      'settings',
+      stripOrgLifecycleInternalSettings(data.settings)
+    );
   }
   // The blob write stays in THIS update rather than going through
   // replaceBillingContact: the #2879 override path below re-asserts
@@ -2088,6 +2121,18 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   // qualifying. It must also run under a system context: the request's
   // partner RLS context can't see the suspended org, so the same UPDATE
   // would silently match 0 rows there.
+  // The pre-read guard above is a SEPARATE statement, so on its own it is only
+  // advisory: an org can transition into archived/purging/merging between that
+  // read and this UPDATE (an archive request, the purge sweeper's CAS, or a
+  // merge fence all race it), and the base WHERE checks nothing but id +
+  // deleted_at. Re-assert the frozen set IN the mutation so the race loses with
+  // 0 rows instead of writing a status onto a frozen tenant. Only applied to a
+  // status write — a frozen org is not otherwise this guard's business.
+  // (The override branch already pins status = 'suspended', which excludes the
+  // frozen set by construction.)
+  const notLifecycleFrozen = data.status === undefined
+    ? undefined
+    : notInArray(organizations.status, [...LIFECYCLE_FROZEN_ORG_STATUS_VALUES]);
   const conditions = suspendedLifecycleOverride
     ? and(
         eq(organizations.id, id),
@@ -2095,7 +2140,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
         eq(organizations.status, 'suspended'),
         isNull(organizations.deletedAt)
       )
-    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
+    : and(eq(organizations.id, id), isNull(organizations.deletedAt), notLifecycleFrozen);
 
   const runUpdate = async () => {
     const rows = await db
@@ -2133,6 +2178,19 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   }
 
   if (!organization) {
+    // A status write that matched 0 rows may have LOST THE RACE against a
+    // concurrent transition into the frozen set rather than named a missing
+    // org (see `notLifecycleFrozen`). Re-read once and answer with the same
+    // 409 the pre-read guard would have given, so a caller can tell "it just
+    // got archived" from "no such org" instead of being told the tenant is
+    // gone. Only on the status path — every other 0-row case is still a 404.
+    if (data.status !== undefined) {
+      const raced = await readOrgLifecycleStatus(id);
+      const frozen = lifecycleFrozenMessage(raced);
+      if (frozen) {
+        return c.json({ error: frozen, code: 'ORG_LIFECYCLE_FROZEN', currentStatus: raced }, 409);
+      }
+    }
     return c.json({ error: 'Organization not found' }, 404);
   }
 

@@ -178,16 +178,40 @@ export const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY = 'purgingRecoveryAttempts';
  */
 export const ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS = 5;
 
+/** Upper clamp for the attempt counter — see `archivePurgingRecoveryAttemptsExpr`. */
+const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_CEILING = 1000;
+
 /**
- * The attempt counter as an int, defaulting to 0. `jsonb_typeof` guards the
- * cast: a hand-edited non-numeric value would otherwise raise 22P02 inside the
- * candidate query and take down the whole sweep, not just this org.
+ * The attempt counter as a SAFE int, for a value that is tenant-reachable.
+ *
+ * `organizations.settings` is a client-writable blob (the org PATCH replaces it
+ * wholesale), so this key can hold ANY jsonb: a string, an object, `1e400`,
+ * `0.5`, `-9999`. And this expression runs inside the FLEET-WIDE candidate
+ * snapshot, which is taken before the sweep's per-org try/catch — so a single
+ * bad value in one tenant used to be able to abort the whole sweep for every
+ * tenant, not just its own org. `jsonb_typeof` alone was not enough: it admits
+ * fractional and out-of-range numbers, and `'0.5'::int` / `'1e400'::int` still
+ * raise 22P02 / 22003.
+ *
+ * So: non-numbers read as 0; numbers go through `numeric` (which swallows any
+ * magnitude), then `floor`, then a clamp into [0, ceiling] before the `::int`.
+ * Nothing reaching `::int` can be out of range or fractional, so the cast cannot
+ * raise. `GREATEST(0, ...)` also means a preseeded negative can only ever buy
+ * the normal ceiling of extra attempts, never an unbounded retry loop.
+ *
+ * `stripOrgLifecycleInternalSettings` (services/orgSettingsInternalKeys.ts)
+ * stops the key being written through the API at all; this is the independent
+ * database-side half, because the sweep must survive a row that got one anyway.
  */
 function archivePurgingRecoveryAttemptsExpr(): SQL {
-  return sql`COALESCE(
+  return sql`(
     CASE WHEN jsonb_typeof(${organizations.settings}->${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY}) = 'number'
-      THEN (${organizations.settings}->>${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY})::int
-    END, 0)`;
+      THEN GREATEST(0, LEAST(
+        ${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_CEILING},
+        floor((${organizations.settings}->>${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY})::numeric)
+      ))::int
+      ELSE 0
+    END)`;
 }
 
 export function buildArchivePurgingRecoveryCandidatesWhere(): SQL {

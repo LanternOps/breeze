@@ -103,18 +103,38 @@ describe('archive purging-recovery candidate predicate (compiled SQL)', () => {
   // Review fix I-5: the 15-minute grace bounds when retrying STARTS, not how
   // long it continues — a permanently failing cascade looped the erasure every
   // 5 minutes forever. The attempt ceiling is what drops the row out.
-  it('excludes rows past the attempt ceiling, guarding the cast against non-numeric settings', () => {
+  it('excludes rows past the attempt ceiling', () => {
     const compiled = dialect.sqlToQuery(buildArchivePurgingRecoveryCandidatesWhere());
 
     expect(compiled.sql).toContain(`jsonb_typeof("organizations"."settings"->$2) = 'number'`);
-    expect(compiled.sql).toContain(`("organizations"."settings"->>$3)::int`);
-    expect(compiled.sql).toContain('<= $4');
+    expect(compiled.sql).toContain('<= $5');
     expect(compiled.params).toEqual([
       'purging',
       ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+      1000, // clamp ceiling
       ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
       ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
     ]);
+  });
+
+  // Review r3: this key lives in a CLIENT-WRITABLE blob and is read by the
+  // FLEET-WIDE candidate snapshot, which is taken before the sweep's per-org
+  // try/catch — so a single bad value used to be able to abort the sweep for
+  // every tenant. `jsonb_typeof` alone was insufficient: it admits fractional
+  // and out-of-range numbers, and `'0.5'::int` / `'1e400'::int` still raise.
+  it('cannot raise on ANY jsonb value: numeric route, floor, and a two-sided clamp before ::int', () => {
+    const compiled = dialect.sqlToQuery(buildArchivePurgingRecoveryCandidatesWhere());
+
+    // Non-numbers never reach a cast at all.
+    expect(compiled.sql).toContain('ELSE 0');
+    // Numbers go via numeric (any magnitude), floor (no fractional), then a
+    // clamp on BOTH sides — so the ::int can never be out of range.
+    expect(compiled.sql).toContain('::numeric');
+    expect(compiled.sql).toContain('floor(');
+    expect(compiled.sql).toContain('GREATEST(0, LEAST(');
+    // The ::int must come AFTER the clamp, never straight off the raw value.
+    expect(compiled.sql).not.toMatch(/->>\$\d+\)::int/);
+    expect(compiled.sql).toMatch(/\)\)::int/);
   });
 });
 

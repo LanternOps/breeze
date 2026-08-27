@@ -151,6 +151,29 @@ describe('archive prior-status round trip (I-3)', () => {
     expect(after.settings?.branding).toEqual({ primaryColor: '#123456' });
   });
 
+  // Review r3 (b): the lifecycle boundary is the other half of the defence —
+  // even if a key were written some other way, entering an archive resets it,
+  // so preseeding cannot ride into the purge that follows.
+  it('clears every engine-owned key at archive ENTRY, including a preseeded recovery counter', async () => {
+    const orgId = await insertOrg({
+      status: 'suspended',
+      settings: {
+        [ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY]: 4,
+        [ARCHIVE_PURGE_WARN_14_SENT_AT_KEY]: '2020-01-01T00:00:00.000Z',
+        branding: { primaryColor: '#123456' },
+      },
+    });
+
+    await beginOrgArchive({ orgId, retentionDays: 30, actor: null });
+
+    const after = await orgRow(orgId);
+    expect(after.settings?.[ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY]).toBeUndefined();
+    expect(after.settings?.[ARCHIVE_PURGE_WARN_14_SENT_AT_KEY]).toBeUndefined();
+    // ...and the tenant's own settings are untouched, with the fresh stamp on.
+    expect(after.settings?.branding).toEqual({ primaryColor: '#123456' });
+    expect(after.settings?.[ARCHIVE_PRIOR_STATUS_KEY]).toBe('suspended');
+  });
+
   it('falls back to active for a missing or hand-edited prior status, never an enum cast error', async () => {
     const missing = await insertOrg({ status: 'archived', settings: {} });
     const bogus = await insertOrg({
@@ -249,6 +272,69 @@ describe('bounded purging recovery (I-5)', () => {
   it('matches nothing once the row has left purging', async () => {
     const orgId = await insertOrg({ status: 'archived' });
     expect(await incrementAttempts(orgId)).toHaveLength(0);
+  });
+
+  // Review r3: `settings` is CLIENT-WRITABLE and this expression runs inside
+  // the FLEET-WIDE candidate snapshot, taken BEFORE the sweep's per-org
+  // try/catch. So one tenant with a hostile value used to be able to abort the
+  // sweep for every tenant. `jsonb_typeof` alone was not enough — it admits
+  // fractional and out-of-range numbers, and `'0.5'::int` / `'1e400'::int`
+  // still raise 22P02 / 22003.
+  it.each([
+    ['a non-numeric string', 'oops', 0],
+    ['an object', { nested: true }, 0],
+    ['an array', [1, 2, 3], 0],
+    ['null', null, 0],
+    ['a fractional number', 2.7, 2],
+    ['a negative number', -9999, 0],
+    ['an absurd magnitude', 1e40, 1000],
+    ['a legitimate count', 3, 3],
+  ])('reads %s without raising, clamped to a safe int', async (_label, seeded, expected) => {
+    const orgId = await insertOrg({
+      status: 'purging',
+      settings: { [ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY]: seeded },
+    });
+
+    // The increment reads the seeded value through the same expression, so its
+    // RETURNING proves exactly what the candidate query would have computed.
+    const [row] = await incrementAttempts(orgId);
+    expect(Number(row!.attempts)).toBe(expected + 1);
+  });
+
+  it('a hostile value in ONE tenant cannot abort the fleet-wide candidate snapshot', async () => {
+    // The poison row and two healthy neighbours, all purging and all aged past
+    // the 15-minute floor.
+    const poison = await insertOrg({
+      status: 'purging',
+      settings: { [ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY]: 'not-a-number' },
+    });
+    const fractional = await insertOrg({
+      status: 'purging',
+      settings: { [ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY]: 0.5 },
+    });
+    const healthy = await insertOrg({ status: 'purging' });
+
+    await withSystemDbAccessContext(() =>
+      db
+        .update(organizations)
+        .set({ updatedAt: new Date(Date.now() - 60 * 60 * 1000) })
+        .where(eq(organizations.partnerId, partnerId))
+    );
+
+    // The snapshot itself must not throw — this is the statement that used to
+    // take the whole sweep down.
+    const candidates = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(buildArchivePurgingRecoveryCandidatesWhere())
+    );
+    const ids = candidates.map((row) => row.id);
+
+    // Every org still processes, the poisoned one included (it reads as 0).
+    expect(ids).toContain(poison);
+    expect(ids).toContain(fractional);
+    expect(ids).toContain(healthy);
   });
 
   it('drops an exhausted row out of the candidate set, and survives a non-numeric counter', async () => {

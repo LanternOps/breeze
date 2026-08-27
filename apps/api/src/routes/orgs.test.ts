@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
 
@@ -80,7 +80,13 @@ vi.mock('../services/tenantLifecycle', () => ({
   restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 })
 }));
 
-vi.mock('../services/tenantOffboarding', () => ({
+// Spread the REAL module so its exported settings-key constants come from the
+// one source of truth (services/orgSettingsInternalKeys.ts imports them, and
+// re-declaring them here as literals would leave this suite green through a
+// rename while every consumer broke). Only the side-effecting functions below
+// are stubbed.
+vi.mock('../services/tenantOffboarding', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/tenantOffboarding')>()),
   beginOrganizationOffboarding: vi.fn().mockResolvedValue({
     revocation: {
       apiKeysRevoked: 0,
@@ -265,7 +271,7 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
@@ -2562,6 +2568,79 @@ describe('org routes', () => {
       expect(body.name).toBe('Updated');
     });
 
+    // ── lifecycle-internal settings keys (review r3) ───────────────────────
+    // `settings` is a client-writable z.any() blob and this handler replaces
+    // the column WHOLESALE, so without the strip a caller could seed the
+    // purge-retry counter (neutering the ceiling) or the prior-status keys
+    // (choosing what a later restore/unfence reactivates the tenant AS). The
+    // strip helper's own matrix is services/orgSettingsInternalKeys.test.ts;
+    // this pins that the write path actually applies it.
+    describe('lifecycle-internal settings keys', () => {
+      const patchSettings = async (settings: Record<string, unknown>) => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        // assertNotLocked('defaults', ...) resolves with no locks.
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ partnerId: 'partner-123', settings: {} }])
+          })
+        } as any);
+        const captured: Record<string, unknown>[] = [];
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn((values: Record<string, unknown>) => {
+            captured.push(values);
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }])
+              })
+            };
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings })
+        });
+        return { res, written: captured[0]?.settings as Record<string, unknown> | undefined };
+      };
+
+      // `vi.clearAllMocks()` (global beforeEach) clears CALLS but not
+      // implementations, so the persistent db.select stub above would leak a
+      // `.limit`-less chain into every later test. Reinstate the factory
+      // default explicitly.
+      afterEach(() => {
+        vi.mocked(db.select).mockImplementation((() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              orderBy: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
+              limit: vi.fn(() => Promise.resolve([]))
+            }))
+          }))
+        })) as any);
+      });
+
+      it('strips every engine-owned key from a client PATCH, keeping the rest', async () => {
+        const { res, written } = await patchSettings({
+          purgingRecoveryAttempts: -9999,
+          archivePriorStatus: 'active',
+          mergePriorStatus: 'active',
+          archivePurgeWarn14SentAt: '2026-01-01T00:00:00.000Z',
+          archivePurgeWarn1SentAt: '2026-01-01T00:00:00.000Z',
+          branding: { primaryColor: '#123456' }
+        });
+
+        expect(res.status).toBe(200);
+        expect(written).toEqual({ branding: { primaryColor: '#123456' } });
+      });
+
+      it('leaves an ordinary settings payload untouched', async () => {
+        const { res, written } = await patchSettings({ branding: { primaryColor: '#abc' } });
+
+        expect(res.status).toBe(200);
+        expect(written).toEqual({ branding: { primaryColor: '#abc' } });
+      });
+    });
+
     // ── transitions OUT of a frozen status (review fix I-6) ────────────────
     // The update schema already excludes archived/purging/merging as a TARGET,
     // but nothing guarded the SOURCE side: for system scope `conditions` is
@@ -2639,6 +2718,98 @@ describe('org routes', () => {
         const res = await patchStatus();
 
         expect(res.status).toBe(200);
+      });
+
+      // Review r3: the pre-read guard is a SEPARATE statement, so it is only
+      // advisory — an archive request, the purge CAS or a merge fence can land
+      // between the read and the UPDATE, whose base WHERE checks nothing but
+      // id + deleted_at. The frozen set is re-asserted IN the mutation.
+      it('re-asserts the frozen set inside the UPDATE WHERE (compiled SQL)', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('active');
+        let capturedWhere: unknown;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn((cond: unknown) => {
+              capturedWhere = cond;
+              return { returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Acme' }]) };
+            })
+          })
+        } as any);
+
+        await patchStatus('suspended');
+
+        // `../db/schema` is mocked with sentinel columns here, so compiled
+        // columns render as bound params — the params ARE the signal: the
+        // status column sentinel, constrained by NOT IN the frozen three.
+        const { sql: compiled, params } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).toContain('not in');
+        expect(params).toEqual(
+          expect.arrayContaining([
+            { __column: 'organizations.status' },
+            'archived',
+            'purging',
+            'merging',
+          ]),
+        );
+      });
+
+      it('409s when the org froze BETWEEN the guard read and the UPDATE (0-row race)', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('active');   // guard read: not frozen, proceed
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]) // the WHERE excluded it
+            })
+          })
+        } as any);
+        queueCurrentStatus('archived'); // re-read: it got archived under us
+
+        const res = await patchStatus();
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.code).toBe('ORG_LIFECYCLE_FROZEN');
+        expect(body.currentStatus).toBe('archived');
+      });
+
+      it('still 404s a 0-row status update when the org is simply gone', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('active');
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) })
+          })
+        } as any);
+        // Re-read finds nothing — not a frozen race, a missing org.
+
+        const res = await patchStatus();
+
+        expect(res.status).toBe(404);
+        expect((await res.json()).error).toBe('Organization not found');
+      });
+
+      it('does not constrain the WHERE for a non-status update', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn((cond: unknown) => {
+              capturedWhere = cond;
+              return { returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Renamed' }]) };
+            })
+          })
+        } as any);
+
+        await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' })
+        });
+
+        const { sql: compiled } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).not.toContain('not in');
       });
 
       it('does not read the status at all for a non-status update', async () => {

@@ -9,6 +9,7 @@ import {
   finalizeOrganizationOffboarding,
   ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
   ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+  ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
 } from './tenantOffboarding';
 
 const DEFAULT_ARCHIVE_RETENTION_DAYS = 90;
@@ -130,7 +131,8 @@ function archiveExitAssignments() {
        settings = COALESCE(settings, '{}'::jsonb)
                   - ${ARCHIVE_PURGE_WARN_14_SENT_AT_KEY}
                   - ${ARCHIVE_PURGE_WARN_1_SENT_AT_KEY}
-                  - ${ARCHIVE_PRIOR_STATUS_KEY},
+                  - ${ARCHIVE_PRIOR_STATUS_KEY}
+                  - ${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY},
        updated_at = now()`;
 }
 
@@ -228,8 +230,19 @@ export async function beginOrgArchive(
           // ARCHIVE_PRIOR_STATUS_KEY). ONE atomic jsonb expression inside the
           // same status-guarded CAS, mirroring orgMerge's `fenceLoser` — never
           // a read-modify-write, which would clobber concurrent settings edits.
+          // Every engine-owned key is DROPPED before the new prior-status is
+          // stamped, so nothing can ride into this archive from a previous
+          // cycle or from a client PATCH: a stale warning marker would suppress
+          // this archive's purge warnings, and a preseeded recovery counter
+          // would neuter the purge-retry ceiling before the org ever reaches
+          // `purging`. (The API strips these keys from client payloads too —
+          // services/orgSettingsInternalKeys.ts — and the counter's own SQL is
+          // independently clamped; this is the lifecycle-boundary reset.)
           settings: sql`jsonb_set(
-            COALESCE(${organizations.settings}, '{}'::jsonb),
+            COALESCE(${organizations.settings}, '{}'::jsonb)
+              - ${ARCHIVE_PURGE_WARN_14_SENT_AT_KEY}
+              - ${ARCHIVE_PURGE_WARN_1_SENT_AT_KEY}
+              - ${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY},
             '{${sql.raw(ARCHIVE_PRIOR_STATUS_KEY)}}',
             to_jsonb(${organization.status}::text),
             true
