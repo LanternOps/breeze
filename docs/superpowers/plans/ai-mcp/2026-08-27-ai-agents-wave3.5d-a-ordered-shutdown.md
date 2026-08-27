@@ -47,9 +47,9 @@ wave: W10 (#4086) — Part A (prerequisite PR)
 **Interfaces:**
 - Produces: `shutdownTicketMailboxPollWorker(): Promise<void>`, `shutdownUnifiWorker(): Promise<void>`, `shutdownUnifiTelemetryWorker(): Promise<void>`.
 
-- [ ] **Step 1: Write the failing tests** — for each module, mock `bullmq` (Worker/Queue classes with `close: vi.fn()`) and `../services/redis`; assert: after `initialize*()` then `shutdown*()`, every created Worker/Queue handle got exactly one `close()` call; a second `shutdown*()` call is a no-op (handles nulled); `shutdown*()` before `initialize*()` resolves without throwing. For `unifiWorker`, the queue is created lazily via `getUnifiSyncQueue()` — shutdown must close it only if it was created (peek the module's lazy handle by calling the getter in the test's arrange step for the created-case).
-- [ ] **Step 2: Run to verify failure** (functions don't exist).
-- [ ] **Step 3: Implement** — mirror `shutdownEventDispatchWorker` exactly:
+- [x] **Step 1: Write the failing tests** — for each module, mock `bullmq` (Worker/Queue classes with `close: vi.fn()`) and `../services/redis`; assert: after `initialize*()` then `shutdown*()`, every created Worker/Queue handle got exactly one `close()` call; a second `shutdown*()` call is a no-op (handles nulled); `shutdown*()` before `initialize*()` resolves without throwing. For `unifiWorker`, the queue is created lazily via `getUnifiSyncQueue()` — shutdown must close it only if it was created (peek the module's lazy handle by calling the getter in the test's arrange step for the created-case).
+- [x] **Step 2: Run to verify failure** (functions don't exist).
+- [x] **Step 3: Implement** — mirror `shutdownEventDispatchWorker` exactly:
 
 ```ts
 // ticketMailboxPollWorker.ts
@@ -67,7 +67,7 @@ export async function shutdownTicketMailboxPollWorker(): Promise<void> {
 
 `unifiWorker.ts`: close `unifiWorker` (null-check/null-out) and the lazy sync queue — add a module-level `let syncQueue` capture inside `getUnifiSyncQueue()` if the current implementation constructs it inline, so shutdown can reach it. `unifiTelemetryWorker.ts`: close `workerInstance` and the lazy telemetry queue the same way.
 
-- [ ] **Step 4: Wire into `index.ts` shutdownTasks** (three bare function refs, placed with their subsystems), run the three test files → PASS, typecheck. Commit: `fix(api): shutdown exports for ticket-mailbox, unifi, unifi-telemetry workers (#4086)`
+- [x] **Step 4: Wire into `index.ts` shutdownTasks** (three bare function refs, placed with their subsystems), run the three test files → PASS, typecheck. Commit: `fix(api): shutdown exports for ticket-mailbox, unifi, unifi-telemetry workers (#4086)`
 
 ---
 
@@ -77,9 +77,9 @@ export async function shutdownTicketMailboxPollWorker(): Promise<void> {
 - Modify: `apps/api/src/services/eventBus.ts:209-214`
 - Test: extend the eventBus test file (find: `ls apps/api/src/services/eventBus*.test.ts`)
 
-- [ ] **Step 1: Write the failing test** — mock `./redis`'s `getRedisConnection` to return a spy client `{ quit: vi.fn(), status: 'ready', xadd: vi.fn(), publish: vi.fn() }`; drive the bus so `getOrCreateRedis()` runs (publish an event or call close after a publish); assert `close()` does NOT call `quit()` on it, and that after `close()` a subsequent publish re-acquires via `getRedisConnection()` (the nulled reference is re-fetched — `getOrCreateRedis()` at eventBus.ts:198-203 already handles this).
-- [ ] **Step 2: Run to verify failure** (current code quits).
-- [ ] **Step 3: Implement**:
+- [x] **Step 1: Write the failing test** — mock `./redis`'s `getRedisConnection` to return a spy client `{ quit: vi.fn(), status: 'ready', xadd: vi.fn(), publish: vi.fn() }`; drive the bus so `getOrCreateRedis()` runs (publish an event or call close after a publish); assert `close()` does NOT call `quit()` on it, and that after `close()` a subsequent publish re-acquires via `getRedisConnection()` (the nulled reference is re-fetched — `getOrCreateRedis()` at eventBus.ts:198-203 already handles this).
+- [x] **Step 2: Run to verify failure** (current code quits).
+- [x] **Step 3: Implement**:
 
 ```ts
   /**
@@ -96,7 +96,7 @@ export async function shutdownTicketMailboxPollWorker(): Promise<void> {
   }
 ```
 
-- [ ] **Step 4: Run the eventBus tests + typecheck** → PASS. Commit: `fix(api): EventBus.close() no longer quits the shared BullMQ connection (#4086)`
+- [x] **Step 4: Run the eventBus tests + typecheck** → PASS. Commit: `fix(api): EventBus.close() no longer quits the shared BullMQ connection (#4086)`
 
 ---
 
@@ -113,15 +113,15 @@ export async function shutdownTicketMailboxPollWorker(): Promise<void> {
 
 **Semantics (the tests pin all of these):** phases run strictly sequentially; a phase's tasks all start together and the phase waits for `Promise.allSettled` of them, raced against its timeout (default `defaultTimeoutMs`, default 20_000); on timeout the runner logs, records the phase in `timedOutPhases`, and PROCEEDS to the next phase (a stuck worker must never prevent Redis/DB close — but note the straggler keeps running detached; its eventual rejection is captured, never unhandled); task rejections are recorded per task with phase + index and never abort anything; a task that throws synchronously is captured identically; empty phases are skipped silently.
 
-- [ ] **Step 1: Write the failing tests** — use fake timers where the timeout cases need them:
+- [x] **Step 1: Write the failing tests** — use fake timers where the timeout cases need them:
   1. Order: tasks push to a log; phase B's tasks never start before every phase-A task settled.
   2. Concurrency within a phase: two tasks in one phase both start before either resolves (start-log asserted before resolution).
   3. Failure isolation: task 0 rejects, task 1 resolves — report lists one failure `{phase, index: 0}`, phase B still runs.
   4. Timeout: a never-resolving task in phase A (timeoutMs 50) — phase B runs, `timedOutPhases: ['A']`; when the straggler later rejects, no unhandled rejection (attach the allSettled handler before racing).
   5. Sync throw captured.
   6. Empty phase skipped.
-- [ ] **Step 2: Run to verify failure.**
-- [ ] **Step 3: Implement** (~50 lines):
+- [x] **Step 2: Run to verify failure.**
+- [x] **Step 3: Implement** (~50 lines):
 
 ```ts
 export async function runShutdownPhases(
@@ -166,7 +166,7 @@ export async function runShutdownPhases(
 }
 ```
 
-- [ ] **Step 4: Run tests + typecheck** → PASS. Commit: `feat(api): sequential shutdown phase runner (#4086)`
+- [x] **Step 4: Run tests + typecheck** → PASS. Commit: `feat(api): sequential shutdown phase runner (#4086)`
 
 ---
 
@@ -178,7 +178,7 @@ export async function runShutdownPhases(
 **Interfaces:**
 - Consumes: `runShutdownPhases` (Task 3), the three Task 1 exports.
 
-- [ ] **Step 1: Partition the existing shutdownTasks array into phases**, preserving every entry and every comment, in the array's existing relative order. The preamble (webhook worker stop, monitors, audit interval clear) and the HTTP-close block (:1755-1777) stay exactly where they are, BEFORE the phases. Phase membership:
+- [x] **Step 1: Partition the existing shutdownTasks array into phases**, preserving every entry and every comment, in the array's existing relative order. The preamble (webhook worker stop, monitors, audit interval clear) and the HTTP-close block (:1755-1777) stay exactly where they are, BEFORE the phases. Phase membership:
 
 ```ts
   const report = await runShutdownPhases([
@@ -209,7 +209,7 @@ export async function runShutdownPhases(
 
 Note: `shutdownEventDispatchWorker` currently sits with the queue/dispatcher cluster in the existing array tail (:1743-1747) — keep the cluster together in `queues`. Timed-out phases alone do NOT flip the exit code (their real failures, if any, land in `failures` when the straggler settles — usually after exit; acceptable, matches today's "failures we saw" semantics).
 
-- [ ] **Step 2: Second-signal force-exit** in `installSignalHandlers`:
+- [x] **Step 2: Second-signal force-exit** in `installSignalHandlers`:
 
 ```ts
 function installSignalHandlers(): void {
@@ -228,15 +228,15 @@ function installSignalHandlers(): void {
 }
 ```
 
-- [ ] **Step 3: Typecheck + run the full unit suite** (`cd apps/api && npx vitest run`) — the suite must be as green as on the base commit (report exact totals). Manual smoke: `grep -c 'shutdown' src/index.ts` sanity, and verify no shutdownTasks entry was dropped — `git diff` must show every removed array entry reappearing in exactly one phase (reviewer will diff-count them: state the count in the commit body).
-- [ ] **Step 4: Commit** — `refactor(api): shutdown runs in ordered phases; second signal force-exits (#4086)` with the entry count in the body.
+- [x] **Step 3: Typecheck + run the full unit suite** (`cd apps/api && npx vitest run`) — the suite must be as green as on the base commit (report exact totals). Manual smoke: `grep -c 'shutdown' src/index.ts` sanity, and verify no shutdownTasks entry was dropped — `git diff` must show every removed array entry reappearing in exactly one phase (reviewer will diff-count them: state the count in the commit body).
+- [x] **Step 4: Commit** — `refactor(api): shutdown runs in ordered phases; second signal force-exits (#4086)` with the entry count in the body.
 
 ---
 
 ### Task 5: Verification + PR
 
-- [ ] Full unit suite + typecheck (heap bump if tsc OOMs: `NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit`).
-- [ ] Tick this plan's checkboxes, commit.
+- [x] Full unit suite + typecheck (heap bump if tsc OOMs: `NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit`).
+- [x] Tick this plan's checkboxes, commit.
 - [ ] Open PR: branch `feature/3821-ai-agents/wave-4086-shutdown` → `main`. Body: "Part A (prerequisite) of #4086 — do NOT close the issue" (no `Closes`), the two verified defects (concurrent allSettled ordering illusion; EventBus quitting the shared connection), phase semantics (sequential, bounded, continue-past-timeout), and the exit-code contract. **Stop after opening the PR.**
 
 ## Self-Review Notes
