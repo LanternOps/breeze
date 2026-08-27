@@ -24,9 +24,16 @@ const { db } = dbModule;
  * job snapshots a publisher's routing plan (services/eventDispatchQueue.ts) and
  * is trusted VERBATIM here — this worker never recomputes
  * `partitionSubscribersForEvent` itself (codex D3/Q3). A `deliver-event` job is
- * one durable delivery to ONE subscriber, gated by a compare-and-swap over
- * `event_delivery_receipts` so retries, redeliveries, and a route/deliver race
- * can never double-execute a subscriber's handler for the same event.
+ * one durable delivery to ONE subscriber.
+ *
+ * Delivery is AT-LEAST-ONCE, not exactly-once: two concurrent claim attempts
+ * for the same (event, subscriber) can both match the claim CAS (the second
+ * blocks on the row lock, then re-evaluates against `status <> 'delivered'`
+ * and still matches `delivering`), so both can invoke the handler. Subscriber
+ * handlers MUST therefore be idempotent. The ONLY terminal dedupe this table
+ * provides is a `delivered` receipt — once a receipt reaches `delivered`, the
+ * claim CAS permanently excludes it and no further attempt can re-invoke that
+ * handler for that event.
  */
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -245,12 +252,24 @@ export async function processDeliverEvent(data: DeliverEventJobData): Promise<vo
   const sub = getSubscriberById(subscriberId);
   if (!sub) {
     // Terminal: a subscriber removed in a later deploy must not retry
-    // forever chasing a handler that no longer exists.
+    // forever chasing a handler that no longer exists. CAS the receipt
+    // straight to `failed` (claim-free — we never invoked a handler, so there
+    // is no `delivering` claim to hold) rather than leaving it at `planned`
+    // forever: a `planned` row is invisible to the retention sweep's partial
+    // index (`WHERE status IN ('delivered','failed')`) and would never be
+    // cleaned up. Reuses the claim CAS shape (PK + `status <> 'delivered'`)
+    // since a `delivered` row must never be overwritten by this path either.
     const message =
       `[EventDispatchWorker] deliver-event for unknown subscriber "${subscriberId}" `
-      + `(event ${event.id}); dropping`;
+      + `(event ${event.id}); marking receipt failed`;
     console.error(message);
     captureException(new Error(message));
+    await runWithSystemDbAccess(() =>
+      db
+        .update(eventDeliveryReceipts)
+        .set({ status: 'failed', lastError: 'unknown subscriber', updatedAt: sql`now()` })
+        .where(buildReceiptClaimCas(event.id, subscriberId))
+    );
     return;
   }
 
@@ -358,8 +377,23 @@ export async function initializeEventDispatchWorker(): Promise<void> {
   const mode = eventDispatchMode();
 
   if (mode === 'off') {
-    const counts = await getEventDispatchQueue().getJobCounts('waiting', 'delayed', 'active', 'paused');
-    const backlog = Object.values(counts).reduce((sum, n) => sum + n, 0);
+    // A throw here (e.g. Redis unreachable while constructing the queue) must
+    // NEVER propagate: `EVENT_DISPATCH_MODE=off` is the default, so an
+    // unguarded probe failure would set `workerStatus['eventDispatch'] =
+    // false` on every boot for a feature that is deliberately disabled,
+    // permanently pinning `/ready` to not-ready with no self-heal. Treat a
+    // failed probe as "no backlog, don't start" — the worst case is a
+    // pre-existing queued job waits for the next successful boot, not an
+    // instance stuck 503ing forever.
+    let backlog = 0;
+    try {
+      const counts = await getEventDispatchQueue().getJobCounts('waiting', 'delayed', 'active', 'paused');
+      backlog = Object.values(counts).reduce((sum, n) => sum + n, 0);
+    } catch (error) {
+      console.error('[EventDispatchWorker] backlog probe failed while mode=off; treating as no backlog', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      backlog = 0;
+    }
     if (backlog === 0) {
       console.log('[EventDispatchWorker] mode=off and queue empty — worker not started');
       return;

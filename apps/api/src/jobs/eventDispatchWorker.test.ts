@@ -21,6 +21,8 @@ const {
   addBulkMock,
   getJobCountsMock,
   workerCloseMock,
+  workerConstructorMock,
+  sharedBullMQConnection,
   attachWorkerObservabilityMock,
   captureExceptionMock,
   getSubscriberByIdMock,
@@ -35,6 +37,11 @@ const {
   addBulkMock: vi.fn(),
   getJobCountsMock: vi.fn(),
   workerCloseMock: vi.fn(),
+  workerConstructorMock: vi.fn(),
+  // A stable object identity so the Worker-construction test can prove the
+  // SAME connection getBullMQConnection() returns is what was passed through,
+  // not merely "an object that looks similar".
+  sharedBullMQConnection: { host: 'shared-redis', port: 6379 },
   attachWorkerObservabilityMock: vi.fn(),
   captureExceptionMock: vi.fn(),
   getSubscriberByIdMock: vi.fn(),
@@ -45,6 +52,9 @@ vi.mock('bullmq', () => ({
   Worker: class {
     close = workerCloseMock;
     on = vi.fn();
+    constructor(...args: unknown[]) {
+      workerConstructorMock(...args);
+    }
   }
 }));
 
@@ -84,7 +94,7 @@ vi.mock('../config/env', () => ({
 }));
 
 vi.mock('../services/redis', () => ({
-  getBullMQConnection: vi.fn(() => ({}))
+  getBullMQConnection: vi.fn(() => sharedBullMQConnection)
 }));
 
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
@@ -107,6 +117,7 @@ vi.mock('./workerObservability', () => ({
 
 import {
   buildReceiptClaimCas,
+  buildReceiptDeliveringCas,
   createEventDispatchWorker,
   eventDispatchProcessor,
   initializeEventDispatchWorker,
@@ -231,15 +242,24 @@ describe('processRouteEvent', () => {
 });
 
 describe('processDeliverEvent', () => {
-  it('unknown subscriberId: terminal — logs, captures, does not touch the receipt', async () => {
+  it('unknown subscriberId: terminal — logs, captures, CASes the receipt straight to failed (claim-free), does not throw', async () => {
     getSubscriberByIdMock.mockReturnValue(undefined);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const expectedCas = buildReceiptClaimCas('event-1', 'webhook-delivery');
 
     const data: DeliverEventJobData = { v: 1, subscriberId: 'webhook-delivery', event: makeEvent() };
     await expect(processDeliverEvent(data)).resolves.toBeUndefined();
 
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-    expect(updateSetMock).not.toHaveBeenCalled();
+    // A `planned` row left untouched would be invisible to the retention
+    // sweep's partial index (`WHERE status IN ('delivered','failed')`) — this
+    // path must actively move it to `failed` rather than just logging.
+    expect(updateSetMock).toHaveBeenCalledTimes(1);
+    expect(updateSetMock.mock.calls[0]![0]).toMatchObject({ status: 'failed', lastError: 'unknown subscriber' });
+    expect(updateWhereMock).toHaveBeenCalledTimes(1);
+    expect(updateWhereMock.mock.calls[0]![0]).toEqual(expectedCas);
+    // Claim-free: no `.returning()` result is ever consulted for this path,
+    // so there is nothing to claim/reclaim — the handler is never invoked.
     errorSpy.mockRestore();
   });
 
@@ -307,6 +327,7 @@ describe('processDeliverEvent', () => {
     const handler = vi.fn().mockRejectedValue(boom);
     getSubscriberByIdMock.mockReturnValue({ id: 'webhook-delivery', eventTypes: '*', handler });
     updateReturningMock.mockResolvedValue([{ eventId: 'event-1' }]);
+    const expectedDeliveringCas = buildReceiptDeliveringCas('event-1', 'webhook-delivery');
 
     await expect(
       processDeliverEvent({ v: 1, subscriberId: 'webhook-delivery', event: makeEvent() })
@@ -317,19 +338,29 @@ describe('processDeliverEvent', () => {
     const failedSet = updateSetMock.mock.calls[1]![0] as { status: string; lastError: string };
     expect(failedSet.status).toBe('failed');
     expect(failedSet.lastError).toHaveLength(500);
+    // The outcome write must use the DELIVERING cas (calls[1]), not the claim
+    // CAS (calls[0]) — swapping the two predicates would let a failure write
+    // land on a receipt this attempt never actually held the claim on.
+    expect(updateWhereMock).toHaveBeenCalledTimes(2);
+    expect(updateWhereMock.mock.calls[1]![0]).toEqual(expectedDeliveringCas);
   });
 
-  it('handler succeeds: CAS delivering -> delivered', async () => {
+  it('handler succeeds: CAS delivering -> delivered, with delivered_at set', async () => {
     const handler = vi.fn().mockResolvedValue(undefined);
     getSubscriberByIdMock.mockReturnValue({ id: 'webhook-delivery', eventTypes: '*', handler });
     updateReturningMock.mockResolvedValue([{ eventId: 'event-1' }]);
+    const expectedDeliveringCas = buildReceiptDeliveringCas('event-1', 'webhook-delivery');
 
     await processDeliverEvent({ v: 1, subscriberId: 'webhook-delivery', event: makeEvent() });
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(updateSetMock).toHaveBeenCalledTimes(2);
-    const deliveredSet = updateSetMock.mock.calls[1]![0] as { status: string };
+    const deliveredSet = updateSetMock.mock.calls[1]![0] as { status: string; deliveredAt: unknown };
     expect(deliveredSet.status).toBe('delivered');
+    // Dropping deliveredAt would otherwise pass silently.
+    expect(deliveredSet.deliveredAt).toBeDefined();
+    expect(updateWhereMock).toHaveBeenCalledTimes(2);
+    expect(updateWhereMock.mock.calls[1]![0]).toEqual(expectedDeliveringCas);
   });
 });
 
@@ -356,17 +387,30 @@ describe('eventDispatchProcessor', () => {
     errorSpy.mockRestore();
   });
 
-  it('dispatches a valid route-event job to processRouteEvent', async () => {
+  it('dispatches a valid route-event job to processRouteEvent (non-empty plan: receipts inserted + deliver jobs addBulk\'d)', async () => {
     const event = makeEvent();
     const job = {
       id: 'job-3',
       name: 'route-event',
-      data: { v: 1, mode: 'shadow', event, matchedSubscriberIds: [], queueSubscriberIds: [] }
+      data: {
+        v: 1,
+        mode: 'enforce',
+        event,
+        matchedSubscriberIds: ['webhook-delivery'],
+        queueSubscriberIds: ['webhook-delivery']
+      }
     } as never;
 
     await eventDispatchProcessor(job);
 
-    expect(insertValuesMock).not.toHaveBeenCalled(); // empty queueSubscriberIds no-op
+    // A processor that ignored route-event entirely (or silently no-op'd)
+    // would leave both of these uncalled — this is what a non-empty plan is
+    // for; the empty-plan no-op branch has its own dedicated test above.
+    expect(insertValuesMock).toHaveBeenCalledTimes(1);
+    expect(insertValuesMock).toHaveBeenCalledWith([
+      expect.objectContaining({ eventId: 'event-1', subscriberId: 'webhook-delivery', status: 'planned' })
+    ]);
+    expect(addBulkMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -377,6 +421,16 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
 
     await initializeEventDispatchWorker();
 
+    expect(attachWorkerObservabilityMock).not.toHaveBeenCalled();
+  });
+
+  it('mode off, backlog probe throws: does NOT propagate (would permanently pin /ready) — treated as no backlog, no worker started', async () => {
+    eventDispatchModeMock.mockReturnValue('off');
+    getJobCountsMock.mockRejectedValue(new Error('redis unreachable'));
+
+    await expect(initializeEventDispatchWorker()).resolves.toBeUndefined();
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(attachWorkerObservabilityMock).not.toHaveBeenCalled();
   });
 
@@ -401,9 +455,19 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
     await shutdownEventDispatchWorker();
   });
 
-  it('createEventDispatchWorker returns a Worker instance', () => {
+  it('createEventDispatchWorker constructs with the shared BullMQ connection and concurrency 5', () => {
     const w = createEventDispatchWorker();
     expect(w).toBeDefined();
+
+    expect(workerConstructorMock).toHaveBeenCalledTimes(1);
+    const [queueName, processorFn, opts] = workerConstructorMock.mock.calls[0]! as [string, unknown, Record<string, unknown>];
+    expect(queueName).toBe('event-dispatch');
+    expect(typeof processorFn).toBe('function');
+    // Reference equality: the SAME object getBullMQConnection() returns, not
+    // merely a similarly-shaped one — proves the shared connection pool is
+    // actually threaded through rather than a fresh one being created.
+    expect(opts.connection).toBe(sharedBullMQConnection);
+    expect(opts.concurrency).toBe(5);
   });
 
   it('shutdown is a no-op when no worker was ever started', async () => {
