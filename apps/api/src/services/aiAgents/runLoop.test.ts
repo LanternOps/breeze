@@ -151,6 +151,35 @@ const resolveEffectiveAgentSystem = vi.hoisted(() =>
   vi.fn<(orgId: string, kind: string) => Promise<AiAgentPolicySnapshot | null>>());
 vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
 
+// `revalidateActExecution` and `verifyActExecution`/`recordActVerifyFailureAlert`
+// are I/O-heavy leaf modules with their own dedicated unit suites
+// (actRevalidation.test.ts, actVerify.test.ts) — mocked here at the module
+// boundary, same precedent as `resolveEffectiveAgentSystem` above, so this
+// file only exercises the run-loop's WIRING contract (deny/downgrade/ok
+// mapping, ledger writes, pin passthrough, verdict rollup) rather than
+// re-driving disk-cleanup preview rows / command-queue reads through this
+// harness's already-strict table-queue mock.
+const revalidateActExecution = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<
+    | { ok: true; pin: Record<string, unknown> }
+    | { ok: false; downgrade: 'propose' }
+    | { ok: false; deny: string }
+  >>());
+vi.mock('./actRevalidation', () => ({ revalidateActExecution }));
+
+const verifyActExecution = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<
+    { execution: string; verification: string; verifyDetail?: string }
+  >>());
+const recordActVerifyFailureAlert = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<void>>(async () => undefined));
+vi.mock('./actVerify', async (importOriginal) => {
+  // `actTargetSummary` is pure — keep the real implementation so the
+  // notification/outcome fields it feeds are exercised for real.
+  const actual = await importOriginal<typeof import('./actVerify')>();
+  return { ...actual, verifyActExecution, recordActVerifyFailureAlert };
+});
+
 const publishEvent = vi.hoisted(() =>
   vi.fn<(type: string, orgId: string, payload: unknown, source: string) => Promise<string>>(
     async () => 'event-1'));
@@ -207,7 +236,8 @@ vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCen
 // the real module would require mocking it; instead the contract is asserted by
 // the red-team suite (Task 5). Here we assert the loop never imports it by
 // asserting on the guardrail path it DOES take.
-import { executeAgentRun } from './runLoop';
+import { computeRunVerdict, executeAgentRun, PROPOSAL_RECORDED_TEXT } from './runLoop';
+import type { AgentRunOutcome } from './runLoop';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -387,6 +417,13 @@ beforeEach(() => {
   resolveRecipientUserIds.mockResolvedValue([]);
   enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
+  // Never reached unless a test's script drives a manifest-matched call
+  // under a live `mode: 'act'` guardrail policy — a mismatched default here
+  // would only ever surface as "Cannot use 'in' operator on undefined" in a
+  // test that forgot to configure it, which is exactly what should happen.
+  revalidateActExecution.mockReset();
+  verifyActExecution.mockReset().mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+  recordActVerifyFailureAlert.mockReset().mockResolvedValue(undefined);
   createBreezeMcpServer.mockImplementation((getAuth: () => unknown, pre: Hooks['pre'], post: Hooks['post']) => {
     hooks.getAuth = getAuth;
     hooks.pre = pre;
@@ -530,36 +567,148 @@ describe('executeAgentRun', () => {
     expect(outcome.proposedActions).toEqual([]);
   });
 
-  it("act disposition is fail-closed: never reaches allowedPending/startToolExecution (Task 3 not yet wired)", async () => {
-    seedRows({
-      effective: policy({ mode: 'act', toolAllowlist: ['manage_services'] }),
-      modeAtStart: 'act',
-    });
-    scriptQuery({
-      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
-      assistantText: 'Could not restart; recorded the finding.',
-    });
+  describe('act disposition (Task 3 revalidation + Task 4 verification)', () => {
+    function seedActRun() {
+      return seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['manage_services'] }),
+        modeAtStart: 'act',
+      });
+    }
 
-    await executeAgentRun(RUN_ID);
-
-    // A manifest-matched act op must never be admitted as an allowed tool
-    // call: no ledger write, no action-intent, and the model is told no.
-    expect(createActionIntent).not.toHaveBeenCalled();
-    expect(startToolExecution).not.toHaveBeenCalled();
-    expect(preVerdicts[0]!.allowed).toBe(false);
-    expect(preVerdicts[0]!.error).toMatch(/act-mode execution is not yet wired/i);
-
-    const final = finalTransition()!;
-    expect(final.to).toBe('completed');
-    const outcome = final.patch.outcome as {
-      deniedActions: Array<Record<string, unknown>>;
-      executedActions: unknown[];
-      proposedActions: unknown[];
+    const ACT_CALL = {
+      tool: 'manage_services',
+      input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' },
     };
-    expect(outcome.deniedActions).toHaveLength(1);
-    expect(outcome.deniedActions[0]!.tool).toBe('manage_services');
-    expect(outcome.executedActions).toEqual([]);
-    expect(outcome.proposedActions).toEqual([]);
+
+    it('ok revalidation dispatches through the NORMAL tool path — ledger write, no action-intent — and verifies to remediated', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true,
+        pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(revalidateActExecution).toHaveBeenCalledTimes(1);
+      const revalidateArgs = revalidateActExecution.mock.calls[0]![0] as Record<string, unknown>;
+      expect(revalidateArgs.toolName).toBe('manage_services');
+      expect((revalidateArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+      // This is the ONLY execution path — through the same
+      // startToolExecution/allowedPending machinery a plain 'allow' uses.
+      expect(startToolExecution).toHaveBeenCalledTimes(1);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(preVerdicts[0]).toEqual({ allowed: true });
+      expect(verifyActExecution).toHaveBeenCalledTimes(1);
+
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.deniedActions).toEqual([]);
+      expect(outcome.proposedActions).toEqual([]);
+      expect(outcome.executedActions).toHaveLength(1);
+      expect(outcome.executedActions[0]).toMatchObject({
+        tool: 'manage_services',
+        execution: 'succeeded',
+        verification: 'passed',
+        actOpKey: 'manage_services.restart',
+        actTargetName: 'Spooler',
+      });
+      expect(outcome.runVerdict).toBe('remediated');
+      expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it('deny revalidation NEVER dispatches — no ledger write, no proposal, recorded as a denial', async () => {
+      seedActRun();
+      revalidateActExecution.mockResolvedValue({ ok: false, deny: 'Agent is disabled' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Could not restart; recorded the finding.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(startToolExecution).not.toHaveBeenCalled();
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: 'Agent is disabled' });
+
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.deniedActions).toEqual([{ tool: 'manage_services', reason: 'Agent is disabled' }]);
+      expect(outcome.executedActions).toEqual([]);
+      expect(outcome.proposedActions).toEqual([]);
+      expect(outcome.runVerdict).toBe('no_action');
+    });
+
+    it('downgrade (drift act→shadow, or cap exhaustion) records a PROPOSAL — never executes', async () => {
+      seedActRun();
+      revalidateActExecution.mockResolvedValue({ ok: false, downgrade: 'propose' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Proposed a restart for review.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(startToolExecution).not.toHaveBeenCalled();
+      // manage_services:restart is Tier 3 — same intent path an ordinary
+      // shadow-mode proposal takes.
+      expect(createActionIntent).toHaveBeenCalledTimes(1);
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: PROPOSAL_RECORDED_TEXT });
+
+      const final = finalTransition()!;
+      // A pending action-intent leaves the run 'awaiting_approval' — same
+      // terminal status an ordinary shadow-mode Tier-3 proposal produces.
+      expect(final.to).toBe('awaiting_approval');
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.proposedActions).toHaveLength(1);
+      expect(outcome.proposedActions[0]!.tool).toBe('manage_services');
+      expect(outcome.proposedActions[0]!.intentId).toBe(INTENT_ID);
+      expect(outcome.executedActions).toEqual([]);
+      expect(outcome.deniedActions).toEqual([]);
+      expect(outcome.runVerdict).toBe('no_action');
+    });
+
+    it('verification failure raises the rule-less alert and rolls up to needs_attention', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true,
+        pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({
+        execution: 'succeeded', verification: 'failed', verifyDetail: 'service status is "stopped"',
+      });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(recordActVerifyFailureAlert).toHaveBeenCalledTimes(1);
+      const alertArgs = recordActVerifyFailureAlert.mock.calls[0]![0] as Record<string, unknown>;
+      expect((alertArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+      expect((alertArgs.op as Record<string, unknown>).key).toBe('manage_services.restart');
+      expect(alertArgs.detail).toBe('service status is "stopped"');
+
+      const final = finalTransition()!;
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.executedActions[0]).toMatchObject({ execution: 'succeeded', verification: 'failed' });
+      expect(outcome.runVerdict).toBe('needs_attention');
+    });
+
+    it('an unmatched mutation under act mode still proposes exactly like shadow (no revalidation call)', async () => {
+      // execute_command has NO manifest entry — resolveActOperation returns
+      // null, so checkAgentGuardrails itself returns 'propose', and the
+      // pre-hook must never call revalidateActExecution for it.
+      seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['execute_command'] }),
+        modeAtStart: 'act',
+      });
+      scriptQuery({
+        toolCalls: [{ tool: 'execute_command', input: { deviceId: DEVICE_ID, commandType: 'restart_service', payload: {} } }],
+        assistantText: 'Proposed a restart for review.',
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(revalidateActExecution).not.toHaveBeenCalled();
+      expect(createActionIntent).toHaveBeenCalledTimes(1);
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: PROPOSAL_RECORDED_TEXT });
+    });
   });
 
   it('policy revoked between admission and start => skipped, no SDK call', async () => {
@@ -1148,6 +1297,55 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(startToolExecution).not.toHaveBeenCalled();
+  });
+});
+
+describe('computeRunVerdict', () => {
+  function executed(overrides: Partial<AgentRunOutcome['executedActions'][number]> = {}) {
+    return { tool: 'manage_services', executionId: 'exec-1', result: 'ok' as const, durationMs: 5, ...overrides };
+  }
+
+  it('no_action when nothing acted (no executedActions carry a verification field)', () => {
+    expect(computeRunVerdict({ executedActions: [], proposedActions: [] })).toBe('no_action');
+    expect(computeRunVerdict({ executedActions: [executed()], proposedActions: [] })).toBe('no_action');
+  });
+
+  it('remediated when every acted op verified passed, with no proposals', () => {
+    const outcome = {
+      executedActions: [executed({ verification: 'passed', execution: 'succeeded' })],
+      proposedActions: [],
+    };
+    expect(computeRunVerdict(outcome)).toBe('remediated');
+  });
+
+  it('needs_attention when ANY acted op verified failed or inconclusive', () => {
+    expect(computeRunVerdict({
+      executedActions: [
+        executed({ verification: 'passed', execution: 'succeeded' }),
+        executed({ verification: 'failed', execution: 'succeeded' }),
+      ],
+      proposedActions: [],
+    })).toBe('needs_attention');
+    expect(computeRunVerdict({
+      executedActions: [executed({ verification: 'inconclusive', execution: 'unknown' })],
+      proposedActions: [],
+    })).toBe('needs_attention');
+  });
+
+  it('partial when every acted op passed but the run ALSO left proposals', () => {
+    const outcome = {
+      executedActions: [executed({ verification: 'passed', execution: 'succeeded' })],
+      proposedActions: [{ tool: 'run_script', args: {} }],
+    };
+    expect(computeRunVerdict(outcome)).toBe('partial');
+  });
+
+  it('needs_attention takes priority over partial when both conditions hold', () => {
+    const outcome = {
+      executedActions: [executed({ verification: 'failed', execution: 'succeeded' })],
+      proposedActions: [{ tool: 'run_script', args: {} }],
+    };
+    expect(computeRunVerdict(outcome)).toBe('needs_attention');
   });
 });
 

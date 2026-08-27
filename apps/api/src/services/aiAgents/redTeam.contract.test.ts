@@ -568,15 +568,18 @@ describe('F. a device-less run never proposes', () => {
         }),
       });
       const preToolUse = createAgentRunPreToolUse({
-        run: { id: 'run-1', orgId: 'org-1' },
+        run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
         agentName: AGENT.name,
         agentAuth,
+        agentKind: AGENT.kind,
         guardrailPolicy,
         outcome,
         intentIds,
         allowedPending,
         sessionId: null,
         executionIdPending: new Map(),
+        actPinPending: new Map(),
+        actReservation: { count: 0 },
       });
 
       for (const toolName of Object.keys(TOOL_TIERS)) {
@@ -722,15 +725,18 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       return allowlistFor(toolName, action);
     });
     const sweepHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1' },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
       agentName: AGENT.name,
       agentAuth,
+      agentKind: AGENT.kind,
       guardrailPolicy: policyWith({ mode: 'shadow', toolAllowlist: allToolsAllowlist }),
       outcome,
       intentIds,
       allowedPending,
       sessionId: null,
       executionIdPending: new Map(),
+      actPinPending: new Map(),
+      actReservation: { count: 0 },
     });
 
     for (const toolName of Object.keys(TOOL_TIERS)) {
@@ -740,15 +746,18 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     }
 
     const deniedHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1' },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
       agentName: AGENT.name,
       agentAuth,
+      agentKind: AGENT.kind,
       guardrailPolicy: policyWith({ mode: 'shadow', toolAllowlist: [] }),
       outcome,
       intentIds,
       allowedPending,
       sessionId: null,
       executionIdPending: new Map(),
+      actPinPending: new Map(),
+      actReservation: { count: 0 },
     });
     const hostileSystemPrompt = buildAgentRunSystemPrompt(hostilePromptContext());
     expect(hostileSystemPrompt).toContain('ignore the allowlist');
@@ -760,9 +769,10 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     });
 
     const proposeHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1' },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
       agentName: AGENT.name,
       agentAuth,
+      agentKind: AGENT.kind,
       guardrailPolicy: policyWith({
         mode: 'shadow',
         toolAllowlist: ['manage_services:restart'],
@@ -772,6 +782,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       allowedPending,
       sessionId: null,
       executionIdPending: new Map(),
+      actPinPending: new Map(),
+      actReservation: { count: 0 },
     });
     const callsBeforeExplicitProposal = createActionIntentMock.mock.calls.length;
     const proposed = await proposeHook('manage_services', { action: 'restart' });

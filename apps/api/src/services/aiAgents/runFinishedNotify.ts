@@ -36,7 +36,7 @@
  * re-enqueue loop here.
  */
 import { eq } from 'drizzle-orm';
-import type { AiAgentPolicySnapshot } from '@breeze/shared';
+import type { AgentRunVerdict, AiAgentPolicySnapshot } from '@breeze/shared';
 import {
   db,
   getCurrentDbAccessContext,
@@ -47,6 +47,56 @@ import {
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
 import { createNotification } from '../userNotifications';
 import { resolveRecipientUserIds } from './recipients';
+
+const RUN_VERDICTS: ReadonlySet<AgentRunVerdict> = new Set([
+  'remediated', 'needs_attention', 'partial', 'no_action',
+]);
+
+/** `run.outcome` is jsonb, read back untyped — never trust its shape. */
+function readRunVerdict(outcome: Record<string, unknown>): AgentRunVerdict | null {
+  const value = outcome.runVerdict;
+  return typeof value === 'string' && RUN_VERDICTS.has(value as AgentRunVerdict)
+    ? (value as AgentRunVerdict)
+    : null;
+}
+
+interface ActSummary {
+  opKey: string;
+  verification: string;
+  target: string;
+}
+
+/**
+ * Sanitized per-op summaries for the notification: op key + target NAME
+ * only, matching `actTargetSummary` (actVerify.ts) — never a raw tool
+ * input/output or a full path list. Only entries that actually went through
+ * the act branch (a `verification` field present) are included.
+ */
+function readActSummaries(outcome: Record<string, unknown>): ActSummary[] {
+  const executedActions = Array.isArray(outcome.executedActions) ? outcome.executedActions : [];
+  const summaries: ActSummary[] = [];
+  for (const raw of executedActions) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.verification !== 'string') continue;
+    summaries.push({
+      opKey: typeof entry.actOpKey === 'string' ? entry.actOpKey : 'unknown',
+      verification: entry.verification,
+      target: typeof entry.actTargetName === 'string' ? entry.actTargetName : '',
+    });
+  }
+  return summaries;
+}
+
+/** Only the two verdicts the plan names get a distinct title; `partial` and
+ *  `no_action`/null keep the existing generic title (still carry `verdict`
+ *  in metadata) — most orgs are not act-mode, and this keeps their
+ *  notification copy unchanged. */
+function verdictAwareTitle(agentName: string, verdict: AgentRunVerdict | null): string {
+  if (verdict === 'remediated') return `Agent remediated an issue: ${agentName}`;
+  if (verdict === 'needs_attention') return `Agent needs attention: ${agentName}`;
+  return 'Agent run finished';
+}
 
 /** The only statuses `finishRun` ever commits before calling this. A run
  *  read back in any other status (e.g. a stale/duplicate retry-job delivery
@@ -164,6 +214,8 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
   const firstLine = (run.summary ?? '').split('\n')[0]?.trim() ?? '';
   const executedActionCount =
     typeof run.outcome?.toolExecutionCount === 'number' ? (run.outcome.toolExecutionCount as number) : 0;
+  const verdict = readRunVerdict(run.outcome ?? {});
+  const actSummary = readActSummaries(run.outcome ?? {});
 
   // AFTER the status commit and outside any held transaction (#1105).
   await inSystemDbContext(async () => {
@@ -172,20 +224,23 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
         userId,
         orgId: run.orgId,
         type: 'ai',
-        title: 'Agent run finished',
+        title: verdictAwareTitle(agent.name, verdict),
         message: `${agent.name}: ${firstLine || run.status}`,
         // There is no run-detail page until wave 6; link to the approvals
         // queue only when there is actually something waiting there.
         link: run.intentIds.length > 0 ? '/approvals' : null,
+        // Only 'needs_attention' escalates priority — every other verdict
+        // (including null, the pre-Part-B/non-act-mode default) keeps the
+        // existing 'normal' default createNotification already applies.
+        ...(verdict === 'needs_attention' ? { priority: 'high' as const } : {}),
         metadata: {
           runId: run.id,
           agentId: agent.id,
           intentIds: run.intentIds,
           status: run.status,
           executedActionCount,
-          // Part B fills this in with the verification verdict; nothing
-          // populates it yet.
-          verdict: null,
+          verdict,
+          ...(actSummary.length > 0 ? { actSummary } : {}),
         },
         dedupeKey: `agent-run:${run.id}`,
       });
