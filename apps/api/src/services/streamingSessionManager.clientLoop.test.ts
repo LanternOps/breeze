@@ -87,6 +87,7 @@ const PARTNER_CONFIG = {
   model: 'claude-sonnet-4-6',
   configId: '2b2b2b2b-2222-4222-8222-222222222222',
   configVersion: 1,
+  endpoint: { kind: 'anthropic' as const },
 };
 
 const RESULT_MSG = {

@@ -308,7 +308,10 @@ officeAddinTicketRoutes.post(
 
     let llm: Awaited<ReturnType<typeof getAnthropicClientForPartner>>;
     try {
-      llm = await getAnthropicClientForPartner(auth.partnerId);
+      llm = await getAnthropicClientForPartner(auth.partnerId, {
+        surface: 'one_shot_email_draft',
+        orgId: input.orgId,
+      });
     } catch (err) {
       if (err instanceof LlmUnavailableError) {
         return c.json({ error: 'ai_unavailable' }, 503);
@@ -331,6 +334,7 @@ officeAddinTicketRoutes.post(
           bodyText: dlpResult.text ?? input.bodyText,
           model,
           partnerId: auth.partnerId,
+          orgId: input.orgId,
           client,
         }),
         DRAFT_TIMEOUT_MS

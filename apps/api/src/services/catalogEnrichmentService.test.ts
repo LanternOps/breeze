@@ -79,7 +79,7 @@ describe('enrichCatalogItem', () => {
       true,
       'partner_key',
     );
-    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
+    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
   });
 
   it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
@@ -345,7 +345,7 @@ describe('polishCatalogText', () => {
     expect(res.description).toMatch(/7 outlets/);
     expect(res.changed).toBe(true);
     expect(res.factChanges).toBeNull();
-    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
+    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
   });
 
   it('maps an unavailable partner LLM config to the typed 503 service error', async () => {

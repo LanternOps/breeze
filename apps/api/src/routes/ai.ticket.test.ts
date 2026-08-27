@@ -320,7 +320,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       })
     );
     expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledTimes(1);
-    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-from-session-org');
+    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-from-session-org', { surface: 'one_shot_ticket_draft', orgId: 'org1' });
     expect(recordUsage).toHaveBeenCalledWith(
       's1',
       'org1',

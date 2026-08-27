@@ -45,7 +45,7 @@ describe('draftTicketFromEmail', () => {
     expect(r.suggestedTimeMinutes).toBe(20);
     expect(r.inputTokens).toBe(100);
     expect(r.outputTokens).toBe(50);
-    expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1');
+    expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1', { surface: 'one_shot_email_draft', orgId: null });
   });
 
   it('uses an injected resolved client without resolving a second time', async () => {

@@ -42,9 +42,12 @@ export interface EnrichmentProvider {
   enrich(query: string, hint: CatalogItemType | undefined, actor: EnrichmentActor, styleOverride?: string | null): Promise<EnrichResponse>;
 }
 
-async function resolveEnrichmentClient(partnerId: string | null) {
+async function resolveEnrichmentClient(partnerId: string | null, orgId: string | null) {
   try {
-    return await getAnthropicClientForPartner(partnerId);
+    return await getAnthropicClientForPartner(partnerId, {
+      surface: 'one_shot_catalog_enrichment',
+      orgId,
+    });
   } catch (err) {
     if (err instanceof LlmUnavailableError) {
       throw new EnrichmentError('AI is unavailable', 'AI_UNAVAILABLE', 503);
@@ -187,7 +190,7 @@ function lastTextBlock(content: Array<{ type: string; text?: string }>): string 
 
 export const aiEnrichmentProvider: EnrichmentProvider = {
   async enrich(query, hint, actor, styleOverride) {
-    const { client, resolved } = await resolveEnrichmentClient(actor.partnerId);
+    const { client, resolved } = await resolveEnrichmentClient(actor.partnerId, actor.orgId);
     if (actor.orgId) {
       const rate = await checkAiRateLimit(actor.userId, actor.orgId);
       if (rate) throw new EnrichmentError(rate, 'AI_LIMIT', 429);
@@ -611,7 +614,7 @@ export async function polishCatalogText(
 ): Promise<PolishTextResponse> {
   const wantName = Boolean(input.name?.trim());
   const wantDescription = Boolean(input.description?.trim());
-  const { client, resolved } = await resolveEnrichmentClient(actor.partnerId);
+  const { client, resolved } = await resolveEnrichmentClient(actor.partnerId, actor.orgId);
 
   if (actor.orgId) {
     const rate = await checkAiRateLimit(actor.userId, actor.orgId);

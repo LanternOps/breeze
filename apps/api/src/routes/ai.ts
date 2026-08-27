@@ -408,7 +408,10 @@ aiRoutes.post(
     let draft;
     let billingSource: 'platform' | 'partner_key' = 'platform';
     try {
-      const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null);
+      const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null, {
+        surface: 'one_shot_ticket_draft',
+        orgId: session.orgId,
+      });
       billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
@@ -416,6 +419,7 @@ aiRoutes.post(
         elapsedMinutes,
         model,
         partnerId: org.partnerId ?? null,
+        orgId: session.orgId,
         client,
       });
     } catch (err) {

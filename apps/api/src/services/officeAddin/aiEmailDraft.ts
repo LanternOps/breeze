@@ -21,6 +21,12 @@ export interface EmailDraftInput {
   threadContext?: string | null;
   model: string;
   partnerId: string | null;
+  /**
+   * Tenant axis for the LLM egress audit when this function has to resolve its
+   * own client (#3922). Callers that pass `client` have already attributed the
+   * call themselves.
+   */
+  orgId?: string | null;
   client?: Anthropic;
 }
 
@@ -86,7 +92,10 @@ export class EmailDraftFailedError extends Error {
 }
 
 export async function draftTicketFromEmail(input: EmailDraftInput): Promise<EmailDraftResult> {
-  const client = input.client ?? (await getAnthropicClientForPartner(input.partnerId)).client;
+  const client = input.client ?? (await getAnthropicClientForPartner(input.partnerId, {
+    surface: 'one_shot_email_draft',
+    orgId: input.orgId ?? null,
+  })).client;
   const userContent = buildUserContent(input);
   const attemptErrors: string[] = [];
   // Accumulated across attempts: a successful retry still reports (and the

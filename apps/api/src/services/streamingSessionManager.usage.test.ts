@@ -87,6 +87,7 @@ const PARTNER_CONFIG = {
   model: 'claude-sonnet-4-6',
   configId: 'config-1',
   configVersion: 3,
+  endpoint: { kind: 'anthropic' as const },
 };
 
 /** Partner-scoped technician: orgId is null on the auth context (the #3095 trigger). */

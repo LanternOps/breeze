@@ -865,9 +865,13 @@ describe('POST /tickets/draft', () => {
 
     expect(res.status).toBe(200);
     expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
-    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledWith(PARTNER_ID);
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledWith(PARTNER_ID, {
+      surface: 'one_shot_email_draft',
+      orgId: ORG_A,
+    });
     expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
       partnerId: PARTNER_ID,
+      orgId: ORG_A,
       model: 'claude-x',
       client: hoisted.anthropicClient,
     }));

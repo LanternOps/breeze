@@ -8,6 +8,12 @@ export interface DraftInput {
   elapsedMinutes: number;
   model: string;
   partnerId: string | null;
+  /**
+   * Tenant axis for the LLM egress audit when this function has to resolve its
+   * own client (#3922). Callers that pass `client` have already attributed the
+   * call themselves.
+   */
+  orgId?: string | null;
   client?: Anthropic;
 }
 export interface DraftResult {
@@ -61,7 +67,10 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
   const hasAssistant = input.messages.some((m) => m.role === 'assistant' && m.content && m.content.trim().length > 0);
   if (!hasAssistant) throw new ThinTranscriptError();
 
-  const client = input.client ?? (await getAnthropicClientForPartner(input.partnerId)).client;
+  const client = input.client ?? (await getAnthropicClientForPartner(input.partnerId, {
+    surface: 'one_shot_ticket_draft',
+    orgId: input.orgId ?? null,
+  })).client;
   const userContent = buildUserContent(input);
   let lastErr: unknown;
   let inTok = 0;

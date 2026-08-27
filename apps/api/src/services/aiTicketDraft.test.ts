@@ -86,7 +86,7 @@ describe('draftTicketFromTranscript', () => {
       partnerId: 'partner-1',
     });
 
-    expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1');
+    expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1', { surface: 'one_shot_ticket_draft', orgId: null });
   });
 
   it('uses an injected resolved client without resolving a second time', async () => {
