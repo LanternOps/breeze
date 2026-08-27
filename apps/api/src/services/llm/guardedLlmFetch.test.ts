@@ -11,7 +11,11 @@ vi.mock('../urlSafety', () => ({
   safeFetch: safeFetchMock,
 }));
 
-import { buildGuardedLlmFetch, LlmEgressViolationError } from './guardedLlmFetch';
+import {
+  buildGuardedLlmFetch,
+  DEFAULT_MAX_LLM_RESPONSE_BYTES,
+  LlmEgressViolationError,
+} from './guardedLlmFetch';
 
 const ALLOWED_ORIGIN = 'https://openrouter.ai';
 
@@ -60,13 +64,42 @@ describe('buildGuardedLlmFetch', () => {
     expect(calledInit).toMatchObject({ method: 'POST', body: '{"a":1}' });
   });
 
-  it('always forces redirect:"error" on the safeFetch call, even when the caller passes redirect:"follow"', async () => {
+  it('never follows a 3xx: an off-origin Location is handed back unfollowed, with no second request', async () => {
+    safeFetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { Location: 'https://evil.example.com/v1/messages' } }),
+    );
     const fetchImpl = buildGuardedLlmFetch({ allowedOrigin: ALLOWED_ORIGIN, recordEgress: vi.fn() });
 
-    await fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`, { method: 'GET', redirect: 'follow' });
+    const res = await fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`, { method: 'GET', redirect: 'follow' });
+
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('https://evil.example.com/v1/messages');
+  });
+
+  it('caps the buffered response body via safeFetch maxBytes by default', async () => {
+    const fetchImpl = buildGuardedLlmFetch({ allowedOrigin: ALLOWED_ORIGIN, recordEgress: vi.fn() });
+
+    await fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`);
 
     const [, calledInit] = safeFetchMock.mock.calls[0]!;
-    expect((calledInit as RequestInit).redirect).toBe('error');
+    expect((calledInit as { maxBytes?: number }).maxBytes).toBe(DEFAULT_MAX_LLM_RESPONSE_BYTES);
+    expect(DEFAULT_MAX_LLM_RESPONSE_BYTES).toBeGreaterThan(0);
+  });
+
+  it('honours an explicit maxResponseBytes ceiling and never lets a caller init override it', async () => {
+    const fetchImpl = buildGuardedLlmFetch({
+      allowedOrigin: ALLOWED_ORIGIN,
+      recordEgress: vi.fn(),
+      maxResponseBytes: 4096,
+    });
+
+    await fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`, {
+      maxBytes: Number.MAX_SAFE_INTEGER,
+    } as RequestInit);
+
+    const [, calledInit] = safeFetchMock.mock.calls[0]!;
+    expect((calledInit as { maxBytes?: number }).maxBytes).toBe(4096);
   });
 
   it('returns the Response safeFetch resolved with', async () => {
@@ -86,7 +119,7 @@ describe('buildGuardedLlmFetch', () => {
     await expect(fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`)).rejects.toThrow('dns failure');
   });
 
-  it('invokes the recorder with the host on a same-origin request', async () => {
+  it('invokes the recorder with the host and blocked:false on a successful same-origin request', async () => {
     const recordEgress = vi.fn();
     const fetchImpl = buildGuardedLlmFetch({ allowedOrigin: ALLOWED_ORIGIN, recordEgress });
 
@@ -94,7 +127,7 @@ describe('buildGuardedLlmFetch', () => {
 
     expect(recordEgress).toHaveBeenCalledTimes(1);
     expect(recordEgress).toHaveBeenCalledWith(
-      expect.objectContaining({ host: 'openrouter.ai' }),
+      expect.objectContaining({ host: 'openrouter.ai', blocked: false }),
     );
   });
 
@@ -108,26 +141,62 @@ describe('buildGuardedLlmFetch', () => {
 
     await fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`);
 
-    expect(recordEgress).toHaveBeenCalledWith({ host: 'openrouter.ai', resolvedIp: '93.184.216.34' });
+    expect(recordEgress).toHaveBeenCalledWith({
+      host: 'openrouter.ai',
+      resolvedIp: '93.184.216.34',
+      blocked: false,
+    });
   });
 
-  it('records resolvedIp: null when safeFetch never calls onConnect (e.g. it rejected before connecting)', async () => {
-    safeFetchMock.mockRejectedValueOnce(new Error('boom'));
+  it('records blocked:true when safeFetch refuses the connection (SSRF pin) — never a success row', async () => {
+    safeFetchMock.mockRejectedValueOnce(new Error('URL points to blocked address: openrouter.ai'));
     const recordEgress = vi.fn();
     const fetchImpl = buildGuardedLlmFetch({ allowedOrigin: ALLOWED_ORIGIN, recordEgress });
 
     await fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`).catch(() => {});
 
-    expect(recordEgress).toHaveBeenCalledWith({ host: 'openrouter.ai', resolvedIp: null });
+    expect(recordEgress).toHaveBeenCalledWith({
+      host: 'openrouter.ai',
+      resolvedIp: null,
+      blocked: true,
+    });
   });
 
-  it('does not invoke the recorder for a cross-origin request that never reached safeFetch', async () => {
+  it('records a blocked event for a cross-origin request refused before any network call', async () => {
     const recordEgress = vi.fn();
     const fetchImpl = buildGuardedLlmFetch({ allowedOrigin: ALLOWED_ORIGIN, recordEgress });
 
     await fetchImpl('https://evil.example.com/x').catch(() => {});
 
-    expect(recordEgress).not.toHaveBeenCalled();
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(recordEgress).toHaveBeenCalledTimes(1);
+    expect(recordEgress).toHaveBeenCalledWith({
+      host: 'evil.example.com',
+      resolvedIp: null,
+      blocked: true,
+    });
+  });
+
+  it('records a blocked event for an unparseable target without throwing out of the recorder', async () => {
+    const recordEgress = vi.fn();
+    const fetchImpl = buildGuardedLlmFetch({ allowedOrigin: ALLOWED_ORIGIN, recordEgress });
+
+    await fetchImpl('not-a-url').catch(() => {});
+
+    expect(recordEgress).toHaveBeenCalledWith(
+      expect.objectContaining({ resolvedIp: null, blocked: true }),
+    );
+  });
+
+  it('does not fail the origin-pin refusal when the recorder throws', async () => {
+    const recordEgress = vi.fn(() => {
+      throw new Error('recorder blew up');
+    });
+    const fetchImpl = buildGuardedLlmFetch({ allowedOrigin: ALLOWED_ORIGIN, recordEgress });
+
+    await expect(fetchImpl('https://evil.example.com/x')).rejects.toBeInstanceOf(
+      LlmEgressViolationError,
+    );
   });
 
   it('does not fail the request when the recorder throws', async () => {

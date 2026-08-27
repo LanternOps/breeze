@@ -17,9 +17,12 @@
  *    `resolveSafeRecords` (the same policy `safeFetch` uses), and the socket is
  *    dialed **at the validated IP**, never at the hostname. That is the DNS
  *    rebinding pin: there is no second resolution for an attacker to race;
- *  - every CONNECT — allowed or refused — is reported to the session's audit
- *    recorder, which is what makes `llm_egress_events` a complete record rather
- *    than a success log.
+ *  - every CONNECT made against a live grant — allowed or refused — is reported
+ *    to that session's audit recorder, which is what makes `llm_egress_events`
+ *    a complete record rather than a success log. The one CONNECT that cannot
+ *    be recorded is one presenting an absent or unknown proxy token: there is
+ *    no grant, and therefore no org/partner, to attribute it to. Those are
+ *    refused with 407 and left to process-level logging.
  *
  * ## What it deliberately does NOT do
  *
@@ -247,6 +250,9 @@ export async function startLlmEgressProxy(): Promise<LlmEgressProxy> {
       // A revoke() (or close()) may have landed during resolution — the grant
       // must still be live at the moment we dial, not merely when we started.
       if (grants.get(grant.sessionId) !== grant || clientSocket.destroyed) {
+        // A grant we still hold, cut off mid-revocation — record it, or the
+        // audit trail silently loses CONNECTs that died in this window.
+        safeRecord(grant, { host: target.host, resolvedIp: null, blocked: true });
         refuse(clientSocket, '407 Proxy Authentication Required');
         return;
       }
@@ -254,6 +260,11 @@ export async function startLlmEgressProxy(): Promise<LlmEgressProxy> {
       // THE PIN: dial the validated IP, never the hostname. No second
       // resolution happens anywhere below this line.
       const upstream = net.connect({ host: ip, port: target.port });
+      // Tracked BEFORE the handshake completes: a revoke() landing while the
+      // socket is still in SYN-SENT must be able to tear it down. Registering
+      // in the 'connect' handler instead would leave an established connection
+      // to the provider alive past revocation.
+      track(upstream, grant);
       let established = false;
       upstream.on('error', () => {
         if (!established) refuse(clientSocket, '502 Bad Gateway');
@@ -262,8 +273,15 @@ export async function startLlmEgressProxy(): Promise<LlmEgressProxy> {
       });
 
       upstream.once('connect', () => {
+        // Re-check: revoke() may have destroyed both halves while we were in
+        // the handshake. Writing the 200 into a dead client would leave the
+        // upstream half established with no teardown listener attached.
+        if (grants.get(grant.sessionId) !== grant || clientSocket.destroyed) {
+          upstream.destroy();
+          clientSocket.destroy();
+          return;
+        }
         established = true;
-        track(upstream, grant);
         safeRecord(grant, { host: target.host, resolvedIp: ip, blocked: false });
 
         clientSocket.write('HTTP/1.1 200 Connection Established\r\nProxy-Agent: breeze-llm-egress\r\n\r\n');

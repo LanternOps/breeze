@@ -198,8 +198,68 @@ function loopbackResolver() {
   };
 }
 
+/**
+ * A resolver the test can hold open, so the window between "resolution
+ * finished" and "the upstream socket finished its TCP handshake" becomes
+ * addressable. Draining microtasks after `release()` lands the caller exactly
+ * inside that window: the proxy's post-await continuation (and its
+ * `net.connect`) runs on a microtask, while the socket's 'connect' event is
+ * I/O and cannot be delivered until the microtask queue is empty.
+ */
+function gatedResolver(ip = '127.0.0.1') {
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  __setResolverForTests(async () => {
+    markEntered();
+    await gate;
+    return { safe: [{ address: ip, family: 4 }], allIps: [ip] };
+  });
+  return { entered, release };
+}
+
+async function drainMicrotasks(hops = 25): Promise<void> {
+  for (let i = 0; i < hops; i += 1) await Promise.resolve();
+}
+
+interface RawServer {
+  port: number;
+  sockets: net.Socket[];
+  close(): Promise<void>;
+}
+
+/** Plain TCP stand-in for the provider — we only care about socket lifetime. */
+async function newRawServer(): Promise<RawServer> {
+  const sockets: net.Socket[] = [];
+  const server = net.createServer((socket) => {
+    socket.on('error', () => {});
+    sockets.push(socket);
+  });
+  server.on('error', () => {});
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const raw: RawServer = {
+    port: (server.address() as AddressInfo).port,
+    sockets,
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => resolve());
+      })
+  };
+  openRawServers.push(raw);
+  return raw;
+}
+
+const openRawServers: RawServer[] = [];
+
 afterEach(async () => {
   __setResolverForTests(null);
+  while (openRawServers.length) await openRawServers.pop()!.close();
   while (openProxies.length) await openProxies.pop()!.close();
   while (openEchoes.length) await openEchoes.pop()!.close();
 });
@@ -418,6 +478,55 @@ describe('llmEgressProxy — tunnelling', () => {
 
     proxy.revoke('s1');
     expect(await waitForClose(secured)).toBe(true);
+  });
+
+  it('revoke() landing during DNS resolution records a blocked attempt instead of dropping it', async () => {
+    const gate = gatedResolver();
+    const proxy = await newProxy();
+    const events: LlmEgressAttempt[] = [];
+    const { proxyUrl } = proxy.grant('s1', grantFor(PROVIDER_HOST, 443), (e) => events.push(e));
+
+    const pending = proxyConnect({
+      port: proxy.port(),
+      token: extractToken(proxyUrl),
+      target: `${PROVIDER_HOST}:443`
+    }).catch(() => null);
+
+    await gate.entered;
+    proxy.revoke('s1');
+    gate.release();
+    await pending;
+    await drainMicrotasks();
+
+    expect(events).toEqual([{ host: PROVIDER_HOST, resolvedIp: null, blocked: true }]);
+  });
+
+  it('revoke() landing mid-handshake tears the upstream socket down', async () => {
+    const upstream = await newRawServer();
+    const gate = gatedResolver();
+    const proxy = await newProxy();
+    const { proxyUrl } = proxy.grant('s1', grantFor(PROVIDER_HOST, upstream.port), () => {});
+
+    const pending = proxyConnect({
+      port: proxy.port(),
+      token: extractToken(proxyUrl),
+      target: `${PROVIDER_HOST}:${upstream.port}`
+    }).catch(() => null);
+
+    await gate.entered;
+    gate.release();
+    // Now inside the connect window: net.connect has been issued, its 'connect'
+    // event has not been delivered.
+    await drainMicrotasks();
+    proxy.revoke('s1');
+    await pending;
+
+    // The kernel may still have completed the handshake, so the provider can
+    // see a connection — but it must not survive the revocation.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    for (const socket of upstream.sockets) {
+      expect(await waitForClose(socket, 1000)).toBe(true);
+    }
   });
 
   it('close() destroys in-flight tunnels', async () => {
