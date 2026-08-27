@@ -1,21 +1,25 @@
-import { Worker, type Job } from 'bullmq';
+import { Worker, Queue, type Job } from 'bullmq';
 import { and, eq, ne, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { eventDeliveryReceipts } from '../db/schema';
 import { eventDispatchMode } from '../config/env';
-import { getBullMQConnection } from '../services/redis';
+import { getBullMQConnection, getRedisConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { getSubscriberById } from '../services/eventSubscriberRegistry';
-import type { SubscriberId } from '../services/eventSubscriberIds';
+import { EVENT_SUBSCRIBER_IDS, type SubscriberId } from '../services/eventSubscriberIds';
 import type { BreezeEvent } from '../services/eventBus';
 import {
   EVENT_DISPATCH_QUEUE,
   getEventDispatchQueue,
+  isShadowSampledEvent,
+  SHADOW_COUNT_PREFIX,
+  SHADOW_LOCAL_PREFIX,
   type RouteEventJobData,
   type DeliverEventJobData
 } from '../services/eventDispatchQueue';
 import { routeEventJobDataSchema, deliverEventJobDataSchema } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 
@@ -34,6 +38,20 @@ const { db } = dbModule;
  * provides is a `delivered` receipt — once a receipt reaches `delivered`, the
  * claim CAS permanently excludes it and no further attempt can re-invoke that
  * handler for that event.
+ *
+ * This file also owns two maintenance repeatables (Task 7, #4085) that run on
+ * a SEPARATE dedicated queue (`EVENT_DISPATCH_MAINTENANCE_QUEUE` — see its own
+ * comment for why not this queue): `receipt-retention` (daily batched-delete
+ * pruning of `event_delivery_receipts`) and `shadow-compare` (5-minute parity
+ * check between shadow-mode routing and local delivery, the evidence gate for
+ * flipping to enforce). Both are registered whenever the MAIN worker above
+ * actually starts (mode != 'off', or draining a backlog) — including in
+ * `mode='off'` if a backlog forces a start. KNOWN GAP: if mode goes back to
+ * 'off' and the queue fully drains, the worker (and therefore both
+ * maintenance repeatables) stops, so residual receipts from a completed
+ * rollout only age out the next time the worker is started again (mode
+ * re-enabled, or a fresh backlog appears) — see
+ * `registerEventDispatchMaintenanceRepeatables`'s docstring for the tradeoff.
  */
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -349,6 +367,399 @@ export async function eventDispatchProcessor(job: Job): Promise<void> {
   captureException(new Error(message));
 }
 
+// ---------------------------------------------------------------------------
+// Receipt retention (Task 7, #4085)
+// ---------------------------------------------------------------------------
+
+const RETENTION_BATCH_SIZE = 5000;
+
+/**
+ * postgres-js DELETE/SELECT row-count extraction — same shape as
+ * `deviceMetricsRetention.extractRowCount`. Never report 0 when rows were
+ * actually affected, which would end a batched-delete loop one iteration
+ * early and silently leave old rows behind.
+ */
+export function extractAffectedCount(result: unknown): number {
+  const raw = result as { rowCount?: number; count?: number };
+  if (typeof raw.rowCount === 'number') return raw.rowCount;
+  if (typeof raw.count === 'number') return raw.count;
+  return Array.isArray(result) ? (result as unknown[]).length : 0;
+}
+
+/**
+ * Pass 1: `delivered` receipts older than 7 days — the workload the partial
+ * index (`event_delivery_receipts_retention_idx`) exists for.
+ */
+export function buildDeliveredRetentionDeleteQuery(): SQL {
+  return sql`
+    DELETE FROM event_delivery_receipts
+    WHERE ctid IN (
+      SELECT ctid FROM event_delivery_receipts
+      WHERE status = 'delivered' AND created_at < now() - interval '7 days'
+      LIMIT ${RETENTION_BATCH_SIZE}
+    )
+  `;
+}
+
+/**
+ * Pass 2: ALL shadow-mode receipts older than 7 days, regardless of status.
+ * `processRouteEvent` stops after the receipt insert in shadow mode (see its
+ * own docstring) — a shadow receipt terminates at `planned` by design, so
+ * this pass, not the `(delivered|failed)` partial index above, is what bounds
+ * table growth while shadow mode runs. Covered by
+ * `event_delivery_receipts_mode_created_idx`.
+ */
+export function buildShadowRetentionDeleteQuery(): SQL {
+  return sql`
+    DELETE FROM event_delivery_receipts
+    WHERE ctid IN (
+      SELECT ctid FROM event_delivery_receipts
+      WHERE mode = 'shadow' AND created_at < now() - interval '7 days'
+      LIMIT ${RETENTION_BATCH_SIZE}
+    )
+  `;
+}
+
+/**
+ * Pass 3: residual `failed`/`planned`/`delivering` receipts older than 30
+ * days, across BOTH modes. `failed` is kept longer than `delivered` for
+ * forensics; a `planned`/`delivering` row this old is a lost job (a
+ * route-event job whose deliver-event insert never landed, or a worker that
+ * crashed mid-claim and was never retried) — see
+ * `buildResidualRetentionCountQuery`, which MUST run first and warn, since
+ * deleting these destroys the only evidence they ever existed. Small
+ * expected volume; a seq scan here is acceptable (no dedicated index).
+ */
+export function buildResidualRetentionDeleteQuery(): SQL {
+  return sql`
+    DELETE FROM event_delivery_receipts
+    WHERE ctid IN (
+      SELECT ctid FROM event_delivery_receipts
+      WHERE status IN ('failed', 'planned', 'delivering') AND created_at < now() - interval '30 days'
+      LIMIT ${RETENTION_BATCH_SIZE}
+    )
+  `;
+}
+
+/** Counts what pass 3 is about to delete, so the deletion can be warned about first. */
+export function buildResidualRetentionCountQuery(): SQL {
+  return sql`
+    SELECT COUNT(*)::int AS count FROM event_delivery_receipts
+    WHERE status IN ('failed', 'planned', 'delivering') AND created_at < now() - interval '30 days'
+  `;
+}
+
+async function deleteBatchedUntilEmpty(buildQuery: () => SQL): Promise<number> {
+  let deleted = 0;
+  for (;;) {
+    const result = await db.execute(buildQuery());
+    const n = extractAffectedCount(result);
+    deleted += n;
+    if (n < RETENTION_BATCH_SIZE) break;
+  }
+  return deleted;
+}
+
+export interface ReceiptRetentionSummary {
+  delivered: number;
+  shadow: number;
+  residual: number;
+  abandonedResidualCount: number;
+}
+
+/**
+ * The `receipt-retention` job body: three independent batched-delete passes
+ * over `event_delivery_receipts`, run under system DB context. See the three
+ * `build*RetentionDeleteQuery` docstrings above for what each pass targets
+ * and why.
+ */
+export async function runReceiptRetentionSweep(): Promise<ReceiptRetentionSummary> {
+  return runWithSystemDbAccess(async () => {
+    const delivered = await deleteBatchedUntilEmpty(buildDeliveredRetentionDeleteQuery);
+    const shadow = await deleteBatchedUntilEmpty(buildShadowRetentionDeleteQuery);
+
+    const countRows = (await db.execute(buildResidualRetentionCountQuery())) as unknown as Array<{
+      count: number;
+    }>;
+    const abandonedResidualCount = countRows[0]?.count ?? 0;
+    if (abandonedResidualCount > 0) {
+      console.warn(
+        `[EventDispatchWorker] receipts-abandoned ${JSON.stringify({
+          errorId: 'EVENT_DISPATCH_RECEIPTS_ABANDONED',
+          count: abandonedResidualCount
+        })}`
+      );
+    }
+    const residual = await deleteBatchedUntilEmpty(buildResidualRetentionDeleteQuery);
+
+    const summary: ReceiptRetentionSummary = { delivered, shadow, residual, abandonedResidualCount };
+    console.log(`[EventDispatchWorker] retention-complete ${JSON.stringify(summary)}`);
+    return summary;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Shadow-mode comparison (Task 7, #4085)
+// ---------------------------------------------------------------------------
+
+const SHADOW_COMPARE_MAX_SAMPLES = 200;
+const SHADOW_COMPARE_LAST_RUN_KEY = 'breeze:event-shadow:compare-last-run';
+const SHADOW_COMPARE_SNAPSHOT_PREFIX = 'breeze:event-shadow:count-snapshot';
+const SHADOW_MISMATCH_LIST_KEY = 'breeze:event-shadow:mismatches';
+const SHADOW_MISMATCH_LIST_MAX = 999;
+// Only used to pick a window on the very first run (no stored watermark yet);
+// every subsequent run's window is `[last run, now]`, matching the
+// repeatable's own 5-minute cadence.
+const SHADOW_COMPARE_FALLBACK_WINDOW_MS = 5 * 60 * 1000;
+
+interface ShadowWindowRow {
+  event_id: string;
+  event_type: string;
+  subscriber_id: string;
+}
+
+/** Receipts routed in shadow mode since `windowStart` — the router's-eye view. */
+export function buildShadowWindowQuery(windowStart: Date): SQL {
+  return sql`
+    SELECT event_id, event_type, subscriber_id
+    FROM event_delivery_receipts
+    WHERE mode = 'shadow' AND created_at >= ${windowStart.toISOString()}
+  `;
+}
+
+/**
+ * Heuristic tolerance for the AGGREGATE counter comparison: local-invocation
+ * counters are process-local-ish (a request can land on any API replica)
+ * while receipts are the single global router record, so some drift between
+ * them is expected even with zero real bugs. This only guards the VOLUME
+ * signal; the per-event SAMPLE diff below is the exact signal and has zero
+ * tolerance — see its own comment.
+ */
+function withinShadowCountTolerance(a: number, b: number): boolean {
+  const diff = Math.abs(a - b);
+  return diff <= Math.max(5, Math.ceil(0.1 * Math.max(a, b)));
+}
+
+export interface ShadowComparisonSummary {
+  windowStart: string;
+  subscriberDeltas: Record<string, { localDelta: number; receiptCount: number; withinTolerance: boolean }>;
+  samplesChecked: number;
+  mismatches: number;
+}
+
+/**
+ * The `shadow-compare` job body — the parity evidence gate for flipping to
+ * enforce. No-ops (returns `{ skipped: true }`) outside shadow mode; checked
+ * here at RUN time (not just once at registration), because mode can flip
+ * between ticks without a worker restart.
+ *
+ * (a) COUNTS: per subscriber, diffs the delta of the local-invocation counter
+ *     (since the LAST run's snapshot — the counter itself accumulates
+ *     forever, see `SHADOW_COMPARE_SNAPSHOT_PREFIX`) against receipts created
+ *     in the same window. Logged as one summary line per run.
+ * (b) SAMPLES: for up to 200 sampled receipts in the window, diffs the
+ *     router-planned subscriber set (this table) against the locally-invoked
+ *     subscriber set (`breeze:event-shadow:local:<eventId>`) both ways. This
+ *     is the exact signal — any mismatch is always retained
+ *     (`SHADOW_MISMATCH_LIST_KEY`), regardless of sampling.
+ */
+export async function runShadowComparisonSweep(): Promise<ShadowComparisonSummary | { skipped: true }> {
+  if (eventDispatchMode() !== 'shadow') {
+    return { skipped: true };
+  }
+
+  const redis = getRedisConnection();
+  const now = new Date();
+
+  const lastRunRaw = await redis.get(SHADOW_COMPARE_LAST_RUN_KEY);
+  const windowStart = lastRunRaw
+    ? new Date(lastRunRaw)
+    : new Date(now.getTime() - SHADOW_COMPARE_FALLBACK_WINDOW_MS);
+
+  const rows = (await runWithSystemDbAccess(() =>
+    db.execute(buildShadowWindowQuery(windowStart))
+  )) as unknown as ShadowWindowRow[];
+
+  // ---- (a) aggregate counts: per-subscriber local-invocation delta vs receipt volume
+  const receiptsByEvent = new Map<string, { eventType: string; subscriberIds: Set<string> }>();
+  const receiptCountsBySubscriber = new Map<string, number>();
+  for (const row of rows) {
+    receiptCountsBySubscriber.set(
+      row.subscriber_id,
+      (receiptCountsBySubscriber.get(row.subscriber_id) ?? 0) + 1
+    );
+    const entry = receiptsByEvent.get(row.event_id) ?? { eventType: row.event_type, subscriberIds: new Set<string>() };
+    entry.subscriberIds.add(row.subscriber_id);
+    receiptsByEvent.set(row.event_id, entry);
+  }
+
+  const subscriberDeltas: ShadowComparisonSummary['subscriberDeltas'] = {};
+  let anyOutOfTolerance = false;
+  for (const subscriberId of EVENT_SUBSCRIBER_IDS) {
+    const countHash = (await redis.hgetall(`${SHADOW_COUNT_PREFIX}:${subscriberId}`)) as Record<string, string>;
+    const currentTotal = (parseInt(countHash.ok ?? '0', 10) || 0) + (parseInt(countHash.error ?? '0', 10) || 0);
+
+    const snapshotKey = `${SHADOW_COMPARE_SNAPSHOT_PREFIX}:${subscriberId}`;
+    const previousRaw = await redis.get(snapshotKey);
+    // First run for this subscriber (no snapshot yet): baseline to the
+    // current absolute rather than diffing against 0 — the counter
+    // accumulates FOREVER, so treating "no snapshot" as "previous = 0" would
+    // report the subscriber's entire lifetime volume as this run's delta.
+    const previousTotal = previousRaw !== null ? parseInt(previousRaw, 10) || 0 : currentTotal;
+    const localDelta = Math.max(0, currentTotal - previousTotal);
+    await redis.set(snapshotKey, String(currentTotal));
+
+    const receiptCount = receiptCountsBySubscriber.get(subscriberId) ?? 0;
+    const withinTolerance = withinShadowCountTolerance(localDelta, receiptCount);
+    if (!withinTolerance) anyOutOfTolerance = true;
+    subscriberDeltas[subscriberId] = { localDelta, receiptCount, withinTolerance };
+  }
+
+  const countsLogLine = `[EventDispatchWorker] shadow-compare-counts ${JSON.stringify({
+    windowStart: windowStart.toISOString(),
+    subscriberDeltas
+  })}`;
+  if (anyOutOfTolerance) console.warn(countsLogLine);
+  else console.log(countsLogLine);
+
+  // ---- (b) per-event sample diff: the exact signal
+  const sampledEventIds = [...receiptsByEvent.entries()]
+    .filter(([eventId, entry]) => isShadowSampledEvent({ id: eventId, type: entry.eventType } as BreezeEvent))
+    .map(([eventId]) => eventId)
+    .slice(0, SHADOW_COMPARE_MAX_SAMPLES);
+
+  let mismatches = 0;
+  for (const eventId of sampledEventIds) {
+    const routedSubscriberIds = receiptsByEvent.get(eventId)!.subscriberIds;
+    const localHash = (await redis.hgetall(`${SHADOW_LOCAL_PREFIX}:${eventId}`)) as Record<string, string>;
+    const locallyInvokedIds = new Set(Object.keys(localHash));
+
+    const routedButNotLocal = [...routedSubscriberIds].filter((id) => !locallyInvokedIds.has(id));
+    const localButNotRouted = [...locallyInvokedIds].filter((id) => !routedSubscriberIds.has(id));
+
+    if (routedButNotLocal.length > 0 || localButNotRouted.length > 0) {
+      mismatches += 1;
+      const detail = {
+        errorId: 'EVENT_DISPATCH_SHADOW_MISMATCH',
+        eventId,
+        eventType: receiptsByEvent.get(eventId)!.eventType,
+        routedButNotLocal,
+        localButNotRouted
+      };
+      const message = `[EventDispatchWorker] shadow-mismatch ${JSON.stringify(detail)}`;
+      console.error(message);
+      captureException(new Error(message));
+      await redis.lpush(SHADOW_MISMATCH_LIST_KEY, JSON.stringify({ ...detail, detectedAt: now.toISOString() }));
+      await redis.ltrim(SHADOW_MISMATCH_LIST_KEY, 0, SHADOW_MISMATCH_LIST_MAX);
+    }
+  }
+
+  await redis.set(SHADOW_COMPARE_LAST_RUN_KEY, now.toISOString());
+
+  return { windowStart: windowStart.toISOString(), subscriberDeltas, samplesChecked: sampledEventIds.length, mismatches };
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance queue (receipt-retention + shadow-compare)
+// ---------------------------------------------------------------------------
+
+export const EVENT_DISPATCH_MAINTENANCE_QUEUE = 'event-dispatch-maintenance';
+
+/**
+ * Queue-shape choice (Task 7, #4085): retention and shadow-compare get their
+ * OWN queue/worker rather than riding `EVENT_DISPATCH_QUEUE` as two more job
+ * names on `eventDispatchProcessor`. That worker's concurrency (5) is tuned
+ * for fan-out delivery latency (see `createEventDispatchWorker`'s comment); a
+ * multi-minute batched-DELETE retention pass or a Redis-heavy shadow-compare
+ * run sharing that pool would steal one of five concurrent delivery slots
+ * from real event traffic. A dedicated concurrency-1 worker — mirroring
+ * `deviceMetricsRetention.ts` / `webhookDeliveryRecovery.ts` — keeps that
+ * contention out of the delivery path entirely, at the cost of one more
+ * BullMQ queue name to know about.
+ */
+async function eventDispatchMaintenanceProcessor(job: Job): Promise<void> {
+  if (job.name === 'receipt-retention') {
+    await runReceiptRetentionSweep();
+    return;
+  }
+  if (job.name === 'shadow-compare') {
+    await runShadowComparisonSweep();
+    return;
+  }
+  const message = `[EventDispatchWorker] unrecognized maintenance job name "${job.name}" on ${EVENT_DISPATCH_MAINTENANCE_QUEUE}`;
+  console.error(message);
+  captureException(new Error(message));
+}
+
+let maintenanceQueue: Queue | null = null;
+let maintenanceWorker: Worker | null = null;
+
+export function getEventDispatchMaintenanceQueue(): Queue {
+  if (!maintenanceQueue) {
+    maintenanceQueue = new Queue(EVENT_DISPATCH_MAINTENANCE_QUEUE, { connection: getBullMQConnection() });
+  }
+  return maintenanceQueue;
+}
+
+export function createEventDispatchMaintenanceWorker(): Worker {
+  return new Worker(EVENT_DISPATCH_MAINTENANCE_QUEUE, eventDispatchMaintenanceProcessor, {
+    connection: getBullMQConnection(),
+    concurrency: 1
+  });
+}
+
+/**
+ * Registers both maintenance repeatables. Called from
+ * `initializeEventDispatchWorker` whenever the MAIN worker actually starts
+ * (mode != 'off', or draining a backlog), unconditionally regardless of the
+ * current mode:
+ *
+ *  - retention: ideally would also run while mode='off' if receipts remain
+ *    from a completed rollout, but that requires a DB probe at boot just to
+ *    decide "should retention run" for a purely housekeeping job. Accepted
+ *    gap (see `initializeEventDispatchWorker`'s docstring): once mode returns
+ *    to 'off' and the queue drains, residual receipts age out only the next
+ *    time the worker starts (mode re-enabled, or a backlog reappears).
+ *  - shadow-compare: cheap to register unconditionally; it re-checks
+ *    `eventDispatchMode() === 'shadow'` on every RUN, not just here at
+ *    registration (see `runShadowComparisonSweep`) — mode can flip between
+ *    5-minute ticks without a worker restart.
+ *
+ * Registration idiom (remove existing repeatables then add) mirrors
+ * `webhookDeliveryRecovery.ts`.
+ */
+async function registerEventDispatchMaintenanceRepeatables(): Promise<void> {
+  const queue = getEventDispatchMaintenanceQueue();
+  const existing = await queue.getRepeatableJobs();
+  for (const job of existing) {
+    await queue.removeRepeatableByKey(job.key);
+  }
+
+  await queue.add(
+    'receipt-retention',
+    {},
+    {
+      // Coarse (daily) — MUST use the scheduleRegistry cron lane, never
+      // `every:` (epoch-stampede rule, see jobs/scheduleRegistry.ts).
+      repeat: { pattern: jobSchedule('eventDeliveryReceiptRetention') },
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 }
+    }
+  );
+
+  await queue.add(
+    'shadow-compare',
+    {},
+    {
+      // Sub-hourly — `every:` is correct here; the scheduleRegistry only
+      // manages >= hourly schedules (see its module docstring).
+      repeat: { every: 5 * 60 * 1000 },
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 }
+    }
+  );
+}
+
 let worker: Worker | null = null;
 
 export function createEventDispatchWorker(): Worker {
@@ -414,11 +825,46 @@ export async function initializeEventDispatchWorker(): Promise<void> {
     }
     throw error;
   }
+
+  try {
+    maintenanceWorker = createEventDispatchMaintenanceWorker();
+    attachWorkerObservability(maintenanceWorker, 'eventDispatchMaintenance');
+    await registerEventDispatchMaintenanceRepeatables();
+    console.log('[EventDispatchWorker] Maintenance repeatables registered (receipt-retention, shadow-compare)');
+  } catch (error) {
+    // Partial-failure cleanup: a throw here (e.g. Redis unreachable while
+    // registering repeatables) must not leave a freshly-created
+    // maintenance Worker/Queue holding a connection with no handle anyone
+    // will ever close. The main event-dispatch worker created just above is
+    // torn down too, so a boot failure here leaves nothing running
+    // half-initialized for the caller to retry into.
+    if (maintenanceWorker) {
+      await maintenanceWorker.close().catch(() => {});
+      maintenanceWorker = null;
+    }
+    if (maintenanceQueue) {
+      await maintenanceQueue.close().catch(() => {});
+      maintenanceQueue = null;
+    }
+    if (worker) {
+      await worker.close().catch(() => {});
+      worker = null;
+    }
+    throw error;
+  }
 }
 
 export async function shutdownEventDispatchWorker(): Promise<void> {
   if (worker) {
     await worker.close();
     worker = null;
+  }
+  if (maintenanceWorker) {
+    await maintenanceWorker.close();
+    maintenanceWorker = null;
+  }
+  if (maintenanceQueue) {
+    await maintenanceQueue.close();
+    maintenanceQueue = null;
   }
 }

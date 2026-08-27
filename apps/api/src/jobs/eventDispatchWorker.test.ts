@@ -18,15 +18,28 @@ const {
   updateWhereMock,
   updateReturningMock,
   selectLimitMock,
+  executeMock,
   addBulkMock,
   getJobCountsMock,
   workerCloseMock,
   workerConstructorMock,
+  queueConstructorMock,
+  queueGetRepeatableJobsMock,
+  queueRemoveRepeatableByKeyMock,
+  queueAddMock,
+  queueCloseMock,
   sharedBullMQConnection,
   attachWorkerObservabilityMock,
   captureExceptionMock,
   getSubscriberByIdMock,
-  eventDispatchModeMock
+  eventDispatchModeMock,
+  jobScheduleMock,
+  redisGetMock,
+  redisSetMock,
+  redisHgetallMock,
+  redisLpushMock,
+  redisLtrimMock,
+  isShadowSampledEventMock
 } = vi.hoisted(() => ({
   insertValuesMock: vi.fn(),
   insertOnConflictMock: vi.fn(),
@@ -34,10 +47,16 @@ const {
   updateWhereMock: vi.fn(),
   updateReturningMock: vi.fn(),
   selectLimitMock: vi.fn(),
+  executeMock: vi.fn(),
   addBulkMock: vi.fn(),
   getJobCountsMock: vi.fn(),
   workerCloseMock: vi.fn(),
   workerConstructorMock: vi.fn(),
+  queueConstructorMock: vi.fn(),
+  queueGetRepeatableJobsMock: vi.fn(),
+  queueRemoveRepeatableByKeyMock: vi.fn(),
+  queueAddMock: vi.fn(),
+  queueCloseMock: vi.fn(),
   // A stable object identity so the Worker-construction test can prove the
   // SAME connection getBullMQConnection() returns is what was passed through,
   // not merely "an object that looks similar".
@@ -45,7 +64,14 @@ const {
   attachWorkerObservabilityMock: vi.fn(),
   captureExceptionMock: vi.fn(),
   getSubscriberByIdMock: vi.fn(),
-  eventDispatchModeMock: vi.fn()
+  eventDispatchModeMock: vi.fn(),
+  jobScheduleMock: vi.fn(),
+  redisGetMock: vi.fn(),
+  redisSetMock: vi.fn(),
+  redisHgetallMock: vi.fn(),
+  redisLpushMock: vi.fn(),
+  redisLtrimMock: vi.fn(),
+  isShadowSampledEventMock: vi.fn()
 }));
 
 vi.mock('bullmq', () => ({
@@ -54,6 +80,15 @@ vi.mock('bullmq', () => ({
     on = vi.fn();
     constructor(...args: unknown[]) {
       workerConstructorMock(...args);
+    }
+  },
+  Queue: class {
+    getRepeatableJobs = queueGetRepeatableJobsMock;
+    removeRepeatableByKey = queueRemoveRepeatableByKeyMock;
+    add = queueAddMock;
+    close = queueCloseMock;
+    constructor(...args: unknown[]) {
+      queueConstructorMock(...args);
     }
   }
 }));
@@ -83,7 +118,8 @@ vi.mock('../db', () => ({
           limit: selectLimitMock
         })
       })
-    }))
+    })),
+    execute: executeMock
   },
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn()
@@ -94,7 +130,14 @@ vi.mock('../config/env', () => ({
 }));
 
 vi.mock('../services/redis', () => ({
-  getBullMQConnection: vi.fn(() => sharedBullMQConnection)
+  getBullMQConnection: vi.fn(() => sharedBullMQConnection),
+  getRedisConnection: vi.fn(() => ({
+    get: redisGetMock,
+    set: redisSetMock,
+    hgetall: redisHgetallMock,
+    lpush: redisLpushMock,
+    ltrim: redisLtrimMock
+  }))
 }));
 
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
@@ -108,11 +151,18 @@ vi.mock('../services/eventDispatchQueue', () => ({
   getEventDispatchQueue: vi.fn(() => ({
     addBulk: addBulkMock,
     getJobCounts: getJobCountsMock
-  }))
+  })),
+  isShadowSampledEvent: isShadowSampledEventMock,
+  SHADOW_COUNT_PREFIX: 'breeze:event-shadow:count',
+  SHADOW_LOCAL_PREFIX: 'breeze:event-shadow:local'
 }));
 
 vi.mock('./workerObservability', () => ({
   attachWorkerObservability: attachWorkerObservabilityMock
+}));
+
+vi.mock('./scheduleRegistry', () => ({
+  jobSchedule: jobScheduleMock
 }));
 
 import {
@@ -123,7 +173,10 @@ import {
   initializeEventDispatchWorker,
   processDeliverEvent,
   processRouteEvent,
-  shutdownEventDispatchWorker
+  shutdownEventDispatchWorker,
+  runReceiptRetentionSweep,
+  runShadowComparisonSweep,
+  extractAffectedCount
 } from './eventDispatchWorker';
 import type { BreezeEvent, EventType } from '../services/eventBus';
 import type { RouteEventJobData, DeliverEventJobData } from '../services/eventDispatchQueue';
@@ -150,6 +203,17 @@ beforeEach(() => {
   getJobCountsMock.mockResolvedValue({ waiting: 0, delayed: 0, active: 0, paused: 0 });
   eventDispatchModeMock.mockReturnValue('enforce');
   getSubscriberByIdMock.mockReturnValue(undefined);
+  workerCloseMock.mockResolvedValue(undefined);
+  jobScheduleMock.mockReturnValue('3 15 * * *');
+  queueGetRepeatableJobsMock.mockResolvedValue([]);
+  queueAddMock.mockResolvedValue(undefined);
+  queueCloseMock.mockResolvedValue(undefined);
+  redisGetMock.mockResolvedValue(null);
+  redisSetMock.mockResolvedValue(undefined);
+  redisHgetallMock.mockResolvedValue({});
+  redisLpushMock.mockResolvedValue(undefined);
+  redisLtrimMock.mockResolvedValue(undefined);
+  isShadowSampledEventMock.mockReturnValue(false);
 });
 
 describe('processRouteEvent', () => {
@@ -434,25 +498,68 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
     expect(attachWorkerObservabilityMock).not.toHaveBeenCalled();
   });
 
-  it('mode off, queue has a backlog: starts the worker anyway to drain it', async () => {
+  it('mode off, queue has a backlog: starts the worker anyway to drain it, AND registers the maintenance repeatables', async () => {
     eventDispatchModeMock.mockReturnValue('off');
     getJobCountsMock.mockResolvedValue({ waiting: 2, delayed: 0, active: 0, paused: 0 });
 
     await initializeEventDispatchWorker();
 
-    expect(attachWorkerObservabilityMock).toHaveBeenCalledTimes(1);
+    // Two workers now: the main event-dispatch worker and the dedicated
+    // maintenance worker (retention + shadow-compare).
+    expect(attachWorkerObservabilityMock).toHaveBeenCalledTimes(2);
+    expect(queueAddMock).toHaveBeenCalledTimes(2);
     await shutdownEventDispatchWorker();
-    expect(workerCloseMock).toHaveBeenCalledTimes(1);
+    expect(workerCloseMock).toHaveBeenCalledTimes(2);
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
   });
 
-  it('mode shadow/enforce: always starts the worker', async () => {
+  it('mode shadow/enforce: always starts the worker and registers the maintenance repeatables', async () => {
     eventDispatchModeMock.mockReturnValue('enforce');
 
     await initializeEventDispatchWorker();
 
     expect(getJobCountsMock).not.toHaveBeenCalled();
-    expect(attachWorkerObservabilityMock).toHaveBeenCalledTimes(1);
+    expect(attachWorkerObservabilityMock).toHaveBeenCalledTimes(2);
     await shutdownEventDispatchWorker();
+  });
+
+  it('registers receipt-retention on the scheduleRegistry cron lane and shadow-compare on a 5-minute every:, after clearing any pre-existing repeatables', async () => {
+    eventDispatchModeMock.mockReturnValue('enforce');
+    queueGetRepeatableJobsMock.mockResolvedValue([{ key: 'stale-repeat-key' }]);
+    jobScheduleMock.mockReturnValue('3 15 * * *');
+
+    await initializeEventDispatchWorker();
+
+    expect(queueRemoveRepeatableByKeyMock).toHaveBeenCalledWith('stale-repeat-key');
+    expect(jobScheduleMock).toHaveBeenCalledWith('eventDeliveryReceiptRetention');
+
+    const [retentionCall, shadowCall] = queueAddMock.mock.calls as Array<
+      [string, unknown, Record<string, unknown>]
+    >;
+    expect(retentionCall![0]).toBe('receipt-retention');
+    expect(retentionCall![2]).toMatchObject({ repeat: { pattern: '3 15 * * *' } });
+    expect(shadowCall![0]).toBe('shadow-compare');
+    expect(shadowCall![2]).toMatchObject({ repeat: { every: 5 * 60 * 1000 } });
+
+    await shutdownEventDispatchWorker();
+  });
+
+  it('maintenance registration failure: closes the maintenance worker/queue AND the main worker (partial-failure cleanup), then rethrows', async () => {
+    eventDispatchModeMock.mockReturnValue('enforce');
+    const boom = new Error('redis unreachable during repeatable registration');
+    queueGetRepeatableJobsMock.mockRejectedValue(boom);
+
+    await expect(initializeEventDispatchWorker()).rejects.toBe(boom);
+
+    expect(workerCloseMock).toHaveBeenCalledTimes(2);
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
+
+    // Nothing left dangling: a subsequent shutdown is a clean no-op.
+    workerCloseMock.mockClear();
+    queueCloseMock.mockClear();
+    await shutdownEventDispatchWorker();
+    expect(workerCloseMock).not.toHaveBeenCalled();
+    expect(queueCloseMock).not.toHaveBeenCalled();
   });
 
   it('createEventDispatchWorker constructs with the shared BullMQ connection and concurrency 5', () => {
@@ -472,5 +579,236 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
 
   it('shutdown is a no-op when no worker was ever started', async () => {
     await expect(shutdownEventDispatchWorker()).resolves.toBeUndefined();
+  });
+});
+
+describe('extractAffectedCount (batched-delete loop termination depends on this)', () => {
+  it('prefers rowCount over count', () => {
+    expect(extractAffectedCount({ rowCount: 7, count: 3 })).toBe(7);
+  });
+
+  it('falls back to count (postgres-js DELETE result)', () => {
+    expect(extractAffectedCount({ count: 5 })).toBe(5);
+  });
+
+  it('falls back to array length', () => {
+    expect(extractAffectedCount([{}, {}])).toBe(2);
+  });
+
+  it('returns 0 for an unrecognized shape rather than falsely ending the loop early', () => {
+    expect(extractAffectedCount({})).toBe(0);
+  });
+});
+
+describe('runReceiptRetentionSweep', () => {
+  it('pass 1 loops until a batch comes back under the 5000 batch size, per-pass compiled WHERE matches the sql.test.ts assertions', async () => {
+    executeMock
+      .mockResolvedValueOnce({ count: 5000 }) // pass 1, iteration 1: full batch, loop again
+      .mockResolvedValueOnce({ count: 1200 }) // pass 1, iteration 2: partial batch, stop
+      .mockResolvedValueOnce({ count: 0 }) // pass 2: empty, stop immediately
+      .mockResolvedValueOnce([{ count: 0 }]) // pass 3 count: nothing abandoned
+      .mockResolvedValueOnce({ count: 0 }); // pass 3 delete: empty, stop immediately
+
+    const summary = await runReceiptRetentionSweep();
+
+    expect(summary).toEqual({ delivered: 6200, shadow: 0, residual: 0, abandonedResidualCount: 0 });
+    expect(executeMock).toHaveBeenCalledTimes(5);
+
+    // Each call receives a DIFFERENT compiled query object — proves pass 1
+    // does NOT reuse pass 2's or pass 3's predicate.
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const dialect = new PgDialect();
+    const compiled = (i: number) => dialect.sqlToQuery(executeMock.mock.calls[i]![0]).sql;
+    expect(compiled(0)).toContain("status = 'delivered'");
+    expect(compiled(0)).toContain("interval '7 days'");
+    expect(compiled(2)).toContain("mode = 'shadow'");
+    expect(compiled(2)).toContain("interval '7 days'");
+    expect(compiled(3)).toContain("status IN ('failed', 'planned', 'delivering')");
+    expect(compiled(3)).toContain("interval '30 days'");
+    expect(compiled(4)).toContain("status IN ('failed', 'planned', 'delivering')");
+    expect(compiled(4)).toContain("interval '30 days'");
+  });
+
+  it('abandoned-warn fires with the count BEFORE the residual pass deletes those rows', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    executeMock
+      .mockResolvedValueOnce({ count: 0 }) // pass 1: empty
+      .mockResolvedValueOnce({ count: 0 }) // pass 2: empty
+      .mockResolvedValueOnce([{ count: 7 }]) // pass 3 count: 7 abandoned rows
+      .mockResolvedValueOnce({ count: 7 }); // pass 3 delete: removes them (< batch size, loop stops)
+
+    const summary = await runReceiptRetentionSweep();
+
+    expect(summary.abandonedResidualCount).toBe(7);
+    expect(summary.residual).toBe(7);
+    const warnCall = warnSpy.mock.calls.find((call) =>
+      String(call[0]).includes('EVENT_DISPATCH_RECEIPTS_ABANDONED')
+    );
+    expect(warnCall).toBeDefined();
+    expect(String(warnCall![0])).toContain('"count":7');
+
+    // The warn must be logged before the delete executes — assert call order.
+    const warnCallIndex = warnSpy.mock.invocationCallOrder[warnSpy.mock.calls.indexOf(warnCall!)]!;
+    const deleteCallIndex = executeMock.mock.invocationCallOrder[3]!;
+    expect(warnCallIndex).toBeLessThan(deleteCallIndex);
+
+    warnSpy.mockRestore();
+  });
+
+  it('no residual rows: does not warn', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    executeMock
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce({ count: 0 });
+
+    await runReceiptRetentionSweep();
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
+describe('runShadowComparisonSweep', () => {
+  it('non-shadow-mode run is a cheap no-op: no DB query, no Redis reads', async () => {
+    eventDispatchModeMock.mockReturnValue('enforce');
+
+    const result = await runShadowComparisonSweep();
+
+    expect(result).toEqual({ skipped: true });
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(redisGetMock).not.toHaveBeenCalled();
+    expect(redisHgetallMock).not.toHaveBeenCalled();
+  });
+
+  it('first run for a subscriber: baselines the snapshot instead of reporting lifetime volume as this run\'s delta', async () => {
+    eventDispatchModeMock.mockReturnValue('shadow');
+    executeMock.mockResolvedValueOnce([]); // empty window
+    redisGetMock.mockResolvedValue(null); // no last-run watermark, no snapshot for any subscriber
+    redisHgetallMock.mockImplementation(async (key: string) => {
+      if (key === 'breeze:event-shadow:count:webhook-delivery') return { ok: '500', error: '3' };
+      return {};
+    });
+
+    const summary = await runShadowComparisonSweep();
+
+    expect(summary).not.toHaveProperty('skipped');
+    const deltas = (summary as { subscriberDeltas: Record<string, { localDelta: number; receiptCount: number }> })
+      .subscriberDeltas;
+    // 503 lifetime invocations must NOT surface as a 503 delta on the very
+    // first run — the snapshot baselines to the current absolute.
+    expect(deltas['webhook-delivery']!.localDelta).toBe(0);
+    expect(deltas['webhook-delivery']!.receiptCount).toBe(0);
+    // The snapshot is then stored so the NEXT run has something to diff against.
+    expect(redisSetMock).toHaveBeenCalledWith('breeze:event-shadow:count-snapshot:webhook-delivery', '503');
+  });
+
+  it('second run: delta is current-minus-previous-snapshot, matched against receipts in the window', async () => {
+    eventDispatchModeMock.mockReturnValue('shadow');
+    executeMock.mockResolvedValueOnce([
+      { event_id: 'evt-1', event_type: 'device.online', subscriber_id: 'webhook-delivery' },
+      { event_id: 'evt-2', event_type: 'device.online', subscriber_id: 'webhook-delivery' }
+    ]);
+    redisGetMock.mockImplementation(async (key: string) => {
+      if (key === 'breeze:event-shadow:count-snapshot:webhook-delivery') return '500'; // previous
+      return null;
+    });
+    redisHgetallMock.mockImplementation(async (key: string) => {
+      if (key === 'breeze:event-shadow:count:webhook-delivery') return { ok: '501', error: '1' }; // current = 502
+      return {};
+    });
+
+    const summary = await runShadowComparisonSweep();
+
+    const deltas = (summary as { subscriberDeltas: Record<string, { localDelta: number; receiptCount: number; withinTolerance: boolean }> })
+      .subscriberDeltas;
+    expect(deltas['webhook-delivery']).toEqual({ localDelta: 2, receiptCount: 2, withinTolerance: true });
+    expect(redisSetMock).toHaveBeenCalledWith('breeze:event-shadow:count-snapshot:webhook-delivery', '502');
+  });
+
+  it('flags a planted swap (event A missing its subscriber locally, aggregate totals still match) that count-comparison alone would conceal', async () => {
+    eventDispatchModeMock.mockReturnValue('shadow');
+    // Router planned 'notification-dispatcher' for BOTH evt-a and evt-b.
+    executeMock.mockResolvedValueOnce([
+      { event_id: 'evt-a', event_type: 'alert.new', subscriber_id: 'notification-dispatcher' },
+      { event_id: 'evt-b', event_type: 'alert.new', subscriber_id: 'notification-dispatcher' }
+    ]);
+    // Aggregate count hash reports exactly 2 total invocations — matches the
+    // 2 receipts exactly, so the pure COUNT comparison sees no problem at all,
+    // even though (per the local hashes below) evt-a's invocation never
+    // actually ran for this subscriber and evt-b's ran twice.
+    redisGetMock.mockImplementation(async (key: string) => {
+      if (key === 'breeze:event-shadow:count-snapshot:notification-dispatcher') return '0';
+      return null;
+    });
+    redisHgetallMock.mockImplementation(async (key: string) => {
+      if (key === 'breeze:event-shadow:count:notification-dispatcher') return { ok: '2', error: '0' };
+      if (key === 'breeze:event-shadow:local:evt-a') return {}; // MISSING locally
+      if (key === 'breeze:event-shadow:local:evt-b') return { 'notification-dispatcher': 'ok' };
+      return {};
+    });
+    isShadowSampledEventMock.mockReturnValue(true); // both events sampled
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const summary = await runShadowComparisonSweep();
+
+    const result = summary as {
+      subscriberDeltas: Record<string, { withinTolerance: boolean }>;
+      mismatches: number;
+      samplesChecked: number;
+    };
+    // The aggregate signal reports all-clear...
+    expect(result.subscriberDeltas['notification-dispatcher']!.withinTolerance).toBe(true);
+    // ...but the exact per-event signal catches exactly the one broken event.
+    expect(result.samplesChecked).toBe(2);
+    expect(result.mismatches).toBe(1);
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    const mismatchCall = errorSpy.mock.calls.find((call) => String(call[0]).includes('EVENT_DISPATCH_SHADOW_MISMATCH'));
+    expect(mismatchCall).toBeDefined();
+    expect(String(mismatchCall![0])).toContain('"eventId":"evt-a"');
+    expect(String(mismatchCall![0])).not.toContain('"eventId":"evt-b"');
+
+    expect(redisLpushMock).toHaveBeenCalledTimes(1);
+    expect(redisLpushMock).toHaveBeenCalledWith(
+      'breeze:event-shadow:mismatches',
+      expect.stringContaining('"eventId":"evt-a"')
+    );
+    expect(redisLtrimMock).toHaveBeenCalledWith('breeze:event-shadow:mismatches', 0, 999);
+    errorSpy.mockRestore();
+  });
+
+  it('un-sampled events are excluded from the per-event sample diff entirely', async () => {
+    eventDispatchModeMock.mockReturnValue('shadow');
+    executeMock.mockResolvedValueOnce([
+      { event_id: 'evt-unsampled', event_type: 'device.online', subscriber_id: 'webhook-delivery' }
+    ]);
+    isShadowSampledEventMock.mockReturnValue(false);
+
+    const summary = await runShadowComparisonSweep();
+
+    expect((summary as { samplesChecked: number }).samplesChecked).toBe(0);
+    expect(redisHgetallMock).not.toHaveBeenCalledWith('breeze:event-shadow:local:evt-unsampled');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('sample cap: never diffs more than 200 sampled events per run', async () => {
+    eventDispatchModeMock.mockReturnValue('shadow');
+    const rows = Array.from({ length: 250 }, (_, i) => ({
+      event_id: `evt-${i}`,
+      event_type: 'alert.new',
+      subscriber_id: 'notification-dispatcher'
+    }));
+    executeMock.mockResolvedValueOnce(rows);
+    isShadowSampledEventMock.mockReturnValue(true);
+    redisHgetallMock.mockImplementation(async (key: string) => {
+      if (key.startsWith('breeze:event-shadow:local:')) return { 'notification-dispatcher': 'ok' };
+      return {};
+    });
+
+    const summary = await runShadowComparisonSweep();
+
+    expect((summary as { samplesChecked: number }).samplesChecked).toBe(200);
   });
 });

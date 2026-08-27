@@ -41,8 +41,12 @@ export interface DeliverEventJobData {
   event: BreezeEvent;
 }
 
-const SHADOW_COUNT_PREFIX = 'breeze:event-shadow:count';
-const SHADOW_LOCAL_PREFIX = 'breeze:event-shadow:local';
+// Exported (rather than kept module-private) so the shadow-comparison job
+// (Task 7, jobs/eventDispatchWorker.ts) reads the SAME key prefixes this
+// module writes under, instead of a second hand-typed copy that could drift —
+// the same "never duplicate the rule" concern as `isShadowSampledEvent` below.
+export const SHADOW_COUNT_PREFIX = 'breeze:event-shadow:count';
+export const SHADOW_LOCAL_PREFIX = 'breeze:event-shadow:local';
 const SHADOW_LOCAL_TTL_SECONDS = 7200;
 
 let queue: Queue<RouteEventJobData | DeliverEventJobData> | null = null;

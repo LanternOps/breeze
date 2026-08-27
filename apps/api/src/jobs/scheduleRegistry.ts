@@ -111,6 +111,7 @@ export const JOB_SCHEDULES = {
   'reliability-history-retention': '3 14 * * *',
   'playbook-execution-retention': '23 14 * * *',
   'cve-enrichment': '43 14 * * *',
+  eventDeliveryReceiptRetention: '3 15 * * *',
   'winget-index-sync': '3 16 * * *',
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
