@@ -207,7 +207,7 @@ describe('getEnrollmentDefaultsForOrg', () => {
   it('falls back to product defaults when neither org nor partner has settings', async () => {
     mockJoinRow({});
     const r = await getEnrollmentDefaultsForOrg(ORG_ID);
-    expect(r).toEqual({ ttlMinutes: 1440, deviceCount: 1, maxTtlMinutes: 525600 });
+    expect(r).toEqual({ ttlMinutes: 43200, deviceCount: 50, maxTtlMinutes: 525600 });
   });
 
   it('falls back to org-local values when there is no partner row (LEFT JOIN null)', async () => {
