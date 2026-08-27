@@ -307,6 +307,24 @@ export async function getListedProviderByEntryId(entryId: string): Promise<Liste
   return providers.find((provider) => provider.entryId === entryId) ?? null;
 }
 
+/**
+ * Raw name lookup by id, independent of listing status (#3922 W4). Usage
+ * provenance ("billed to your key via <name>") must still resolve a name
+ * after an entry is delisted — {@link getListedProviderByEntryId} would go
+ * null the moment that happens, which is correct for selection but wrong for
+ * historical display.
+ */
+export async function getCatalogEntryName(entryId: string): Promise<string | null> {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ name: llmProviderCatalog.name })
+      .from(llmProviderCatalog)
+      .where(eq(llmProviderCatalog.id, entryId))
+      .limit(1);
+    return row?.name ?? null;
+  });
+}
+
 export function invalidateLlmProviderCatalogCache(): void {
   listedProvidersCache = null;
   listedProvidersCacheLoadedAt = 0;

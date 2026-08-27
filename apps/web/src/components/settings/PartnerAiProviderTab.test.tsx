@@ -41,6 +41,29 @@ const connectedStatus = {
   verifiedAt: '2026-08-23T12:00:00.000Z',
   lastError: null,
   supportedModels: SUPPORTED_MODELS,
+  catalogEntryId: null,
+  catalog: [],
+};
+
+const CATALOG_ENTRY = {
+  entryId: 'entry-1',
+  slug: 'openrouter',
+  name: 'OpenRouter',
+  dataNote: 'Requests are proxied through OpenRouter and may be logged by them for up to 30 days.',
+  models: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
+};
+
+const CATALOG_ENTRY_NO_NOTE = {
+  entryId: 'entry-2',
+  slug: 'vllm-internal',
+  name: 'Internal vLLM',
+  dataNote: null,
+  models: ['claude-sonnet-4-6'],
+};
+
+const connectedWithCatalogStatus = {
+  ...connectedStatus,
+  catalog: [CATALOG_ENTRY, CATALOG_ENTRY_NO_NOTE],
 };
 
 /** Route the mock fetch by method+url; GET / falls through to `initial`. */
@@ -258,5 +281,123 @@ describe('PartnerAiProviderTab', () => {
 
     await waitFor(() => expect(screen.getByTestId('ai-provider-forbidden')).toBeInTheDocument());
     expect(screen.queryByTestId('ai-provider-status-card')).toBeNull();
+  });
+
+  describe('endpoint selection (#3922 W4)', () => {
+    it('hides the endpoint card when the catalog is empty', async () => {
+      mockApi(connectedStatus);
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-status-card')).toBeInTheDocument());
+      expect(screen.queryByTestId('ai-provider-endpoint-card')).toBeNull();
+    });
+
+    it('renders a radio row per catalog entry plus the direct option', async () => {
+      mockApi(connectedWithCatalogStatus);
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-card')).toBeInTheDocument());
+      expect(screen.getByTestId('ai-provider-endpoint-direct-radio')).toBeInTheDocument();
+      expect((screen.getByTestId('ai-provider-endpoint-direct-radio') as HTMLInputElement).checked).toBe(true);
+      expect(screen.getByTestId('ai-provider-endpoint-radio-entry-1')).toBeInTheDocument();
+      expect(screen.getByTestId('ai-provider-endpoint-radio-entry-2')).toBeInTheDocument();
+      expect(screen.getByText('OpenRouter')).toBeInTheDocument();
+      expect(screen.getByText(/claude-sonnet-4-6, claude-haiku-4-5/)).toBeInTheDocument();
+    });
+
+    it('selecting a non-direct entry with a data note opens a confirm dialog quoting it verbatim, gated by consent', async () => {
+      mockApi(connectedWithCatalogStatus);
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-radio-entry-1')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-radio-entry-1'));
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-confirm-dialog')).toBeInTheDocument());
+      expect(screen.getByTestId('ai-provider-endpoint-confirm-dialog').textContent)
+        .toContain(CATALOG_ENTRY.dataNote);
+      // No request fired yet — nothing submits without the API call.
+      expect(fetchWithAuth).not.toHaveBeenCalledWith('/ai/provider/endpoint', expect.anything());
+
+      const confirmButton = screen.getByTestId('ai-provider-endpoint-confirm-submit') as HTMLButtonElement;
+      expect(confirmButton.disabled).toBe(true);
+
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-consent-checkbox'));
+      expect(confirmButton.disabled).toBe(false);
+    });
+
+    it('submits the endpoint change with acknowledgeDataNote once consent is given', async () => {
+      mockApi(connectedWithCatalogStatus, {
+        'POST /ai/provider/endpoint': () => jsonRes({ catalogEntryId: 'entry-1', configVersion: 5 }),
+      });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-radio-entry-1')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-radio-entry-1'));
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-consent-checkbox')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-consent-checkbox'));
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-confirm-submit'));
+
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/ai/provider/endpoint', {
+        method: 'POST',
+        body: JSON.stringify({ catalogEntryId: 'entry-1', acknowledgeDataNote: true }),
+      }));
+    });
+
+    it('selecting an entry with no data note needs no consent checkbox', async () => {
+      mockApi(connectedWithCatalogStatus, {
+        'POST /ai/provider/endpoint': () => jsonRes({ catalogEntryId: 'entry-2', configVersion: 5 }),
+      });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-radio-entry-2')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-radio-entry-2'));
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-confirm-dialog')).toBeInTheDocument());
+      expect(screen.queryByTestId('ai-provider-endpoint-consent-checkbox')).toBeNull();
+      const confirmButton = screen.getByTestId('ai-provider-endpoint-confirm-submit') as HTMLButtonElement;
+      expect(confirmButton.disabled).toBe(false);
+
+      fireEvent.click(confirmButton);
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/ai/provider/endpoint', {
+        method: 'POST',
+        body: JSON.stringify({ catalogEntryId: 'entry-2', acknowledgeDataNote: false }),
+      }));
+    });
+
+    it('selecting the direct option submits immediately with no dialog or consent', async () => {
+      mockApi({ ...connectedWithCatalogStatus, catalogEntryId: 'entry-1' }, {
+        'POST /ai/provider/endpoint': () => jsonRes({ catalogEntryId: null, configVersion: 6 }),
+      });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-direct-radio')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-direct-radio'));
+
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/ai/provider/endpoint', {
+        method: 'POST',
+        body: JSON.stringify({ catalogEntryId: null, acknowledgeDataNote: false }),
+      }));
+      expect(screen.queryByTestId('ai-provider-endpoint-confirm-dialog')).toBeNull();
+    });
+
+    it('renders the delisted banner when the selected entry is no longer in the catalog', async () => {
+      mockApi({
+        ...connectedWithCatalogStatus,
+        catalogEntryId: 'entry-gone',
+      });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-delisted-banner')).toBeInTheDocument());
+      expect(screen.getByTestId('ai-provider-endpoint-delisted-banner').textContent)
+        .toContain('This endpoint was delisted by Breeze — AI is paused until you choose another');
+    });
+
+    it('does not render the delisted banner while the selected entry is still listed', async () => {
+      mockApi({ ...connectedWithCatalogStatus, catalogEntryId: 'entry-1' });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-card')).toBeInTheDocument());
+      expect(screen.queryByTestId('ai-provider-endpoint-delisted-banner')).toBeNull();
+    });
   });
 });

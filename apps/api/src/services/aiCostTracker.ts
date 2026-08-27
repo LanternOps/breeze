@@ -13,6 +13,7 @@ import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
+import { getCatalogEntryName } from './llmProviderCatalog';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -1243,6 +1244,24 @@ export async function getSessionHistory(orgId: string, options: { limit?: number
 }
 
 /**
+ * Most recent catalog entry a session on this org used, or null if none of
+ * the org's sessions ever routed through a catalog endpoint (#3922 W4). Reads
+ * the raw `catalog_entry_id` stamped on session create
+ * ({@link streamingSessionManager.ts}) — independent of the entry's current
+ * listing status, since a delisted-but-previously-used endpoint should still
+ * be nameable on the usage page.
+ */
+async function getRecentCatalogEntryIdForOrg(orgId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ catalogEntryId: aiSessions.catalogEntryId })
+    .from(aiSessions)
+    .where(and(eq(aiSessions.orgId, orgId), isNotNull(aiSessions.catalogEntryId)))
+    .orderBy(desc(aiSessions.lastActivityAt))
+    .limit(1);
+  return row?.catalogEntryId ?? null;
+}
+
+/**
  * Get usage summary for an org.
  */
 export async function getUsageSummary(orgId: string): Promise<{
@@ -1257,6 +1276,9 @@ export async function getUsageSummary(orgId: string): Promise<{
     approvalMode: string;
   } | null;
   billedTo: AiBillingSource;
+  /** Name of the catalog endpoint the org's most recent session used, or null
+   *  for direct-Anthropic / platform-key traffic (#3922 W4). */
+  catalogEndpointName: string | null;
 }> {
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -1282,6 +1304,14 @@ export async function getUsageSummary(orgId: string): Promise<{
 
   const billedTo = await getLlmBillingSourceForOrg(orgId);
 
+  // Only worth a lookup when traffic is actually billed to the partner's own
+  // key — platform-key orgs never stamp a catalog_entry_id on their sessions.
+  let catalogEndpointName: string | null = null;
+  if (billedTo === 'partner_key') {
+    const entryId = await getRecentCatalogEntryIdForOrg(orgId);
+    if (entryId) catalogEndpointName = await getCatalogEntryName(entryId);
+  }
+
   return {
     daily: {
       inputTokens: dailyUsage?.inputTokens ?? 0,
@@ -1304,5 +1334,6 @@ export async function getUsageSummary(orgId: string): Promise<{
       approvalMode: budget.approvalMode ?? 'per_step',
     } : null,
     billedTo,
+    catalogEndpointName,
   };
 }

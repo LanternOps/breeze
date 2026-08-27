@@ -159,7 +159,22 @@
     "disconnectFailed": "No se pudo desconectar la clave de Anthropic.",
     "permissionDenied": "Administrar el proveedor de IA requiere permisos de facturación y acceso a todas las organizaciones.",
     "loadFailed": "No se pudo cargar la configuración del proveedor de IA.",
-    "workspaceDisclosure": "El enriquecimiento de contenido de Workspace usa tu proveedor de IA configurado y aparece en tu uso de IA."
+    "workspaceDisclosure": "El enriquecimiento de contenido de Workspace usa tu proveedor de IA configurado y aparece en tu uso de IA.",
+    "endpointCardTitle": "Endpoint",
+    "endpointCardSubtitle": "Elige adónde se envía tu tráfico de IA. Breeze verifica cada opción antes de que aparezca aquí.",
+    "directOptionLabel": "Anthropic (directo)",
+    "verifiedModelsLabel": "Modelos verificados: {{models}}",
+    "noVerifiedModels": "Aún no hay modelos verificados",
+    "viewDataNote": "Ver nota sobre el manejo de datos",
+    "hideDataNote": "Ocultar nota sobre el manejo de datos",
+    "confirmDialogTitle": "¿Cambiar a {{name}}?",
+    "confirmDialogMessageWithNote": "Antes de que tu tráfico de IA se enrute a través de {{name}}, revisa cómo maneja tus datos:",
+    "confirmDialogMessageNoNote": "¿Cambiar tu tráfico de IA a {{name}}?",
+    "consentCheckboxLabel": "Entiendo que mi tráfico de IA y contenido serán procesados por {{name}}",
+    "endpointUpdated": "Endpoint de IA actualizado.",
+    "endpointUpdateFailed": "No se pudo actualizar el endpoint de IA.",
+    "endpointDelistedBanner": "Breeze eliminó este endpoint de la lista — la IA está en pausa hasta que elijas otro",
+    "endpointModelUnverifiedBanner": "El modelo {{model}} no está verificado en este endpoint. Elige un modelo o endpoint diferente para reanudar la IA."
   },
   "partnerDefaults": {
     "notSet": "No configurado: las organizaciones se configuran individualmente",
@@ -1305,7 +1320,8 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Las herramientas de nivel 2 se ejecutan automáticamente con registro de auditoría. Las herramientas de nivel 3 aún requieren aprobación.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como Plan de acción, además de capturas de pantalla en vivo entre los pasos y un botón Detener persistente.",
     "untitled": "Sin título",
-    "billedToPartnerKey": "Facturado a tu clave: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze"
+    "billedToPartnerKey": "Facturado a tu clave: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze",
+    "billedToPartnerKeyViaEndpoint": "Facturado a tu clave a través de {{name}}: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze"
   },
   "aiAgentsPage": {
     "title": "Agentes de IA",

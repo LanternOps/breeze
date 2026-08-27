@@ -1,12 +1,22 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, KeyRound, Loader2, Save, Unplug } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { Dialog } from '../shared/Dialog';
+
+/** One platform-vetted catalog entry, as summarized by GET /ai/provider (#3922 W4). */
+type CatalogEntry = {
+  entryId: string;
+  slug: string;
+  name: string;
+  dataNote: string | null;
+  models: string[];
+};
 
 /** Shape of GET /ai/provider. The API never returns the key itself. */
 type ProviderStatus = {
@@ -18,10 +28,16 @@ type ProviderStatus = {
   verifiedAt: string | null;
   lastError: string | null;
   supportedModels: string[];
+  /** The platform-catalog endpoint this partner has selected, or null for
+   *  direct Anthropic (#3922 W3/W4). */
+  catalogEntryId: string | null;
+  /** Platform-vetted third-party endpoints available for selection. Empty
+   *  when the catalog feature is disabled or nothing is listed. */
+  catalog: CatalogEntry[];
 };
 
-/** Mutation responses (POST /key, DELETE) omit supportedModels — preserve it. */
-type ProviderMutationResult = Omit<Partial<ProviderStatus>, 'supportedModels'>;
+/** Mutation responses (POST /key, DELETE) omit supportedModels/catalog — preserve them. */
+type ProviderMutationResult = Omit<Partial<ProviderStatus>, 'supportedModels' | 'catalog'>;
 
 export default function PartnerAiProviderTab() {
   const { t } = useTranslation('settings');
@@ -45,7 +61,12 @@ export default function PartnerAiProviderTab() {
         return;
       }
       const data: ProviderStatus = await response.json();
-      setStatus({ ...data, supportedModels: Array.isArray(data.supportedModels) ? data.supportedModels : [] });
+      setStatus({
+        ...data,
+        supportedModels: Array.isArray(data.supportedModels) ? data.supportedModels : [],
+        catalog: Array.isArray(data.catalog) ? data.catalog : [],
+        catalogEntryId: data.catalogEntryId ?? null,
+      });
     } catch {
       setLoadError('failed');
     } finally {
@@ -59,7 +80,7 @@ export default function PartnerAiProviderTab() {
 
   const applyMutationResult = (result: ProviderMutationResult) => {
     setStatus(prev => prev
-      ? { ...prev, ...result, supportedModels: prev.supportedModels }
+      ? { ...prev, ...result, supportedModels: prev.supportedModels, catalog: prev.catalog }
       : prev);
   };
 
@@ -135,6 +156,7 @@ export default function PartnerAiProviderTab() {
         status: 'platform',
         verifiedAt: null,
         lastError: null,
+        catalogEntryId: null,
       });
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
@@ -143,6 +165,81 @@ export default function PartnerAiProviderTab() {
       setDisconnecting(false);
     }
   };
+
+  // The catalog entry a non-direct radio click is confirming — non-null opens
+  // the consent dialog. Direct selection never sets this (submits immediately).
+  const [pendingEntry, setPendingEntry] = useState<CatalogEntry | null>(null);
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [switchingEndpoint, setSwitchingEndpoint] = useState(false);
+  const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
+
+  const submitEndpoint = useCallback(async (catalogEntryId: string | null, acknowledgeDataNote: boolean) => {
+    setSwitchingEndpoint(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/ai/provider/endpoint', {
+          method: 'POST',
+          body: JSON.stringify({ catalogEntryId, acknowledgeDataNote }),
+        }),
+        successMessage: t('partnerAiProvider.endpointUpdated'),
+        errorFallback: t('partnerAiProvider.endpointUpdateFailed'),
+        onUnauthorized,
+      });
+      setPendingEntry(null);
+      setConsentChecked(false);
+      // Refetch: the write only echoes `catalogEntryId`/`configVersion`, and the
+      // model-mapping/verified-models the endpoint card renders live on the
+      // GET payload's `catalog` array, not the mutation response.
+      await fetchStatus();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('partnerAiProvider.endpointUpdateFailed') });
+      // non-401 ActionError already toasted by runAction
+    } finally {
+      setSwitchingEndpoint(false);
+    }
+  }, [t, fetchStatus]);
+
+  const handleSelectDirect = () => {
+    if (!status || status.catalogEntryId === null || switchingEndpoint) return;
+    void submitEndpoint(null, false);
+  };
+
+  const handleSelectEntry = (entry: CatalogEntry) => {
+    if (!status || status.catalogEntryId === entry.entryId || switchingEndpoint) return;
+    setPendingEntry(entry);
+    setConsentChecked(false);
+  };
+
+  const closeEndpointDialog = () => {
+    if (switchingEndpoint) return;
+    setPendingEntry(null);
+    setConsentChecked(false);
+  };
+
+  const handleConfirmEntry = () => {
+    if (!pendingEntry) return;
+    if (pendingEntry.dataNote && !consentChecked) return;
+    void submitEndpoint(pendingEntry.entryId, !!pendingEntry.dataNote && consentChecked);
+  };
+
+  const toggleDataNote = (entryId: string) => {
+    setExpandedNotes(prev => {
+      const next = new Set(prev);
+      if (next.has(entryId)) next.delete(entryId); else next.add(entryId);
+      return next;
+    });
+  };
+
+  const selectedCatalogEntry = useMemo(() => {
+    if (!status || status.catalogEntryId === null) return null;
+    return status.catalog.find(entry => entry.entryId === status.catalogEntryId) ?? null;
+  }, [status]);
+  const isEndpointDelisted = !!status && status.catalogEntryId !== null && selectedCatalogEntry === null;
+  const isEndpointModelUnverified = !!status
+    && selectedCatalogEntry !== null
+    && status.defaultModel !== null
+    && !selectedCatalogEntry.models.includes(status.defaultModel);
 
   if (loading) {
     return (
@@ -229,6 +326,96 @@ export default function PartnerAiProviderTab() {
         </div>
       )}
 
+      {/* Endpoint card: only when the platform-vetted catalog has entries.
+          Selecting an endpoint requires a saved key — attempting it without
+          one fails loud via the API's own message, surfaced by runAction. */}
+      {status.catalog.length > 0 && (
+        <div className="space-y-3 rounded-md border p-4" data-testid="ai-provider-endpoint-card">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold">{t('partnerAiProvider.endpointCardTitle')}</h3>
+            <p className="text-xs text-muted-foreground">{t('partnerAiProvider.endpointCardSubtitle')}</p>
+          </div>
+
+          {isEndpointDelisted && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+              data-testid="ai-provider-endpoint-delisted-banner"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{t('partnerAiProvider.endpointDelistedBanner')}</span>
+            </div>
+          )}
+          {!isEndpointDelisted && isEndpointModelUnverified && status.defaultModel && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+              data-testid="ai-provider-endpoint-model-unverified-banner"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{t('partnerAiProvider.endpointModelUnverifiedBanner', { model: status.defaultModel })}</span>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="ai-provider-endpoint"
+                data-testid="ai-provider-endpoint-direct-radio"
+                checked={status.catalogEntryId === null}
+                onChange={handleSelectDirect}
+                disabled={switchingEndpoint}
+              />
+              {t('partnerAiProvider.directOptionLabel')}
+            </label>
+
+            {status.catalog.map(entry => (
+              <div key={entry.entryId} className="space-y-1 rounded-md border p-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="ai-provider-endpoint"
+                    data-testid={`ai-provider-endpoint-radio-${entry.entryId}`}
+                    checked={status.catalogEntryId === entry.entryId}
+                    onChange={() => handleSelectEntry(entry)}
+                    disabled={switchingEndpoint}
+                  />
+                  <span className="font-medium">{entry.name}</span>
+                </label>
+                <p className="ml-6 text-xs text-muted-foreground">
+                  {entry.models.length > 0
+                    ? t('partnerAiProvider.verifiedModelsLabel', { models: entry.models.join(', ') })
+                    : t('partnerAiProvider.noVerifiedModels')}
+                </p>
+                {entry.dataNote && (
+                  <div className="ml-6">
+                    <button
+                      type="button"
+                      data-testid={`ai-provider-endpoint-datanote-toggle-${entry.entryId}`}
+                      onClick={() => toggleDataNote(entry.entryId)}
+                      className="text-xs font-medium text-muted-foreground underline hover:text-foreground"
+                    >
+                      {expandedNotes.has(entry.entryId)
+                        ? t('partnerAiProvider.hideDataNote')
+                        : t('partnerAiProvider.viewDataNote')}
+                    </button>
+                    {expandedNotes.has(entry.entryId) && (
+                      <p
+                        data-testid={`ai-provider-endpoint-datanote-${entry.entryId}`}
+                        className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground"
+                      >
+                        {entry.dataNote}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Connect / replace form */}
       <div className="space-y-3 rounded-md border p-4">
         <h3 className="text-sm font-semibold">
@@ -307,6 +494,67 @@ export default function PartnerAiProviderTab() {
       <p className="text-xs text-muted-foreground" data-testid="ai-provider-workspace-note">
         {t('partnerAiProvider.workspaceDisclosure')}
       </p>
+
+      {/* Non-direct endpoint confirm dialog. Consent is only required when the
+          entry carries a data note — an entry with none has nothing to confirm
+          beyond the switch itself, so the checkbox does not render. */}
+      <Dialog
+        open={pendingEntry !== null}
+        onClose={closeEndpointDialog}
+        title={pendingEntry ? t('partnerAiProvider.confirmDialogTitle', { name: pendingEntry.name }) : ''}
+        maxWidth="md"
+        className="p-6"
+      >
+        {pendingEntry && (
+          <div className="space-y-4" data-testid="ai-provider-endpoint-confirm-dialog">
+            <p className="text-sm text-muted-foreground">
+              {pendingEntry.dataNote
+                ? t('partnerAiProvider.confirmDialogMessageWithNote', { name: pendingEntry.name })
+                : t('partnerAiProvider.confirmDialogMessageNoNote', { name: pendingEntry.name })}
+            </p>
+            {pendingEntry.dataNote && (
+              <blockquote
+                data-testid="ai-provider-endpoint-confirm-datanote"
+                className="whitespace-pre-wrap rounded-md border bg-muted/30 p-3 text-sm"
+              >
+                {pendingEntry.dataNote}
+              </blockquote>
+            )}
+            {pendingEntry.dataNote && (
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  data-testid="ai-provider-endpoint-consent-checkbox"
+                  checked={consentChecked}
+                  onChange={e => setConsentChecked(e.target.checked)}
+                  className="mt-0.5"
+                />
+                {t('partnerAiProvider.consentCheckboxLabel', { name: pendingEntry.name })}
+              </label>
+            )}
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                data-testid="ai-provider-endpoint-confirm-cancel"
+                onClick={closeEndpointDialog}
+                disabled={switchingEndpoint}
+                className="rounded-md border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                {t('common:actions.cancel')}
+              </button>
+              <button
+                type="button"
+                data-testid="ai-provider-endpoint-confirm-submit"
+                onClick={handleConfirmEntry}
+                disabled={switchingEndpoint || (!!pendingEntry.dataNote && !consentChecked)}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                {switchingEndpoint ? <Loader2 className="h-4 w-4 animate-spin" /> : t('common:actions.confirm')}
+              </button>
+            </div>
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }

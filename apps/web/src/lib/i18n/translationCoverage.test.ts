@@ -71,7 +71,9 @@ const namespaceDuplicateBaselines = {
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
-    'settings.json': 112,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in pt-BR technical UI.
+    'settings.json': 113,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -138,7 +140,9 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 60,
     'security.json': 114,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
-    'settings.json': 115,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in es-419 technical UI.
+    'settings.json': 116,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -401,7 +405,9 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 59,
     'security.json': 163,
-    'settings.json': 156,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in it-IT technical UI.
+    'settings.json': 157,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
