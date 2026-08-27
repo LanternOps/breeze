@@ -12,7 +12,7 @@ import { eq, and, sql, desc, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
-import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
+import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import { buildMonitorCommand } from '../routes/monitors';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
 import { resolveAlert } from '../services/alertService';
@@ -137,7 +137,7 @@ function createMonitorWorker(): Worker<MonitorJobData> {
   );
 }
 
-async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
+export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
   dispatched: boolean;
   agentId: string | null;
 }> {
@@ -159,20 +159,20 @@ async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
 
   const agentId = await selectExecutionAgentForMonitor(monitor);
 
-  if (!agentId || !isAgentConnected(agentId)) {
+  if (!agentId || !(await isAgentConnectedAnywhere(agentId))) {
     console.warn(`[MonitorWorker] No online agent for org ${data.orgId}`);
     return { dispatched: false, agentId: null };
   }
 
   const command = buildMonitorCommand(monitor);
-  const sent = sendCommandToAgent(agentId, command);
+  const outcome = await dispatchCommandToAgent(agentId, command, { priority: 'probe' });
 
-  if (!sent) {
-    console.error(`[MonitorWorker] Failed to send check command to agent ${agentId}`);
+  if (outcome.status !== 'sent') {
+    console.error(`[MonitorWorker] Check dispatch ${outcome.status} for agent ${agentId}`);
     return { dispatched: false, agentId };
   }
 
-  console.log(`[MonitorWorker] Check dispatched to agent ${agentId} for monitor ${data.monitorId}`);
+  console.log(`[MonitorWorker] Check dispatched to agent ${agentId} for monitor ${data.monitorId} (${outcome.via})`);
   return { dispatched: true, agentId };
 }
 
