@@ -3151,6 +3151,33 @@
         "archive": "No se pudo archivar la organización",
         "mfaRequired": "Archivar organizaciones requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo."
       }
+    },
+    "archived": {
+      "sectionTitle": "Archivadas",
+      "loading": "Cargando organizaciones archivadas...",
+      "empty": "No hay organizaciones archivadas.",
+      "badge": "Archivada",
+      "keptIndefinitely": "Se conserva indefinidamente",
+      "purgeToday": "Se elimina hoy",
+      "purgeCountdown_one": "Se elimina en {{count}} día",
+      "purgeCountdown_other": "Se elimina en {{count}} días",
+      "truncatedNote": "Mostrando las primeras {{count}} organizaciones archivadas. Busque para acotar la lista.",
+      "readOnlyNotice": "Esta organización está archivada y es de solo lectura. Restáurela para reanudar el acceso normal.",
+      "errors": {
+        "fetch": "No se pudieron cargar las organizaciones archivadas"
+      }
+    },
+    "restore": {
+      "action": "Restaurar",
+      "restoring": "Restaurando...",
+      "success": "{{name}} restaurada — estado: {{status}}.",
+      "recreateRequiredNote": "Antes de que esté completamente utilizable de nuevo: {{items}}",
+      "suspendedNote": "Estaba suspendida antes de archivarse, así que se restauró como suspendida — resuelva eso antes de que la organización reanude el acceso normal.",
+      "errors": {
+        "restore": "No se pudo restaurar la organización",
+        "mfaRequired": "Restaurar organizaciones requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo.",
+        "purging": "Esta organización ya se está eliminando permanentemente y no se puede restaurar."
+      }
     }
   },
   "siteDetailPage": {

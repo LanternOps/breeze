@@ -3204,6 +3204,33 @@
         "archive": "Kuruluş arşivlenemedi",
         "mfaRequired": "Kuruluşları arşivlemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
       }
+    },
+    "archived": {
+      "sectionTitle": "Arşivlenenler",
+      "loading": "Arşivlenen kuruluşlar yükleniyor...",
+      "empty": "Arşivlenmiş kuruluş yok.",
+      "badge": "Arşivlendi",
+      "keptIndefinitely": "Süresiz olarak saklanıyor",
+      "purgeToday": "Bugün kalıcı olarak silinecek",
+      "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
+      "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek",
+      "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
+      "readOnlyNotice": "Bu kuruluş arşivlendi ve salt okunur durumda. Normal erişimi sürdürmek için geri yükleyin.",
+      "errors": {
+        "fetch": "Arşivlenen kuruluşlar yüklenemedi"
+      }
+    },
+    "restore": {
+      "action": "Geri yükle",
+      "restoring": "Geri yükleniyor...",
+      "success": "{{name}} geri yüklendi — durum: {{status}}.",
+      "recreateRequiredNote": "Tekrar tam olarak kullanılabilir olmadan önce: {{items}}",
+      "suspendedNote": "Arşivlenmeden önce askıya alınmıştı, bu nedenle askıya alınmış olarak geri yüklendi — normal erişimi sürdürmeden önce bunu çözün.",
+      "errors": {
+        "restore": "Kuruluş geri yüklenemedi",
+        "mfaRequired": "Kuruluşları geri yüklemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin.",
+        "purging": "Bu kuruluş zaten kalıcı olarak siliniyor ve artık geri yüklenemez."
+      }
     }
   },
   "siteDetailPage": {

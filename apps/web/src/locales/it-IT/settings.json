@@ -3199,6 +3199,33 @@
         "archive": "Impossibile archiviare l'organizzazione",
         "mfaRequired": "L'archiviazione delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova."
       }
+    },
+    "archived": {
+      "sectionTitle": "Archiviate",
+      "loading": "Caricamento delle organizzazioni archiviate...",
+      "empty": "Nessuna organizzazione archiviata.",
+      "badge": "Archiviata",
+      "keptIndefinitely": "Conservata indefinitamente",
+      "purgeToday": "Eliminata definitivamente oggi",
+      "purgeCountdown_one": "Eliminata definitivamente tra {{count}} giorno",
+      "purgeCountdown_other": "Eliminata definitivamente tra {{count}} giorni",
+      "truncatedNote": "Vengono mostrate le prime {{count}} organizzazioni archiviate. Cerca per restringere l'elenco.",
+      "readOnlyNotice": "Questa organizzazione è archiviata ed è in sola lettura. Ripristinala per riprendere l'accesso normale.",
+      "errors": {
+        "fetch": "Impossibile caricare le organizzazioni archiviate"
+      }
+    },
+    "restore": {
+      "action": "Ripristina",
+      "restoring": "Ripristino in corso...",
+      "success": "{{name}} ripristinata — stato: {{status}}.",
+      "recreateRequiredNote": "Prima che sia di nuovo pienamente utilizzabile: {{items}}",
+      "suspendedNote": "Era sospesa prima dell'archiviazione, quindi è stata ripristinata come sospesa — risolvi questo aspetto prima che riprenda l'accesso normale.",
+      "errors": {
+        "restore": "Impossibile ripristinare l'organizzazione",
+        "mfaRequired": "Il ripristino delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova.",
+        "purging": "Questa organizzazione è già in fase di eliminazione definitiva e non può più essere ripristinata."
+      }
     }
   },
   "siteDetailPage": {

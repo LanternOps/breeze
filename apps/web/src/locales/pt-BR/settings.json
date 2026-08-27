@@ -3204,6 +3204,33 @@
         "archive": "Falha ao arquivar a organização",
         "mfaRequired": "Arquivar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
       }
+    },
+    "archived": {
+      "sectionTitle": "Arquivadas",
+      "loading": "Carregando organizações arquivadas...",
+      "empty": "Nenhuma organização arquivada.",
+      "badge": "Arquivada",
+      "keptIndefinitely": "Mantida indefinidamente",
+      "purgeToday": "Excluída definitivamente hoje",
+      "purgeCountdown_one": "Excluída definitivamente em {{count}} dia",
+      "purgeCountdown_other": "Excluída definitivamente em {{count}} dias",
+      "truncatedNote": "Mostrando as primeiras {{count}} organizações arquivadas. Pesquise para restringir a lista.",
+      "readOnlyNotice": "Esta organização está arquivada e é somente leitura. Restaure-a para retomar o acesso normal.",
+      "errors": {
+        "fetch": "Falha ao carregar as organizações arquivadas"
+      }
+    },
+    "restore": {
+      "action": "Restaurar",
+      "restoring": "Restaurando...",
+      "success": "{{name}} restaurada — status: {{status}}.",
+      "recreateRequiredNote": "Antes que ela esteja totalmente utilizável de novo: {{items}}",
+      "suspendedNote": "Ela estava suspensa antes de ser arquivada, então foi restaurada como suspensa — resolva isso antes que ela retome o acesso normal.",
+      "errors": {
+        "restore": "Falha ao restaurar a organização",
+        "mfaRequired": "Restaurar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
+        "purging": "Esta organização já está sendo excluída definitivamente e não pode mais ser restaurada."
+      }
     }
   },
   "siteDetailPage": {

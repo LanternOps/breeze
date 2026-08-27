@@ -3199,6 +3199,33 @@
         "archive": "Échec de l'archivage de l'organisation",
         "mfaRequired": "L'archivage des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
       }
+    },
+    "archived": {
+      "sectionTitle": "Archivées",
+      "loading": "Chargement des organisations archivées...",
+      "empty": "Aucune organisation archivée.",
+      "badge": "Archivée",
+      "keptIndefinitely": "Conservée indéfiniment",
+      "purgeToday": "Suppression définitive aujourd'hui",
+      "purgeCountdown_one": "Suppression définitive dans {{count}} jour",
+      "purgeCountdown_other": "Suppression définitive dans {{count}} jours",
+      "truncatedNote": "Affichage des {{count}} premières organisations archivées. Effectuez une recherche pour affiner la liste.",
+      "readOnlyNotice": "Cette organisation est archivée et en lecture seule. Restaurez-la pour reprendre un accès normal.",
+      "errors": {
+        "fetch": "Échec du chargement des organisations archivées"
+      }
+    },
+    "restore": {
+      "action": "Restaurer",
+      "restoring": "Restauration...",
+      "success": "{{name}} restaurée — statut : {{status}}.",
+      "recreateRequiredNote": "Avant qu'elle soit à nouveau pleinement utilisable : {{items}}",
+      "suspendedNote": "Elle était suspendue avant son archivage ; elle a donc été restaurée à l'état suspendu — réglez ce point avant qu'elle ne reprenne un accès normal.",
+      "errors": {
+        "restore": "Échec de la restauration de l'organisation",
+        "mfaRequired": "La restauration des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
+        "purging": "Cette organisation est déjà en cours de suppression définitive et ne peut plus être restaurée."
+      }
     }
   },
   "siteDetailPage": {

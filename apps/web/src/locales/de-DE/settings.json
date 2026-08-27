@@ -3151,6 +3151,33 @@
         "archive": "Organisation konnte nicht archiviert werden",
         "mfaRequired": "Das Archivieren von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
       }
+    },
+    "archived": {
+      "sectionTitle": "Archiviert",
+      "loading": "Archivierte Organisationen werden geladen...",
+      "empty": "Keine archivierten Organisationen.",
+      "badge": "Archiviert",
+      "keptIndefinitely": "Wird unbegrenzt aufbewahrt",
+      "purgeToday": "Wird heute endgültig gelöscht",
+      "purgeCountdown_one": "Wird in {{count}} Tag endgültig gelöscht",
+      "purgeCountdown_other": "Wird in {{count}} Tagen endgültig gelöscht",
+      "truncatedNote": "Zeigt die ersten {{count}} archivierten Organisationen. Suchen Sie, um die Liste einzugrenzen.",
+      "readOnlyNotice": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um den normalen Zugriff fortzusetzen.",
+      "errors": {
+        "fetch": "Archivierte Organisationen konnten nicht geladen werden"
+      }
+    },
+    "restore": {
+      "action": "Wiederherstellen",
+      "restoring": "Wird wiederhergestellt...",
+      "success": "{{name}} wiederhergestellt — Status: {{status}}.",
+      "recreateRequiredNote": "Bevor sie wieder vollständig nutzbar ist: {{items}}",
+      "suspendedNote": "Sie war vor der Archivierung gesperrt, daher wurde sie als gesperrt wiederhergestellt — beheben Sie dies, bevor sie den normalen Zugriff wieder aufnimmt.",
+      "errors": {
+        "restore": "Die Organisation konnte nicht wiederhergestellt werden",
+        "mfaRequired": "Das Wiederherstellen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut.",
+        "purging": "Diese Organisation wird bereits endgültig gelöscht und kann nicht mehr wiederhergestellt werden."
+      }
     }
   },
   "siteDetailPage": {

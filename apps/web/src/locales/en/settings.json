@@ -3204,6 +3204,33 @@
         "archive": "Failed to archive the organization",
         "mfaRequired": "Archiving organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
+    },
+    "archived": {
+      "sectionTitle": "Archived",
+      "loading": "Loading archived organizations...",
+      "empty": "No archived organizations.",
+      "badge": "Archived",
+      "keptIndefinitely": "Kept indefinitely",
+      "purgeToday": "Purges today",
+      "purgeCountdown_one": "Purges in {{count}} day",
+      "purgeCountdown_other": "Purges in {{count}} days",
+      "truncatedNote": "Showing the first {{count}} archived organizations. Search to narrow the list.",
+      "readOnlyNotice": "This organization is archived and read-only. Restore it to resume normal access.",
+      "errors": {
+        "fetch": "Failed to load archived organizations"
+      }
+    },
+    "restore": {
+      "action": "Restore",
+      "restoring": "Restoring...",
+      "success": "{{name}} restored — status: {{status}}.",
+      "recreateRequiredNote": "Before it's fully usable again: {{items}}",
+      "suspendedNote": "It was suspended before being archived, so it has been restored as suspended — resolve that before it resumes normal access.",
+      "errors": {
+        "restore": "Failed to restore the organization",
+        "mfaRequired": "Restoring organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+        "purging": "This organization is already being permanently deleted and can no longer be restored."
+      }
     }
   },
   "siteDetailPage": {

@@ -13,7 +13,7 @@ import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useJwtClaims } from '../../lib/authScope';
 import { extractApiError } from '@/lib/apiError';
-import { runAction, ActionError } from '@/lib/runAction';
+import { runAction, ActionError, handleActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 
@@ -68,6 +68,37 @@ export const statusColors: Record<Organization['status'], string> = {
   purging: 'border-red-400/30 bg-red-400/10 text-red-600 dark:text-red-300',
 };
 
+/**
+ * Days remaining until an archived org's scheduled purge, rounded UP so a
+ * countdown reading "1 day" never flips to "0 days" while any part of that day
+ * remains — the operator's read of "1 day left" must stay true until it
+ * actually is zero. `null` covers both `purgeAt: null` ("kept indefinitely",
+ * `retentionDays` was Never) and an unparseable timestamp, so callers can
+ * treat the two identically instead of rendering `NaN`.
+ *
+ * Exported for test. `now` defaults to `new Date()` — real callers never pass
+ * it; tests pin it (or the global clock via `vi.setSystemTime`) for a
+ * deterministic countdown.
+ */
+export function purgeCountdownDays(purgeAt: string | null | undefined, now: Date = new Date()): number | null {
+  if (!purgeAt) return null;
+  const target = new Date(purgeAt);
+  if (Number.isNaN(target.getTime())) return null;
+  return Math.ceil((target.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+/**
+ * The archived-org restore route (`apps/api/src/routes/orgArchive.ts`) answers
+ * a purging target with a bare `{ error: '<this text>' }, 410` — no machine
+ * `code` field the way its MFA rejection carries `code: 'MFA_REQUIRED'`. That
+ * makes this literal string the only handle `runAction`'s `friendly` lookup
+ * has to give the purging case its own localized copy instead of the raw
+ * backend sentence; a copy edit to that route's message must update this
+ * constant too, or the match silently stops firing (degrading gracefully back
+ * to the raw — still correct, just unlocalized — backend text).
+ */
+export const RESTORE_PURGING_ERROR_TEXT = 'Organization is already purging and can no longer be restored';
+
 // Walking every page of GET /orgs/organizations moved to lib/ (#3446 follow-up)
 // so the org-switcher store — a second reader with the same first-50 truncation
 // — can share it without importing this page component. Re-exported here to
@@ -115,6 +146,26 @@ export default function OrganizationsPage() {
   const [reorderPending, setReorderPending] = useState(false);
   const [dragOverOrgId, setDragOverOrgId] = useState<string | null>(null);
 
+  // Archived-organizations section state. Collapsed by default and fetched
+  // ONLY on expand (`includeArchived=true`) — deliberately NOT threaded through
+  // `fetchOrganizations`/the org store's own page walk (orgStore.ts), which
+  // stays on the plain unarchived query every other reader of it relies on.
+  // Archived orgs live in their own array rather than merged into
+  // `organizations`, so the active list, its search, drag-reorder, and the
+  // hash-based deep-link effect never have to know archived rows exist.
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [archivedOrgs, setArchivedOrgs] = useState<Organization[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedError, setArchivedError] = useState<string>();
+  // Mirrors the list endpoint's own `archivedTruncated` (archived rows are
+  // capped at the page limit rather than paginated — see orgs.ts) so the
+  // section can say "there are more" instead of silently showing a short list.
+  const [archivedTruncated, setArchivedTruncated] = useState(false);
+  // Which archived org id is mid-restore, so only THAT row's button shows a
+  // busy state — `submitting`/`siteSubmitting` are page/site-modal-scoped and
+  // would incorrectly disable every other control if reused here.
+  const [restoringOrgId, setRestoringOrgId] = useState<string | null>(null);
+
   // Sites state
   const [sites, setSites] = useState<Site[]>([]);
   const [sitesLoading, setSitesLoading] = useState(false);
@@ -137,6 +188,18 @@ export default function OrganizationsPage() {
     if (!q) return organizations;
     return organizations.filter(org => org.name.toLowerCase().includes(q));
   }, [organizations, searchQuery]);
+
+  /** Renders an archived org's purge countdown, shared by the row and the
+   *  read-only detail pane. `purgeAt: null` (retention "Never") and an
+   *  unparseable timestamp both collapse to "kept indefinitely" via
+   *  `purgeCountdownDays` — see its own doc comment for why those two cases
+   *  are deliberately indistinguishable here. */
+  const renderPurgeCountdown = (purgeAt: string | null | undefined): string => {
+    const days = purgeCountdownDays(purgeAt);
+    if (days === null) return t('organizationsPage.archived.keptIndefinitely');
+    if (days <= 0) return t('organizationsPage.archived.purgeToday');
+    return t('organizationsPage.archived.purgeCountdown', { count: days });
+  };
 
   /**
    * `silent` skips the page-level loading flag. `loading` is an EARLY RETURN
@@ -177,6 +240,53 @@ export default function OrganizationsPage() {
       setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
     } finally {
       if (!silent) setLoading(false);
+    }
+  }, [t]);
+
+  /**
+   * Fetches the Archived section's contents. Reuses `fetchAllOrganizations`
+   * (the same page-walking helper `fetchOrganizations` above uses) rather than
+   * a bespoke single-page GET: archived orgs ride along on only the LAST live
+   * page (`isFinalOrganizationsPage`, orgs.ts), so a partner with more than one
+   * page of live orgs would silently see an empty Archived section on a
+   * single-page fetch. Walking every page and filtering to `archived === true`
+   * costs nothing extra for the common case (one page) and stays correct for
+   * the uncommon one, at the cost of one throwaway array per open — cheap next
+   * to a GDPR-relevant tenant silently going missing from its own purge queue.
+   *
+   * Deliberately NOT threaded through the org store's own page walk
+   * (`orgStore.ts`) or `fetchOrganizations` above: both stay on the plain
+   * unarchived query every other caller of them expects, and this is the one
+   * reader that opts in to `includeArchived=true`.
+   */
+  const fetchArchivedOrganizations = useCallback(async () => {
+    setArchivedLoading(true);
+    setArchivedError(undefined);
+    let truncated = false;
+    try {
+      const all = await fetchAllOrganizations<Organization>(async (page, limit) => {
+        const response = await fetchWithAuth(`/orgs/organizations?page=${page}&limit=${limit}&includeArchived=true`);
+        if (!response.ok) {
+          if (response.status === 401) {
+            handleSessionExpired();
+            return null;
+          }
+          throw new Error(t('organizationsPage.archived.errors.fetch'));
+        }
+        const body = await response.json();
+        // Present only on the page that actually carries the archived block
+        // (orgs.ts) — a page that never looked must not overwrite a `true`
+        // already captured from an earlier page in this same walk.
+        if (typeof body?.archivedTruncated === 'boolean') truncated = body.archivedTruncated;
+        return body;
+      });
+      if (all === null) return;
+      setArchivedOrgs(all.filter((org) => org.archived === true));
+      setArchivedTruncated(truncated);
+    } catch (err) {
+      setArchivedError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
+    } finally {
+      setArchivedLoading(false);
     }
   }, [t]);
 
@@ -232,6 +342,16 @@ export default function OrganizationsPage() {
     fetchOrganizations();
   }, [fetchOrganizations]);
 
+  // Fetch-on-expand: the Archived section starts collapsed and empty, and only
+  // issues the `includeArchived=true` request the moment it's opened — not on
+  // page mount. Re-fires on every expand (no "already fetched" cache) so a
+  // reopen after a restore/archive elsewhere always shows current data; that
+  // costs one extra request per open, which is cheap next to a stale purge
+  // countdown.
+  useEffect(() => {
+    if (archivedExpanded) fetchArchivedOrganizations();
+  }, [archivedExpanded, fetchArchivedOrganizations]);
+
   // Load the partner's default timezone once so new sites pre-select it.
   // Best-effort: on any failure we silently fall back to the form's UTC default.
   useEffect(() => {
@@ -267,6 +387,15 @@ export default function OrganizationsPage() {
 
   useEffect(() => {
     if (selectedOrg) {
+      // An archived org is outside the request's own accessible-org set by
+      // design (RLS excludes it from `accessibleOrgIds`), so its sites read
+      // would come back an empty array regardless of the real count — reading
+      // that as "confirmed zero sites" would be a lie. The read-only detail
+      // pane has no sites section anyway, so skip the request outright.
+      if (selectedOrg.status === 'archived') {
+        setSites([]);
+        return;
+      }
       // Skip the fetch if org creation already fetched sites for this org
       // synchronously — avoids a redundant concurrent GET per create.
       if (skipSiteFetchForOrgId.current === selectedOrg.id) {
@@ -355,6 +484,67 @@ export default function OrganizationsPage() {
     setSiteModalMode('closed');
     setSelectedSite(null);
     window.location.hash = org.id;
+  };
+
+  const handleToggleArchived = () => {
+    setArchivedExpanded(prev => !prev);
+  };
+
+  /** Maps the restore route's error tokens to localized copy. MFA is a real
+   *  machine `code`; the purging refusal is matched on its literal backend
+   *  text (see `RESTORE_PURGING_ERROR_TEXT`'s comment for why). Anything else
+   *  (e.g. a plain 409 for a status that can't be restored) falls through to
+   *  the raw backend message via `runAction`'s default handling. */
+  const restoreFriendly = (code: string) => {
+    if (code === 'MFA_REQUIRED') return t('organizationsPage.restore.errors.mfaRequired');
+    if (code === RESTORE_PURGING_ERROR_TEXT) return t('organizationsPage.restore.errors.purging');
+    return undefined;
+  };
+
+  /**
+   * Restores an archived org. LIST-STATE UPDATE ONLY, mirroring the
+   * archive/merge complete handlers above: drop it from `archivedOrgs`, add it
+   * back to the active `organizations` list under the status the API reports
+   * (its PRE-archive status — restoring a suspended org lands it back
+   * suspended, not active), and re-select it so the detail pane switches out
+   * of read-only immediately. No `refreshOrgs()` call: that would re-fetch the
+   * plain (unarchived) list and could race this optimistic update, and
+   * everything the active list needs (id/name/status/deviceCount/createdAt)
+   * already rode along on the archived row itself.
+   */
+  const handleRestore = async (org: Organization) => {
+    setRestoringOrgId(org.id);
+    try {
+      const data = await runAction<{ status: string; recreateRequired: string[] }>({
+        request: () => fetchWithAuth(`/orgs/organizations/${org.id}/restore`, { method: 'POST' }),
+        errorFallback: t('organizationsPage.restore.errors.restore'),
+        friendly: restoreFriendly,
+        onUnauthorized: handleSessionExpired,
+      });
+
+      const restoredStatus = data.status as Organization['status'];
+      const restoredOrg: Organization = { ...org, status: restoredStatus, archived: undefined, purgeAt: undefined };
+
+      setArchivedOrgs(prev => prev.filter(o => o.id !== org.id));
+      setOrganizations(prev => [...prev, restoredOrg]);
+      setSelectedOrg(restoredOrg);
+
+      const parts = [t('organizationsPage.restore.success', { name: org.name, status: t(/* i18n-dynamic */ statusLabelKeys[restoredStatus]) })];
+      if (data.recreateRequired.length > 0) {
+        parts.push(t('organizationsPage.restore.recreateRequiredNote', { items: data.recreateRequired.join('; ') }));
+      }
+      if (restoredStatus === 'suspended') {
+        parts.push(t('organizationsPage.restore.suspendedNote'));
+      }
+      showToast({ message: parts.join(' '), type: 'success' });
+    } catch (err) {
+      // runAction already toasted (the friendly copy above for MFA/purging, or
+      // the raw backend message for anything else, e.g. a 409). onUnauthorized
+      // handles a 401 redirect. Only a non-ActionError escape needs a fallback.
+      handleActionError(err, t('organizationsPage.restore.errors.restore'));
+    } finally {
+      setRestoringOrgId(null);
+    }
   };
 
   const persistOrganizationOrder = useCallback(async (orderedIds: string[]) => {
@@ -869,78 +1059,195 @@ export default function OrganizationsPage() {
               </ul>
             )}
           </div>
+
+          {/* Archived organizations — collapsed by default, fetched only on expand */}
+          <div className="border-t">
+            <button
+              type="button"
+              data-testid="org-archived-toggle"
+              onClick={handleToggleArchived}
+              aria-expanded={archivedExpanded}
+              className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/50"
+            >
+              <span>{t('organizationsPage.archived.sectionTitle')}</span>
+              <svg
+                xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                className={`transition-transform ${archivedExpanded ? 'rotate-180' : ''}`}
+                aria-hidden="true"
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+
+            {archivedExpanded && (
+              <div data-testid="org-archived-section" className="max-h-[calc(100vh-320px)] overflow-y-auto">
+                {archivedLoading ? (
+                  <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    {t('organizationsPage.archived.loading')}
+                  </div>
+                ) : archivedError ? (
+                  <div className="px-4 py-4 text-sm text-destructive">
+                    {archivedError}
+                  </div>
+                ) : archivedOrgs.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    {t('organizationsPage.archived.empty')}
+                  </div>
+                ) : (
+                  <>
+                    {archivedTruncated && (
+                      <p data-testid="org-archived-truncated-note" className="px-4 py-2 text-xs text-muted-foreground">
+                        {t('organizationsPage.archived.truncatedNote', { count: archivedOrgs.length })}
+                      </p>
+                    )}
+                    <ul className="divide-y">
+                      {archivedOrgs.map(org => (
+                        <li
+                          key={org.id}
+                          data-testid="org-archived-row"
+                          onClick={() => handleSelectOrg(org)}
+                          className={`cursor-pointer px-4 py-3 transition hover:bg-muted/50 ${
+                            selectedOrg?.id === org.id ? 'bg-muted/60 border-l-2 border-l-primary' : 'border-l-2 border-l-transparent'
+                          }`}
+                        >
+                          <p className="truncate text-sm font-medium">{org.name}</p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span
+                              data-testid="org-archived-badge"
+                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors.archived}`}
+                            >
+                              {t('organizationsPage.archived.badge')}
+                            </span>
+                            <span data-testid="org-archived-purge" className="text-xs text-muted-foreground">
+                              {renderPurgeCountdown(org.purgeAt)}
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right panel - Detail view */}
-        <div className="rounded-lg border bg-card shadow-xs">
+        <div className="rounded-lg border bg-card shadow-xs" data-testid="org-detail-panel">
           {selectedOrg ? (
-            <>
-              {/* Org header */}
-              <div className="border-b px-6 py-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
-                    <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors[selectedOrg.status]}`}
-                      >
-                        {t(/* i18n-dynamic */ statusLabelKeys[selectedOrg.status])}
-                      </span>
-                      {shouldShowDeviceCount(selectedOrg.deviceCount) && (
-                        <span>
-                          {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}
+            selectedOrg.status === 'archived' ? (
+              /* Archived org detail — READ-ONLY. No edit/merge/archive buttons: an
+               * archived org is outside the request's own accessible-org set by
+               * design (RLS), so none of those mutations could succeed against it
+               * anyway, and offering them would just produce a confusing 404/409
+               * after the fact. Restore is the only action, and the only way back
+               * to the normal (mutable) detail pane. */
+              <>
+                <div className="border-b px-6 py-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
+                      <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                        <span
+                          data-testid="org-archived-detail-badge"
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors.archived}`}
+                        >
+                          {t('organizationsPage.archived.badge')}
                         </span>
+                        <span data-testid="org-archived-detail-purge">
+                          {renderPurgeCountdown(selectedOrg.purgeAt)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        data-testid="org-restore"
+                        onClick={() => void handleRestore(selectedOrg)}
+                        disabled={restoringOrgId === selectedOrg.id}
+                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {restoringOrgId === selectedOrg.id
+                          ? t('organizationsPage.restore.restoring')
+                          : t('organizationsPage.restore.action')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-6 text-sm text-muted-foreground" data-testid="org-archived-readonly-notice">
+                  {t('organizationsPage.archived.readOnlyNotice')}
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Org header */}
+                <div className="border-b px-6 py-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
+                      <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors[selectedOrg.status]}`}
+                        >
+                          {t(/* i18n-dynamic */ statusLabelKeys[selectedOrg.status])}
+                        </span>
+                        {shouldShowDeviceCount(selectedOrg.deviceCount) && (
+                          <span>
+                            {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleEdit(selectedOrg)}
+                        className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                      >
+                        {t('common:actions.edit')}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="org-archive-open"
+                        onClick={() => handleArchive(selectedOrg)}
+                        className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+                      >
+                        {t('organizationsPage.actions.archiveOrganization')}
+                      </button>
+                      {canMergeOrgs && (
+                        <button
+                          type="button"
+                          data-testid="org-merge-open"
+                          onClick={() => handleMerge(selectedOrg)}
+                          className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+                        >
+                          {t('organizationsPage.merge.openButton')}
+                        </button>
                       )}
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleEdit(selectedOrg)}
-                      className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
-                    >
-                      {t('common:actions.edit')}
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="org-archive-open"
-                      onClick={() => handleArchive(selectedOrg)}
-                      className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
-                    >
-                      {t('organizationsPage.actions.archiveOrganization')}
-                    </button>
-                    {canMergeOrgs && (
-                      <button
-                        type="button"
-                        data-testid="org-merge-open"
-                        onClick={() => handleMerge(selectedOrg)}
-                        className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        {t('organizationsPage.merge.openButton')}
-                      </button>
-                    )}
-                  </div>
                 </div>
-              </div>
 
-              {/* Sites section */}
-              <div className="p-6">
-                {sitesLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-                    <span className="ml-3 text-sm text-muted-foreground">{t('organizationsPage.sites.loading')}</span>
-                  </div>
-                ) : (
-                  <SiteList
-                    sites={sites}
-                    onAddSite={handleAddSite}
-                    onEdit={handleEditSite}
-                    onDelete={handleDeleteSite}
-                    onSiteClick={(site) => void navigateTo(`/settings/sites/${site.id}`)}
-                  />
-                )}
-              </div>
-            </>
+                {/* Sites section */}
+                <div className="p-6">
+                  {sitesLoading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                      <span className="ml-3 text-sm text-muted-foreground">{t('organizationsPage.sites.loading')}</span>
+                    </div>
+                  ) : (
+                    <SiteList
+                      sites={sites}
+                      onAddSite={handleAddSite}
+                      onEdit={handleEditSite}
+                      onDelete={handleDeleteSite}
+                      onSiteClick={(site) => void navigateTo(`/settings/sites/${site.id}`)}
+                    />
+                  )}
+                </div>
+              </>
+            )
           ) : (
             /* Empty state */
             <div className="flex flex-col items-center justify-center py-20 text-center">
