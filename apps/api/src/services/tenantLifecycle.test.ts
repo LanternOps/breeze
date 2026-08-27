@@ -237,10 +237,7 @@ describe('tenantLifecycle — agent fleet severance', () => {
       inArray: ['devices.orgId', ['org-1']],
     });
     expect(andClauses(suspend!.where)).toContainEqual({
-      or: [
-        { isNull: 'devices.agentTokenSuspendedAt' },
-        { eq: ['devices.agentTokenSuspendedReason', 'tenant_suspended'] },
-      ],
+      isNull: 'devices.agentTokenSuspendedAt',
     });
 
     expect(lift!.values).toEqual({
@@ -260,12 +257,19 @@ describe('tenantLifecycle — agent fleet severance', () => {
     expect(lifted.agentTokensRestored).toBe(1);
   });
 
-  it('archive suspension converts tenant_suspended devices but never admits security reasons', async () => {
+  // Review fix I-3: archive must not take OWNERSHIP of a suspension it did not
+  // create. It used to re-tag `tenant_suspended` rows to `org_archived`, and
+  // `liftArchiveSuspension` then cleared them on restore — so archive→restore
+  // was a two-call fleet un-suspension for an org suspended for non-payment or
+  // abuse, with the status column overwritten too. Now it only claims devices
+  // that nothing else has suspended.
+  it('archive suspension claims ONLY unsuspended devices — no reason tag is re-tagged', async () => {
     await suspendOrganizationTenantAccessReversibly('org-1');
 
     const suspend = updateLog.find((u) => u.table === devices)!;
     const where = JSON.stringify(suspend.where);
-    expect(where).toContain('tenant_suspended');
+    expect(where).toContain('agentTokenSuspendedAt');
+    expect(where).not.toContain('tenant_suspended');
     expect(where).not.toContain('cross_tenant_probe');
     expect(where).not.toContain('cross-tenant-probe');
   });

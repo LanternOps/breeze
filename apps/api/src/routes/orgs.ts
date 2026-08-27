@@ -1863,6 +1863,50 @@ async function canApplySuspendedOrgLifecycleTransition(
   );
 }
 
+/**
+ * Statuses whose ONLY exit is the dedicated lifecycle endpoint. Nothing guarded
+ * the SOURCE side of a status write before this: the update schema excludes
+ * archived/purging/merging as a TARGET, but for system scope `conditions` is
+ * just `id = ? AND deleted_at IS NULL`, and an archived org has
+ * `deleted_at IS NULL`.
+ *
+ * So `PATCH /organizations/:id {status:'active'}` succeeded on an archived org
+ * and took the reactivation branch — which calls `restoreOrganizationTenantAccess`,
+ * and that lifts only `agentTokenSuspendedReason = 'tenant_suspended'`. Wave 4
+ * tags the archived fleet `org_archived`, which only `liftArchiveSuspension`
+ * clears. Result: the org is active, RLS-visible and billable, with every
+ * device permanently 401ing for no operator-visible reason and stale
+ * `archived_at`/`purge_at`/`offboarding_target` still stamped on a live row.
+ * For `purging` it is worse — un-fencing a tenant whose erasure cascade is
+ * already deleting tables, and hiding it from the recovery backstop.
+ */
+const LIFECYCLE_FROZEN_ORG_STATUSES: Record<string, string> = {
+  archived:
+    'Organization is archived — restore it with POST /orgs/organizations/:id/restore; its status cannot be changed directly.',
+  purging:
+    'Organization is purging and can no longer be restored; its status cannot be changed.',
+  merging:
+    'Organization is being merged — use the organization merge endpoints; its status cannot be changed directly.',
+};
+
+/**
+ * The org's CURRENT status, read under a system context because a frozen org is
+ * outside every request's accessible set. Only called when a status write was
+ * actually requested, so ordinary org edits pay nothing.
+ */
+async function readOrgLifecycleStatus(orgId: string): Promise<string | null> {
+  const [org] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ status: organizations.status })
+        .from(organizations)
+        .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+        .limit(1)
+    )
+  );
+  return org?.status ?? null;
+}
+
 // #2879 — a membership-less platform admin resolves no role row in
 // getUserPermissions (permissions derive only from partner/org memberships),
 // so requirePermission 403s ("No permissions found") and system scope cannot
@@ -1892,6 +1936,20 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     suspendedLifecycleOverride = await canApplySuspendedOrgLifecycleTransition(auth, id, data);
     if (!suspendedLifecycleOverride) {
       return c.json({ error: 'Organization not found' }, 404);
+    }
+  }
+
+  // Wave 4 introduces the frozen statuses, so it owns the guard on the way OUT.
+  // Deliberately AFTER the partner-scope 404 above: a partner caller can only
+  // reach here for an org it may already see, so refusing with a 409 that names
+  // the status can never become a cross-tenant existence oracle. In practice
+  // this bites system/platform-admin scope, which is exactly the caller that
+  // would "unarchive" a customer by flipping status in an admin surface.
+  if (data.status !== undefined) {
+    const currentStatus = await readOrgLifecycleStatus(id);
+    const frozen = currentStatus ? LIFECYCLE_FROZEN_ORG_STATUSES[currentStatus] : undefined;
+    if (frozen) {
+      return c.json({ error: frozen, code: 'ORG_LIFECYCLE_FROZEN', currentStatus }, 409);
     }
   }
 

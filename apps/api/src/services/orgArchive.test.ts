@@ -6,6 +6,10 @@ const state = vi.hoisted(() => ({
   selectRows: [] as unknown[][],
   updateRows: [] as unknown[][],
   updates: [] as Array<{ values: Record<string, unknown>; where: unknown }>,
+  // Restore now ships raw CASes through db.execute (it needs a CASE-validated
+  // enum cast and RETURNING status), so those are captured separately.
+  executeRows: [] as unknown[][],
+  executed: [] as unknown[],
 }));
 
 vi.mock('../db', () => ({
@@ -27,6 +31,10 @@ vi.mock('../db', () => ({
         }),
       })),
     })),
+    execute: vi.fn(async (query: unknown) => {
+      state.executed.push(query);
+      return state.executeRows.shift() ?? [];
+    }),
   },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -51,6 +59,7 @@ vi.mock('./tenantOffboarding', async () => {
       otherCommandsCancelled: 0,
     })),
     finalizeOrganizationOffboarding: vi.fn(async () => ({ scopeType: 'organization' })),
+    abortOrganizationOffboarding: vi.fn(async () => ({ aborted: true, uninstallsCancelled: 3 })),
   };
 });
 
@@ -61,12 +70,17 @@ vi.mock('./tenantLifecycle', () => ({
 import {
   ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
   ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+  abortOrganizationOffboarding,
   beginOrganizationOffboarding,
   finalizeOrganizationOffboarding,
 } from './tenantOffboarding';
 import { liftArchiveSuspension } from './tenantLifecycle';
+import { db } from '../db';
 import {
+  ARCHIVE_PRIOR_STATUS_KEY,
   beginOrgArchive,
+  buildArchiveDrainAbortCas,
+  buildArchiveRestoreCas,
   computePurgeAt,
   OrgArchiveStateError,
   restoreOrgFromArchive,
@@ -82,6 +96,8 @@ beforeEach(() => {
   state.selectRows = [];
   state.updateRows = [];
   state.updates = [];
+  state.executeRows = [];
+  state.executed = [];
 });
 
 describe('computePurgeAt', () => {
@@ -103,7 +119,7 @@ describe('computePurgeAt', () => {
 describe('beginOrgArchive', () => {
   it.each(['active', 'trial'] as const)('CAS-enters the drain from %s and starts archive-target offboarding', async (status) => {
     const purgeAt = new Date('2026-11-24T12:00:00.000Z');
-    state.selectRows.push([{ status }]);
+    state.selectRows.push([{ status, type: 'customer' }]);
     state.updateRows.push([{ id: ORG_ID }]);
 
     const result = await beginOrgArchive({
@@ -126,13 +142,38 @@ describe('beginOrgArchive', () => {
       offboardingTarget: 'archive',
       purgeAt,
     });
+    // Review fix I-3: the PRE-archive status is stashed in the SAME
+    // status-guarded CAS, as one atomic jsonb_set (never read-modify-write).
+    const settingsSql = new PgDialect().sqlToQuery(update.values.settings as SQL);
+    expect(settingsSql.sql).toContain('jsonb_set');
+    expect(settingsSql.sql).toContain(`'{${ARCHIVE_PRIOR_STATUS_KEY}}'`);
+    expect(settingsSql.params).toEqual([status]);
+
     const compiled = new PgDialect().sqlToQuery(update.where as SQL);
     expect(compiled.sql).toBe('("organizations"."id" = $1 and "organizations"."status" = $2)');
     expect(compiled.params).toEqual([ORG_ID, status]);
   });
 
+  // Review fix I-7: archiving the hidden per-partner Quick Support org is a
+  // one-way door — every archived READ filters it out ("archiving is not a way
+  // to surface it") while the purge sweeper, which looks only at status +
+  // purge_at, would still erase it. orgMerge already refuses the same type.
+  it('refuses a quick_support organization before any write', async () => {
+    state.selectRows.push([{ status: 'active', type: 'quick_support' }]);
+
+    await expect(beginOrgArchive({
+      orgId: ORG_ID,
+      retentionDays: 90,
+      actor: ACTOR_ID,
+      now: NOW,
+    })).rejects.toBeInstanceOf(OrgArchiveStateError);
+
+    expect(state.updates).toHaveLength(0);
+    expect(beginOrganizationOffboarding).not.toHaveBeenCalled();
+  });
+
   it('skips the drain for suspended and finalizes archive immediately', async () => {
-    state.selectRows.push([{ status: 'suspended' }]);
+    state.selectRows.push([{ status: 'suspended', type: 'customer' }]);
     state.updateRows.push([{ id: ORG_ID }]);
 
     const result = await beginOrgArchive({
@@ -151,7 +192,7 @@ describe('beginOrgArchive', () => {
   });
 
   it('rejects any entry status outside active, trial, or suspended', async () => {
-    state.selectRows.push([{ status: 'archived' }]);
+    state.selectRows.push([{ status: 'archived', type: 'customer' }]);
 
     await expect(beginOrgArchive({
       orgId: ORG_ID,
@@ -164,7 +205,7 @@ describe('beginOrgArchive', () => {
   });
 
   it('reports a lost entry CAS instead of starting a drain', async () => {
-    state.selectRows.push([{ status: 'active' }]);
+    state.selectRows.push([{ status: 'active', type: 'customer' }]);
     state.updateRows.push([]);
 
     await expect(beginOrgArchive({
@@ -179,48 +220,128 @@ describe('beginOrgArchive', () => {
 });
 
 describe('restoreOrgFromArchive', () => {
+  const dialect = new PgDialect();
+
   it('reports only material that archive can actually require recreating', () => {
     expect(REVERSIBILITY_NOTES).toEqual([
       'Agents that completed the archive uninstall must be re-enrolled.',
     ]);
   });
 
-  it('ships one atomic archived-only CAS that clears archive lifecycle columns', async () => {
-    state.updateRows.push([{ id: ORG_ID }]);
+  // ── I-3: status-preserving restore ────────────────────────────────────────
+  // Restore used to hard-code `status: 'active'`, so archive→restore was a
+  // two-call SUSPENSION RESET: a customer suspended for non-payment came back
+  // fully active with no record it had ever been suspended.
+  it('restores the STASHED prior status, not a hard-coded active (compiled SQL)', () => {
+    const { sql, params } = dialect.sqlToQuery(buildArchiveRestoreCas(ORG_ID));
+
+    expect(sql).toContain(`settings->>$1 IN ($2, $3, $4)`);
+    expect(sql).toContain('::org_status');
+    expect(sql).not.toMatch(/SET\s+status = 'active'/);
+    // Allowlisted prior statuses + the fallback for a missing/edited value.
+    expect(params.slice(0, 4)).toEqual([
+      ARCHIVE_PRIOR_STATUS_KEY, 'active', 'trial', 'suspended',
+    ]);
+    expect(sql).toContain("ELSE 'active'");
+  });
+
+  it('clears every archive marker AND the prior-status key in one jsonb expression', () => {
+    const { sql, params } = dialect.sqlToQuery(buildArchiveRestoreCas(ORG_ID));
+
+    expect(sql).toContain('archived_at = NULL');
+    expect(sql).toContain('purge_at = NULL');
+    expect(sql).toContain("offboarding_target = 'churn'");
+    expect(sql).toContain("COALESCE(settings, '{}'::jsonb)");
+    expect(params).toEqual(expect.arrayContaining([
+      ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+      ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+      ARCHIVE_PRIOR_STATUS_KEY,
+    ]));
+  });
+
+  it('CASes only an archived row, and reports the restored status', async () => {
+    state.executeRows.push([{ id: ORG_ID, status: 'suspended' }]);
 
     const result = await restoreOrgFromArchive({ orgId: ORG_ID, actor: ACTOR_ID });
 
-    expect(result).toEqual({ recreateRequired: REVERSIBILITY_NOTES });
-    expect(state.updates).toHaveLength(1);
-    const update = state.updates[0]!;
-    expect(update.values).toMatchObject({
-      status: 'active',
-      archivedAt: null,
-      purgeAt: null,
-      offboardingTarget: 'churn',
+    expect(result).toEqual({
+      status: 'suspended',
+      recreateRequired: REVERSIBILITY_NOTES,
+      aborted: false,
+      uninstallsCancelled: 0,
     });
-    const settingsSql = new PgDialect().sqlToQuery(update.values.settings as SQL);
-    expect(settingsSql.sql).toBe(
-      `coalesce("organizations"."settings", '{}'::jsonb) - $1 - $2`
-    );
-    expect(settingsSql.params).toEqual([
-      ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
-      ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
-    ]);
-
-    const compiled = new PgDialect().sqlToQuery(update.where as SQL);
-    expect(compiled.sql).toBe('("organizations"."id" = $1 and "organizations"."status" = $2)');
-    expect(compiled.params).toEqual([ORG_ID, 'archived']);
+    expect(state.executed).toHaveLength(1);
+    expect(dialect.sqlToQuery(state.executed[0] as SQL).sql).toContain("status = 'archived'");
     expect(liftArchiveSuspension).toHaveBeenCalledWith(ORG_ID);
+    expect(abortOrganizationOffboarding).not.toHaveBeenCalled();
   });
 
-  it('does not lift suspensions when the archived-only CAS loses', async () => {
-    state.updateRows.push([]);
+  // ── I-4: abort the in-flight drain ────────────────────────────────────────
+  // Between `beginOrgArchive` and the finalize the org is `offboarding`, which
+  // is outside accessibleOrgIds and outside the archived reads — so before this
+  // a mis-clicked archive was uncancellable for up to 72h while self_uninstall
+  // was delivered to the customer's entire fleet.
+  it('aborts an archive-target drain: cancels uninstalls FIRST, then CASes back', async () => {
+    state.executeRows.push([]); // archived CAS loses — the org is still draining
+    state.selectRows.push([{ status: 'offboarding', offboardingTarget: 'archive' }]);
+    state.executeRows.push([{ id: ORG_ID, status: 'trial' }]);
+
+    const result = await restoreOrgFromArchive({ orgId: ORG_ID, actor: ACTOR_ID });
+
+    expect(result).toEqual({
+      status: 'trial',
+      recreateRequired: REVERSIBILITY_NOTES,
+      aborted: true,
+      uninstallsCancelled: 3,
+    });
+    expect(abortOrganizationOffboarding).toHaveBeenCalledWith(ORG_ID);
+    // Order matters: an uncollected self_uninstall must never survive into a
+    // reactivated tenant, so the cancellation precedes the status flip.
+    const abortOrder = vi.mocked(abortOrganizationOffboarding).mock.invocationCallOrder[0]!;
+    const casOrder = vi.mocked(db.execute).mock.invocationCallOrder[1]!;
+    expect(abortOrder).toBeLessThan(casOrder);
+  });
+
+  it('scopes the abort CAS to offboarding_target=archive (compiled SQL)', () => {
+    const { sql } = dialect.sqlToQuery(buildArchiveDrainAbortCas(ORG_ID));
+    expect(sql).toContain("status = 'offboarding'");
+    expect(sql).toContain("offboarding_target = 'archive'");
+  });
+
+  it('does NOT restore a churn-target offboarding org', async () => {
+    state.executeRows.push([]); // archived CAS loses
+    state.selectRows.push([{ status: 'offboarding', offboardingTarget: 'churn' }]);
 
     await expect(
       restoreOrgFromArchive({ orgId: ORG_ID, actor: ACTOR_ID })
     ).rejects.toBeInstanceOf(OrgArchiveStateError);
 
+    expect(abortOrganizationOffboarding).not.toHaveBeenCalled();
     expect(liftArchiveSuspension).not.toHaveBeenCalled();
+    expect(state.executed).toHaveLength(1); // no abort CAS was even attempted
+  });
+
+  it('does not lift suspensions when the org is in neither restorable state', async () => {
+    state.executeRows.push([]);
+    state.selectRows.push([{ status: 'purging', offboardingTarget: 'archive' }]);
+
+    await expect(
+      restoreOrgFromArchive({ orgId: ORG_ID, actor: ACTOR_ID })
+    ).rejects.toMatchObject({ name: 'OrgArchiveStateError', currentStatus: 'purging' });
+
+    expect(liftArchiveSuspension).not.toHaveBeenCalled();
+  });
+
+  it('throws when the abort CAS loses the race after the uninstall cancellation', async () => {
+    state.executeRows.push([]); // archived CAS loses
+    state.selectRows.push([{ status: 'offboarding', offboardingTarget: 'archive' }]);
+    state.executeRows.push([]); // abort CAS loses too
+
+    // The throw rolls back the surrounding system transaction, so the
+    // cancellation is undone with it — the org stays draining rather than
+    // going live with uncollected uninstalls.
+    await expect(
+      restoreOrgFromArchive({ orgId: ORG_ID, actor: ACTOR_ID })
+    ).rejects.toBeInstanceOf(OrgArchiveStateError);
   });
 });

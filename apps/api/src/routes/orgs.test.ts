@@ -2562,6 +2562,106 @@ describe('org routes', () => {
       expect(body.name).toBe('Updated');
     });
 
+    // ── transitions OUT of a frozen status (review fix I-6) ────────────────
+    // The update schema already excludes archived/purging/merging as a TARGET,
+    // but nothing guarded the SOURCE side: for system scope `conditions` is
+    // just `id = ? AND deleted_at IS NULL`, and an archived org has
+    // `deleted_at IS NULL`. So PATCH {status:'active'} un-archived the org
+    // through the WRONG door — `restoreOrganizationTenantAccess` lifts only
+    // `tenant_suspended`, never Wave 4's `org_archived` tag, leaving a live,
+    // billable org whose entire fleet 401s forever with stale purge_at.
+    describe('lifecycle-frozen source statuses', () => {
+      const queueCurrentStatus = (status: string) => {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ status }])
+            })
+          })
+        } as any);
+      };
+
+      const patchStatus = (status = 'active') =>
+        app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+
+      it.each(['archived', 'purging', 'merging'])(
+        '409s a status write on a %s org, for platform-admin system scope too',
+        async (current) => {
+          setAuthContext({
+            scope: 'system', partnerId: null,
+            user: { id: 'admin-1', email: 'a@b.test', name: 'Admin', isPlatformAdmin: true }
+          });
+          queueCurrentStatus(current);
+
+          const res = await patchStatus();
+
+          expect(res.status).toBe(409);
+          const body = await res.json();
+          expect(body.code).toBe('ORG_LIFECYCLE_FROZEN');
+          expect(body.currentStatus).toBe(current);
+          expect(db.update).not.toHaveBeenCalled();
+        }
+      );
+
+      it('points an archived org at the restore endpoint', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('archived');
+
+        const res = await patchStatus();
+
+        expect((await res.json()).error).toContain('/restore');
+      });
+
+      it('points a merging org at the merge endpoints', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('merging');
+
+        const res = await patchStatus();
+
+        expect((await res.json()).error).toContain('merge');
+      });
+
+      it('does not block a status write on a normal org', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        queueCurrentStatus('suspended');
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Acme' }])
+            })
+          })
+        } as any);
+
+        const res = await patchStatus();
+
+        expect(res.status).toBe(200);
+      });
+
+      it('does not read the status at all for a non-status update', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Renamed' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' })
+        });
+
+        expect(res.status).toBe(200);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+    });
+
     // #3967 — renaming an org's slug onto a sibling's must 409, not silently
     // produce a second holder (pre-fix) or a raw 23505 500 (index only).
     describe('slug uniqueness (#3967)', () => {

@@ -251,10 +251,17 @@ export async function suspendOrganizationTenantAccessReversibly(
       .where(
         and(
           inArray(devices.orgId, [orgId]),
-          or(
-            isNull(devices.agentTokenSuspendedAt),
-            eq(devices.agentTokenSuspendedReason, TENANT_SUSPENDED_TOKEN_REASON)
-          )
+          // ONLY devices nothing else has already suspended. Re-tagging a
+          // `tenant_suspended` row to `org_archived` (the previous behaviour)
+          // handed archive ownership of a suspension it did not create — and
+          // `liftArchiveSuspension` then cleared it on restore, so
+          // archive→restore silently un-severed the fleet of an org suspended
+          // for non-payment or abuse. `TENANT_SUSPENDED_TOKEN_REASON`'s own
+          // contract is that another reason is "never silently lifted"; a
+          // still-suspended org is already severed, so skipping those rows
+          // costs nothing and keeps the round trip honest (org-lifecycle Wave 4
+          // review fix I-3, restore is status-preserving).
+          isNull(devices.agentTokenSuspendedAt)
         )
       )
       .returning({ id: devices.id });

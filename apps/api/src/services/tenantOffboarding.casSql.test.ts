@@ -18,7 +18,10 @@ vi.mock('./tenantLifecycle', () => ({}));
 vi.mock('./tenantStatus', () => ({}));
 
 import {
+  ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+  ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
   buildArchivePurgeCas,
+  buildArchivePurgingRecoveryAttemptIncrement,
   buildArchivePurgingRecoveryCandidatesWhere,
   buildArchiveWarningMarkerCas,
   buildArchiveWarningMarkerRelease,
@@ -92,9 +95,51 @@ describe('archive purging-recovery candidate predicate (compiled SQL)', () => {
   it('only recovers purging rows whose CAS committed at least 15 minutes ago', () => {
     const compiled = dialect.sqlToQuery(buildArchivePurgingRecoveryCandidatesWhere());
 
-    expect(compiled.sql).toBe(
-      `("organizations"."status" = $1 and "organizations"."updated_at" < now() - interval '15 minutes')`
+    expect(compiled.sql).toContain('"organizations"."status" = $1');
+    expect(compiled.sql).toContain(`"organizations"."updated_at" < now() - interval '15 minutes'`);
+    expect(compiled.params[0]).toBe('purging');
+  });
+
+  // Review fix I-5: the 15-minute grace bounds when retrying STARTS, not how
+  // long it continues — a permanently failing cascade looped the erasure every
+  // 5 minutes forever. The attempt ceiling is what drops the row out.
+  it('excludes rows past the attempt ceiling, guarding the cast against non-numeric settings', () => {
+    const compiled = dialect.sqlToQuery(buildArchivePurgingRecoveryCandidatesWhere());
+
+    expect(compiled.sql).toContain(`jsonb_typeof("organizations"."settings"->$2) = 'number'`);
+    expect(compiled.sql).toContain(`("organizations"."settings"->>$3)::int`);
+    expect(compiled.sql).toContain('<= $4');
+    expect(compiled.params).toEqual([
+      'purging',
+      ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+      ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+      ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
+    ]);
+  });
+});
+
+describe('archive purging-recovery attempt increment (compiled SQL)', () => {
+  const dialect = new PgDialect();
+  const orgId = '11111111-1111-4111-8111-111111111111';
+
+  it('increments atomically, status-guarded, and returns the NEW count', () => {
+    const compiled = dialect.sqlToQuery(
+      buildArchivePurgingRecoveryAttemptIncrement(orgId)
     );
-    expect(compiled.params).toEqual(['purging']);
+
+    expect(compiled.sql).toContain('jsonb_set');
+    expect(compiled.sql).toContain(`'{${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY}}'`);
+    expect(compiled.sql).toContain(`status = 'purging'`);
+    expect(compiled.sql).toContain('RETURNING');
+    expect(compiled.params).toContain(orgId);
+  });
+
+  // Bumping updated_at would push the row past the 15-minute age guard and
+  // silently turn the 5-minute recovery cadence into a 15-minute backoff.
+  it('does NOT touch updated_at', () => {
+    const compiled = dialect.sqlToQuery(
+      buildArchivePurgingRecoveryAttemptIncrement(orgId)
+    );
+    expect(compiled.sql).not.toContain('updated_at');
   });
 });

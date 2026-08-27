@@ -176,7 +176,12 @@ vi.mock('drizzle-orm', () => ({
   isNotNull: vi.fn((c) => ({ isNotNull: c })),
   ne: vi.fn((l, r) => ({ ne: [l, r] })),
   // Tagged-template tag: sql`now()` → { sql: 'now()' } (see DB_NOW, #2877).
-  sql: vi.fn((strings: TemplateStringsArray) => ({ sql: strings.join('') })),
+  // `.raw` is used by the purging-recovery attempt counter's jsonb path
+  // literal; the real drizzle exposes it on the tag, so the mock must too.
+  sql: Object.assign(
+    vi.fn((strings: TemplateStringsArray) => ({ sql: strings.join('') })),
+    { raw: vi.fn((value: string) => ({ sql: value })) }
+  ),
 }));
 
 // The marker DB_NOW (sql`now()`) resolves to under the drizzle-orm mock above.
@@ -202,6 +207,7 @@ import {
   finalizeOrganizationOffboarding,
   finalizePartnerOffboarding,
   sweepOffboardingTenants,
+  ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
   OFFBOARDING_DRAIN_WINDOW_HOURS,
 } from './tenantOffboarding';
 
@@ -1256,8 +1262,11 @@ describe('sweepOffboardingTenants', () => {
       expect(first).toMatchObject({ archivePurgesEnqueued: 0, failures: 1 });
 
       // The first CAS left the row at `purging`; a second sweep must still
-      // pass it through the stale-job-aware enqueue helper.
+      // pass it through the stale-job-aware enqueue helper. Review fix I-5:
+      // the recovery loop first claims an attempt (atomic jsonb increment)
+      // and only re-enqueues while the count is inside the ceiling.
       queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+      executeQueue.push([{ attempts: 1 }]); // attempt counter increment
       enqueueTenantErasureMock.mockResolvedValueOnce({ id: 'tenant-erasure-org-purge-recovery' });
 
       const second = await sweepOffboardingTenants(NOW);
@@ -1283,6 +1292,69 @@ describe('sweepOffboardingTenants', () => {
           result: 'success',
         })
       );
+    });
+
+    // ── bounded recovery (review fix I-5) ─────────────────────────────────
+    // Before this the backstop re-ran a permanently failing cascade on EVERY
+    // 5-minute sweep forever: ~288 erasure jobs, 288 audit rows and 288 Sentry
+    // captures per day per wedged org, with the tenant neither erased nor
+    // visible nor restorable.
+    describe('bounded purging recovery', () => {
+      const candidate = { id: 'org-wedged' };
+
+      it('gives up ONCE past the attempt ceiling: no enqueue, an exhausted audit, one console.error', async () => {
+        queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+        executeQueue.push([{ attempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS + 1 }]);
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const result = await sweepOffboardingTenants(NOW);
+
+          expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+          expect(result.purgingRecoveryReenqueued).toBe(0);
+          expect(result.purgingRecoveryExhausted).toBe(1);
+          expect(result.failures).toBe(0); // giving up is not a sweep failure
+          expect(err).toHaveBeenCalledTimes(1);
+          expect(writeAuditEvent).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+              orgId: null,
+              action: 'org.archive.purge_recovery_exhausted',
+              resourceId: candidate.id,
+              actorType: 'system',
+              result: 'failure',
+              details: expect.objectContaining({
+                attempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS + 1,
+                maxAttempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
+              }),
+            })
+          );
+        } finally {
+          err.mockRestore();
+        }
+      });
+
+      it('still recovers on the LAST attempt inside the ceiling', async () => {
+        queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+        executeQueue.push([{ attempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS }]);
+        enqueueTenantErasureMock.mockResolvedValueOnce({ id: 'job' });
+
+        const result = await sweepOffboardingTenants(NOW);
+
+        expect(enqueueTenantErasureMock).toHaveBeenCalledTimes(1);
+        expect(result.purgingRecoveryReenqueued).toBe(1);
+        expect(result.purgingRecoveryExhausted).toBe(0);
+      });
+
+      it('skips a row that left purging between the snapshot and the attempt claim', async () => {
+        queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+        executeQueue.push([]); // the status-guarded increment matched nothing
+
+        const result = await sweepOffboardingTenants(NOW);
+
+        expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+        expect(result.purgingRecoveryReenqueued).toBe(0);
+        expect(result.purgingRecoveryExhausted).toBe(0);
+      });
     });
 
     // Review hardening (I5): replaces the old "both send" expectation. An

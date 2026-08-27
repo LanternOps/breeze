@@ -17,7 +17,7 @@ import {
   requireScope,
   type AuthContext,
 } from '../middleware/auth';
-import { writeRouteAudit } from '../services/auditEvents';
+import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import {
   beginOrgArchive,
   OrgArchiveStateError,
@@ -44,6 +44,53 @@ interface ArchiveOrgRow {
   partnerId: string;
   name: string;
   status: string;
+}
+
+/**
+ * DURABLE twin of the org-bound route audit.
+ *
+ * `cascadeDeleteOrg` deletes the target org's own `audit_logs` rows at purge, so
+ * an org-tenanted `org.archive.requested` is erased by the very purge it
+ * authorized: 90 days later nothing records who archived the customer, what
+ * retention they chose, or that a restore ever happened. Every surviving event
+ * is `actorType: 'system'`. The merge path already writes `org.merge.*`
+ * org-less for exactly this reason, as do this wave's own sweeper audits — the
+ * entry/exit events are the ones that most obviously needed it.
+ *
+ * Written alongside (not instead of) the org-bound row, which is what the
+ * customer's own audit view shows while the tenant still exists. `orgId: null`
+ * puts it outside the cascade; the org id, name and partner ride in `details`,
+ * mirroring `org.merge.*`'s shape.
+ */
+function writeDurableArchiveAudit(
+  c: Parameters<typeof writeAuditEvent>[0] & { get: (k: 'auth') => AuthContext },
+  input: {
+    action: string;
+    organization: ArchiveOrgRow;
+    partnerId: string;
+    details: Record<string, unknown>;
+  },
+): void {
+  const user = c.get('auth')?.user;
+  writeAuditEvent(c, {
+    orgId: null,
+    action: input.action,
+    resourceType: 'organization',
+    resourceId: input.organization.id,
+    resourceName: input.organization.name,
+    actorId: user?.id ?? null,
+    actorEmail: user?.email,
+    result: 'success',
+    details: {
+      ...input.details,
+      // Repeated in details because the row is deliberately org-less: after the
+      // purge these are the only surviving identifiers of the erased tenant.
+      orgId: input.organization.id,
+      orgName: input.organization.name,
+      partnerId: input.partnerId,
+      durable: true,
+    },
+  });
 }
 
 type ArchiveAuthzResult =
@@ -137,17 +184,24 @@ orgArchiveRoutes.post(
         actor: auth.user.id,
       });
 
+      const archiveDetails = {
+        retentionDays: retentionDays === undefined ? 'default' : retentionDays,
+        purgeAt: result.purgeAt,
+        partnerId: authz.partnerId,
+      };
       writeRouteAudit(c, {
         orgId,
         action: 'org.archive.requested',
         resourceType: 'organization',
         resourceId: orgId,
         resourceName: authz.organization.name,
-        details: {
-          retentionDays: retentionDays === undefined ? 'default' : retentionDays,
-          purgeAt: result.purgeAt,
-          partnerId: authz.partnerId,
-        },
+        details: archiveDetails,
+      });
+      writeDurableArchiveAudit(c, {
+        action: 'org.archive.requested',
+        organization: authz.organization,
+        partnerId: authz.partnerId,
+        details: { ...archiveDetails, priorStatus: authz.organization.status },
       });
 
       return c.json(result, 202);
@@ -177,21 +231,28 @@ orgArchiveRoutes.post(
     }
 
     try {
-      const { recreateRequired } = await restoreOrgFromArchive({
-        orgId,
-        actor: auth.user.id,
-      });
+      const { status, recreateRequired, aborted, uninstallsCancelled } =
+        await restoreOrgFromArchive({ orgId, actor: auth.user.id });
 
+      // `status` is the PRE-archive status, not always 'active' — a suspended
+      // org restores suspended, a trial org restores to trial.
+      const restoreDetails = { recreateRequired, restoredStatus: status, aborted, uninstallsCancelled };
       writeRouteAudit(c, {
         orgId,
         action: 'org.archive.restored',
         resourceType: 'organization',
         resourceId: orgId,
         resourceName: authz.organization.name,
-        details: { recreateRequired },
+        details: restoreDetails,
+      });
+      writeDurableArchiveAudit(c, {
+        action: 'org.archive.restored',
+        organization: authz.organization,
+        partnerId: authz.partnerId,
+        details: restoreDetails,
       });
 
-      return c.json({ status: 'active' as const, recreateRequired });
+      return c.json({ status, recreateRequired, aborted, uninstallsCancelled });
     } catch (err) {
       if (err instanceof OrgArchiveStateError) {
         const currentStatus =

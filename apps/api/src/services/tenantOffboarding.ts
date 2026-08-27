@@ -161,11 +161,63 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * unit test injecting rows straight past the WHERE clause can't tell a
  * 15-minute floor apart from no floor at all.
  */
+export const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY = 'purgingRecoveryAttempts';
+
+/**
+ * How many times the backstop will re-run the erasure handoff for one `purging`
+ * row before giving up and alerting once.
+ *
+ * `purging` had no bounded recovery owner: the backstop re-enqueued every
+ * qualifying row on EVERY 5-minute sweep, forever, and `enqueueOrReplaceStale`
+ * genuinely re-runs a failed cascade. A permanently failing erasure — e.g. a new
+ * `org_id` table missing from CORE_ORG_CASCADE_DELETE_ORDER, this repo's
+ * most-repeated defect — therefore produced ~288 audit rows, 288 erasure jobs
+ * and 288 Sentry captures per day, indefinitely, while the tenant sat neither
+ * erased nor visible nor restorable. The 15-minute grace bounded when retrying
+ * STARTS, never how long it continues.
+ */
+export const ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS = 5;
+
+/**
+ * The attempt counter as an int, defaulting to 0. `jsonb_typeof` guards the
+ * cast: a hand-edited non-numeric value would otherwise raise 22P02 inside the
+ * candidate query and take down the whole sweep, not just this org.
+ */
+function archivePurgingRecoveryAttemptsExpr(): SQL {
+  return sql`COALESCE(
+    CASE WHEN jsonb_typeof(${organizations.settings}->${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY}) = 'number'
+      THEN (${organizations.settings}->>${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY})::int
+    END, 0)`;
+}
+
 export function buildArchivePurgingRecoveryCandidatesWhere(): SQL {
   return and(
     eq(organizations.status, 'purging'),
-    sql`${organizations.updatedAt} < now() - interval '15 minutes'`
+    sql`${organizations.updatedAt} < now() - interval '15 minutes'`,
+    // Once the counter passes the ceiling the row leaves the candidate set for
+    // good, so the exhausted alert below fires exactly once instead of every
+    // sweep — and the wedged tenant stops generating writes entirely.
+    sql`${archivePurgingRecoveryAttemptsExpr()} <= ${ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS}`
   )!;
+}
+
+/**
+ * Atomically bump the attempt counter and report the NEW value. `updated_at` is
+ * deliberately NOT touched: bumping it would push the row past the 15-minute age
+ * guard and silently turn the recovery cadence into a 15-minute backoff.
+ */
+export function buildArchivePurgingRecoveryAttemptIncrement(orgId: string): SQL {
+  return sql`
+    UPDATE organizations
+       SET settings = jsonb_set(
+             COALESCE(settings, '{}'::jsonb),
+             '{${sql.raw(ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY)}}',
+             to_jsonb(${archivePurgingRecoveryAttemptsExpr()} + 1),
+             true
+           )
+     WHERE id = ${orgId}::uuid
+       AND status = 'purging'
+     RETURNING (settings->>${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY})::int AS attempts`;
 }
 
 /** Raw SQL so the archived-only transition is atomic and compiled-SQL testable. */
@@ -1129,6 +1181,7 @@ export async function sweepOffboardingTenants(
   mergeShellsStamped: number;
   archivePurgesEnqueued: number;
   purgingRecoveryReenqueued: number;
+  purgingRecoveryExhausted: number;
 }> {
   const windowMs = OFFBOARDING_DRAIN_WINDOW_HOURS * 60 * 60 * 1000;
   let orgsFinalized = 0;
@@ -1139,6 +1192,7 @@ export async function sweepOffboardingTenants(
   let mergeShellsStamped = 0;
   let archivePurgesEnqueued = 0;
   let purgingRecoveryReenqueued = 0;
+  let purgingRecoveryExhausted = 0;
 
   const [
     offboardingOrgs,
@@ -1572,6 +1626,42 @@ export async function sweepOffboardingTenants(
   // cannot distinguish a reused live job from a newly-created replacement.
   for (const org of archivePurgingCandidateRows) {
     try {
+      // Claim + count this attempt BEFORE the handoff, so a crash inside
+      // enqueueTenantErasure still burns an attempt rather than looping free.
+      const claimed = (await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db.execute(buildArchivePurgingRecoveryAttemptIncrement(org.id))
+        )
+      )) as unknown as Array<{ attempts: number }>;
+      // 0 rows = the row left `purging` between the snapshot and now (erasure
+      // finished, or an operator moved it). Nothing to recover.
+      if (claimed.length === 0) continue;
+
+      const attempts = Number(claimed[0]!.attempts);
+      if (attempts > ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS) {
+        // Exactly once: the candidate predicate excludes the row from here on.
+        console.error(
+          `[tenantOffboarding] Archive purge for org ${org.id} has failed ${ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS} recovery attempts; giving up. The tenant is stuck in 'purging' — neither erased nor restorable — and needs manual investigation (most likely a table missing from CORE_ORG_CASCADE_DELETE_ORDER).`
+        );
+        writeAuditEvent(requestLikeFromSnapshot({}), {
+          orgId: null,
+          action: 'org.archive.purge_recovery_exhausted',
+          resourceType: 'organization',
+          resourceId: org.id,
+          actorType: 'system',
+          actorId: null,
+          result: 'failure',
+          details: {
+            orgId: org.id,
+            attempts,
+            maxAttempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
+            note: 'erasure handoff kept failing for a purging row; recovery abandoned and the org excluded from further sweeps',
+          },
+        });
+        purgingRecoveryExhausted++;
+        continue;
+      }
+
       await enqueueTenantErasure({
         orgId: org.id,
         performedBy: ANONYMOUS_ACTOR_ID,
@@ -1764,5 +1854,6 @@ export async function sweepOffboardingTenants(
     mergeShellsStamped,
     archivePurgesEnqueued,
     purgingRecoveryReenqueued,
+    purgingRecoveryExhausted,
   };
 }

@@ -50,9 +50,13 @@ vi.mock('drizzle-orm', async (importActual) => {
   };
 });
 
-const { writeRouteAuditMock } = vi.hoisted(() => ({ writeRouteAuditMock: vi.fn() }));
+const { writeRouteAuditMock, writeAuditEventMock } = vi.hoisted(() => ({
+  writeRouteAuditMock: vi.fn(),
+  writeAuditEventMock: vi.fn(),
+}));
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: writeRouteAuditMock,
+  writeAuditEvent: writeAuditEventMock,
 }));
 
 const { beginOrgArchiveMock, restoreOrgFromArchiveMock } = vi.hoisted(() => ({
@@ -179,7 +183,10 @@ describe('org archive routes', () => {
     mayReachOrgMock.mockResolvedValue(true);
     beginOrgArchiveMock.mockResolvedValue({ status: 'offboarding', purgeAt: PURGE_AT });
     restoreOrgFromArchiveMock.mockResolvedValue({
+      status: 'active',
       recreateRequired: ['Agents that completed the archive uninstall must be re-enrolled.'],
+      aborted: false,
+      uninstallsCancelled: 0,
     });
     setAuthContext();
   });
@@ -347,17 +354,21 @@ describe('org archive routes', () => {
   });
 
   describe('POST /orgs/organizations/:id/restore', () => {
-    it('returns active with recreateRequired and audits the restored org', async () => {
+    it('returns the restored status with recreateRequired and audits the restored org', async () => {
       orgRows.current[0]!.status = 'archived';
       const recreateRequired = [
         'Agents that completed the archive uninstall must be re-enrolled.',
       ];
-      restoreOrgFromArchiveMock.mockResolvedValueOnce({ recreateRequired });
+      restoreOrgFromArchiveMock.mockResolvedValueOnce({
+        status: 'active', recreateRequired, aborted: false, uninstallsCancelled: 0,
+      });
 
       const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
 
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ status: 'active', recreateRequired });
+      expect(await res.json()).toEqual({
+        status: 'active', recreateRequired, aborted: false, uninstallsCancelled: 0,
+      });
       expect(restoreOrgFromArchiveMock).toHaveBeenCalledWith({
         orgId: ORG_ID,
         actor: 'user-1',
@@ -370,9 +381,36 @@ describe('org archive routes', () => {
           resourceType: 'organization',
           resourceId: ORG_ID,
           resourceName: 'Acme Corp',
-          details: { recreateRequired },
+          details: expect.objectContaining({ recreateRequired, restoredStatus: 'active' }),
         }),
       );
+    });
+
+    // Review fix I-3: restore is status-PRESERVING, so the route must report
+    // whatever came back, not the hard-coded 'active' it used to send.
+    it('reports a suspended org restoring to suspended, not active', async () => {
+      orgRows.current[0]!.status = 'archived';
+      restoreOrgFromArchiveMock.mockResolvedValueOnce({
+        status: 'suspended', recreateRequired: [], aborted: false, uninstallsCancelled: 0,
+      });
+
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect((await res.json()).status).toBe('suspended');
+    });
+
+    // Review fix I-4: the abort edge surfaces the cancellation count so the
+    // operator knows the drain was actually stopped.
+    it('reports an aborted drain with the uninstalls it cancelled', async () => {
+      orgRows.current[0]!.status = 'offboarding';
+      restoreOrgFromArchiveMock.mockResolvedValueOnce({
+        status: 'active', recreateRequired: [], aborted: true, uninstallsCancelled: 12,
+      });
+
+      const res = await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ aborted: true, uninstallsCancelled: 12 });
     });
 
     it('maps a purging restore refusal to 410', async () => {
@@ -516,6 +554,64 @@ describe('org archive routes', () => {
 
       expect(res.status).toBe(200);
       expect(mayReachOrgMock).not.toHaveBeenCalled();
+    });
+  });
+  // ── durable audit (review fix I-2) ───────────────────────────────────────
+  // cascadeDeleteOrg deletes the target org's own audit_logs rows at purge, so
+  // an org-tenanted archive audit is erased by the very purge it authorized.
+  // The merge path already writes org.merge.* org-less for this reason.
+  describe('durable (org-less) audit twin', () => {
+    it('writes an org-less org.archive.requested carrying the org id and name', async () => {
+      await postJson(`/orgs/organizations/${ORG_ID}/archive`, { retentionDays: 30 });
+
+      expect(writeAuditEventMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.archive.requested',
+          resourceId: ORG_ID,
+          resourceName: 'Acme Corp',
+          actorId: 'user-1',
+          details: expect.objectContaining({
+            orgId: ORG_ID,
+            orgName: 'Acme Corp',
+            partnerId: PARTNER_ID,
+            retentionDays: 30,
+            priorStatus: 'active',
+            durable: true,
+          }),
+        }),
+      );
+    });
+
+    it('writes an org-less org.archive.restored alongside the org-bound row', async () => {
+      orgRows.current[0]!.status = 'archived';
+
+      await postJson(`/orgs/organizations/${ORG_ID}/restore`, {});
+
+      expect(writeAuditEventMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.archive.restored',
+          resourceId: ORG_ID,
+          details: expect.objectContaining({ orgId: ORG_ID, durable: true }),
+        }),
+      );
+      // The org-bound row still exists — it is what the customer's own audit
+      // view shows while the tenant is alive.
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID, action: 'org.archive.restored' }),
+      );
+    });
+
+    it('writes no durable audit when the target is refused', async () => {
+      orgRows.current[0]!.partnerId = OTHER_PARTNER_ID;
+
+      await postJson(`/orgs/organizations/${ORG_ID}/archive`, {});
+
+      expect(writeAuditEventMock).not.toHaveBeenCalled();
     });
   });
 });
