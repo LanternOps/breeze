@@ -157,14 +157,18 @@ export function registerAiAgentEnqueuer(): void {
 
 **Mechanism:** a small resolver (in the test file): parse `import ... from '<spec>'` + `await import('<spec>')` with regex; follow RELATIVE specifiers only (bare package imports are runtime-safe); skip `import type` lines; resolve `.ts`/`/index.ts`; memoize; return the transitive file set.
 
-- [ ] **Step 1: Write the test three ways:**
+- [x] **Step 1: Write the test three ways:**
   1. **Worker entrypoint closure**: closure(`src/worker.ts`) must NOT contain `routes/agentWs.ts`, anything under `routes/` at all, `services/agentCommandAwait.ts`, or `index.ts`. (worker.ts imports the registry, whose `load()` thunks are dynamic — the resolver must NOT follow dynamic imports for this assertion, that's the point; assert statically-reachable set only.)
   2. **Global-placement closures**: for every `WORKER_REGISTRY` entry with `placement: 'global'`, extract its `load()` target specifier (regex the registry source for `import('<spec>')` per entry) and assert that module's closure (dynamic-follow ON here) does not contain `routes/agentWs.ts` or `services/agentCommandAwait.ts`. A global entry whose closure reaches them = placement bug → test names the entry and the offending path chain.
   3. **Losslessness**: registry names set-equals the 104-name list (duplicated literal in the test).
-- [ ] **Step 2: Run it — let it FAIL on every misclassified entry, then flip those entries to `socket-owner` in the registry until honest-green.** Record the final classification (counts + the socket-owner name list) in THIS plan doc under "Final placement" below, and in the PR body. Sanity-expect: monitorWorker socket-owner (its closure still reaches `routes/agentWs.ts` via `services/agentCommandRelay`; Task 3's extraction only removed `routes/monitors.ts` from the closure, not the relay path — see the Task 1 placement note above); snmp/backup/discovery global (their `AgentCommand` imports are type-only); automation/quickSupport/softwareDeployment/commandQueue-reachers socket-owner.
-- [ ] **Step 3: Commit:** `test(api): worker entrypoint import-closure contract + final placements (#4086)`
+- [x] **Step 2: Run it — let it FAIL on every misclassified entry, then flip those entries to `socket-owner` in the registry until honest-green.** Record the final classification (counts + the socket-owner name list) in THIS plan doc under "Final placement" below, and in the PR body. Sanity-expect: monitorWorker socket-owner (its closure still reaches `routes/agentWs.ts` via `services/agentCommandRelay`; Task 3's extraction only removed `routes/monitors.ts` from the closure, not the relay path — see the Task 1 placement note above); snmp/backup/discovery global (their `AgentCommand` imports are type-only); automation/quickSupport/softwareDeployment/commandQueue-reachers socket-owner.
+- [x] **Step 3: Commit:** `test(api): worker entrypoint import-closure contract + final placements (#4086)`
 
-**Final placement (fill at implementation):** global = __, socket-owner = __ (names: __).
+**Final placement (filled 2026-08-27, Task 5):** global = 76, socket-owner = 28 (out of 104 total). The closure tool confirmed every one of Task 1's initial-pass guesses except one: `policyEvaluationWorker` was mis-flagged `global` and is flipped to `socket-owner` here — its runtime closure reaches `routes/agentWs.ts` via a dynamic import one hop out (`jobs/policyEvaluationWorker.ts` → `services/policyEvaluationService.ts` → `await import('../jobs/automationWorker')` for `enqueueAutomationRun` → `services/automationRuntime.ts` → `services/scriptDispatch.ts` → `routes/agentWs.ts`). All other sanity-expected classifications held (monitorWorker socket-owner via `agentCommandRelay`; snmp/backup/discovery global with type-only `AgentCommand` imports; automation/quickSupport/softwareDeployment/commandQueue-reachers socket-owner).
+
+socket-owner (28): fleetRemediationDispatchWorker, policyEvaluationWorker, softwareComplianceWorker, softwareRemediationWorker, aiAgentRunner, auditBaselineJobs, cisJobs, automationWorker, backupVerificationJobs, eventLogRetention, quickSupportReaper, desktopSessionFinalization, desktopSessionOrphanRecovery, discoveryWorker, networkBaselineWorker, snmpWorker, monitorWorker, patchJobWorker, patchSchedulerWorker, maintenanceRebootWorker, backupWorker, sensitiveDataWorker, peripheralJobs, drExecutionWorker, staleCommandReaper, softwareDeploymentScheduler, offboardingDrainReaper, intentReleaseWorker.
+
+global (76): everything else in `WORKER_REGISTRY` not listed above.
 
 ---
 

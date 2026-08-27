@@ -168,8 +168,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // socket-owner, not global: its runtime import closure reaches
+    // routes/agentWs.ts — jobs/policyEvaluationWorker.ts ->
+    // services/policyEvaluationService.ts -> (dynamic `await
+    // import('../jobs/automationWorker')` for `enqueueAutomationRun`) ->
+    // services/automationRuntime.ts -> services/scriptDispatch.ts ->
+    // routes/agentWs.ts. Found by workerEntrypointClosure.contract.test.ts
+    // (#4086 Task 5) — flipped from an initial-pass 'global' guess.
     name: 'policyEvaluationWorker',
-    placement: 'global',
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/policyEvaluationWorker');
       return { init: m.initializePolicyEvaluationWorker, shutdown: m.shutdownPolicyEvaluationWorker };
