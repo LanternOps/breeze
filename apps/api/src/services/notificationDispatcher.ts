@@ -18,7 +18,7 @@ import {
   organizations,
   partners
 } from '../db/schema';
-import { eq, and, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
+import { eq, and, ne, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
 import { checkNotificationThrottle } from './notificationThrottle';
@@ -66,7 +66,7 @@ export function getNotificationQueue(): Queue {
 }
 
 // Job data types
-interface SendNotificationJobData {
+export interface SendNotificationJobData {
   type: 'send';
   alertId: string;
   channelId: string;
@@ -334,6 +334,23 @@ type PrepareSendResult =
     };
 
 /**
+ * The claim / success CAS for a send-identity row (wave 3.5c, #4085): this
+ * row, unless it has already reached 'sent'. Used both to reclaim an
+ * orphaned 'pending' row for a retry (a prior attempt crashed between the
+ * insert and the final update) and to CAS the eventual send outcome to
+ * 'sent' — either way, a row that already recorded a successful send must
+ * never be clobbered back to 'pending' by a stale/racing attempt.
+ *
+ * Exported so tests can assert the COMPILED SQL rather than substring-match
+ * column names against a mocked drizzle-orm (vacuous-Drizzle-assertion
+ * rule) — swapping `ne` for `eq` here silently turns the dedupe backstop
+ * into a no-op (every row becomes reclaimable, including already-sent ones).
+ */
+export function buildAlertNotificationClaimCas(id: string): SQL {
+  return and(eq(alertNotifications.id, id), ne(alertNotifications.status, 'sent'))!;
+}
+
+/**
  * Send a notification through a specific channel.
  *
  * Split into three phases to avoid holding a pooled DB connection across the
@@ -352,13 +369,14 @@ type PrepareSendResult =
  * the pending insert and the final update would roll back the whole thing —
  * a BullMQ retry would insert a fresh pending row and try again cleanly. Now
  * step 1 commits before the send runs, so the same crash instead leaves an
- * orphaned 'pending' row (retry still inserts a fresh row and resends,
- * exactly as before). That failure mode already existed for a crash on the
- * old code's own final `db.update` (rollback of an already-sent message), so
- * this does not introduce a new double-send risk — it only adds a harmless
- * orphaned 'pending' row on the rare mid-send crash case.
+ * orphaned 'pending' row. Wave 3.5c (#4085) closed the double-send/orphan gap
+ * this used to leave open: sends are keyed by a durable
+ * (alertId, channelId, escalationStep) identity (unique index; see
+ * `buildAlertNotificationClaimCas`), so a retry after a mid-send crash
+ * RECLAIMS that same row instead of inserting a fresh one, and a retry after
+ * a row already reached 'sent' is a dedupe skip with no egress call at all.
  */
-async function processSendNotification(data: SendNotificationJobData): Promise<{
+export async function processSendNotification(data: SendNotificationJobData): Promise<{
   success: boolean;
   channelType: string;
   error?: string;
@@ -411,15 +429,74 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       } satisfies PrepareSendResult;
     }
 
-    // Create notification record (pending)
-    const [notificationRecord] = await db
+    // Send identity: (alertId, channelId, escalationStep). `?? 0` is
+    // load-bearing — an explicit `escalationStep: null` must still collapse
+    // onto step 0; a schema column default alone would not stop it, because
+    // Drizzle sends the literal `null` rather than omitting the key (#4085).
+    const escalationStep = data.escalationStep ?? 0;
+
+    const [insertedRecord] = await db
       .insert(alertNotifications)
       .values({
         alertId: data.alertId,
         channelId: data.channelId,
+        escalationStep,
         status: 'pending'
       })
+      .onConflictDoNothing({
+        target: [alertNotifications.alertId, alertNotifications.channelId, alertNotifications.escalationStep]
+      })
       .returning();
+
+    let notificationRecord = insertedRecord;
+
+    if (!notificationRecord) {
+      // Conflict: a row for this exact (alert, channel, step) identity
+      // already exists — either a durable dedupe win (already sent) or an
+      // orphaned 'pending'/'failed' row from a prior crashed/failed attempt.
+      const [existing] = await db
+        .select()
+        .from(alertNotifications)
+        .where(
+          and(
+            eq(alertNotifications.alertId, data.alertId),
+            eq(alertNotifications.channelId, data.channelId),
+            eq(alertNotifications.escalationStep, escalationStep)
+          )
+        )
+        .limit(1);
+
+      if (existing?.status === 'sent') {
+        // Durable per-channel backstop: this exact send already succeeded.
+        // Resolve success with NO egress call — the job completes cleanly.
+        return {
+          send: false,
+          result: { success: true, channelType: channel.type }
+        } satisfies PrepareSendResult;
+      }
+
+      if (existing) {
+        // CLAIM: reuse the existing row for this attempt. Guarded by the
+        // same CAS used for the eventual success write, so a concurrent
+        // attempt that already reached 'sent' between the select above and
+        // this update can never be clobbered back to 'pending'.
+        const [claimed] = await db
+          .update(alertNotifications)
+          .set({ status: 'pending', errorMessage: null })
+          .where(buildAlertNotificationClaimCas(existing.id))
+          .returning();
+        notificationRecord = claimed;
+
+        if (!claimed) {
+          // Lost the race: the row reached 'sent' between the select and the
+          // claim update. Same outcome as the sent-skip above.
+          return {
+            send: false,
+            result: { success: true, channelType: channel.type }
+          } satisfies PrepareSendResult;
+        }
+      }
+    }
 
     if (!notificationRecord) {
       return {
@@ -652,29 +729,42 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
   // Persist the final result — short DB context, AFTER the send completes
   // ("record-result after send"), so the transaction never spans the send.
+  if (success) {
+    // CAS to 'sent' rather than an unconditional update: a racing/stale
+    // attempt on the same send identity (see buildAlertNotificationClaimCas)
+    // must never re-open a row that another attempt already finished.
+    await runWithSystemDbAccess(() =>
+      db
+        .update(alertNotifications)
+        .set({ status: 'sent', sentAt: new Date(), errorMessage: null })
+        .where(buildAlertNotificationClaimCas(notificationRecord.id))
+    );
+
+    console.log(`[NotificationDispatcher] Sent ${channel.type} notification for alert ${data.alertId}`);
+
+    return {
+      success: true,
+      channelType: channel.type,
+      error: undefined,
+      durationMs: Date.now() - startTime
+    };
+  }
+
   await runWithSystemDbAccess(() =>
     db
       .update(alertNotifications)
-      .set({
-        status: success ? 'sent' : 'failed',
-        sentAt: success ? new Date() : null,
-        errorMessage: error || null
-      })
+      .set({ status: 'failed', errorMessage: error || null })
       .where(eq(alertNotifications.id, notificationRecord.id))
   );
 
-  if (success) {
-    console.log(`[NotificationDispatcher] Sent ${channel.type} notification for alert ${data.alertId}`);
-  } else {
-    console.error(`[NotificationDispatcher] Failed to send ${channel.type} notification: ${error}`);
-  }
+  console.error(`[NotificationDispatcher] Failed to send ${channel.type} notification: ${error}`);
 
-  return {
-    success,
-    channelType: channel.type,
-    error,
-    durationMs: Date.now() - startTime
-  };
+  // Throw so BullMQ's attempts+backoff actually retries a transport failure.
+  // This path used to return a resolved {success:false}, which BullMQ treats
+  // as a completed job and never retries (#4085 — codex-flagged defect: with
+  // attempts:3, transport failures were never actually retried). The row is
+  // reclaimed on the next attempt via the send-identity claim path above.
+  throw new Error(error || `Unknown error sending ${channel.type} notification`);
 }
 
 /**
