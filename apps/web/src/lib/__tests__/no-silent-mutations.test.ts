@@ -46,6 +46,10 @@ const TARGET_GLOBS = [
   // POST are advisory-then-destructive mutations against a partner's tenant
   // tree, so a silent failure here is exactly the class this guard exists for.
   'src/components/settings/MergeOrgModal.tsx',
+  // Org archive (org-lifecycle Wave 5), replacing the org delete flow: the
+  // archive POST hides an org, uninstalls its agents, and stops its billing —
+  // a silent failure here is exactly the class this guard exists for.
+  'src/components/settings/ArchiveOrgModal.tsx',
   'src/components/settings/LoginBrandingCard.tsx',
   'src/components/settings/ConnectSsoCard.tsx',
   'src/components/patches/PatchesPage.tsx',
@@ -362,9 +366,9 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    // 98: 97 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
-    // (org-lifecycle Wave 3).
-    expect(absoluteFiles.length).toBe(98);
+    // 99: 97 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
+    // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5).
+    expect(absoluteFiles.length).toBe(99);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

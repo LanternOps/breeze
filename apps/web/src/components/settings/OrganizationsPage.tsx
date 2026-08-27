@@ -7,6 +7,7 @@ import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
 import MergeOrgModal from './MergeOrgModal';
+import ArchiveOrgModal from './ArchiveOrgModal';
 import BulkOrgImport from '../organizations/BulkOrgImport';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -16,7 +17,7 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 
-type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'merge';
+type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
 type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
 type OrganizationFormValues = {
@@ -287,9 +288,29 @@ export default function OrganizationsPage() {
     void navigateTo(`/settings/organizations/${org.id}`);
   };
 
-  const handleDelete = (org: Organization) => {
+  const handleArchive = (org: Organization) => {
     setSelectedOrg(org);
-    setModalMode('delete');
+    setModalMode('archive');
+  };
+
+  /**
+   * Called by ArchiveOrgModal the moment its archive POST reports 202.
+   * LIST-STATE UPDATE ONLY — mirrors handleMergeComplete: the modal stays open
+   * on its own `done` phase so the operator can see the purge-date summary,
+   * so this must not close the modal or touch `selectedOrg`.
+   */
+  const handleArchiveComplete = (archivedId: string) => {
+    setOrganizations(prev => prev.filter(o => o.id !== archivedId));
+  };
+
+  /**
+   * The done-phase summary's explicit Close button. `selectedOrg` here is the
+   * org that was just archived (handleArchiveComplete already dropped it from
+   * the active list), so it's cleared too — mirrors handleMergeDoneClose.
+   */
+  const handleArchiveDoneClose = () => {
+    setSelectedOrg(null);
+    handleCloseModal();
   };
 
   const handleMerge = (org: Organization) => {
@@ -319,7 +340,7 @@ export default function OrganizationsPage() {
    * The done-phase summary's explicit Close button. Unlike a plain
    * `handleCloseModal()`, `selectedOrg` here is known to be the org that was
    * JUST merged away (handleMergeComplete already dropped it from the list),
-   * so it's cleared too — mirrors handleConfirmDelete's selectedOrg-clearing
+   * so it's cleared too — mirrors handleArchiveDoneClose's selectedOrg-clearing
    * behavior. A plain Cancel out of the pick/failed phases (before anything
    * merged) must NOT clear it, which is why this is a separate handler
    * rather than folded into `onClose`.
@@ -499,50 +520,6 @@ export default function OrganizationsPage() {
           setGuidingFirstSite(true);
           setSiteModalMode('add');
         }
-      }
-    } catch (err) {
-      // runAction already surfaced an ActionError as a toast, and onUnauthorized
-      // is redirecting on 401 — re-storing either in the page banner would be a
-      // second, INVISIBLE copy (it renders behind this modal). Only a
-      // non-ActionError escaped runAction untoasted, so only that is surfaced.
-      if (!(err instanceof ActionError)) {
-        // A toast, NOT setError. The modal is still open on failure and the
-        // page banner renders behind its `fixed inset-0 z-50` overlay, so
-        // routing an unexpected error there reproduces the exact invisibility
-        // this change removes. Reachable in practice: `runAction` calls
-        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
-        // handleSessionExpired's logout or location.replace arrives here as a
-        // non-ActionError.
-        showToast({
-          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
-          type: 'error'
-        });
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleConfirmDelete = async () => {
-    if (!selectedOrg) return;
-
-    setSubmitting(true);
-    try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/orgs/organizations/${selectedOrg.id}`, {
-            method: 'DELETE'
-          }),
-        errorFallback: t('organizationsPage.errors.deleteOrganization'),
-        onUnauthorized: handleSessionExpired,
-      });
-
-      const deletedId = selectedOrg.id;
-      await refreshOrgs();
-      handleCloseModal();
-
-      if (selectedOrg?.id === deletedId) {
-        setSelectedOrg(null);
       }
     } catch (err) {
       // runAction already surfaced an ActionError as a toast, and onUnauthorized
@@ -870,17 +847,18 @@ export default function OrganizationsPage() {
                         </button>
                         <button
                           type="button"
+                          data-testid={`org-archive-open-row-${org.id}`}
                           onClick={e => {
                             e.stopPropagation();
-                            handleDelete(org);
+                            handleArchive(org);
                           }}
                           className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          title={t('organizationsPage.actions.deleteOrganization')}
+                          title={t('organizationsPage.actions.archiveOrganization')}
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M3 6h18" />
-                            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                            <rect x="2" y="4" width="20" height="5" rx="1" />
+                            <path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" />
+                            <path d="M10 13h4" />
                           </svg>
                         </button>
                       </div>
@@ -925,10 +903,11 @@ export default function OrganizationsPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleDelete(selectedOrg)}
+                      data-testid="org-archive-open"
+                      onClick={() => handleArchive(selectedOrg)}
                       className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
                     >
-                      {t('common:actions.delete')}
+                      {t('organizationsPage.actions.archiveOrganization')}
                     </button>
                     {canMergeOrgs && (
                       <button
@@ -1005,34 +984,14 @@ export default function OrganizationsPage() {
         </div>
       )}
 
-      {/* Org Delete Confirmation Modal */}
-      {modalMode === 'delete' && selectedOrg && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">{t('organizationsPage.delete.title')}</h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t('organizationsPage.delete.messagePrefix')} <span className="font-medium">{selectedOrg.name}</span>?
-              {t('organizationsPage.delete.messageSuffix')}
-            </p>
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={handleCloseModal}
-                className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-              >
-                {t('common:actions.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                disabled={submitting}
-                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {submitting ? t('organizationsPage.actions.deleting') : t('common:actions.delete')}
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Org Archive Modal */}
+      {modalMode === 'archive' && selectedOrg && (
+        <ArchiveOrgModal
+          org={selectedOrg}
+          onClose={handleCloseModal}
+          onArchived={handleArchiveComplete}
+          onDoneClose={handleArchiveDoneClose}
+        />
       )}
 
       {/* Org Merge Modal */}

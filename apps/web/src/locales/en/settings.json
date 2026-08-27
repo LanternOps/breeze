@@ -3077,7 +3077,7 @@
       "addOrganization": "Add organization",
       "tryAgain": "Try again",
       "editOrganization": "Edit organization",
-      "deleteOrganization": "Delete organization",
+      "archiveOrganization": "Archive organization",
       "deleting": "Deleting..."
     },
     "errors": {
@@ -3085,7 +3085,6 @@
       "generic": "An error occurred",
       "saveOrder": "Failed to save organization order",
       "saveOrganization": "Failed to save organization",
-      "deleteOrganization": "Failed to delete organization",
       "saveSite": "Failed to save site ({{status}})",
       "deleteSite": "Failed to delete site"
     },
@@ -3118,11 +3117,6 @@
       "title": "Add Organization",
       "description": "Create a new organization with the details below.",
       "submit": "Create organization"
-    },
-    "delete": {
-      "title": "Delete Organization",
-      "messagePrefix": "Are you sure you want to delete",
-      "messageSuffix": " This action cannot be undone."
     },
     "siteModal": {
       "editTitle": "Edit Site",
@@ -3171,6 +3165,44 @@
         "merge": "Failed to start the merge",
         "missingResult": "The merge finished but returned no result data. Try again.",
         "mfaRequired": "Merging organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
+      }
+    },
+    "archive": {
+      "title": "Archive organization",
+      "description": "Archiving {{name}} hides it from your active list without erasing anything. You can restore it later.",
+      "consequencesHeading": "What happens when you archive:",
+      "consequences": {
+        "hidden": "Hidden from your organization list and search",
+        "readOnly": "Existing data stays intact and read-only",
+        "agentsUninstalled": "Agents are uninstalled from its devices",
+        "billingStops": "Billing for this organization stops",
+        "purgeScheduled": "Permanently deleted after the retention period, unless you restore it first",
+        "purgeNever": "Kept until you delete it — never automatically purged"
+      },
+      "restoreNote": "Restoring {{name}} is the undo for this action, available any time before it's purged.",
+      "retentionLabel": "Keep archived data for",
+      "retentionOptions": {
+        "days30": "30 days",
+        "days90": "90 days (recommended)",
+        "days365": "365 days",
+        "never": "Never — keep indefinitely",
+        "custom": "Custom"
+      },
+      "customDaysLabel": "Number of days (1–3650)",
+      "customError": "Enter a number of days between 1 and 3650.",
+      "cancel": "Cancel",
+      "confirmButton": "Archive organization",
+      "archiving": "Archiving...",
+      "doneOffboardingTitle": "Archiving started",
+      "doneOffboardingDescription": "{{name}} is being archived — its agents are being uninstalled now. This finishes automatically within a few minutes.",
+      "doneArchivedTitle": "Organization archived",
+      "doneArchivedDescription": "{{name}} has been archived.",
+      "donePurgeScheduled": "Scheduled to be permanently deleted on {{date}}.",
+      "donePurgeNever": "Its data will be kept until you delete it.",
+      "close": "Close",
+      "errors": {
+        "archive": "Failed to archive the organization",
+        "mfaRequired": "Archiving organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
     }
   },

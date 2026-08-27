@@ -3077,7 +3077,7 @@
       "addOrganization": "Adicionar organização",
       "tryAgain": "Tente novamente",
       "editOrganization": "Editar organização",
-      "deleteOrganization": "Excluir organização",
+      "archiveOrganization": "Arquivar organização",
       "deleting": "Excluindo..."
     },
     "errors": {
@@ -3085,7 +3085,6 @@
       "generic": "Ocorreu um erro",
       "saveOrder": "Falha ao salvar a ordem das organizações",
       "saveOrganization": "Falha ao salvar a organização",
-      "deleteOrganization": "Falha ao excluir a organização",
       "saveSite": "Falha ao salvar site ({{status}})",
       "deleteSite": "Falha ao excluir site"
     },
@@ -3118,11 +3117,6 @@
       "title": "Adicionar organização",
       "description": "Crie uma nova organização com os detalhes abaixo.",
       "submit": "Criar organização"
-    },
-    "delete": {
-      "title": "Excluir organização",
-      "messagePrefix": "Tem certeza de que deseja excluir",
-      "messageSuffix": "Esta ação não pode ser desfeita."
     },
     "siteModal": {
       "editTitle": "Editar site",
@@ -3171,6 +3165,44 @@
         "merge": "Falha ao iniciar a mesclagem",
         "missingResult": "A mesclagem terminou, mas não retornou dados de resultado. Tente novamente.",
         "mfaRequired": "Mesclar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
+      }
+    },
+    "archive": {
+      "title": "Arquivar organização",
+      "description": "Arquivar {{name}} a oculta da sua lista ativa sem excluir nada. Você pode restaurá-la depois.",
+      "consequencesHeading": "O que acontece ao arquivar:",
+      "consequences": {
+        "hidden": "Oculta da sua lista de organizações e da busca",
+        "readOnly": "Os dados existentes permanecem intactos e somente leitura",
+        "agentsUninstalled": "Os agentes são desinstalados dos dispositivos dela",
+        "billingStops": "A cobrança dessa organização é interrompida",
+        "purgeScheduled": "Excluída permanentemente após o período de retenção, a menos que você a restaure antes",
+        "purgeNever": "Mantida até que você a exclua — nunca excluída automaticamente"
+      },
+      "restoreNote": "Restaurar {{name}} desfaz essa ação e está disponível a qualquer momento antes da exclusão definitiva.",
+      "retentionLabel": "Manter dados arquivados por",
+      "retentionOptions": {
+        "days30": "30 dias",
+        "days90": "90 dias (recomendado)",
+        "days365": "365 dias",
+        "never": "Nunca — manter indefinidamente",
+        "custom": "Personalizado"
+      },
+      "customDaysLabel": "Número de dias (1–3650)",
+      "customError": "Informe um número de dias entre 1 e 3650.",
+      "cancel": "Cancelar",
+      "confirmButton": "Arquivar organização",
+      "archiving": "Arquivando...",
+      "doneOffboardingTitle": "Arquivamento iniciado",
+      "doneOffboardingDescription": "{{name}} está sendo arquivada — os agentes dela estão sendo desinstalados agora. Isso termina automaticamente em poucos minutos.",
+      "doneArchivedTitle": "Organização arquivada",
+      "doneArchivedDescription": "{{name}} foi arquivada.",
+      "donePurgeScheduled": "Programada para ser excluída permanentemente em {{date}}.",
+      "donePurgeNever": "Os dados dela serão mantidos até que você os exclua.",
+      "close": "Fechar",
+      "errors": {
+        "archive": "Falha ao arquivar a organização",
+        "mfaRequired": "Arquivar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
       }
     }
   },
