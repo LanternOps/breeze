@@ -104,6 +104,21 @@ describe('ArchiveOrgModal — retention picker', () => {
     expect(screen.queryByTestId('org-archive-custom-error')).not.toBeInTheDocument();
     expect(submit).not.toBeDisabled();
   });
+
+  it('accepts the boundary values 1 and 3650', () => {
+    renderModal();
+    fireEvent.click(screen.getByTestId('org-archive-retention-custom'));
+    const input = screen.getByTestId('org-archive-custom-days-input');
+    const submit = screen.getByTestId('org-archive-submit');
+
+    fireEvent.change(input, { target: { value: '1' } });
+    expect(screen.queryByTestId('org-archive-custom-error')).not.toBeInTheDocument();
+    expect(submit).not.toBeDisabled();
+
+    fireEvent.change(input, { target: { value: '3650' } });
+    expect(screen.queryByTestId('org-archive-custom-error')).not.toBeInTheDocument();
+    expect(submit).not.toBeDisabled();
+  });
 });
 
 describe('ArchiveOrgModal — consequences copy', () => {
@@ -183,7 +198,69 @@ describe('ArchiveOrgModal — submit', () => {
     );
   });
 
-  it('renders the draining-copy done state and purge date for an offboarding response', async () => {
+  it('POSTs the custom boundary value 1', async () => {
+    routeFetch({});
+    renderModal();
+
+    fireEvent.click(screen.getByTestId('org-archive-retention-custom'));
+    fireEvent.change(screen.getByTestId('org-archive-custom-days-input'), { target: { value: '1' } });
+    fireEvent.click(screen.getByTestId('org-archive-submit'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/orgs/organizations/${ORG.id}/archive`,
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ retentionDays: 1 }) }),
+      ),
+    );
+  });
+
+  it('POSTs the custom boundary value 3650', async () => {
+    routeFetch({});
+    renderModal();
+
+    fireEvent.click(screen.getByTestId('org-archive-retention-custom'));
+    fireEvent.change(screen.getByTestId('org-archive-custom-days-input'), { target: { value: '3650' } });
+    fireEvent.click(screen.getByTestId('org-archive-submit'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/orgs/organizations/${ORG.id}/archive`,
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ retentionDays: 3650 }) }),
+      ),
+    );
+  });
+
+  it('POSTs {retentionDays: 30} for the 30-day preset', async () => {
+    routeFetch({});
+    renderModal();
+
+    fireEvent.click(screen.getByTestId('org-archive-retention-30'));
+    fireEvent.click(screen.getByTestId('org-archive-submit'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/orgs/organizations/${ORG.id}/archive`,
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ retentionDays: 30 }) }),
+      ),
+    );
+  });
+
+  it('POSTs {retentionDays: 365} for the 365-day preset', async () => {
+    routeFetch({});
+    renderModal();
+
+    fireEvent.click(screen.getByTestId('org-archive-retention-365'));
+    fireEvent.click(screen.getByTestId('org-archive-submit'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/orgs/organizations/${ORG.id}/archive`,
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ retentionDays: 365 }) }),
+      ),
+    );
+  });
+
+  it('renders the draining-copy done state, description, and purge date for an offboarding response', async () => {
     routeFetch({ archive: () => ({ payload: { status: 'offboarding', purgeAt: '2026-11-24T00:00:00.000Z' } }) });
     renderModal();
 
@@ -191,10 +268,15 @@ describe('ArchiveOrgModal — submit', () => {
 
     await waitFor(() => expect(screen.getByTestId('org-archive-done')).toBeInTheDocument());
     expect(screen.getByText('Archiving started')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `${ORG.name} is being archived — its agents are being uninstalled now. This finishes automatically within a few minutes.`,
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('org-archive-purge-summary')).toHaveTextContent('2026');
   });
 
-  it('renders the archived-immediately done state for a suspended-entry response', async () => {
+  it('renders the archived-immediately done state and description for a suspended-entry response', async () => {
     routeFetch({ archive: () => ({ payload: { status: 'archived', purgeAt: null } }) });
     renderModal();
 
@@ -202,6 +284,7 @@ describe('ArchiveOrgModal — submit', () => {
 
     await waitFor(() => expect(screen.getByTestId('org-archive-done')).toBeInTheDocument());
     expect(screen.getByText('Organization archived')).toBeInTheDocument();
+    expect(screen.getByText(`${ORG.name} has been archived.`)).toBeInTheDocument();
     expect(screen.getByTestId('org-archive-purge-summary')).toHaveTextContent('kept until you delete it');
   });
 
