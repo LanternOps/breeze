@@ -364,6 +364,11 @@ import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
+import {
+  initializeAgentCommandRelayWorker,
+  shutdownAgentCommandRelayWorker,
+} from './jobs/agentCommandRelayWorker';
+import { breezeRole } from './config/env';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
@@ -1523,6 +1528,22 @@ async function initializeWorkers(): Promise<void> {
     console.error('[CRITICAL] Failed to initialize eventDispatch:', error);
     captureException(error instanceof Error ? error : new Error(String(error)));
   }
+
+  // Wave 3.5b (#4084): the relay CONSUMER only runs on a process that may own
+  // agent sockets. In today's BREEZE_ROLE=all topology this is every process
+  // (zero behavior change — dispatchCommandToAgent's local-first branch means
+  // the relay path is unreachable for an online agent); the 3.5d split
+  // (#4086) is what makes a worker-role process actually skip this.
+  if (breezeRole() !== 'worker') {
+    try {
+      await initializeAgentCommandRelayWorker();
+      workerStatus['agentCommandRelay'] = true;
+    } catch (error) {
+      workerStatus['agentCommandRelay'] = false;
+      console.error('[CRITICAL] Failed to initialize agentCommandRelay:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
   readiness.invalidate();
 
   if (failed.length === 0) {
@@ -1716,6 +1737,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownEventDispatcher,
     shutdownEventDispatchWorker,
     shutdownEventDispatchQueue,
+    shutdownAgentCommandRelayWorker,
     async () => getEventBus().close(),
     closeRedis,
     async () => {

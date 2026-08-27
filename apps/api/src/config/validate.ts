@@ -610,6 +610,13 @@ const envObjectSchema = z
     EVENT_DISPATCH_MODE: z.string().optional(),
     EVENT_DISPATCH_QUEUE_SUBSCRIBERS: z.string().optional(),
 
+    // Process role for the 3.5d socket/worker split (wave 3.5b, #4084). all
+    // (default) = today's all-in-one process. Read at runtime by
+    // breezeRole() in env.ts. Validated here for format only — absence means
+    // 'all', and this is NOT required-in-production in this wave (that lands
+    // with 3.5d once the split is actually exercised in prod topology).
+    BREEZE_ROLE: z.string().optional(),
+
     // M365 Tier-3 write-action AI tools (m365_disable_user, m365_reset_password)
     // and the action-intents release worker's headless dispatch. Dark by
     // default. Read at runtime by writeActionRuntimeConfig.ts; declared here so
@@ -1729,6 +1736,29 @@ const envSchema = envObjectSchema
         path: ['APP_ENCRYPTION_KEY_ID'],
         message:
           'APP_ENCRYPTION_KEY_ID is required when M365_GRAPH_ACTIONS_TOOLS_ENABLED=true (write-action reveal credentials are sealed with AAD-bound v3 ciphertext).',
+      });
+    }
+
+    // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a
+    // process is split into 'api' or 'worker', cross-process agent command
+    // dispatch goes through agentCommandRelay.ts, which seals every relay job
+    // with AAD-bound v3 ciphertext and REFUSES to seal without a configured
+    // key id (sealRelayCommand throws rather than silently degrading to the
+    // AAD-ignoring v1 fallback). Without this check, a 'api'/'worker' split
+    // deployment boots clean and then fails every single relay dispatch at
+    // runtime with zero boot-time signal — turn that into a boot refusal, same
+    // shape as the M365 pairing rule above. 'all' (default) is unaffected: it
+    // never takes the relay branch for a locally-connected agent.
+    const breezeRoleRaw = (data.BREEZE_ROLE ?? '').trim().toLowerCase();
+    if (
+      (breezeRoleRaw === 'api' || breezeRoleRaw === 'worker')
+      && !data.APP_ENCRYPTION_KEY_ID?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['APP_ENCRYPTION_KEY_ID'],
+        message:
+          'APP_ENCRYPTION_KEY_ID is required when BREEZE_ROLE is "api" or "worker" (the cross-process agent command relay envelope requires AAD-bound v3 ciphertext).',
       });
     }
 

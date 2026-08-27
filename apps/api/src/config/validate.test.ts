@@ -2661,6 +2661,53 @@ describe('M365_GRAPH_ACTIONS_TOOLS_ENABLED boolean guard (#3374)', () => {
   );
 });
 
+describe('BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084)', () => {
+  it.each(['api', 'worker'])(
+    'refuses boot with BREEZE_ROLE=%s and no APP_ENCRYPTION_KEY_ID',
+    (role) => {
+      withEnv({ ...validEnv, BREEZE_ROLE: role }, () => {
+        withoutEnv(['APP_ENCRYPTION_KEY_ID'], () => {
+          expect(() => validateConfig()).toThrow(/APP_ENCRYPTION_KEY_ID/);
+        });
+      });
+    },
+  );
+
+  it.each(['api', 'worker'])(
+    'refuses boot with BREEZE_ROLE=%s and a whitespace-only APP_ENCRYPTION_KEY_ID',
+    (role) => {
+      withEnv({ ...validEnv, BREEZE_ROLE: role, APP_ENCRYPTION_KEY_ID: '   ' }, () => {
+        expect(() => validateConfig()).toThrow(/APP_ENCRYPTION_KEY_ID/);
+      });
+    },
+  );
+
+  it.each(['api', 'worker'])(
+    'passes with BREEZE_ROLE=%s when APP_ENCRYPTION_KEY_ID is set',
+    (role) => {
+      withEnv({ ...validEnv, BREEZE_ROLE: role, APP_ENCRYPTION_KEY_ID: 'current' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it('does not require APP_ENCRYPTION_KEY_ID when BREEZE_ROLE is unset (default "all")', () => {
+    withEnv({ ...validEnv }, () => {
+      withoutEnv(['BREEZE_ROLE', 'APP_ENCRYPTION_KEY_ID'], () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  it('does not require APP_ENCRYPTION_KEY_ID when BREEZE_ROLE=all explicitly', () => {
+    withEnv({ ...validEnv, BREEZE_ROLE: 'all' }, () => {
+      withoutEnv(['APP_ENCRYPTION_KEY_ID'], () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+});
+
 // `isConfigInitialized()` gates ipAllowlistMode()'s pre-boot fallback. Its unit
 // tests mock the whole config module, so without this the predicate itself is
 // unexercised — and inverting it (`_config !== undefined`, always true for a
