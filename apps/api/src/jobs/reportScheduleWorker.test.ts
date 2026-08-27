@@ -174,6 +174,7 @@ import {
   findDueReports,
   processCheckSchedules,
   processRunScheduledReport,
+  buildOccurrenceClaimCas,
 } from './reportScheduleWorker';
 
 const REPORT_ID = '11111111-1111-1111-1111-111111111111';
@@ -491,6 +492,51 @@ describe('processCheckSchedules inline fallback (occurrence CAS + role gate)', (
     // completion) — the claim's own update already stamped lastGeneratedAt, so
     // processRunScheduledReport must not have stamped it again.
     expect(updateMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("'all' role threads a NON-NULL observed lastGeneratedAt into the claim (not a hardcoded null)", async () => {
+    // Every other CAS test in this describe block uses `lastGeneratedAt: null`,
+    // so a mutation that hardcodes `claimReportOccurrence(item.id, null)` in
+    // processCheckSchedules would pass them unnoticed (null replaced with null
+    // is a no-op there). This case observes a previously-generated report and
+    // asserts the CAS predicate actually threads that observed Date through —
+    // as opposed to always claiming via `IS NULL`.
+    const observed = new Date('2026-06-30T09:00:00.000Z');
+    selectMock.mockReturnValueOnce(selectChain([dueRow({ lastGeneratedAt: observed })]));
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+    const claim = claimUpdateChain([{ id: REPORT_ID }]);
+    updateMock.mockReturnValueOnce(claim);
+    // processRunScheduledReport's own path after the claim.
+    selectMock.mockReturnValueOnce(selectChain([{
+      id: REPORT_ID,
+      orgId: ORG_ID,
+      name: 'Nightly inventory',
+      type: 'device_inventory',
+      format: 'csv',
+      schedule: 'daily',
+      config: {},
+      lastGeneratedAt: observed,
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+      executionScopeFingerprint: 'f'.repeat(64),
+      executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
+    }]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()); // reportRuns -> completed
+    generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(processCheckSchedules()).resolves.toBeUndefined();
+
+    expect(claim.where).toHaveBeenCalledTimes(1);
+    const casArg = (claim.where as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    // The predicate actually used must equal the CAS built from the OBSERVED
+    // value (equality against the timestamp) and must NOT equal the CAS built
+    // from null (an IS NULL claim) — that distinguishes a genuine thread from
+    // a hardcoded-null mutation.
+    expect(casArg).toEqual(buildOccurrenceClaimCas(REPORT_ID, observed));
+    expect(casArg).not.toEqual(buildOccurrenceClaimCas(REPORT_ID, null));
   });
 
   it("a lost claim (concurrent tick already won it) skips the report without generating", async () => {
