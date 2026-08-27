@@ -3077,7 +3077,7 @@
       "addOrganization": "Organizasyon ekle",
       "tryAgain": "Tekrar deneyin",
       "editOrganization": "Organizasyonu düzenle",
-      "deleteOrganization": "Kuruluşu sil",
+      "archiveOrganization": "Kuruluşu arşivle",
       "deleting": "Siliniyor..."
     },
     "errors": {
@@ -3085,7 +3085,6 @@
       "generic": "Bir hata oluştu",
       "saveOrder": "Organizasyon sırası kaydedilemedi",
       "saveOrganization": "Kuruluş kaydedilemedi",
-      "deleteOrganization": "Kuruluş silinemedi",
       "saveSite": "Site kaydedilemedi ({{status}})",
       "deleteSite": "Site silinemedi"
     },
@@ -3118,11 +3117,6 @@
       "title": "Organizasyon Ekle",
       "description": "Aşağıdaki ayrıntılarla yeni bir organizasyon oluşturun.",
       "submit": "Organizasyon oluştur"
-    },
-    "delete": {
-      "title": "Kuruluşu Sil",
-      "messagePrefix": "Silmek istediğinizden emin misiniz?",
-      "messageSuffix": "Bu işlem geri alınamaz."
     },
     "siteModal": {
       "editTitle": "Siteyi Düzenle",
@@ -3171,6 +3165,72 @@
         "merge": "Birleştirme başlatılamadı",
         "missingResult": "Birleştirme tamamlandı ancak sonuç verisi döndürmedi. Tekrar deneyin.",
         "mfaRequired": "Kuruluşları birleştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      }
+    },
+    "archive": {
+      "title": "Kuruluşu arşivle",
+      "description": "{{name}} kuruluşunu arşivlemek, hiçbir şeyi silmeden onu etkin listenizden gizler. Daha sonra geri yükleyebilirsiniz.",
+      "consequencesHeading": "Arşivlediğinizde neler olur:",
+      "consequences": {
+        "hidden": "Kuruluş listenizden ve aramadan gizlenir",
+        "readOnly": "Mevcut veriler bozulmadan ve salt okunur olarak kalır",
+        "agentsUninstalled": "Cihazlarındaki ajanlar kaldırılır",
+        "billingStops": "Bu kuruluş için faturalandırma durur",
+        "purgeScheduled": "Önce geri yüklemezseniz saklama süresinden sonra kalıcı olarak silinir",
+        "purgeNever": "Siz silene kadar saklanır — asla otomatik olarak temizlenmez"
+      },
+      "restoreNote": "{{name}} kuruluşunu geri yüklemek bu işlemi geri alır ve kalıcı olarak silinmeden önce her zaman kullanılabilir.",
+      "retentionLabel": "Arşivlenen verileri şu süre boyunca sakla",
+      "retentionOptions": {
+        "days30": "30 gün",
+        "days90": "90 gün (önerilen)",
+        "days365": "365 gün",
+        "never": "Asla — süresiz sakla",
+        "custom": "Özel"
+      },
+      "customDaysLabel": "Gün sayısı (1–3650)",
+      "customError": "1 ile 3650 arasında bir gün sayısı girin.",
+      "cancel": "İptal",
+      "confirmButton": "Kuruluşu arşivle",
+      "archiving": "Arşivleniyor...",
+      "doneOffboardingTitle": "Arşivleme başladı",
+      "doneOffboardingDescription": "{{name}} arşivleniyor — ajanları şu anda kaldırılıyor. Bu işlem birkaç dakika içinde otomatik olarak tamamlanır.",
+      "doneArchivedTitle": "Kuruluş arşivlendi",
+      "doneArchivedDescription": "{{name}} arşivlendi.",
+      "donePurgeScheduled": "{{date}} tarihinde kalıcı olarak silinecek şekilde planlandı.",
+      "donePurgeNever": "Verileri siz silene kadar saklanacak.",
+      "close": "Kapat",
+      "errors": {
+        "archive": "Kuruluş arşivlenemedi",
+        "mfaRequired": "Kuruluşları arşivlemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      }
+    },
+    "archived": {
+      "sectionTitle": "Arşivlenenler",
+      "loading": "Arşivlenen kuruluşlar yükleniyor...",
+      "empty": "Arşivlenmiş kuruluş yok.",
+      "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
+      "badge": "Arşivlendi",
+      "keptIndefinitely": "Süresiz olarak saklanıyor",
+      "purgeToday": "Bugün kalıcı olarak silinecek",
+      "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
+      "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek",
+      "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
+      "readOnlyNotice": "Bu kuruluş arşivlendi ve salt okunur durumda. Normal erişimi sürdürmek için geri yükleyin.",
+      "errors": {
+        "fetch": "Arşivlenen kuruluşlar yüklenemedi"
+      }
+    },
+    "restore": {
+      "action": "Geri yükle",
+      "restoring": "Geri yükleniyor...",
+      "success": "{{name}} geri yüklendi — durum: {{status}}.",
+      "recreateRequiredNote": "Tekrar tam olarak kullanılabilir olmadan önce: {{items}}",
+      "suspendedNote": "Arşivlenmeden önce askıya alınmıştı, bu nedenle askıya alınmış olarak geri yüklendi — normal erişimi sürdürmeden önce bunu çözün.",
+      "errors": {
+        "restore": "Kuruluş geri yüklenemedi",
+        "mfaRequired": "Kuruluşları geri yüklemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin.",
+        "purging": "Bu kuruluş zaten kalıcı olarak siliniyor ve artık geri yüklenemez."
       }
     }
   },

@@ -3024,7 +3024,7 @@
       "addOrganization": "Organisation hinzufügen",
       "tryAgain": "Versuchen Sie es erneut",
       "editOrganization": "Organisation bearbeiten",
-      "deleteOrganization": "Organisation löschen",
+      "archiveOrganization": "Organisation archivieren",
       "deleting": "Löschen..."
     },
     "errors": {
@@ -3032,7 +3032,6 @@
       "generic": "Es ist ein Fehler aufgetreten",
       "saveOrder": "Organisationsreihenfolge konnte nicht gespeichert werden",
       "saveOrganization": "Die Organisation konnte nicht gespeichert werden",
-      "deleteOrganization": "Organisation konnte nicht gelöscht werden",
       "saveSite": "Standort konnte nicht gespeichert werden ({{status}})",
       "deleteSite": "Die Standort konnte nicht gelöscht werden"
     },
@@ -3065,11 +3064,6 @@
       "title": "Organisation hinzufügen",
       "description": "Erstellen Sie eine neue Organisation mit den unten aufgeführten Details.",
       "submit": "Organisation schaffen"
-    },
-    "delete": {
-      "title": "Organisation löschen",
-      "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
-      "messageSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
     },
     "siteModal": {
       "editTitle": "Standort bearbeiten",
@@ -3118,6 +3112,72 @@
         "merge": "Zusammenführung konnte nicht gestartet werden",
         "missingResult": "Die Zusammenführung wurde abgeschlossen, lieferte aber keine Ergebnisdaten. Versuchen Sie es erneut.",
         "mfaRequired": "Das Zusammenführen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      }
+    },
+    "archive": {
+      "title": "Organisation archivieren",
+      "description": "Durch das Archivieren wird {{name}} aus Ihrer aktiven Liste ausgeblendet, ohne etwas zu löschen. Sie können die Organisation später wiederherstellen.",
+      "consequencesHeading": "Was beim Archivieren passiert:",
+      "consequences": {
+        "hidden": "Wird aus Ihrer Organisationsliste und der Suche ausgeblendet",
+        "readOnly": "Vorhandene Daten bleiben erhalten und werden schreibgeschützt",
+        "agentsUninstalled": "Agenten werden von den Geräten deinstalliert",
+        "billingStops": "Die Abrechnung für diese Organisation wird eingestellt",
+        "purgeScheduled": "Wird nach der Aufbewahrungsfrist dauerhaft gelöscht, sofern Sie sie nicht vorher wiederherstellen",
+        "purgeNever": "Wird aufbewahrt, bis Sie sie löschen — nie automatisch endgültig gelöscht"
+      },
+      "restoreNote": "Die Wiederherstellung von {{name}} macht diese Aktion rückgängig und ist jederzeit möglich, bevor sie endgültig gelöscht wird.",
+      "retentionLabel": "Archivierte Daten aufbewahren für",
+      "retentionOptions": {
+        "days30": "30 Tage",
+        "days90": "90 Tage (empfohlen)",
+        "days365": "365 Tage",
+        "never": "Nie — unbegrenzt aufbewahren",
+        "custom": "Benutzerdefiniert"
+      },
+      "customDaysLabel": "Anzahl der Tage (1–3650)",
+      "customError": "Geben Sie eine Anzahl von Tagen zwischen 1 und 3650 ein.",
+      "cancel": "Abbrechen",
+      "confirmButton": "Organisation archivieren",
+      "archiving": "Wird archiviert...",
+      "doneOffboardingTitle": "Archivierung gestartet",
+      "doneOffboardingDescription": "{{name}} wird archiviert — die Agenten werden jetzt deinstalliert. Dies wird automatisch innerhalb weniger Minuten abgeschlossen.",
+      "doneArchivedTitle": "Organisation archiviert",
+      "doneArchivedDescription": "{{name}} wurde archiviert.",
+      "donePurgeScheduled": "Wird am {{date}} endgültig gelöscht.",
+      "donePurgeNever": "Die Daten werden aufbewahrt, bis Sie sie löschen.",
+      "close": "Schließen",
+      "errors": {
+        "archive": "Organisation konnte nicht archiviert werden",
+        "mfaRequired": "Das Archivieren von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      }
+    },
+    "archived": {
+      "sectionTitle": "Archiviert",
+      "loading": "Archivierte Organisationen werden geladen...",
+      "empty": "Keine archivierten Organisationen.",
+      "noMatches": "Keine archivierten Organisationen entsprechen Ihrer Suche.",
+      "badge": "Archiviert",
+      "keptIndefinitely": "Wird unbegrenzt aufbewahrt",
+      "purgeToday": "Wird heute endgültig gelöscht",
+      "purgeCountdown_one": "Wird in {{count}} Tag endgültig gelöscht",
+      "purgeCountdown_other": "Wird in {{count}} Tagen endgültig gelöscht",
+      "truncatedNote": "Zeigt die ersten {{count}} archivierten Organisationen. Suchen Sie, um die Liste einzugrenzen.",
+      "readOnlyNotice": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um den normalen Zugriff fortzusetzen.",
+      "errors": {
+        "fetch": "Archivierte Organisationen konnten nicht geladen werden"
+      }
+    },
+    "restore": {
+      "action": "Wiederherstellen",
+      "restoring": "Wird wiederhergestellt...",
+      "success": "{{name}} wiederhergestellt — Status: {{status}}.",
+      "recreateRequiredNote": "Bevor sie wieder vollständig nutzbar ist: {{items}}",
+      "suspendedNote": "Sie war vor der Archivierung gesperrt, daher wurde sie als gesperrt wiederhergestellt — beheben Sie dies, bevor sie den normalen Zugriff wieder aufnimmt.",
+      "errors": {
+        "restore": "Die Organisation konnte nicht wiederhergestellt werden",
+        "mfaRequired": "Das Wiederherstellen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut.",
+        "purging": "Diese Organisation wird bereits endgültig gelöscht und kann nicht mehr wiederhergestellt werden."
       }
     }
   },

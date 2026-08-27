@@ -24,6 +24,16 @@ export type Organization = {
   type?: 'customer' | 'internal' | 'quick_support';
   deviceCount?: number;
   createdAt: string;
+  /**
+   * Set (`true`) only on rows read through the archived-org list/detail door
+   * (`GET /orgs/organizations?includeArchived=true`, `archivedOrgReads.ts`).
+   * Absent on every ordinary live row — never `false` — so a plain
+   * `org.archived` truthiness check is the same test as `status === 'archived'`
+   * without re-deriving it from the status string at every call site.
+   */
+  archived?: true;
+  /** ISO timestamp, or `null` for "kept indefinitely" — only meaningful when `archived`. */
+  purgeAt?: string | null;
 };
 
 type OrganizationListProps = {
