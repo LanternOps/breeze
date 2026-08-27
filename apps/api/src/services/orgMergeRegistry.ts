@@ -118,6 +118,14 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // are erased together (tenantCascade deletes action_intents first —
   // alphabetical order happens to be the correct child-before-parent order).
   ai_agent_runs: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (ai_agent_runs_immutable_guard); run history stays with the source org per the 2026-08-23 owner decision' },
+  // llm_egress_events (#3922 phase 2, landed on main 2026-08-27): per-request
+  // egress telemetry — which org attempted which outbound LLM dial, allowed or
+  // blocked. Repointing would attribute the loser org's egress history to the
+  // survivor (and the composite (org_id, partner_id) FK to organizations means
+  // an org_id-only UPDATE breaks the moment the two orgs' partners differ).
+  // Same disposition as ai_agent_runs: history stays with the source org and
+  // dies with the loser shell; the preview discloses the row count.
+  llm_egress_events: { kind: 'leave-for-erasure', note: 'egress telemetry is per-org history; composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
 
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in
@@ -362,7 +370,12 @@ const REPOINT_TABLES: readonly string[] = [
   "elevation_audit",
   "elevation_requests",
   "escalation_policies",
-  "event_bus_events",
+  // event_delivery_receipts (durable dispatch bookkeeping, #4117, landed on
+  // main 2026-08-27 — the same PR dropped event_bus_events, which used to be
+  // listed here): PK (event_id, subscriber_id) carries no org, so a repoint
+  // can't collide, and in-flight planned/delivering receipts keep retrying
+  // against the surviving org instead of a dead shell.
+  "event_delivery_receipts",
   "executive_summaries",
   "fleet_finding_devices",
   "fleet_remediation_run_targets",
