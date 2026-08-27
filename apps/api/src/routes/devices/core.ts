@@ -402,7 +402,7 @@ coreRoutes.post(
     }
 
     const ttlMinutes = explicitTtlMinutes
-      ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
+      ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60 * 24 * 30);
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);
