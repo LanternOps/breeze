@@ -25,7 +25,13 @@ import { dispatchAlertNotifications, handleAlertLifecycleEvent } from './notific
 describe('alert.triggered redelivery cannot double-notify', () => {
   beforeEach(() => {
     queueAddMock.mockReset();
-    queueAddMock.mockResolvedValue({ id: 'job-1' });
+    // Default: a fresh/healthy job, never 'failed' — so the (d) failed-job
+    // recovery path (getState/retry) stays a no-op for every test in this
+    // file EXCEPT the ones that explicitly override this mock to exercise
+    // it. Without getState, every pre-existing test here would throw inside
+    // retryIfFailedJob's try/catch and only warn — silently untested and
+    // noisy, not a genuine pass of the happy path.
+    queueAddMock.mockResolvedValue({ id: 'job-1', getState: vi.fn().mockResolvedValue('waiting') });
   });
 
   it('enqueues process-alert under a stable job id derived from the alert and event', async () => {

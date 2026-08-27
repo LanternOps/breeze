@@ -151,6 +151,39 @@ function railOwnershipCondition(
 }
 
 /**
+ * Failed-job recovery (#4085): `queue.add`/`queue.addBulk` return the
+ * EXISTING job for a duplicate id WITHOUT enqueuing a new one — including
+ * when that existing job already reached the 'failed' state. A stable jobId
+ * (baseline sends, escalation steps, process-alert) is only a double-send
+ * guard while its failed-job hash exists in Redis; the moment a send fails,
+ * that hash occupies the id for the rest of its `removeOnFail` window
+ * (count- or age-bounded), and every later add for that identity — a
+ * process-alert retry, a redelivered alert.triggered, a rescheduled
+ * escalation — would otherwise silently return the dead job without
+ * enqueuing, while the caller's `queued`/success count keeps reporting as if
+ * it worked. Explicitly retry a duplicate-id job that is already 'failed' so
+ * redelivery actually recovers instead of no-oping.
+ *
+ * Benign races only warn, never throw: the job can be removed/reaped between
+ * `getState()` and `retry()` (e.g. a `removeOnFail` count/age purge), or
+ * `getState()` itself can transiently fail — neither should fail the
+ * caller's dispatch.
+ */
+async function retryIfFailedJob(job: Job<NotificationJobData>, context: string): Promise<void> {
+  try {
+    const state = await job.getState();
+    if (state === 'failed') {
+      await job.retry();
+    }
+  } catch (err) {
+    console.warn(
+      `[NotificationDispatcher] Failed to retry job ${job.id} (${context}) after duplicate-id failed-state check:`,
+      err
+    );
+  }
+}
+
+/**
  * Process an alert and queue notifications to all configured channels.
  * Exported for the notificationRailsPartnerRls integration suite, which
  * proves the partner-wide rail fan-out (#2130) against real Postgres — every
@@ -316,11 +349,20 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       // retry collapses onto the same job. Escalation sends already have a
       // stable jobId (`escalation-<alertId>-step<n>-<channelId>`) — this
       // gives baseline sends the same property.
+      //
+      // This jobId collapse is only a FAST PATH, and only while the job hash
+      // still exists — see `retryIfFailedJob` below for what happens once it
+      // reaches 'failed'. Task 8's durable (alertId, channelId, escalationStep)
+      // row identity in `alert_notifications` (unique index; see
+      // `buildAlertNotificationClaimCas`) is the actual double-send backstop.
       jobId: `alert-send-${data.alertId}-${channelId}-0`
     }
   }));
 
-  await queue.addBulk(jobs);
+  const addedJobs = await queue.addBulk(jobs);
+  await Promise.all(
+    addedJobs.map((job) => retryIfFailedJob(job, `alert ${data.alertId} baseline send`))
+  );
 
   // Check for escalation policy (only applicable to rule-based alerts)
   const escalationPolicyId = ruleOverrides?.escalationPolicyId as string | undefined;
@@ -1242,7 +1284,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
     const stepChannelIds = (step.channelIds || []).filter((channelId) => validChannelIdSet.has(channelId));
 
     for (const channelId of stepChannelIds) {
-      await queue.add(
+      const job = await queue.add(
         'send',
         {
           type: 'send',
@@ -1266,6 +1308,10 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
           removeOnFail: { age: 3600 }
         }
       );
+      // Same exposure as the baseline sends above: a duplicate add against a
+      // failed escalation-step hash would otherwise silently no-op for the
+      // whole 1-hour removeOnFail window.
+      await retryIfFailedJob(job, `alert ${alertId} escalation step ${i + 1}`);
     }
   }
 
@@ -1342,28 +1388,12 @@ export async function dispatchAlertNotifications(
     }
   );
 
-  // Failed-job recovery (#4085): `queue.add` returns the EXISTING job for a
-  // duplicate id WITHOUT enqueuing — it does not re-run a failed job. Before
-  // this, a redelivered alert.triggered landing on a previously-FAILED
-  // process-alert hash (still retained for up to an hour by the
-  // age-bounded removeOnFail above) was a silent permanent drop: the
-  // redelivery that exists specifically to recover the failure never
-  // notified anyone. Explicitly retry a failed job on every duplicate add.
-  try {
-    const state = await job.getState();
-    if (state === 'failed') {
-      await job.retry();
-    }
-  } catch (err) {
-    // Benign races: the job could be removed/reaped between getState() and
-    // retry() (e.g. the removeOnFail age purge), or getState() itself can
-    // transiently fail. Either way this must not fail the whole dispatch —
-    // log and move on.
-    console.warn(
-      `[NotificationDispatcher] Failed to retry job ${job.id} for alert ${alertId} after duplicate-id failed-state check:`,
-      err
-    );
-  }
+  // Failed-job recovery (#4085): see `retryIfFailedJob` above. A redelivered
+  // alert.triggered landing on a previously-FAILED process-alert hash (still
+  // retained for up to an hour by the age-bounded removeOnFail above) was a
+  // silent permanent drop before this — the redelivery that exists
+  // specifically to recover the failure never notified anyone.
+  await retryIfFailedJob(job, `alert ${alertId} process-alert`);
 }
 
 /**
