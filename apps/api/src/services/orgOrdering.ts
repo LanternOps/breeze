@@ -4,6 +4,11 @@
 // are appended at the end in their original relative order (which the caller
 // is expected to pre-sort by createdAt).
 
+import { eq } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { partners } from '../db/schema';
+import { encryptColumnValueForWrite } from './encryptedColumnRegistry';
+
 export interface OrderableOrg {
   id: string;
 }
@@ -50,4 +55,51 @@ export function sanitizeOrganizationOrder(
     out.push(id);
   }
   return out;
+}
+
+/**
+ * Drop `orgId` from `partners.settings.organizationOrder`, if present. Called
+ * post-commit after an org is permanently destroyed (org merge, Task 4) so a
+ * dead id doesn't linger in the partner's saved order forever.
+ *
+ * Purely cosmetic, by design: `applyOrganizationOrder` already tolerates a
+ * stale id (it's simply never matched, same as any other id an org list no
+ * longer contains), so leaving this unfixed would never break the UI — it
+ * would just keep a phantom entry in the persisted array. Never scoped by
+ * `isNull(partners.deletedAt)`: a partner mid-erasure of its own should not
+ * make this throw, and the caller treats the whole call as best-effort
+ * anyway (its own try/catch).
+ *
+ * No-op (no write) when the partner has no saved order or the id isn't in
+ * it, so a merge under a partner that never set a custom order costs nothing
+ * beyond the one read.
+ */
+export async function removeOrgFromPartnerOrder(partnerId: string, orgId: string): Promise<void> {
+  await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [current] = await db
+        .select({ settings: partners.settings })
+        .from(partners)
+        .where(eq(partners.id, partnerId))
+        .limit(1);
+      if (!current) return;
+
+      const currentSettings = (current.settings as Record<string, unknown> | null) ?? {};
+      const order = currentSettings.organizationOrder;
+      if (!Array.isArray(order) || !order.includes(orgId)) return;
+
+      const newSettings = {
+        ...currentSettings,
+        organizationOrder: order.filter((id) => id !== orgId),
+      };
+
+      await db
+        .update(partners)
+        .set({
+          settings: encryptColumnValueForWrite('partners', 'settings', newSettings),
+          updatedAt: new Date(),
+        })
+        .where(eq(partners.id, partnerId));
+    }),
+  );
 }

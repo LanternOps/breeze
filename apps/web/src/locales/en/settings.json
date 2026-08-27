@@ -2982,7 +2982,10 @@
       "trial": "Trial",
       "suspended": "Suspended",
       "churned": "Churned",
-      "offboarding": "Offboarding"
+      "offboarding": "Offboarding",
+      "merging": "Merging…",
+      "archived": "Archived",
+      "purging": "Purging"
     },
     "columns": {
       "devices": "Devices"
@@ -3075,7 +3078,10 @@
       "trial": "Trial",
       "suspended": "Suspended",
       "churned": "Churned",
-      "offboarding": "Offboarding"
+      "offboarding": "Offboarding",
+      "merging": "Merging…",
+      "archived": "Archived",
+      "purging": "Purging"
     },
     "deviceCount": "{{count}} devices",
     "list": {

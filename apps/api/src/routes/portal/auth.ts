@@ -9,6 +9,7 @@ import { portalBranding, portalUsers } from '../../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
 import { getEmailService } from '../../services/email';
 import { getRedis } from '../../services/redis';
+import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { rateLimitIpKey } from '../../services/clientIp';
 import {
   loginSchema,
@@ -150,6 +151,33 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
 
   if (user.status !== 'active') {
     return c.json({ error: 'Account is not active' }, 403);
+  }
+
+  // Org-status gate. Portal sessions live in Redis and were validated against
+  // the portal_users row only — nothing here ever consulted the ORG's
+  // lifecycle state, so a portal user kept full read/write access to an org
+  // that had been suspended, offboarded, archived, or (org-lifecycle Wave 2)
+  // fenced into `merging` for a merge. During a merge that is not merely a
+  // stale read: a portal write landing under the loser org after the fence is
+  // either stranded by the re-tenant or destroyed by the erasure that follows.
+  //
+  // `getActiveOrgTenant` is the same machinery the agent and API ingress paths
+  // use — it applies `isUsableOrgStatus`, the `deleted_at` check and the owning
+  // partner's status in one system-context read, so this gate cannot drift
+  // from theirs.
+  const activeOrg = await getActiveOrgTenant(user.orgId);
+  if (!activeOrg) {
+    if (PORTAL_USE_REDIS) {
+      const redis = getRedis();
+      if (redis) await redis.del(PORTAL_REDIS_KEYS.session(token));
+    }
+    if (ALLOW_IN_MEMORY_PORTAL_STATE) {
+      portalSessions.delete(token);
+    }
+    if (cookieToken) {
+      clearPortalSessionCookies(c);
+    }
+    return c.json({ error: 'Organization is not available' }, 403);
   }
 
   // Sliding session timeout: any authenticated activity pushes expiry forward.

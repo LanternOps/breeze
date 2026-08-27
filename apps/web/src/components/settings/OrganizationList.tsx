@@ -6,7 +6,7 @@ import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/Res
 export type Organization = {
   id: string;
   name: string;
-  status: 'active' | 'trial' | 'suspended' | 'churned' | 'offboarding';
+  status: 'active' | 'trial' | 'suspended' | 'churned' | 'offboarding' | 'merging' | 'archived' | 'purging';
   /**
    * Absent when the caller is organization-scoped: that branch of
    * `GET /orgs/organizations` returns a deliberately minimal projection
@@ -25,12 +25,16 @@ type OrganizationListProps = {
   onDelete?: (organization: Organization) => void;
 };
 
-const STATUS_LABEL_KEYS: Record<Organization['status'], string> = {
+// Exported for test — see OrganizationsPage.statusMaps.test.tsx.
+export const STATUS_LABEL_KEYS: Record<Organization['status'], string> = {
   active: 'organizationList.status.active',
   trial: 'organizationList.status.trial',
   suspended: 'organizationList.status.suspended',
   churned: 'organizationList.status.churned',
   offboarding: 'organizationList.status.offboarding',
+  merging: 'organizationList.status.merging',
+  archived: 'organizationList.status.archived',
+  purging: 'organizationList.status.purging',
 };
 
 export default function OrganizationList({

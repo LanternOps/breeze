@@ -48,6 +48,7 @@ import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTem
 import { ticketFormRoutes } from './routes/tickets/forms';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
+import { orgMergeRoutes } from './routes/orgMerge';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
 import { oauthInteractionRoutes } from './routes/oauthInteraction';
@@ -271,6 +272,7 @@ import {
   shutdownAuditChainAnchorWorker,
 } from './jobs/auditChainAnchor';
 import { initializeTenantErasureWorker, shutdownTenantErasureWorker } from './jobs/tenantErasure';
+import { initializeOrgMergeWorker, shutdownOrgMergeWorker } from './jobs/orgMerge';
 import {
   initializeDesktopSessionFinalizationWorker,
   shutdownDesktopSessionFinalizationWorker,
@@ -1020,6 +1022,7 @@ api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
 api.route('/', tenantVariableRoutes);
 api.route('/orgs', orgRoutes);
+api.route('/orgs', orgMergeRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
 api.route('/permissions', permissionsCatalogRoutes);
@@ -1402,6 +1405,10 @@ async function initializeWorkers(): Promise<void> {
     ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['auditChainAnchor', initializeAuditChainAnchorWorker],
     ['tenantErasure', initializeTenantErasureWorker],
+    // org-lifecycle Wave 2, Task 4: Phase C (audit + erasure handoff) of a
+    // completed org merge. See jobs/orgMerge.ts and the sweeper backstop in
+    // services/tenantOffboarding.ts's sweepOffboardingTenants.
+    ['orgMerge', initializeOrgMergeWorker],
     ['desktopSessionFinalization', initializeDesktopSessionFinalizationWorker],
     ['desktopSessionOrphanRecovery', initializeDesktopSessionOrphanRecovery],
     ['playbookRetention', initializePlaybookRetention],
@@ -1632,6 +1639,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAuditChainVerifyWorker,
     shutdownAuditChainAnchorWorker,
     shutdownTenantErasureWorker,
+    shutdownOrgMergeWorker,
     shutdownDesktopSessionOrphanRecovery,
     shutdownDesktopSessionFinalizationWorker,
     shutdownPlaybookRetention,

@@ -2929,7 +2929,10 @@
       "trial": "Prueba",
       "suspended": "Suspendido",
       "churned": "Dado de baja",
-      "offboarding": "En proceso de baja"
+      "offboarding": "En proceso de baja",
+      "merging": "En proceso de fusión",
+      "archived": "Archivado",
+      "purging": "En proceso de purgado"
     },
     "columns": {
       "devices": "Dispositivos"
@@ -3022,7 +3025,10 @@
       "trial": "Prueba",
       "suspended": "Suspendido",
       "churned": "Dado de baja",
-      "offboarding": "En proceso de baja"
+      "offboarding": "En proceso de baja",
+      "merging": "En proceso de fusión",
+      "archived": "Archivado",
+      "purging": "En proceso de purgado"
     },
     "deviceCount": "dispositivos {{count}}",
     "list": {

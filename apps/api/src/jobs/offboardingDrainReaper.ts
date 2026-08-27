@@ -43,9 +43,18 @@ function createWorker(): Worker<ReaperJobData> {
         // the whole pass — socket teardown must not run while holding a
         // pooled connection idle-in-transaction (#1105).
         const result = await sweepOffboardingTenants();
-        if (result.orgsFinalized > 0 || result.partnersFinalized > 0 || result.failures > 0) {
+        if (
+          result.orgsFinalized > 0
+          || result.partnersFinalized > 0
+          || result.failures > 0
+          || result.mergeErasureReenqueued > 0
+          || result.mergeUnfenced > 0
+          || result.mergeShellsStamped > 0
+        ) {
           console.log(
-            `[OffboardingDrainReaper] Finalized ${result.orgsFinalized} org(s), ${result.partnersFinalized} partner(s), ${result.failures} failure(s)`,
+            `[OffboardingDrainReaper] Finalized ${result.orgsFinalized} org(s), ${result.partnersFinalized} partner(s), `
+            + `${result.mergeErasureReenqueued} merge erasure re-enqueue(s), ${result.mergeUnfenced} merge unfence(s), `
+            + `${result.mergeShellsStamped} merge shell stamp(s), ${result.failures} failure(s)`,
           );
         }
         return result;
