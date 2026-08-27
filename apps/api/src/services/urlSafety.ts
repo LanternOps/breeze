@@ -369,6 +369,17 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * callback's JWKS fetch (SR2-13).
    */
   maxBytes?: number;
+  /**
+   * Optional callback invoked once with the validated IP `safeFetch` has
+   * pinned for this request, before the socket is dialed. Exists so callers
+   * that need to audit/record which address was actually contacted (e.g. the
+   * LLM egress recorder) don't have to duplicate `resolveSafeRecords`.
+   *
+   * Fire-and-forget: a throwing `onConnect` is swallowed and never fails the
+   * request or surfaces to the caller. Backward compatible — omitting it is a
+   * no-op, matching every existing caller's behavior exactly.
+   */
+  onConnect?: (ip: string) => void;
 }
 
 /**
@@ -408,6 +419,15 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     allowPrivateNetwork: init.allowPrivateNetwork
   });
   const safeRecord = safe[0]!;
+
+  if (init.onConnect) {
+    try {
+      init.onConnect(safeRecord.address);
+    } catch {
+      // Fire-and-forget by contract — a caller's audit hook must never be
+      // able to fail the request it's merely observing.
+    }
+  }
 
   // Cleartext is only conceded for the on-LAN hop the operator owns. Checked
   // against the pinned record specifically, so it cannot drift from the address

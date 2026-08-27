@@ -563,6 +563,64 @@ describe('safeFetch — maxBytes body cap (SR2-13)', () => {
   });
 });
 
+describe('safeFetch — onConnect hook', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  function primeLookupPublic(ip = '8.8.8.8'): void {
+    __setLookupForTests(async () => [{ address: ip, family: 4 }]);
+  }
+
+  function spyRequestOk(): void {
+    vi.spyOn(http, 'request').mockImplementation((_options: any, callback?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = 200;
+        res.statusMessage = 'OK';
+        res.headers = {};
+        callback?.(res);
+        res.emit('data', Buffer.from('ok'));
+        res.emit('end');
+      });
+      return req;
+    });
+  }
+
+  it('invokes onConnect with the pinned IP exactly once', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    const onConnect = vi.fn();
+
+    await safeFetch('http://guarded.example.test/x', { onConnect });
+
+    expect(onConnect).toHaveBeenCalledTimes(1);
+    expect(onConnect).toHaveBeenCalledWith('8.8.8.8');
+  });
+
+  it('does not fail the request when onConnect throws', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    const onConnect = vi.fn(() => {
+      throw new Error('boom');
+    });
+
+    const res = await safeFetch('http://guarded.example.test/x', { onConnect });
+    expect(res.status).toBe(200);
+  });
+
+  it('is a no-op when onConnect is not supplied (backward compatible)', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    await expect(safeFetch('http://guarded.example.test/x')).resolves.toBeDefined();
+  });
+});
+
 describe('safeFetch — DNS pinning & rebinding defense', () => {
   let server: http.Server;
   let port: number;
