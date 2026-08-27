@@ -204,13 +204,16 @@ class EventBus {
   }
 
   /**
-   * Close the persistent Redis connection and clean up resources.
+   * Release this bus's reference to the shared Redis connection.
+   *
+   * Deliberately does NOT call `.quit()`: `getOrCreateRedis()` borrows the
+   * module-singleton BullMQ connection (`getRedisConnection()`), which every
+   * BullMQ Worker/Queue in the process shares. Quitting it here tore the
+   * connection out from under consumers still draining in the same shutdown
+   * pass — `closeRedis()` is the sole owner of that quit (wave 3.5d-a, #4086).
    */
   async close(): Promise<void> {
-    if (this.redisClient) {
-      await this.redisClient.quit();
-      this.redisClient = null;
-    }
+    this.redisClient = null;
   }
 
   /**

@@ -283,8 +283,8 @@ import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/disco
 import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
-import { initializeUnifiWorker } from './jobs/unifiWorker';
-import { initializeUnifiTelemetryWorker } from './jobs/unifiTelemetryWorker';
+import { initializeUnifiWorker, shutdownUnifiWorker } from './jobs/unifiWorker';
+import { initializeUnifiTelemetryWorker, shutdownUnifiTelemetryWorker } from './jobs/unifiTelemetryWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
 import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
@@ -356,7 +356,7 @@ import { initializeSuppressionExpiryReaper, shutdownSuppressionExpiryReaper } fr
 import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
-import { initializeTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
+import { initializeTicketMailboxPollWorker, shutdownTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
 import { getWebhookWorker, initializeWebhookDelivery, type WebhookFanoutDeps } from './workers/webhookDelivery';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { toWebhookConfig } from './services/webhookConfig';
@@ -372,6 +372,7 @@ import { breezeRole } from './config/env';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
+import { runShutdownPhases } from './services/shutdownPhases';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
@@ -1625,15 +1626,23 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     auditRetryInterval = null;
   }
 
-  const shutdownTasks: Array<() => Promise<void>> = [
-    // Best-effort final drain of pending audit retries. Bounded by a hard
-    // 5s timeout so a stuck DB doesn't block the rest of shutdown.
-    async () => {
-      await Promise.race([
-        drainAuditRetryQueue().then(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
-      ]);
-    },
+  // Best-effort final drain of pending audit retries. Bounded by a hard
+  // 5s timeout so a stuck DB doesn't block the rest of shutdown.
+  const boundedAuditDrainTask = async () => {
+    await Promise.race([
+      drainAuditRetryQueue().then(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  };
+
+  const dbCloseTask = async () => {
+    const closeDb = dbModule.closeDb;
+    if (typeof closeDb === 'function') {
+      await closeDb();
+    }
+  };
+
+  const workerShutdownTasks: Array<() => Promise<void>> = [
     shutdownLogForwardingWorker,
     shutdownPatchJobWorkers,
     shutdownBackupWorker,
@@ -1665,6 +1674,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownBackupVerificationJobs,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
+    shutdownUnifiWorker,
+    shutdownUnifiTelemetryWorker,
     shutdownSnmpWorker,
     shutdownNetworkBaselineWorker,
     shutdownDiscoveryWorker,
@@ -1732,23 +1743,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,
+    shutdownTicketMailboxPollWorker,
     shutdownInvoiceWorkers,
     shutdownContractWorkers,
-    shutdownEventDispatcher,
-    shutdownEventDispatchWorker,
-    shutdownEventDispatchQueue,
-    shutdownAgentCommandRelayWorker,
-    async () => getEventBus().close(),
-    closeRedis,
-    async () => {
-      const closeDb = dbModule.closeDb;
-      if (typeof closeDb === 'function') {
-        await closeDb();
-      }
-    },
-    // Drain any buffered Sentry events before the process exits (no-op if
-    // Sentry is disabled). Bounded internally by a 2s flush timeout.
-    () => flushSentry(),
   ];
 
   // Stop accepting requests BEFORE tearing down workers/Redis/DB. Otherwise a
@@ -1775,27 +1772,56 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     }
   }
 
-  const shutdownResults = await Promise.allSettled(shutdownTasks.map((task) => task()));
-  const shutdownFailures = shutdownResults.filter((result) => result.status === 'rejected');
-
-  if (shutdownFailures.length > 0) {
-    console.error(`[shutdown] Completed with ${shutdownFailures.length} failure(s)`);
-    process.exit(1);
-    return;
+  const report = await runShutdownPhases([
+    // 1. Final local drains that need DB/Redis still up.
+    { name: 'drain', tasks: [boundedAuditDrainTask] },
+    // 2. Every worker/consumer close — concurrent, as today, but now
+    //    guaranteed to fully settle before shared infrastructure goes away.
+    { name: 'workers', tasks: workerShutdownTasks },
+    // 3. Producer queues + dispatchers (they enqueue INTO Redis; workers are gone).
+    {
+      name: 'queues',
+      tasks: [
+        shutdownEventDispatcher,
+        shutdownEventDispatchWorker,
+        shutdownEventDispatchQueue,
+        shutdownAgentCommandRelayWorker,
+      ],
+    },
+    // 4. Event bus releases its borrowed connection reference (no quit — Task 2).
+    { name: 'eventbus', tasks: [async () => getEventBus().close()] },
+    // 5. The ONLY owner of the Redis quits.
+    { name: 'redis', tasks: [closeRedis] },
+    // 6. DB pool.
+    { name: 'db', tasks: [dbCloseTask] },
+    // 7. Sentry flush (bounded internally at 2s).
+    { name: 'sentry', tasks: [() => flushSentry()], timeoutMs: 5_000 },
+  ]);
+  const failed = report.failures.length > 0;
+  const timedOutSuffix = report.timedOutPhases.length > 0
+    ? ` (timed-out phase(s): ${report.timedOutPhases.join(', ')})`
+    : '';
+  if (failed) {
+    console.error(`[shutdown] Completed with ${report.failures.length} failure(s)${timedOutSuffix}`);
+  } else {
+    console.log(`[shutdown] Complete${timedOutSuffix}`);
   }
-
-  console.log('[shutdown] Complete');
-  process.exit(0);
+  process.exit(failed ? 1 : 0);
 }
 
 function installSignalHandlers(): void {
-  process.once('SIGINT', () => {
-    void shutdownRuntime('SIGINT');
-  });
-
-  process.once('SIGTERM', () => {
-    void shutdownRuntime('SIGTERM');
-  });
+  const onSignal = (signal: NodeJS.Signals) => {
+    // Second signal while a graceful shutdown is running: operator (or
+    // orchestrator) wants out NOW. Deterministic force-exit beats Node's
+    // default handler ambiguity.
+    process.once(signal, () => {
+      console.error(`[shutdown] Second ${signal} — forcing exit`);
+      process.exit(130);
+    });
+    void shutdownRuntime(signal);
+  };
+  process.once('SIGINT', () => onSignal('SIGINT'));
+  process.once('SIGTERM', () => onSignal('SIGTERM'));
 
   // Guard against unhandled rejections from the Claude Agent SDK's
   // fire-and-forget handleControlRequest. When a session is closed while
