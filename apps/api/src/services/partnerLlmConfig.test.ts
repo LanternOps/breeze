@@ -64,7 +64,12 @@ vi.mock('./llmProviderCatalog', () => ({
   getListedProviderByEntryId: catalogState.getListedProviderByEntryId,
 }));
 
-vi.mock('./llm/llmConfigResolver', () => ({
+// Only the feature flag is stubbed. `buildCatalogEndpointSnapshot` stays REAL:
+// it is the single shared definition of "usable endpoint + wire model", and a
+// hand-rolled copy here would let this file's probe assertions pass against a
+// mapping the resolver no longer performs.
+vi.mock('./llm/llmConfigResolver', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./llm/llmConfigResolver')>()),
   isLlmProviderCatalogEnabled: () => catalogState.catalogEnabled,
 }));
 

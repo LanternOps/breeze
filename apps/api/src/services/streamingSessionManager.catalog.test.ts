@@ -24,6 +24,7 @@ const {
   revokeMock,
   getLlmEgressProxyMock,
   recordLlmEgressEventMock,
+  sessionUpdates,
 } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   recordUsageMock: vi.fn(() => Promise.resolve()),
@@ -38,6 +39,7 @@ const {
   revokeMock: vi.fn(),
   getLlmEgressProxyMock: vi.fn(),
   recordLlmEgressEventMock: vi.fn(),
+  sessionUpdates: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -51,7 +53,12 @@ vi.mock('../db', () => ({
         })),
       })),
     })),
-    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })) })),
+    update: vi.fn(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        sessionUpdates.push(values);
+        return { where: vi.fn(() => Promise.resolve()) };
+      }),
+    })),
     insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
   },
   withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
@@ -146,12 +153,23 @@ const PRICING = {
   cacheWriteCentsPerM: 375,
 };
 
+const HAIKU_PRICING = {
+  catalogEntryId: ENTRY_ID,
+  revisionId: REVISION_ID,
+  inputCentsPerM: 100,
+  outputCentsPerM: 500,
+  cacheReadCentsPerM: 10,
+  cacheWriteCentsPerM: 125,
+};
+
 function catalogConfig(overrides: Partial<{
   authMode: 'x-api-key' | 'bearer';
   revisionId: string;
   providerModel: string;
   apiKey: string;
 }> = {}): UsableLlmConfig {
+  const revisionId = overrides.revisionId ?? REVISION_ID;
+  const providerModel = overrides.providerModel ?? 'anthropic/claude-sonnet-4-6';
   return {
     source: 'partner',
     partnerId: PARTNER,
@@ -162,11 +180,23 @@ function catalogConfig(overrides: Partial<{
     endpoint: {
       kind: 'catalog',
       catalogEntryId: ENTRY_ID,
-      revisionId: overrides.revisionId ?? REVISION_ID,
+      revisionId,
       baseUrl: 'https://openrouter.ai/api/v1',
       authMode: overrides.authMode ?? 'x-api-key',
-      providerModel: overrides.providerModel ?? 'anthropic/claude-sonnet-4-6',
-      pricing: { ...PRICING, revisionId: overrides.revisionId ?? REVISION_ID },
+      providerModel,
+      pricing: { ...PRICING, revisionId },
+      // The default model plus one NON-default verified model: a session's
+      // `model` column is client-supplied and can be neither.
+      models: {
+        'claude-sonnet-4-6': {
+          providerModel,
+          pricing: { ...PRICING, revisionId },
+        },
+        'claude-haiku-4-5': {
+          providerModel: 'anthropic/claude-haiku-4-5',
+          pricing: { ...HAIKU_PRICING, revisionId },
+        },
+      },
     },
   };
 }
@@ -319,6 +349,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedQueryArgs.length = 0;
+    sessionUpdates.length = 0;
     grantMock.mockReturnValue({ proxyUrl: PROXY_URL });
     getLlmEgressProxyMock.mockResolvedValue({
       grant: grantMock,
@@ -461,6 +492,115 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     expect(manager.get('sess-catalog-proxy-down')).toBeUndefined();
   });
 
+  it("sends the SESSION's own model on the wire, not the partner default's", async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    // `ai_sessions.model` is a free-form client-supplied string and can also be
+    // stale; the resolver's model_unverified gate only ever checked the partner
+    // DEFAULT, so this model reached the provider untranslated.
+    const session = await manager.getOrCreate(
+      'sess-catalog-haiku',
+      { ...DB_SESSION, model: 'claude-haiku-4-5' },
+      AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+    );
+
+    expect(capturedQueryArgs[0]!.options.model).toBe('anthropic/claude-haiku-4-5');
+    expect(session.model).toBe('claude-haiku-4-5');
+    // …and the ledger prices haiku at HAIKU's rates, not sonnet's.
+    expect(session.catalogPricing).toEqual(expect.objectContaining({ inputCentsPerM: 100 }));
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('fails the session closed when the pinned revision has not verified the session model', async () => {
+    const gate = deferred();
+    gate.resolve();
+    mockSdkQuery([], gate.promise);
+
+    await expect(manager.getOrCreate(
+      'sess-catalog-unmapped',
+      { ...DB_SESSION, model: 'claude-opus-4-8' },
+      AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+    )).rejects.toThrow(/claude-opus-4-8/);
+
+    // Never silently re-pointed at the default model's wire id, and no
+    // subprocess started.
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(grantMock).not.toHaveBeenCalled();
+    expect(manager.get('sess-catalog-unmapped')).toBeUndefined();
+  });
+
+  it('stamps the catalog entry and revision onto the ai_sessions row', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-provenance', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+    );
+
+    // billing_source stays 'partner_key' for direct AND catalog BYOK, so these
+    // two columns are the ledger's only record of WHICH third party processed
+    // the session's content.
+    expect(sessionUpdates).toContainEqual({
+      catalogEntryId: ENTRY_ID,
+      catalogRevisionId: REVISION_ID,
+    });
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('clears the provenance columns for a session that is not catalog-routed', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const session = await manager.getOrCreate(
+      'sess-direct-provenance', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, DIRECT_PARTNER_CONFIG,
+    );
+
+    // A partner who unpins rotates their sessions; the row must not keep
+    // describing a routing the session no longer uses.
+    expect(sessionUpdates).toContainEqual({
+      catalogEntryId: null,
+      catalogRevisionId: null,
+    });
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('releases the egress grant when MCP server construction throws', async () => {
+    const gate = deferred();
+    gate.resolve();
+    mockSdkQuery([], gate.promise);
+
+    await expect(manager.getOrCreate(
+      'sess-catalog-mcp-boom', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      undefined,
+      () => { throw new Error('script-builder factory exploded'); },
+    )).rejects.toThrow('script-builder factory exploded');
+
+    // The grant map must not grow unbounded: `remove()` never runs for a
+    // session that was never registered, so the grant is taken only AFTER the
+    // MCP server exists — inside the window the failure catch actually covers.
+    expect(grantMock).not.toHaveBeenCalled();
+    expect(manager.get('sess-catalog-mcp-boom')).toBeUndefined();
+  });
+
+  it('releases the egress grant when the SDK query itself throws', async () => {
+    queryMock.mockImplementation(() => { throw new Error('spawn EACCES'); });
+
+    await expect(manager.getOrCreate(
+      'sess-catalog-query-boom', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+    )).rejects.toThrow('spawn EACCES');
+
+    expect(grantMock).toHaveBeenCalledOnce();
+    expect(revokeMock).toHaveBeenCalledWith('sess-catalog-query-boom');
+    expect(manager.get('sess-catalog-query-boom')).toBeUndefined();
+  });
+
   it('prices the turn from the revision snapshot instead of Anthropic list rates', async () => {
     const gate = deferred();
     mockSdkQuery([{
@@ -497,6 +637,7 @@ describe('getOrCreate — catalog revision rotation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedQueryArgs.length = 0;
+    sessionUpdates.length = 0;
     grantMock.mockReturnValue({ proxyUrl: PROXY_URL });
     getLlmEgressProxyMock.mockResolvedValue({
       grant: grantMock,

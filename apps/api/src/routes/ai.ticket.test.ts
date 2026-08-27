@@ -28,6 +28,7 @@ const routeMocks = vi.hoisted(() => ({
   deviceInSiteScopeMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   getAnthropicClientForPartnerMock: vi.fn(),
+  resolveWireModelMock: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
   anthropicClient: { messages: { create: vi.fn() } },
 }));
 
@@ -47,6 +48,7 @@ vi.mock('../services/llm/llmConfigResolver', () => ({
     }
   },
   getAnthropicClientForPartner: routeMocks.getAnthropicClientForPartnerMock,
+  resolveWireModel: routeMocks.resolveWireModelMock,
 }));
 
 vi.mock('../db', () => ({
@@ -329,6 +331,50 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       5,
       false,
       'partner_key',
+      undefined,
+    );
+  });
+
+  it('sends the WIRE model to the summarizer and meters catalog traffic at revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    // A catalog endpoint speaks its own ids; the platform-logical one 404s.
+    routeMocks.resolveWireModelMock.mockReturnValueOnce({
+      model: 'anthropic/claude-test',
+      catalogPricing: CATALOG_PRICING,
+    });
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: 'claude-sonnet-4-6', createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'fixed' },
+      ],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockResolvedValueOnce({
+      subject: 'S', problemSummary: 'P', resolutionSummary: 'R', wasFixed: true,
+      suggestedTimeMinutes: 15, inputTokens: 10, outputTokens: 5,
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+    expect(res.status).toBe(200);
+
+    // Translated from the SESSION's model, not the partner default.
+    expect(routeMocks.resolveWireModelMock).toHaveBeenCalledWith(
+      expect.anything(), 'claude-sonnet-4-6',
+    );
+    expect(draftTicketFromTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-test' }),
+    );
+    // Metered from the revision snapshot, never Anthropic list rates — and the
+    // ledger keeps the platform-logical id.
+    expect(recordUsage).toHaveBeenCalledWith(
+      's1', 'org1', 'claude-sonnet-4-6', 10, 5, false, 'partner_key', CATALOG_PRICING,
     );
   });
 

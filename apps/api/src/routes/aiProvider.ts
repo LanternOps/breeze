@@ -172,10 +172,17 @@ aiProviderRoutes.post(
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
     if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
-    if (!isLlmProviderCatalogEnabled()) {
+    const { catalogEntryId, acknowledgeDataNote } = c.req.valid('json');
+    // The flag gates SELECTING an endpoint, never CLEARING one. On a flag
+    // rollback every pinned partner resolves `catalog_disabled` (AI dead) and
+    // cannot even rotate their key — `catalogEntryId: null` is the documented
+    // escape hatch back to direct Anthropic, and `updatePartnerLlmEndpoint`
+    // deliberately places its own flag check after that null branch. Checking
+    // before the body was read made that escape hatch unreachable, leaving
+    // DELETE / (which destroys the stored key) as the only recovery.
+    if (catalogEntryId !== null && !isLlmProviderCatalogEnabled()) {
       throw new HTTPException(404, { message: 'Catalog endpoint selection is not available on this deployment.' });
     }
-    const { catalogEntryId, acknowledgeDataNote } = c.req.valid('json');
     try {
       const result = await updatePartnerLlmEndpoint({
         partnerId: auth.partnerId,

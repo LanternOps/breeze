@@ -139,6 +139,8 @@ import {
   markPartnerLlmError,
   resolveLlmConfig,
   resolveLlmConfigForOrg,
+  resolveWireModel,
+  type UsableLlmConfig,
 } from './llmConfigResolver';
 import { SecretKeyMaterialError } from '../secretCrypto';
 import { captureException, captureMessage } from '../sentry';
@@ -628,8 +630,57 @@ describe('resolveLlmConfig — catalog endpoints (#3922 W3)', () => {
           cacheReadCentsPerM: 30,
           cacheWriteCentsPerM: 375,
         },
+        // The whole verified ∩ mapped set travels with the snapshot: sessions
+        // and one-shot surfaces can run a model other than the partner
+        // default, and none of them may re-read the catalog mid-flight.
+        models: {
+          'claude-sonnet-4-6': {
+            providerModel: 'anthropic/claude-sonnet-4-6',
+            pricing: {
+              catalogEntryId: CATALOG_ENTRY_ID,
+              revisionId: CATALOG_REVISION_ID,
+              inputCentsPerM: 300,
+              outputCentsPerM: 1500,
+              cacheReadCentsPerM: 30,
+              cacheWriteCentsPerM: 375,
+            },
+          },
+        },
       },
     });
+  });
+
+  it('omits a mapped-but-unverified model from the endpoint model map', async () => {
+    process.env.LLM_PROVIDER_CATALOG_ENABLED = 'true';
+    dbState.selectResults.push([catalogRow()]);
+    getListedProviderByEntryIdMock.mockResolvedValue(listedProvider({
+      modelMap: {
+        'claude-sonnet-4-6': {
+          providerModel: 'anthropic/claude-sonnet-4-6',
+          inputCentsPerM: 300,
+          outputCentsPerM: 1500,
+          cacheReadCentsPerM: 30,
+          cacheWriteCentsPerM: 375,
+        },
+        // Mapped by the revision but never verified at the current harness
+        // version — must not become reachable through the model map.
+        'claude-haiku-4-5': {
+          providerModel: 'anthropic/claude-haiku-4-5',
+          inputCentsPerM: 100,
+          outputCentsPerM: 500,
+          cacheReadCentsPerM: 10,
+          cacheWriteCentsPerM: 125,
+        },
+      },
+      verifiedModels: ['claude-sonnet-4-6'],
+    }));
+
+    const resolved = await resolveLlmConfig(PARTNER_ID);
+    expect(resolved.source).toBe('partner');
+    const endpoint = (resolved as Extract<typeof resolved, { source: 'partner' }>).endpoint;
+    expect(endpoint.kind).toBe('catalog');
+    expect(Object.keys((endpoint as Extract<typeof endpoint, { kind: 'catalog' }>).models))
+      .toEqual(['claude-sonnet-4-6']);
   });
 
   it('keys catalog lookup on the row default model, not the platform default', async () => {
@@ -847,5 +898,106 @@ describe('getAnthropicClientForPartner — catalog clients (#3922 W3)', () => {
       .rejects.toBeInstanceOf(LlmUnavailableError);
     expect(anthropicOptions).toHaveLength(0);
     expect(buildGuardedLlmFetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The wire-model translation every outbound surface must go through
+ * (#3922 W3 review). Two properties are load-bearing: a catalog endpoint never
+ * receives a platform-logical model id, and a model the pinned revision has
+ * not mapped AND verified fails CLOSED rather than being silently re-pointed
+ * at the partner's default — which would run a model nobody asked for while
+ * the usage ledger recorded one that never ran.
+ */
+describe('resolveWireModel', () => {
+  const DIRECT_PARTNER: UsableLlmConfig = {
+    source: 'partner',
+    partnerId: PARTNER_ID,
+    apiKey: 'partner-plaintext-key',
+    model: 'claude-sonnet-4-6',
+    configId: CONFIG_ID,
+    configVersion: 4,
+    endpoint: { kind: 'anthropic' },
+  };
+
+  async function catalogConfig(): Promise<UsableLlmConfig> {
+    process.env.LLM_PROVIDER_CATALOG_ENABLED = 'true';
+    dbState.selectResults.push([row({ catalogEntryId: CATALOG_ENTRY_ID })]);
+    getListedProviderByEntryIdMock.mockResolvedValue(listedProvider({
+      modelMap: {
+        'claude-sonnet-4-6': {
+          providerModel: 'anthropic/claude-sonnet-4-6',
+          inputCentsPerM: 300,
+          outputCentsPerM: 1500,
+          cacheReadCentsPerM: 30,
+          cacheWriteCentsPerM: 375,
+        },
+        'claude-haiku-4-5': {
+          providerModel: 'anthropic/claude-haiku-4-5',
+          inputCentsPerM: 100,
+          outputCentsPerM: 500,
+          cacheReadCentsPerM: 10,
+          cacheWriteCentsPerM: 125,
+        },
+      },
+      verifiedModels: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
+    }));
+    const resolved = await resolveLlmConfig(PARTNER_ID);
+    if (resolved.source === 'unavailable') throw new Error('fixture did not resolve');
+    return resolved;
+  }
+
+  it('passes the logical id straight through for the platform path', () => {
+    expect(resolveWireModel(
+      { source: 'platform', apiKey: 'platform-key', model: 'claude-sonnet-4-6' },
+      'claude-sonnet-4-6',
+    )).toEqual({ model: 'claude-sonnet-4-6' });
+  });
+
+  it('passes the logical id straight through for a direct-Anthropic partner, with no pricing', () => {
+    expect(resolveWireModel(DIRECT_PARTNER, 'claude-opus-4-8')).toEqual({ model: 'claude-opus-4-8' });
+  });
+
+  it('translates the partner default model to the revision wire id and its pricing', async () => {
+    const resolved = await catalogConfig();
+
+    expect(resolveWireModel(resolved, 'claude-sonnet-4-6')).toEqual({
+      model: 'anthropic/claude-sonnet-4-6',
+      catalogPricing: {
+        catalogEntryId: CATALOG_ENTRY_ID,
+        revisionId: CATALOG_REVISION_ID,
+        inputCentsPerM: 300,
+        outputCentsPerM: 1500,
+        cacheReadCentsPerM: 30,
+        cacheWriteCentsPerM: 375,
+      },
+    });
+  });
+
+  it('translates a NON-default verified model to its own wire id and its own pricing', async () => {
+    const resolved = await catalogConfig();
+
+    // The resolver's model_unverified gate only ever looked at the partner
+    // default; a session or one-shot surface running haiku must still get
+    // haiku's wire id AND haiku's rates, not sonnet's.
+    expect(resolveWireModel(resolved, 'claude-haiku-4-5')).toEqual({
+      model: 'anthropic/claude-haiku-4-5',
+      catalogPricing: {
+        catalogEntryId: CATALOG_ENTRY_ID,
+        revisionId: CATALOG_REVISION_ID,
+        inputCentsPerM: 100,
+        outputCentsPerM: 500,
+        cacheReadCentsPerM: 10,
+        cacheWriteCentsPerM: 125,
+      },
+    });
+  });
+
+  it('fails closed for a model the pinned revision has not mapped and verified', async () => {
+    const resolved = await catalogConfig();
+
+    expect(() => resolveWireModel(resolved, 'claude-opus-4-8')).toThrow(LlmUnavailableError);
+    // Never silently substituted with the partner default.
+    expect(() => resolveWireModel(resolved, 'claude-opus-4-8')).toThrow(/claude-opus-4-8/);
   });
 });

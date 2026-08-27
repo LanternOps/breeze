@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const createMock = vi.fn();
-const { getAnthropicClientForPartnerMock } = vi.hoisted(() => ({
+const { getAnthropicClientForPartnerMock, resolveWireModelMock } = vi.hoisted(() => ({
   getAnthropicClientForPartnerMock: vi.fn(),
+  resolveWireModelMock: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create: createMock }; },
 }));
 vi.mock('../llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner: getAnthropicClientForPartnerMock,
+  resolveWireModel: resolveWireModelMock,
 }));
 
 import { draftTicketFromEmail, EmailDraftFailedError } from './aiEmailDraft';

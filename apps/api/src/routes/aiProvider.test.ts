@@ -486,6 +486,32 @@ describe('AI provider routes', () => {
     expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
   });
 
+  it('POST /endpoint still CLEARS a selection when the catalog flag is off', async () => {
+    catalogFlagState.enabled = false;
+    vi.mocked(updatePartnerLlmEndpoint).mockResolvedValueOnce({
+      catalogEntryId: null,
+      configVersion: 3,
+      slug: null,
+      revision: null,
+    });
+
+    const response = await postEndpoint({ catalogEntryId: null });
+
+    // The flag gates SELECTING, never CLEARING. On a rollback a pinned partner
+    // resolves `catalog_disabled` (AI dead) and cannot even rotate their key;
+    // `catalogEntryId: null` is the documented escape hatch, and gating it
+    // behind the flag left DELETE / — which destroys the stored key — as the
+    // only recovery.
+    expect(response.status).toBe(200);
+    expect(updatePartnerLlmEndpoint).toHaveBeenCalledWith({
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      catalogEntryId: null,
+      acknowledgeDataNote: false,
+      userId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(await response.json()).toEqual({ catalogEntryId: null, configVersion: 3 });
+  });
+
   it('POST /endpoint selects a catalog entry and audits the slug + revision, never the key', async () => {
     const response = await postEndpoint({ catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true });
 

@@ -17,7 +17,11 @@ import { buildGuardedLlmFetch, LlmEgressViolationError } from './llm/guardedLlmF
 // runtime cycle — `isLlmProviderCatalogEnabled` is called from inside function
 // bodies here, never at module-evaluation time, which is the condition ESM
 // circular imports require to resolve safely.
-import { isLlmProviderCatalogEnabled, type ResolvedLlmEndpoint } from './llm/llmConfigResolver';
+import {
+  buildCatalogEndpointSnapshot,
+  isLlmProviderCatalogEnabled,
+  type ResolvedLlmEndpoint,
+} from './llm/llmConfigResolver';
 import { getListedProviderByEntryId } from './llmProviderCatalog';
 import { decryptSecret, encryptSecret, hmacFingerprint } from './secretCrypto';
 import { captureException } from './sentry';
@@ -198,29 +202,14 @@ async function resolveCatalogEndpointForSelection(
   if (!provider) {
     throw new PartnerLlmError('That endpoint was delisted and is no longer available for selection.', 409);
   }
-  const mapped = provider.modelMap[model];
-  if (!mapped || !provider.verifiedModels.includes(model)) {
+  const endpoint = buildCatalogEndpointSnapshot(provider, model);
+  if (!endpoint) {
     throw new PartnerLlmError(
       'That endpoint does not currently support your configured AI model. Choose a different model or endpoint.',
       409,
     );
   }
-  return {
-    kind: 'catalog',
-    catalogEntryId: provider.entryId,
-    revisionId: provider.revisionId,
-    baseUrl: provider.baseUrl,
-    authMode: provider.authMode,
-    providerModel: mapped.providerModel,
-    pricing: {
-      catalogEntryId: provider.entryId,
-      revisionId: provider.revisionId,
-      inputCentsPerM: mapped.inputCentsPerM,
-      outputCentsPerM: mapped.outputCentsPerM,
-      cacheReadCentsPerM: mapped.cacheReadCentsPerM,
-      cacheWriteCentsPerM: mapped.cacheWriteCentsPerM,
-    },
-  };
+  return endpoint;
 }
 
 export async function savePartnerLlmKey(input: {
@@ -453,30 +442,13 @@ export async function updatePartnerLlmEndpoint(input: {
   }
 
   const model = existing.defaultModel ?? resolveDefaultModel();
-  const mapped = provider.modelMap[model];
-  if (!mapped || !provider.verifiedModels.includes(model)) {
+  const endpoint = buildCatalogEndpointSnapshot(provider, model);
+  if (!endpoint) {
     throw new PartnerLlmError(
       'That endpoint does not currently support your configured AI model. Choose a different model or endpoint.',
       409,
     );
   }
-
-  const endpoint: ResolvedLlmEndpoint = {
-    kind: 'catalog',
-    catalogEntryId: provider.entryId,
-    revisionId: provider.revisionId,
-    baseUrl: provider.baseUrl,
-    authMode: provider.authMode,
-    providerModel: mapped.providerModel,
-    pricing: {
-      catalogEntryId: provider.entryId,
-      revisionId: provider.revisionId,
-      inputCentsPerM: mapped.inputCentsPerM,
-      outputCentsPerM: mapped.outputCentsPerM,
-      cacheReadCentsPerM: mapped.cacheReadCentsPerM,
-      cacheWriteCentsPerM: mapped.cacheWriteCentsPerM,
-    },
-  };
 
   const apiKey = decryptPartnerLlmApiKey({ id: existing.id, apiKeyEncrypted: existing.apiKeyEncrypted });
   await probeAnthropicKey(apiKey, endpoint);

@@ -31,6 +31,7 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     draftTicketFromEmail: vi.fn(),
     recordUsage: vi.fn(),
     getAnthropicClientForPartner: vi.fn(),
+    resolveWireModel: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
     anthropicClient: { messages: { create: vi.fn() } },
   },
 }));
@@ -160,6 +161,7 @@ vi.mock('../../services/llm/llmConfigResolver', () => ({
     }
   },
   getAnthropicClientForPartner: hoisted.getAnthropicClientForPartner,
+  resolveWireModel: hoisted.resolveWireModel,
 }));
 
 import { officeAddinTicketRoutes } from './tickets';
@@ -785,6 +787,35 @@ describe('POST /tickets/draft', () => {
       50,
       false,
       'platform',
+      undefined,
+    );
+  });
+
+  it('sends the WIRE model to the drafter and meters catalog traffic at revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    // A catalog endpoint speaks its own model ids; the platform-logical id
+    // 404s at the provider and the SDK's list pricing must be ignored.
+    hoisted.resolveWireModel.mockReturnValueOnce({
+      model: 'anthropic/claude-x',
+      catalogPricing: CATALOG_PRICING,
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(200);
+    expect(hoisted.resolveWireModel).toHaveBeenCalledWith(expect.anything(), 'claude-x');
+    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-x' }),
+    );
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null, ORG_A, 'claude-x', 100, 50, false, 'platform', CATALOG_PRICING,
     );
   });
 
@@ -914,6 +945,7 @@ describe('POST /tickets/draft', () => {
       90,
       false,
       'platform',
+      undefined,
     );
     errSpy.mockRestore();
   });
@@ -947,6 +979,7 @@ describe('POST /tickets/draft', () => {
       9,
       false,
       'partner_key',
+      undefined,
     );
     errSpy.mockRestore();
   });

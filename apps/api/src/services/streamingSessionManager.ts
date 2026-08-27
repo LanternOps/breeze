@@ -36,7 +36,7 @@ import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isRecognizedSelfHostSignal } from '../config/env';
-import type { ResolvedLlmEndpoint, UsableLlmConfig } from './llm/llmConfigResolver';
+import { resolveWireModel, type ResolvedLlmEndpoint, type UsableLlmConfig } from './llm/llmConfigResolver';
 import { getLlmEgressProxy } from './llm/llmEgressProxy';
 import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
 
@@ -732,53 +732,7 @@ export class StreamingSessionManager {
       console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
     }
 
-    // ── Catalog egress grant (#3922 phase 2) ────────────────────────────────
-    // A catalog session's subprocess may open exactly one destination, through
-    // the local allowlisting CONNECT proxy. The grant must exist BEFORE the
-    // child env is built (it carries the proxy URL) and before query() spawns
-    // the subprocess. Any failure here propagates: fail loud, never start an
-    // unproxied child (phase-1 invariant).
     const catalogEndpoint = catalogEndpointOf(resolved);
-    let egressProxyUrl: string | undefined;
-    let revokeEgressGrant: (() => void) | undefined;
-    if (catalogEndpoint && resolved.source === 'partner') {
-      const host = new URL(catalogEndpoint.baseUrl).hostname;
-      const partnerId = resolved.partnerId;
-      const provenance = {
-        orgId: dbSession.orgId,
-        partnerId,
-        catalogEntryId: catalogEndpoint.catalogEntryId,
-        revisionId: catalogEndpoint.revisionId,
-        aiSessionId: breezeSessionId,
-      };
-      const proxy = await getLlmEgressProxy();
-      egressProxyUrl = proxy.grant(
-        breezeSessionId,
-        { host, port: 443 },
-        // Every CONNECT the child makes under this grant — tunnelled or
-        // refused — becomes one audit row. Synchronous and fire-and-forget by
-        // the recorder's contract; it runs inside the proxy's socket handler.
-        (attempt) => {
-          recordLlmEgressEvent({
-            ...provenance,
-            surface: 'sdk_proxy_connect',
-            host: attempt.host,
-            resolvedIp: attempt.resolvedIp,
-            blocked: attempt.blocked,
-          });
-        },
-      ).proxyUrl;
-      revokeEgressGrant = () => proxy.revoke(breezeSessionId);
-      // One row per session create, so the audit shows which provider a session
-      // was pointed at even if the child never manages a single CONNECT.
-      recordLlmEgressEvent({
-        ...provenance,
-        surface: 'sdk_session_create',
-        host,
-        resolvedIp: null,
-        blocked: false,
-      });
-    }
 
     // Device-bound sessions execute tools under the DEVICE's org, not the
     // login org (#3087). `toolAuth` (MCP tool handlers + their RLS context)
@@ -791,14 +745,23 @@ export class StreamingSessionManager {
     // query and processorPromise are filled in after creation.
     const now = Date.now();
     const effectiveModel = dbSession.model || resolved.model;
+    // `ai_sessions.model` is a free-form, client-supplied string and can also
+    // be stale (created before the partner changed `default_model`), while the
+    // resolver's `model_unverified` gate keys on the partner DEFAULT only. So
+    // translate THIS session's model — and fail closed (LlmUnavailableError)
+    // when the pinned revision has not mapped and verified it, rather than
+    // silently re-pointing the run at the default model's wire id while the
+    // ledger records a model that never ran.
+    const wire = resolveWireModel(resolved, effectiveModel);
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
       deviceId,
       model: effectiveModel,
       llmConfigSnapshot: llmConfigSnapshot(resolved),
-      catalogPricing: catalogEndpoint?.pricing,
-      revokeEgressGrant,
+      // The pricing for the model THIS session runs, not the partner default's.
+      catalogPricing: wire.catalogPricing,
+      revokeEgressGrant: undefined,
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
       abortController,
@@ -861,6 +824,86 @@ export class StreamingSessionManager {
       effectiveSystemPrompt += modeInstructions[approvalMode] ?? '';
     }
 
+    // ── Catalog egress grant (#3922 phase 2) ────────────────────────────────
+    // A catalog session's subprocess may open exactly one destination, through
+    // the local allowlisting CONNECT proxy. The grant must exist BEFORE the
+    // child env is built (it carries the proxy URL) and before query() spawns
+    // the subprocess. Any failure here propagates: fail loud, never start an
+    // unproxied child (phase-1 invariant).
+    //
+    // Taken as late as possible, immediately before the try/catch that
+    // releases it: anything that throws between the grant and that catch —
+    // `mcpServerFactory`, `createBreezeMcpServer` — would otherwise leak the
+    // grant until the process restarted, since `remove()` never runs for a
+    // session that was never registered.
+    let egressProxyUrl: string | undefined;
+    let revokeEgressGrant: (() => void) | undefined;
+    if (catalogEndpoint && resolved.source === 'partner') {
+      const host = new URL(catalogEndpoint.baseUrl).hostname;
+      const partnerId = resolved.partnerId;
+      const provenance = {
+        orgId: dbSession.orgId,
+        partnerId,
+        catalogEntryId: catalogEndpoint.catalogEntryId,
+        revisionId: catalogEndpoint.revisionId,
+        aiSessionId: breezeSessionId,
+      };
+      const proxy = await getLlmEgressProxy();
+      egressProxyUrl = proxy.grant(
+        breezeSessionId,
+        { host, port: 443 },
+        // Every CONNECT the child makes under this grant — tunnelled or
+        // refused — becomes one audit row. Synchronous and fire-and-forget by
+        // the recorder's contract; it runs inside the proxy's socket handler.
+        (attempt) => {
+          recordLlmEgressEvent({
+            ...provenance,
+            surface: 'sdk_proxy_connect',
+            host: attempt.host,
+            resolvedIp: attempt.resolvedIp,
+            blocked: attempt.blocked,
+          });
+        },
+      ).proxyUrl;
+      revokeEgressGrant = () => proxy.revoke(breezeSessionId);
+      session.revokeEgressGrant = revokeEgressGrant;
+      // One row per session create, so the audit shows which provider a session
+      // was pointed at even if the child never manages a single CONNECT.
+      recordLlmEgressEvent({
+        ...provenance,
+        surface: 'sdk_session_create',
+        host,
+        resolvedIp: null,
+        blocked: false,
+      });
+    }
+
+    // Durable per-session provenance (#3922 phase 2). `billing_source` stays
+    // 'partner_key' for direct and catalog BYOK alike, so these two columns are
+    // the only record in the ledger of WHICH third party processed a session's
+    // content — and of which immutable revision's URL/model map/pricing it ran
+    // under. Written on every create (including back to NULL when a partner
+    // unpins and the session rotates) so the row can never describe a routing
+    // the session is no longer using. Best-effort: provenance bookkeeping must
+    // not take AI away from a partner whose traffic is already correctly pinned
+    // and already audited in `llm_egress_events`.
+    try {
+      await db
+        .update(aiSessions)
+        .set({
+          catalogEntryId: catalogEndpoint?.catalogEntryId ?? null,
+          catalogRevisionId: catalogEndpoint?.revisionId ?? null,
+        })
+        .where(eq(aiSessions.id, breezeSessionId));
+    } catch (err) {
+      captureException(err);
+      console.error(
+        '[StreamingSessionManager] Failed to stamp catalog provenance on session:',
+        breezeSessionId,
+        err,
+      );
+    }
+
     // CRITICAL: Create SDK query and background processor OUTSIDE the request's
     // AsyncLocalStorage DB context. The auth middleware wraps requests in a
     // transaction (via withDbAccessContext). Without this escape hatch, the SDK's
@@ -874,9 +917,10 @@ export class StreamingSessionManager {
             systemPrompt: effectiveSystemPrompt,
             // A catalog endpoint speaks its own model ids (`anthropic/…` on
             // OpenRouter, a deployment name on a self-hosted gateway). The wire
-            // id comes from the revision's model map; `session.model` keeps the
-            // platform-logical id for provenance and pricing fallback.
-            model: catalogEndpoint?.providerModel ?? effectiveModel,
+            // id is THIS session's model translated through the revision's
+            // model map; `session.model` keeps the platform-logical id for
+            // provenance and pricing fallback.
+            model: wire.model,
             maxTurns,
             maxBudgetUsd,
             tools: [],
@@ -908,9 +952,10 @@ export class StreamingSessionManager {
       });
     } catch (err) {
       // The subprocess never started (a rejected child env, a query() throw).
-      // Release the egress grant here — nothing else holds a reference to this
-      // session, so `remove()` will never run for it and the grant would leak
-      // until the process restarted.
+      // Release the egress grant here — the session was never registered in
+      // `this.sessions`, so `remove()` will never run for it and the grant
+      // would leak until the process restarted. The grant is taken immediately
+      // above this block precisely so there is no un-covered window.
       try { revokeEgressGrant?.(); } catch { /* teardown must not mask err */ }
       throw err;
     }

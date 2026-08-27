@@ -5,7 +5,7 @@ import { organizations, partnerLlmConfigs } from '../../db/schema';
 import type { LlmEgressSurface } from '../../db/schema/llmEgressEvents';
 import type { CatalogPricingSnapshot } from '../aiCostTracker';
 import { resolveDefaultModel } from '../aiModel';
-import { getListedProviderByEntryId } from '../llmProviderCatalog';
+import { getListedProviderByEntryId, type ListedProvider } from '../llmProviderCatalog';
 import { decryptPartnerLlmApiKey } from '../partnerLlmConfig';
 import { SecretKeyMaterialError } from '../secretCrypto';
 import { captureException, captureMessage } from '../sentry';
@@ -33,6 +33,13 @@ function captureAtMostHourly(key: string, capture: () => void): void {
  * come from ONE immutable revision, so nothing downstream has to re-read the
  * catalog (and cannot see a half-rotated mixture of two revisions).
  */
+/** What one logical (platform) model id becomes on a catalog endpoint's wire. */
+export interface CatalogModelBinding {
+  /** The id sent on the wire; the logical model stays the platform id. */
+  providerModel: string;
+  pricing: CatalogPricingSnapshot;
+}
+
 export type ResolvedLlmEndpoint =
   | { kind: 'anthropic' }
   | {
@@ -44,6 +51,20 @@ export type ResolvedLlmEndpoint =
       /** The id sent on the wire; the logical `model` stays the platform id. */
       providerModel: string;
       pricing: CatalogPricingSnapshot;
+      /**
+       * Every logical model this revision BOTH maps and has a passing
+       * verification for, keyed by platform id.
+       *
+       * The partner default (`providerModel`/`pricing` above) is only one of
+       * them: an `ai_sessions` row carries a client-supplied model, and a
+       * one-shot surface can be handed a session's model — neither is the
+       * default, and neither is covered by the resolver's `model_unverified`
+       * gate, which keys on the partner default alone. Carrying the whole map
+       * on the snapshot lets {@link resolveWireModel} translate (or fail
+       * closed on) any of them without re-reading the catalog and without
+       * risking a half-rotated mixture of two revisions.
+       */
+      models: Readonly<Record<string, CatalogModelBinding>>;
     };
 
 export type ResolvedLlmConfig =
@@ -173,23 +194,34 @@ async function resolveCatalogEndpoint(
   const provider = await getListedProviderByEntryId(catalogEntryId);
   if (!provider) return { ok: false, reason: 'provider_delisted' };
 
-  const mapped = provider.modelMap[model];
-  // Both halves matter. An unmapped model has no wire id or price at all; a
-  // mapped-but-unverified one has never proven tool-call fidelity on THIS
-  // revision at the CURRENT harness version, and shipping agent turns to it
-  // would fail in ways the partner cannot diagnose.
-  if (!mapped || !provider.verifiedModels.includes(model)) {
-    return { ok: false, reason: 'model_unverified' };
-  }
+  const endpoint = buildCatalogEndpointSnapshot(provider, model);
+  if (!endpoint) return { ok: false, reason: 'model_unverified' };
+  return { ok: true, endpoint };
+}
 
-  return {
-    ok: true,
-    endpoint: {
-      kind: 'catalog',
-      catalogEntryId: provider.entryId,
-      revisionId: provider.revisionId,
-      baseUrl: provider.baseUrl,
-      authMode: provider.authMode,
+/**
+ * Snapshots one listed catalog entry against a logical model, or returns null
+ * when this revision has not BOTH mapped and verified that model.
+ *
+ * Both halves matter. An unmapped model has no wire id or price at all; a
+ * mapped-but-unverified one has never proven tool-call fidelity on THIS
+ * revision at the CURRENT harness version, and shipping agent turns to it
+ * would fail in ways the partner cannot diagnose. Intersecting the two up
+ * front means every entry in `models` is usable by construction.
+ *
+ * Shared by the resolver, the partner-facing endpoint selection, and the
+ * key-rotation probe so those three can never disagree about what "usable"
+ * means or about which wire id a model maps to.
+ */
+export function buildCatalogEndpointSnapshot(
+  provider: ListedProvider,
+  model: string,
+): Extract<ResolvedLlmEndpoint, { kind: 'catalog' }> | null {
+  const models: Record<string, CatalogModelBinding> = {};
+  for (const modelId of provider.verifiedModels) {
+    const mapped = provider.modelMap[modelId];
+    if (!mapped) continue;
+    models[modelId] = {
       providerModel: mapped.providerModel,
       pricing: {
         catalogEntryId: provider.entryId,
@@ -199,8 +231,53 @@ async function resolveCatalogEndpoint(
         cacheReadCentsPerM: mapped.cacheReadCentsPerM,
         cacheWriteCentsPerM: mapped.cacheWriteCentsPerM,
       },
-    },
+    };
+  }
+
+  const defaultBinding = models[model];
+  if (!defaultBinding) return null;
+
+  return {
+    kind: 'catalog',
+    catalogEntryId: provider.entryId,
+    revisionId: provider.revisionId,
+    baseUrl: provider.baseUrl,
+    authMode: provider.authMode,
+    providerModel: defaultBinding.providerModel,
+    pricing: defaultBinding.pricing,
+    models,
   };
+}
+
+/**
+ * Translates a logical (platform) model id into what actually goes on the wire
+ * for this resolved config, plus the pricing that must be used to meter it.
+ *
+ * Every surface that sends a model id to the provider MUST route it through
+ * here. A catalog endpoint speaks its own ids (`anthropic/claude-sonnet-4-6`
+ * on OpenRouter, a deployment name on a self-hosted gateway), so sending the
+ * platform id verbatim 404s at the provider; and the returned
+ * `catalogPricing` is what keeps catalog traffic metered from the revision
+ * snapshot instead of Anthropic list rates.
+ *
+ * Fails CLOSED for a model the pinned revision has not mapped AND verified —
+ * silently re-pointing such a request at the partner's default model would run
+ * a model nobody asked for while the ledger recorded the one that never ran.
+ */
+export function resolveWireModel(
+  resolved: UsableLlmConfig,
+  logicalModel: string,
+): { model: string; catalogPricing?: CatalogPricingSnapshot } {
+  if (resolved.source !== 'partner' || resolved.endpoint.kind !== 'catalog') {
+    return { model: logicalModel };
+  }
+  const binding = resolved.endpoint.models[logicalModel];
+  if (!binding) {
+    throw new LlmUnavailableError(
+      `The selected AI provider endpoint has no verified mapping for model "${logicalModel}".`,
+    );
+  }
+  return { model: binding.providerModel, catalogPricing: binding.pricing };
 }
 
 export async function resolveLlmConfig(partnerId: string | null): Promise<ResolvedLlmConfig> {
