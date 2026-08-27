@@ -31,6 +31,11 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // history stays with the source org (owner decision 2026-08-23) — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_runs',
+  // Durable PAM ownership history is frozen in its source org. A device with
+  // any actuation is non-transferable, so neither table participates in an
+  // organization-move rewrite.
+  'pam_actuations',
+  'pam_actuation_results',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',
@@ -137,6 +142,13 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
   it('includes ML output tables so device moves do not strand old-org rows', () => {
     expect(deviceOrgDenormalizedTables).toContain('metric_anomalies');
     expect(deviceOrgDenormalizedTables).toContain('remediation_suggestions');
+  });
+
+  it('excludes frozen PAM evidence from moves but preserves permanent deletion', () => {
+    expect(deviceOrgDenormalizedTables).not.toContain('pam_actuations');
+    expect(deviceOrgDenormalizedTables).not.toContain('pam_actuation_results');
+    expect(deviceCascadeDeleteTables).toContain('pam_actuations');
+    expect(deviceCascadeDeleteTables).toContain('pam_actuation_results');
   });
 });
 

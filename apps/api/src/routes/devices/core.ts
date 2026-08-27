@@ -154,7 +154,6 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
   'onedrive_device_state',
-  'pam_actuations', 'pam_actuation_results',
   'peripheral_events', 'peripheral_policy_delivery_events', 'peripheral_policy_device_states',
   'playbook_executions', 'provision_credential_handles',
   'recovery_key_access_events',
