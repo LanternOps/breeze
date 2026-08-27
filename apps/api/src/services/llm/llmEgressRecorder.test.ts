@@ -1,16 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { insertMock, valuesMock, systemContextMock, outsideContextMock, captureExceptionMock } =
-  vi.hoisted(() => {
-    const valuesMock = vi.fn(async (_row: Record<string, unknown>) => undefined);
-    return {
-      valuesMock,
-      insertMock: vi.fn(() => ({ values: valuesMock })),
-      systemContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-      outsideContextMock: vi.fn((fn: () => unknown) => fn()),
-      captureExceptionMock: vi.fn(),
-    };
-  });
+const {
+  insertMock,
+  valuesMock,
+  systemContextMock,
+  outsideContextMock,
+  captureExceptionMock,
+  captureMessageMock,
+} = vi.hoisted(() => {
+  const valuesMock = vi.fn(async (_row: Record<string, unknown>) => undefined);
+  return {
+    valuesMock,
+    insertMock: vi.fn(() => ({ values: valuesMock })),
+    systemContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    outsideContextMock: vi.fn((fn: () => unknown) => fn()),
+    captureExceptionMock: vi.fn(),
+    captureMessageMock: vi.fn(),
+  };
+});
 
 vi.mock('../../db', () => ({
   db: { insert: insertMock },
@@ -18,7 +25,10 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: outsideContextMock,
 }));
 
-vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+vi.mock('../sentry', () => ({
+  captureException: captureExceptionMock,
+  captureMessage: captureMessageMock,
+}));
 
 import { llmEgressEvents } from '../../db/schema/llmEgressEvents';
 import {
@@ -45,6 +55,7 @@ describe('recordLlmEgressEvent', () => {
     valuesMock.mockResolvedValue(undefined);
     systemContextMock.mockClear();
     captureExceptionMock.mockClear();
+    captureMessageMock.mockClear();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -153,5 +164,116 @@ describe('recordLlmEgressEvent', () => {
       String(call[0]).includes('llmEgressRecorder'),
     );
     expect(dropWarnings).toHaveLength(1);
+  });
+
+  /**
+   * One shedding outage: hold the first write open, overflow, then release.
+   * Returns how many events were actually lost — derived from what reached the
+   * DB rather than hardcoded, because one event is already in flight when the
+   * overflow starts and an off-by-one here would be a test bug, not a finding.
+   */
+  async function outage(overBy: number, prefix = 'h'): Promise<number> {
+    const before = valuesMock.mock.calls.length;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    valuesMock.mockImplementationOnce(async () => {
+      await gate;
+    });
+    const pushed = LLM_EGRESS_QUEUE_LIMIT + overBy;
+    for (let i = 0; i < pushed; i += 1) {
+      recordLlmEgressEvent({ ...BASE, host: `${prefix}${i}.example.com` });
+    }
+    release();
+    await drainLlmEgressQueue();
+    const dropped = pushed - (valuesMock.mock.calls.length - before);
+    expect(dropped).toBeGreaterThan(0);
+    return dropped;
+  }
+
+  it('warns again on a SECOND outage — "once per outage", not once per process', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await outage(20);
+    // The queue is empty again: the outage is over, so the next one is news.
+    await outage(20);
+
+    const dropWarnings = warn.mock.calls.filter((call) =>
+      String(call[0]).includes('llmEgressRecorder'),
+    );
+    expect(dropWarnings).toHaveLength(2);
+  });
+
+  it('reports the size of the audit gap to Sentry, not just to the console', async () => {
+    const dropped = await outage(20);
+    // Many rows were shed one at a time, so a per-shed count would read `1`.
+    expect(dropped).toBeGreaterThan(1);
+
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    const [message, options] = captureMessageMock.mock.calls[0]!;
+    // The count has to survive `scrubEvent`, which deletes `message` from every
+    // outbound event — so it must be a TAG, not just prose. Asserting the tag
+    // is what stops this regressing into a countless Sentry event.
+    expect(options).toMatchObject({
+      eventCode: 'llm_egress_audit_queue_shed',
+      level: 'warning',
+      // …the TOTAL for the outage, not the one-row delta of a single shed,
+      // which is what `record()` sees and is always 1.
+      tags: { llm_egress_dropped: String(dropped) },
+    });
+    expect(String(message)).toContain(String(dropped));
+  });
+
+  it('captures once per outage — one event carrying the total, not one per shed', async () => {
+    const first = await outage(20, 'a');
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+
+    const second = await outage(7, 'b');
+
+    expect(captureMessageMock).toHaveBeenCalledTimes(2);
+    expect(second).toBeLessThan(first);
+    expect(captureMessageMock.mock.calls[1]![1]).toMatchObject({
+      tags: { llm_egress_dropped: String(second) },
+    });
+  });
+
+  it('emits no Sentry event for an outage that never shed anything', async () => {
+    recordLlmEgressEvent(BASE);
+    await drainLlmEgressQueue();
+
+    expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('drainLlmEgressQueue resolves only once every queued write has landed', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    valuesMock.mockImplementationOnce(async () => {
+      await gate;
+    });
+
+    recordLlmEgressEvent({ ...BASE, host: 'first.example.com' });
+    recordLlmEgressEvent({ ...BASE, host: 'second.example.com' });
+
+    let settled = false;
+    const drained = drainLlmEgressQueue().then(() => {
+      settled = true;
+    });
+
+    // Shutdown must not race the write it is waiting for.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    expect(valuesMock).toHaveBeenCalledTimes(1);
+
+    release();
+    await drained;
+
+    expect(settled).toBe(true);
+    expect(valuesMock.mock.calls.map((call) => String(call[0]?.host))).toEqual([
+      'first.example.com',
+      'second.example.com',
+    ]);
   });
 });

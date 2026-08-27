@@ -10,7 +10,7 @@
  * The only injected seam is DNS resolution (`__setResolverForTests`), because
  * the real `resolveSafeRecords` correctly refuses to hand back 127.0.0.1.
  */
-import { afterEach, beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import http from 'http';
 import net from 'net';
 import tls from 'tls';
@@ -257,6 +257,20 @@ async function newRawServer(): Promise<RawServer> {
 
 const openRawServers: RawServer[] = [];
 
+/** A port that is guaranteed to refuse: bound, its number captured, then closed. */
+async function closedPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+/** Resolver that hands back a fixed IP for any host — no gating. */
+function fixedResolver(ip = '127.0.0.1') {
+  __setResolverForTests(async () => ({ safe: [{ address: ip, family: 4 }], allIps: [ip] }));
+}
+
 afterEach(async () => {
   __setResolverForTests(null);
   while (openRawServers.length) await openRawServers.pop()!.close();
@@ -501,11 +515,14 @@ describe('llmEgressProxy — tunnelling', () => {
     expect(events).toEqual([{ host: PROVIDER_HOST, resolvedIp: null, blocked: true }]);
   });
 
-  it('revoke() landing mid-handshake tears the upstream socket down', async () => {
+  it('revoke() landing mid-handshake tears the upstream socket down AND records the dial', async () => {
     const upstream = await newRawServer();
     const gate = gatedResolver();
     const proxy = await newProxy();
-    const { proxyUrl } = proxy.grant('s1', grantFor(PROVIDER_HOST, upstream.port), () => {});
+    const events: LlmEgressAttempt[] = [];
+    const { proxyUrl } = proxy.grant('s1', grantFor(PROVIDER_HOST, upstream.port), (e) =>
+      events.push(e)
+    );
 
     const pending = proxyConnect({
       port: proxy.port(),
@@ -526,6 +543,91 @@ describe('llmEgressProxy — tunnelling', () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     for (const socket of upstream.sockets) {
       expect(await waitForClose(socket, 1000)).toBe(true);
+    }
+
+    // …and the dial itself must be auditable. This is the window the audit
+    // trail most needs: a TCP handshake to the provider that the kernel may
+    // already have completed. A `resolvedIp` distinguishes it from the
+    // revoke-during-resolution case, which never dialled at all — so deleting
+    // either recorder cannot be papered over by the other.
+    expect(events).toEqual([{ host: PROVIDER_HOST, resolvedIp: '127.0.0.1', blocked: true }]);
+  });
+
+  it('records a blocked attempt and answers 502 when the upstream dial is refused', async () => {
+    fixedResolver();
+    const port = await closedPort();
+    const proxy = await newProxy();
+    const events: LlmEgressAttempt[] = [];
+    const { proxyUrl } = proxy.grant('s1', grantFor(PROVIDER_HOST, port), (e) => events.push(e));
+
+    const out = await proxyConnect({
+      port: proxy.port(),
+      token: extractToken(proxyUrl),
+      target: `${PROVIDER_HOST}:${port}`
+    });
+
+    expect(out).toEqual({ kind: 'status', status: 502 });
+    // resolvedIp is populated here and null on the resolver-failure 502: the
+    // pin was applied, the dial was made, the provider refused it.
+    expect(events).toEqual([{ host: PROVIDER_HOST, resolvedIp: '127.0.0.1', blocked: true }]);
+  });
+
+  it('records exactly one event per CONNECT, never a second on teardown', async () => {
+    fixedResolver();
+    const port = await closedPort();
+    const proxy = await newProxy();
+    const events: LlmEgressAttempt[] = [];
+    const { proxyUrl } = proxy.grant('s1', grantFor(PROVIDER_HOST, port), (e) => events.push(e));
+
+    await proxyConnect({
+      port: proxy.port(),
+      token: extractToken(proxyUrl),
+      target: `${PROVIDER_HOST}:${port}`
+    });
+    // Let the upstream 'close' land after the 'error' that already recorded.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(events).toHaveLength(1);
+  });
+
+  it('tears the tunnel down observably when the provider resets an established connection', async () => {
+    const warnings: string[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+    try {
+      const upstream = await newRawServer();
+      __setResolverForTests(async () => ({
+        safe: [{ address: '127.0.0.1', family: 4 }],
+        allIps: ['127.0.0.1']
+      }));
+      const proxy = await newProxy();
+      const events: LlmEgressAttempt[] = [];
+      const { proxyUrl } = proxy.grant('s1', grantFor(PROVIDER_HOST, upstream.port), (e) =>
+        events.push(e)
+      );
+
+      const out = await proxyConnect({
+        port: proxy.port(),
+        token: extractToken(proxyUrl),
+        target: `${PROVIDER_HOST}:${upstream.port}`
+      });
+      expect(out.kind).toBe('tunnel');
+      if (out.kind !== 'tunnel') return;
+      expect(events).toEqual([{ host: PROVIDER_HOST, resolvedIp: '127.0.0.1', blocked: false }]);
+
+      // RST rather than FIN, so our upstream half raises ECONNRESET — the
+      // post-establish error branch, which must not die silently.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      for (const socket of upstream.sockets) socket.resetAndDestroy();
+
+      expect(await waitForClose(out.socket, 2000)).toBe(true);
+      expect(warnings.some((line) => line.includes('[llmEgressProxy]'))).toBe(true);
+      // The tunnel WAS established, so the allowed row stands alone: a transport
+      // failure after the fact must not retroactively add a blocked row.
+      expect(events).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 

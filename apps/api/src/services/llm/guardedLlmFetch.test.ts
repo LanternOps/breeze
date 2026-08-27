@@ -73,6 +73,14 @@ describe('buildGuardedLlmFetch', () => {
     const res = await fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`, { method: 'GET', redirect: 'follow' });
 
     expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    // Two assertions, deliberately: the observable behaviour (one call, the 3xx
+    // handed straight back) AND the mechanism that produces it. `safeFetch`
+    // happens not to follow redirects today, so the behaviour assertion alone
+    // stays green if `redirect: 'error'` is deleted from the call site — and
+    // that flag is the only thing standing between a future fetch-backed
+    // safeFetch and a silently followed off-origin Location.
+    const [, calledInit] = safeFetchMock.mock.calls[0]!;
+    expect((calledInit as { redirect?: RequestRedirect }).redirect).toBe('error');
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('https://evil.example.com/v1/messages');
   });
