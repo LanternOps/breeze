@@ -605,6 +605,31 @@ git add agent/internal/agentapp agent/internal/heartbeat/heartbeat.go agent/inte
 git commit -m "fix(agent): reconcile PAM cleanup on restart"
 ```
 
+### Task 7A: Preserve immutable PAM ownership across device organization moves
+
+**Authoritative design:** [`2026-08-26-s0-track-e-pam-device-move-guard-design.md`](../specs/2026-08-26-s0-track-e-pam-device-move-guard-design.md)
+
+**Executable plan:** [`2026-08-26-s0-track-e-pam-device-move-guard.md`](2026-08-26-s0-track-e-pam-device-move-guard.md)
+
+The exact-head core run exposed an ownership conflict outside the original
+Task 7 Step 3 transport: `POST /devices/:id/move-org` treats
+`pam_actuation_results` as an ordinary denormalized child and attempts to
+rewrite its `org_id`, but accepted PAM results are append-only and carry exact
+device/organization/actuation ownership foreign keys.
+
+The wrap-first decision is fail-closed and contains no transfer mechanism: a
+device with any durable `pam_actuations` row cannot move between organizations.
+The route must return a stable 409 and a database trigger must enforce the same
+predicate for every writer. PAM tables leave organization-move rewrite
+registries but remain in device/organization deletion and retention contracts.
+No override, state exception, evidence mutation, ownership detachment, command
+bypass, durable-agent-ledger expansion, or Task 8 work is permitted.
+
+- [ ] **Step 1: Implement and pass the database no-transfer boundary**
+- [ ] **Step 2: Implement and pass the stable route conflict**
+- [ ] **Step 3: Pass the two-connection race, focused regressions, and exact-head core CI**
+- [ ] **Step 4: Synchronize issue #4060 and PR #4105 at the exact passing SHA**
+
 ### Task 8: Prove the failure matrix and produce exact-candidate Windows evidence
 
 **Files:**
