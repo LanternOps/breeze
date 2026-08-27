@@ -86,6 +86,8 @@ export const SENTRY_EVENT_CODES = [
   'inbound_email_claim_race_lost',
   /** No usable platform LLM key is configured on this deployment. */
   'llm_platform_key_missing',
+  /** The LLM egress audit queue shed rows — the audit trail has gaps (#3922). */
+  'llm_egress_audit_queue_shed',
 
   // --- ai spend / billing -----------------------------------------------
   /** The billing service's AI-credit check failed; the gate fell open. */

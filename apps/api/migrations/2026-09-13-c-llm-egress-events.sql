@@ -48,4 +48,12 @@ DROP POLICY IF EXISTS llm_egress_events_isolation ON llm_egress_events;
 CREATE POLICY llm_egress_events_isolation ON llm_egress_events
   USING (public.breeze_current_scope() = 'system' OR public.breeze_has_org_access(org_id))
   WITH CHECK (public.breeze_current_scope() = 'system' OR public.breeze_has_org_access(org_id));
-GRANT SELECT, INSERT, UPDATE, DELETE ON llm_egress_events TO breeze_app;
+-- No UPDATE. An egress event is a statement about something that already
+-- happened; a tenant-reachable role that can rewrite `host`, `blocked` or
+-- `resolved_ip` after the fact turns the audit trail into a claim rather than a
+-- record. Nothing in the API updates this table (the recorder only INSERTs), so
+-- the privilege would be pure attack surface. DELETE stays: `llm_egress_events`
+-- is in CORE_ORG_CASCADE_DELETE_ORDER and org erasure has to be able to remove
+-- these rows.
+REVOKE UPDATE ON llm_egress_events FROM breeze_app;
+GRANT SELECT, INSERT, DELETE ON llm_egress_events TO breeze_app;

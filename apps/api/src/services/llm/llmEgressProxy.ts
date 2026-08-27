@@ -266,10 +266,55 @@ export async function startLlmEgressProxy(): Promise<LlmEgressProxy> {
       // to the provider alive past revocation.
       track(upstream, grant);
       let established = false;
-      upstream.on('error', () => {
-        if (!established) refuse(clientSocket, '502 Bad Gateway');
+      // Exactly one audit row per CONNECT. Past this point the dial can end in
+      // four ways — refused by the provider, torn down mid-handshake, refused
+      // by a re-check, or tunnelled — and every one of them must land a row,
+      // but only one. `settled` is what makes "record everywhere" safe.
+      let settled = false;
+
+      /**
+       * A dial that never became a tunnel. Records it, then answers the client
+       * with `statusLine`, or simply drops the socket when there is no client
+       * left to tell (revocation destroys the client half too).
+       */
+      const blockedDial = (statusLine: string | null): void => {
+        if (settled) return;
+        settled = true;
+        // `ip`, not null: the pin WAS applied and the packet WAS sent. That is
+        // the difference between this and a resolver refusal, and it is the
+        // detail an operator needs to tell "we never dialled" from "we dialled
+        // the provider and then stopped".
+        safeRecord(grant, { host: target.host, resolvedIp: ip, blocked: true });
+        if (statusLine) refuse(clientSocket, statusLine);
+        else clientSocket.destroy();
+      };
+
+      upstream.on('error', (err: Error) => {
+        if (established) {
+          // The tunnel already carried bytes, so its allowed row stands — a
+          // transport failure afterwards must not retroactively add a blocked
+          // one. But it must not be silent either: a provider resetting live
+          // tunnels is indistinguishable from a hung session without this.
+          console.warn(
+            `[llmEgressProxy] established tunnel to ${target.host} failed: ${err.message}`
+          );
+          upstream.destroy();
+          clientSocket.destroy();
+          return;
+        }
         upstream.destroy();
-        clientSocket.destroy();
+        blockedDial('502 Bad Gateway');
+      });
+
+      upstream.once('close', () => {
+        // The socket died before the tunnel opened. A revoke() landing
+        // mid-handshake is exactly this shape — and it is the WORST window to
+        // lose, because the kernel may already have completed a TCP handshake
+        // to the provider. Neither 'connect' (never emitted for a socket
+        // destroyed while connecting) nor 'error' (a revoke destroy raises
+        // none) fires here, so without this the dial vanishes from the audit
+        // trail entirely.
+        if (!established) blockedDial(null);
       });
 
       upstream.once('connect', () => {
@@ -277,11 +322,13 @@ export async function startLlmEgressProxy(): Promise<LlmEgressProxy> {
         // the handshake. Writing the 200 into a dead client would leave the
         // upstream half established with no teardown listener attached.
         if (grants.get(grant.sessionId) !== grant || clientSocket.destroyed) {
+          blockedDial(null);
           upstream.destroy();
           clientSocket.destroy();
           return;
         }
         established = true;
+        settled = true;
         safeRecord(grant, { host: target.host, resolvedIp: ip, blocked: false });
 
         clientSocket.write('HTTP/1.1 200 Connection Established\r\nProxy-Agent: breeze-llm-egress\r\n\r\n');
