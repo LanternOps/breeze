@@ -70,7 +70,8 @@
     "sectionBackup": "Yedekleme",
     "sectionReporting": "Raporlama",
     "sectionSettings": "Ayarlar",
-    "sectionExtensions": "Uzantılar"
+    "sectionExtensions": "Uzantılar",
+    "llmProviderCatalog": "LLM Sağlayıcı Kataloğu"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

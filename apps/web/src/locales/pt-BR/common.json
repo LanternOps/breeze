@@ -70,7 +70,8 @@
     "sectionReporting": "Relatórios",
     "sectionSettings": "Configurações",
     "sectionExtensions": "Extensões",
-    "variables": "Variáveis"
+    "variables": "Variáveis",
+    "llmProviderCatalog": "Catálogo de Provedores de LLM"
   },
   "documentTitles": {
     "dashboard": "Painel",
