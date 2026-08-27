@@ -78,8 +78,19 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
   return new Worker<BackupQueueJobData>(
     BACKUP_QUEUE,
     async (job: Job<BackupQueueJobData>) => {
+      const data = parseQueueJobData(BACKUP_QUEUE, job, backupQueueJobDataSchema);
+      // dispatch-backup is handled OUTSIDE the blanket context below (#1105):
+      // it does Redis/WS I/O via the agentCommandRelay facade
+      // (isAgentConnectedAnywhere, recordDispatchedExpectation,
+      // dispatchCommandToAgent — the latter's ack wait is a poll loop up to
+      // RELAY_DELIVERY_DEADLINE_MS), and processDispatchBackup manages its own
+      // short-lived system DB contexts around just its reads/writes so no
+      // pooled connection sits idle-in-transaction across that I/O.
+      if (data.type === 'dispatch-backup') {
+        assertQueueJobName(BACKUP_QUEUE, job, 'dispatch-backup');
+        return await processDispatchBackup(data);
+      }
       return runWithSystemDbAccess(async () => {
-        const data = parseQueueJobData(BACKUP_QUEUE, job, backupQueueJobDataSchema);
         switch (data.type) {
           case 'check-schedules':
             assertQueueJobName(BACKUP_QUEUE, job, 'check-schedules');
@@ -90,9 +101,6 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
           case 'cleanup-expired-snapshots':
             assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
             return await processCleanupExpiredSnapshots();
-          case 'dispatch-backup':
-            assertQueueJobName(BACKUP_QUEUE, job, 'dispatch-backup');
-            return await processDispatchBackup(data);
           case 'process-results':
             assertQueueJobName(BACKUP_QUEUE, job, 'process-results');
             return await processResults(data);
@@ -464,12 +472,53 @@ export async function resolveBackupTargets(
 }
 
 // ── dispatch-backup ───────────────────────────────────────────────────────────
+//
+// #1105 phase split (final-review fix, wave 3.5b #4084): processDispatchBackup
+// used to run entirely inside the worker's blanket `runWithSystemDbAccess`
+// wrap, so `isAgentConnectedAnywhere`, `recordDispatchedExpectation` and
+// `dispatchCommandToAgent` — all Redis/WS I/O via the agentCommandRelay
+// facade, the last with an ack-wait poll loop up to
+// RELAY_DELIVERY_DEADLINE_MS — ran with a pooled Postgres connection pinned
+// idle-in-transaction, multiplied by target count in the per-target loop.
+//
+// Fixed by splitting into short-lived contexts around just the DB work, with
+// every facade call at depth 0:
+//   Phase 1 (context)  loadBackupDispatchPrecheck    — cancellation, config, agent lookup
+//   Phase 2 (no ctx)   isAgentConnectedAnywhere        — connectivity (facade)
+//   Phase 3 (context)  prepareBackupDispatchTargets   — mode/targets, per-target
+//                                                        command build + child job
+//                                                        rows + recordDispatchedExpectation
+//   Phase 4 (no ctx)   dispatchCommandToAgent per target — the actual sends (facade)
+//   Phase 5 (context)  settle child-job failures + final job status
+//
+// recordDispatchedExpectation is a single Redis SET, not the unbounded ack
+// poll — it stays in Phase 3's context deliberately (that's the at-most-once
+// bookkeeping for a send that is about to happen, not the hazard this split
+// exists to remove).
+//
+// Behavior note: cancellation is now checked at the start of each phase and at
+// each Phase-3 loop iteration (as before), but NOT re-checked between
+// individual Phase-4 sends — those all run after Phase 3's context has
+// closed, so there is no DB read to interleave without reopening a context per
+// target. A cancellation that lands mid-Phase-4 no longer aborts the
+// remaining sends early; it still fails the job via the usual result handling
+// once Phase 5 re-checks it.
 
-async function processDispatchBackup(
+type BackupDispatchPrecheck =
+  | { status: 'done'; result: { dispatched: boolean } }
+  | { status: 'ok'; config: typeof backupConfigs.$inferSelect; agentId: string };
+
+/**
+ * Phase 1: cancellation guard, config load and the agent lookup, inside ONE
+ * short system DB context. Deliberately stops short of the connectivity
+ * check — `isAgentConnectedAnywhere` is Redis I/O via the agentCommandRelay
+ * facade and must run with no context held (#1105).
+ */
+async function loadBackupDispatchPrecheck(
   data: DispatchBackupJobData
-): Promise<{ dispatched: boolean }> {
+): Promise<BackupDispatchPrecheck> {
   if (await isBackupJobCancelled(data.jobId)) {
-    return { dispatched: false };
+    return { status: 'done', result: { dispatched: false } };
   }
 
   // Load config for command payload
@@ -481,11 +530,11 @@ async function processDispatchBackup(
 
   if (!config) {
     await markJobFailed(data.jobId, 'Backup config not found');
-    return { dispatched: false };
+    return { status: 'done', result: { dispatched: false } };
   }
 
   if (await isBackupJobCancelled(data.jobId)) {
-    return { dispatched: false };
+    return { status: 'done', result: { dispatched: false } };
   }
 
   // Find the agent for this device
@@ -496,13 +545,42 @@ async function processDispatchBackup(
     .limit(1);
 
   const agentId = device?.agentId;
-  if (!agentId || !(await isAgentConnectedAnywhere(agentId))) {
+  if (!agentId) {
     await markJobFailed(data.jobId, 'Agent not connected');
-    return { dispatched: false };
+    return { status: 'done', result: { dispatched: false } };
   }
 
+  return { status: 'ok', config, agentId };
+}
+
+interface PreparedBackupTarget {
+  commandJobId: string;
+  command: AgentCommand;
+  commandType: string;
+}
+
+type BackupDispatchPrepare =
+  | { status: 'done'; result: { dispatched: boolean } }
+  | {
+      status: 'ok';
+      prepared: PreparedBackupTarget[];
+      preFailedTargets: string[];
+      backupMode: string;
+      targetCount: number;
+    };
+
+/**
+ * Phase 3: resolve the backup mode/targets, build every target's command
+ * payload and record its dispatch expectation — all inside ONE short system
+ * DB context (#1105). Nothing here calls `dispatchCommandToAgent`; that send
+ * happens in Phase 4, after this context has closed.
+ */
+async function prepareBackupDispatchTargets(
+  data: DispatchBackupJobData,
+  config: typeof backupConfigs.$inferSelect,
+): Promise<BackupDispatchPrepare> {
   if (await isBackupJobCancelled(data.jobId)) {
-    return { dispatched: false };
+    return { status: 'done', result: { dispatched: false } };
   }
 
   // Resolve backup mode: fan-out jobs carry their own selection (profile
@@ -543,7 +621,7 @@ async function processDispatchBackup(
   const targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
 
   if (await isBackupJobCancelled(data.jobId)) {
-    return { dispatched: false };
+    return { status: 'done', result: { dispatched: false } };
   }
 
   if (targets.length === 0) {
@@ -557,7 +635,7 @@ async function processDispatchBackup(
         errorLog: `No backup targets resolved (mode=${backupMode}). Ensure discovery has been run for this device.`,
       })
       .where(eq(backupJobs.id, data.jobId));
-    return { dispatched: false };
+    return { status: 'done', result: { dispatched: false } };
   }
 
   const providerConfig = config.providerConfig as Record<string, unknown>;
@@ -568,20 +646,20 @@ async function processDispatchBackup(
   });
   if (encryptionPlan.required && encryptionPlan.status === 'unsupported') {
     await markJobFailed(data.jobId, encryptionPlan.reason);
-    return { dispatched: false };
+    return { status: 'done', result: { dispatched: false } };
   }
 
   const commandProviderConfig =
     encryptionPlan.required && encryptionPlan.status === 'enforced'
       ? { ...providerConfig, ...encryptionPlan.providerConfigPatch }
       : providerConfig;
-  let sentCount = 0;
-  const failedTargets: string[] = [];
-  let lastNonOfflineOutcomeStatus: string | null = null;
+
+  const prepared: PreparedBackupTarget[] = [];
+  const preFailedTargets: string[] = [];
 
   for (let i = 0; i < targets.length; i++) {
     if (await isBackupJobCancelled(data.jobId)) {
-      return { dispatched: false };
+      return { status: 'done', result: { dispatched: false } };
     }
 
     const target = targets[i]!;
@@ -605,14 +683,14 @@ async function processDispatchBackup(
         .returning();
       if (!newJob?.id) {
         console.error(`[BackupWorker] Failed to create child job for target ${i} (${target.commandType}), skipping`);
-        failedTargets.push(`${target.commandType} (job creation failed)`);
+        preFailedTargets.push(`${target.commandType} (job creation failed)`);
         continue;
       }
       commandJobId = newJob.id;
 
       if (await isBackupJobCancelled(data.jobId)) {
         await markBackupJobCancelled(commandJobId, 'Cancelled before dispatch');
-        return { dispatched: false };
+        return { status: 'done', result: { dispatched: false } };
       }
     }
 
@@ -648,67 +726,114 @@ async function processDispatchBackup(
     // fail-closed on arrival (dropped), not trusted.
     await recordDispatchedExpectation('backup', data.deviceId, commandJobId);
 
-    const outcome = await dispatchCommandToAgent(agentId, command);
+    prepared.push({ commandJobId, command, commandType: target.commandType });
+  }
+
+  return { status: 'ok', prepared, preFailedTargets, backupMode, targetCount: targets.length };
+}
+
+async function processDispatchBackup(
+  data: DispatchBackupJobData
+): Promise<{ dispatched: boolean }> {
+  // Phase 1 — cancellation guard, config load, agent lookup: ONE short system
+  // DB context, then it CLOSES.
+  const precheck = await runWithSystemDbAccess(() => loadBackupDispatchPrecheck(data));
+  if (precheck.status === 'done') return precheck.result;
+  const { config, agentId } = precheck;
+
+  // Phase 2 — connectivity check with NO DB context open (#1105).
+  if (!(await isAgentConnectedAnywhere(agentId))) {
+    await runWithSystemDbAccess(() => markJobFailed(data.jobId, 'Agent not connected'));
+    return { dispatched: false };
+  }
+
+  // Phase 3 — resolve targets, build every command payload and record its
+  // dispatch expectation: another short system DB context, then it CLOSES
+  // before any target is actually sent.
+  const prepare = await runWithSystemDbAccess(() => prepareBackupDispatchTargets(data, config));
+  if (prepare.status === 'done') return prepare.result;
+  const { prepared, preFailedTargets, backupMode, targetCount } = prepare;
+
+  // Phase 4 — the actual WS/relay sends, NO DB context open. Each
+  // dispatchCommandToAgent call may poll for a relay ack for up to
+  // RELAY_DELIVERY_DEADLINE_MS; holding a transaction across `targetCount` of
+  // these is exactly the #1105 hold this split removes.
+  let sentCount = 0;
+  const failedTargets: string[] = [...preFailedTargets];
+  let lastNonOfflineOutcomeStatus: string | null = null;
+  const failedChildJobs: Array<{ commandJobId: string; detail: string }> = [];
+
+  for (const target of prepared) {
+    const outcome = await dispatchCommandToAgent(agentId, target.command);
     if (outcome.status === 'sent') {
       sentCount++;
-    } else {
-      const detail = outcome.status === 'offline'
-        ? `Failed to send ${target.commandType} command to agent`
-        : `Failed to send ${target.commandType} command to agent (dispatch outcome ${outcome.status})`;
-      console.warn(`[BackupWorker] ${detail} for job ${commandJobId}`);
-      failedTargets.push(target.commandType);
-      if (outcome.status !== 'offline') {
-        lastNonOfflineOutcomeStatus = outcome.status;
-      }
-      if (commandJobId !== data.jobId) {
-        await db
-          .update(backupJobs)
-          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: detail })
-          .where(eq(backupJobs.id, commandJobId));
-      }
+      continue;
+    }
+
+    const detail = outcome.status === 'offline'
+      ? `Failed to send ${target.commandType} command to agent`
+      : `Failed to send ${target.commandType} command to agent (dispatch outcome ${outcome.status})`;
+    console.warn(`[BackupWorker] ${detail} for job ${target.commandJobId}`);
+    failedTargets.push(target.commandType);
+    if (outcome.status !== 'offline') {
+      lastNonOfflineOutcomeStatus = outcome.status;
+    }
+    if (target.commandJobId !== data.jobId) {
+      failedChildJobs.push({ commandJobId: target.commandJobId, detail });
     }
   }
 
-  if (await isBackupJobCancelled(data.jobId)) {
-    return { dispatched: false };
-  }
+  // Phase 5 — settle per-target failure rows and the final job status: one
+  // more short system DB context.
+  return runWithSystemDbAccess(async () => {
+    if (await isBackupJobCancelled(data.jobId)) {
+      return { dispatched: false };
+    }
 
-  if (sentCount === 0) {
-    await markJobFailed(
-      data.jobId,
-      lastNonOfflineOutcomeStatus
-        ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
-        : 'Failed to send command to agent',
-    );
-    return { dispatched: false };
-  }
+    for (const failure of failedChildJobs) {
+      await db
+        .update(backupJobs)
+        .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: failure.detail })
+        .where(eq(backupJobs.id, failure.commandJobId));
+    }
 
-  if (failedTargets.length > 0) {
-    console.warn(
-      `[BackupWorker] Partial dispatch for job ${data.jobId}: ${sentCount}/${targets.length} sent, failed targets: ${failedTargets.join(', ')}`
-    );
+    if (sentCount === 0) {
+      await markJobFailed(
+        data.jobId,
+        lastNonOfflineOutcomeStatus
+          ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
+          : 'Failed to send command to agent',
+      );
+      return { dispatched: false };
+    }
+
+    if (failedTargets.length > 0) {
+      console.warn(
+        `[BackupWorker] Partial dispatch for job ${data.jobId}: ${sentCount}/${targetCount} sent, failed targets: ${failedTargets.join(', ')}`
+      );
+      await db
+        .update(backupJobs)
+        .set({ errorLog: `Partial dispatch: ${failedTargets.length} target(s) failed to send (${failedTargets.join(', ')})`, updatedAt: new Date() })
+        .where(eq(backupJobs.id, data.jobId));
+    }
+
     await db
       .update(backupJobs)
-      .set({ errorLog: `Partial dispatch: ${failedTargets.length} target(s) failed to send (${failedTargets.join(', ')})`, updatedAt: new Date() })
-      .where(eq(backupJobs.id, data.jobId));
-  }
+      .set({
+        status: 'running',
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(backupJobs.id, data.jobId),
+        inArray(backupJobs.status, ['pending', 'running'])
+      ));
 
-  await db
-    .update(backupJobs)
-    .set({
-      status: 'running',
-      startedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(and(
-      eq(backupJobs.id, data.jobId),
-      inArray(backupJobs.status, ['pending', 'running'])
-    ));
-
-  console.log(
-    `[BackupWorker] Dispatched ${sentCount}/${targets.length} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
-  );
-  return { dispatched: true };
+    console.log(
+      `[BackupWorker] Dispatched ${sentCount}/${targetCount} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
+    );
+    return { dispatched: true };
+  });
 }
 
 // ── process-results ───────────────────────────────────────────────────────────
