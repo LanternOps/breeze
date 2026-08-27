@@ -75,6 +75,7 @@ import { commandAcceptsAgentResultCondition } from '../services/commandResultAcc
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
+import { breezeRole } from '../config/env';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
 
@@ -3018,6 +3019,19 @@ export function __resetCrossTenantDropsForTest() {
   crossTenantDrops.clear();
 }
 
+// Test-only: install a fake agent socket directly into `activeConnections`
+// without going through the real WS upgrade/auth handshake. Needed by the
+// wave 3.5b (#4084) relay integration suite, which needs a "locally connected"
+// agent on ONE simulated process while dispatching from another. Never usable
+// in production — a real socket must come through createAgentWsHandlers.
+export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('__installAgentSocketForTest is test-only');
+  }
+  activeConnections.set(agentId, ws as never);
+  installAgentSocketEpoch(agentId);
+}
+
 /**
  * Create the agent WebSocket routes
  * The upgradeWebSocket function must be passed from the main app
@@ -3085,10 +3099,29 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
 }
 
 /**
+ * Wave 3.5b (#4084): a worker-role process never holds agent sockets — this
+ * throws rather than letting a socket-local entry point silently return
+ * false/empty, which would otherwise read as "every agent is offline" instead
+ * of "this process cannot answer that question at all". Callers on a process
+ * that may own sockets (`all`/`api`) must route through
+ * dispatchCommandToAgent/isAgentConnectedAnywhere (services/agentCommandRelay.ts)
+ * once BREEZE_ROLE=worker is actually in use (3.5d, #4086).
+ */
+function assertSocketLocalDispatchAllowed(fn: string): void {
+  if (breezeRole() === 'worker') {
+    throw new Error(
+      `[BREEZE_ROLE] ${fn} is socket-local and cannot run in the worker role — `
+      + 'use dispatchCommandToAgent/isAgentConnectedAnywhere (services/agentCommandRelay.ts)',
+    );
+  }
+}
+
+/**
  * Send a command to a connected agent via WebSocket
  * Returns true if the command was sent, false if agent is not connected
  */
 export function sendCommandToAgent(agentId: string, command: AgentCommand): boolean {
+  assertSocketLocalDispatchAllowed('sendCommandToAgent');
   const ws = activeConnections.get(agentId);
   if (!ws) {
     return false;
@@ -3146,6 +3179,7 @@ export function disconnectAgent(agentId: string, code: number = 4040, reason: st
  * Check if an agent is connected via WebSocket
  */
 export function isAgentConnected(agentId: string): boolean {
+  assertSocketLocalDispatchAllowed('isAgentConnected');
   return activeConnections.has(agentId);
 }
 

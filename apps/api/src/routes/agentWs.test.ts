@@ -313,6 +313,7 @@ import {
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
 } from './agentWs';
+import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import { applySoftwareInstallResult } from '../services/softwareDeploymentResult';
 import { isRedisAvailable } from '../services/redis';
 import {
@@ -2221,6 +2222,51 @@ describe('presence lifecycle (wave 3.5b #4084)', () => {
     handlers.onError({}, ws as any);
 
     expect(clearAgentPresence).toHaveBeenCalledWith('agent-p7', token);
+  });
+});
+
+// Wave 3.5b (#4084) — socket-local dispatch must fail LOUDLY in the worker
+// role rather than silently returning false/offline (the every-agent-reads-
+// offline failure mode this wave exists to kill). A worker-role process never
+// holds sockets, so these three entry points are unreachable there by design.
+describe('worker-role runtime assertions (wave 3.5b #4084)', () => {
+  const originalRole = process.env.BREEZE_ROLE;
+
+  afterEach(() => {
+    if (originalRole === undefined) delete process.env.BREEZE_ROLE;
+    else process.env.BREEZE_ROLE = originalRole;
+  });
+
+  it('sendCommandToAgent throws (never returns false) in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    expect(() =>
+      sendCommandToAgent('agent-role-1', { id: 'c1', type: 'ping', payload: {} } as any)
+    ).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('isAgentConnected throws in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    expect(() => isAgentConnected('agent-role-1')).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('sendCommandToAgentAwaitResult throws (never resolves as offline) in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    // Not `async` — the guard throws synchronously, before a Promise is ever
+    // constructed, so callers see a real throw rather than a rejected Promise.
+    expect(() =>
+      sendCommandToAgentAwaitResult('agent-role-1', { id: 'c1', type: 'ping', payload: {} }, 1_000)
+    ).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('does not throw for any of the three outside the worker role', () => {
+    process.env.BREEZE_ROLE = 'all';
+    expect(() => isAgentConnected('agent-role-2')).not.toThrow();
+
+    delete process.env.BREEZE_ROLE;
+    expect(() => isAgentConnected('agent-role-2')).not.toThrow();
   });
 });
 
