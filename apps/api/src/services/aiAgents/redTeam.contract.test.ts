@@ -501,8 +501,13 @@ describe('D. allowlist matching is exact', () => {
       { action: 'restart' },
       policyWith({ mode: 'act', toolAllowlist: ['manage_services'] }),
     );
-    expect(verdict.disposition).toBe('allow');
-    expect(verdict.requiresApproval).toBe(true);
+    // manage_services:restart is manifest-matched (wave 4b), so the coarse
+    // allowlist grant now resolves to 'act' (executes with verification, no
+    // human approval step) rather than the pre-wave-4b 'allow' + approval-
+    // required placeholder. The point under test — a bare tool-name entry
+    // grants the action at all — is unaffected by which disposition it lands on.
+    expect(verdict.disposition).toBe('act');
+    expect(verdict.requiresApproval).toBe(false);
 
     // …and it is still only that tool.
     expect(checkAgentGuardrails(
