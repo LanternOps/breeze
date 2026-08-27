@@ -2,7 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { alerts, alertRules, alertTemplates, automationPolicies, organizations } from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
-import { getEventBus } from './eventBus';
+import type { BreezeEvent } from './eventBus';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -12,8 +12,6 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const POLICY_TEMPLATE_NAME = 'Policy Compliance Violation';
 const POLICY_RULE_PREFIX = 'Policy Violation Rule';
-
-let subscribed = false;
 
 type PolicyEventPayload = {
   policyId?: string;
@@ -142,8 +140,8 @@ async function resolvePolicyAlertsForDevice(ruleId: string, deviceId: string): P
 }
 
 // Exported for unit testing (dual-axis partner-wide policy check, #2149) — not
-// used outside this module otherwise; subscribeToPolicyEvents wires it to the
-// event bus.
+// used outside this module otherwise; handlePolicyViolationEvent wires it to
+// the durable subscriber registry.
 export async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload): Promise<void> {
   if (!payload.policyId || !payload.deviceId) {
     return;
@@ -234,37 +232,25 @@ async function handlePolicyCompliant(orgId: string, payload: PolicyEventPayload)
   await resolvePolicyAlertsForDevice(rule.id, payload.deviceId);
 }
 
-export function subscribeToPolicyEvents(): void {
-  if (subscribed) {
-    return;
-  }
-
-  const eventBus = getEventBus();
-
-  eventBus.subscribe('policy.violation', async (event) => {
-    try {
-      await runWithSystemDbAccess(async () => {
-        await handlePolicyViolation(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
-      });
-    } catch (error) {
-      console.error('[PolicyAlertBridge] Failed to handle policy violation:', error);
-    }
+/**
+ * Handle a `policy.violation` event.
+ *
+ * Registered (with handlePolicyCompliantEvent) under subscriber id
+ * `policy-alert-bridge` (services/eventSubscribers.ts). MUST throw on failure
+ * — queue-mode dispatch (#4085) retries on a thrown rejection; local
+ * delivery's wrapper (eventBus.ts's invokeLocalHandlers) provides the
+ * swallow-and-log semantics the old subscriber's try/catch used to provide
+ * itself.
+ */
+export async function handlePolicyViolationEvent(event: BreezeEvent): Promise<void> {
+  await runWithSystemDbAccess(async () => {
+    await handlePolicyViolation(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
   });
-
-  eventBus.subscribe('policy.compliant', async (event) => {
-    try {
-      await runWithSystemDbAccess(async () => {
-        await handlePolicyCompliant(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
-      });
-    } catch (error) {
-      console.error('[PolicyAlertBridge] Failed to handle policy compliant event:', error);
-    }
-  });
-
-  subscribed = true;
-  console.log('[PolicyAlertBridge] Subscribed to policy events');
 }
 
-export async function initializePolicyAlertBridge(): Promise<void> {
-  subscribeToPolicyEvents();
+/** Handle a `policy.compliant` event. See handlePolicyViolationEvent. */
+export async function handlePolicyCompliantEvent(event: BreezeEvent): Promise<void> {
+  await runWithSystemDbAccess(async () => {
+    await handlePolicyCompliant(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
+  });
 }

@@ -313,7 +313,6 @@ import { initializeAiAgentRunner, shutdownAiAgentRunner } from './jobs/aiAgentRu
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
-import { registerDnsThreatAlertSubscriber } from './services/dnsThreatAlerts';
 import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
@@ -358,8 +357,8 @@ import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
 import { initializeTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
-import { initializePolicyAlertBridge } from './services/policyAlertBridge';
-import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
+import { getWebhookWorker, initializeWebhookDelivery, type WebhookFanoutDeps } from './workers/webhookDelivery';
+import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { toWebhookConfig } from './services/webhookConfig';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
@@ -1265,24 +1264,18 @@ let server: ReturnType<typeof serve> | null = null;
 let shutdownInProgress = false;
 let auditRetryInterval: NodeJS.Timeout | null = null;
 
-async function initializeWebhookDeliveryWorker(): Promise<void> {
-  const webhookWorker = getWebhookWorker();
-
-  // EXECUTION CLAIM (#4095). The delivery queue is a plain Redis list with no
-  // job identity, so the same delivery can legitimately appear on it twice —
-  // the recovery sweep re-queues any row that still looks unresolved, and a job
-  // that was only backlogged is indistinguishable from one that was lost. This
-  // CAS is what makes that safe: exactly one popped copy flips `pending` ->
-  // `retrying` and POSTs; every other copy loses and is dropped by the worker.
-  //
-  // It is also what bounds the sweep, since a claimed row leaves `pending` the
-  // instant a worker takes it.
-  webhookWorker.setDeliveryClaimCallback(claimDeliveryForExecution);
-
-  webhookWorker.setDeliveryCallback(recordDeliveryOutcome);
-
-  await initializeWebhookDelivery(
-    async (orgId, eventType) => {
+/**
+ * Build the `getWebhooksForEvent`/`createDeliveryRecord` closures the durable
+ * `webhook-delivery` subscriber needs (services/eventSubscribers.ts). Split out
+ * of `initializeWebhookDeliveryWorker` so it can be handed to
+ * `registerAllEventSubscribers()` synchronously BEFORE `initializeWorkers()`
+ * runs (codex Q3 hole #2) — the claim/delivery callback wiring below is fine
+ * running inside the async worker-init phase, but the subscriber lookup itself
+ * must exist before any event can reach the registry.
+ */
+function buildWebhookFanoutDeps(): WebhookFanoutDeps {
+  return {
+    getWebhooksForEvent: async (orgId, eventType) => {
       return runWithSystemDbAccess(async () => {
         const rows = await db
           .select()
@@ -1324,8 +1317,30 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
           });
       });
     },
-    recordWebhookDelivery
-  );
+    createDeliveryRecord: recordWebhookDelivery,
+  };
+}
+
+async function initializeWebhookDeliveryWorker(): Promise<void> {
+  const webhookWorker = getWebhookWorker();
+
+  // EXECUTION CLAIM (#4095). The delivery queue is a plain Redis list with no
+  // job identity, so the same delivery can legitimately appear on it twice —
+  // the recovery sweep re-queues any row that still looks unresolved, and a job
+  // that was only backlogged is indistinguishable from one that was lost. This
+  // CAS is what makes that safe: exactly one popped copy flips `pending` ->
+  // `retrying` and POSTs; every other copy loses and is dropped by the worker.
+  //
+  // It is also what bounds the sweep, since a claimed row leaves `pending` the
+  // instant a worker takes it.
+  webhookWorker.setDeliveryClaimCallback(claimDeliveryForExecution);
+
+  webhookWorker.setDeliveryCallback(recordDeliveryOutcome);
+
+  // Event routing itself is wired by registerAllEventSubscribers() before
+  // initializeWorkers() runs (see bootstrap()) — this only starts the queue
+  // drain loop.
+  await initializeWebhookDelivery();
 }
 
 async function initializeWorkers(): Promise<void> {
@@ -1365,7 +1380,10 @@ async function initializeWorkers(): Promise<void> {
     ['abuseSignalsWorker', initializeAbuseSignalsWorker],
     ['userRiskRetention', initializeUserRiskRetention],
     ['backupVerificationJobs', initializeBackupVerificationJobs],
-    ['policyAlertBridge', initializePolicyAlertBridge],
+    // policyAlertBridge's ENTIRE init was subscribing to policy events; that
+    // now happens synchronously in registerAllEventSubscribers() before this
+    // array even runs (services/eventSubscribers.ts), so there is no
+    // remaining per-worker init to list here.
     ['eventLogRetention', initializeEventLogRetention],
     ['logCorrelationWorker', initializeLogCorrelationWorker],
     ['agentLogRetention', initializeAgentLogRetention],
@@ -1418,7 +1436,10 @@ async function initializeWorkers(): Promise<void> {
     ['wingetIndexSyncWorker', initializeWingetIndexSyncWorker],
     ['vulnerabilityJobs', initializeVulnerabilityJobs],
     ['dnsSyncWorker', initializeDnsSyncJob],
-    ['dnsThreatAlertSubscriber', async () => { registerDnsThreatAlertSubscriber(); }],
+    // dnsThreatAlertSubscriber's ENTIRE init was subscribing to
+    // dns.threat.blocked; that now happens synchronously in
+    // registerAllEventSubscribers() before this array even runs
+    // (services/eventSubscribers.ts).
     ['s1SyncWorker', initializeS1SyncJob],
     ['huntressSyncWorker', initializeHuntressSyncJob],
     ['pax8SyncWorker', initializePax8SyncWorkers],
@@ -2017,6 +2038,13 @@ async function bootstrap(): Promise<void> {
 
   console.log(`Breeze API running at http://localhost:${port}`);
   console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
+
+  // Synchronous and MUST run before initializeWorkers(): the durable
+  // subscriber registry (webhook fan-out, automation dispatch, notification
+  // dispatch, policy alert bridge, DNS threat alerts) has to be fully
+  // installed before the queue-mode dispatch worker — or any event published
+  // during worker boot — can reach it (codex Q3 hole #2, #4085).
+  registerAllEventSubscribers(buildWebhookFanoutDeps());
 
   await initializeWorkers();
 

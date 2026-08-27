@@ -32,7 +32,7 @@ vi.mock('./eventBus', () => ({
 }));
 
 import { db } from '../db';
-import { handleDnsThreatBlocked } from './dnsThreatAlerts';
+import { handleDnsThreatBlocked, handleDnsThreatBlockedEvent } from './dnsThreatAlerts';
 
 function mockCooldownSelect(found: boolean) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -200,6 +200,64 @@ describe('handleDnsThreatBlocked', () => {
     // the cooldown logic respects. The non-throw + creation success is
     // the smoke; the override-respect path is exercised more thoroughly
     // by the cooldown-blocks test above.
+    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+});
+
+// #4085 Task 3: handleDnsThreatBlockedEvent is the registry-registered
+// subscriber (id `dns-threat-alerts`). MUST throw on failure — the old
+// registerDnsThreatAlertSubscriber logged and swallowed; that swallow now
+// lives one layer up, in eventBus.ts's registry-aware local delivery.
+describe('handleDnsThreatBlockedEvent (durable registry contract)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function event(orgId: string, payload: Record<string, unknown>) {
+    return {
+      id: 'event-1',
+      type: 'dns.threat.blocked',
+      orgId,
+      source: 'test',
+      priority: 'normal' as const,
+      payload,
+      metadata: { correlationId: 'c1', timestamp: new Date().toISOString() },
+    } as never;
+  }
+
+  it('rethrows (does not swallow) a failure from handleDnsThreatBlocked', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => {
+      throw new Error('db exploded');
+    });
+
+    await expect(
+      handleDnsThreatBlockedEvent(
+        event('org-1', {
+          deviceId: 'dev-1',
+          domain: 'm.example.com',
+          category: 'malware',
+          integrationId: null,
+          timestamp: '2026-05-22T20:00:00.000Z',
+        })
+      )
+    ).rejects.toThrow('db exploded');
+  });
+
+  it('inserts an alert on the happy path', async () => {
+    mockCooldownSelect(false);
+    mockDeviceSelect({ hostname: 'h', displayName: null });
+    mockInsertReturning('alert-1');
+
+    await handleDnsThreatBlockedEvent(
+      event('org-1', {
+        deviceId: 'dev-1',
+        domain: 'm.example.com',
+        category: 'malware',
+        integrationId: null,
+        timestamp: '2026-05-22T20:00:00.000Z',
+      })
+    );
+
     expect(vi.mocked(db.insert)).toHaveBeenCalled();
   });
 });

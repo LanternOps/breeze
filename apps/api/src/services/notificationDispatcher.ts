@@ -38,7 +38,7 @@ import {
   type AlertSeverity
 } from './notificationSenders';
 import { sendSmsNotification, type SmsChannelConfig } from './notificationSenders/smsSender';
-import { getEventBus } from './eventBus';
+import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 
 const { db } = dbModule;
@@ -1145,47 +1145,41 @@ export async function dispatchAlertNotifications(
 }
 
 /**
- * Subscribe to alert events and dispatch notifications automatically
+ * Handle one alert lifecycle event (`alert.triggered` / `alert.acknowledged` /
+ * `alert.resolved`).
+ *
+ * Registered under subscriber id `notification-dispatcher` (services/eventSubscribers.ts).
+ * MUST throw on failure — queue-mode dispatch (#4085) retries on a thrown
+ * rejection; local delivery's wrapper (eventBus.ts's invokeLocalHandlers)
+ * provides the swallow-and-log semantics the old subscribers' try/catch used
+ * to provide themselves.
  */
-export function subscribeToAlertEvents(): void {
-  const eventBus = getEventBus();
+export async function handleAlertLifecycleEvent(event: BreezeEvent): Promise<void> {
+  const payload = event.payload as { alertId?: string };
+  if (!payload.alertId) {
+    // Kept as a guard, not a silent no-op (#4085): these events should always
+    // carry an alertId, so a missing one is worth a trace even though there is
+    // nothing actionable to do about it here.
+    console.warn(
+      `[NotificationDispatcher] ${event.type} event missing alertId; skipping`,
+      JSON.stringify({ eventId: event.id, orgId: event.orgId })
+    );
+    return;
+  }
 
-  eventBus.subscribe('alert.triggered', async (event) => {
-    try {
-      const payload = event.payload as { alertId?: string };
-      if (payload.alertId) {
-        // Pass the event id so a redelivered alert.triggered collapses onto the
-        // same job rather than notifying every on-call tech twice.
-        await dispatchAlertNotifications(payload.alertId, event.id);
-      }
-    } catch (error) {
-      console.error('Failed to dispatch alert notifications:', error);
-    }
-  });
-
-  eventBus.subscribe('alert.acknowledged', async (event) => {
-    try {
-      const payload = event.payload as { alertId?: string };
-      if (payload.alertId) {
-        await cancelAlertEscalations(payload.alertId);
-      }
-    } catch (error) {
-      console.error('Failed to cancel escalations on acknowledge:', error);
-    }
-  });
-
-  eventBus.subscribe('alert.resolved', async (event) => {
-    try {
-      const payload = event.payload as { alertId?: string };
-      if (payload.alertId) {
-        await cancelAlertEscalations(payload.alertId);
-      }
-    } catch (error) {
-      console.error('Failed to cancel escalations on resolve:', error);
-    }
-  });
-
-  console.log('[NotificationDispatcher] Subscribed to alert events');
+  switch (event.type) {
+    case 'alert.triggered':
+      // Pass the event id so a redelivered alert.triggered collapses onto the
+      // same job rather than notifying every on-call tech twice.
+      await dispatchAlertNotifications(payload.alertId, event.id);
+      return;
+    case 'alert.acknowledged':
+    case 'alert.resolved':
+      await cancelAlertEscalations(payload.alertId);
+      return;
+    default:
+      return;
+  }
 }
 
 // Worker instance
@@ -1208,9 +1202,6 @@ export async function initializeNotificationDispatcher(): Promise<void> {
     notificationWorker.on('failed', (job, error) => {
       console.error(`[NotificationDispatcher] Job ${job?.id} failed:`, error);
     });
-
-    // Subscribe to alert events
-    subscribeToAlertEvents();
 
     console.log('[NotificationDispatcher] Notification dispatcher initialized');
   } catch (error) {

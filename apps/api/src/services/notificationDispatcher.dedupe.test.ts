@@ -20,10 +20,7 @@ vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => true)
 }));
 
-const subscribeMock = vi.hoisted(() => vi.fn());
-vi.mock('./eventBus', () => ({ getEventBus: () => ({ subscribe: subscribeMock }) }));
-
-import { dispatchAlertNotifications, subscribeToAlertEvents } from './notificationDispatcher';
+import { dispatchAlertNotifications, handleAlertLifecycleEvent } from './notificationDispatcher';
 
 describe('alert.triggered redelivery cannot double-notify', () => {
   beforeEach(() => {
@@ -58,36 +55,53 @@ describe('alert.triggered redelivery cannot double-notify', () => {
     expect(queueAddMock.mock.calls.at(-1)?.[2]?.jobId).toBe('process-alert-alert-2-alert-2');
   });
 
-  describe('the alert.triggered subscriber is what makes the token per-event', () => {
+  describe('handleAlertLifecycleEvent is what makes the token per-event', () => {
     // Without this, the whole dedupe can be dead and the suite above still
     // passes: it calls dispatchAlertNotifications directly, so it tests
     // argument FORMATTING, not the wiring that supplies the argument.
-    function handlerFor(type: string) {
-      subscribeMock.mockReset();
-      subscribeToAlertEvents();
-      const call = subscribeMock.mock.calls.find(([t]) => t === type);
-      return call![1] as (e: unknown) => Promise<void>;
-    }
+    const triggeredEvent = (id: string, alertId: string) =>
+      ({ id, type: 'alert.triggered', orgId: 'org-1', payload: { alertId } }) as never;
 
     it('collapses a redelivered alert.triggered onto one job id', async () => {
-      const handler = handlerFor('alert.triggered');
-      const event = { id: 'event-1', payload: { alertId: 'alert-1' } };
-
-      await handler(event);
-      await handler(event);
+      await handleAlertLifecycleEvent(triggeredEvent('event-1', 'alert-1'));
+      await handleAlertLifecycleEvent(triggeredEvent('event-1', 'alert-1'));
 
       const jobIds = queueAddMock.mock.calls.map(([, , o]) => o?.jobId);
       expect(jobIds).toEqual(['process-alert-alert-1-event-1', 'process-alert-alert-1-event-1']);
     });
 
     it('keeps two distinct events on one alert distinct', async () => {
-      const handler = handlerFor('alert.triggered');
-
-      await handler({ id: 'event-1', payload: { alertId: 'alert-1' } });
-      await handler({ id: 'event-2', payload: { alertId: 'alert-1' } });
+      await handleAlertLifecycleEvent(triggeredEvent('event-1', 'alert-1'));
+      await handleAlertLifecycleEvent(triggeredEvent('event-2', 'alert-1'));
 
       const jobIds = queueAddMock.mock.calls.map(([, , o]) => o?.jobId);
       expect(new Set(jobIds).size).toBe(2);
+    });
+
+    // #4085: the handler used to swallow this in its own try/catch. Now the
+    // registry's local wrapper provides that swallow, so this handler must
+    // propagate the rejection for queue-mode retry to work at all.
+    it('propagates a dispatch failure instead of swallowing it', async () => {
+      queueAddMock.mockRejectedValueOnce(new Error('redis exploded'));
+
+      await expect(
+        handleAlertLifecycleEvent(triggeredEvent('event-1', 'alert-1'))
+      ).rejects.toThrow('redis exploded');
+    });
+
+    it('warns (not silently no-ops) when the event is missing alertId', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await handleAlertLifecycleEvent({
+        id: 'event-1',
+        type: 'alert.triggered',
+        orgId: 'org-1',
+        payload: {},
+      } as never);
+
+      expect(queueAddMock).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
     });
   });
 });

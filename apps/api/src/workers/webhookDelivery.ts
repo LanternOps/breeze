@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from 'crypto';
 import { createBlockingRedisConnection, getRedisConnection } from '../services/redis';
 import type Redis from 'ioredis';
-import { getEventBus, type BreezeEvent } from '../services/eventBus';
+import type { BreezeEvent } from '../services/eventBus';
 import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { sanitizeOutboundHeaders } from '../services/outboundHeaders';
@@ -623,106 +623,139 @@ function reportDuplicateSkip(
   }
 }
 
+export interface WebhookFanoutDeps {
+  getWebhooksForEvent: (orgId: string, eventType: string) => Promise<WebhookConfig[]>;
+  createDeliveryRecord?: CreateWebhookDeliveryRecord;
+}
+
+let webhookFanoutDeps: WebhookFanoutDeps | null = null;
+
 /**
- * Initialize webhook delivery by subscribing to all events
- * and routing to appropriate webhooks
+ * Wires the org->webhooks lookup and delivery-record creator that
+ * `handleWebhookFanoutEvent` needs. Called once from `registerAllEventSubscribers`
+ * (services/eventSubscribers.ts) synchronously at boot, before the event bus
+ * or the queue-mode dispatch worker can ever hand this handler an event.
  */
-export async function initializeWebhookDelivery(
-  getWebhooksForEvent: (orgId: string, eventType: string) => Promise<WebhookConfig[]>,
-  createDeliveryRecord?: CreateWebhookDeliveryRecord
-): Promise<void> {
-  const eventBus = getEventBus();
-  const worker = getWebhookWorker();
+export function configureWebhookFanout(deps: WebhookFanoutDeps): void {
+  webhookFanoutDeps = deps;
+}
 
-  // Subscribe to all events
-  eventBus.subscribe('*', async (event) => {
-    let webhooks: WebhookConfig[];
+/**
+ * Fan an event out to every webhook subscribed to it in the event's org.
+ *
+ * Registered under subscriber id `webhook-delivery` (services/eventSubscribers.ts).
+ * MUST throw on failure — queue-mode dispatch (#4085) retries on a thrown
+ * rejection, and local delivery's wrapper (eventBus.ts's invokeLocalHandlers)
+ * provides the swallow-and-log semantics this function used to provide itself.
+ */
+export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void> {
+  if (!webhookFanoutDeps) {
+    throw new Error('handleWebhookFanoutEvent invoked before configureWebhookFanout()');
+  }
+  const { getWebhooksForEvent, createDeliveryRecord } = webhookFanoutDeps;
+
+  let webhooks: WebhookConfig[];
+  try {
+    // Get webhooks configured for this event type in this org — short DB context.
+    webhooks = await runWithSystemDbAccess(() => getWebhooksForEvent(event.orgId, event.type));
+  } catch (err) {
+    // This used to be the ONE drop in this file with no recovery path anywhere
+    // (#4095): the webhook lookup failed, so NO delivery rows were created for
+    // this event — which means the recovery sweep cannot see it either, since
+    // the sweep reclaims recorded-but-unenqueued rows and here nothing was
+    // recorded. Rethrowing (rather than swallowing) lets queue-mode dispatch
+    // retry this exact event; local delivery still logs+swallows one layer up.
+    const msg = err instanceof Error ? err.message : String(err);
+    const transient = msg.includes('CONNECTION_DESTROYED') || msg.includes('CONNECTION_ENDED');
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error(`[WebhookDelivery] event-routing-failed ${JSON.stringify({
+      errorId: 'WEBHOOK_EVENT_ROUTING_FAILED',
+      eventId: event.id,
+      orgId: event.orgId,
+      eventType: event.type,
+      transient,
+      error: msg,
+      impact: 'no delivery rows were created; this event\'s fan-out is lost for every subscribed webhook unless retried'
+    })}`);
+    throw err;
+  }
+
+  // Queue delivery for each webhook. The delivery record is created in
+  // its own short DB context right before its enqueue ("mark-attempted
+  // before send"); `queueDelivery` itself is a Redis LPUSH and runs
+  // OUTSIDE any DB context (#1105) — looping Redis calls while a pooled
+  // Postgres connection sits idle-in-transaction is exactly the hold
+  // pattern that exhausts the pool under load, and this handler fires
+  // on every event fleet-wide.
+  //
+  // The try/catch is INSIDE the loop (#4095): one webhook's failure must not
+  // abort delivery for webhooks N+1… of the same event — combined with the
+  // dedupe below, wrapping the whole loop would make a retry skip the
+  // webhooks that already had a row while the rest proceeded, permanently
+  // dropping the FAILING webhook. Failures are collected and raised together
+  // AFTER the loop (#4085) so a retry re-attempts only the failed ones — the
+  // (webhook_id, event_id) unique insert makes that safe.
+  const failures: Array<{ webhookId: string; error: unknown }> = [];
+  for (const webhook of webhooks) {
     try {
-      // Get webhooks configured for this event type in this org — short DB context.
-      webhooks = await runWithSystemDbAccess(() => getWebhooksForEvent(event.orgId, event.type));
-    } catch (err) {
-      // This is the ONE drop in this file with no recovery path anywhere.
-      //
-      // The webhook lookup failed, so NO delivery rows were created for this
-      // event — which means the recovery sweep cannot see it either: the sweep
-      // reclaims recorded-but-unenqueued rows, and here there is nothing
-      // recorded. The event's entire fan-out is simply gone, for every webhook
-      // subscribed to it.
-      //
-      // The old message claimed this would "retry on next event". It does not:
-      // a LATER event may succeed, but THIS one is lost. Saying otherwise is
-      // how a silent drop survives triage, which is the whole subject of #4095.
-      const msg = err instanceof Error ? err.message : String(err);
-      const transient = msg.includes('CONNECTION_DESTROYED') || msg.includes('CONNECTION_ENDED');
-      captureException(err instanceof Error ? err : new Error(String(err)));
-      console.error(`[WebhookDelivery] event-routing-failed ${JSON.stringify({
-        errorId: 'WEBHOOK_EVENT_ROUTING_FAILED',
-        eventId: event.id,
-        orgId: event.orgId,
-        eventType: event.type,
-        transient,
-        error: msg,
-        impact: 'no delivery rows were created; this event\'s fan-out is lost for every subscribed webhook and no sweep can recover it'
-      })}`);
-      return;
-    }
+      let deliveryId: string | undefined;
 
-    // Queue delivery for each webhook. The delivery record is created in
-    // its own short DB context right before its enqueue ("mark-attempted
-    // before send"); `queueDelivery` itself is a Redis LPUSH and runs
-    // OUTSIDE any DB context (#1105) — looping Redis calls while a pooled
-    // Postgres connection sits idle-in-transaction is exactly the hold
-    // pattern that exhausts the pool under load, and this subscriber fires
-    // on every event fleet-wide.
-    //
-    // The try/catch is INSIDE the loop (#4095). It used to wrap the whole
-    // loop, so one webhook's failure aborted delivery for webhooks N+1… of the
-    // same event — and combined with the dedupe below, a later retry then
-    // skipped the webhooks that already had a row while the rest proceeded,
-    // making the FAILING webhook the one permanently dropped.
-    for (const webhook of webhooks) {
-      try {
-        let deliveryId: string | undefined;
-
-        if (createDeliveryRecord) {
-          const outcome = await runWithSystemDbAccess(() => createDeliveryRecord(webhook, event));
-          // `created: false` means the (webhook, event) pair is already
-          // recorded, so the ORIGINAL delivery owns this event's outcome.
-          // Queueing again would POST to the customer's endpoint twice for one
-          // event. A recorded-but-never-enqueued original is NOT rescued here —
-          // see reportDuplicateSkip.
-          if (!outcome.created) {
-            reportDuplicateSkip(webhook, event, outcome.existing);
-            continue;
-          }
-          deliveryId = outcome.deliveryId;
+      if (createDeliveryRecord) {
+        const outcome = await runWithSystemDbAccess(() => createDeliveryRecord(webhook, event));
+        // `created: false` means the (webhook, event) pair is already
+        // recorded, so the ORIGINAL delivery owns this event's outcome.
+        // Queueing again would POST to the customer's endpoint twice for one
+        // event. A recorded-but-never-enqueued original is NOT rescued here —
+        // see reportDuplicateSkip.
+        if (!outcome.created) {
+          reportDuplicateSkip(webhook, event, outcome.existing);
+          continue;
         }
-        // With no creator there is no dedupe surface at all, so this queues
-        // blind rather than skipping — a skip there would drop the delivery
-        // outright rather than de-duplicate it.
-
-        await worker.queueDelivery(webhook, event, deliveryId);
-      } catch (err) {
-        // Recorded-but-not-enqueued is exactly the orphan the recovery sweep
-        // reclaims, so this is loud but not fatal to the rest of the fan-out.
-        captureException(err instanceof Error ? err : new Error(String(err)));
-        console.error(`[WebhookDelivery] webhook-routing-failed ${JSON.stringify({
-          errorId: 'WEBHOOK_DELIVERY_ROUTING_FAILED',
-          webhookId: webhook.id,
-          orgId: event.orgId,
-          eventId: event.id,
-          eventType: event.type,
-          error: err instanceof Error ? err.message : String(err)
-        })}`);
+        deliveryId = outcome.deliveryId;
       }
+      // With no creator there is no dedupe surface at all, so this queues
+      // blind rather than skipping — a skip there would drop the delivery
+      // outright rather than de-duplicate it.
+
+      await getWebhookWorker().queueDelivery(webhook, event, deliveryId);
+    } catch (err) {
+      // Recorded-but-not-enqueued is exactly the orphan the recovery sweep
+      // reclaims, so this is loud but not fatal to the rest of the fan-out.
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      console.error(`[WebhookDelivery] webhook-routing-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_ROUTING_FAILED',
+        webhookId: webhook.id,
+        orgId: event.orgId,
+        eventId: event.id,
+        eventType: event.type,
+        error: err instanceof Error ? err.message : String(err)
+      })}`);
+      failures.push({ webhookId: webhook.id, error: err });
     }
-  });
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      `webhook fan-out failed for ${failures.length}/${webhooks.length} webhooks: ${failures.map((f) => f.webhookId).join(',')}`
+    );
+  }
+}
+
+/**
+ * Initialize the webhook delivery BullMQ worker loop that drains the delivery
+ * queue. Event routing itself no longer subscribes here — it runs through the
+ * durable subscriber registry (`handleWebhookFanoutEvent` above, registered by
+ * services/eventSubscribers.ts) so a webhook fan-out failure can be retried by
+ * queue-mode dispatch (#4085).
+ */
+export async function initializeWebhookDelivery(): Promise<void> {
+  const worker = getWebhookWorker();
 
   void worker.start().catch((err) => {
     console.error('[WebhookDelivery] Worker failed:', err);
   });
 
-  console.log('[WebhookDelivery] Initialized webhook event subscription');
+  console.log('[WebhookDelivery] Initialized webhook delivery worker');
 }
 
 // Export signature generation for webhook verification endpoint

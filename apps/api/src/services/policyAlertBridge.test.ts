@@ -55,7 +55,11 @@ vi.mock('./eventBus', () => ({
 
 import { db } from '../db';
 import { createAlert } from './alertService';
-import { handlePolicyViolation } from './policyAlertBridge';
+import {
+  handlePolicyViolation,
+  handlePolicyViolationEvent,
+  handlePolicyCompliantEvent,
+} from './policyAlertBridge';
 
 function mockSelectOnce(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -166,5 +170,54 @@ describe('handlePolicyViolation (dual-axis policy check, #2149)', () => {
     await handlePolicyViolation('org-1', payload());
 
     expect(vi.mocked(createAlert)).not.toHaveBeenCalled();
+  });
+});
+
+// #4085 Task 3: handlePolicyViolationEvent / handlePolicyCompliantEvent are the
+// registry-registered subscriber ids (single `policy-alert-bridge` id, dispatched
+// by event.type in services/eventSubscribers.ts). Both MUST throw on failure —
+// the old subscribeToPolicyEvents wrapped each in a try/catch that logged and
+// swallowed; that swallow now lives one layer up, in eventBus.ts's registry-aware
+// local delivery.
+describe('handlePolicyViolationEvent / handlePolicyCompliantEvent (durable registry contract)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function event(type: 'policy.violation' | 'policy.compliant', orgId: string, payloadOverrides = {}) {
+    return {
+      id: 'event-1',
+      type,
+      orgId,
+      source: 'test',
+      priority: 'normal' as const,
+      payload: payload(payloadOverrides),
+      metadata: { correlationId: 'c1', timestamp: new Date().toISOString() },
+    } as never;
+  }
+
+  it('propagates a DB rejection out of handlePolicyViolationEvent', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => {
+      throw new Error('db exploded');
+    });
+
+    await expect(handlePolicyViolationEvent(event('policy.violation', 'org-1'))).rejects.toThrow('db exploded');
+  });
+
+  it('propagates a DB rejection out of handlePolicyCompliantEvent', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => {
+      throw new Error('db exploded');
+    });
+
+    await expect(handlePolicyCompliantEvent(event('policy.compliant', 'org-1'))).rejects.toThrow('db exploded');
+  });
+
+  it('handlePolicyViolationEvent creates an alert on the happy path', async () => {
+    mockSelectOnce([{ id: POLICY_ID, orgId: 'org-1', partnerId: null }]);
+    mockSelectOnce([{ id: 'rule-1' }]);
+
+    await handlePolicyViolationEvent(event('policy.violation', 'org-1'));
+
+    expect(vi.mocked(createAlert)).toHaveBeenCalledTimes(1);
   });
 });
