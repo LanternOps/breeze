@@ -131,7 +131,8 @@ describe('llm_egress_events schema contracts', () => {
 
     // An audit row states what happened; rewriting `blocked` after the fact
     // would turn the trail into a claim. 42501 = permission denied, from the
-    // narrowed GRANT rather than from RLS.
+    // narrowed GRANT in `2026-09-13-d-llm-egress-events-revoke-update.sql`
+    // rather than from RLS.
     await expect(
       withSystemDbAccessContext(() =>
         db
