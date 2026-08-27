@@ -1,4 +1,4 @@
-import { and, arrayContains, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, arrayContains, eq, gte, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, partners } from '../db/schema';
 import { ANONYMOUS_ACTOR_ID, requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
@@ -9,6 +9,7 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
   severAgentCredentialsForOrgIds,
+  suspendOrganizationTenantAccessReversibly,
   type TenantRevocationResult,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
@@ -132,6 +133,11 @@ export interface OffboardingEntryResult {
   devicesTargeted: number;
   uninstallsQueued: number;
   otherCommandsCancelled: number;
+}
+
+export interface OrganizationOffboardingOptions {
+  target?: 'churn' | 'archive';
+  purgeAt?: Date | null;
 }
 
 export interface OffboardingAbortResult {
@@ -265,23 +271,42 @@ async function queueDrainUninstalls(
 
 export async function beginOrganizationOffboarding(
   orgId: string,
-  actorUserId: string | null
+  actorUserId: string | null,
+  options: OrganizationOffboardingOptions = {}
 ): Promise<OffboardingEntryResult> {
-  // Users/API keys/OAuth out immediately; agent channel kept (drain mode).
+  const target = options.target ?? 'churn';
+  const purgeAt = options.purgeAt ?? null;
+  // Churn hard-revokes user/API/OAuth access immediately. Archive leaves all
+  // one-way credential surfaces untouched and prepares only the agent delivery
+  // channel; the offboarding status gate blocks the preserved credentials.
   // This runs on its own short system contexts BEFORE the ambient-transaction
   // work below: it never writes the organizations row (no lock conflict with
   // the route's held request transaction), and its non-DB side effects
   // (session/WS teardown, Redis) could not be transactional anyway. It is
   // idempotent, so a rollback of the request transaction is recoverable by
   // retrying the PATCH (or by reactivation's restore path).
-  const revocation = await revokeOrganizationTenantAccess(orgId, { agentChannel: 'drain' });
+  const revocation = target === 'archive'
+    ? await prepareAgentDrainForOrgIds([orgId], { preserveEnrollmentKeys: true }).then(() => ({
+      apiKeysRevoked: 0,
+      userSessionsRevoked: 0,
+      oauthGrantsRevoked: 0,
+      oauthRefreshTokensRevoked: 0,
+      agentTokensSuspended: 0,
+      enrollmentKeysInvalidated: 0,
+    }))
+    : await revokeOrganizationTenantAccess(orgId, { agentChannel: 'drain' });
 
   return inCallerOrSystemDbContext({ orgId }, async () => {
     // Preserve the original start on re-entry so a repeated PATCH can't
     // extend the drain window indefinitely.
     await db
       .update(organizations)
-      .set({ offboardingStartedAt: DB_NOW, updatedAt: new Date() })
+      .set({
+        offboardingStartedAt: DB_NOW,
+        offboardingTarget: target,
+        purgeAt,
+        updatedAt: new Date(),
+      })
       .where(and(eq(organizations.id, orgId), isNull(organizations.offboardingStartedAt)));
 
     const queued = await queueDrainUninstalls([orgId], actorUserId);
@@ -713,13 +738,13 @@ function writeOffboardingReportAudit(report: OffboardingFinalizeReport, orgIdFor
  * `churned` no longer stands — the sever is only correct for a tenant that is
  * still terminal.
  */
-async function orgIsStillChurned(orgId: string): Promise<boolean> {
+async function orgIsStillStatus(orgId: string, expectedStatus: 'churned' | 'archived'): Promise<boolean> {
   const [row] = await db
     .select({ status: organizations.status })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
-  return row?.status === 'churned';
+  return row?.status === expectedStatus;
 }
 
 async function partnerIsStillChurned(partnerId: string): Promise<boolean> {
@@ -731,11 +756,22 @@ async function partnerIsStillChurned(partnerId: string): Promise<boolean> {
   return row?.status === 'churned';
 }
 
+export function buildOrganizationFinalizeCas(
+  orgId: string,
+  target: 'churn' | 'archive'
+): SQL {
+  return and(
+    eq(organizations.id, orgId),
+    eq(organizations.status, 'offboarding'),
+    eq(organizations.offboardingTarget, target)
+  )!;
+}
+
 /**
- * Finalize an org drain: CAS the status offboarding→churned FIRST (losing the
- * CAS means an operator aborted or forced another transition concurrently —
- * do nothing), then cancel leftovers with the never-drained report, write the
- * audit report, and sever agent credentials.
+ * Finalize an org drain according to its persisted offboarding target. The CAS
+ * lands churn at `churned` with the existing hard sever, or archive at
+ * `archived` with an archived_at stamp and reversible credential suspension.
+ * Losing the CAS means an operator changed the state or target concurrently.
  */
 export async function finalizeOrganizationOffboarding(
   orgId: string,
@@ -744,15 +780,35 @@ export async function finalizeOrganizationOffboarding(
   // Read the drain start BEFORE the CAS clears it — it scopes the report's
   // terminal counts to this drain window.
   const [before] = await db
-    .select({ startedAt: organizations.offboardingStartedAt })
+    .select({
+      startedAt: organizations.offboardingStartedAt,
+      target: organizations.offboardingTarget,
+      purgeAt: organizations.purgeAt,
+    })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
 
+  const target = before?.target === 'archive' ? 'archive' : 'churn';
+  const terminalStatus = target === 'archive' ? 'archived' : 'churned';
+  const terminalValues = target === 'archive'
+    ? {
+      status: 'archived' as const,
+      archivedAt: new Date(),
+      purgeAt: before?.purgeAt ?? null,
+      offboardingStartedAt: null,
+      updatedAt: new Date(),
+    }
+    : {
+      status: 'churned' as const,
+      offboardingStartedAt: null,
+      updatedAt: new Date(),
+    };
+
   const flipped = await db
     .update(organizations)
-    .set({ status: 'churned', offboardingStartedAt: null, updatedAt: new Date() })
-    .where(and(eq(organizations.id, orgId), eq(organizations.status, 'offboarding')))
+    .set(terminalValues)
+    .where(buildOrganizationFinalizeCas(orgId, target))
     .returning({ id: organizations.id });
   if (flipped.length === 0) return null;
 
@@ -767,11 +823,15 @@ export async function finalizeOrganizationOffboarding(
   };
   writeOffboardingReportAudit(report, orgId);
 
-  if (await orgIsStillChurned(orgId)) {
-    await severAgentCredentialsForOrgIds([orgId]);
+  if (await orgIsStillStatus(orgId, terminalStatus)) {
+    if (target === 'archive') {
+      await suspendOrganizationTenantAccessReversibly(orgId);
+    } else {
+      await severAgentCredentialsForOrgIds([orgId]);
+    }
   } else {
     console.warn(
-      `[tenantOffboarding] org ${orgId} left churned during finalize — skipping credential sever`
+      `[tenantOffboarding] org ${orgId} left ${terminalStatus} during finalize — skipping credential cutoff`
     );
   }
   return report;
@@ -877,13 +937,19 @@ export async function repairIncompleteEntry(
   // `offboarding_entry_repaired` with a success result, so nothing about it
   // looks wrong afterwards.
   let stillIncomplete: boolean;
+  let target: 'churn' | 'archive' = 'churn';
   if (scope === 'organization') {
     const [row] = await db
-      .select({ status: organizations.status, startedAt: organizations.offboardingStartedAt })
+      .select({
+        status: organizations.status,
+        startedAt: organizations.offboardingStartedAt,
+        target: organizations.offboardingTarget,
+      })
       .from(organizations)
       .where(eq(organizations.id, scopeId))
       .for('update');
     stillIncomplete = row?.status === 'offboarding' && row.startedAt === null;
+    target = row?.target === 'archive' ? 'archive' : 'churn';
   } else {
     const [row] = await db
       .select({ status: partners.status, startedAt: partners.offboardingStartedAt })
@@ -911,7 +977,11 @@ export async function repairIncompleteEntry(
   // Drain prep FIRST, matching begin*Offboarding: #2785 made this step the one
   // that lifts a superseded token suspension, so queueing before it would leave
   // a window where the uninstall exists but the fleet is still 401ing.
-  await prepareAgentDrainForOrgIds(orgIds);
+  if (target === 'archive') {
+    await prepareAgentDrainForOrgIds(orgIds, { preserveEnrollmentKeys: true });
+  } else {
+    await prepareAgentDrainForOrgIds(orgIds);
+  }
   const queued = await queueDrainUninstalls(orgIds, null);
 
   // DB_NOW, not the sweep's JS `now`, for the same clock-skew reason as

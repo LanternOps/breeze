@@ -62,6 +62,9 @@ vi.mock('../db/schema', () => ({
     status: 'organizations.status',
     deletedAt: 'organizations.deletedAt',
     offboardingStartedAt: 'organizations.offboardingStartedAt',
+    archivedAt: 'organizations.archivedAt',
+    purgeAt: 'organizations.purgeAt',
+    offboardingTarget: 'organizations.offboardingTarget',
     updatedAt: 'organizations.updatedAt',
     settings: 'organizations.settings',
   },
@@ -132,6 +135,9 @@ vi.mock('./tenantLifecycle', () => ({
     agentTokensSuspended: 0,
     enrollmentKeysInvalidated: 0,
   })),
+  suspendOrganizationTenantAccessReversibly: vi.fn(async () => ({
+    agentTokensSuspended: 0,
+  })),
 }));
 
 vi.mock('./tenantStatus', () => ({ invalidateAgentTenantCache: vi.fn(async () => undefined) }));
@@ -162,6 +168,7 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
   severAgentCredentialsForOrgIds,
+  suspendOrganizationTenantAccessReversibly,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
 import {
@@ -272,6 +279,27 @@ describe('beginOrganizationOffboarding', () => {
     // window must include the entry's own commands (#2877 clock skew).
     expect(stamp.values.offboardingStartedAt).toEqual(SQL_NOW);
     expect(JSON.stringify(stamp.where)).toContain('isNull');
+  });
+
+  it('stores the archive target and purge timestamp without hard-revoking credentials', async () => {
+    const purgeAt = new Date('2027-01-24T00:00:00.000Z');
+    queueSelect([]); // devices
+
+    await beginOrganizationOffboarding('org-1', 'user-1', {
+      target: 'archive',
+      purgeAt,
+    });
+
+    const stamp = updatesFor(organizations)[0]!;
+    expect(stamp.values).toMatchObject({
+      offboardingTarget: 'archive',
+      purgeAt,
+    });
+    expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+    expect(prepareAgentDrainForOrgIds).toHaveBeenCalledWith(
+      ['org-1'],
+      { preserveEnrollmentKeys: true }
+    );
   });
 
   it('cancels other pending/sent commands, MERGES its reason into an existing device-remove uninstall, and queues a fresh row for the rest', async () => {
@@ -692,6 +720,33 @@ describe('finalizeOrganizationOffboarding', () => {
       })
     );
     expect(severAgentCredentialsForOrgIds).toHaveBeenCalledWith(['org-1']);
+    expect(suspendOrganizationTenantAccessReversibly).not.toHaveBeenCalled();
+  });
+
+  it('finalizes an archive target to archived, stamps archived_at, and suspends reversibly', async () => {
+    const purgeAt = new Date('2027-01-24T00:00:00.000Z');
+    queueSelect([{ startedAt: DRAIN_START, target: 'archive', purgeAt }]);
+    updateReturningQueue.push([{ id: 'org-1' }]); // CAS wins
+    queueSelect([]); // terminal
+    queueSelect([]); // outstanding
+    queueSelect([{ status: 'archived' }]); // pre-suspend status re-check
+
+    const before = Date.now();
+    const report = await finalizeOrganizationOffboarding('org-1', { forcedByDeadline: false });
+    const after = Date.now();
+
+    expect(report).not.toBeNull();
+    const flip = updatesFor(organizations)[0]!;
+    expect(flip.values.status).toBe('archived');
+    expect(flip.values.offboardingStartedAt).toBeNull();
+    expect(flip.values.archivedAt).toBeInstanceOf(Date);
+    expect((flip.values.archivedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
+    expect((flip.values.archivedAt as Date).getTime()).toBeLessThanOrEqual(after);
+    expect(flip.values.purgeAt).toBe(purgeAt);
+    expect(JSON.stringify(flip.where)).toContain('offboarding');
+    expect(JSON.stringify(flip.where)).toContain('archive');
+    expect(suspendOrganizationTenantAccessReversibly).toHaveBeenCalledWith('org-1');
+    expect(severAgentCredentialsForOrgIds).not.toHaveBeenCalled();
   });
 
   // Fix round 1: collectAndCancelOutstanding used to cancel/report EVERY
@@ -1025,6 +1080,19 @@ describe('sweepOffboardingTenants', () => {
     expect(insertsAtPrepareTime).toBe(0);
     // ...and the uninstall was queued after it, not skipped.
     expect(insertLog[0]!.rows[0]).toMatchObject({ deviceId: 'd1', type: 'self_uninstall' });
+  });
+
+  it('preserves enrollment keys when repairing an incomplete archive entry', async () => {
+    queueCandidates([{ id: 'org-1', startedAt: null }], []);
+    queueSelect([{ status: 'offboarding', startedAt: null, target: 'archive' }]);
+    queueSelect([]); // no devices
+
+    await sweepOffboardingTenants(NOW);
+
+    expect(prepareAgentDrainForOrgIds).toHaveBeenCalledWith(
+      ['org-1'],
+      { preserveEnrollmentKeys: true }
+    );
   });
 
   // One bad tenant must not starve every other draining tenant's finalization
