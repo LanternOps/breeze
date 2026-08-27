@@ -237,8 +237,11 @@ export const escalationPolicies = pgTable('escalation_policies', {
 // unique index backs a claim-style state machine in processSendNotification:
 // insert-onConflictDoNothing on this triple, then either skip (already
 // 'sent') or reclaim the existing row for a retry. No org_id column — tenant
-// scope is derived transitively via alertId, so this table needs no RLS or
-// cascade/export registration of its own.
+// scope is derived transitively via alertId, so this table needs no cascade/
+// export registration of its own. It DOES have RLS: FORCE ROW LEVEL SECURITY
+// with EXISTS-join policies over alerts.org_id (migration
+// 2026-05-30-fk-child-tables-rls.sql), registered as an alert-join table in
+// rls-coverage.integration.test.ts — "no org_id column" is not "no RLS".
 export const alertNotifications = pgTable('alert_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),
   alertId: uuid('alert_id').notNull().references(() => alerts.id),
