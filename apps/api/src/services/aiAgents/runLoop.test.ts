@@ -86,6 +86,24 @@ const transitionRunStatus = vi.hoisted(() =>
   ) => Promise<boolean>>());
 vi.mock('./runService', () => ({ transitionRunStatus }));
 
+const createAgentRunSession = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<string>>());
+const startToolExecution = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<string>>());
+const completeToolExecution = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<void>>());
+const reconcileHungExecutions = vi.hoisted(() =>
+  vi.fn<(sessionId: string) => Promise<number>>());
+const closeAgentRunSession = vi.hoisted(() =>
+  vi.fn<(sessionId: string, status: 'completed' | 'failed') => Promise<void>>());
+vi.mock('./executionLedger', () => ({
+  createAgentRunSession,
+  startToolExecution,
+  completeToolExecution,
+  reconcileHungExecutions,
+  closeAgentRunSession,
+}));
+
 const resolveEffectiveAgentSystem = vi.hoisted(() =>
   vi.fn<(orgId: string, kind: string) => Promise<AiAgentPolicySnapshot | null>>());
 vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
@@ -297,6 +315,12 @@ beforeEach(() => {
   preVerdicts.length = 0;
   lastQueryOptions = undefined;
   transitionRunStatus.mockResolvedValue(true);
+  let execCounter = 0;
+  createAgentRunSession.mockResolvedValue('session-1');
+  startToolExecution.mockImplementation(async () => `exec-${++execCounter}`);
+  completeToolExecution.mockResolvedValue(undefined);
+  reconcileHungExecutions.mockResolvedValue(0);
+  closeAgentRunSession.mockResolvedValue(undefined);
   resolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: 'sk-test', model: 'claude-fallback' });
   resolveRecipientUserIds.mockResolvedValue([]);
   createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
@@ -847,6 +871,130 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(finalTransition()!.to).toBe('completed');
+  });
+
+  // -------------------------------------------------------------------------
+  // Execution ledger wiring (wave 4a, Task 2)
+  // -------------------------------------------------------------------------
+
+  it('creates exactly one execution-ledger session per run, with the snapshot model + turn ceiling', async () => {
+    seedRows({
+      effective: policy({ model: 'claude-agent-model', limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 9 } as AiAgentLimits }),
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createAgentRunSession).toHaveBeenCalledTimes(1);
+    expect(createAgentRunSession).toHaveBeenCalledWith(expect.objectContaining({
+      runId: RUN_ID,
+      agentId: AGENT_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      model: 'claude-agent-model',
+      maxTurns: 9,
+    }));
+  });
+
+  it('falls back to the resolved LLM model when the snapshot has none', async () => {
+    seedRows({ effective: policy({ model: null }) });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createAgentRunSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'claude-fallback' }),
+    );
+  });
+
+  it('an allowed tool call gets a real ledger execution id, threaded onto the outcome', async () => {
+    seedRows();
+    scriptQuery({
+      toolCalls: [{ tool: 'query_devices', input: { status: 'online' } }],
+      assistantText: 'done',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(startToolExecution).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      toolName: 'query_devices',
+      toolInput: { status: 'online' },
+    }));
+    expect(completeToolExecution).toHaveBeenCalledWith(expect.objectContaining({
+      executionId: 'exec-1',
+      isError: false,
+      durationMs: 5,
+    }));
+
+    const final = finalTransition()!;
+    const outcome = final.patch.outcome as { executedActions: Array<{ executionId: string }> };
+    expect(outcome.executedActions[0]!.executionId).toBe('exec-1');
+  });
+
+  it('a ledger write failure never blocks the tool call — falls back to (inline)', async () => {
+    seedRows();
+    startToolExecution.mockRejectedValueOnce(new Error('db unavailable'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    scriptQuery({
+      toolCalls: [{ tool: 'query_devices', input: { status: 'online' } }],
+      assistantText: 'done',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    // The gate still allowed the call — the ledger write is observability
+    // only, never authorization.
+    expect(preVerdicts[0]).toEqual({ allowed: true });
+    expect(completeToolExecution).not.toHaveBeenCalled();
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    const outcome = final.patch.outcome as { executedActions: Array<{ executionId: string; result: string }> };
+    expect(outcome.executedActions[0]).toMatchObject({ executionId: '(inline)', result: 'ok' });
+  });
+
+  it('reconciles hung executions and closes the session on finish', async () => {
+    seedRows();
+
+    await executeAgentRun(RUN_ID);
+
+    expect(reconcileHungExecutions).toHaveBeenCalledWith('session-1');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'completed');
+  });
+
+  it('closes the session as failed when the run itself fails', async () => {
+    seedRows();
+    scriptQuery({
+      results: [resultMessage({ subtype: 'error_during_execution', is_error: true, result: undefined, errors: ['boom'] })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()!.to).toBe('failed');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'failed');
+  });
+
+  it('a denied call never reaches the ledger — no execution row is started', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }) });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
+      assistantText: 'denied',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(startToolExecution).not.toHaveBeenCalled();
+  });
+
+  it('a proposed (shadow) call never reaches the ledger — no execution row is started', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }) });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
+      assistantText: 'proposed',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(startToolExecution).not.toHaveBeenCalled();
   });
 });
 

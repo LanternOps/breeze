@@ -78,6 +78,13 @@ import { createNotification } from '../userNotifications';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import {
+  closeAgentRunSession,
+  completeToolExecution,
+  createAgentRunSession,
+  reconcileHungExecutions,
+  startToolExecution,
+} from './executionLedger';
 import { resolveRecipientUserIds } from './recipients';
 import { transitionRunStatus } from './runService';
 import {
@@ -122,9 +129,13 @@ export interface OutcomeExecutedAction {
   tool: string;
   action?: string;
   /**
-   * '(inline)' for wave 3: an agent tool call executes inside the MCP handler
-   * and has no `ai_tool_executions` row of its own yet (that ledger is written
-   * by the chat session path). Wave 6's transcript work gives these real ids.
+   * The real `ai_tool_executions` row id (wave 4a's execution ledger), or
+   * `'(inline)'` when the ledger write itself failed — a ledger failure must
+   * never block the tool call, so the call still executes and is recorded
+   * with the placeholder id (see `executionLedger.ts` and the pre/post hooks
+   * below). Correlation between the pre and post hook is per-tool FIFO order
+   * (same assumption `allowedPending` already made) — genuine per-invocation
+   * ids need SDK hook support the loop doesn't have yet.
    */
   executionId: string;
   result: 'ok' | 'failed';
@@ -188,6 +199,14 @@ interface RunContext {
   orgPartnerId: string;
   device: { id: string; siteId: string; hostname: string; osType: string } | null;
   alert: { title: string; severity: string; message: string | null } | null;
+  /**
+   * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
+   * inside `driveSdkLoop`, right after the model is resolved — `null` until
+   * then, and stays `null` for the lifetime of the run if session creation
+   * itself failed (a best-effort write: see `driveSdkLoop`). `finishRun` reads
+   * it back to reconcile/close the session.
+   */
+  sessionId: string | null;
 }
 
 /**
@@ -301,7 +320,14 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
-    return { run: run as RunRow, agent: agent as AgentRow, orgPartnerId: org.partnerId, device, alert };
+    return {
+      run: run as RunRow,
+      agent: agent as AgentRow,
+      orgPartnerId: org.partnerId,
+      device,
+      alert,
+      sessionId: null,
+    };
   });
 }
 
@@ -326,8 +352,19 @@ export function createAgentRunPreToolUse(args: {
   intentIds: string[];
   /** Per-tool count of calls the gate ALLOWED, consumed by the post hook. */
   allowedPending: Map<string, number>;
+  /** The run's execution-ledger session, or `null` if session creation itself failed. */
+  sessionId: string | null;
+  /**
+   * Per-tool FIFO of `ai_tool_executions` ids (or `null` sentinels for a
+   * failed/skipped ledger write), shifted by the post hook. Same ordering
+   * assumption as `allowedPending`.
+   */
+  executionIdPending: Map<string, Array<string | null>>;
 }): PreToolUseCallback {
-  const { run, agentName, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending } = args;
+  const {
+    run, agentName, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending, sessionId,
+    executionIdPending,
+  } = args;
 
   return async (toolName, input) => {
     const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
@@ -401,6 +438,27 @@ export function createAgentRunPreToolUse(args: {
     }
 
     allowedPending.set(toolName, (allowedPending.get(toolName) ?? 0) + 1);
+
+    // Ledger write is best-effort: the tool call is already decided ALLOWED
+    // above, and a failure here must never turn that into a denial. A failed
+    // (or skipped, when the session itself never got created) write pushes a
+    // `null` sentinel so the post hook's FIFO stays aligned with the calls
+    // that actually happened.
+    let executionId: string | null = null;
+    if (sessionId) {
+      try {
+        executionId = await startToolExecution({ sessionId, toolName, toolInput: input });
+      } catch (error) {
+        console.error('[aiAgentRunLoop] execution-ledger write failed — tool call still executes', {
+          runId: run.id, toolName, error,
+        });
+        executionId = null;
+      }
+    }
+    const pending = executionIdPending.get(toolName) ?? [];
+    pending.push(executionId);
+    executionIdPending.set(toolName, pending);
+
     return { allowed: true };
   };
 }
@@ -414,19 +472,35 @@ export function createAgentRunPreToolUse(args: {
 export function createAgentRunPostToolUse(args: {
   outcome: AgentRunOutcome;
   allowedPending: Map<string, number>;
+  executionIdPending: Map<string, Array<string | null>>;
 }): PostToolUseCallback {
-  const { outcome, allowedPending } = args;
+  const { outcome, allowedPending, executionIdPending } = args;
 
   return async (toolName, input, _output, isError, durationMs) => {
     const remaining = allowedPending.get(toolName) ?? 0;
     if (remaining <= 0) return;
     allowedPending.set(toolName, remaining - 1);
 
+    let executionId: string | null = null;
+    const pending = executionIdPending.get(toolName);
+    if (pending && pending.length > 0) {
+      executionId = pending.shift() ?? null;
+    }
+    if (executionId) {
+      try {
+        await completeToolExecution({ executionId, isError, durationMs });
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to complete execution-ledger row (non-fatal)', {
+          toolName, executionId, error,
+        });
+      }
+    }
+
     const action = readToolAction(toolName, input);
     outcome.executedActions.push({
       tool: toolName,
       ...(action ? { action } : {}),
-      executionId: '(inline)',
+      executionId: executionId ?? '(inline)',
       result: isError ? 'failed' : 'ok',
       durationMs,
     });
@@ -636,6 +710,30 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     { id: run.orgId, partnerId: ctx.orgPartnerId },
   );
 
+  // Execution-ledger session: created here — AFTER the ownership check above
+  // can no longer throw, so an ownership_mismatch failure never leaks an
+  // orphaned `active` session row nothing will ever close (that failure path
+  // returns straight to `executeAgentRun`'s catch block, not `finishRun`).
+  // Stored on `ctx` so `finishRun` can reconcile and close it once the loop
+  // below is done. Best-effort: a failure here must not fail the run — it
+  // just means every tool call below skips its ledger row (see the pre-hook's
+  // `sessionId` guard) and falls back to the `'(inline)'` executionId, same as
+  // before wave 4a.
+  try {
+    ctx.sessionId = await createAgentRunSession({
+      runId: run.id,
+      agentId: ctx.agent.id,
+      orgId: run.orgId,
+      deviceId: run.deviceId,
+      model,
+      maxTurns: Math.max(1, limits.maxTurnsPerRun),
+    });
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to create the execution-ledger session', {
+      runId: run.id, error,
+    });
+  }
+
   const outcome: AgentRunOutcome = {
     findings: [],
     proposedActions: [],
@@ -645,11 +743,13 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   };
   const intentIds: string[] = [];
   const allowedPending = new Map<string, number>();
+  const executionIdPending = new Map<string, Array<string | null>>();
 
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending,
+    sessionId: ctx.sessionId, executionIdPending,
   });
-  const postToolUse = createAgentRunPostToolUse({ outcome, allowedPending });
+  const postToolUse = createAgentRunPostToolUse({ outcome, allowedPending, executionIdPending });
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one.
@@ -966,6 +1066,34 @@ async function finishRun(
     costCents: result.costCents,
     ...(errorCode ? { errorCode } : {}),
   });
+
+  // Ledger cleanup — best-effort, and never allowed to change the run's
+  // already-committed terminal status above. `completed`/`awaiting_approval`
+  // both close the session as `completed` (a human owning the follow-up on an
+  // awaiting_approval run is not the SESSION continuing — the agent is done
+  // thinking); anything else is `failed`.
+  if (ctx.sessionId) {
+    const sessionId = ctx.sessionId;
+    try {
+      const hungCount = await reconcileHungExecutions(sessionId);
+      if (hungCount > 0) {
+        console.warn('[aiAgentRunLoop] reconciled tool executions left in-flight at run finish', {
+          runId: ctx.run.id, sessionId, hungCount,
+        });
+      }
+    } catch (error) {
+      console.error('[aiAgentRunLoop] failed to reconcile hung executions (non-fatal)', {
+        runId: ctx.run.id, sessionId, error,
+      });
+    }
+    try {
+      await closeAgentRunSession(sessionId, status === 'failed' ? 'failed' : 'completed');
+    } catch (error) {
+      console.error('[aiAgentRunLoop] failed to close the execution-ledger session (non-fatal)', {
+        runId: ctx.run.id, sessionId, error,
+      });
+    }
+  }
 
   await notifyRunFinished(ctx, {
     status,
