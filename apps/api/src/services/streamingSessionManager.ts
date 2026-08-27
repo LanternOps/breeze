@@ -21,7 +21,13 @@ import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { recordUsageFromSdkResult, calculateCostCents, sumInputTokens } from './aiCostTracker';
+import {
+  recordUsageFromSdkResult,
+  calculateCostCents,
+  calculateCatalogCostCents,
+  sumInputTokens,
+  type CatalogPricingSnapshot,
+} from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -30,7 +36,9 @@ import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isRecognizedSelfHostSignal } from '../config/env';
-import type { UsableLlmConfig } from './llm/llmConfigResolver';
+import type { ResolvedLlmEndpoint, UsableLlmConfig } from './llm/llmConfigResolver';
+import { getLlmEgressProxy } from './llm/llmEgressProxy';
+import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -106,10 +114,39 @@ const SDK_CHILD_ENV_CREDENTIAL_KEYS = new Set<string>([
   'CLAUDE_CODE_OAUTH_TOKEN',
 ]);
 
+/**
+ * Proxy configuration the parent process may carry. Forwarded as-is for
+ * platform and direct-Anthropic partner sessions (an operator's outbound proxy
+ * is legitimate there), but DROPPED wholesale for a catalog session: those must
+ * traverse the grant-scoped CONNECT proxy, and a parent `NO_PROXY=*` (or a
+ * lowercase `https_proxy` shadowing our uppercase one) would quietly restore
+ * direct, unpinned egress to the provider (#3922, quorum P4).
+ */
+const SDK_CHILD_ENV_PROXY_KEYS = new Set<string>([
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NO_PROXY',
+  'https_proxy',
+  'http_proxy',
+  'no_proxy',
+]);
+
+/** The catalog endpoint of a partner session, or null for every other shape. */
+function catalogEndpointOf(
+  resolved: UsableLlmConfig,
+): Extract<ResolvedLlmEndpoint, { kind: 'catalog' }> | null {
+  return resolved.source === 'partner' && resolved.endpoint.kind === 'catalog'
+    ? resolved.endpoint
+    : null;
+}
+
 export function buildClaudeSdkChildEnv(
   resolved: UsableLlmConfig,
   source: NodeJS.ProcessEnv = process.env,
+  options: { egressProxyUrl?: string } = {},
 ): Record<string, string> {
+  const catalogEndpoint = catalogEndpointOf(resolved);
+
   const env: Record<string, string> = {
     CI: 'true',
     CLAUDE_AGENT_SDK_CLIENT_APP: source.CLAUDE_AGENT_SDK_CLIENT_APP ?? 'breeze-api/ai-agent',
@@ -117,10 +154,44 @@ export function buildClaudeSdkChildEnv(
 
   for (const key of SDK_CHILD_ENV_ALLOWLIST) {
     if (resolved.source === 'partner' && SDK_CHILD_ENV_CREDENTIAL_KEYS.has(key)) continue;
+    if (catalogEndpoint && SDK_CHILD_ENV_PROXY_KEYS.has(key)) continue;
     const value = source[key];
     if (typeof value === 'string' && value.length > 0) {
       env[key] = value;
     }
+  }
+
+  // `resolved.source === 'partner'` is implied by a catalog endpoint existing;
+  // it is restated so `resolved.apiKey` narrows to a required string.
+  if (catalogEndpoint && resolved.source === 'partner') {
+    const { egressProxyUrl } = options;
+    // No proxy URL means no grant, and no grant means the child would dial the
+    // provider itself with none of the allowlisting, DNS pinning, or egress
+    // audit this whole path exists for. Refuse to build such an environment
+    // rather than start a subprocess that silently egresses unguarded.
+    if (!egressProxyUrl) {
+      throw new Error(
+        'A catalog LLM session requires an egress proxy URL; refusing to build an unproxied child environment.',
+      );
+    }
+    // The endpoint's own URL — deliberately NOT the parent's
+    // ANTHROPIC_BASE_URL, which is never in the allowlist and stays irrelevant
+    // here whatever IS_HOSTED says (#1412 governs the PLATFORM path only).
+    env.ANTHROPIC_BASE_URL = catalogEndpoint.baseUrl;
+    // Exactly one credential var; the other was already excluded above with the
+    // rest of the parent's credentials, so the SDK cannot fall back to a
+    // platform key and leak it to a third party.
+    if (catalogEndpoint.authMode === 'bearer') {
+      env.ANTHROPIC_AUTH_TOKEN = resolved.apiKey;
+    } else {
+      env.ANTHROPIC_API_KEY = resolved.apiKey;
+    }
+    env.HTTPS_PROXY = egressProxyUrl;
+    env.HTTP_PROXY = egressProxyUrl;
+    // Explicit and empty: an unset NO_PROXY would let the parent's (already
+    // dropped) value or a library default exempt hosts from the proxy.
+    env.NO_PROXY = '';
+    return env;
   }
 
   if (resolved.source === 'partner') {
@@ -302,23 +373,43 @@ export interface LlmConfigSnapshot {
   readonly source: UsableLlmConfig['source'];
   readonly configId?: string;
   readonly configVersion?: number;
+  /**
+   * Catalog revision this session's subprocess was built against (#3922 phase
+   * 2). Revisions are immutable, so a changed id means the base URL, auth mode,
+   * model map or pricing moved — everything the child env and the cost snapshot
+   * were derived from. Absent for direct-Anthropic and platform sessions.
+   */
+  readonly revisionId?: string;
+  /** Wire model id the child sends; moves with the revision's model map. */
+  readonly providerModel?: string;
 }
 
 function llmConfigSnapshot(resolved: UsableLlmConfig): LlmConfigSnapshot {
-  return resolved.source === 'partner'
+  if (resolved.source !== 'partner') return { source: resolved.source };
+  const base = {
+    source: resolved.source,
+    configId: resolved.configId,
+    configVersion: resolved.configVersion,
+  };
+  return resolved.endpoint.kind === 'catalog'
     ? {
-        source: resolved.source,
-        configId: resolved.configId,
-        configVersion: resolved.configVersion,
+        ...base,
+        revisionId: resolved.endpoint.revisionId,
+        providerModel: resolved.endpoint.providerModel,
       }
-    : { source: resolved.source };
+    : base;
 }
 
 function llmConfigSnapshotsMatch(snapshot: LlmConfigSnapshot, resolved: UsableLlmConfig): boolean {
   const fresh = llmConfigSnapshot(resolved);
   return snapshot.source === fresh.source
     && snapshot.configId === fresh.configId
-    && snapshot.configVersion === fresh.configVersion;
+    && snapshot.configVersion === fresh.configVersion
+    // A revision bump (or a swap between direct and catalog, which flips these
+    // between a value and undefined) rotates the session exactly as a key
+    // rotation does — the subprocess cannot be re-pointed in place.
+    && snapshot.revisionId === fresh.revisionId
+    && snapshot.providerModel === fresh.providerModel;
 }
 
 export interface ActiveSession {
@@ -343,6 +434,19 @@ export interface ActiveSession {
    */
   readonly model: string;
   readonly llmConfigSnapshot: LlmConfigSnapshot;
+  /**
+   * Per-million-token rates from the catalog revision this session runs on.
+   * Present only for catalog sessions, where the SDK's self-reported
+   * `total_cost_usd` describes Anthropic list pricing rather than what the
+   * partner is actually charged and must be ignored (#3922 W2 Task 2.4).
+   */
+  readonly catalogPricing?: CatalogPricingSnapshot;
+  /**
+   * Releases this session's CONNECT-proxy grant. Set for catalog sessions only;
+   * invoked by `remove()` so a torn-down, rotated or evicted session stops
+   * being able to reach the provider immediately.
+   */
+  revokeEgressGrant?: () => void;
   sdkSessionId: string | null;
   query: Query;
   abortController: AbortController;
@@ -628,6 +732,54 @@ export class StreamingSessionManager {
       console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
     }
 
+    // ── Catalog egress grant (#3922 phase 2) ────────────────────────────────
+    // A catalog session's subprocess may open exactly one destination, through
+    // the local allowlisting CONNECT proxy. The grant must exist BEFORE the
+    // child env is built (it carries the proxy URL) and before query() spawns
+    // the subprocess. Any failure here propagates: fail loud, never start an
+    // unproxied child (phase-1 invariant).
+    const catalogEndpoint = catalogEndpointOf(resolved);
+    let egressProxyUrl: string | undefined;
+    let revokeEgressGrant: (() => void) | undefined;
+    if (catalogEndpoint && resolved.source === 'partner') {
+      const host = new URL(catalogEndpoint.baseUrl).hostname;
+      const partnerId = resolved.partnerId;
+      const provenance = {
+        orgId: dbSession.orgId,
+        partnerId,
+        catalogEntryId: catalogEndpoint.catalogEntryId,
+        revisionId: catalogEndpoint.revisionId,
+        aiSessionId: breezeSessionId,
+      };
+      const proxy = await getLlmEgressProxy();
+      egressProxyUrl = proxy.grant(
+        breezeSessionId,
+        { host, port: 443 },
+        // Every CONNECT the child makes under this grant — tunnelled or
+        // refused — becomes one audit row. Synchronous and fire-and-forget by
+        // the recorder's contract; it runs inside the proxy's socket handler.
+        (attempt) => {
+          recordLlmEgressEvent({
+            ...provenance,
+            surface: 'sdk_proxy_connect',
+            host: attempt.host,
+            resolvedIp: attempt.resolvedIp,
+            blocked: attempt.blocked,
+          });
+        },
+      ).proxyUrl;
+      revokeEgressGrant = () => proxy.revoke(breezeSessionId);
+      // One row per session create, so the audit shows which provider a session
+      // was pointed at even if the child never manages a single CONNECT.
+      recordLlmEgressEvent({
+        ...provenance,
+        surface: 'sdk_session_create',
+        host,
+        resolvedIp: null,
+        blocked: false,
+      });
+    }
+
     // Device-bound sessions execute tools under the DEVICE's org, not the
     // login org (#3087). `toolAuth` (MCP tool handlers + their RLS context)
     // is narrowed to the session org; `auth` stays raw so RBAC, rate limits,
@@ -645,6 +797,8 @@ export class StreamingSessionManager {
       deviceId,
       model: effectiveModel,
       llmConfigSnapshot: llmConfigSnapshot(resolved),
+      catalogPricing: catalogEndpoint?.pricing,
+      revokeEgressGrant,
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
       abortController,
@@ -712,41 +866,54 @@ export class StreamingSessionManager {
     // transaction (via withDbAccessContext). Without this escape hatch, the SDK's
     // tool handlers inherit the transaction context and hang after the HTTP
     // request completes and the transaction commits.
-    runOutsideDbContextSafe(() => {
-      const sdkQuery = query({
-        prompt: inputController.getInputStream(),
-        options: {
-          systemPrompt: effectiveSystemPrompt,
-          model: effectiveModel,
-          maxTurns,
-          maxBudgetUsd,
-          tools: [],
-          allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
-          mcpServers: { [mcpServerName]: mcpServer },
-          includePartialMessages: true,
-          abortController,
-          env: buildClaudeSdkChildEnv(resolved),
-          resume: dbSession.sdkSessionId ?? undefined,
-          persistSession: true,
-          settingSources: [],
-          thinking: { type: 'disabled' },
-          stderr: (data: string) => {
-            if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
-              console.error('[SDK-stderr]', breezeSessionId, redactClaudeSdkStderr(data));
-            }
-          },
-        }
-      });
+    try {
+      runOutsideDbContextSafe(() => {
+        const sdkQuery = query({
+          prompt: inputController.getInputStream(),
+          options: {
+            systemPrompt: effectiveSystemPrompt,
+            // A catalog endpoint speaks its own model ids (`anthropic/…` on
+            // OpenRouter, a deployment name on a self-hosted gateway). The wire
+            // id comes from the revision's model map; `session.model` keeps the
+            // platform-logical id for provenance and pricing fallback.
+            model: catalogEndpoint?.providerModel ?? effectiveModel,
+            maxTurns,
+            maxBudgetUsd,
+            tools: [],
+            allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
+            mcpServers: { [mcpServerName]: mcpServer },
+            includePartialMessages: true,
+            abortController,
+            env: buildClaudeSdkChildEnv(resolved, process.env, { egressProxyUrl }),
+            resume: dbSession.sdkSessionId ?? undefined,
+            persistSession: true,
+            settingSources: [],
+            thinking: { type: 'disabled' },
+            stderr: (data: string) => {
+              if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
+                console.error('[SDK-stderr]', breezeSessionId, redactClaudeSdkStderr(data));
+              }
+            },
+          }
+        });
 
-      (session as { query: Query }).query = sdkQuery;
+        (session as { query: Query }).query = sdkQuery;
 
-      // Start background processor (inherits the clean context)
-      (session as { processorPromise: Promise<void> }).processorPromise = this.runBackgroundProcessor(session);
-      session.processorPromise.catch((err) => {
-        captureException(err);
-        console.error('[StreamingSessionManager] Background processor error:', err);
+        // Start background processor (inherits the clean context)
+        (session as { processorPromise: Promise<void> }).processorPromise = this.runBackgroundProcessor(session);
+        session.processorPromise.catch((err) => {
+          captureException(err);
+          console.error('[StreamingSessionManager] Background processor error:', err);
+        });
       });
-    });
+    } catch (err) {
+      // The subprocess never started (a rejected child env, a query() throw).
+      // Release the egress grant here — nothing else holds a reference to this
+      // session, so `remove()` will never run for it and the grant would leak
+      // until the process restarted.
+      try { revokeEgressGrant?.(); } catch { /* teardown must not mask err */ }
+      throw err;
+    }
 
     // Enforce max active sessions via LRU eviction
     if (this.sessions.size >= MAX_ACTIVE_SESSIONS) {
@@ -785,6 +952,12 @@ export class StreamingSessionManager {
     }
     try { session.query.close(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to close SDK query:', sessionId, err);
+    }
+    // Release the CONNECT-proxy allowance (catalog sessions only). Done on
+    // every teardown path — rotation, eviction, processor exit — so a session
+    // that is going away cannot keep a tunnel to the provider open.
+    try { session.revokeEgressGrant?.(); } catch (err) {
+      captureException(err); console.error('[StreamingSessionManager] Failed to revoke LLM egress grant:', sessionId, err);
     }
     session.eventBus.closeAll();
     session.state = 'closed';
@@ -1151,6 +1324,10 @@ export class StreamingSessionManager {
                     orgId,
                     usageData,
                     session.llmConfigSnapshot.source === 'partner' ? 'partner_key' : 'platform',
+                    // Catalog traffic is priced from the revision snapshot; the
+                    // SDK's own total_cost_usd reflects Anthropic list pricing
+                    // for a request that never went to Anthropic.
+                    session.catalogPricing,
                   ),
                 );
               } catch (err) {
@@ -1177,6 +1354,10 @@ export class StreamingSessionManager {
                     orgId,
                     usageData,
                     session.llmConfigSnapshot.source === 'partner' ? 'partner_key' : 'platform',
+                    // Catalog traffic is priced from the revision snapshot; the
+                    // SDK's own total_cost_usd reflects Anthropic list pricing
+                    // for a request that never went to Anthropic.
+                    session.catalogPricing,
                   ),
                 );
               } catch (err) {
@@ -1187,7 +1368,19 @@ export class StreamingSessionManager {
 
             // Per-user usage hook (AI for Office): runs alongside the org-level
             // recordUsageFromSdkResult above, never instead of it.
-            const turnCostCents = Math.round(usageData.total_cost_usd * 100 * 100) / 100;
+            // Catalog sessions price from the revision snapshot, matching what
+            // recordUsageFromSdkResult wrote to the ledger — otherwise the
+            // per-user buckets and the client's turn summary would quote
+            // Anthropic list pricing for third-party traffic.
+            const turnCostCents = session.catalogPricing
+              ? calculateCatalogCostCents(
+                  session.catalogPricing,
+                  usageData.usage.input_tokens,
+                  usageData.usage.output_tokens,
+                  usageData.usage.cache_read_input_tokens,
+                  usageData.usage.cache_creation_input_tokens,
+                )
+              : Math.round(usageData.total_cost_usd * 100 * 100) / 100;
             // Cache-read and cache-creation tokens are input tokens — they are
             // split out for PRICING only. Reporting the uncached slice alone made
             // per-user ledgers and the client's turn summary read near-zero on
@@ -1266,6 +1459,7 @@ export class StreamingSessionManager {
                 toolExecutionCount: abandonedToolExecutionCount,
               },
               session.llmConfigSnapshot.source === 'partner' ? 'partner_key' : 'platform',
+              session.catalogPricing,
             ),
           );
         } catch (err) {
@@ -1280,13 +1474,21 @@ export class StreamingSessionManager {
             await session.recordExtraUsage({
               inputTokens: abandoned.inputTokens,
               outputTokens: abandoned.outputTokens,
-              costCents: calculateCostCents(
-                session.model,
-                abandoned.inputTokens,
-                abandoned.outputTokens,
-                abandoned.cacheReadInputTokens,
-                abandoned.cacheCreationInputTokens
-              ),
+              costCents: session.catalogPricing
+                ? calculateCatalogCostCents(
+                    session.catalogPricing,
+                    abandoned.inputTokens,
+                    abandoned.outputTokens,
+                    abandoned.cacheReadInputTokens,
+                    abandoned.cacheCreationInputTokens,
+                  )
+                : calculateCostCents(
+                    session.model,
+                    abandoned.inputTokens,
+                    abandoned.outputTokens,
+                    abandoned.cacheReadInputTokens,
+                    abandoned.cacheCreationInputTokens
+                  ),
             });
           } catch (err) {
             captureException(err);

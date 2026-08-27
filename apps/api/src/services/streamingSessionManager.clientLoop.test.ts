@@ -368,6 +368,8 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
       ORG, // session.orgId (dbSession.orgId) — NOT auth.orgId, which is null here
       expect.objectContaining({ total_cost_usd: 0.03 }),
       'platform',
+      // 5th arg: catalog pricing snapshot (#3922 W3) — absent off the catalog path.
+      undefined,
     );
   });
 });
