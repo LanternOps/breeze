@@ -1295,12 +1295,16 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   };
 
   // wave 3.5d-b (#4086): the manually-curated shutdown list used to live
-  // here. It is now sourced from the registry — only entries that were
-  // actually loaded (by `startRegisteredWorkers` in `initializeWorkers()`,
-  // above) for this role contribute a shutdown task, same as today (an
-  // unstarted worker never had a call queued here either). Tasks still run
-  // concurrently via `Promise.allSettled` inside the 'workers' phase below,
-  // so relative order within the list carries no runtime significance.
+  // here. It is now sourced from the registry — an entry contributes a
+  // shutdown task as soon as its module has been LOADED (registered before
+  // its init() runs; see workerRegistry.ts's `runEntries`), so a worker whose
+  // init() throws partway still gets torn down here. That matches the
+  // pre-refactor static list, which called every one of its ~103 shutdown
+  // fns unconditionally regardless of whether that worker's init had
+  // succeeded. Only an entry that was never selected for this role (and so
+  // never loaded at all) contributes nothing. Tasks still run concurrently
+  // via `Promise.allSettled` inside the 'workers' phase below, so relative
+  // order within the list carries no runtime significance.
   const workerShutdownTasks = await buildWorkerShutdownTasks(breezeRole());
 
   // Stop accepting requests BEFORE tearing down workers/Redis/DB. Otherwise a

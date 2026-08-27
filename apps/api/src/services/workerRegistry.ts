@@ -801,7 +801,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'offboardingDrainReaper',
-    placement: 'global',
+    // socket-owner, not global: its static closure is clean, but at RUNTIME
+    // it reaches routes/agentWs.ts via a dynamic import one hop out —
+    // jobs/offboardingDrainReaper.ts -> services/tenantOffboarding.ts
+    // (sweepOffboardingTenants) -> services/tenantLifecycle.ts
+    // (disconnectLiveAgentSocketsForOrgIds) -> `await import('../routes/agentWs')`
+    // for getConnectedAgentIds()/disconnectAgent(). Those two functions carry
+    // no assertSocketLocalDispatchAllowed guard, so on a worker-role process
+    // this fails silently (empty connected-id list) instead of loudly,
+    // quietly disabling the #2774 offboarding drain's live-socket eviction.
+    // Review finding, wave 3.5d-b (#4086).
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/offboardingDrainReaper');
       return { init: m.initializeOffboardingDrainReaper, shutdown: m.shutdownOffboardingDrainReaper };
@@ -928,12 +938,19 @@ export function selectWorkers(role: BreezeRole): readonly WorkerRegistration[] {
 }
 
 /**
- * Per-name loaded shutdown functions, populated as `startRegisteredWorkers`
- * (or its test seam) successfully loads+inits an entry. `buildWorkerShutdownTasks`
- * reads from this so shutdown only tears down what actually started — an
- * entry that failed `init()` (or was never selected for this role) contributes
- * no shutdown task, same as today (a worker that never started has no
- * shutdown call queued).
+ * Per-name loaded shutdown functions, populated by `runEntries` as soon as an
+ * entry's module has *loaded* — deliberately BEFORE `init()` runs. This
+ * mirrors the pre-refactor behavior: the old static `workerShutdownTasks`
+ * list in index.ts called every shutdown fn unconditionally on SIGTERM,
+ * regardless of whether that worker's init had succeeded, failed partway, or
+ * even been reached. Most inits construct a BullMQ `Worker`/`Queue` into
+ * module-level state and only then do throwable work (e.g. scheduling a
+ * repeatable job against Redis) — a partial init still leaves that
+ * Worker/Queue holding a live Redis connection that must be closed on
+ * shutdown. Registering the shutdown at load-time (not at successful-init
+ * time) restores that behavior exactly. An entry contributes no shutdown task
+ * only when its module never loaded at all — not selected for this role, or
+ * the dynamic `import()` itself threw.
  */
 const loadedShutdowns = new Map<string, () => Promise<void>>();
 
@@ -945,10 +962,10 @@ async function runEntries(
     entries.map(async (entry) => {
       try {
         const mod = await entry.load();
-        await mod.init();
         if (mod.shutdown) {
           loadedShutdowns.set(entry.name, mod.shutdown);
         }
+        await mod.init();
         hooks.onResult(entry.name, true);
       } catch (error) {
         hooks.onResult(entry.name, false, error);
@@ -972,11 +989,11 @@ export async function startRegisteredWorkers(
 }
 
 /**
- * Returns the shutdown functions for every entry selected for `role` that
- * was actually loaded (by a prior `startRegisteredWorkers` call) and defines
- * a `shutdown`. An entry that was never selected, never started, or defines
- * no `shutdown` contributes nothing — same as today, where an unstarted
- * worker has no corresponding call in `workerShutdownTasks`.
+ * Returns the shutdown functions for every entry selected for `role` whose
+ * module was actually loaded (by a prior `startRegisteredWorkers` call —
+ * loaded, not necessarily init-succeeded, see `runEntries` above) and defines
+ * a `shutdown`. An entry that was never selected, never loaded, or defines no
+ * `shutdown` contributes nothing.
  */
 export async function buildWorkerShutdownTasks(
   role: BreezeRole,

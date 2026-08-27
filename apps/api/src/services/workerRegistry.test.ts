@@ -185,11 +185,43 @@ describe('workerRegistry: startRegisteredWorkers / buildWorkerShutdownTasks (inj
     await _startWorkersForTest(entries, 'worker', { onResult: () => {} });
 
     const tasks = await _buildShutdownTasksForTest(entries, 'worker');
-    // fakeShutB failed init (never loaded a shutdown fn) and fakeShutSocket
-    // wasn't selected for the 'worker' role — neither contributes a task.
-    expect(tasks.length).toBe(2);
+    // fakeShutB's module still LOADED (only its init() threw), so its
+    // shutdown fn is registered same as fakeShutA/fakeShutC — a partially
+    // initialized worker still needs to be torn down on shutdown. Only
+    // fakeShutSocket is excluded, because it wasn't selected for the
+    // 'worker' role at all (never loaded).
+    expect(tasks.length).toBe(3);
     // All returned tasks must be callable without throwing.
     await Promise.all(tasks.map((t) => t()));
+  });
+
+  it('an entry whose module loads but whose init() throws still contributes its shutdown task', async () => {
+    const loadedNames: string[] = [];
+    const entry: WorkerRegistration = {
+      name: 'fakePartialInit',
+      placement: 'global',
+      load: async () => {
+        loadedNames.push('fakePartialInit'); // module loaded...
+        return {
+          init: async () => {
+            throw new Error('fakePartialInit init failed');
+          },
+          shutdown: async () => {},
+        };
+      },
+    };
+
+    const results: Array<[string, boolean]> = [];
+    await _startWorkersForTest([entry], 'worker', {
+      onResult: (name, ok) => results.push([name, ok]),
+    });
+
+    expect(loadedNames).toEqual(['fakePartialInit']); // ...even though init() threw
+    expect(results).toEqual([['fakePartialInit', false]]);
+
+    const tasks = await _buildShutdownTasksForTest([entry], 'worker');
+    expect(tasks.length).toBe(1);
+    await expect(tasks[0]!()).resolves.toBeUndefined();
   });
 
   it('an entry with no shutdown contributes no shutdown task even though it loaded', async () => {
