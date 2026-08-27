@@ -8,7 +8,6 @@ import { devices } from './devices';
 export const pluginStatusEnum = pgEnum('plugin_status', ['active', 'disabled', 'error', 'installing']);
 export const webhookStatusEnum = pgEnum('webhook_status', ['active', 'disabled', 'error']);
 export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', ['pending', 'delivered', 'failed', 'retrying']);
-export const eventBusPriorityEnum = pgEnum('event_bus_priority', ['low', 'normal', 'high', 'critical']);
 // The DB enum is intentionally WIDER than the implemented provider list
 // (PSA_PROVIDERS in @breeze/shared): 'halo', 'syncro', 'kaseya' and 'other'
 // are DEAD values — no adapter exists and the route-level zod gate

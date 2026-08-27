@@ -8,3 +8,6 @@
 -- actual event delivery has always gone through Redis Streams (XADD) and
 -- pub/sub, never through this Postgres table.
 DROP TABLE IF EXISTS event_bus_events;
+
+-- event_bus_priority backed only the dropped table's `priority` column; drop it too.
+DROP TYPE IF EXISTS event_bus_priority;
